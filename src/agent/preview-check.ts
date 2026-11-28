@@ -5,6 +5,7 @@ import type { EditOperation, OperationType } from '@shared/ops';
 import { scopeForWidth } from '@shared/styles';
 import type { ProjectState } from '@shared/types';
 import { allTrees, placementCounts } from '@engine/tree';
+import { detailPlaces } from '@engine/business-details';
 import { named } from './completeness';
 import type { Viewport } from './report';
 
@@ -292,7 +293,9 @@ function fieldsReach(op: EditOperation, reach: Reach, before: ProjectState, arti
   } else if (op.type === 'site.update') {
     const direction = op.direction === undefined ? before.site.direction : op.direction === 'auto' ? undefined : op.direction;
     const turned = (op.language !== undefined || op.direction !== undefined) && siteDirection(before.site) !== siteDirection({ language: op.language ?? before.site.language, direction });
-    if (turned || set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
+    // The publisher's email, telephone, address and hours show wherever a section, link or footer row shows them (#1368).
+    const details = (op.identity !== undefined || op.language !== undefined) && detailPlaces(before).length > 0;
+    if (turned || details || set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
     if (set(op).some((k) => NOT_FOUND.has(k))) reach.unreachable.add('not-found');
   } else if (op.type === 'asset.update') {
     // A font's files change how its text is drawn everywhere; a name or description shows in the editor only.

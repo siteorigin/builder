@@ -16,7 +16,9 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
-import { contactInText, dialString } from '@shared/contact-links';
+import { dialString } from '@shared/contact-links';
+import { checkEmail, checkTelephone } from '@shared/site-identity';
+import { detailPlaces } from '@engine/business-details';
 import { isLanguageCode } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
@@ -284,6 +286,19 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   };
   const email = contactLink('contactEmail', args.contactEmail, 'email');
   const phone = contactLink('contactPhone', args.contactPhone, 'tel');
+  // The site's own email and telephone (Site details' publisher, #1368): every section, link and footer row that shows
+  // the old one, or the sample, shows the new one; a value of the author's own stays.
+  const identity: { email?: string; telephone?: string } = {};
+  const stored = (state.site.identity ?? {}) as { email?: unknown; telephone?: unknown };
+  for (const [field, link, value, key, check] of [
+    ['contactEmail', email, args.contactEmail, 'email', checkEmail],
+    ['contactPhone', phone, args.contactPhone, 'telephone', checkTelephone]
+  ] as const) {
+    if (!link || value === undefined) continue;
+    const c = check(value);
+    if (!c.ok) issues.push({ field, message: c.message });
+    else if (c.value !== stored[key]) identity[key] = c.value;
+  }
   // How the site is found and shared, set with the brand so a rebrand ships complete.
   // A value the site already has is left out, so a call that changes nothing says so.
   const seo: { baseUrl?: string; language?: string; socialImage?: string | null } = {};
@@ -313,9 +328,10 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const footers = state.site.shell.footer.rootIds.map((id) => state.site.shell.footer.nodes[id]).filter((n): n is InstanceNode => n?.kind === 'instance' && state.components[n.definitionId]?.properties[COPYRIGHT_PROP]?.type === 'string');
   const copyright = (value: string): EditOperation[] => footers.filter((n) => args.siteName !== undefined || n.props[COPYRIGHT_PROP] !== value).map((n) => ({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: n.id, prop: COPYRIGHT_PROP, value }));
   if (args.copyright !== undefined && args.siteName !== undefined) ops.push(...copyright(''));
-  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description) || Object.keys(seo).length) {
+  const details = Object.keys(identity).length ? { identity } : {};
+  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description) || Object.keys(seo).length || details.identity) {
     const description = args.description ?? (!state.site.description ? args.tagline : undefined);
-    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}), ...seo });
+    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}), ...seo, ...details });
   }
   if (args.copyright !== undefined) ops.push(...copyright(args.copyright));
 
@@ -333,14 +349,15 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     if (schema?.type === 'list') {
       const list = (footer.props.contact as ListItem[] | undefined) ?? [];
       let room = schema.max === undefined ? Infinity : schema.max - list.length;
-      for (const [link, label] of [[email, args.contactEmail], [phone, args.contactPhone]] as const) {
+      // The rows that show the site's email or number, or the sample, follow the site's new one (a deliberate label
+      // such as "Call reception" keeps its words, and only the destination behind it changes).
+      const following = detailPlaces(state, footer).filter((p) => p.prop === 'contact');
+      for (const [link, label, detail] of [[email, args.contactEmail, 'email'], [phone, args.contactPhone, 'telephone']] as const) {
         if (!link) continue;
-        const existing = list.find((i) => (i.link as LinkValue | undefined)?.type === link.type);
         const owner = { kind: 'shell' as const, id: 'footer' };
-        // A deliberate label ("Call reception") stays: only the destination behind it changes.
-        const custom = typeof existing?.label === 'string' && existing.label.trim() !== '' && !contactInText(existing.label);
-        if (existing) ops.push({ type: 'instance.setProp', owner, nodeId: footer.id, prop: 'contact', itemId: existing.id, value: custom ? { link } : { label: label!.trim(), link } });
-        else if (room-- > 0) ops.push({ type: 'instance.listInsert', owner, nodeId: footer.id, prop: 'contact', item: { label: label!.trim(), link } });
+        if (list.some((i) => (i.link as LinkValue | undefined)?.type === link.type)) {
+          if (!following.some((p) => p.detail === detail)) warnings.push(`The footer's ${detail === 'email' ? 'email address' : 'telephone number'} is one of the author's own, so it still shows that. Change its contact row with instance.setProp if it should show ${label!.trim()} too.`);
+        } else if (room-- > 0) ops.push({ type: 'instance.listInsert', owner, nodeId: footer.id, prop: 'contact', item: { label: label!.trim(), link } });
         else warnings.push(`The footer's contact list is full, so ${label} was not added.`);
       }
     }

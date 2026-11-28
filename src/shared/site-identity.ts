@@ -100,6 +100,69 @@ export function checkOpeningHours(input: string): Checked<string> {
   return period && period.length <= IDENTITY_LIMITS.hoursLine ? ok(period) : refused;
 }
 
+const DAY_CODES = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'] as const;
+const ENGLISH_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+/** "9am", "9:30am", "12pm" at noon, "12am" at its start and "midnight" at its end, as English writes opening hours. */
+function englishTime(h: number, min: number): string {
+  if (h === 24) return 'midnight';
+  const shown = `${h % 12 || 12}${min ? `:${String(min).padStart(2, '0')}` : ''}`;
+  return `${shown}${h < 12 ? 'am' : 'pm'}`;
+}
+
+/** "Monday, Wednesday and Friday": the last two joined by "and". */
+const englishList = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+
+/** How one language names the days and the hours, from the platform's own names for them. */
+function localWords(language: string): { day: (i: number) => string; time: (h: number, min: number) => string; list: (parts: string[]) => string } {
+  const day = new Intl.DateTimeFormat([language, 'en'], { weekday: 'long', timeZone: 'UTC' });
+  const time = new Intl.DateTimeFormat([language, 'en'], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+  const list = new Intl.ListFormat([language, 'en'], { type: 'conjunction' });
+  // 2024-01-01 was a Monday.
+  return { day: (i) => day.format(Date.UTC(2024, 0, 1 + i)), time: (h, min) => time.format(Date.UTC(2024, 0, 1, h % 24, min)), list: (parts) => list.format(parts) };
+}
+
+/**
+ * Opening hours as visitors read them, in the site's language: “Monday to Friday, 9am – 5pm” for Schema.org's
+ * “Mo-Fr 09:00-17:00”, the periods joined with semicolons. A period of days alone is open all day. Each period is
+ * checked as Site details keeps it, and one that is not usable is left out.
+ */
+export function openingHoursText(periods: readonly string[], language = 'en'): string {
+  const english = /^en\b/i.test(language);
+  let words: ReturnType<typeof localWords> | null = null;
+  if (!english) {
+    try {
+      words = localWords(language);
+    } catch {
+      words = null;
+    }
+  }
+  const dayName = (code: string) => {
+    const i = DAY_CODES.indexOf(code.toLowerCase() as (typeof DAY_CODES)[number]);
+    return words ? words.day(i) : ENGLISH_DAYS[i];
+  };
+  const out: string[] = [];
+  for (const raw of periods) {
+    const c = checkOpeningHours(raw);
+    if (!c.ok || !c.value) continue;
+    const [days, hours] = c.value.split(' ');
+    const groups = days.split(',').map((g) => {
+      const [from, to] = g.split('-');
+      return to ? `${dayName(from)}${words ? ' – ' : ' to '}${dayName(to)}` : dayName(from);
+    });
+    const named = words ? words.list(groups) : englishList(groups);
+    let text: string;
+    if (!hours) text = words ? named : `${named}, all day`;
+    else {
+      const [from, to] = hours.split('-').map((t) => t.split(':').map(Number));
+      const time = words ? words.time : englishTime;
+      text = `${named}, ${time(from[0], from[1])} – ${time(to[0], to[1])}`;
+    }
+    out.push(text.charAt(0).toLocaleUpperCase(language) + text.slice(1));
+  }
+  return out.join('; ');
+}
+
 /** A map position typed as “latitude, longitude” (“-33.92, 18.42”). Empty text is none. */
 export function checkCoordinates(input: string): Checked<{ latitude: number; longitude: number } | null> {
   const text = input.trim();

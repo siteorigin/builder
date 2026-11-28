@@ -79,6 +79,7 @@ import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
+import { carryBusinessDetails, detailTexts, fillBusinessDetails } from './business-details';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
@@ -1792,6 +1793,8 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
       // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
       if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[], new Set(), formDefaults(def));
     }
+    // A section placed once Site details has the business's details shows them where it would show the samples.
+    if (op.owner.kind !== 'component') fillBusinessDetails(state, op.owner, inst);
     nodes = [inst];
   }
   // The editor names the node it inserts when the same batch goes on to fill it (an image and its picture).
@@ -3327,6 +3330,8 @@ function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
+  // The site's business details as its sections show them before the change (the hours are written in its language).
+  const details = detailTexts(s);
   if (op.name !== undefined) {
     // One line, as the header, the footer and the browser title show it.
     const name = siteNameText(op.name);
@@ -3412,6 +3417,9 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (next.value) s.identity = next.value;
     else delete s.identity;
   }
+  // The sections, links and footer that showed a detail (or its sample) show its new value (#1368); their own stay.
+  const problem = carryBusinessDetails(state, details);
+  if (problem) fail(problem);
   return {};
 }
 
