@@ -224,7 +224,7 @@ export function linkToTarget(link: LinkValue, pages: RichPages): string {
     case 'anchor':
       return `#${link.target}`;
     case 'entry':
-      return `${ENTRY_LINK_PREFIX}${link.target}`;
+      return `${ENTRY_LINK_PREFIX}${link.target}${link.query ?? ''}`;
     case 'collection':
       return `${COLLECTION_LINK_PREFIX}${link.target}`;
     default:
@@ -234,6 +234,26 @@ export function linkToTarget(link: LinkValue, pages: RichPages): string {
 
 /** How a link to a collection entry is written as text: `entry:` and the entry's ID, which never changes. */
 export const ENTRY_LINK_PREFIX = 'entry:';
+/** The longest query an entry link keeps. */
+export const MAX_LINK_QUERY = 2000;
+/**
+ * A query ("?…") as an entry link keeps it: its order, repeats and escapes as written, with only what an address or the
+ * text form can't hold as it is (a space, a quote, a letter outside ASCII, "#") escaped. A "?" alone says nothing.
+ */
+export const linkQuery = (query: string): string =>
+  query.length > 1 ? query.replace(/[^!$-;=?-[\]_a-z~]/gu, (c) => encodeURIComponent(/\p{Surrogate}/u.test(c) ? '\uFFFD' : c)) : '';
+
+/**
+ * What follows "entry:" in the text form: the entry's ID, then the link's query when it has one. With a "#" it is left
+ * whole, so it names no entry: an entry has no sections to go to.
+ */
+export function entryTarget(text: string): { target: string; query?: string } {
+  const at = text.indexOf('?');
+  if (at < 0 || text.includes('#')) return { target: text };
+  const query = linkQuery(text.slice(at));
+  return { target: text.slice(0, at), ...(query ? { query } : {}) };
+}
+
 /** How a link to a collection's index is written as text: `collection:` and the collection's ID, which never changes. */
 export const COLLECTION_LINK_PREFIX = 'collection:';
 

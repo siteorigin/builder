@@ -162,9 +162,12 @@ export class SessionRoom extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {
-    // Finish the closing handshake. 1005 and 1006 only describe a close; they cannot be sent.
+    // Finish the closing handshake with the peer's own code, or with none. Never 1000 in place of another: to a guest,
+    // 1000 says the session ended, and a browser that closes a page's socket as it reloads (1001, Going Away) may still
+    // tell that page the answer, as Firefox does (#1528). 1005 and 1006 only describe a close; they cannot be sent.
     try {
-      ws.close(code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000);
+      if (code === 1000 || code === 1001 || (code >= 3000 && code <= 4999)) ws.close(code);
+      else ws.close();
     } catch {
       // Already closed.
     }
