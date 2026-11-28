@@ -721,6 +721,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   // The document "Open in Assets" asked for, until the list has opened it.
   const [shownDocument, setShownDocument] = useState<string | null>(null);
   const revealed = useCallback(() => setShownDocument(null), []);
+  // The font "Open in Assets" asked for (a missing file in Project health or an export), until its family has opened.
+  const [shownFont, setShownFont] = useState<string | null>(null);
+  const fontRevealed = useCallback(() => setShownFont(null), []);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const recordsLocation = useRecordsLocation(sel);
   const webPlan = useWebCopyPlan(sel, snap?.workspaceKey ?? '', !!(sel && missingOf.get(sel.id)?.original));
@@ -755,9 +758,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const show = ({ opening, assetId }: { opening?: string; assetId?: string }) => {
       const s = getState().snapshot;
       const kind = assetId && s ? s.state.assets.assets[assetId]?.kind : undefined;
-      if (!assetId || !s || s.workspaceKey !== opening || (kind !== 'image' && kind !== 'document')) return;
+      if (!assetId || !s || s.workspaceKey !== opening || (kind !== 'image' && kind !== 'document' && kind !== 'font')) return;
       replaceSession.current++;
       setReplacing(false);
+      if (kind === 'font') {
+        setSelected(null);
+        setSection('fonts');
+        setShownFont(assetId);
+        return;
+      }
       if (kind === 'document') {
         setSelected(null);
         setSection('documents');
@@ -796,6 +805,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const foundUnused = found.filter((a) => !usage[a.id]);
   // Images with files missing from the project folder, so they can be found without scrolling the whole library.
   const damaged = assets.filter((a) => missingOf.has(a.id));
+  // Fonts whose file is missing, flagged on their tab as images are.
+  const lostFonts = fonts.filter((a) => missingOf.get(a.id)?.original).length;
   const foundDamaged = found.filter((a) => missingOf.has(a.id));
   const mode = replacing ? 'all' : filter === 'unused' && unused.length ? 'unused' : filter === 'missing' && damaged.length ? 'missing' : 'all';
   const shown = mode === 'unused' ? foundUnused : mode === 'missing' ? foundDamaged : found;
@@ -876,12 +887,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       if (!plan) return { ids: [], added: [], failed: false, reviewed: false, chosen: 0 };
       setAdding(true);
       perfMark('import.requested', { files: plan.paths.length, revision: getState().snapshot?.revision ?? null });
-      const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The files couldn’t be added: ${e.message}` }));
+      const r: { ok: boolean; assetIds: string[]; restoredAssetIds?: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The files couldn’t be added: ${e.message}` }));
       // What arrived is told by kind once the new records reach this window (they come in one snapshot).
       if (r.assetIds.length) await assetArrived(r.assetIds[r.assetIds.length - 1], plan.choices.opening);
       const added = r.assetIds.filter((id) => !before.has(id));
-      const already = r.assetIds.length - added.length;
+      // A font whose missing file came back was not already here: it was put back.
+      const restored = (r.restoredAssetIds ?? []).filter((id) => before.has(id));
+      const already = r.assetIds.length - added.length - restored.length;
       const doc = getState().snapshot?.state.assets.assets ?? {};
+      const restoredName = restored.length === 1 ? doc[restored[0]]?.name?.trim() : '';
       const addedFonts = added.filter((id) => doc[id]?.kind === 'font').length;
       const addedDocuments = added.filter((id) => doc[id]?.kind === 'document').length;
       const addedImages = added.length - addedFonts - addedDocuments;
@@ -889,6 +903,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         addedImages ? `Added ${plural(addedImages, 'image', 'images')}.` : '',
         addedFonts ? `Added ${plural(addedFonts, 'font', 'fonts')}. Use ${addedFonts === 1 ? 'it' : 'them'} in Site styles.` : '',
         addedDocuments ? `Added ${plural(addedDocuments, 'document', 'documents')}. Link a button to ${addedDocuments === 1 ? 'it' : 'them'}: choose Document as the link’s destination.` : '',
+        restored.length ? (restoredName ? `Put back the missing file of ${restoredName}.` : `Put back the missing files of ${plural(restored.length, 'font', 'fonts')}.`) : '',
         already ? `${plural(already, 'file was', 'files were')} already here.` : '',
         r.note ?? '',
         r.message ?? ''
@@ -1929,10 +1944,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               {
                 value: 'fonts',
                 label: <>Fonts {tabCount(fonts.length)}</>,
+                icon: lostFonts ? <TriangleAlert className="asset-tab-warn" role="img" aria-label={`${plural(lostFonts, 'font is', 'fonts are')} missing ${lostFonts === 1 ? 'its file' : 'their files'}:`} /> : undefined,
                 panel: () => (
                   <div className="panel-body">
                     {fonts.length > 0 ? (
-                      <FontList fonts={fonts} usage={usage} />
+                      <FontList fonts={fonts} usage={usage} missingOf={missingOf} reveal={shownFont} onRevealed={fontRevealed} />
                     ) : (
                       <p className="asset-section-note">
                         No fonts yet. Add WOFF2 or WOFF files, then choose them for headings or body text in{' '}

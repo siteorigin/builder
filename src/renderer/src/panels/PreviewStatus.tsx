@@ -291,8 +291,9 @@ function PreviewCard({ runtime, slow, outlined }: { runtime: RuntimeState; slow:
         }
       >
         <p>{runtime.message}</p>
-        {/* A project only a newer version can open is read-only here: it can be looked through, not edited. */}
-        <p className="status-card-safe">{WORK_SAFE_READ_ONLY}</p>
+        {/* A project only a newer version can open is read-only here; one in a folder the preview cannot run from
+            (#1366) is still edited in Layers and the Inspector. */}
+        <p className="status-card-safe">{safe}</p>
       </StatusCard>
     );
   if (runtime.state === 'idle' && outlined) return null;

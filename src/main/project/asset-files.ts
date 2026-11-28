@@ -1,6 +1,6 @@
 /**
- * Library images whose files are no longer in the project folder (moved, deleted or never copied along). The
- * library entry and every use of it stay as they are, so the author can locate the file or choose another image.
+ * Library images, documents and fonts whose files are no longer in the project folder (moved, deleted or never copied
+ * along). The library entry and every use of it stay as they are, so the author can locate the file or choose another.
  */
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
@@ -14,7 +14,7 @@ export const IMPORTED_MEDIA_FILE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jp
 /** A document as the asset importer names it: a slug and the first eight characters of the SHA-256 of its bytes, which it keeps as they are. */
 export const IMPORTED_DOCUMENT_FILE = new RegExp(`^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}\\.(${DOCUMENT_EXTENSIONS.join('|')})$`);
 
-/** What each library image or document is missing: its original, and which of the smaller copies it lists. Fonts are not checked. */
+/** What each library image, document or font is missing: its original, and which of the smaller copies it lists (only an image has any). */
 export async function findMissingAssetFiles(projectDir: string, assets: Record<string, AssetRecord>): Promise<MissingAssetFiles[]> {
   // Two images may list the same file: each path is looked at once.
   const seen = new Map<string, Promise<boolean>>();
@@ -33,10 +33,11 @@ export async function findMissingAssetFiles(projectDir: string, assets: Record<s
   };
   const out: MissingAssetFiles[] = [];
   for (const a of Object.values(assets)) {
-    if ((a?.kind !== 'image' && a?.kind !== 'document') || typeof a.file !== 'string') continue;
+    if ((a?.kind !== 'image' && a?.kind !== 'document' && a?.kind !== 'font') || typeof a.file !== 'string') continue;
     const original = !(await present(a.file));
     const variants: string[] = [];
-    for (const v of a.variants ?? []) if (typeof v?.file === 'string' && !(await present(v.file))) variants.push(v.file);
+    // A font has no smaller copies: one listed (assets.json edited by hand) is nothing a font could be missing.
+    if (a.kind !== 'font') for (const v of a.variants ?? []) if (typeof v?.file === 'string' && !(await present(v.file))) variants.push(v.file);
     if (original || variants.length) out.push({ assetId: a.id, original, variants });
   }
   return out;
@@ -51,8 +52,23 @@ export function missingParts(m: Pick<MissingAssetFiles, 'original' | 'variants'>
 }
 
 /**
- * One Project health entry per image with missing files, naming it. An image the site uses is a problem, one it does
- * not use a warning. The message never mentions the uses themselves, so it reads the same while they change.
+ * What a library file is missing, as a sentence says it: missingParts, or for a font its file by name
+ * ("its font file (lora-1a2b3c4d.woff2)"), since one family can have several faces whose names differ little.
+ */
+export function missingFiles(a: AssetRecord | undefined, m: Pick<MissingAssetFiles, 'original' | 'variants'>): string {
+  if (a?.kind === 'font' && m.original && typeof a.file === 'string') return `its font file (${a.file.split('/').pop()})`;
+  return missingParts(m);
+}
+
+/** A library file's name, or what it is when it has none. */
+export function libraryName(a: AssetRecord | undefined): string {
+  return (typeof a?.name === 'string' && a.name.trim()) || (a?.kind === 'document' ? 'A document' : a?.kind === 'font' ? 'A font' : 'An image');
+}
+
+/**
+ * One Project health entry per image, document or font with missing files, naming it. One the site uses (for a font,
+ * a style or code that names its family) is a problem, one it does not use a warning. The message never mentions the
+ * uses themselves, so it reads the same while they change.
  */
 export function missingFileDiagnostics(state: ProjectState, missing: MissingAssetFiles[], usages: () => Record<string, number> = () => assetUsages(state)): Diagnostic[] {
   if (!missing.length) return [];
@@ -61,13 +77,12 @@ export function missingFileDiagnostics(state: ProjectState, missing: MissingAsse
   for (const m of missing) {
     const a = state.assets.assets[m.assetId];
     if (!a) continue;
-    const document = a.kind === 'document';
-    const name = (typeof a.name === 'string' ? a.name.trim() : '') || (document ? 'A document' : 'An image');
-    const fix = document ? 'Locate its file in Assets, or link to something else.' : m.original ? 'Locate the file or choose another image in Assets.' : 'Make the copies again in Assets.';
+    const fix =
+      a.kind === 'document' ? 'Locate its file in Assets, or link to something else.' : a.kind === 'font' ? 'Locate the file in Assets, or remove the font.' : m.original ? 'Locate the file or choose another image in Assets.' : 'Make the copies again in Assets.';
     out.push({
       severity: used[a.id] ? 'error' : 'warning',
       code: 'ASSET_FILE_MISSING',
-      message: `${name} is missing ${missingParts(m)} in the project folder. ${fix}`,
+      message: `${libraryName(a)} is missing ${missingFiles(a, m)} in the project folder. ${fix}`,
       owner: { kind: 'asset', id: a.id }
     });
   }
