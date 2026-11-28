@@ -16,6 +16,11 @@ export interface LiveProjectSnapshot {
   /** The host's AI is making changes: guests' edits are refused until it finishes. */
   aiBusy: boolean;
   runtime: LiveRuntimeStatus;
+  /**
+   * By design, the properties of a placed component a copy editor may change (engine/copy-editor.ts
+   * copyEditableProps), so a copy editor's editor offers those and no others (#1318). The host checks every edit again.
+   */
+  copyEditable: Record<string, string[]>;
 }
 
 /**
@@ -57,6 +62,7 @@ export interface LiveSnapshotSource {
   readOnly: boolean;
   aiBusy: boolean;
   runtime: RuntimeState['state'];
+  copyEditable: Record<string, string[]>;
 }
 
 /** Stands in for a host path wherever one turns up in text. */
@@ -169,6 +175,8 @@ export function liveSnapshot(source: LiveSnapshotSource, hostPaths: readonly str
     state: pattern ? (scrub(state, pattern) as LiveProjectState) : state,
     readOnly: source.readOnly,
     aiBusy: source.aiBusy,
-    runtime: { state: source.runtime }
+    runtime: { state: source.runtime },
+    // Named as the documents are: a property's name holding a host path is scrubbed in both.
+    copyEditable: pattern ? (scrub(source.copyEditable, pattern) as Record<string, string[]>) : source.copyEditable
   };
 }

@@ -68,9 +68,17 @@ export type ModelEvent =
   /** `setup`: the server or model is not usable as set up (not this request's fault), so the fix is in AI settings. */
   | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ContextOverflow; setup?: 'server' | 'chat' };
 
+/**
+ * Something an adapter did within one request that its events do not show (#1566): the request sent to the server
+ * again, changed (a correction after a reply it could not use, a fallback the server needed, a smaller reply budget).
+ * `reason` names it; the rest says what changed, and a correction keeps the reply that could not be used.
+ */
+export type AdapterNote = { kind: 'resend'; reason: string } & Record<string, unknown>;
+
 export interface AgentModelAdapter {
   capabilities(): ModelCapabilities;
-  streamTurn(request: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
+  /** `note`: told of each resend within the request (AdapterNote), for learning mode; adapters that never resend ignore it. */
+  streamTurn(request: CanonicalModelRequest, signal: AbortSignal, note?: (n: AdapterNote) => void): AsyncIterable<ModelEvent>;
   /** How the author gives the model a context of at least `tokens` tokens, when the adapter knows its server. */
   contextHelp?(tokens: number): string;
 }

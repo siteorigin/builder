@@ -7,12 +7,12 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChatContext, Conversation } from '@shared/api';
+import type { ChatContext, ChatMessage, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, pastedImageFiles, type PastedData, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -562,5 +562,61 @@ describe('image files dropped on the composer (#679)', () => {
     expect(isFileDrag(['Files'])).toBe(true);
     expect(isFileDrag(['text/plain', 'Files'])).toBe(true);
     expect(isFileDrag(['text/plain', 'text/uri-list'])).toBe(false);
+  });
+});
+
+describe('ArrowUp in an empty composer (#1410)', () => {
+  const time = '2026-11-28T00:00:00.000Z';
+  it('brings back the last message the author sent, never a reply', () => {
+    const messages = [
+      { id: 'm1', role: 'user' as const, text: 'Make the hero blue', time },
+      { id: 'm2', role: 'assistant' as const, text: 'Done.', time },
+      { id: 'm3', role: 'user' as const, text: 'Now add a button', time },
+      { id: 'm4', role: 'assistant' as const, text: 'Added a button.', time }
+    ];
+    expect(lastSentText(messages)).toBe('Now add a button');
+  });
+
+  it('has nothing to bring back before anything is sent', () => {
+    expect(lastSentText([])).toBeNull();
+    expect(lastSentText(undefined)).toBeNull();
+    expect(lastSentText([{ role: 'assistant', text: 'Hello' }])).toBeNull();
+  });
+});
+
+describe('ArrowUp never brings back a live-session guest’s request (#1410)', () => {
+  it('skips the guest’s turn for the author’s own', () => {
+    const time = '2026-11-28T00:00:00.000Z';
+    const messages: ChatMessage[] = [
+      { id: 'm1', role: 'user', text: 'Mine', time },
+      { id: 'm2', role: 'user', text: 'A guest’s', time, guest: { name: 'Sam', id: 'g1' } }
+    ];
+    expect(lastSentText(messages)).toBe('Mine');
+  });
+});
+
+describe('images pasted into the composer (#1410)', () => {
+  const file = (name: string, type: string) => new File([new Uint8Array([1, 2, 3])], name, { type });
+  const clip = (opts: { files?: File[]; items?: Array<{ kind: string; type: string; file?: File }>; text?: string }) =>
+    ({
+      files: opts.files ?? [],
+      items: (opts.items ?? []).map((i) => ({ kind: i.kind, type: i.type, getAsFile: () => i.file ?? null })),
+      getData: (t: string) => (t === 'text/plain' ? (opts.text ?? '') : '')
+    }) satisfies PastedData<File>;
+
+  it('takes the pictures a paste carries, from its files or else its items', () => {
+    const shot = file('image.png', 'image/png');
+    expect(pastedImageFiles(clip({ files: [shot, file('notes.txt', 'text/plain')] }))).toEqual([shot]);
+    // The same picture listed as an item too is taken once.
+    expect(pastedImageFiles(clip({ files: [shot], items: [{ kind: 'file', type: 'image/png', file: shot }] }))).toEqual([shot]);
+    expect(pastedImageFiles(clip({ items: [{ kind: 'string', type: 'text/html' }, { kind: 'file', type: 'image/jpeg', file: shot }] }))).toEqual([shot]);
+  });
+
+  it('leaves text to paste as text, even with a picture of it beside', () => {
+    expect(pastedImageFiles(clip({ files: [file('image.png', 'image/png')], text: 'Quarterly figures' }))).toEqual([]);
+    expect(pastedImageFiles(clip({ text: 'Hello' }))).toEqual([]);
+    // Empty spreadsheet cells are text too.
+    expect(pastedImageFiles(clip({ files: [file('image.png', 'image/png')], text: '\t\n' }))).toEqual([]);
+    expect(pastedImageFiles(null)).toEqual([]);
   });
 });

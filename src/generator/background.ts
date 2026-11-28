@@ -99,6 +99,11 @@ function resolve(raw: StyleValue, assets: Record<string, AssetRecord>): { value:
   return original ? { value, asset, original } : null;
 }
 
+/** Whether a background image value paints a picture: one the library holds, as an image, at an address the site can serve. */
+export function paintsPicture(raw: StyleValue, assets: Record<string, AssetRecord>): boolean {
+  return resolve(raw, assets) !== null;
+}
+
 /** The scrim as a layer: a colour is a gradient of one colour, since a plain colour cannot be a background image. */
 const scrimLayer = (scrim: string) => (/^[a-z-]*gradient\(/i.test(scrim) ? scrim : `linear-gradient(${scrim}, ${scrim})`);
 

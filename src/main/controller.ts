@@ -89,7 +89,7 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
-import { copyEditorBatchProblem } from '@engine/copy-editor';
+import { copyEditableProps, copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
 import { LiveHostManager, type LiveGuestEdit, type LiveNotesAnswer } from './live/host';
@@ -802,11 +802,13 @@ export class Controller {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
     const settled = this.settled.get(s) ?? { state: s.state, revision: s.revision };
-    const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const source = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
-    const snapshot = liveSnapshot(source, [s.dir, homedir()]);
-    this.shared = { ...source, snapshot };
+    // What a copy editor may change is worked out from the same documents the guests are sent, once for each.
+    const copyEditable = last && last.state === source.state ? last.copyEditable : copyEditableProps(source.state);
+    const snapshot = liveSnapshot({ ...source, copyEditable } satisfies LiveSnapshotSource, [s.dir, homedir()]);
+    this.shared = { ...source, copyEditable, snapshot };
     return snapshot;
   }
 
@@ -3329,7 +3331,7 @@ export class Controller {
       if ((!only || only === 'image') && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
       else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font') || isAssetOfKind(f, 'document')) rows.push({ path: f, name, bytes: 0, action: 'import' });
       // What the import would skip or refuse, the review names, so it is never counted among the files added.
-      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
+      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2, WOFF, TTF or OTF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
     }
     return { paths: files, rows };
   }

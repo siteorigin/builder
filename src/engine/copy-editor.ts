@@ -269,3 +269,19 @@ export function copyEditorBatchProblem(before: ProjectState, after: ProjectState
   const destination = guestDestinationChange(before, after);
   return destination ? refused(destination) : null;
 }
+
+/**
+ * Every property a Copy Editor may change, by design: what the host sends its guests with the project (#1318), so a
+ * copy editor's editor offers only those. The guest cannot work it out itself: it is never sent components' code,
+ * which decides whether a section Foundation ships counts. Each placement still has to qualify (on a page, shown
+ * once, not bound), and the host checks every edit again (copyEditorBatchProblem).
+ */
+export function copyEditableProps(state: ProjectState): Record<string, string[]> {
+  const editable = copyEditableLookup(state);
+  const out: Record<string, string[]> = {};
+  for (const [id, def] of Object.entries(state.components)) {
+    const props = Object.keys(def.properties).filter((prop) => editable(id, prop));
+    if (props.length) out[id] = props;
+  }
+  return out;
+}

@@ -65,7 +65,7 @@ export function RemoteSessionControl({ compact }: { compact?: boolean }) {
           { id: 'roster', heading: 'Where everyone is' },
           ...roster.map((l): MenuItem =>
             l.watching
-              ? { id: l.key, info: true, label: l.who, hint: 'Watching' }
+              ? { id: l.key, info: true, label: l.who, hint: l.where }
               : !l.pageId || l.pageId === pageId
                 ? { id: l.key, info: true, label: `${l.who}: ${l.where}`, hint: l.pageId ? 'Same page as you' : undefined }
                 : { id: l.key, label: `${l.who}: ${l.where}`, icon: <FileText />, hint: 'Go to page', onSelect: () => goTo(l.key) }

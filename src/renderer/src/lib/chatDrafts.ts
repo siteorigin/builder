@@ -155,8 +155,43 @@ export function attachImages(images: ChatImages, conversationId: string, assetId
   return { images: next, added, already, full };
 }
 
+/**
+ * What ArrowUp in an empty composer brings back (#1410): the text of the last message the author sent in this
+ * conversation, to edit and send again. A live-session guest's request is theirs, never brought back as the author's.
+ * Null when nothing has been sent in it yet.
+ */
+export function lastSentText(messages: readonly { role: string; text: string; guest?: unknown }[] | undefined): string | null {
+  for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+    const m = messages![i];
+    if (m.role === 'user' && !m.guest && typeof m.text === 'string' && m.text.trim()) return m.text;
+  }
+  return null;
+}
+
 /** Whether a drag carries files from the desktop (not text, or an image dragged out of Assets). */
 export const isFileDrag = (types: readonly string[]): boolean => types.includes('Files');
+
+/**
+ * The pictures a paste into the composer carries (#1410): a screenshot or a copied image. A paste with text keeps to
+ * its text, so words copied from a document that also puts a picture of them on the clipboard paste as words.
+ */
+export function pastedImageFiles<F extends { type: string }>(data: PastedData<F> | null): F[] {
+  if (!data || data.getData('text/plain')) return [];
+  const files = Array.from(data.files).filter((f) => f.type.startsWith('image/'));
+  if (files.length) return files;
+  // Some pictures come only as clipboard items, never in the file list.
+  return Array.from(data.items).flatMap((i) => {
+    const f = i.kind === 'file' && i.type.startsWith('image/') ? i.getAsFile() : null;
+    return f ? [f] : [];
+  });
+}
+
+/** As much of a paste's clipboard data (a DataTransfer) as pastedImageFiles reads. */
+export interface PastedData<F> {
+  files: ArrayLike<F>;
+  items: ArrayLike<{ kind: string; type: string; getAsFile(): F | null }>;
+  getData(format: string): string;
+}
 
 /** What to say once the dropped images are in Assets: how many were attached, and why any were not. */
 export function droppedImagesNote(r: { added: number; already: number; full: number }): string {

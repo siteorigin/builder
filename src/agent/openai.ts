@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, StopReason, ToolCall } from './types';
+import type { AdapterNote, AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, StopReason, ToolCall } from './types';
 import { classifyHttpError, classifyProviderCode, errorCodes, withoutEnv } from './types';
 import { modelInfo } from './models';
 
@@ -104,14 +104,17 @@ export class OpenAIAdapter implements AgentModelAdapter {
     return false;
   }
 
-  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal, note?: (n: AdapterNote) => void): AsyncIterable<ModelEvent> {
     let stream: AsyncIterable<unknown> | undefined;
     for (let attempt = 0; !stream; attempt++) {
       const params = this.params(req);
       try {
         stream = (await this.client.responses.create(params as never, { signal })) as unknown as AsyncIterable<unknown>;
       } catch (e) {
-        if (!signal.aborted && attempt < 5 && this.fallBack(e, Number(params.max_output_tokens))) continue;
+        if (!signal.aborted && attempt < 5 && this.fallBack(e, Number(params.max_output_tokens))) {
+          note?.({ kind: 'resend', reason: 'server fallback', error: classifyHttpError(e) });
+          continue;
+        }
         yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Canceled' } : { type: 'error', ...classifyHttpError(e) };
         return;
       }

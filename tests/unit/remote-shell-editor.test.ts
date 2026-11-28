@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { BuilderApi, ProjectSnapshot, RemoteState } from '@shared/api';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
 import { createStarterState } from '@catalogue/starters';
+import { applyOperations } from '@engine/apply';
 
 /**
  * The editor as a remote shell (#766): one API whose calls reach this computer's project or, while the editor shows a
@@ -29,7 +30,7 @@ let remoteSnapshot: LiveProjectSnapshot | null = null;
 
 const state = createStarterState('business', 'Acme', false);
 const home = state.site.homePageId;
-const live = (revision: number, extra: Partial<LiveProjectSnapshot> = {}): LiveProjectSnapshot => ({ revision, state: state as never, readOnly: false, aiBusy: false, runtime: { state: 'ready' }, ...extra });
+const live = (revision: number, extra: Partial<LiveProjectSnapshot> = {}): LiveProjectSnapshot => ({ revision, state: state as never, readOnly: false, aiBusy: false, runtime: { state: 'ready' }, copyEditable: {}, ...extra });
 const admitted = (extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = {}): Extract<RemoteState, { phase: 'admitted' }> => ({
   phase: 'admitted',
   joinId: 'join-1',
@@ -66,7 +67,8 @@ const PATHS = {
   liveHost: '../../src/renderer/src/lib/live-host',
   remoteChat: '../../src/renderer/src/panels/RemoteChat',
   notesFeed: '../../src/renderer/src/lib/notes-feed',
-  pending: '../../src/renderer/src/lib/pending'
+  pending: '../../src/renderer/src/lib/pending',
+  actions: '../../src/renderer/src/lib/actions'
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loaded = any;
@@ -200,9 +202,9 @@ function listen() {
 }
 
 /** Admitted to a host's session, with the host's project at revision 7 shown as the editor shows it. */
-async function shown(extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = {}) {
+async function shown(extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = {}, first: LiveProjectSnapshot = live(7)) {
   const events = listen();
-  remoteSnapshot = live(7);
+  remoteSnapshot = first;
   remoteStateAnswer = admitted(extra);
   session.applyRemoteState(admitted(extra));
   await flush();
@@ -328,7 +330,6 @@ describe('the host’s project as the editor shows it', () => {
   it('is read-only, saying why, whenever the guest cannot edit it now', () => {
     const reason = (remote: Partial<Extract<RemoteState, { phase: 'admitted' }>>, l: Partial<LiveProjectSnapshot> = {}) => snapshots.remoteSnapshot(admitted(remote), live(7, l)).readOnly?.reason;
     expect(reason({ role: 'viewer' })).toMatch(/as a viewer/);
-    expect(reason({ role: 'copy-editor' })).toMatch(/copy editor.*not edit it/);
     expect(reason({ hostConnected: false })).toMatch(/host is reconnecting/);
     expect(reason({ reconnecting: true })).toMatch(/connection to the live session dropped/);
     expect(reason({ tooLarge: true })).toMatch(/too large/);
@@ -337,6 +338,22 @@ describe('the host’s project as the editor shows it', () => {
     expect(reason({}, { aiBusy: true })).toMatch(/AI is making changes/);
     expect(snapshots.remoteSnapshot(admitted(), live(7, { aiBusy: true })).aiBusy).toBe(false);
     expect(snapshots.remoteSnapshot(admitted({ role: 'viewer' }), live(7)).readOnly?.canUnlock).toBe(false);
+  });
+
+  it('is read-only to a copy editor but for the words and pictures the host grants, paused whenever anyone’s editing is (#1318)', () => {
+    const grant = { [Object.keys(state.components)[0]]: ['heading'] };
+    const readOnly = (remote: Partial<Extract<RemoteState, { phase: 'admitted' }>>, l: Partial<LiveProjectSnapshot> = {}) => snapshots.remoteSnapshot(admitted({ role: 'copy-editor', ...remote }), live(7, { copyEditable: grant, ...l })).readOnly;
+    expect(readOnly({})).toEqual({ reason: expect.stringMatching(/copy editor.*words and pictures/), canUnlock: false, copyOnly: { props: grant, paused: false } });
+    for (const [remote, l, why] of [
+      [{ hostConnected: false }, {}, /host is reconnecting/],
+      [{ reconnecting: true }, {}, /connection to the live session dropped/],
+      [{ tooLarge: true }, {}, /too large/],
+      [{}, { readOnly: true }, /open read-only/],
+      [{}, { aiBusy: true }, /AI is making changes/]
+    ] as const)
+      expect(readOnly(remote, l), why.source).toEqual({ reason: expect.stringMatching(why), canUnlock: false, copyOnly: { props: grant, paused: true } });
+    // Nobody else is given a grant.
+    expect(snapshots.remoteSnapshot(admitted({ role: 'viewer' }), live(7, { copyEditable: grant })).readOnly).not.toHaveProperty('copyOnly');
   });
 
   it('shows the preview only once the host’s is running and the cookie is in place', () => {
@@ -447,6 +464,82 @@ describe('following the session', () => {
     expect(await store.api.project.apply({ operations: [] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
     expect(calls.snapshots.length).toBe(asked + 1);
     expect((await store.api.project.snapshot())?.revision).toBe(9);
+  });
+
+  it('sends a copy editor’s copy edits to the host, and refuses anything else, or anything while paused, without asking it (#1318)', async () => {
+    const owner = { kind: 'page' as const, id: home };
+    const placed = Object.values(state.pages[home].nodes).find((n) => n.kind === 'instance')!;
+    if (placed.kind !== 'instance') throw new Error('no placement');
+    const prop = Object.keys(state.components[placed.definitionId].properties).find((p) => state.components[placed.definitionId].properties[p].type === 'string')!;
+    const copyEditable = { [placed.definitionId]: [prop] };
+    await shown({ role: 'copy-editor' }, live(7, { copyEditable }));
+    offs.push(...session.followRemote());
+    const reword = { type: 'instance.setProp', owner, nodeId: placed.id, prop, value: 'New words' };
+    const applying = store.api.project.apply({ operations: [reword], expectedRevision: 7 }, { label: 'Reword', opening: 'remote:join-1' });
+    await flush();
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(8, { copyEditable }) });
+    expect(await applying).toMatchObject({ ok: true, revision: 8 });
+    expect(calls.remoteApply).toEqual([{ joinId: 'join-1', batch: { operations: [reword], expectedRevision: 7, label: 'Reword' } }]);
+    calls.remoteApply.length = 0;
+    // A layout change beside it, or a property the host did not grant: the whole batch refused here, naming the one.
+    const other = Object.keys(state.components[placed.definitionId].properties).find((p) => p !== prop) ?? 'nope';
+    expect(await store.api.project.apply({ operations: [reword, { type: 'node.remove', owner, nodeId: placed.id }] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/cannot make "node.remove"/), details: { operationIndex: 1 } } });
+    expect(await store.api.project.apply({ operations: [{ ...reword, prop: other }] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/Only the host/) } });
+    // A property the host no longer grants (its design changed) is refused at once.
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(9, { copyEditable: { [placed.definitionId]: [other] } }) });
+    expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/Only the host/) } });
+    // Paused (the host's AI at work), or made a viewer: nothing goes, and the reason says why.
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(10, { copyEditable, aiBusy: true }) });
+    expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/AI is making changes/) } });
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(11, { copyEditable }) });
+    emit('remote:state', admitted({ role: 'viewer' }));
+    expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/as a viewer/) } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
+  it('offers back what a copy editor typed when it is refused, on the page or in the Inspector (#1318)', async () => {
+    const actions = await import(/* @vite-ignore */ PATHS.actions);
+    const owner = { kind: 'page' as const, id: home };
+    const r = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph', text: 'Opening hours vary.' }]);
+    const paragraph = r.results[0].nodeId as string;
+    // Editing paused as the edit is made: the host's AI started.
+    await shown({ role: 'copy-editor' }, live(7, { state: r.state as never, aiBusy: true }));
+    const lastToast = () => store.getState().toasts.at(-1);
+    expect(await actions.commitText({ owner, instancePath: [], nodeId: paragraph }, 'Open every day.')).toBe('restore');
+    expect(lastToast()).toMatchObject({ kind: 'error', text: expect.stringMatching(/AI is making changes/), action: { label: 'Copy text', copies: { text: 'Open every day.' } } });
+    const op = { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open on Sundays.' };
+    await store.commitDraft(store.getState().snapshot, () => store.commitOps([op], 'Edit text'), 'Open on Sundays.');
+    expect(lastToast()).toMatchObject({ kind: 'error', action: { label: 'Copy text', copies: { text: 'Open on Sundays.' } } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
+  it('sends nothing before the host’s project has arrived (#1318)', async () => {
+    remoteSnapshot = null;
+    session.applyRemoteState(admitted({ role: 'copy-editor' }));
+    await flush();
+    const result = await store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });
+    expect(result).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/on its way/) } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
+  it('lets a copy editor type on the page only into a page’s own text, and not while editing is paused (#1318)', async () => {
+    const actions = await import(/* @vite-ignore */ PATHS.actions);
+    const owner = { kind: 'page' as const, id: home };
+    const r = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph', text: 'Opening hours vary.' }]);
+    const paragraph = r.results[0].nodeId as string;
+    const placed = r.state.pages[home].rootIds.find((id) => r.state.pages[home].nodes[id].kind === 'instance')!;
+    const at = (nodeId: string, instancePath: string[] = []) => ({ owner, instancePath, nodeId });
+    // A collaborator types into the paragraph as into anything else on the page.
+    await shown({}, live(7, { state: r.state as never }));
+    expect(actions.canInlineEdit(at(paragraph))).toBe(true);
+    await shown({ role: 'copy-editor' }, live(7, { state: r.state as never }));
+    expect(actions.canInlineEdit(at(paragraph))).toBe(true);
+    // Text inside a placed section is its copy, changed in the Inspector; code's marked text is never typed over here.
+    const inner = Object.keys(r.state.components[(r.state.pages[home].nodes[placed] as { definitionId: string }).definitionId].tree?.nodes ?? {})[0];
+    if (inner) expect(actions.canInlineEdit(at(inner, [placed]))).toBe(false);
+    expect(actions.canInlineEditCode({ owner, instancePath: [], nodeId: placed, prop: 'heading' } as never)).toBe(false);
+    await shown({ role: 'copy-editor' }, live(7, { state: r.state as never, aiBusy: true }));
+    expect(actions.canInlineEdit(at(paragraph))).toBe(false);
   });
 
   it('refuses an edit while editing is paused, whatever asked for it, without asking the host', async () => {
@@ -633,20 +726,24 @@ describe('presence', () => {
       { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const, colorSlot: 4, connected: true },
       { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const, colorSlot: 5, connected: true },
       { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const, colorSlot: 6, connected: true },
-      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true }
+      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true },
+      { guestId: 'g-5', displayName: 'Cy', role: 'copy-editor' as const, colorSlot: 8, connected: true }
     ];
     const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at }, activity: {} });
     expect(roster.map((l: { who: string; where: string; pageId: string | null; watching: boolean }) => [l.who, l.where, l.pageId, l.watching])).toEqual([
       ['Host', state.pages[home].title, home, false],
       ['Tom', state.pages[home].title, home, false],
       ['Lee', 'Location not known yet', null, false],
-      ['Ann', 'Watching', null, true]
+      ['Ann', 'Watching', null, true],
+      // A copy editor shares no presence, but is no mere watcher (#1318).
+      ['Cy', 'Editing copy', null, true]
     ]);
     // A host that is away is not counted as here; presence from another join says nothing about where anyone is.
     expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {}, activity: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
       ['Tom', 'Location not known yet'],
       ['Lee', 'Location not known yet'],
-      ['Ann', 'Watching']
+      ['Ann', 'Watching'],
+      ['Cy', 'Editing copy']
     ]);
   });
 
@@ -668,6 +765,10 @@ describe('the host’s AI (#769)', () => {
     expect([...session.remoteRightTabs('collaborator')].sort()).toEqual(['chat', 'inspect', 'styles']);
     expect([...session.remoteRightTabs('viewer')].sort()).toEqual(['inspect', 'styles']);
     expect(session.remoteRightTabs(undefined).has('chat')).toBe(false);
+    // A copy editor (#1318) has the Inspector alone, and the pages and their layers with nothing to insert.
+    expect([...session.remoteRightTabs('copy-editor')]).toEqual(['inspect']);
+    expect([...session.remoteLeftTabs('copy-editor')].sort()).toEqual(['layers', 'pages']);
+    expect([...session.remoteLeftTabs('viewer')].sort()).toEqual(['insert', 'layers', 'pages']);
   });
 
   it('follows this join’s own AI requests, never another join’s, and lets them go when the join ends', async () => {

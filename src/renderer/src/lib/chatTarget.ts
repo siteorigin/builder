@@ -53,15 +53,15 @@ export function editableDesign(state: ProjectState, id: unknown) {
   return def?.kind === 'managed' && def.owner === 'project' && def.tree ? def : null;
 }
 
-/**
- * The component edited everywhere when it is one the AI does not edit (a code component, open in Component Studio),
- * by name; null otherwise. The composer then refuses to send an edit, which would otherwise reach the page behind it.
- */
-export function uneditableDesign(state: ProjectState, definitionMode: DefinitionMode): string | null {
-  const id = definitionMode?.definitionId;
-  const def = id !== undefined && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
-  return def && !editableDesign(state, id) ? def.name : null;
+/** A code component of this project's own, which the AI edits through its source as a whole (#1410): open in
+ *  Component Studio, a request is about it, never the page behind the studio. */
+export function codeDesign(state: ProjectState, id: unknown) {
+  const def = typeof id === 'string' && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+  return def?.kind === 'code' && def.owner === 'project' ? def : null;
 }
+
+/** A component a request can be about: a managed design of the project's own, or a project code component. */
+export const targetableDesign = (state: ProjectState, id: unknown) => editableDesign(state, id) ?? codeDesign(state, id);
 
 /** The component a saved request was about: named, or (saved before requests named it) owning its selection. */
 export function requestComponentId(ctx: ChatContext | undefined): string | null {
@@ -78,6 +78,9 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
   const entry = postAt(state, view.post);
   if (entry && view.post) return { page, component: null, selection: null, selectionLabel: null, post: { collectionId: view.post.collectionId, entryId: view.post.entryId, title: postTitle(entry.title) } };
   if (view.writer) return { page: null, component: null, selection: null, selectionLabel: null, empty: true };
+  // A code component is edited as a whole, through its source: it has no nodes of its own to select (#1410).
+  const code = codeDesign(state, view.definitionMode?.definitionId);
+  if (code) return { page, component: { id: code.id, name: code.name }, selection: null, selectionLabel: null };
   const def = editableDesign(state, view.definitionMode?.definitionId);
   if (def) {
     // Only the design's own nodes: anything else (a pick the canvas has yet to convert) is not offered.
@@ -219,6 +222,13 @@ export function retryView(
   }
   const componentId = requestComponentId(ctx);
   if (ctx && componentId) {
+    // A code component goes back to Component Studio, where it is edited as a whole (#1410).
+    const code = codeDesign(state, componentId);
+    if (code) {
+      const studio = (now.definitionMode?.definitionId === code.id ? now.definitionMode.studio : undefined) ?? NEW_STUDIO;
+      const pageId = pageOk ? ctx.pageId : (now.pageId ?? state.site.homePageId);
+      return { pageId, definitionMode: { definitionId: code.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId, studio }, selection: null, scope, missing: null };
+    }
     const def = editableDesign(state, componentId);
     if (!def) return { ...leave, definitionMode: null, selection: null, scope, missing: ctx.component?.name ?? ctx.selectionLabel ?? 'The component' };
     const selOk = !!ctx.selection && inDefinition(ctx.selection, def.id) && resolves(state, ctx.selection);

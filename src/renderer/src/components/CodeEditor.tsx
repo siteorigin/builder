@@ -8,7 +8,7 @@ import { forceLinting, linter, lintGutter, type Diagnostic } from '@codemirror/l
 import { svelte } from '@replit/codemirror-lang-svelte';
 import { tags as t } from '@lezer/highlight';
 import { CircleAlert, CircleCheck, Lock, TriangleAlert, WrapText } from 'lucide-react';
-import type { SourceManifest } from '@shared/api';
+import type { CodePropsTaken, SourceManifest } from '@shared/api';
 import { api } from '../store';
 import { Spinner } from './ui';
 
@@ -206,6 +206,7 @@ export function CodeEditor({
   saveHint,
   onErrorCount,
   onChecking,
+  onProps,
   problemsShown,
   manifest,
   handle
@@ -223,6 +224,8 @@ export function CodeEditor({
   onErrorCount?: (n: number, line?: number) => void;
   /** Whether the live check is still to report on the text as it stands. */
   onChecking?: (pending: boolean) => void;
+  /** The props the code takes from $props(), with the code it read, each time the check reports; null when it could not say. */
+  onProps?: (taken: CodePropsTaken | null, source: string) => void;
   /** A list of the problems is on screen below the editor, so the strip keeps to the count. */
   problemsShown?: boolean;
   /** The manifest the code is checked against, as edited: a change checks the code again. */
@@ -241,8 +244,8 @@ export function CodeEditor({
   const pending = useRef(!readOnly);
   const lastJump = useRef(-1);
   const found = useRef<Problem[]>([]);
-  const callbacks = useRef({ onChange, onSave, onErrorCount, onChecking });
-  callbacks.current = { onChange, onSave, onErrorCount, onChecking };
+  const callbacks = useRef({ onChange, onSave, onErrorCount, onChecking, onProps });
+  callbacks.current = { onChange, onSave, onErrorCount, onChecking, onProps };
   const hintId = useId();
   const [pos, setPos] = useState({ line: 1, column: 1, lines: value.split('\n').length });
   const [selecting, setSelecting] = useState(false);
@@ -299,14 +302,18 @@ export function CodeEditor({
       async (v) => {
         const doc = v.state.doc;
         let found: Awaited<ReturnType<typeof api.project.validateSource>>['diagnostics'] = [];
+        let taken: CodePropsTaken | null = null;
         const asked = JSON.stringify(held.current ?? null);
         try {
-          found = (await api.project.validateSource(doc.toString(), held.current)).diagnostics;
+          const checked = await api.project.validateSource(doc.toString(), held.current);
+          found = checked.diagnostics;
+          taken = checked.props ?? null;
         } catch {
           // The check itself failed: say nothing about the code rather than leave "Checking" on screen.
           if (doc.eq(v.state.doc)) {
             setLint({ errors: 0, warnings: 0, items: [], failed: true });
             callbacks.current.onErrorCount?.(0);
+            callbacks.current.onProps?.(null, doc.toString());
             setChecking(false);
           }
           return [];
@@ -327,6 +334,7 @@ export function CodeEditor({
         const errors = items.filter((p) => p.severity === 'error');
         setLint({ errors: errors.length, warnings: items.length - errors.length, items });
         callbacks.current.onErrorCount?.(errors.length, errors[0]?.line);
+        callbacks.current.onProps?.(taken, doc.toString());
         setChecking(false);
         return diagnostics;
       },

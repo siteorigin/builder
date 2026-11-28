@@ -423,27 +423,31 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
 /**
- * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
- * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
- * project.
+ * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
+ * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
+ * preview the editor already runs (inspect_layout), finding a field, and a plain question to the author. Nothing that
+ * changes the site.
  */
-export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification'];
+export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
+/** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
+const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
 
-export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask' | 'entry' | 'layout';
+export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'source' | 'general' | 'ask' | 'entry' | 'layout';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. layout: one collection layout, open on the canvas. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. source: a code component's own source, on any model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. layout: one collection layout, open on the canvas. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
   /** The run builds a new component, asked for from the Create component dialog. */
   task?: 'component';
-  /** A page run only: Developer mode is on, so a new component it asks to widen for may be written in code. */
+  /** A page run: Developer mode is on, so a new component it asks to widen for may be written in code. A source run:
+   *  Developer mode is on, so the code component's source may change. */
   code?: boolean;
 }
 
@@ -451,15 +455,18 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true, focused = false): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
-    // A question can never widen what may change: nothing may.
-    const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : TOOL_ARGS[name];
+    // A question can never widen what may change: nothing may. A small model's question measures whole pages: the
+    // elements a check narrows to are what an edit fixes.
+    const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : name === 'inspect_layout' && focused ? TOOL_ARGS.inspect_layout.omit({ refs: true }) : TOOL_ARGS[name];
     const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
     delete schema.$schema;
     // A question asks back only when it is ambiguous, which the question's own instructions say.
-    return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
+    const brief = name === 'request_clarification' ? 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' : name === 'inspect_layout' && focused ? ASK_FOCUSED_INSPECT_BRIEF : undefined;
+    // A small native model reads the description rather than the brief: it says the same.
+    return { name, ...describe(name), ...(brief ? { brief } : {}), ...(name === 'inspect_layout' && focused ? { description: ASK_FOCUSED_INSPECT_BRIEF } : {}), parameters: schema };
   });
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
   // A question about the post open in the Posts workspace reads that post, never another with a title like it.
@@ -599,7 +606,7 @@ function runTools(opts: {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   // A small model's question reads a source only when it asks about one.
-  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest), mode: 'ask', focused };
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest, focused), mode: 'ask', focused };
   // One collection layout, for every model: nothing else is in reach, and nothing widens it.
   if (opts.layout) return { tools: layoutTools(state, opts.layout.owner, focused), mode: 'layout', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing
@@ -623,6 +630,10 @@ function runTools(opts: {
     // The whole component in one call comes first: the operations stay for finer changes to what it built.
     return { tools: [managedComponentTool(), ...tools], mode: 'general', focused, task: 'component' };
   }
+  // A code component's design is its source (#1410): every model reads and patches that one component, and asks the
+  // author before anything else. Without Developer mode its source cannot change, so the run only asks.
+  const designed = opts.definitionTarget && !opts.definitionTarget.nodeId && Object.hasOwn(state.components, opts.definitionTarget.definitionId) ? state.components[opts.definitionTarget.definitionId] : undefined;
+  if (designed?.kind === 'code') return { tools: codeEnabled ? [...sourceTools(designed.id), plainTool('search_assets'), plainTool('request_clarification')] : [plainTool('request_clarification')], mode: 'source', focused, code: codeEnabled };
   // A component's own design on a small model: tools built from that design as it is now, beside its contract and
   // design to read and the author to ask, so the general operations never crowd out the request (#360).
   // A design or selected node that is gone (removed by the run itself, say) keeps the small set's reads and question: the
@@ -768,6 +779,17 @@ function definitionRead(definitionId: string): ToolDefinition {
     ...describe('read_component'),
     parameters: { type: 'object', properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] } }, required: ['definitionId'], additionalProperties: false }
   };
+}
+
+/** read_source and apply_source_patch for the one code component a run edits: no other definition can be named, and a
+ *  patch's scope is that component. */
+function sourceTools(definitionId: string): ToolDefinition[] {
+  const scope = { type: 'object', properties: { kind: { type: 'string', enum: ['component'] }, targetIds: { type: 'array', items: { type: 'string', enum: [definitionId] }, minItems: 1, maxItems: 1 } }, required: ['kind', 'targetIds'], additionalProperties: false };
+  return (['read_source', 'apply_source_patch'] as const).map((name) => {
+    const t = plainTool(name);
+    const schema = t.parameters as { properties: Record<string, unknown> };
+    return { ...t, parameters: { ...schema, properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] }, ...(name === 'apply_source_patch' ? { scope } : {}) } } };
+  });
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */
@@ -1230,7 +1252,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
         if (count !== 1) return toolError('INVALID_ARGUMENT', `"${e.find.slice(0, 60)}" matched ${count} times; it must match exactly once.`);
-        src = src.replace(e.find, e.replace);
+        // Inserted as written: a replacement holding $& or $1 is code, never a pattern.
+        src = src.replace(e.find, () => e.replace);
       }
       // The properties travel in the same operation, so the code is checked against the contract it lands with.
       const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash, ...(a.properties ? { properties: a.properties, expectedPropertiesHash: a.expectedPropertiesHash } : {}), ...(a.renames?.length ? { renames: a.renames } : {}) }];
