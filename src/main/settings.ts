@@ -240,6 +240,20 @@ function sameProject(old: RecentProject, opened: RecentProject): boolean {
 }
 
 /**
+ * A folder's identity on its disk (device and inode), or undefined when it cannot be looked at. A move or rename on the
+ * same disk keeps it; a copy of the project (an editable ZIP opened again, a Finder duplicate) is a new folder with its
+ * own (#1541).
+ */
+function folderIdentity(dir: string): string | undefined {
+  try {
+    const st = statSync(dir, { bigint: true, throwIfNoEntry: false });
+    return st?.isDirectory() ? `${st.dev}:${st.ino}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The list as it is kept: every pinned project (#259), and the newest MAX_RECENTS of the rest, so a project pinned
  * long ago is never rotated off by others opened since. `keep` is an entry this opening may not push off the end
  * (#217): it holds one of the places, and the newest of the others fill the rest.
@@ -258,8 +272,10 @@ function withPin(r: RecentProject, pinned: boolean): RecentProject {
 /**
  * Lists a project folder as the one opened last. `replaces` is the missing entry the author chose this folder for
  * (Find folder… on its card, #217): it is dropped when this is the same project and its old folder is still not
- * there, in the same save, so the list never shows both. Any other project leaves that entry as it was, never
- * pushed off the end of the list by this opening. A pinned project stays pinned when it is opened again, and when
+ * there, in the same save, so the list never shows both. A folder that already had its own entry takes it over only
+ * when it is that entry's own folder, moved (#1541): another working copy of the same project (an editable ZIP opened
+ * into two folders keeps its ID) is a separate workspace, and the missing entry keeps its place and its pin. Any other
+ * project leaves that entry as it was, never pushed off the end of the list by this opening. A pinned project stays pinned when it is opened again, and when
  * its moved folder takes over its missing entry (#259); opening it takes no other project off the list.
  */
 export async function addRecent(dir: string, name: string, projectId: string, replaces?: string) {
@@ -269,12 +285,15 @@ export async function addRecent(dir: string, name: string, projectId: string, re
   const real = canonicalDir(dir);
   const same = s.recents.filter((r) => r.dir === dir || canonicalDir(r.dir) === real);
   let rest = s.recents.filter((r) => !same.includes(r));
-  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId };
+  const folderId = folderIdentity(dir);
+  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId, ...(folderId ? { folderId } : {}) };
   // The pin stays with its project: another project put in a pinned project's old folder is not pinned for it. An
   // entry listed before IDs were kept cannot be told apart, so its pin is kept.
   let pinned = same.some((r) => r.pinned === true && (typeof r.projectId !== 'string' || r.projectId === '' || r.projectId === projectId));
   let old = replaces === undefined ? undefined : rest.find((r) => r.dir === replaces);
-  if (old && listedFolderGone(old.dir) && sameProject(old, entry)) {
+  // Listed already, this folder is the missing entry's only when it is the very folder that entry was listed with.
+  const itsOwn = same.length === 0 || (folderId !== undefined && old?.folderId === folderId);
+  if (old && listedFolderGone(old.dir) && sameProject(old, entry) && itsOwn) {
     pinned ||= old.pinned === true;
     rest = rest.filter((r) => r !== old);
     old = undefined;

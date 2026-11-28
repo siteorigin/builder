@@ -251,10 +251,10 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
     expect(c.session?.dir).toBe(staging);
     await c.close();
     expect((await listed(root)).map((r) => [r.dir, r.missing, r.pinned === true])).toEqual([
-      [source, true, true],
-      [staging, false, false]
+      [staging, false, false],
+      [source, true, true]
     ]);
-    expect(saved(root).map((r) => r.dir)).toEqual([source, staging]);
+    expect(saved(root).map((r) => r.dir)).toEqual([staging, source]);
 
     // The source's own folder, found for its entry, takes it over with its pin.
     pick(join(root, 'elsewhere'));
