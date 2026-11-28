@@ -203,9 +203,77 @@ function ReferenceValue({ state, schema, value, self, disabled, onSet }: { state
   const noun = target.settings.name;
   const none = own ? `${noun} has no other entries yet.` : `${noun} has no entries yet. Add one in the Content panel.`;
 
+  const many = options.length > MANY_ENTRIES;
+  const needle = find.trim().toLowerCase();
+  // Found by the words each row shows (its title, and what tells it apart: a date, Draft), and by its address and author.
+  const shown = many && needle ? options.filter((o) => `${o.title} ${named(o.id).more} ${o.slug} ${o.author ?? ''}`.toLowerCase().includes(needle)) : options;
+  const findBox = many && (
+    <div className="post-terms-add entry-ref-find">
+      <Search className="post-terms-find" aria-hidden="true" />
+      <input
+        className="input sm with-icon"
+        value={find}
+        placeholder={`Find in ${noun}`}
+        aria-label={`Find in ${noun}`}
+        onChange={(e) => (setCleared(!e.target.value.trim() && !!find.trim()), setFind(e.target.value))}
+      />
+    </div>
+  );
+  const findStatus = (
+    <span className="sr-only" role="status">
+      {many && needle ? `${shown.length} of ${options.length} match.` : cleared ? `All ${options.length} shown.` : ''}
+    </span>
+  );
+  const noMatch = many && needle && !shown.length && (
+    <li className="post-terms-none" aria-hidden="true">
+      No {noun.toLowerCase()} match “{find.trim()}”.
+    </li>
+  );
+
   if (!schema.multiple) {
     const current = typeof value === 'string' ? value : '';
     const gone = !!current && !names.has(current);
+    if (many && !disabled) {
+      const n = current ? named(current) : undefined;
+      return (
+        <Field label={schema.label} hint={schema.description} error={gone ? 'The entry this named has been deleted. Choose another, or None.' : undefined}>
+          <div ref={picker} className="entry-ref-picker" role="radiogroup" aria-label={schema.label}>
+            {n && (
+              <ol className="post-term-chips entry-ref-chips" aria-label={`${schema.label}, chosen`}>
+                <li className={`post-term-chip${n.gone ? ' gone' : ''}`}>
+                  <span className="ellipsis" title={plain(n)}>
+                    {n.title}
+                    {n.more && <span className="entry-ref-more"> · {n.more}</span>}
+                  </span>
+                  <button type="button" className="icon-btn sm" aria-label="Choose None" title="Choose None" onClick={() => onSet('')}>
+                    <X />
+                  </button>
+                </li>
+              </ol>
+            )}
+            {findBox}
+            {findStatus}
+            <ul className="entry-refs many" aria-label={`${noun} to choose from`}>
+              {shown.map((o) => {
+                const m = named(o.id);
+                return (
+                  <li key={o.id}>
+                    <label>
+                      <input type="radio" name={`${uid}-ref`} checked={current === o.id} onChange={() => onSet(o.id)} />
+                      <span className="entry-ref-name">
+                        {m.title}
+                        {m.more && <span className="entry-ref-more"> {m.more}</span>}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+              {noMatch}
+            </ul>
+          </div>
+        </Field>
+      );
+    }
     return (
       <Field
         label={schema.label}
@@ -254,10 +322,6 @@ function ReferenceValue({ state, schema, value, self, disabled, onSet }: { state
     });
   const remove = (id: string, i: number) => (send(now().filter((x) => x !== id && names.has(x))), refocus(i));
   const clearGone = () => (send(now().filter((x) => names.has(x))), refocus(0));
-  const many = options.length > MANY_ENTRIES;
-  const needle = find.trim().toLowerCase();
-  // Found by the words each row shows: its title and what tells it apart (a date, Draft).
-  const shown = many && needle ? options.filter((o) => `${o.title} ${named(o.id).more}`.toLowerCase().includes(needle)) : options;
   const kept = ticked.length - missing.length;
   const full = kept >= MAX_REFERENCES;
   const count = options.length ? (full && !disabled ? `${kept} of ${options.length} chosen, the most` : kept ? `${kept} of ${options.length} chosen` : 'None chosen') : undefined;
@@ -313,11 +377,7 @@ function ReferenceValue({ state, schema, value, self, disabled, onSet }: { state
           </li>
         );
       })}
-      {many && needle && !shown.length && (
-        <li className="post-terms-none" aria-hidden="true">
-          No {noun.toLowerCase()} match “{find.trim()}”.
-        </li>
-      )}
+      {noMatch}
     </ul>
   );
   return (
@@ -327,21 +387,8 @@ function ReferenceValue({ state, schema, value, self, disabled, onSet }: { state
         {/* Read-only: what it names, not every entry it could. */}
         {!disabled && options.length > 0 && (
           <>
-            {many && (
-              <div className="post-terms-add entry-ref-find">
-                <Search className="post-terms-find" aria-hidden="true" />
-                <input
-                  className="input sm with-icon"
-                  value={find}
-                  placeholder={`Find in ${noun}`}
-                  aria-label={`Find in ${noun}`}
-                  onChange={(e) => (setCleared(!e.target.value.trim() && !!find.trim()), setFind(e.target.value))}
-                />
-              </div>
-            )}
-            <span className="sr-only" role="status">
-              {many && needle ? `${shown.length} of ${options.length} match.` : cleared ? `All ${options.length} shown.` : ''}
-            </span>
+            {findBox}
+            {findStatus}
             {/* Its own region, so it is said once when the field fills, not again with every letter typed. */}
             <span className="sr-only" role="status">
               {full ? `${MAX_REFERENCES} chosen, the most a field can name. Remove one to choose another.` : ''}
