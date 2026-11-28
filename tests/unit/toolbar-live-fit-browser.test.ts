@@ -163,7 +163,9 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
     await page.locator(session.remote ? '.remote-leave' : '.export-btn').waitFor();
     // Each fixture shows what it says it does: Notes' count, the session's own pill, and Preview colors with a dark palette.
     expect(await page.locator('.notes-btn').innerText()).toContain('2');
-    expect(await page.locator('.scheme-btn').count()).toBe(palettes === 'dual' ? 1 : 0);
+    // The overflow toolbar keeps Preview colors in its More menu.
+    const inMore = (await page.locator('.toolbar').getAttribute('data-tier')) === 'overflow';
+    expect(await page.locator('.scheme-btn').count()).toBe(palettes === 'dual' && !inMore ? 1 : 0);
     if (session.remote) {
       const r = session.remote;
       expect(await page.locator(`.remote-pill.${r.reconnecting ? 'reconnecting' : r.hostConnected ? 'live' : 'away'}`).count()).toBe(1);
