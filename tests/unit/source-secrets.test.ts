@@ -8,6 +8,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSecretStore } from '../../src/main/sources/secrets';
+import { createApprovalStore } from '../../src/main/sources/approvals';
+import type { SourceDoc } from '@shared/types';
 import { redactSecrets } from '../../src/main/sources/redact';
 import { holdsSecretValue } from '@shared/sources';
 
@@ -42,7 +44,7 @@ describe('the source secret store', () => {
   });
 
   it('keeps a copy of a project in another folder apart from the original, and takes out what either keeps (#1543)', async () => {
-    const { all, here: original, secrets } = store();
+    const { file, all, here: original, secrets } = store();
     const copy = all.in(join(original, '..', 'copy'));
     await secrets.set('proj', 'audience', 'published-token');
     // The copy carries the project's ID, not its folder: it has nothing saved until it is given its own.
@@ -58,6 +60,13 @@ describe('the source secret store', () => {
     await copy.set('proj', 'audience', null);
     expect(await secrets.resolve('proj', ['audience'])).toEqual({ audience: 'published-token' });
     expect(await copy.names('proj')).toEqual([]);
+    // A folder with nothing left is gone from the file; the original's stays.
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ proj: { [original]: { audience: 'published-token' } } });
+    // Two changes at once, one in each folder, lose neither; one value kept in both is taken out once.
+    await Promise.all([secrets.set('proj', 'other', 'value-here'), copy.set('proj', 'other', 'value-there'), copy.set('proj', 'audience', 'published-token')]);
+    expect(await secrets.resolve('proj', ['audience', 'other'])).toEqual({ audience: 'published-token', other: 'value-here' });
+    expect(await copy.resolve('proj', ['audience', 'other'])).toEqual({ audience: 'published-token', other: 'value-there' });
+    expect((await copy.values('proj')).sort()).toEqual(['published-token', 'value-here', 'value-there']);
     await expect(all.in('relative/folder').set('proj', 'audience', 'value-1')).rejects.toThrow(/folder/);
   });
 
@@ -80,7 +89,7 @@ describe('the source secret store', () => {
     expect(readFileSync(file, 'utf8')).toBe('{"other": {"token": "keep-me"}');
     // Sound JSON holding what no change could save (a value that is no text, or too short to be taken out of what a
     // source says) is damaged too, and so are secrets kept for no folder.
-    for (const damaged of [{ other: { [here]: { token: 42 } } }, { other: { [here]: { token: 'abc' } } }, { other: { token: 'value-1' } }, { other: { work: { token: 'value-1' } } }].map((d) => JSON.stringify(d))) {
+    for (const damaged of [{ other: { [here]: { token: 42 } } }, { other: { [here]: { token: 'abc' } } }, { other: { token: 'value-1' } }, { other: { work: { token: 'value-1' } } }, { '': { [here]: { token: 'value-1' } } }].map((d) => JSON.stringify(d))) {
       writeFileSync(file, damaged);
       await expect(secrets.resolve('other', ['token'])).rejects.toThrow(/damaged/);
       await expect(secrets.set('p', 'token', 'value-1')).rejects.toThrow(/damaged/);
@@ -108,5 +117,32 @@ describe('taking secrets out of what a source says', () => {
     expect(holdsSecretValue(`https://a.example/?k=${new URLSearchParams({ v: 'abc!~ xyz' }).toString().slice(2)}`, ['abc!~ xyz'])).toBe(true);
     expect(holdsSecretValue('https://cdn.example/a%20b%2Fc.png', ['a b/c'])).toBe(true);
     expect(holdsSecretValue('{"name":"Team"}', ['tok"en-1'])).toBe(false);
+  });
+});
+
+describe('the source approval store (#1543)', () => {
+  const source = { id: 'team', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: 'https://api.example/team' } } as unknown as SourceDoc;
+  it('approves settings for one project in one folder only, and approves nothing from a damaged file', async () => {
+    const { file, here } = store();
+    const all = createApprovalStore(() => file.replace('source-secrets', 'source-approvals'));
+    const original = all.in(here);
+    const copy = all.in(join(here, '..', 'copy'));
+    const staging = { ...source, config: { url: 'https://staging.example/team' } } as unknown as SourceDoc;
+    // Two approvals at once, one in each folder, lose neither.
+    await Promise.all([original.approve('proj', source), copy.approve('proj', staging)]);
+    expect(await original.approved('proj', source)).toBe(true);
+    expect(await original.approved('proj', staging)).toBe(false);
+    expect(await copy.approved('proj', staging)).toBe(true);
+    expect(await copy.approved('proj', source)).toBe(false);
+    expect(await original.approved('other', source)).toBe(false);
+    await expect(all.in('relative/folder').approve('proj', source)).rejects.toThrow(/folder/);
+    // Approvals kept for no folder, or for no project, approve nothing; the next approval writes the file afresh.
+    for (const damaged of [{ proj: { team: ['x'] } }, { '': { [here]: { team: ['x'] } } }]) {
+      writeFileSync(file.replace('source-secrets', 'source-approvals'), JSON.stringify(damaged));
+      expect(await original.approved('proj', source)).toBe(false);
+    }
+    await original.approve('proj', source);
+    expect(await original.approved('proj', source)).toBe(true);
+    expect(Object.keys(JSON.parse(readFileSync(file.replace('source-secrets', 'source-approvals'), 'utf8')).proj)).toEqual([here]);
   });
 });

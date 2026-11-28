@@ -4,8 +4,8 @@
  * saved secrets, are refused before anything is asked of the source or written into the project.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,14 +26,29 @@ class FakeWorker extends EventEmitter {
   }
 }
 
-const env = vi.hoisted(() => ({ userData: '', forks: 0 }));
+/** A stand-in for the source sync worker: it keeps each request it is sent and answers with no records. */
+class FakeSync extends EventEmitter {
+  constructor(private seen: Array<{ mode: string; secrets?: Record<string, string> }>) {
+    super();
+  }
+  postMessage(m: { id: number; mode?: string; secrets?: Record<string, string> }) {
+    // A sync names no mode; a sample or an inspection does.
+    this.seen.push({ mode: m.mode ?? 'sync', secrets: m.secrets });
+    queueMicrotask(() => this.emit('message', { id: m.id, ok: true, records: [], images: [], ...(m.mode === 'sample' ? { raw: [] } : {}) }));
+  }
+  kill() {
+    return true;
+  }
+}
+
+const env = vi.hoisted(() => ({ userData: '', forks: 0, syncs: [] as Array<{ mode: string; secrets?: Record<string, string> }> }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
   BrowserWindow: class {},
   shell: { showItemInFolder: () => undefined },
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
   dialog: { showSaveDialog: async () => ({ canceled: true }), showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({ response: 0 }) },
-  utilityProcess: { fork: () => (env.forks++, new FakeWorker()) }
+  utilityProcess: { fork: (path: string) => (env.forks++, path.includes('source-sync-worker') ? new FakeSync(env.syncs) : new FakeWorker()) }
 }));
 
 const { createStarterState } = await import('@catalogue/starters');
@@ -44,6 +59,7 @@ const { createSecretStore } = await import('../../src/main/sources/secrets');
 const { createApprovalStore } = await import('../../src/main/sources/approvals');
 import type { EditOperation } from '@shared/ops';
 import type { SourceSettingsDraft } from '@shared/api';
+import { sourceFingerprint } from '@shared/sources';
 
 const dirs: string[] = [];
 const tmp = (prefix: string) => {
@@ -59,10 +75,12 @@ afterEach(async () => {
 
 const SECRET = 'tok-11223344556677aa';
 
-async function opened() {
+async function opened(ops: EditOperation[] = []) {
   env.userData = tmp('so-src-userdata-');
+  env.syncs = [];
   const state = applyOperations(createStarterState('blank', 'Sources', false), [
-    { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: false, archive: false } } as EditOperation
+    { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: false, archive: false } } as EditOperation,
+    ...ops
   ]).state;
   const dir = tmp('so-src-project-');
   await (await ProjectSession.create(dir, state)).close();
@@ -109,34 +127,66 @@ describe('saving a source’s settings in the editor', () => {
 describe('a copy of a project in another folder (#1543)', () => {
   const PUBLISHED = 'tok-published-audience';
   const STAGING = 'tok-staging-audience';
+  const signedIn = { sourceId: 'team', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: 'https://api.example/team', headers: { Authorization: 'Bearer ${secret:api}' } } } as const;
 
-  it('keeps its own source secrets and approvals, and saving one there leaves what the original signs in with', async () => {
-    const { c, dir: original, state } = await opened();
-    // An editable ZIP opened into another folder: the same project, its ID and all, somewhere else.
+  it('keeps its own source secrets and approvals: a secret saved there never changes what the original syncs with', async () => {
+    const { c, dir: original, state } = await opened([{ ...signedIn, type: 'source.upsert' } as EditOperation]);
+    // An editable ZIP opened into another folder: the same project, its ID and source settings and all, somewhere else.
     const copy = tmp('so-src-copy-');
     await (await ProjectSession.create(copy, state)).close();
     const projectId = state.manifest.projectId;
+    const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
+    await approvals.in(original).approve(projectId, state.sources!.team);
     expect((await c.setSourceSecret('api', PUBLISHED, c.openingKey!)).ok).toBe(true);
     expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
 
     expect((await c.trustAndOpen(copy)).ok).toBe(true);
-    // Nothing saved for the original shows as saved in the copy.
+    // Nothing saved for the original shows as saved in the copy, and its settings were never approved there.
     expect(await c.sourceSecretNames(c.openingKey!)).toEqual([]);
     expect((await c.setSourceSecret('api', STAGING, c.openingKey!)).ok).toBe(true);
+    expect((await c.setSourceSecret('copy-only', 'tok-copy-only', c.openingKey!)).ok).toBe(true);
+    expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api', 'copy-only']);
+    expect(await c.syncSource('team', c.openingKey!)).toMatchObject({ ok: false, code: 'unapproved' });
+    expect(env.syncs).toEqual([]);
+    // Saved here, the settings are approved here and nowhere else; the copy then syncs with its own secret.
+    expect(await c.saveSource({ ...signedIn, config: structuredClone(signedIn.config) }, c.openingKey!, sourceFingerprint(state.sources!.team))).toMatchObject({ ok: true });
+    expect(env.syncs.splice(0)).toEqual([{ mode: 'sample', secrets: { api: STAGING } }]);
+    const saved = c.session!.state.sources!.team;
+    expect(await approvals.in(copy).approved(projectId, saved)).toBe(true);
+    expect(await c.syncSource('team', c.openingKey!)).toMatchObject({ ok: true });
+    expect(env.syncs.splice(0)).toEqual([{ mode: 'sync', secrets: { api: STAGING } }]);
+    expect((await c.setSourceSecret('copy-only', null, c.openingKey!)).ok).toBe(true);
     expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
 
+    // Back in the original, its next sync signs in with its own secret.
     expect((await c.trustAndOpen(original)).ok).toBe(true);
     expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
+    expect(await c.syncSource('team', c.openingKey!)).toMatchObject({ ok: true });
+    expect(env.syncs.splice(0)).toEqual([{ mode: 'sync', secrets: { api: PUBLISHED } }]);
     const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
-    // What the original's next sync signs in with is still its own value; the copy's is the copy's.
     expect(await secrets.in(original).resolve(projectId, ['api'])).toEqual({ api: PUBLISHED });
-    expect(await secrets.in(copy).resolve(projectId, ['api'])).toEqual({ api: STAGING });
+    // Settings approved only in the copy are not approved here.
+    const elsewhere = { ...state.sources!.team, config: { ...state.sources!.team.config, url: 'https://staging.example/team' } };
+    await approvals.in(copy).approve(projectId, elsewhere);
+    expect(await approvals.in(original).approved(projectId, elsewhere)).toBe(false);
+    // From an opening that has ended, nothing is listed or changed.
+    expect(await c.sourceSecretNames('another opening')).toEqual([]);
+    expect(await c.setSourceSecret('api', STAGING, 'another opening')).toMatchObject({ ok: false });
+    expect(await secrets.in(original).resolve(projectId, ['api'])).toEqual({ api: PUBLISHED });
+  });
 
-    // Settings approved in the copy never sign in with the original's secrets.
-    const source = { id: 'team', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: 'https://staging.example/team' } } as unknown as NonNullable<typeof state.sources>[string];
-    const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
-    await approvals.in(copy).approve(projectId, source);
-    expect(await approvals.in(copy).approved(projectId, source)).toBe(true);
-    expect(await approvals.in(original).approved(projectId, source)).toBe(false);
+  it('changes no secret from a project open only to look at', async () => {
+    const { c, dir, state } = await opened();
+    expect((await c.setSourceSecret('api', PUBLISHED, c.openingKey!)).ok).toBe(true);
+    await c.close();
+    // Another window holds the project, so this one opens it read-only.
+    writeFileSync(join(dir, '.siteorigin/lock.json'), JSON.stringify({ pid: process.pid, host: hostname(), instance: 'another-window', started: new Date().toISOString() }));
+    const viewer = new Controller(() => null);
+    viewer.send = () => undefined;
+    controllers.push(viewer);
+    expect((await viewer.trustAndOpen(dir)).ok).toBe(true);
+    expect(viewer.session?.readOnly).toBeTruthy();
+    expect(await viewer.setSourceSecret('api', STAGING, viewer.openingKey!)).toMatchObject({ ok: false });
+    expect(await createSecretStore(() => join(env.userData, 'source-secrets.json')).in(dir).resolve(state.manifest.projectId, ['api'])).toEqual({ api: PUBLISHED });
   });
 });

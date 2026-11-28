@@ -6,7 +6,6 @@ import { createSyncRunner } from './client';
 import { createSecretStore } from './secrets';
 import { createApprovalStore } from './approvals';
 import { testHostsEnv } from './test-hosts';
-import { canonicalDir } from '../../runtime/policy';
 
 /**
  * Only what a process needs to start and find its temporary folder: none of the app's own settings or keys, nor a
@@ -37,9 +36,10 @@ export const sourceApprovals = createApprovalStore(() => join(app.getPath('userD
 
 /**
  * The secrets and approvals of the project open in `project.dir`: its own folder's, never those of a copy of it in
- * another folder, which carries the same project ID (#1543). The folder is the one it was opened at, as it is now.
+ * another folder, which carries the same project ID (#1543). The folder is the real path the project was opened at
+ * (every opening resolves it first), never resolved again: a link put in its place while it is open never turns it
+ * into another folder's project.
  */
 export function sourceStores(project: { readonly dir: string }) {
-  const dir = canonicalDir(project.dir);
-  return { secrets: sourceSecrets.in(dir), approvals: sourceApprovals.in(dir) };
+  return { secrets: sourceSecrets.in(project.dir), approvals: sourceApprovals.in(project.dir) };
 }

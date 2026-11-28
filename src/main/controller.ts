@@ -3895,6 +3895,8 @@ export class Controller {
   async setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
     if (!s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'No project is open.' };
+    // A project open only to look at changes nothing it signs in with, as it saves and syncs no source.
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
     try {
       await sourceStores(s).secrets.set(s.state.manifest.projectId, name, value);
       return { ok: true };

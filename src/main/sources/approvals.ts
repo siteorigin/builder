@@ -49,7 +49,7 @@ export function createApprovalStore(file: () => string): ApprovalFileStore {
     try {
       const parsed = JSON.parse(await fs.readFile(file(), 'utf8')) as unknown;
       const folder = (f: unknown) => isRecord(f) && Object.values(f).every((l) => Array.isArray(l) && l.every((fp) => typeof fp === 'string'));
-      if (isRecord(parsed) && Object.values(parsed).every((p) => isRecord(p) && Object.entries(p).every(([dir, f]) => isAbsolute(dir) && folder(f)))) return parsed as ApprovalFile;
+      if (isRecord(parsed) && Object.entries(parsed).every(([id, p]) => id !== '' && isRecord(p) && Object.entries(p).every(([dir, f]) => isAbsolute(dir) && folder(f)))) return parsed as ApprovalFile;
     } catch {
       // None.
     }
