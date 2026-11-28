@@ -2369,9 +2369,23 @@ export function publicationIds(plan: Pick<PublicationPlan, 'published' | 'publis
  * maps (lowercased) to what is there: a draft's address or an old address that leads to a draft, say.
  */
 function targetAtAddress<T extends object>(state: ProjectState, target: string, withheld: Map<string, T>): (T & { anchor?: string }) | null {
-  // Only a public URL the site is built from makes an address the site's own.
+  if (!withheld.size) return null;
+  const at = ownSiteAddress(state, target);
+  const draft = at && withheld.get(at.route.toLowerCase());
+  if (!draft) return null;
+  const anchor = at.url.hash.replace(/^#/, '');
+  return anchor ? { ...draft, anchor } : draft;
+}
+
+/**
+ * The address of the site a typed web address opens, when it is on the site's own public URL (under its path, when
+ * the site is published below one): as a route, decoded, with a slash at its end, the way a static host serves it
+ * ("/winter/index.html" is "/winter/"), with the address read. Null for any other address, or while the site has no
+ * public URL: only a public URL the site is built from makes an address the site's own.
+ */
+export function ownSiteAddress(state: ProjectState, target: string): { route: string; url: URL } | null {
   const base = publicUrl(state.site);
-  if (!base || !withheld.size) return null;
+  if (!base) return null;
   const site = new URL(base);
   let url: URL;
   try {
@@ -2388,12 +2402,8 @@ function targetAtAddress<T extends object>(state: ProjectState, target: string, 
   } catch {
     // Kept as typed: a malformed escape names no page.
   }
-  // "/winter/index.html" is the file a static host serves at "/winter/".
   path = path.replace(/\/index\.html$/i, '/');
-  const draft = withheld.get((path.endsWith('/') ? path : path + '/').toLowerCase());
-  if (!draft) return null;
-  const anchor = url.hash.replace(/^#/, '');
-  return anchor ? { ...draft, anchor } : draft;
+  return { route: path.endsWith('/') ? path : `${path}/`, url };
 }
 
 /**
