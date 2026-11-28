@@ -12,7 +12,7 @@ import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
-import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutGlance, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName, instancesOf, subtreeIds } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
@@ -563,8 +563,11 @@ export function asksForCollection(text: string, state?: ProjectState): boolean {
   };
   if (Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName))) return true;
   // An address one of them holds: its index, an entry's page or an archive page ("/properties/", #1408).
-  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘])(\/[^\s"'()”’,;!?]+)/gu)].some((m) => {
-    const route = normalizeRoute(m[1].replace(/[.:]+$/, ''));
+  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘`*_[<])(\/[^\s"'()”’,;!?`*<>\]]+)/gu)].some((m) => {
+    // An address as written, without its #fragment or ?query; //host/... names another site.
+    const path = m[1].replace(/[#?].*$/, '').replace(/[.:]+$/, '');
+    if (path.startsWith('//')) return false;
+    const route = normalizeRoute(path);
     return route !== '/' && !!collectionRouteOwner(state, route);
   });
 }
@@ -782,7 +785,7 @@ function runTools(opts: {
   // So is a collection loop in a component's design, or a list of a component placed in it.
   if (opts.definition) {
     const lists = connectListTools(state, opts.definitionTarget ? { kind: 'component', id: opts.definitionTarget.definitionId } : undefined);
-    return { tools: opts.definitionTarget ? [...general, ...lists] : [...update({ kind: 'site' }), ...general, ...lists], mode: 'general', focused: false };
+    return { tools: opts.definitionTarget ? [...general, ...lists] : [...update({ kind: 'site' }), ...general, ...lists, ...siteLayoutTools(state, false)], mode: 'general', focused: false };
   }
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
@@ -1542,8 +1545,10 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const layout = host.layoutLimit?.() ?? null;
       if (layout && (a.owner.kind !== layout.owner.kind || a.owner.id !== layout.owner.id)) return toolError('SCOPE_MISMATCH', `This request may change only ${layout.label}. Nothing was applied.`);
       // A whole-site run connects a list in a collection's layout as its layout tool changes it: that one layout (#1408).
-      const inLayout = !layout && (a.owner.kind === 'template' || a.owner.kind === 'archive') && !!host.siteWide?.();
-      return runConnectList(a, host, callId, inLayout ? { collectionWrite: { kind: 'layout', owner: { kind: a.owner.kind as LayoutOwner['kind'], id: a.owner.id } } } : undefined);
+      // A layout whose pages are turned off is kept for when they come back, and is not the run's to change meanwhile.
+      const inLayout = !layout && (a.owner.kind === 'template' || a.owner.kind === 'archive') && !!host.siteWide?.() ? siteLayout(state, { kind: a.owner.kind as LayoutOwner['kind'], id: a.owner.id }) : null;
+      if (inLayout && 'error' in inLayout) return toolError('INVALID_ARGUMENT', `${inLayout.error} Nothing was applied.`);
+      return runConnectList(a, host, callId, inLayout ? { collectionWrite: { kind: 'layout', owner: inLayout.owner } } : undefined);
     }
     case 'read_layout':
       return readLayout(args as z.infer<(typeof TOOL_ARGS)['read_layout']>, host);
@@ -1600,8 +1605,12 @@ function readLayout(args: { owner?: LayoutOwner; nodeId?: string }, host: ToolHo
     if ('error' in found) return toolError('INVALID_ARGUMENT', found.error);
     layout = found;
     // An index still shows the ready-made cards until it has a layout of its own, which the run may start.
-    if (!layoutTree(host.state(), found.owner))
+    if (!layoutTree(host.state(), found.owner)) {
+      if (args.nodeId !== undefined) return toolError('INVALID_ARGUMENT', `${sentence(found.label)} shows the ready-made cards, which have no node "${args.nodeId}": read it without nodeId.`);
       return { ok: true, content: { revision: host.revision(), owner: found.owner, collectionId: found.owner.id, custom: false, note: `${sentence(found.label)} shows the ready-made cards, which have no sections to change. edit_collection_layout with action "start" begins its own layout in their place, which you can then change.` } };
+    }
+    // Read whole while it fits a result; else by its sections' IDs, each then read with nodeId (as a layout run's first look).
+    if (args.nodeId === undefined) return { ok: true, content: { revision: host.revision(), ...layoutGlance(host.state(), found.owner, found.label, MAX_RESULT_CHARS - 2000) } };
   }
   const detail = layoutDetail(host.state(), layout.owner, args.nodeId);
   if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${sentence(layout.label)} is no longer in the site.`);
@@ -1623,7 +1632,7 @@ async function runEditLayout(a: z.infer<(typeof TOOL_ARGS)['edit_collection_layo
     if (a.operations !== undefined) return toolError('INVALID_ARGUMENT', 'start takes no operations: change the layout it begins in your next step, with the IDs it returns.');
     if (owner.kind === 'template') return toolError('INVALID_ARGUMENT', `${sentence(label)} is always there: change it with action "edit".`);
     // Started already (by the author, or by a call before this one): never replaced with a new one.
-    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...layoutDetail(state, owner) } };
+    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...layoutGlance(state, owner, label, MAX_RESULT_CHARS - 2000) } };
     const op = { type: 'collection.update', collectionId: owner.id, archiveTemplate: 'start' } as EditOperation;
     const res = await host.apply([op], a.expectedRevision, `Start ${label}`.slice(0, 120), callId, { collectionWrite: { kind: 'indexLayout', collectionId: owner.id } });
     if (!res.ok) return applyFailure(res);

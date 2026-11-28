@@ -175,7 +175,7 @@ const SITE_SHOWN = new Set(['name', 'visitorText']);
 const NOT_FOUND = new Set(['notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel']);
 
 /** What a page check cannot measure: a collection's posts, and the not-found page. */
-export type Unreachable = 'posts' | 'not-found';
+export type Unreachable = 'posts' | 'index' | 'not-found';
 
 /** What one batch changes of what pages show. */
 export interface Reach {
@@ -226,6 +226,8 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
   for (const op of ops) {
     // Phone styles count wherever they are written: a component styled for phones may be placed later in the run.
     if (isPhoneScoped(op)) reach.phone = true;
+    // A collection's index given its own layout, in place of the ready-made cards, is unmeasured like a change to it (#1408).
+    if (op.type === 'collection.update' && op.archiveTemplate !== undefined) reach.unreachable.add('index');
     switch (LOOK[op.type] ?? 'shared') {
       case 'none':
         break;
@@ -247,7 +249,8 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
         const owner = op.type === 'node.copy' || op.type === 'node.paste' ? op.toOwner : 'owner' in op ? op.owner : undefined;
         if (owner?.kind === 'page') reach.pages.add(owner.id);
         // A collection's entry or index layout shows on no page the preview check measures: it says so, unmeasured.
-        else if (owner?.kind === 'template' || owner?.kind === 'archive') reach.unreachable.add('posts');
+        else if (owner?.kind === 'template') reach.unreachable.add('posts');
+        else if (owner?.kind === 'archive') reach.unreachable.add('index');
         else if (owner?.kind !== 'component' || placed(owner.id)) {
           if (owner?.kind === 'component') reach.components.add(owner.id);
           reach.shared = true;
@@ -587,6 +590,7 @@ export class PreviewCheck {
     // A change every page shows is checked on a few of them; the rest are said to be unchecked.
     if (this.shared && state.site.pageOrder.some((id) => live(id) && !pages.includes(id))) unchecked.push({ status: 'unverified', text: "Didn't check the other pages that show the changes to what pages share in the preview." });
     if (this.unreachable.has('posts')) unchecked.push({ status: 'unverified', text: "Didn't check the posts that show the changed post layout in the preview." });
+    if (this.unreachable.has('index')) unchecked.push({ status: 'unverified', text: "Didn't check the collection index pages that show the changed index layout in the preview." });
     if (this.unreachable.has('not-found')) unchecked.push({ status: 'unverified', text: "Didn't check the page shown for an address the site does not have in the preview." });
     const widths = this.widths();
     const targets = pages.flatMap((pageId) => widths.map((viewport) => ({ pageId, viewport })));
