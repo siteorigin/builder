@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import type { GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { missingSectionLinks, renderedContent } from '@generator/checks';
+import { labelKeyFor, missingSectionLinks, renderedContent, shippedCode } from '@generator/checks';
+import { pageText } from '@generator/search';
+import { findTheme } from '@catalogue/index';
 import { contentFields, contentTarget, entryTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
 import { P, item as dslItem, prop } from '@catalogue/dsl';
@@ -590,6 +592,94 @@ describe('opening a match', () => {
     expect(new Set(keys).size).toBe(keys.length);
     const { after } = apply(s, findContent(s, 'Test Studio'), 'Bookshop');
     expect(contentFields(after).map((f) => f.key)).toEqual(keys);
+  });
+});
+
+describe('the release’s own sections (#1341)', () => {
+  const home = (s: ProjectState) => s.pages[s.site.homePageId];
+  const SECTIONS = ['Split hero', 'Logo strip', 'Services grid', 'Content with image', 'Statistics', 'Gallery', 'Testimonials', 'Call to action', 'Team', 'FAQ'];
+
+  it('replaces the words the release’s sections show, as typing over them on the page does', () => {
+    const s = fresh();
+    const fields = contentFields(s).filter((f) => SECTIONS.includes(f.section));
+    expect([...new Set(fields.map((f) => f.section))].sort()).toEqual([...SECTIONS].sort());
+    // Headings, copy, each item's words and the buttons' destinations: none is taken for a custom code component's setting.
+    expect(fields.filter((f) => f.custom).map((f) => `${f.section} › ${f.label}`)).toEqual([]);
+    expect(fields.filter((f) => f.label === 'Primary button link' && f.kind === 'link').map((f) => f.section)).toEqual(['Split hero']);
+
+    const hero = instanceOf(s, 'hero.split', home(s).id);
+    const grid = instanceOf(s, 'features.grid', home(s).id);
+    const card = item(grid, 'items', 'Planning & layout');
+    const heading = findContent(s, 'Calm, considered spaces').filter((m) => m.field.section === 'Split hero');
+    const title = findContent(s, 'Planning & layout').filter((m) => m.field.section === 'Services grid');
+    expect([...heading, ...title].map((m) => [m.field.label, m.blocked])).toEqual([
+      ['Heading', undefined],
+      ['Cards › Planning & layout › Title', undefined]
+    ]);
+    const { after } = apply(s, [...heading, ...title], 'Rooms');
+    expect(instanceOf(after, 'hero.split', home(s).id).props.heading).toBe('Rooms for everyday life');
+    const items = instanceOf(after, 'features.grid', home(s).id).props.items as ListItem[];
+    expect(items.find((x) => x.id === card.id)).toMatchObject({ title: 'Rooms', description: card.description });
+    expect(items.filter((x) => x.id !== card.id)).toEqual((grid.props.items as ListItem[]).filter((x) => x.id !== card.id));
+    expect(instanceOf(after, 'hero.split', home(s).id).props.lead).toBe(hero.props.lead);
+    // The site's search reads them too.
+    expect(pageText(after, home(after))).toContain('Rooms for everyday life');
+  });
+
+  it('reads what a section shows from the release, not the project’s copy, which a publication takes the markers out of', () => {
+    const s = fresh();
+    const def = s.components[instanceOf(s, 'hero.split', home(s).id).definitionId];
+    def.source = def.source!.replace(/data-so-text=\{[^}]*\}/g, '');
+    expect(findContent(s, 'Calm, considered spaces').map((m) => [m.field.section, m.blocked])).toEqual([['Split hero', undefined]]);
+  });
+
+  it('leaves out a button the site leaves out for having no destination', () => {
+    const s = fresh();
+    const cta = instanceOf(s, 'cta.banner', home(s).id);
+    expect(cta.props.secondaryLabel).toBe('See our packages');
+    expect(findContent(s, 'See our packages')).toEqual([]);
+    const linked = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: home(s).id }, nodeId: cta.id, prop: 'secondaryLink', value: { type: 'url', target: 'https://example.org/packages' } }]).state;
+    expect(findContent(linked, 'See our packages').map((m) => [m.field.label, m.blocked])).toEqual([['Text link label', undefined]]);
+    expect(findContent(linked, 'example.org/packages').map((m) => [m.field.label, m.kind, m.blocked])).toEqual([['Text link destination', 'link', undefined]]);
+  });
+
+  it('leaves to the inspector what the release’s markup does not mark, and a section made unique', () => {
+    const s = fresh();
+    const owner = { kind: 'page' as const, id: home(s).id };
+    // The billing switch's words are not marked for typing over: what the code does with them is up to its markup.
+    const toggle = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'pricing.toggle', props: { monthlyLabel: 'Paid monthly' } }]).state;
+    expect(findContent(toggle, 'Paid monthly').map((m) => m.blocked)).toEqual([expect.stringMatching(/custom code component/)]);
+    // A copy keeps the code, which is the project's own from then on.
+    const hero = instanceOf(s, 'hero.split', home(s).id);
+    const unique = applyOperations(s, [{ type: 'component.makeUnique', owner, nodeId: hero.id, name: 'Studio hero' }]).state;
+    expect(findContent(unique, 'Calm, considered spaces').map((m) => m.blocked)).toEqual([expect.stringMatching(/custom code component/)]);
+  });
+
+  it('takes a label for a button’s only where the release shows it as one, which the site leaves out without a destination', () => {
+    // known() in renderedContent (src/generator/checks.ts) leaves out a marked label beside a link of its own while the
+    // link goes nowhere: true only while each is a button's.
+    const BUTTON = new Set(['primary', 'secondary', 'text', 'light']);
+    const packs = ['foundation', 'foundation-alt'].map((id) => findTheme(id)!);
+    const s = fresh();
+    const checked: string[] = [];
+    // The sections read from their markup: the rest have rules of their own (shippedCodeShows).
+    for (const def of packs.flatMap((p) => p.components).filter((d) => d.kind === 'code' && !shippedCode(s, d))) {
+      const source = def.source ?? '';
+      for (const m of source.matchAll(/data-so-text=\{\s*\w+\?\.\(\s*'([^']+)'/g)) {
+        const [prop, field] = m[1].split('.');
+        const schema = def.properties[prop];
+        const schemas = field ? (schema?.type === 'list' ? schema.fields : {}) : def.properties;
+        const label = field ?? prop;
+        if (!Object.entries(schemas).some(([k, f]) => f.type === 'link' && labelKeyFor(k) === label)) continue;
+        const tag = source.slice(source.lastIndexOf('<', m.index), source.indexOf('>', m.index) + 1);
+        const appearance = /appearance=(?:"([^"]*)"|\{([^}]*)\})/.exec(tag);
+        const shown = appearance?.[1] !== undefined ? [appearance[1]] : [...(appearance?.[2] ?? '').matchAll(/'([^']*)'/g)].map((x) => x[1]);
+        expect({ section: def.componentId, label: m[1], tag: tag.split(/\s/)[0], appearances: shown.filter((a) => !BUTTON.has(a)), some: shown.length > 0 }).toEqual({ section: def.componentId, label: m[1], tag: '<SoLink', appearances: [], some: true });
+        checked.push(`${def.componentId} ${m[1]}`);
+      }
+    }
+    expect(checked).toContain('hero.split primaryLabel');
+    expect(checked).toContain('features.grid items.linkLabel');
   });
 });
 
