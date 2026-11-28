@@ -1142,6 +1142,99 @@ export function keepDrafts(text) {
 `;
 
 /**
+ * Puts the page back where the visitor left it at once on Back and Forward (#1542). The root layout calls it once.
+ */
+export const HISTORY_SCROLL_JS = `/**
+ * Back and Forward put the page back where the visitor left it at once, as the browser does with JavaScript off.
+ * SvelteKit takes over the browser's scroll restoration and puts each history entry's position back with
+ * scrollTo(), which a theme's smooth scrolling (html { scroll-behavior: smooth }, there for jumps to a section)
+ * turns into a long glide: moments after Back the page would still be at the section the visitor jumped to. While
+ * SvelteKit restores a position the page scrolls instantly; jumps from links stay smooth.
+ *
+ * A Back or Forward within the page (between a section's address and the page's) restores in the same task as the
+ * browser's popstate, heard here before SvelteKit hears it: a window's listeners hear an event in the order they were
+ * added, and SvelteKit adds its own once the page has hydrated, after the layout has mounted. One to another page
+ * restores once that page is drawn,
+ * at the end of SvelteKit's navigation. A page brought back from the browser's back/forward cache restores as it
+ * shows again.
+ */
+import { onMount } from 'svelte';
+import { afterNavigate, beforeNavigate } from '$app/navigation';
+
+const holds = new Set();
+// The page root's own scroll-behavior from before the first hold, and its priority, put back after the last.
+let kept = ['', ''];
+
+/**
+ * Makes the page scroll instantly until the returned function is called, and every other hold has ended too. A
+ * smooth scroll still running (a jump the visitor went Back from before it finished) stops where it is, or it
+ * would carry on past the position put back; Chromium still takes its last step in the next frame, so the position
+ * the page has when the hold ends is put back after that frame.
+ */
+function hold() {
+	const style = document.documentElement.style;
+	if (!holds.size) kept = [style.getPropertyValue('scroll-behavior'), style.getPropertyPriority('scroll-behavior')];
+	const key = {};
+	holds.add(key);
+	style.setProperty('scroll-behavior', 'auto', 'important');
+	scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' });
+	return () => {
+		if (!holds.has(key)) return;
+		const left = scrollX;
+		const top = scrollY;
+		requestAnimationFrame(() => {
+			if (!holds.delete(key)) return;
+			if (scrollX !== left || scrollY !== top) scrollTo({ left, top, behavior: 'instant' });
+			if (!holds.size) unhold();
+		});
+	};
+}
+
+function unhold() {
+	holds.clear();
+	const style = document.documentElement.style;
+	if (kept[0]) style.setProperty('scroll-behavior', kept[0], kept[1]);
+	else style.removeProperty('scroll-behavior');
+}
+
+/** Holds for the rest of this task: SvelteKit's own listener restores in it, after this one. */
+function briefly() {
+	setTimeout(hold(), 0);
+}
+
+export function keepHistoryScroll() {
+	// To another page: held from the start of the navigation until it has finished, whichever way it ends.
+	beforeNavigate((navigation) => {
+		if (navigation?.type !== 'popstate') return;
+		const release = hold();
+		if (navigation.complete) navigation.complete.then(release, release);
+		else release();
+	});
+	// SvelteKit has restored by the time it says a navigation has finished; one that never settles ends here too.
+	afterNavigate(() => {
+		if (holds.size) unhold();
+	});
+	onMount(() => {
+		// Only an entry SvelteKit keeps a position for: following a link to a section is the browser's own popstate,
+		// whose jump stays smooth.
+		const popped = (event) => {
+			if (event.state?.['sveltekit:metadata']?.historyIndex) briefly();
+		};
+		const shown = (event) => {
+			if (event.persisted) briefly();
+		};
+		window.addEventListener('popstate', popped);
+		window.addEventListener('pageshow', shown);
+		return () => {
+			window.removeEventListener('popstate', popped);
+			window.removeEventListener('pageshow', shown);
+			if (holds.size) unhold();
+		};
+	});
+}
+`;
+
+/**
  * The note the draft keeper puts after a form whose message it gave back (DRAFTS_JS), in site.css: the size and ink
  * of the text around it, with the weight of an outcome and a mark one line tall, a step below the form. Its class
  * adds no weight (:where), so a theme's own rules for it win; as a paragraph it still outweighs a theme's reset of
