@@ -2867,7 +2867,7 @@ export function Canvas() {
       over = !!page;
       aim = { kind: 'pending' };
       if (page && pointed) {
-        const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own } : null;
+        const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own, inside: pointed.picture.inside } : null;
         const hit = resolveImageDrop(st, targets, { chain: pointed.chain, picture }, showing);
         // On the image, the element under the pointer; off it, the empty image's box.
         const outline = hit ? (hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target)) : null;

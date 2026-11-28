@@ -1651,9 +1651,10 @@ export interface RenderedImage {
   /**
    * A code placement's one image property: `drawn` when its markup shows exactly that property with its one SoImage
    * (see showsWithSoImage), and the files its picture can show now (the original and its smaller copies; none with no
-   * image chosen).
+   * image chosen). `item` for one item's picture of a list the code shows one picture per item of (see
+   * showsItemsWithSoImage), taken only from that picture.
    */
-  code?: { drawn: boolean; files: string[] };
+  code?: { drawn: boolean; files: string[]; item?: true };
   /** For content placed in a design's slot (an Image in a Section): the design it shows in, as `instancePath`,
    *  `itemPath` and `repeats` name an image's own. */
   shownIn?: { instancePath: string[]; itemPath: string[]; repeats: string[] };
@@ -1691,6 +1692,21 @@ export function codeImageProp(def: ComponentDefinition): string | null {
   return images.length === 1 && !nested ? images[0][0] : null;
 }
 
+/**
+ * A code component's one list of pictures (a Gallery's images): the list and its one image field, when no other
+ * property, list or group holds an image and the list is the component's own rows, not a feed's.
+ */
+export function codeImageList(def: ComponentDefinition): { prop: string; field: string } | null {
+  const props = Object.entries(def.properties ?? {});
+  if (props.some(([, s]) => s?.type === 'image')) return null;
+  const holders = props.filter(([, s]) => (s?.type === 'list' || s?.type === 'object') && Object.values(s.fields ?? {}).some((f) => f?.type === 'image'));
+  if (holders.length !== 1) return null;
+  const [prop, schema] = holders[0];
+  if (schema.type !== 'list' || schema.feed) return null;
+  const fields = Object.entries(schema.fields ?? {}).filter(([, f]) => f?.type === 'image');
+  return fields.length === 1 ? { prop, field: fields[0][0] } : null;
+}
+
 /** The value branches of an expression: each outcome of a `cond ? a : b` (nested too), or the expression itself. */
 function outcomes(whole: string): string[] {
   const expr = bare(whole);
@@ -1716,35 +1732,112 @@ function outcomes(whole: string): string[] {
   return colon < 0 ? [expr] : [...outcomes(expr.slice(q + 1, colon)), ...outcomes(expr.slice(colon + 1))];
 }
 
-/**
- * Whether code markup shows `prop` with its one SoImage, and nothing else with it: exactly one `<SoImage>`, whose
- * `image={...}` gives, whichever way it goes, the property itself, a copy with settings added
- * (`{ ...logo, decorative: true }`) or its thumbnail. Only then is the one SoImage picture on the page the property's.
- */
-export function showsWithSoImage(source: string, prop: string): boolean {
-  const tags = [...source.matchAll(/<SoImage\b/g)];
-  if (tags.length !== 1 || !/^[A-Za-z_$][\w$]*$/.test(prop)) return false;
-  const at = source.indexOf('image={', tags[0].index);
-  if (at < 0 || source.slice(tags[0].index, at).includes('/>')) return false;
+/** Where the `{` at `open` closes, past quoted strings inside it; -1 when it never does. */
+function closingBrace(source: string, open: number): number {
   let depth = 0;
-  let i = at + 'image='.length;
-  for (; i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}' && --depth === 0) break;
+  for (let i = open; i < source.length; i++) {
+    const c = source[i];
+    if (c === '"' || c === "'") {
+      const end = source.indexOf(c, i + 1);
+      if (end < 0) return -1;
+      i = end;
+    } else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i;
   }
-  if (i >= source.length) return false;
-  const p = prop.replace(/\$/g, '\\$');
-  const thumb = new RegExp(`^thumbnail\\(\\s*${p}\\s*\\)$`);
-  const copy = new RegExp(`^\\{\\s*\\.\\.\\.${p}\\s*(?:,([^{}]*))?\\}$`);
+  return -1;
+}
+
+/**
+ * Code markup's one `<SoImage>`, and the expression its `image` attribute gives (`image={...}`, or the shorthand
+ * `{image}`): null when there is not exactly one, it has no image attribute or more than one, or a spread
+ * (`{...rest}`) could give it one.
+ */
+function soImageAttr(source: string): { at: number; expr: string } | null {
+  const tags = [...source.matchAll(/<SoImage\b/g)];
+  if (tags.length !== 1) return null;
+  const at = tags[0].index;
+  const start = at + '<SoImage'.length;
+  let expr: string | null = null;
+  for (let i = start; i < source.length; i++) {
+    const c = source[i];
+    if (c === '>' || (c === '/' && source[i + 1] === '>')) return expr === null ? null : { at, expr };
+    if (c === '"' || c === "'") {
+      const end = source.indexOf(c, i + 1);
+      if (end < 0) return null;
+      i = end;
+    } else if (c === '{') {
+      const end = closingBrace(source, i);
+      if (end < 0) return null;
+      const inner = source.slice(i + 1, end).trim();
+      const before = source.slice(start, i);
+      const named = /(?:^|\s)image\s*=\s*$/.test(before);
+      const attribute = /(?:^|\s)$/.test(before);
+      if (attribute && inner.startsWith('...')) return null;
+      if (named || (attribute && inner === 'image')) {
+        if (expr !== null) return null;
+        expr = named ? source.slice(i + 1, end) : 'image';
+      }
+      i = end;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether an image expression gives `value` (a property, `logo`, or a list item's field, `item.image`), whichever way
+ * it goes: the value itself, a copy with settings added (`{ ...logo, decorative: true }`) or its thumbnail.
+ */
+function givesImage(expr: string, value: string): boolean {
+  const v = value.replace(/[.$]/g, (c) => `\\${c}`);
+  const thumb = new RegExp(`^thumbnail\\(\\s*${v}\\s*\\)$`);
+  const copy = new RegExp(`^\\{\\s*\\.\\.\\.${v}\\s*(?:,([^{}]*))?\\}$`);
   const shows = (o: string) => {
     const e = bare(o);
-    if (e === prop || thumb.test(e)) return true;
+    if (e === value || thumb.test(e)) return true;
     // Settings added to a copy of it, never its picture: no other source, and nothing spread in that could be one.
     const m = e.match(copy);
     const keys = (m?.[1] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
     return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset|sources)['"]?\s*(?::|$)/.test(part));
   };
-  return outcomes(source.slice(at + 'image={'.length, i)).every(shows);
+  return outcomes(expr).every(shows);
+}
+
+/**
+ * Whether code markup shows `prop` with its one SoImage, and nothing else with it: exactly one `<SoImage>`, whose
+ * `image` attribute gives, whichever way it goes, the property itself, a copy with settings added
+ * (`{ ...logo, decorative: true }`) or its thumbnail. Only then is the one SoImage picture on the page the property's.
+ */
+export function showsWithSoImage(source: string, prop: string): boolean {
+  if (!/^[A-Za-z_$][\w$]*$/.test(prop)) return false;
+  const attr = soImageAttr(source);
+  return !!attr && givesImage(attr.expr, prop);
+}
+
+/**
+ * Whether code markup shows each item of list `prop` once, with its one SoImage showing the item's image `field` and
+ * nothing else: exactly one `<SoImage>`, inside one `{#each prop as item}` and no other loop or snippet (either could
+ * show an item twice), whose `image` attribute gives `item.field` (a copy or thumbnail of it, as showsWithSoImage
+ * allows). Only then is a picture there that shows one item's file that item's.
+ */
+export function showsItemsWithSoImage(source: string, prop: string, field: string): boolean {
+  const name = /^[A-Za-z_$][\w$]*$/;
+  if (!name.test(prop) || !name.test(field) || /\{#snippet\b/.test(source)) return false;
+  const attr = soImageAttr(source);
+  if (!attr) return false;
+  // The loops open around the SoImage.
+  const open: string[] = [];
+  for (const m of source.slice(0, attr.at).matchAll(/\{#each\b|\{\/each\s*\}/g)) {
+    if (m[0].startsWith('{/')) {
+      if (!open.pop()) return false;
+      continue;
+    }
+    const end = closingBrace(source, m.index);
+    if (end < 0 || end > attr.at) return false;
+    open.push(source.slice(m.index, end + 1));
+  }
+  if (open.length !== 1) return false;
+  const each = open[0].match(/^\{#each\s+([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)\s*(?:,\s*[A-Za-z_$][\w$]*\s*)?(?:\([^()]*\)\s*)?\}$/);
+  return !!each && each[1] === prop && givesImage(attr.expr, `${each[2]}.${field}`);
 }
 
 /** An expression without the parentheses around the whole of it (`(photo)` is `photo`). */
@@ -1841,12 +1934,49 @@ export function renderedImages(state: ProjectState, tree: NodeTree): RenderedIma
     image: (n, scope, reportId) => push(n, scope, reportId, false),
     hiddenImage: (n, scope, reportId) => push(n, scope, reportId, true),
     code: (def, props, _reportId, _placement, n, scope, inDef) => {
-      const prop = inDef ? null : codeImageProp(def);
+      if (inDef) return;
+      const file = (f: string) => f.replace(/^static\//, '');
+      const filesOf = (v: unknown) => {
+        const asset = imageChosen(state, v) ? state.assets.assets[(v as ImageValue).assetId!] : undefined;
+        return asset ? [file(asset.file), ...(asset.variants ?? []).map((x) => file(x.file))] : [];
+      };
+      const prop = codeImageProp(def);
+      const list = prop ? null : codeImageList(def);
+      if (list) {
+        // A list of pictures the code shows one of per item (a Gallery): each item's chosen picture is a picture of its
+        // own, named on the page by its file. An item with none shows nothing to point at. A list connected to a
+        // collection holds its entries' rows, and an item whose ID its list does not give it alone can't be named.
+        if (Object.hasOwn(n.listSources ?? {}, list.prop) || !showsItemsWithSoImage(def.source ?? '', list.prop, list.field)) return;
+        const schema = def.properties[list.prop];
+        const rows = Object.hasOwn(n.props, list.prop) ? n.props[list.prop] : schema.default;
+        if (!Array.isArray(rows)) return;
+        const ids = rows.map((r) => (r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' ? (r as { id: string }).id : ''));
+        rows.forEach((r, i) => {
+          const id = ids[i];
+          const value = (r as Record<string, unknown> | null)?.[list.field];
+          const files = filesOf(value);
+          if (!id || ids.indexOf(id) !== i || ids.lastIndexOf(id) !== i || !files.length) return;
+          const title = schema.titleField ? (r as Record<string, unknown>)[schema.titleField] : undefined;
+          const at = { nodeId: n.id, prop: list.prop, itemId: id, field: list.field };
+          shownThrough.set(out.length, scope);
+          out.push({
+            nodeId: n.id,
+            instancePath: scope.instances ?? [],
+            itemPath: [],
+            repeats: [],
+            field: at,
+            reads: at,
+            unfilled: false,
+            code: { drawn: true, files, item: true },
+            name: schema.fields?.[list.field]?.label?.trim() || 'Image',
+            ...(typeof title === 'string' && title.trim() ? { item: title.trim() } : {})
+          });
+        });
+        return;
+      }
       if (!prop) return;
       const value = props[prop] as ImageValue | undefined;
       const chosen = imageChosen(state, value);
-      const asset = chosen ? state.assets.assets[value!.assetId!] : undefined;
-      const file = (f: string) => f.replace(/^static\//, '');
       shownThrough.set(out.length, scope);
       out.push({
         nodeId: n.id,
@@ -1858,7 +1988,7 @@ export function renderedImages(state: ProjectState, tree: NodeTree): RenderedIma
         unfilled: !chosen,
         // The page names a picture by its file (see resolveImage): the picture under the pointer is this one only if
         // it shows one of this image's files.
-        code: { drawn: showsWithSoImage(def.source ?? '', prop), files: asset ? [file(asset.file), ...(asset.variants ?? []).map((v) => file(v.file))] : [] },
+        code: { drawn: showsWithSoImage(def.source ?? '', prop), files: filesOf(value) },
         name: def.properties[prop].label?.trim() || 'Image'
       });
     }

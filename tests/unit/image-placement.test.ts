@@ -1128,7 +1128,7 @@ describe('placing a library image from Assets (issue #13)', () => {
     });
 
     it('replaces one Gallery picture for that use alone, opening that row', async () => {
-      // A Gallery designed in the editor, added to Home: Foundation's takes no drop on one row (the Release gap test below).
+      // A Gallery designed in the editor, added to Home (Foundation's takes a drop on one row too: the test below).
       let gallery = '';
       const { owner, page, targets, uses } = await onHome((s) => {
         const placed = makeInstance(projectDesign(s, GALLERY), { images: [{ image: { assetId: null, alt: '' }, caption: 'One' }, { image: { assetId: null, alt: '' }, caption: 'Two' }] });
@@ -1153,8 +1153,7 @@ describe('placing a library image from Assets (issue #13)', () => {
       expect(uses(nook.id)).toBe(used);
     });
 
-    // Release gap: renderedImages gives a code placement a drop target for one image property only.
-    it.fails('offers one picture of the release’s Gallery as a drop target of its own', async () => {
+    it('offers one picture of the release’s Gallery as a drop target of its own (#1386)', async () => {
       const { gallery, item, targets } = await onHome();
       expect(targets().find((t) => t.field?.nodeId === gallery && t.field.itemId === item)).toMatchObject({ unfilled: false, field: { prop: 'images', field: 'image' } });
     });

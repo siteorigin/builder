@@ -31,9 +31,9 @@ export interface ImageTarget {
   unfilled: boolean;
   /** Shown by `box` until it has an image. */
   hidden: boolean;
-  /** A code placement's one image: whether its markup shows exactly it, and the files its picture can show now (see
-   *  RenderedImage.code). */
-  code: { drawn: boolean; files: string[] } | null;
+  /** A code placement's one image, or one item's of the list it shows a picture per item of: whether its markup shows
+   *  exactly it, and the files its picture can show now (see RenderedImage.code). */
+  code: { drawn: boolean; files: string[]; item?: true } | null;
   /** Shown more than once on the page from the same field. */
   multiple: boolean;
   /**
@@ -49,10 +49,10 @@ export interface ImageTarget {
 export interface PointedAt {
   chain: BridgeDesc[];
   /**
-   * The picture the pointer is on, if any: the file it shows, and whether it is the only one the code placement around
-   * it draws itself.
+   * The picture the pointer is on, if any: the file it shows, whether it is the only one the code placement around it
+   * draws itself (`own`), and whether that placement draws it at all (`inside`; `own` says so too).
    */
-  picture: { src: string; own: boolean } | null;
+  picture: { src: string; own: boolean; inside?: boolean } | null;
 }
 
 /** Whether a picture's address is the library file `file` (`images/x.jpg`), wherever the site is served from. */
@@ -128,7 +128,8 @@ export function imageDropTargets(state: ProjectState, pageId: string): ImageTarg
       out.push(t);
     }
   }
-  for (const group of byDesc.values()) if (group.length > 1) for (const t of group) t.field = null;
+  // The items of a list a code placement shows a picture per item of are told apart by the file each shows.
+  for (const group of byDesc.values()) if (group.length > 1 && !group.every((t) => t.code?.item)) for (const t of group) t.field = null;
   // Every use of a field, counted whether or not it can take a drop itself: a field one of whose uses can't be told
   // apart (a component placed in each item of a list) is shown there too, and would change there.
   const byField = new Map<string, ImageTarget[]>();
@@ -182,8 +183,13 @@ export function resolveImageDrop(state: ProjectState, targets: readonly ImageTar
   if (on) return on.field ? { target: on, direct: true } : null;
   if (at.picture) {
     // The one picture a code placement draws, showing its image property's file: that property.
-    const drawn = first.code && at.picture.own ? targets.find((t) => t.code?.drawn && sameDesc(t.desc, first) && t.code.files.some((f) => showsFile(at.picture!.src, f))) : undefined;
+    const shows = (t: ImageTarget) => !!t.code?.drawn && sameDesc(t.desc, first) && t.code.files.some((f) => showsFile(at.picture!.src, f));
+    const drawn = first.code && at.picture.own ? targets.find((t) => !t.code?.item && shows(t)) : undefined;
     if (drawn) return drawn.field ? { target: drawn, direct: true } : null;
+    // A picture the code draws of one item of its list (a Gallery's): the one item whose picture shows that file. Two
+    // showing it can't be told apart.
+    const items = first.code && (at.picture.own || at.picture.inside) ? targets.filter((t) => t.code?.item && shows(t)) : [];
+    if (items.length) return items.length === 1 && items[0].field ? { target: items[0], direct: true } : null;
     // Any other picture (one the code draws of its own, an entry's, one in rich text) takes nothing. An empty one the
     // code draws (its placeholder shows no file) is the placement's empty image, as anywhere else on it.
     if (!(first.code && at.picture.own && !at.picture.src)) return null;
