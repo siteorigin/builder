@@ -9,7 +9,7 @@ import { dirname, join, relative } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The folder picker, counted: the author is asked where to export only when the website can be built.
-const picker = vi.hoisted(() => ({ asked: 0 }));
+const picker = vi.hoisted(() => ({ asked: 0, trusted: true }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => tmpdir(), getVersion: () => '0.0.0' },
   BrowserWindow: class {},
@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/settings', () => ({
   addRecent: async () => undefined,
   renameRecent: async () => undefined,
-  isTrusted: async () => true,
+  isTrusted: async () => picker.trusted,
   trust: async () => undefined,
   loadSettings: async () => ({ settings: { developerMode: false } })
 }));
@@ -132,6 +132,7 @@ afterEach(async () => {
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
   picker.asked = 0;
+  picker.trusted = true;
   Object.assign(env, { ready: true, installs: 0, install: null, builds: 0, takes: 0, take: null, starting: null, release: () => {} });
 });
 
@@ -166,6 +167,7 @@ describe('exporting the website while its tools are set up', () => {
     const asked = await c.exportStatic('folder');
     expect(asked.ok).toBe(false);
     expect(asked.message).toMatch(STILL_SETTING_UP);
+    expect((await c.exportStatic('zip')).message).toMatch(STILL_SETTING_UP);
     expect(picker.asked).toBe(0);
     const first = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(first.ok).toBe(false);
@@ -210,6 +212,22 @@ describe('exporting the website while its tools are set up', () => {
     expect(r.ok).toBe(false);
     expect(r.message).not.toMatch(STILL_SETTING_UP);
     expect(r.message).toMatch(/website tools are not set up.*Reinstall website tools/);
+    expect(env.builds).toBe(0);
+  });
+
+  it('asks for a review of package files changed outside the app before anything sends the author to reinstall', async () => {
+    const c = await opened(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready');
+    // package.json edited elsewhere while the preview runs: the tools no longer match it, and it is no longer what was trusted.
+    env.ready = false;
+    picker.trusted = false;
+    // Said before the folder is chosen, and by the build itself.
+    for (const r of [await c.exportStatic('folder'), await c.buildStaticTo(join(temp('out'), 'site'))]) {
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/build settings changed outside SiteOrigin Builder\. (Close and reopen|Reopen) the project/);
+      expect(r.message).not.toMatch(/Reinstall/);
+    }
+    expect(picker.asked).toBe(0);
     expect(env.builds).toBe(0);
   });
 

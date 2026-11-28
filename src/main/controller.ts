@@ -1852,7 +1852,8 @@ export class Controller {
     const ready = await dependenciesReady(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
-    this.toolsLooked.add(session);
+    // Found set up; tools that are not are looked at once the install below has ended, and until then are being set up.
+    if (ready) this.toolsLooked.add(session);
     if (!ready) {
       if (session.readOnly) {
         this.status({ state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
@@ -1872,6 +1873,7 @@ export class Controller {
         this.broadcast();
         return;
       } finally {
+        if (!abort.signal.aborted) this.toolsLooked.add(session);
         done();
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
@@ -2531,7 +2533,11 @@ export class Controller {
     // health shows it), or has not looked at them yet for this opening, which it is about to; or it found them set up
     // and they have changed since, which only a reinstall puts right.
     const runtime = this.session === s ? this.runtimeStatus() : null;
-    if (runtime?.state === 'error') return runtime.message === TRUST_CHANGED ? TRUST_CHANGED : TOOLS_FAILED;
+    if (runtime?.state === 'error' && runtime.message === TRUST_CHANGED) return TRUST_CHANGED;
+    // The package files are part of what the author trusted: changed outside the app, they are reviewed before any
+    // reinstall removes the tools they replace.
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return TRUST_CHANGED;
+    if (runtime?.state === 'error') return TOOLS_FAILED;
     return this.toolsLooked.has(s) ? TOOLS_MISSING : TOOLS_SETTING_UP;
   }
 

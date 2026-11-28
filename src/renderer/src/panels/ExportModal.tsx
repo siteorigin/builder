@@ -32,6 +32,7 @@ const MANY_NOTES = 2;
 const UNEXPECTED_FAILURE = 'The export could not be completed.';
 /** Why the website card waits while the website tools are set up (#1395), said in the dialog and announced. */
 const TOOLS_NOTE = 'SiteOrigin Builder is still setting up the website tools. The website can be exported once they are ready; the editable project can be exported now.';
+const TOOLS_NOTE_SHORT = 'SiteOrigin Builder is still setting up the website tools. The website can be exported once they are ready.';
 const NOT_STARTED = 'The export didn’t start, because a change isn’t saved yet. Save or discard it, then export again.';
 let reports = 0;
 /** A new export report's id: unique for this editor's lifetime, across every opening of the dialog. */
@@ -863,7 +864,8 @@ export function ExportModal() {
               <div className="scope-note info export-blocker" data-testid="export-blocked-tools">
                 <Info aria-hidden />
                 <span className="export-note-body export-blocker-text" id="export-blocked-tools">
-                  {TOOLS_NOTE}
+                  {/* With something else in the way too, its own note says what else waits. */}
+                  {blocked || draftLinks.length > 0 ? TOOLS_NOTE_SHORT : TOOLS_NOTE}
                 </span>
               </div>
             )}
