@@ -4695,7 +4695,7 @@ export class Controller {
    * the word comes is kept whole, and its capture says so.
    */
   stopReviewCapture(id?: unknown) {
-    if (this.reviewCapture && !this.reviewCapture.signal.aborted && (typeof id === 'string' ? id.slice(0, 64) : '') === this.reviewCaptureId) this.reviewCapture.abort(STOPPED);
+    if (this.reviewCapture && !this.reviewCapture.signal.aborted && typeof id === 'string' && !!id && id.slice(0, 64) === this.reviewCaptureId) this.reviewCapture.abort(STOPPED);
   }
 
   /** The open project's review editions, newest first. */
