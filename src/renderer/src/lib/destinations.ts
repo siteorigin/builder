@@ -35,7 +35,7 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
     return at ? { kind: 'prop', owner: d.owner as OwnerRef, nodeId: d.nodeId, ...at } : null;
   }
   const setting = Object.hasOwn(FORM_SETTINGS, d.code) ? FORM_SETTINGS[d.code] : null;
-  if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'component'].includes(d.owner.kind)) return null;
+  if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'archive', 'component'].includes(d.owner.kind)) return null;
   // A field finding names its row (`${nodeId}|fields|${itemId}`): each finding leads to its own.
   const row = d.site?.startsWith(`${d.nodeId}|fields|`) ? d.site.slice(`${d.nodeId}|fields|`.length) : undefined;
   const dest: EditorDestination = { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting, ...(row ? { itemId: row } : {}) };

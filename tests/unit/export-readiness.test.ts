@@ -72,7 +72,7 @@ describe('the website’s contact forms visitors cannot send', () => {
     expect(websiteFormProblems(drafted)).toEqual([]);
   });
 
-  it('lists a form in the shared footer while a published page or entry shows it', () => {
+  it('lists a form in the shared footer while a published page, entry or collection index shows it', () => {
     const s = fresh();
     const node = place(s, s.site.shell.footer);
     expect(websiteFormProblems(s).map(at)).toEqual([`shell:footer:${node.id}`]);
@@ -80,10 +80,16 @@ describe('the website’s contact forms visitors cannot send', () => {
     for (const id of s.site.pageOrder) s.pages[id].showFooter = false;
     expect(websiteFormProblems(s)).toEqual([]);
     // A draft entry shows nothing to visitors; a published one shows the footer.
-    const drafted = apply(s, [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon' }]);
+    const drafted = apply(s, [
+      { type: 'collection.create', collectionId: 'posts', pages: { detail: true, archive: false } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon' }
+    ]);
     expect(websiteFormProblems(drafted)).toEqual([]);
     const published = apply(drafted, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_soon', draft: false }]);
     expect(websiteFormProblems(published).map(at)).toEqual([`shell:footer:${node.id}`]);
+    // A collection's index shows it from the start, with no entry published (#1348).
+    const indexed = apply(drafted, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: true } }]);
+    expect(websiteFormProblems(indexed).map(at)).toEqual([`shell:footer:${node.id}`]);
   });
 
   it('lists a form in a collection’s layout only while an entry of it is published', () => {

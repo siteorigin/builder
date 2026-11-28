@@ -3,8 +3,9 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { getState, inspectorFocusRequest, setState, toast, type InspectorFocus } from '../store';
 import { openSection } from '../components/ui';
 import { pageShowing } from '@shared/page-shell';
+import { archivePages } from '@shared/archives';
 import { siteEntries } from '@generator/index';
-import { openComponentStudio, openLayout, openPost, openSiteStyles, selectPage, setMode } from './actions';
+import { openComponentStudio, openLayout, openPost, openSiteStyles, selectPage, setMode, showArchiveLayout } from './actions';
 import { formDestinationField } from './destinations';
 import { treeFor } from './model';
 
@@ -76,16 +77,19 @@ export function openEditorDestination(dest: EditorDestination) {
   if (s.mode !== 'edit') setMode('edit');
   if (owner.kind === 'page') selectPage(owner.id, ref);
   else if (owner.kind === 'template') openLayout(owner.id);
-  else if (owner.kind === 'component') {
+  else if (owner.kind === 'archive') {
+    if (!showArchiveLayout(owner.id)) return toast('That form is no longer on the site.', 'info');
+  } else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That form is in a component that can no longer be edited here.', 'info');
   } else {
-    // The page on screen when it shows the shared part, else the first that does; else an entry, whose page shows both.
+    // The page on screen when it shows the shared part, else the first that does; else an entry, whose page shows both;
+    // else a collection's index.
     const pageId = pageShowing(snap.state, owner.id, s.definitionMode?.returnPageId ?? s.pageId);
     const entry = pageId ? undefined : siteEntries(snap.state)[0];
     // Chosen even when it is the page already open, so a collection layout or a component being edited closes.
     if (pageId) selectPage(pageId, ref);
     else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
-    else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
+    else if (!openCollectionShell(snap.state)) return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
   // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
   const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};
@@ -104,6 +108,20 @@ export async function openEntryField(collectionId: string, entryId: string, fiel
 }
 
 /**
+ * Open a collection's page for the shared header and footer, when no page or published entry shows them: the first
+ * collection index the website shows, in its own layout when it has one, else that collection's layout (with no index
+ * shown, the first collection's). False when the project has no collection.
+ */
+function openCollectionShell(state: ProjectState): boolean {
+  const index = archivePages(state)[0]?.collectionId;
+  if (index && showArchiveLayout(index)) return true;
+  const collectionId = index ?? Object.keys(state.collections ?? {}).sort()[0];
+  if (!collectionId) return false;
+  openLayout(collectionId);
+  return true;
+}
+
+/**
  * Select an element where it is: its page, a page showing the shared header or footer, or its collection's layout
  * (on the entry named, else the first). One no longer there is said, and nothing moves.
  */
@@ -116,17 +134,17 @@ function showElement(state: ProjectState, dest: Extract<EditorDestination, { kin
   if (s.mode !== 'edit') setMode('edit');
   if (owner.kind === 'page') selectPage(owner.id, ref);
   else if (owner.kind === 'template') openLayout(owner.id, dest.entryId);
-  else if (owner.kind === 'component') {
+  else if (owner.kind === 'archive') {
+    if (!showArchiveLayout(owner.id)) return toast('That element is no longer on the site.', 'info');
+  } else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That element is in a component that can no longer be edited here.', 'info');
   } else {
-    // A page showing the shared part, else a post's page, else a collection's layout, whose index shows it too.
+    // A page showing the shared part, else a post's page, else a collection's index.
     const pageId = pageShowing(state, owner.id, s.definitionMode?.returnPageId ?? s.pageId);
     const entry = pageId ? undefined : siteEntries(state)[0];
-    const collectionId = pageId || entry ? undefined : Object.keys(state.collections ?? {}).sort()[0];
     if (pageId) selectPage(pageId, ref);
     else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
-    else if (collectionId) openLayout(collectionId);
-    else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
+    else if (!openCollectionShell(state)) return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
   // A named element destination shows its selected row in Layers, including when opened from Insert or a dialog.
   setState({ modal: null, selection: ref, showSelection: getState().showSelection + 1, leftTab: 'layers', rightTab: 'inspect', dockOpen: true, ...(focus ? { inspectorFocus: focus } : {}) });

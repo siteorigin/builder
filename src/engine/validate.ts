@@ -25,7 +25,8 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { archivePages } from '@shared/archives';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
 import { collectionSourceProblems, loopMembers } from './collection-sources';
@@ -732,9 +733,18 @@ export function runtimeFontDiagnostics(state: ProjectState): Diagnostic[] {
     }));
 }
 
-/** Where a form is, for a message: its page's title, or the shared header or footer. */
+/** A collection's layout as Project health names it (templateTrees): "Posts layout", "Posts archive layout". */
+const layoutName = (state: ProjectState, owner: OwnerRef) => `${state.collections[owner.id]?.settings.name ?? owner.id} ${owner.kind === 'archive' ? 'archive layout' : 'layout'}`;
+
+/** Where a form is, for a message: its page's title, the shared header or footer, or a collection's layout. */
 const formPlace = (state: ProjectState, f: FormNameClash['forms'][number]) =>
-  f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'the shared header' : 'the shared footer') : (state.pages[f.owner.id]?.title ?? 'a page');
+  f.owner.kind === 'shell'
+    ? f.owner.id === 'header'
+      ? 'the shared header'
+      : 'the shared footer'
+    : f.owner.kind === 'template' || f.owner.kind === 'archive'
+      ? `the ${layoutName(state, f.owner)}`
+      : (state.pages[f.owner.id]?.title ?? 'a page');
 
 /** What is wrong with forms that send to Netlify under one form name, said once for all of them. */
 export function formNameClashMessage(state: ProjectState, clash: FormNameClash): string {
@@ -757,7 +767,8 @@ export function formNameClashMessage(state: ProjectState, clash: FormNameClash):
 export function formNameDiagnostics(state: ProjectState, parts?: CheckParts): Diagnostic[] {
   return netlifyFormClashes(state, parts).flatMap((clash) => {
     const message = formNameClashMessage(state, clash);
-    const label = (f: FormNameClash['forms'][number]) => (f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'Header' : 'Footer') : formPlace(state, f));
+    const label = (f: FormNameClash['forms'][number]) =>
+      f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'Header' : 'Footer') : f.owner.kind === 'template' || f.owner.kind === 'archive' ? layoutName(state, f.owner) : formPlace(state, f);
     // A form shown more than once (through a slot inside a list) is flagged once where it is.
     const forms = clash.forms.filter((f, i) => clash.forms.findIndex((g) => g.owner.kind === f.owner.kind && g.owner.id === f.owner.id && g.nodeId === f.nodeId) === i);
     return forms.map((f) => ({ severity: 'warning' as const, code: 'FORM_NAME_DUPLICATE', message: `${label(f)}: ${message}`, owner: f.owner, nodeId: f.nodeId }));
@@ -792,17 +803,20 @@ export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, l
 
 /**
  * The trees the website shows, of a published state (publishedState), named as Project health names them: the pages
- * in site order, then the shared header and footer when a page or entry shows them, then the layout of each
- * collection with an entry.
+ * in site order, then the shared header and footer when a page, an entry or an archive page shows them, then the
+ * layout of each collection with an entry and each archive layout an archive page shows (shownArchiveLayouts), which
+ * a collection's index shows before any entry is published.
  */
 export function websiteTrees(live: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
   const entries = siteEntries(live).filter((e) => !isDraftEntry(e.entry));
   const collections = new Set(entries.map((e) => e.collection.settings.id));
+  const archives = new Set(shownArchiveLayouts(live).map((a) => a.collectionId));
+  const archived = archivePages(live).length > 0;
   const pages = live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => live.pages[id]);
   return [
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p, label: p.title })),
-    ...SHELL_PARTS.filter((part) => entries.length > 0 || pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' })),
-    ...templateTrees(live).filter((t) => collections.has(t.owner.id))
+    ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' })),
+    ...templateTrees(live).filter((t) => (t.owner.kind === 'archive' ? archives : collections).has(t.owner.id))
   ];
 }
 
