@@ -70,6 +70,9 @@ describe('checking a sample-default mark', () => {
     expect(sampleDefaultProblem({ type: 'list', sampleDefault: true, feed: 'articles' })).toMatch(/computed list has no items/);
     expect(sampleDefaultProblem({ type: 'list', feed: 'articles', fields: { title: { type: 'string', sampleDefault: true } } })).toMatch(/the field "title" of a computed list/);
     expect(sampleDefaultProblem({ type: 'list', feed: 'articles', fields: { title: { type: 'string' } } })).toBeNull();
+    // Found past an earlier marked field the pages leave alone, which shows its own default on every row and may be marked.
+    expect(sampleDefaultProblem({ type: 'list', feed: 'currentPage', fields: { '': { type: 'string', sampleDefault: true }, readMore: { type: 'string', sampleDefault: true }, excerpt: { type: 'string', sampleDefault: true } } })).toMatch(/the field "excerpt" of a computed list/);
+    expect(sampleDefaultProblem({ type: 'list', feed: 'entries', fields: { readMore: { type: 'string', sampleDefault: true }, title: { type: 'string' } } })).toBeNull();
     // A feed setting means nothing on any other type, so it never stands in the way of a mark there.
     for (const type of ['string', 'richtext', 'table']) expect(sampleDefaultProblem({ type, sampleDefault: true, feed: 'articles' }), type).toBeNull();
     for (const type of ['boolean', 'number', 'image', 'link', 'list', 'table']) expect(sampleDefaultProblem({ type, sampleDefault: true }, true), type).toMatch(/only a text or rich text field/);
@@ -114,6 +117,8 @@ describe('a sample-default mark in an authored property schema', () => {
     expect(normalizePropSchema(posts(), state(), 'posts')).toMatchObject({ feed: 'articles' });
     refuses({ ...posts(), sampleDefault: true }, /computed list has no items/);
     refuses(posts({ sampleDefault: true }), /the field "title" of a computed list/);
+    const withLabel = normalizePropSchema({ ...posts(), fields: { ...posts().fields, readMore: { type: 'string', label: 'Read more', default: 'Keep reading', sampleDefault: true } } }, state(), 'posts') as ListProp;
+    expect(withLabel.fields.readMore).toMatchObject({ default: 'Keep reading', sampleDefault: true });
     refuses({ type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label' }, link: { type: 'link', label: 'Link', sampleDefault: true } } }, /p\.link.*only a text or rich text field/);
     refuses({ type: 'list', label: 'Gallery', fields: { image: { type: 'image', label: 'Image', sampleDefault: true } } }, /p\.image.*only a text or rich text field/);
   });

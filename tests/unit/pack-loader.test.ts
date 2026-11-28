@@ -204,8 +204,12 @@ describe('loading a theme pack release', () => {
     const root = tmp();
     const dir = await release(root, sampled());
     for (const feed of ['articles', 'currentPage'] as const) {
-      editSampled(dir, (props) => (props.posts = computedList(feed)));
-      await expect(loadPackDir(dir, user(root))).resolves.toBeTruthy();
+      // A field the pages leave alone shows its own default on every row, so it may be marked.
+      const list = computedList(feed);
+      (list.fields as Record<string, unknown>).readMore = { type: 'string', label: 'Read more', default: 'Keep reading', sampleDefault: true };
+      editSampled(dir, (props) => (props.posts = list));
+      const { pack } = await loadPackDir(dir, user(root));
+      expect(pack.components.find((c) => c.componentId === 'hero.centered')!.properties.posts).toEqual(list);
     }
   });
 
@@ -448,6 +452,9 @@ describe('loading a theme pack release', () => {
     ['a sample-content mark on a link field of an object (issue #1639)', (d) => editSampled(d, (props) => {
       (props.sampleAction.fields as Record<string, Record<string, unknown>>).link.sampleDefault = true;
     }), /the field "link" of "sampleAction" is marked wrongly: only a text or rich text field/],
+    ['a list whose fields are written as an array, so no field is checked (issue #1639)', (d) => editSampled(d, (props) => {
+      props.samplePlans.fields = [{ type: 'string', label: 'Name', default: 'Plan', sampleDefault: false }];
+    }), /the list property "samplePlans" has no fields or no default items/],
     ['a sample-content mark on a link field of a list (issue #1639)', (d) => editSampled(d, (props) => {
       (props.samplePlans.fields as Record<string, Record<string, unknown>>).link = { type: 'link', label: 'Link', default: { type: 'none', target: '' }, sampleDefault: true };
     }), /the field "link" of "samplePlans" is marked wrongly: only a text or rich text field/],
