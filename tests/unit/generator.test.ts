@@ -1596,7 +1596,8 @@ describe('old addresses kept working (#37)', () => {
     // The inline script the page writes, for a destination as the browser would get it.
     const go = new Function('to', `return ${file.match(/\tconst go = (.*);\n/)![1]};`);
     expect(go('/studio/')).toBe('<script>var u = "/studio/" + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</script>');
-    expect(go('/a</script>')).not.toContain('</script>"');
+    expect(go('/a</b/</script>')).not.toContain('</script>"');
+    expect(go('/a</b/</script>')).not.toContain('</b');
   });
 
   it('#1502: goes from the body, once its link is there, and leaves that link carrying the query and section', () => {
