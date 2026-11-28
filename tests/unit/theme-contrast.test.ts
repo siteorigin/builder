@@ -443,7 +443,11 @@ describe('what ships', () => {
     // The error colour is the author's to choose, so the release offers no change to it.
     expect(PAIRS.filter((p) => p.fg.startsWith('color.error')).every((p) => p.fixable === false)).toBe(true);
     // The development fixture draws the same forms, so it checks the same pairs.
-    for (const id of ['foundation-alt']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
+    expect((getTheme('foundation-alt').contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error'))).toEqual(PAIRS.filter((p) => p.fg.startsWith('color.error')));
+    // And draws them with the same form code.
+    const forms = (id: string) => getTheme(id).components.filter((c) => c.componentId === 'contact.form' || c.componentId === 'block.signup').map((c) => c.source);
+    expect(forms('foundation')).toHaveLength(2);
+    expect(forms('foundation-alt')).toEqual(forms('foundation'));
   });
 
   it('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections (#1016)', () => {

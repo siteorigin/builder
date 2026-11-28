@@ -368,7 +368,9 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   const TONES = ['default', 'inverse'] as const;
   /** The site's colours as the theme's stylesheet sets them, each one distinct so the test can tell which is drawn. */
   const COLORS = `:root { --so-color-text: rgb(17, 17, 17); --so-color-on-inverse: rgb(240, 240, 240); --so-color-surface: rgb(255, 255, 255);
-      --so-color-inverse: rgb(20, 33, 29); --so-color-error: rgb(179, 38, 30); --so-color-error-on-inverse: rgb(255, 138, 128); }`;
+      --so-color-inverse: rgb(20, 33, 29); --so-color-error: rgb(160, 20, 60); --so-color-error-on-inverse: rgb(255, 160, 150); }`;
+  /** The error colour each tone draws in, from `COLORS`. */
+  const ERROR_BY_TONE = [['default', 'rgb(160, 20, 60)'], ['muted', 'rgb(160, 20, 60)'], ['inverse', 'rgb(255, 160, 150)']] as const;
   /** Sent from a script, which has the browser refuse every unanswered field in one attempt; resolves once they show. */
   const refuseAll = async (page: Page) => {
     await page.evaluate(`document.querySelector('form').requestSubmit()`);
@@ -431,7 +433,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   }, 30_000);
 
   it('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
-    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['muted', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+    for (const [tone, ground] of ERROR_BY_TONE)
       await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: FIELDS, variant_tone: tone }, async ({ page }) => {
         await page.addStyleTag({ content: COLORS });
         await refuseAll(page);
@@ -440,25 +442,75 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       });
   }, 30_000);
 
-  it('draws the signup’s one-row field to put right in the error colour of its card (#1310)', async () => {
+  it('draws the signup’s one-row field to put right in the error colour of its card, and a failed send says so in it (#1310)', async () => {
     const signup = await bundleForm('block.signup');
-    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['muted', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+    const edge = ['border-top-color', 'border-top-style', 'box-shadow'];
+    const wrong = (colour: string) => [colour, 'solid', `${colour} 0px 0px 0px 1px inset`];
+    for (const [tone, colour] of ERROR_BY_TONE)
       await withForm(
         { provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [FIELDS[1]], variant_tone: tone },
-        async ({ page }) => {
+        async ({ page, field, nextPost, alert }) => {
           await page.addStyleTag({ content: COLORS });
+          // Nothing is marked before there is something to put right.
+          await expect.poll(async () => (await drawn(page, '.so-form__row', ['border-top-color']))[0], { message: tone }).not.toBe(colour);
           await page.evaluate(`document.querySelector('form').requestSubmit()`);
-          await expect.poll(() => drawn(page, '.so-form__error', ['color']), { message: tone }).toEqual([ground]);
+          await expect.poll(() => drawn(page, '.so-form__error', ['color']), { message: tone }).toEqual([colour]);
           // Wide enough, the row carries the field's edge.
-          await expect.poll(() => drawn(page, '.so-form__row', ['flex-direction', 'border-top-color']), { message: tone }).toEqual(['row', ground]);
+          expect(await drawn(page, '.so-form__row', ['flex-direction']), tone).toEqual(['row']);
+          await expect.poll(() => drawn(page, '.so-form__row', edge), { message: tone }).toEqual(wrong(colour));
           // Narrow, the field and its button stack, and the field carries it.
           await page.setViewportSize({ width: 360, height: 700 });
-          await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: `${tone} stacked` }).toEqual([ground]);
+          await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', edge), { message: `${tone} stacked` }).toEqual(wrong(colour));
           expect(await drawn(page, '.so-form__row', ['flex-direction']), tone).toEqual(['column']);
+          await field('Email').fill('ada@example.com');
+          // The signup's button sits with its field rather than in a row of actions.
+          await page.locator('.so-form__send').click();
+          await (await nextPost()).respond(500);
+          await expect.poll(alert).toBe(FAILED);
+          expect(await drawn(page, '.so-form__status[role="alert"]', ['color']), tone).toEqual([colour]);
         },
         signup
       );
   }, 60_000);
+
+  it.each(['contact.form', 'block.signup'])('keeps the empty boxes of %s’s unanswered questions in the error colour, hovered and held down (#1310)', async (componentId) => {
+    const formScript = await bundleForm(componentId);
+    const agree = { id: 'f5', label: 'I agree to the terms', name: 'agree', type: 'checkbox', required: true, placeholder: '' };
+    for (const [tone, colour] of ERROR_BY_TONE)
+      await withForm(
+        { provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [FIELDS[1], CHOICE, agree], variant_tone: tone },
+        async ({ page }) => {
+          await page.addStyleTag({ content: COLORS });
+          const radio = '.so-form__box--radio';
+          const check = '.so-form__box:not(.so-form__box--radio)';
+          for (const box of [radio, check]) expect((await drawn(page, box, ['border-top-color']))[0], `${tone} ${box} before`).not.toBe(colour);
+          // A box with nothing wrong still answers the pointer.
+          const resting = await drawn(page, radio, ['border-top-color', 'background-color']);
+          await page.locator('.so-form__option').filter({ has: page.locator(radio) }).first().hover();
+          await expect.poll(() => drawn(page, radio, ['border-top-color', 'background-color']), { message: `${tone} valid hover` }).not.toEqual(resting);
+          await page.mouse.move(0, 0);
+          await page.evaluate(`document.querySelector('form').requestSubmit()`);
+          for (const box of [radio, check]) {
+            const edge = ['border-top-color', 'box-shadow'];
+            const wrong = [colour, `${colour} 0px 0px 0px 1px inset`];
+            await page.mouse.move(0, 0);
+            await expect.poll(() => drawn(page, box, edge), { message: `${tone} ${box}` }).toEqual(wrong);
+            const fill = await drawn(page, box, ['background-color']);
+            await page.locator('.so-form__option').filter({ has: page.locator(box) }).first().hover();
+            await settle(page);
+            expect(await drawn(page, box, edge), `${tone} ${box} hovered`).toEqual(wrong);
+            expect(await drawn(page, box, ['background-color']), `${tone} ${box} hovered fill`).toEqual(fill);
+            await page.mouse.down();
+            await settle(page);
+            expect(await drawn(page, box, edge), `${tone} ${box} held down`).toEqual(wrong);
+            // Let go away from the box, so nothing is chosen.
+            await page.mouse.move(0, 0);
+            await page.mouse.up();
+          }
+        },
+        formScript
+      );
+  }, 90_000);
 
   it('refuses to send two answers under one key, and says why (issue #198)', async () => {
     // The stock form with "EMAIL" typed into Phone's field name, as in the issue.
