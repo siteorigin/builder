@@ -103,6 +103,7 @@ describe('reading how a section uses a property', () => {
     expect(problems('{#if heading}<p>{heading}</p>{/if}')).toEqual([expect.stringMatching(/IfBlock/)]);
     expect(problems('<p>{heading.trim()}</p>')).toEqual([expect.stringMatching(/MemberExpression/)]);
     expect(problems('{#each [1, 2] as n}<p>{heading}</p>{/each}')).toEqual([expect.stringMatching(/inside EachBlock/)]);
+    expect(problems('{#await Promise.resolve(1) then n}<p>{heading}</p>{/await}')).toEqual([expect.stringMatching(/inside AwaitBlock/)]);
     expect(problems('{@html heading}')).toEqual([expect.stringMatching(/HtmlTag/)]);
     expect(problems('<p style:heading>{heading}</p>')).toEqual([expect.stringMatching(/StyleDirective/)]);
   });
@@ -110,6 +111,7 @@ describe('reading how a section uses a property', () => {
   it('refuses words in an element that acts, or that something may name by its ID', () => {
     expect(problems('<div role="button" tabindex="0"><span>{heading}</span></div>')).toEqual([expect.stringMatching(/inside <div>, which has role/)]);
     expect(problems('<div onclick={() => {}}><p>{heading}</p></div>')).toEqual([expect.stringMatching(/which has onclick/)]);
+    expect(problems('<div on:click={() => {}}><p>{heading}</p></div>')).toEqual([expect.stringMatching(/which handles events/)]);
     expect(problems('<h2 id="title">{heading}</h2><form aria-labelledby="title"></form>')).toEqual([expect.stringMatching(/inside <h2>, which has an ID/)]);
     expect(problems('<div {...{ role: "link" }}><p>{heading}</p></div>')).toEqual([expect.stringMatching(/spreads/)]);
   });
@@ -117,6 +119,8 @@ describe('reading how a section uses a property', () => {
   it('refuses a heading whose tag is anything but a property choosing headings and paragraphs', () => {
     const level = { ...properties, headingLevel: { ...(properties.headingLevel as Extract<PropSchema, { type: 'enum' }>), options: [{ value: 'h2', label: 'H2' }, { value: 'a', label: 'Link' }] } };
     expect(copyUses(sample('<svelte:element this={headingLevel}>{heading}</svelte:element>'), 'heading', level).problems).toEqual([expect.stringMatching(/words of SvelteElement/)]);
+    // A choice of headings the component is never given.
+    expect(copyUses(sample('<svelte:element this={level}>{heading}</svelte:element>'), 'heading', { ...properties, level: properties.headingLevel }).problems).toEqual([expect.stringMatching(/words of SvelteElement/)]);
     // A tag of the script's own, or the markup's.
     expect(problems('<svelte:element this={tag}>{heading}</svelte:element>', 'heading', "const tag = 'a';")).toEqual([expect.stringMatching(/words of SvelteElement/)]);
     expect(problems("{#if true}{@const tag = 'a'}<svelte:element this={tag}>{heading}</svelte:element>{/if}")).toEqual([expect.stringMatching(/words of SvelteElement/)]);
@@ -131,19 +135,28 @@ describe('reading how a section uses a property', () => {
     expect(problems('<SoImage {image} decorative />', 'image')).toEqual([expect.stringMatching(/given “decorative”/)]);
   });
 
-  it('reads a presence test only in the markup or a $derived, where nothing runs again when the words change', () => {
-    expect(problems('<p>{heading}</p>', 'heading', '$effect(() => { if (has(heading)) console.log(1); });')).toEqual([expect.stringMatching(/outside \$derived/)]);
-    expect(problems('<p>{heading}</p>', 'heading', 'function report() { return has(heading); }\n$effect(report);')).toEqual([expect.stringMatching(/outside \$derived/)]);
-    expect(problems('<p>{heading}</p>', 'heading', '$inspect(has(heading));')).toEqual([expect.stringMatching(/outside \$derived/)]);
-    expect(problems('<p>{heading}</p>', 'heading', 'const shown = $derived.by(() => has(heading));')).toEqual([]);
+  it('reads a presence test only where nothing but true or false runs again when the words change', () => {
+    const again = [expect.stringMatching(/more than the test may run again/)];
+    expect(problems('<p>{heading}</p>', 'heading', 'const shown = $derived(!has(heading) || (has(heading) ? true : false));')).toEqual([]);
+    expect(problems('<p>{heading}</p>', 'heading', '$effect(() => { if (has(heading)) console.log(1); });')).toEqual(again);
+    expect(problems('<p>{heading}</p>', 'heading', 'function report() { return has(heading); }\n$effect(report);')).toEqual(again);
+    expect(problems('<p>{heading}</p>', 'heading', '$inspect(has(heading));')).toEqual(again);
+    expect(problems('<p>{heading}</p>', 'heading', "const shown = $derived.by(() => { console.log('read'); return has(heading); });")).toEqual(again);
+    expect(problems('<p>{heading}</p>', 'heading', '$effect(() => { const shown = $derived(has(heading)); void shown; });')).toEqual(again);
+    expect(problems('<p>{heading}</p>', 'heading', 'const shown = $derived(String(has(heading)));')).toEqual(again);
+    expect(problems('<p>{heading}</p>{report(has(heading))}', 'heading', 'const report = (v) => v;')).toEqual(again);
   });
 
   it('takes only the runtime’s own helpers, never a name bound again or imported from elsewhere', () => {
     // `has` bound again, by a parameter or a `let:`, or imported from another module.
     expect(problems('<p>{heading}</p>', 'heading', 'const check = (has) => has(heading);')).toContainEqual(expect.stringMatching(/bound again/));
     expect(problems('<p>{heading}</p><Pass let:has>{#if has(heading)}<span></span>{/if}</Pass>', 'heading', '', "\timport Pass from './Pass.svelte';")).toContainEqual(expect.stringMatching(/bound again/));
+    expect(problems('<p>{heading}</p><Pass let:check={has}>{#if has(heading)}<span></span>{/if}</Pass>', 'heading', '', "\timport Pass from './Pass.svelte';")).toContainEqual(expect.stringMatching(/bound again/));
+    expect(problems("<p>{heading}</p>{#await Promise.resolve({ check: (s) => s === 'Hi' }) then { check: has }}{#if has(heading)}<span></span>{/if}{/await}")).toContainEqual(expect.stringMatching(/bound again/));
     const elsewhere = copyUses(sample('{#if has(heading)}<p>{heading}</p>{/if}').replace("'../runtime/util.js'", "'./runtime/util.js'"), 'heading', properties);
     expect(elsewhere.problems).toEqual([expect.stringMatching(/CallExpression/)]);
+    const rich = copyUses(sample('<SoRichText value={body} />').replace("'../runtime/RichText.svelte'", "'./runtime/RichText.svelte'"), 'body', properties);
+    expect(rich.problems).toEqual([expect.stringMatching(/value attribute of <SoRichText>/)]);
     // SoImage bound again inside the markup.
     expect(problems('{#if true}{@const SoImage = Other}<SoImage {image} />{/if}', 'image', '', "\timport Other from './Other.svelte';")).toContainEqual(expect.stringMatching(/bound again/));
     // The property itself bound again.

@@ -5,8 +5,9 @@
  * starts using a property some other way fails the check until someone looks.
  *
  * A property is copy when every reference to it is one of:
- * - `has(prop)`, the site's runtime test of whether it shows, which a Copy Editor's edit never changes: in the markup,
- *   or in the script inside `$derived`, never where an effect or anything else could run again when it is reworded;
+ * - `has(prop)`, the site's runtime test of whether it shows, which a Copy Editor's edit never changes: read only
+ *   through operators on true and false into an `{#if}`, a markup expression or a top-level `$derived(…)`, never where
+ *   a function, an effect or another call could run again when it is reworded;
  * - `{prop}`, the words of a text element (or of a `<svelte:element>` whose tag is a property choosing only headings
  *   and paragraphs);
  * - the picture of the runtime's `<SoImage image={prop}>`, or the rich text of its `<SoRichText value={prop}>`, given
@@ -115,15 +116,16 @@ export function copyUses(source: string, prop: string, properties: Record<string
     const n = value as AstNode;
     if (typeof n.type !== 'string') return;
     if (n.type === 'VariableDeclarator' && !propsDeclarators.has(n)) boundBy(n.id).forEach((x) => rebound.add(x));
-    if (/Function/.test(n.type)) {
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
       boundBy(n.id).forEach((x) => rebound.add(x));
-      (n.params as unknown[]).flatMap(boundBy).forEach((x) => rebound.add(x));
+      ((n.params as unknown[] | undefined) ?? []).flatMap(boundBy).forEach((x) => rebound.add(x));
     }
     if (n.type === 'CatchClause') boundBy(n.param).forEach((x) => rebound.add(x));
     if (n.type === 'EachBlock') boundBy(n.context).forEach((x) => rebound.add(x));
     if (n.type === 'EachBlock' && typeof n.index === 'string') rebound.add(n.index);
     if (n.type === 'SnippetBlock') (n.parameters as unknown[]).flatMap(boundBy).forEach((x) => rebound.add(x));
-    if (n.type === 'LetDirective') rebound.add(String(n.name));
+    if (n.type === 'LetDirective') [String(n.name), ...boundBy(n.expression)].forEach((x) => rebound.add(x));
+    if (n.type === 'AwaitBlock') [...boundBy(n.value), ...boundBy(n.error)].forEach((x) => rebound.add(x));
     if (n.type === 'ClassDeclaration') boundBy(n.id).forEach((x) => rebound.add(x));
     for (const [k, v] of Object.entries(n)) if (!SKIP.has(k)) collect(v);
   };
@@ -168,22 +170,27 @@ export function copyUses(source: string, prop: string, properties: Record<string
     const schema = Object.hasOwn(properties, name) ? properties[name] : undefined;
     return schema?.type === 'enum' && schema.options.length > 0 && schema.options.every((o) => /^(h[1-6]|p|span|div)$/.test(o.value));
   };
-  /** Whether a presence test can be read again without anything running again: the markup, or a `$derived`. */
+  /**
+   * Whether a presence test (`chain` ends at the `has()` call) is read again with nothing running again: only through
+   * operators on true and false, into an `{#if}`, a markup expression, or a `$derived(…)` the script declares at its
+   * top. Anything else (a function, an effect, another call) could do more each time the words change.
+   */
+  const PURE = new Set(['LogicalExpression', 'UnaryExpression', 'ConditionalExpression', 'BinaryExpression']);
   const settled = (chain: AstNode[]): boolean => {
-    if (chain.includes(root.fragment)) return true;
-    return chain.some((a) => {
-      if (a.type !== 'CallExpression') return false;
-      const callee = a.callee as AstNode;
-      if (callee.type === 'Identifier') return callee.name === '$derived';
-      return callee.type === 'MemberExpression' && (callee.object as AstNode).name === '$derived' && (callee.property as AstNode).name === 'by';
-    });
+    let i = chain.length - 1;
+    while (i > 0 && PURE.has(chain[i - 1].type)) i--;
+    const into = chain[i - 1];
+    if (into?.type === 'IfBlock' && into.test === chain[i]) return true;
+    if (into?.type === 'ExpressionTag' && chain.includes(root.fragment)) return true;
+    const derived = into?.type === 'CallExpression' && (into.callee as AstNode).type === 'Identifier' && (into.callee as AstNode).name === '$derived';
+    return derived && chain[i - 2]?.type === 'VariableDeclarator' && chain[i - 3]?.type === 'VariableDeclaration' && chain[i - 4] === root.instance?.content;
   };
 
   const reference = (n: AstNode, chain: AstNode[]) => {
     const parent = chain.at(-1)!;
     const args = parent.arguments as AstNode[] | undefined;
     if (parent.type === 'CallExpression' && local.has && (parent.callee as AstNode).type === 'Identifier' && (parent.callee as AstNode).name === local.has && args?.length === 1 && args[0] === n) {
-      if (!settled(chain)) return void problems.push(`“${prop}” at line ${lineOf(n)} is tested in the script outside $derived.`);
+      if (!settled(chain)) return void problems.push(`“${prop}” at line ${lineOf(n)} is tested for being set where more than the test may run again.`);
       return void uses.push('presence');
     }
     if (parent.type === 'ExpressionTag' && parent.expression === n) {
