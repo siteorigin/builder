@@ -404,9 +404,9 @@ describe('a deleted conversation’s workspace state (#235)', () => {
     expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatSiteGrants: { c_gone: true }, chatConversation: 'c_gone' });
     // Put back beside whatever changed meanwhile, which stays: another thread's draft, and another one opened.
     const again = c.forgetConversation('c_gone', key);
-    c.saveLocalState({ chatDrafts: { c_new: 'Newer draft' }, chatImages: { c_new: ['a_9'] }, chatConversation: 'c_new' }, key);
+    c.saveLocalState({ chatDrafts: { c_new: 'Newer draft' }, chatImages: { c_new: ['a_9'] }, chatSiteGrants: { c_new: true }, chatConversation: 'c_new' }, key);
     again();
-    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_new: 'Newer draft', c_gone: 'Ask about the contact form' }, chatImages: { c_new: ['a_9'], c_gone: ['a_1'] }, chatConversation: 'c_new' });
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_new: 'Newer draft', c_gone: 'Ask about the contact form' }, chatImages: { c_new: ['a_9'], c_gone: ['a_1'] }, chatSiteGrants: { c_new: true, c_gone: true }, chatConversation: 'c_new' });
     // Only the remembered place, or only images: each goes on its own.
     c.saveLocalState({ chatDrafts: {}, chatImages: {}, chatConversation: 'c_pointer' }, key);
     c.forgetConversation('c_pointer', key);

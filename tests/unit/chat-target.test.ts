@@ -307,6 +307,11 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     const onPage = chatContextFor(state, nothing, { enabled, viewport: 1280 });
     expect(withGrant(onPage, true)).toEqual({ ...onPage, scope: 'site' });
     expect(withGrant(onPage, false)).toBe(onPage);
+    // Only a page request is widened: one sent unscoped, or already on the whole site, goes on as it was.
+    const { scope: _none, ...unscoped } = onPage;
+    expect(withGrant(unscoped, true)).toBe(unscoped);
+    const whole = { ...onPage, scope: 'site' as const };
+    expect(withGrant(whole, true)).toBe(whole);
     // Anything narrower than the page, or a question, goes on as it was.
     const sel: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
     const picked = chatContextFor(state, composerScope(state, { pageId: home, selection: sel, definitionMode: null }), { enabled, viewport: 1280 });

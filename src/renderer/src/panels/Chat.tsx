@@ -360,7 +360,7 @@ const FOLLOW_PX = 48;
 interface TurnActions {
   undoTurn: (runId: string) => unknown;
   reviewTurn: (entryId: string) => void;
-  continueRequest: (user: ChatMessage | undefined) => void;
+  continueRequest: (user: ChatMessage | undefined, turn?: ChatMessage) => void;
   retryRequest: (user: ChatMessage | undefined) => void;
   msgs: ChatMessage[];
 }
@@ -462,7 +462,7 @@ export function Chat() {
   const turnActions = useRef<TurnActions | null>(null);
   const onUndoTurn = useCallback((runId: string) => void turnActions.current?.undoTurn(runId), []);
   const onReviewTurn = useCallback((entryId: string) => turnActions.current?.reviewTurn(entryId), []);
-  const onContinueTurn = useCallback((id: string) => turnActions.current?.continueRequest(requestBefore(turnActions.current.msgs, id)), []);
+  const onContinueTurn = useCallback((id: string) => turnActions.current?.continueRequest(requestBefore(turnActions.current.msgs, id), turnActions.current.msgs.find((m) => m.id === id)), []);
   const onRetryTurn = useCallback((id: string) => turnActions.current?.retryRequest(requestBefore(turnActions.current.msgs, id)), []);
   // Scrolled back far enough that the latest turn is out of sight: offer the way back.
   const [away, setAway] = useState(false);
@@ -745,6 +745,15 @@ export function Chat() {
   const starterWidened = useRef(new Map<string, ChatEditScope>());
   /** Counts each conversation's narrowings to This page, so an answer sent before one never undoes it (#1412). */
   const narrowings = useRef(new Map<string, number>());
+  /**
+   * This page as the scope menu last chose it (#1412): the setting it made, the conversation it was chosen in, and when
+   * (`order`, shared with `grantedAt`). A conversation that allowed the whole site is held to it only where it was
+   * chosen, and only until a later Yes there. A page scope set any other way (Write page with AI, Edit and try again)
+   * is never this one, so it always holds.
+   */
+  const pagePick = useRef<{ setting: object; conversationId: string; order: number } | null>(null);
+  const grantedAt = useRef(new Map<string, number>());
+  const order = useRef(0);
   const widenedHere = useRef<string | null>(null);
   const widenedTo = useRef<object | null>(null);
   const setScope = (to: ChatEditScope) => setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: to } });
@@ -752,13 +761,6 @@ export function Chat() {
     setScope('site');
     widenedTo.current = getState().chatContextEnabled;
   };
-  /** A conversation that allowed the whole site, shown again, is not held to This page chosen in another one. */
-  useEffect(() => {
-    const id = conversation?.id;
-    const s = getState();
-    if (id && Object.hasOwn(s.chatSiteGrants, id) && s.chatContextEnabled.scope === 'page') setScope('selection');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversation?.id]);
   /** Put the scope back from a widening, unless something else has set it since. */
   const unwiden = (to: ChatEditScope) => {
     if (getState().chatContextEnabled === widenedTo.current && getState().chatContextEnabled.scope === 'site') setScope(to);
@@ -830,7 +832,10 @@ export function Chat() {
   const sel = selLabel?.toLowerCase();
   // A conversation that allowed the whole site starts its next edit there (#1412); a question changes nothing.
   const granted = !askMode && !!conversation && Object.hasOwn(siteGrants, conversation.id);
-  const grantScope = grantedScope(scope, ctxChosen.scope, granted);
+  // This page chosen from the menu in another conversation, or here before the Yes, gives way to the grant.
+  const pick = pagePick.current;
+  const pickYields = granted && !!conversation && !!pick && pick.setting === ctxChosen && ctxChosen.scope === 'page' && (pick.conversationId !== conversation.id || (grantedAt.current.get(conversation.id) ?? -1) > pick.order);
+  const grantScope = grantedScope(scope, pickYields ? 'selection' : ctxChosen.scope, granted);
   const ctxOn = grantScope === ctxChosen.scope ? ctxChosen : { ...ctxChosen, scope: grantScope };
   /** How far the next message goes, as the composer sends it: the selection only while something is selected. */
   const chosen = editScope(scope, ctxOn.scope);
@@ -994,7 +999,9 @@ export function Chat() {
           const narrows = o.value === 'page' && !!conversation;
           if (narrows) narrowings.current.set(conversation.id, (narrowings.current.get(conversation.id) ?? 0) + 1);
           const narrowed = narrows ? withoutKey(grants, conversation.id) : grants;
-          setState({ chatContextEnabled: { ...ctxChosen, scope: o.value }, ...(narrowed !== grants ? { chatSiteGrants: narrowed } : {}) });
+          const setting = { ...ctxChosen, scope: o.value };
+          pagePick.current = narrows ? { setting, conversationId: conversation.id, order: ++order.current } : null;
+          setState({ chatContextEnabled: setting, ...(narrowed !== grants ? { chatSiteGrants: narrowed } : {}) });
           focusComposer();
         } }))
       ],
@@ -1164,10 +1171,9 @@ export function Chat() {
         : null;
     const ok = await api.ai.answer(q.runId, q.question.id, typeof value === 'string' ? value.trim() : { assetId: value.assetId }).catch(() => false);
     if (ok && grant && grant.at === (narrowings.current.get(grant.conversationId) ?? 0) && getState().snapshot?.workspaceKey === grant.workspaceKey) {
-      const s = getState();
-      // The newer answer wins over This page chosen before it in the conversation shown.
-      const repick = s.conversation?.id === grant.conversationId && s.chatContextEnabled.scope === 'page';
-      setState({ chatSiteGrants: { ...s.chatSiteGrants, [grant.conversationId]: true }, ...(repick ? { chatContextEnabled: { ...s.chatContextEnabled, scope: 'selection' as const } } : {}) });
+      // Later than This page chosen before it in the same conversation, so that choice gives way (see pagePick).
+      grantedAt.current.set(grant.conversationId, ++order.current);
+      setState({ chatSiteGrants: { ...getState().chatSiteGrants, [grant.conversationId]: true } });
     }
     if (!ok) {
       if (answering.current === key) {
@@ -1300,7 +1306,7 @@ export function Chat() {
   }, [handed, conversation, running, sending, configured, notice, msgs.length, next?.id, snap.workspaceKey]);
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
-  const continueRequest = (user: ChatMessage | undefined) => {
+  const continueRequest = (user: ChatMessage | undefined, turn?: ChatMessage) => {
     const c = continueContext(user, st, viewport);
     if ('error' in c) {
       // The user picks the target in the editor and sends "Continue" from the composer, never over a draft.
@@ -1314,8 +1320,10 @@ export function Chat() {
       focusComposer();
       return;
     }
-    // Carried on in a conversation that has since allowed the whole site, a page request goes on from it (#1412).
-    void send('Continue', withGrant(c.ctx, !!conversation && Object.hasOwn(getState().chatSiteGrants, conversation.id)));
+    // A page request that was allowed the whole site part way through goes on from it, while its conversation still
+    // allows it (#1412); one kept to its page goes on as it was.
+    const widenedTurn = !!turn && !turn.guest && turnQuestions(turn).some((q) => grantsWider(q, q?.answered));
+    void send('Continue', withGrant(c.ctx, widenedTurn && !!conversation && Object.hasOwn(getState().chatSiteGrants, conversation.id)));
   };
 
   /** Send a request that failed on the AI setup again, as it was: same words, page, selection and images. */

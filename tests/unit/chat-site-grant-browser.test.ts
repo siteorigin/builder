@@ -36,7 +36,7 @@ const ENTRY = [
   '  window.bridge.providers = [provider];',
   '  flushSync(() => useStore.setState({',
   "    screen: 'editor', snapshot: { workspaceKey: 'w', dir: '/project', state, revision: 1, history: { canUndo: false, canRedo: false, entries: [] } }, pageId: state.site.homePageId, selection: null,",
-  "    settings, providers: [provider], conversation: asking('c_1', opts), runStatus: 'awaiting-input', activeRunId: 'run_c_1', runConversationId: 'c_1', runMode: 'edit',",
+  "    settings, providers: [provider], conversation: asking('c_1', opts), runStatus: opts.idle ? 'running' : 'awaiting-input', activeRunId: 'run_c_1', runConversationId: 'c_1', runMode: 'edit',",
   "    chatMode: 'edit', dockOpen: true, rightTab: 'chat', chatContextEnabled: { page: true, scope: opts.scope ?? 'selection' }",
   '  }));',
   "  flushSync(() => createRoot(document.getElementById('root')).render(h(Chat)));",
@@ -50,6 +50,7 @@ const ENTRY = [
   // The question settles in the transcript (the run's own update) before the answer's reply comes back.
   "  settle: () => { const c = useStore.getState().conversation; flushSync(() => useStore.setState({ runStatus: 'running', conversation: { ...c, messages: c.messages.map((m) => m.role === 'assistant' ? { ...m, questions: m.questions.map((q) => ({ ...q, answered: q.choices[0] })) } : m) } })); },",
   "  scope: () => useStore.getState().chatContextEnabled.scope,",
+  "  ask: () => flushSync(() => useStore.setState({ runStatus: 'awaiting-input' })),",
   "  toasts: () => useStore.getState().toasts.map((t) => t.text)",
   '};'
 ].join('\n');
@@ -113,7 +114,7 @@ describe.skipIf(!browserInstalled)('a whole site allowed for the rest of the con
     await browser?.close();
   }, 60_000);
 
-  const mount = async (opts: { guest?: boolean; plain?: boolean; scope?: 'page' } = {}) => {
+  const mount = async (opts: { guest?: boolean; plain?: boolean; scope?: 'page'; idle?: boolean } = {}) => {
     context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
     context.setDefaultTimeout(5_000);
     page = await context.newPage();
@@ -210,12 +211,23 @@ describe.skipIf(!browserInstalled)('a whole site allowed for the rest of the con
     expect(await page.evaluate('so.scope()')).toBe('page');
   });
 
-  it('lets a Yes win over This page chosen before it', async () => {
-    await mount({ scope: 'page' });
+  it('lets a Yes win over This page chosen before it, but not over a page scope a handoff set', async () => {
+    // This page chosen from the menu while the run works, then the run asks and the author allows the whole site.
+    await mount({ idle: true });
+    await narrowToPage();
+    await page.evaluate('so.ask()');
     await answerWith('click yes');
     await page.evaluate('so.finish()');
     await expect.poll(async () => chip().getAttribute('aria-label')).toMatch(/^What the AI may change: Whole site/);
     expect(await sendNext('Add a page about prices')).toBe('site');
+    await context.close();
+    // Write page with AI (or Edit and try again) sets the page scope itself: that request keeps to the page.
+    await mount({ scope: 'page' });
+    await answerWith('click yes');
+    await page.evaluate('so.finish()');
+    expect(await page.evaluate('so.grants()')).toEqual({ c_1: true });
+    await expect.poll(async () => chip().getAttribute('aria-label')).toMatch(/^What the AI may change: Home/);
+    expect(await sendNext('Write the page')).toBe('page');
   });
 
   it('grants nothing for an answer that never reached the AI, or a yes to a question that is not about scope', async () => {

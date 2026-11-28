@@ -100,6 +100,8 @@ describe('saving the composer state', () => {
     const grants = { c_a: true as const };
     expect(chatStatePatch({ ...before, grants: {} }, { ...before, grants })).toEqual({ key: '/a#1', patch: { chatSiteGrants: grants } });
     expect(chatStatePatch({ ...before, grants }, { ...before, grants })).toBeNull();
+    // Narrowing the last one saves that none is left.
+    expect(chatStatePatch({ ...before, grants }, { ...before, grants: {} })).toEqual({ key: '/a#1', patch: { chatSiteGrants: {} } });
     // Leaving the project writes none into it.
     expect(chatStatePatch({ ...before, grants }, { ...st(null, {}, null), grants: {} })).toBeNull();
     expect(cleanGrants({ c_a: true, c_b: 'yes', 'not-an-id': true, c_c: false })).toEqual({ c_a: true });
