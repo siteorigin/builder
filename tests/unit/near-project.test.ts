@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { NOT_A_PROJECT, WEBSITE_FOLDER, notAProject } from '../../src/main/near-project';
+import { FOLDER_DENIED, NOT_A_PROJECT, WEBSITE_FOLDER, notAProject } from '../../src/main/near-project';
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -45,6 +45,12 @@ describe('notAProject', () => {
     expect((await notAProject(page)).nearby).toEqual({ dir: p, name: 'Cafe' });
   });
 
+  it('takes a file picked beside the manifest for the project it is in', async () => {
+    const p = project(join(tmp(), 'cafe'), { name: 'Cafe' });
+    writeFileSync(join(p, 'package.json'), '{}');
+    expect(await notAProject(join(p, 'package.json'))).toEqual({ message: `That file is part of the project “Cafe”, in ${p}.`, nearby: { dir: p, name: 'Cafe' } });
+  });
+
   it('names a project by its folder when its manifest has no name or cannot be read', async () => {
     const holder = tmp();
     const p = project(join(holder, 'half-a-site'), '{"name": "Half');
@@ -77,6 +83,22 @@ describe('notAProject', () => {
     expect(await notAProject(site)).toEqual({ message: WEBSITE_FOLDER });
     expect(WEBSITE_FOLDER).toMatch(/exported website/);
     expect(WEBSITE_FOLDER).toMatch(/project it was exported from/);
+    // Kept inside its project, the website names the project it came from.
+    const p = project(join(tmp(), 'cafe'), { name: 'Cafe' });
+    const kept = join(p, 'exports', 'website');
+    mkdirSync(join(kept, '_app'), { recursive: true });
+    writeFileSync(join(kept, 'index.html'), '');
+    expect(await notAProject(kept)).toEqual({ message: `That folder holds a website exported from the project “Cafe”, which is edited from its own folder, ${p}.`, nearby: { dir: p, name: 'Cafe' } });
+  });
+
+  it('offers no project from a folder too large to look through whole', async () => {
+    const holder = tmp();
+    project(join(holder, 'aaa-project'), { name: 'Atelier' });
+    for (let i = 0; i < 520; i++) writeFileSync(join(holder, `note-${i}.txt`), '');
+    const r = await notAProject(holder);
+    // Wherever the folder lists it, the one project seen is never offered as the only one.
+    expect(r.nearby).toBeUndefined();
+    expect([NOT_A_PROJECT, 'That folder holds projects, among them “Atelier”. Choose the folder of the one to open.']).toContain(r.message);
   });
 
   it('says plainly that an unrelated or unreadable folder is not a project, without the manifest file name', async () => {
@@ -91,9 +113,19 @@ describe('notAProject', () => {
       project(join(locked, 'inside'));
       chmodSync(locked, 0o000);
       try {
-        expect(await notAProject(locked)).toEqual({ message: NOT_A_PROJECT });
+        expect(await notAProject(locked)).toEqual({ message: FOLDER_DENIED });
       } finally {
         chmodSync(locked, 0o755);
+      }
+      // A project one level down whose manifest cannot be read leaves the one that can be read unoffered.
+      const holder = tmp();
+      project(join(holder, 'cafe'), { name: 'Cafe' });
+      const hidden = project(join(holder, 'deli'), { name: 'Deli' });
+      chmodSync(join(hidden, 'siteorigin.project.json'), 0o000);
+      try {
+        expect(await notAProject(holder)).toEqual({ message: 'That folder holds projects, among them “Cafe”. Choose the folder of the one to open.' });
+      } finally {
+        chmodSync(join(hidden, 'siteorigin.project.json'), 0o644);
       }
     }
   });

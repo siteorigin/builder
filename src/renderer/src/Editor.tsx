@@ -502,8 +502,10 @@ export function Editor() {
           else if (!r.ok) {
             // Leaving was agreed but the switch did not happen: this project takes input again.
             endEditingHold();
-            // A folder beside a project offers that project (#1433).
-            if (r.message) toast(r.message, 'error', nearbyOffer(r.nearby, (d) => openProject(d)));
+            // A folder beside a project offers that project (#1433), while this one is open and no live session has
+            // taken its place: a project of the author's own opens only once they have left it, as Open project does.
+            const offer = nearbyOffer(r.nearby, (d) => (showsRemote() ? toast('Leave the live session first: a project of your own opens once you have left.', 'info') : openProject(d)), getState().snapshot?.workspaceKey);
+            if (r.message) toast(r.message, 'error', offer);
           }
         },
         (e: unknown) => {
