@@ -59,7 +59,7 @@ async function open(path: string, serve: Array<{ status: number; body: string }>
   };
 }
 /** Two frames of the page drawn: whatever the bridge queued for the next frame has been sent. */
-const drawn = (frame: Frame) => frame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const drawn = (frame: Frame) => frame.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
 
 describe.skipIf(!browserInstalled)('a code component that threw while the page rendered', () => {
   beforeAll(async () => {
@@ -73,7 +73,7 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
     const o = await open('/frame', [{ status: 500, body: BROKEN }]);
     await expect.poll(async () => (await o.messages()).map((m) => m.type).filter((t) => t === 'ready' || t === 'runtimeError'), { timeout: 10000 }).toEqual(['ready', 'runtimeError']);
     expect(await o.errors()).toEqual([{ message: "Cannot read properties of undefined (reading 'nested')", file: 'src/lib/siteorigin/custom/Broken.svelte', revision: 0 }]);
-    expect(await o.frame().evaluate(() => (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming).responseStatus)).toBe(500);
+    expect(await o.frame().evaluate(`performance.getEntriesByType('navigation')[0].responseStatus`)).toBe(500);
     await o.page.waitForTimeout(400);
     expect(o.loads()).toBe(1);
     await o.page.close();
@@ -93,7 +93,7 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
     const frame = o.frame();
     await o.page.evaluate(`window.seen = []`);
     const later = (node: string, message: string, file: string) =>
-      frame.evaluate(([html]) => document.querySelector('[data-so-node="footer"]')!.insertAdjacentHTML('beforebegin', html), [`<div style="display: contents" data-so-ctx="page:p" data-so-node="${node}" data-so-code="true">${note(message, file)}</div>`]);
+      frame.evaluate(`document.querySelector('[data-so-node="footer"]').insertAdjacentHTML('beforebegin', ${JSON.stringify(`<div style="display: contents" data-so-ctx="page:p" data-so-node="${node}" data-so-code="true">${note(message, file)}</div>`)})`);
     // The same file with another message, and the same message from another file, are each a problem of their own.
     await later('a', 'later is not defined', 'src/lib/siteorigin/custom/Later.svelte');
     await later('b', 'another message', 'src/lib/siteorigin/custom/Later.svelte');
@@ -104,16 +104,13 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
       'src/lib/siteorigin/custom/Other.svelte later is not defined'
     ]);
     // Other changes to the page say nothing more of notes already reported.
-    await frame.evaluate(() => (document.querySelector('h1')!.textContent = 'Hero again'));
+    await frame.evaluate(`document.querySelector('h1').textContent = 'Hero again'`);
     await drawn(frame);
     await drawn(frame);
     expect(await o.errors()).toHaveLength(3);
     // Another page (a link followed in place): all four notes are its problems, said after the editor hears of it.
     await o.page.evaluate(`window.seen = []`);
-    await frame.evaluate(() => {
-      history.pushState(null, '', '/other');
-      dispatchEvent(new CustomEvent('siteorigin:navigated'));
-    });
+    await frame.evaluate(`history.pushState(null, '', '/other'); dispatchEvent(new CustomEvent('siteorigin:navigated'))`);
     await expect.poll(async () => (await o.errors()).length, { timeout: 10000 }).toBe(4);
     const after = (await o.messages()).filter((m) => m.type === 'navigated' || m.type === 'runtimeError');
     expect(after[0].type).toBe('navigated');
@@ -126,25 +123,19 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
     await expect.poll(async () => (await o.errors()).length, { timeout: 10000 }).toBe(1);
     const frame = o.frame();
     // The boundary's retry, as the note's attachment hands it on: here, still failing, the note stays.
-    await frame.evaluate(() => {
-      (window as unknown as { __retried: number }).__retried = 0;
-      (document.querySelector('[data-so-render-error]') as unknown as { __soRetry: () => void }).__soRetry = () => (window as unknown as { __retried: number }).__retried++;
-    });
+    await frame.evaluate(`window.__retried = 0; document.querySelector('[data-so-render-error]').__soRetry = () => window.__retried++`);
     await o.page.evaluate(`window.seen = []`);
-    await frame.evaluate(() => (window as unknown as { __fire: (e: string, d: object) => void }).__fire('siteorigin:revision', { revision: 7, batch: 1 }));
+    await frame.evaluate(`window.__fire('siteorigin:revision', { revision: 7, batch: 1 })`);
     await expect.poll(async () => (await o.messages()).some((m) => m.type === 'revisionApplied'), { timeout: 10000 }).toBe(true);
-    expect(await frame.evaluate(() => (window as unknown as { __retried: number }).__retried)).toBe(1);
+    expect(await frame.evaluate(`window.__retried`)).toBe(1);
     expect((await o.messages()).filter((m) => m.type === 'runtimeError' || m.type === 'revisionApplied').map((m) => [m.type, m.payload.revision])).toEqual([
       ['runtimeError', 7],
       ['revisionApplied', 7]
     ]);
     // Fixed: the retry shows the component again, and the next change is shown with nothing to report.
-    await frame.evaluate(() => {
-      const el = document.querySelector('[data-so-render-error]') as unknown as { __soRetry: () => void; replaceWith(n: Node): void };
-      el.__soRetry = () => el.replaceWith(Object.assign(document.createElement('p'), { textContent: 'Value: 1' }));
-    });
+    await frame.evaluate(`const el = document.querySelector('[data-so-render-error]'); el.__soRetry = () => el.replaceWith(Object.assign(document.createElement('p'), { textContent: 'Value: 1' }))`);
     await o.page.evaluate(`window.seen = []`);
-    await frame.evaluate(() => (window as unknown as { __fire: (e: string, d: object) => void }).__fire('siteorigin:revision', { revision: 8, batch: 2 }));
+    await frame.evaluate(`window.__fire('siteorigin:revision', { revision: 8, batch: 2 })`);
     await expect.poll(async () => (await o.messages()).some((m) => m.type === 'revisionApplied'), { timeout: 10000 }).toBe(true);
     await drawn(frame);
     expect(await o.errors()).toEqual([]);
