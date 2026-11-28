@@ -5,6 +5,7 @@
  * project (engine/seo-audit.ts). Everything here is plain data, so the editor, the export and the AI tools read the
  * same answer.
  */
+import type { ArchiveTerm } from './archives';
 import type { AssetRecord } from './types';
 import type { Diagnostic, EditorDestination } from './api';
 
@@ -88,11 +89,11 @@ export interface EffectiveSeo {
 }
 
 /**
- * One page of a collection's index or category archive (shared/archives.ts), at its address. It is no document of its
- * own: what it says comes from its collection, its category and the site, and nothing in the editor resolves or audits
+ * One page of a collection's index or of a category's or tag's archive (shared/archives.ts), at its address. It is no
+ * document of its own: what it says comes from its collection, its category or tag and the site, and nothing in the editor resolves or audits
  * it as a page or an entry. The generator writes its `<head>` and structured data from it (generator/seo-metadata.ts).
  */
-export type ArchiveSubject = { kind: 'archive'; collectionId: string; category?: string; page: number; pages: number; route: string };
+export type ArchiveSubject = { kind: 'archive'; collectionId: string; term?: ArchiveTerm; page: number; pages: number; route: string };
 
 /** What an archive page says about itself, as EffectiveSeo says it of a page or an entry. */
 export type ArchiveSeo = Omit<EffectiveSeo, 'subject'> & { subject: ArchiveSubject };

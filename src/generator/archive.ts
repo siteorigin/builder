@@ -1,5 +1,5 @@
 /**
- * A collection's index and category archive pages (see shared/archives.ts), written as static pages inside the site's
+ * A collection's index and its category and tag archive pages (see shared/archives.ts), written as static pages inside the site's
  * own header and footer. Each lists its share of the collection's published entries, newest first, as cards (featured
  * picture, categories, title, date, author and excerpt; the boxed card the Post grid section shows, each one link to
  * its entry through its title), and links to the pages before and after it in its series,
@@ -7,8 +7,10 @@
  * written into the page when the site is generated: visitors' browsers look nothing up.
  */
 import type { ArchivePage } from '@shared/archives';
-import { archivePages, archiveWords, categoryTerms, fillWords as fill } from '@shared/archives';
+import { archivePages, archiveTerms, archiveWords, fillWords as fill, sameTerm } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
+import { archivePageSize } from '@shared/collections';
+import { BROWSE_COMPONENT_FILE, browseControls, browseIndexFile, browsesIndex } from './collection-browse';
 import { siteLanguage } from '@shared/languages';
 import { routeDir } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
@@ -67,11 +69,11 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const words = visitorTextFor(site, siteLanguage(site));
   const file = archiveFile(route);
   // Category labels link to their archive while the category has one.
-  const archives = new Map(series.filter((p) => p.category && p.page === 1).map((p) => [p.category!, p.route]));
-  const terms = new Map(categoryTerms(collection).map((t) => [t.id, t.label]));
+  const archives = new Map(series.filter((p) => p.term?.taxonomy === 'categories' && p.page === 1).map((p) => [p.term!.id, p.route]));
+  const terms = new Map(archiveTerms(collection, 'categories').map((t) => [t.id, t.label]));
   const { heading } = archiveWords(state, here);
-  // A category's pages lead back to the whole collection's index, by its own heading.
-  const index = here.category ? series.find((p) => !p.category && p.page === 1) : undefined;
+  // A category's or tag's pages lead back to the whole collection's index, by its own heading.
+  const index = here.term ? series.find((p) => !p.term && p.page === 1) : undefined;
   const rctx = { state };
   // What the markup below turns out to hold, so that the page is styled for that and nothing more: Svelte warns of
   // every selector that matches nothing, in the build of the exported project.
@@ -124,7 +126,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   // The first page of the index leads with its newest entry, shown large; every other page is a grid of cards.
   const ids = here.entryIds.filter((id) => Object.hasOwn(collection.entries, id));
   const layout = hasArchiveLayout(collection.settings) ? emitArchiveLayout(state, collectionId, ids, file, opts) : null;
-  const lead = !layout && !here.category && here.page === 1 && ids.length ? ids[0] : undefined;
+  const lead = !layout && !here.term && here.page === 1 && ids.length ? ids[0] : undefined;
   const rest = layout ? [] : lead ? ids.slice(1) : ids;
   const body: string[] = [];
   if (lead) body.push(`\t\t${card(lead, true, 'h2')}`);
@@ -144,7 +146,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     const numbers = links
       .map((n) => {
         if (n === null) return `\t\t\t\t<li aria-hidden="true">…</li>`;
-        const to = series.find((p) => p.category === here.category && p.page === n)!.route;
+        const to = series.find((p) => sameTerm(p.term, here.term) && p.page === n)!.route;
         // Wording that leaves the number out still names each link apart.
         const name = words.archivePage.includes('{page}') ? fill(words.archivePage, { page: n }) : `${words.archivePage} ${n}`;
         return `\t\t\t\t<li><a href=${href(to)} aria-label={${js(name)}}${n === here.page ? ' aria-current="page"' : ''}>${n}</a></li>`;
@@ -157,6 +159,25 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     );
   }
 
+  // The first page of the index, with something to list, gives visitors the collection's search, filters and sorting
+  // when it offers them: until a visitor uses one, the page shows what is written above.
+  const controls = !layout && !here.term && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId) ? browseControls(state, collectionId) : undefined;
+  // Only with a control that does something: a filter whose grouping has lost its last term offers none.
+  const browsing = !!controls && (controls.search || controls.filters.length > 0 || controls.sorts.length > 0);
+  if (browsing) {
+    for (const part of ['grid', 'card', 'image', 'category', 'categoryLink', 'meta', 'excerpt'] as const) uses.add(part);
+    const content = body.splice(0).map((b) => b.replace(/^/gm, '\t'));
+    const load = js(relImport(file, `${RUNTIME_DIR}/${browseIndexFile(collectionId)}`));
+    body.push(
+      [
+        `\t\t<SoBrowse controls={${js(controls)}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`,
+        browseResults(),
+        ...content,
+        `\t\t</SoBrowse>`
+      ].join('\n')
+    );
+  }
+
   // What it says when it is found or shared, as a page does: its title and description, its sharing tags, its own
   // address and, once the site has a public URL, the site's structured data with its trail from Home.
   const head = seoHead(state, archiveMetadata(state, here), { article: false, alternates: [] });
@@ -165,16 +186,20 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   if (here.prev) head.push(`\t<link rel="prev" href=${href(here.prev)} />`);
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 
-  const imports = [`\timport { resolve } from '$app/paths';`, ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : [])];
+  const imports = [
+    `\timport { resolve } from '$app/paths';`,
+    ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : []),
+    ...(browsing ? [`\timport SoBrowse from ${js(relImport(file, `${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`))};`] : [])
+  ];
   // The layout's own imports, each once (the layout may show pictures too).
   for (const line of layout?.imports ?? []) if (!imports.includes(line)) imports.push(line);
   const script = [imports.join('\n'), layout?.script ?? ''].filter(Boolean).join('\n\n');
-  if (here.category) uses.add('eyebrow');
+  if (here.term) uses.add('eyebrow');
   if (index) uses.add('trail');
   if (here.page > 1) uses.add('count');
   const intro = [
-    here.category
-      ? `\t\t\t<p class="so-archive__eyebrow">${index ? `<a href=${href(index.route)}>{${js(archiveWords(state, index).heading)}}</a><span aria-hidden="true">/</span>` : ''}{${js(words.archiveCategory)}}</p>`
+    here.term
+      ? `\t\t\t<p class="so-archive__eyebrow">${index ? `<a href=${href(index.route)}>{${js(archiveWords(state, index).heading)}}</a><span aria-hidden="true">/</span>` : ''}{${js(here.term.taxonomy === 'tags' ? words.archiveTag : words.archiveCategory)}}</p>`
       : '',
     `\t\t\t<h1 class="so-archive__heading">{${js(heading)}}</h1>`,
     here.page > 1 ? `\t\t\t<p class="so-archive__count">{${js(fill(words.archivePageOf, { page: here.page, count: here.pages }))}}</p>` : ''
@@ -185,6 +210,33 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     ? [`<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n\t</div>\n</section>`, layout.markup, body.length ? `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${body.join('\n')}\n\t</div>\n</section>` : ''].filter(Boolean).join('\n')
     : `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n${body.join('\n')}\n\t</div>\n</section>`;
   return HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) + `<script>\n${script}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` + `${sections}\n\n${archiveStyle(uses)}`;
+}
+
+/**
+ * The snippet an index's browse component lists the entries that match with: the grid of ready-made cards, each card
+ * written from the entry's row in the collection's browse index (see generator/collection-browse.ts) as the page's own
+ * cards are written from the entry.
+ */
+function browseResults(): string {
+  return [
+    `\t\t\t{#snippet results(entries)}`,
+    `\t\t\t\t<ul class="so-archive__grid">`,
+    `\t\t\t\t\t{#each entries as entry (entry.id)}`,
+    `\t\t\t\t\t\t<li>`,
+    `\t\t\t\t\t\t\t<article class="so-archive__card">`,
+    `\t\t\t\t\t\t\t\t{#if entry.image}<SoImage image={entry.image} sizes="(min-width: 1024px) 33vw, (min-width: 768px) 50vw, 100vw" class="so-archive__image" />{/if}`,
+    `\t\t\t\t\t\t\t\t<div class="so-archive__text">`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.categories.length}<p class="so-archive__category">{#each entry.categories as category, i (i)}{#if i}, {/if}{#if category.route}<a href={resolve(category.route)}>{category.label}</a>{:else}<span>{category.label}</span>{/if}{/each}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t\t<h2 class="so-archive__title"><a href={resolve(entry.route)}>{entry.title}</a></h2>`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.date || entry.byline}<p class="so-archive__meta">{#if entry.date}<time datetime={entry.date}>{entry.dateLabel}</time>{/if}{#if entry.date && entry.byline}{' '}{/if}{#if entry.byline}<span>{entry.byline}</span>{/if}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.excerpt}<p class="so-archive__excerpt">{entry.excerpt}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t</div>`,
+    `\t\t\t\t\t\t\t</article>`,
+    `\t\t\t\t\t\t</li>`,
+    `\t\t\t\t\t{/each}`,
+    `\t\t\t\t</ul>`,
+    `\t\t\t{/snippet}`
+  ].join('\n');
 }
 
 /** The parts of an archive page that not every one has, each with rules of its own. */

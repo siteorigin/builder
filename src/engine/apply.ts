@@ -57,7 +57,7 @@ import { loopText, redirectSourceProblem, redirectTargetProblem, resolveRedirect
 import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
-import { POSTS_PRESET_NAME, archivesAtStartOf, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type ArchivesAtStart, type EntryAddress } from './collections';
+import { POSTS_PRESET_NAME, archivesAtStartOf, collectionCreate, isArchiveAddressOf, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type ArchivesAtStart, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -1037,8 +1037,17 @@ function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
   if (owner) fail(`${from} is the address of ${owner.label}. Choose another address.`);
   if (redirectIndex(state, from) >= 0 || keptPublishedAt(state, from)) fail(`${from} already sends visitors on. Change where it goes instead.`);
   const target = redirectTarget(state, op, from);
-  state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target } as SiteRedirect];
-  refuseRedirectLoop(state, from);
+  // One leading to a collection's archive page can be the collection's (an import's old category and tag addresses),
+  // which follows it when it moves (see SiteRedirect.archiveOf). An archive page's address is never an old address, so
+  // it ends a chain there and is no loop.
+  let archiveOf: { archiveOf: string } | undefined;
+  if (op.archiveOf !== undefined) {
+    const c = own(state.collections, op.archiveOf) ?? fail('The collection whose archive the old address leads to does not exist.');
+    if (target.to === undefined || !isArchiveAddressOf(c, target.to)) fail(`${target.to ?? 'That'} is not an address of the ${c.settings.name} collection's archive pages.`);
+    archiveOf = { archiveOf: c.settings.id };
+  }
+  state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target, ...archiveOf } as SiteRedirect];
+  if (!archiveOf) refuseRedirectLoop(state, from);
   return { from, ...target };
 }
 

@@ -315,6 +315,53 @@ describe('website export assets', () => {
     expect(omittedAssetsWarning(omitted)).toBe("Left out of the website because no page or code refers to them: draft.jpg, legacy.svg. They stay in the project's assets.");
   });
 
+  it('#1402: ships the pictures a collection index browses, never a file its entries only name in a field', async () => {
+    let state = createStarterState('business', 'Test', false);
+    const photo = image('photo', 'static/assets/house-22222222.jpg', ['static/assets/house-22222222-480w.jpg', 'static/assets/house-22222222-480w.webp', 'static/assets/house-22222222-1000w.webp']);
+    const offer: AssetRecord = { id: 'offer', name: 'offer.pdf', file: 'static/assets/offer-33333333.pdf', mime: 'application/pdf', bytes: 1, hash: 'x', kind: 'document', createdAt: '' };
+    state.assets.assets.photo = photo;
+    state.assets.assets.offer = offer;
+    state = applyOperations(state, [
+      // Its entries' pages show no custom field: the note is only sorted by.
+      { type: 'collection.create', collectionId: 'homes', route: '/homes/', fields: { note: { type: 'string', label: 'Note' } }, browse: { sort: ['field.note'] } },
+      { type: 'entry.create', collectionId: 'homes', entryId: 'en_house', title: 'House', draft: false, featuredImage: 'photo', values: { note: 'See offer-33333333.pdf' } }
+    ] as EditOperation[]).state;
+    const files = generateProject(state);
+    const index = 'src/lib/siteorigin/runtime/collections/homes.js';
+    expect(files.get(index)).toContain('offer-33333333.pdf');
+    expect(files.get(index)).toContain('house-22222222-480w.webp');
+    const exported = async (only?: string) => {
+      const dir = temp();
+      for (const [path, text] of files) if (!only || path === only) write(dir, path, text);
+      for (const f of [photo.file, ...(photo.variants ?? []).map((v) => v.file), offer.file]) write(dir, f, 'x');
+      await pruneWebsiteAssets(dir, state);
+      return (f: string) => existsSync(join(dir, f));
+    };
+    // The whole site: the note names the offer, but nothing the visitor reaches links to it.
+    const site = await exported();
+    expect(site(offer.file)).toBe(false);
+    expect(site(photo.file)).toBe(true);
+    // The browse index alone keeps the pictures its cards show.
+    const alone = await exported(index);
+    expect(alone(photo.file)).toBe(true);
+    expect(alone('static/assets/house-22222222-480w.webp')).toBe(true);
+    expect(alone(offer.file)).toBe(false);
+    // A field named by hand to read like a picture's address in the index names nothing either.
+    const forged = structuredClone(state);
+    const homes = forged.collections.homes;
+    homes.settings.fields['note"src'] = { type: 'string', label: 'Forged', default: '' };
+    homes.settings.browse = { sort: ['field.note"src'] };
+    homes.entries.en_house.values['note"src'] = 'offer-33333333.pdf';
+    const forgedIndex = generateProject(forged).get(index)!;
+    expect(forgedIndex).toContain('"field.note\\"src":"offer-33333333.pdf"');
+    const dir = temp();
+    write(dir, index, forgedIndex);
+    for (const f of [photo.file, offer.file]) write(dir, f, 'x');
+    await pruneWebsiteAssets(dir, forged);
+    expect(existsSync(join(dir, offer.file))).toBe(false);
+    expect(existsSync(join(dir, photo.file))).toBe(true);
+  });
+
   it('lists every asset it left out, and says nothing when it left none out', () => {
     expect(omittedAssetsWarning([])).toBeUndefined();
     expect(omittedAssetsWarning([image('a', 'static/assets/a-aaaaaaaa.svg')])).toBe("Left out of the website because no page or code refers to it: a.svg. It stays in the project's assets.");

@@ -75,10 +75,11 @@ const preview = (posts: PostImportPreviewPost[], over: Partial<PostImportPreview
   redirectsPending: 0,
   searchSettings: 0,
   redirectsLost: 0,
+  archiveRedirects: { kept: 0, pending: 0, lost: [] },
   skipped: [],
   oldSiteLinks: [],
   problems: [],
-  update: { posts: posts.filter((p) => p.existing).length, pictures: 2, missing: [], newTerms: { categories: [], tags: [] }, oldSiteLinks: [], problems: [] },
+  update: { posts: posts.filter((p) => p.existing).length, pictures: 2, missing: [], newTerms: { categories: [], tags: [] }, oldSiteLinks: [], archiveRedirects: { kept: 0, pending: 0, lost: [] }, problems: [] },
   ...over
 });
 
@@ -161,6 +162,21 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     expect(await page.getByTestId('post-import-existing-count').textContent()).toBe('2 posts are already in the project: 1 will be updated from the export, and 1 whose text could not be read will be left as it is.');
     expect(await page.getByText('Its text was longer than a post holds', { exact: false }).count()).toBe(1);
     expect(await page.getByTestId('post-import-confirm').textContent()).toBe('Import 1 post and update 1');
+  });
+
+  it('issue 1512: counts the old category and tag addresses of the posts it imports, skipping or updating', async () => {
+    const p = preview([post('Autumn'), post('Winter', { existing: true })], { redirects: 1 });
+    p.archiveRedirects = { kept: 1, pending: 0, lost: [] };
+    // Updating brings a tag only the post already here has, which waits for a published post, and one that can't be kept.
+    p.update!.archiveRedirects = { kept: 3, pending: 1, lost: [{ from: '/tag/rye/', reason: 'it is the address of the page “Rye”' }] };
+    await open(p);
+    await page.getByText(/^2 keep working$/).waitFor();
+    await page.getByTestId('post-import-update').check();
+    await page.getByText(/^3 keep working · 1 once a post filed under its category or tag is published · 1 can’t/).waitFor();
+    expect(await page.getByTestId('post-import-archives-lost').textContent()).toBe('/tag/rye/ can’t keep working: it is the address of the page “Rye”.');
+    await page.getByLabel('Skip them').check();
+    await page.getByText(/^2 keep working$/).waitFor();
+    expect(await page.getByTestId('post-import-archives-lost').count()).toBe(0);
   });
 
   it('stops only updating when only updating has a problem', async () => {

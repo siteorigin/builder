@@ -583,9 +583,9 @@ export type ExportFormat = 'folder' | 'zip';
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
-  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
-  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
+  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'publisherUrl' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
+  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'canonical' | 'socialImage' | 'structuredData' | 'pageTitle' }
+  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'canonical' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
   /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
   | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
@@ -1099,26 +1099,38 @@ export interface PostImportPreview {
   /** Pictures the posts show that are not in the chosen folder, with why. */
   missing: Array<{ post: string; ref: string; problem: string }>;
   newTerms: { categories: string[]; tags: string[] };
-  /** Old addresses kept working. */
+  /** Old addresses of the posts kept working. */
   redirects: number;
   /** Of those, the ones kept for a post that arrives as a draft: they start working once it is published. */
   redirectsPending: number;
-  /** Old addresses that can't keep working (each post's note says why). */
+  /** Old addresses of the posts that can't keep working (each post's note says why). */
   redirectsLost?: number;
   /** New posts that bring search settings of their own from the site's SEO plugin (a search title, description, canonical address or noindex). */
   searchSettings: number;
+  /**
+   * The old site's category and tag archive addresses (`/category/<slug>/`, `/tag/<slug>/`): how many are kept
+   * working, of those how many start working once a post filed under their term is published, and each that can't, with why.
+   */
+  archiveRedirects: PostImportArchiveRedirects;
   /** What is not imported at all. */
   skipped: string[];
   /**
    * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
-   * the new address an old category archive's sends visitors to, when the import keeps it working; `pending` while no
-   * published post is filed under that category, so the archive is not there yet.
+   * the new address an old category's or tag's archive sends visitors to, when the import keeps it working; `pending`
+   * while no published post is filed under it, so the archive is not there yet.
    */
   oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
   /** With posts already in the project: what updating them as well brings (`posts` of them), and what stops that. */
-  update?: { posts: number; pictures: number; missing: Array<{ post: string; ref: string; problem: string }>; newTerms: { categories: string[]; tags: string[] }; oldSiteLinks: PostImportPreview['oldSiteLinks']; problems: string[] };
+  update?: { posts: number; pictures: number; missing: Array<{ post: string; ref: string; problem: string }>; newTerms: { categories: string[]; tags: string[] }; oldSiteLinks: PostImportPreview['oldSiteLinks']; archiveRedirects: PostImportArchiveRedirects; problems: string[] };
+}
+
+/** The old site's category and tag archive addresses an import keeps working (see PostImportPreview.archiveRedirects). */
+export interface PostImportArchiveRedirects {
+  kept: number;
+  pending: number;
+  lost: Array<{ from: string; reason: string }>;
 }
 
 /** What importing does with posts already in the project: leaves them as they are, or updates each from the source. */

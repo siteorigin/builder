@@ -24,6 +24,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent } from '@agent/types';
 import { executeTool, MUTATING_TOOLS, serializeResult, TOOL_ARGS, type ToolHost, type ToolName } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
+import { BRIEF_ACTIONS } from '@agent/brief-tools';
 import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ToolResult } from '@agent/result';
 import { applyContextBudget } from '@agent/budget';
 import { ProjectSession } from '../../src/main/project/session';
@@ -131,7 +132,7 @@ interface Case {
   sameStep?: { fail?: (s: ProjectState, revision: number, ids: { note: string; design: string }) => unknown };
   /** What the project needs first, done as the author would: a change in History for an Undo to take. */
   seed?: (session: ProjectSession) => Promise<unknown>;
-  /** What the author asks, for a tool offered only to a request that asks for it (open_page). */
+  /** What the author asks, for a tool offered only to a request that asks for it (open_page, the brief tool #1407). */
   request?: string;
 }
 
@@ -211,6 +212,7 @@ const CASES = {
     fail: () => ({ sourceId: 'team-api', mapping: { title: 'headline' }, converter: 'export function convert(items) { return items; }' }),
     code: 'INVALID_ARGUMENT'
   },
+  update_project_brief: { where: 'site', request: 'Add to my project brief notes that we specialise in historic limestone estates.', ok: () => ({ action: 'add_note', text: 'We specialise in historic limestone estates.' }), fail: () => ({ action: 'add_note', text: ' ' }), code: 'INVALID_ARGUMENT' },
   read_layout: { where: 'layout', ok: () => ({}), fail: () => ({ nodeId: 'n_missing' }), code: 'INVALID_ARGUMENT' },
   edit_collection_layout: {
     where: 'site',
@@ -270,7 +272,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     state: () => session.state,
     revision: () => session.revision,
     diagnostics: () => session.diagnostics(),
-    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}) }),
+    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(grants?.briefWrite ? { briefWrite: grants.briefWrite } : {}) }),
+    briefWrite: () => ({ actions: BRIEF_ACTIONS }),
     sources: sourcesOf(session),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [], images: { total: 0, loaded: 0, failed: 0, unverified: 0 } }),

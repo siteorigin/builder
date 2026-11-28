@@ -34,6 +34,7 @@ import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION, VALIDATE_FOCUSED_BRIEF } from './validation';
+import { runUpdateBrief, UPDATE_BRIEF_ARGS, UPDATE_BRIEF_BRIEF, UPDATE_BRIEF_DESCRIPTION, type BriefWriteAllowance } from './brief-tools';
 import { layoutLabel, OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { collectionRouteOwner, hasArchivePages, hasDetailPages } from '@shared/collections';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
@@ -157,6 +158,7 @@ export const TOOL_ARGS = {
   connect_collection_list: CONNECT_LIST_ARGS,
   inspect_source_sample: INSPECT_SOURCE_ARGS,
   write_source_converter: WRITE_SOURCE_ARGS,
+  update_project_brief: UPDATE_BRIEF_ARGS,
   read_layout: z.object({ owner: LAYOUT_OWNER.optional().describe('The collection layout to read, in a request that may change the whole site.'), nodeId: z.string().optional().describe('Optional subtree to read.') }),
   edit_collection_layout: z.object({
     owner: LAYOUT_OWNER,
@@ -227,6 +229,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   connect_collection_list: CONNECT_LIST_DESCRIPTION,
   inspect_source_sample: INSPECT_SOURCE_DESCRIPTION,
   write_source_converter: WRITE_SOURCE_DESCRIPTION,
+  update_project_brief: UPDATE_BRIEF_DESCRIPTION,
   read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
   edit_collection_layout:
     'Change a collection\'s own layout, which every one of its pages shows: its entry pages (owner kind "template") or its index at the collection\'s address, with the index\'s later pages and category pages (kind "archive"). Read it first with read_layout. action "start" begins the index\'s own layout in place of the ready-made cards (a collection loop of linked titles and excerpts) and returns its sections with their IDs; "edit" applies operations to the layout atomically, each naming no owner, and node.insert without parentId adds a section. In the entry layout an element shows the entry its page is for with node.setBinding { "$entry": field }; inside a collection loop, { "$item": field } shows each row\'s entry. connect_collection_list connects a list or a loop in it. Call it at most once per step.',
@@ -273,6 +276,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   connect_collection_list: CONNECT_LIST_BRIEF,
   inspect_source_sample: INSPECT_SOURCE_BRIEF,
   write_source_converter: WRITE_SOURCE_BRIEF,
+  update_project_brief: UPDATE_BRIEF_BRIEF,
   read_layout: 'The layout this request may change, as it is now, or one node of it.',
   edit_collection_layout: 'Change a collection\'s entry layout (template) or index layout (archive), read first with read_layout. "start" begins the index\'s own layout in place of the ready-made cards; "edit" applies operations, each with no owner. { "$entry": field } binds the entry layout to its entry; { "$item": field } a loop\'s row. Once per step.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
@@ -313,7 +317,8 @@ const NEVER_OFFERED = new Set<OperationType>([
   // A list or loop is connected to a collection with connect_collection_list, whose query a small model can send.
   'instance.setListSource',
   'node.setRepeatSource',
-  // The project brief is the author's own (#518), and session.apply refuses it from a run.
+  // The project brief is the author's own (#518): a run changes it only with update_project_brief, offered when the
+  // author asks (#1407), and session.apply refuses any other brief change from a run.
   'brief.update',
   // So are external sources' settings (#676).
   'source.upsert',
@@ -516,7 +521,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout', 'update_project_brief']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -526,7 +531,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'audit_performance', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
 /** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
 const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_project_brief', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
@@ -1077,6 +1082,8 @@ export interface ToolHost {
    */
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   compileAll(): Promise<Diagnostic[]>;
+  /** What update_project_brief may do in this run: what the author's own message asked of the brief (#1407), or null. */
+  briefWrite?(): BriefWriteAllowance | null;
   /**
    * `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page.
    * `focus`: list only the findings on these elements (validate_project narrowed to them).
@@ -1717,6 +1724,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       return runInspectSource(args as z.infer<typeof INSPECT_SOURCE_ARGS>, host);
     case 'write_source_converter':
       return runWriteSource(args as z.infer<typeof WRITE_SOURCE_ARGS>, host, callId);
+    case 'update_project_brief':
+      return runUpdateBrief(args as z.infer<typeof UPDATE_BRIEF_ARGS>, host, callId);
     case 'update_theme_component':
       return runUpdateThemeComponent(args as z.infer<typeof UPDATE_THEME_COMPONENT_ARGS>, host, callId);
     case 'update_selected_props':
