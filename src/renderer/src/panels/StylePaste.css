@@ -18,6 +18,13 @@
   .paste-route { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 13px; line-height: 1.4; }
   .paste-route strong { font-weight: 600; overflow-wrap: anywhere; }
   .paste-route-arrow { width: 14px; height: 14px; flex: none; color: var(--text-2); }
+  /* Which cards a paste onto a repeated part changes, said with where it goes and before the sizes: the neutral
+     scope note, its answer in the ink and what it means quieter, then how to choose the other on a line of its own. */
+  .paste-reach-note { font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .paste-reach-note > p { margin: 0; min-width: 0; }
+  .paste-reach-note strong { color: var(--text); }
+  .paste-reach-note svg { margin-top: 2px; }
+  .paste-reach-how { display: block; margin-top: 2px; color: var(--text-3); }
   .paste-note { font-size: 12px; line-height: 1.4; }
   .paste-body > .paste-note:last-child { padding-top: 4px; }
   .paste-section { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -55,7 +62,14 @@
      consequence of the Sizes choice, not a danger. */
   .paste-cleared { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--border-control); font-size: 12px; font-weight: 500; color: var(--text-2); }
   .paste-cleared svg { width: 12px; height: 12px; flex: none; }
-  .paste-fallback { font-size: 12px; color: var(--text-3); }
+  .paste-fallback { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); }
+  /* Onto every card, the cards that keep a value of their own for a style: under its sizes, in the values column. */
+  .paste-kept { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .paste-kept-card { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; }
+  .paste-kept-size { color: var(--text-3); }
+  /* One card's before when it has nothing of its own: the shared value it shows now, quiet and not struck. */
+  .paste-shared { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+  .paste-source { font-size: 11px; color: var(--text-3); }
   .paste-lead { width: 13px; height: 13px; flex: none; color: var(--text-2); }
   /* The Site styles colour sample (.ss-chip): one --border-control ring holds 3:1 around any colour. */
   .paste-same { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
@@ -78,7 +92,7 @@
   /* Narrow: the property takes its own line and each size keeps its values beside it. */
   @container paste-body (max-width: 420px) {
     .paste-list { grid-template-columns: max-content minmax(0, 1fr); }
-    .paste-list .paste-prop, .paste-changes { grid-column: 1 / -1; }
+    .paste-list .paste-prop, .paste-changes, .paste-kept { grid-column: 1 / -1; }
     .paste-list .paste-prop { position: static; }
     .paste-skip { grid-template-columns: minmax(0, 1fr); }
   }

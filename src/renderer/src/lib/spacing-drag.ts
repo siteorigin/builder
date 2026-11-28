@@ -6,11 +6,10 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue, TokenGroup } from '@shared/types';
 import { CONTAINER_SCOPES } from '@shared/types';
 import { MEDIA_QUERIES, STYLE_PROP_MAP, tokenVar } from '@shared/styles';
-import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveTokens } from '@generator/index';
-import { styleSelection } from './style-copy';
+import { styleSelection, type ReachChoice } from './style-copy';
 import { treeFor } from './model';
-import { itemReachKey } from './item-reach';
 
 export type SpacingSide = 'top' | 'bottom' | 'left' | 'right';
 export type SpacingBox = 'padding' | 'margin';
@@ -195,8 +194,9 @@ export interface SpacingTarget {
  * changes of its own here (an element inside a section's design that is not one of its parts, a component's
  * design being edited everywhere).
  */
-export function spacingTarget(state: ProjectState, ref: ElementRef, reach: (key: string) => 'all' | 'item' | undefined = () => undefined): SpacingTarget | null {
-  const sel = styleSelection(state, ref);
+export function spacingTarget(state: ProjectState, ref: ElementRef, reach: ReachChoice = () => undefined): SpacingTarget | null {
+  // Which card a part picked in one card writes to is Paste style's rule too (styleSelection), so the two never differ.
+  const sel = styleSelection(state, ref, reach);
   if (!sel) return null;
   // A section is resolved only from its own box (the placement, or its design's root element), never from
   // something inside it, which resolves to a part or to nothing.
@@ -210,13 +210,10 @@ export function spacingTarget(state: ProjectState, ref: ElementRef, reach: (key:
   const inList = !!ref.itemPath?.length;
   if (!t.partId) return ref.instancePath.length === 0 && t.nodeId === ref.nodeId ? { owner: t.owner, nodeId: t.nodeId, styles: t.styles, offered: t.offered, everyItem: inList } : null;
   const base: SpacingTarget = { owner: t.owner, nodeId: t.nodeId, partId: t.partId, styles: t.styles, offered: t.offered, everyItem: inList };
+  if (t.itemId) return { ...base, itemId: t.itemId, everyItem: false };
   const inst = treeFor(state, t.owner)?.nodes[t.nodeId];
   const def = inst?.kind === 'instance' && Object.hasOwn(state.components, inst.definitionId) ? state.components[inst.definitionId] : undefined;
   if (inst?.kind !== 'instance' || !def || !repeatedPartList(def, t.partId)) return base;
-  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-  const own = itemId ? itemStylesOf(def, inst, t.partId, itemId) : undefined;
-  const chosen = itemId ? (reach(itemReachKey(t.owner, t.nodeId, itemId)) ?? (own ? 'item' : 'all')) : 'all';
-  if (chosen === 'item') return { ...base, itemId, styles: own, everyItem: false };
   const items = liveItemStyles(def, inst, t.partId)?.items;
   return { ...base, everyItem: true, ...(items ? { items: { ...items } } : {}) };
 }

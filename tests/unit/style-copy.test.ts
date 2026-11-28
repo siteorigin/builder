@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ComponentDefinition, ElementRef, InstanceNode, ProjectState, ResponsiveScope, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, InstanceNode, ProjectState, ResponsiveScope, StyleScope, StyleValue } from '@shared/types';
 import { MEDIA_QUERIES, placementStyleControls } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -30,7 +30,7 @@ const part = (s: ProjectState, componentId: string, partId: string): ElementRef 
   const n = placed(s, componentId);
   return { owner: owner(s), instancePath: [n.id], nodeId: s.components[n.definitionId].parts[partId].nodeId, partId };
 };
-const style = (s: ProjectState, ref: ElementRef, scope: ResponsiveScope, property: string, value: StyleValue | null) =>
+const style = (s: ProjectState, ref: ElementRef, scope: StyleScope, property: string, value: StyleValue | null) =>
   applyOperations(s, [{ type: 'node.setStyle', owner: ref.owner, nodeId: ref.instancePath[0] ?? ref.nodeId, ...(ref.partId ? { partId: ref.partId } : {}), scope, property, value }]).state;
 
 /**
@@ -114,10 +114,12 @@ describe('copy style', () => {
     expect(styleSelection(own, { owner: owner(own), instancePath: [grid.id], nodeId: 'card', partId: 'card' })!.targets[0].reach).toBe('every card');
   });
 
-  // Release gap: partTarget (src/renderer/src/lib/style-copy.ts) ignores a code part's list.
-  it.fails('styles a card part of the release once for every card', () => {
+  it('styles a card part of the release once for every card', () => {
     const s = fresh();
-    expect(styleSelection(s, part(s, 'features.grid', 'card'))!.targets[0].reach).toBe('every card');
+    const card = styleSelection(s, part(s, 'features.grid', 'card'))!;
+    expect(card.targets[0].reach).toBe('every card');
+    // Picked in Layers, no one card is chosen: the paste goes to the style all 3 cards share.
+    expect(card.repeat).toMatchObject({ kind: 'every', partName: 'card', count: 3, oneByOne: true, picked: false });
   });
 
   it('matches the inspector: Hidden on a section and on code parts, a part’s own list elsewhere', () => {
@@ -188,6 +190,100 @@ describe('copy style', () => {
 });
 
 describe('paste style', () => {
+  describe('onto one card of a list (#1347)', () => {
+    const setup = () => {
+      let s = fresh();
+      s = style(s, part(s, 'content.media', 'frame'), 'base', 'background', '#FDE68A');
+      s = style(s, part(s, 'content.media', 'frame'), 'base', 'radius', '28px');
+      const g = placed(s, 'features.grid');
+      const items = g.props.items as Array<{ id: string; title: string }>;
+      const card = (i: number): ElementRef => ({ ...part(s, 'features.grid', 'card'), itemPath: [items[i].id] });
+      const own = (st: ProjectState, i: number, property: string, value: StyleValue, scope: StyleScope = 'base') =>
+        applyOperations(st, [{ type: 'node.setStyle', owner: owner(st), nodeId: g.id, partId: 'card', itemId: items[i].id, scope, property, value }]).state;
+      return { s, g, items, card, own, copy: captureStyle(s, part(s, 'content.media', 'frame'))! };
+    };
+    const grid = (s: ProjectState) => s.pages[homeId(s)].nodes[placed(s, 'features.grid').id] as InstanceNode;
+
+    it('writes only the card’s own styles when Apply to is This card', () => {
+      const { s, g, items, card, copy } = setup();
+      const plan = planStylePaste(s, copy, card(0), 'every', () => 'item');
+      expect(plan.destination).toMatchObject({ label: `Card “${items[0].title}” in Services grid`, repeat: { kind: 'item', itemName: `“${items[0].title}”`, count: 3 } });
+      expect(plan.operations).toEqual([
+        { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: items[0].id, scope: 'base', property: 'background', value: '#FDE68A' },
+        { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: items[0].id, scope: 'base', property: 'radius', value: '28px' }
+      ]);
+      const after = grid(applyOperations(s, plan.operations).state);
+      expect(after.overrides?.card).toBeUndefined();
+      expect(after.itemOverrides?.card.items).toEqual({ [items[0].id]: { base: { background: '#FDE68A', radius: '28px' } } });
+    });
+
+    it('writes the style every card shares when Apply to is All cards, and names the cards that keep their own', () => {
+      const { s: base, g, items, card, own, copy } = setup();
+      // A card's own value beats the shared style at every size; a size's own value at that size.
+      const s = own(own(base, 1, 'background', { token: 'color.surface' }), 2, 'radius', '2px', 'phone');
+      const plan = planStylePaste(s, copy, card(0), 'every', () => 'all');
+      expect(plan.destination?.repeat).toMatchObject({ kind: 'every', count: 3, picked: true, keeping: 2 });
+      expect(plan.operations.every((o) => o.type === 'node.setStyle' && o.nodeId === g.id && o.partId === 'card' && !('itemId' in o))).toBe(true);
+      expect(plan.rows.find((r) => r.property === 'background')?.kept).toEqual([{ id: items[1].id, name: `“${items[1].title}”`, scope: 'base', value: { token: 'color.surface' } }]);
+      expect(plan.rows.find((r) => r.property === 'radius')?.kept).toEqual([{ id: items[2].id, name: `“${items[2].title}”`, scope: 'phone', value: '2px' }]);
+    });
+
+    it('names a card’s own value only where it hides a change to the shared style', () => {
+      const { s: base, card, own, copy } = setup();
+      // Phones already use 28px from the shared style, so a card's own Phone corners hide no change there.
+      const s = own(style(base, part(base, 'features.grid', 'card'), 'phone', 'radius', '28px'), 2, 'radius', '2px', 'phone');
+      expect(planStylePaste(s, copy, card(0), 'every', () => 'all').rows.find((r) => r.property === 'radius')?.kept).toBeUndefined();
+    });
+
+    it('counts a container width as a size: a card’s own value there is kept, and a shared one there is not promised', () => {
+      const { s: base, items, card, own, copy } = setup();
+      const kept = own(base, 2, 'radius', '3px', 'cq-medium');
+      expect(planStylePaste(kept, copy, card(0), 'every', () => 'all').rows.find((r) => r.property === 'radius')?.kept).toEqual([{ id: items[2].id, name: `“${items[2].title}”`, scope: 'cq-medium', value: '3px' }]);
+      // The shared 12px shows only where no container width's value wins, which depends on the box around the card.
+      const byWidth = style(style(base, part(base, 'features.grid', 'card'), 'base', 'radius', '12px'), part(base, 'features.grid', 'card'), 'cq-medium', 'radius', '20px');
+      expect(planStylePaste(byWidth, copy, card(0), 'every', () => 'item').rows.find((r) => r.property === 'radius')?.changes).toEqual([{ scope: 'base', to: '28px' }]);
+    });
+
+    it('says what a cleared card value gives way to from the styles the paste leaves, not those it replaces', () => {
+      const { s: base, card, own } = setup();
+      const s = own(style(base, part(base, 'features.grid', 'card'), 'base', 'radius', '12px'), 0, 'radius', '6px');
+      // A copy with corners only for a medium container: matching it clears the card's own 6px, and the pasted
+      // container width's 28px (not the shared 12px) is what shows wherever that width holds.
+      const widthOnly: StyleCopy = { kind: 'single', label: 'Frame', sets: [{ part: null, label: 'Frame', styles: { 'cq-medium': { radius: '28px' } } }], vars: [] };
+      expect(planStylePaste(s, widthOnly, card(0), 'every', () => 'item').rows.find((r) => r.property === 'radius')?.changes).toEqual([
+        { scope: 'base', from: '6px' },
+        { scope: 'cq-medium', to: '28px' }
+      ]);
+    });
+
+    it('follows the card’s own styles while nothing is chosen, as the inspector opens it', () => {
+      const { s: base, items, card, own, copy } = setup();
+      expect(planStylePaste(base, copy, card(0), 'every').destination?.repeat?.kind).toBe('every');
+      const s = own(base, 0, 'radius', '6px');
+      const plan = planStylePaste(s, copy, card(0), 'every');
+      expect(plan.destination?.repeat?.kind).toBe('item');
+      // Its before is its own value, not the shared style's.
+      expect(plan.rows.find((r) => r.property === 'radius')?.changes).toEqual([{ scope: 'base', from: '6px', to: '28px' }]);
+      // Copy style takes the card's own styles too.
+      expect(captureStyle(s, card(0))?.sets).toEqual([{ part: null, label: 'Card', styles: { base: { radius: '6px' } } }]);
+      expect(captureStyle(s, card(0))?.label).toBe(`Card “${items[0].title}” in Services grid`);
+    });
+
+    it('shows the shared value a card stops using where it has none of its own', () => {
+      const { s: base, card, copy } = setup();
+      const s = style(base, part(base, 'features.grid', 'card'), 'base', 'radius', '12px');
+      const plan = planStylePaste(s, copy, card(0), 'every', () => 'item');
+      expect(plan.rows.find((r) => r.property === 'radius')?.changes).toEqual([{ scope: 'base', to: '28px', shared: '12px' }]);
+    });
+
+    it('offers nothing for a card that has left its list', () => {
+      const { s, copy } = setup();
+      const gone: ElementRef = { ...part(s, 'features.grid', 'card'), itemPath: ['item-gone'] };
+      expect(styleSelection(s, gone, () => 'item')).toBeNull();
+      expect(planStylePaste(s, copy, gone, 'every').operations).toEqual([]);
+    });
+  });
+
   it('gives Content with image the hero’s padding at every size and nothing else, in one undoable batch (#165)', async () => {
     let s = heroPadded();
     const dest = section(s, 'content.media');

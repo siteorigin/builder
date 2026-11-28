@@ -2,18 +2,22 @@
  * Copy style and Paste style: the style changes a section, one of its parts or an element carries, taken as they
  * are when copied and pasted onto another selection as ordinary `node.setStyle` edits in one batch, so a single
  * Undo takes the whole paste back. Only style overrides move: content, links, images and design options stay.
- * Pure: it reads a project and says what a paste would change, for the editor to show and send.
+ * One card of a repeated part goes where the inspector's Apply to says for that card: its own styles ("This card"),
+ * or the style every card shares. Pure: it reads a project and says what a paste would change, for the editor to
+ * show and send.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, InstanceNode, ListItem, ListProp, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { GRID_CHILD_PROPS } from './grid-child';
 import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, containerStyleError, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
+import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, treeFor } from './model';
+import { itemReachKey } from './item-reach';
 
 export const STYLE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 export const SCOPE_LABELS: Record<ResponsiveScope, string> = { base: 'All sizes', phone: 'Phone', tablet: 'Tablet', desktop: 'Desktop' };
@@ -33,6 +37,43 @@ const andJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${ite
 /** Which sizes a paste writes: every size the copy holds a change for, or only the changes made for one. */
 export type PasteScope = 'every' | ResponsiveScope;
 
+/**
+ * The Apply to chosen for one card of one placement (lib/item-reach's chosenReach): undefined while none has been
+ * chosen, and then a card with styles of its own is styled on its own, as the inspector opens it.
+ */
+export type ReachChoice = (key: string) => 'all' | 'item' | undefined;
+const noChoice: ReachChoice = () => undefined;
+
+/** A card with styles of its own, which beat the style every card shares. */
+export interface OwnItem {
+  id: string;
+  /** As the inspector names it: its title in quotes, or "Card 2". */
+  name: string;
+  styles: ResponsiveStyles;
+}
+
+/** Which copies of a repeated part a paste onto one of them changes, in the words of the inspector's Apply to. */
+export interface RepeatReach {
+  /** item: one card's own styles ("This card"); every: the style every card shares. */
+  kind: 'item' | 'every';
+  /** The part, as Apply to counts it: "card", or "card title". */
+  partName: string;
+  itemLabel: string;
+  /** The list, as "Cards". */
+  listLabel: string;
+  /** The section the part is in. */
+  parent: string;
+  /** How many cards the list shows; none for a list worked out from the site's pages or filled from a collection. */
+  count?: number;
+  /** The card a paste onto one card goes to, as the inspector names it. */
+  itemName?: string;
+  /** A card can be styled on its own here (Apply to is offered), and one was picked on the page (not in Layers). */
+  oneByOne: boolean;
+  picked: boolean;
+  /** Onto the style every card shares: how many cards keep styles of their own. */
+  keeping?: number;
+}
+
 /** One set of style rules a selection carries, and where `node.setStyle` writes it. */
 export interface StyleTarget {
   /** The part of a section ("root" is the section itself); null for a selected part or element, which is one set. */
@@ -46,6 +87,12 @@ export interface StyleTarget {
   partId?: string;
   /** A part inside a repeat is styled once for all of them: "every card". */
   reach?: string;
+  /** Set when one card is styled on its own ("This card"): `styles` are that card's own. */
+  itemId?: string;
+  /** For one card: the style every card shares, which shows wherever this one sets nothing. */
+  shared?: ResponsiveStyles;
+  /** For the style every card shares: the cards with styles of their own, in list order, which keep theirs. */
+  ownItems?: OwnItem[];
 }
 
 export interface StyleSelection {
@@ -54,6 +101,8 @@ export interface StyleSelection {
   /** Where it is: "on the Home page", or the shared header and the pages that show it. */
   where: string;
   targets: StyleTarget[];
+  /** A part repeated once per card: whether this changes one card or all of them. */
+  repeat?: RepeatReach;
 }
 
 /** What Copy style took: each set's rules, detached from the project, so later edits to the original don't change it. */
@@ -72,6 +121,20 @@ export interface PasteChange {
   state?: StyleState;
   from?: StyleValue;
   to?: StyleValue;
+  /**
+   * Onto one card: the shared value it shows here while it has none of its own. Beside a new value, what it shows
+   * now and stops using; beside a cleared one, what it shows once the paste is done.
+   */
+  shared?: StyleValue;
+}
+
+/** A card that keeps its own value for a style over a change to the style every card shares, and where. */
+export interface KeptValue {
+  id: string;
+  name: string;
+  scope: StyleScope;
+  state?: StyleState;
+  value: StyleValue;
 }
 
 export interface PasteRow {
@@ -85,6 +148,8 @@ export interface PasteRow {
   status: 'change' | 'same' | 'skip';
   reason?: string;
   changes: PasteChange[];
+  /** Onto the style every card shares: the cards with a value of their own for this style that beats the change. */
+  kept?: KeptValue[];
 }
 
 export interface PastePlan {
@@ -106,15 +171,44 @@ function whereOf(state: ProjectState, owner: OwnerRef): string {
   return `on the ${ownerLabel(state, owner)} page`;
 }
 
-/** The list a part repeats over, as "every card", when it sits inside a repeat. */
-function reachOf(def: ComponentDefinition, nodeId: string | undefined): string | undefined {
-  const prop = nodeId ? enclosingRepeatProp(def, nodeId) : undefined;
-  const schema = prop ? own(def.properties, prop) : undefined;
-  return schema?.type === 'list' ? `every ${schema.itemLabel.toLowerCase()}` : undefined;
+/** The list a part repeats over: the repeat around it in a design, or the list a code component says it repeats over. */
+function repeatListOf(def: ComponentDefinition, partId: string): ListProp | undefined {
+  const part = own(def.parts, partId);
+  const prop = def.kind === 'code' ? part?.list : part ? enclosingRepeatProp(def, part.nodeId) : undefined;
+  const schema = typeof prop === 'string' ? own(def.properties, prop) : undefined;
+  return schema?.type === 'list' ? schema : undefined;
+}
+
+/**
+ * The cards a placement's part can be styled one at a time on, as the inspector offers it: a list that keeps its own
+ * items (not one worked out from pages, nor a code placement's list filled from a collection). None otherwise.
+ */
+function cardsOf(def: ComponentDefinition, inst: InstanceNode, partId: string): { schema: ListProp; items: ListItem[] } | undefined {
+  const list = repeatedPartList(def, partId);
+  if (!list || (def.kind === 'code' && Object.hasOwn(inst.listSources ?? {}, list))) return undefined;
+  const schema = own(def.properties, list);
+  return schema?.type === 'list' ? { schema, items: placementItems(def, inst, list) } : undefined;
+}
+
+/** A card as the inspector names it: its title in quotes, or "Card 2". */
+function cardName(schema: ListProp, items: ListItem[], index: number): string {
+  const t = schema.titleField ? items[index]?.[schema.titleField] : undefined;
+  return typeof t === 'string' && t.trim() ? `“${t.trim()}”` : `${schema.itemLabel} ${index + 1}`;
+}
+
+/** The cards that keep styles of their own for a part, in list order. */
+function ownItemsOf(def: ComponentDefinition, inst: InstanceNode, partId: string, cards: { schema: ListProp; items: ListItem[] }): OwnItem[] {
+  const styled = liveItemStyles(def, inst, partId)?.items ?? {};
+  return cards.items.flatMap((it, i) => {
+    const styles = own(styled, it.id);
+    return styles && typeof styles === 'object' && hasRules(styles) ? [{ id: it.id, name: cardName(cards.schema, cards.items, i), styles }] : [];
+  });
 }
 
 function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRef, partId: string, list: string[] | undefined): StyleTarget {
   const part = own(def.parts, partId);
+  const repeat = repeatListOf(def, partId);
+  const cards = repeat ? cardsOf(def, inst, partId) : undefined;
   return {
     part: partId,
     label: part?.label ?? 'Section',
@@ -123,16 +217,19 @@ function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRe
     owner,
     nodeId: inst.id,
     partId,
-    reach: def.kind === 'managed' ? reachOf(def, part?.nodeId) : undefined
+    ...(repeat ? { reach: `every ${repeat.itemLabel.toLowerCase()}` } : {}),
+    ...(cards ? { ownItems: ownItemsOf(def, inst, partId, cards) } : {})
   };
 }
 
 /**
  * The style sets a selection carries, as the inspector edits them: a section's own and each of its parts', or the
- * one set of a selected part or element. Null for what takes no style changes of its own here: a component's
- * design (Edit everywhere styles every placement), a part of a component nested inside a section, a repeat or slot.
+ * one set of a selected part or element. A part picked in one card of a list is that card's own styles when Apply
+ * to is "This card" for it (`reach`), else the style every card shares. Null for what takes no style changes of its
+ * own here: a component's design (Edit everywhere styles every placement), a part of a component nested inside a
+ * section, a repeat or slot.
  */
-export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelection | null {
+export function styleSelection(state: ProjectState, ref: ElementRef, reach: ReachChoice = noChoice): StyleSelection | null {
   // A slot of a placement, picked by its empty box, is a place for content: it has no styles of its own.
   if (ref.owner.kind === 'component' || ref.slot !== undefined) return null;
   // A part picked by name stays that part, as in the inspector, even on its component's root element: a component
@@ -166,14 +263,39 @@ export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelec
   const list = placementStyleControls(def, b.partId, def.kind === 'code' && codeTakesOverrides(def));
   if (list === null) return null;
   const t = partTarget(def, inst, b.owner, b.partId, list);
-  return { kind: 'single', label: `${t.label} in ${inst.name ?? def.name}`, where, targets: [{ ...t, part: null }] };
+  const parent = inst.name ?? def.name;
+  const repeated = repeatListOf(def, b.partId);
+  if (!repeated) return { kind: 'single', label: `${t.label} in ${parent}`, where, targets: [{ ...t, part: null }] };
+  const cards = cardsOf(def, inst, b.partId);
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const index = cards && itemId ? cards.items.findIndex((x) => x.id === itemId) : -1;
+  // A card that has left its list (removed, or an undo took it back) is neither its own style nor the shared one
+  // the author picked: nothing is offered until they pick again, as in the inspector.
+  if (cards && itemId && index < 0) return null;
+  const words = { partName: t.label.toLowerCase(), itemLabel: repeated.itemLabel.toLowerCase(), listLabel: repeated.label, parent, oneByOne: !!cards, picked: index >= 0, ...(cards ? { count: cards.items.length } : {}) };
+  // The card it was picked in is styled on its own when Apply to says so for that card (or, with nothing chosen
+  // yet, when the card has styles of its own), as the inspector and the canvas's spacing handles do.
+  if (cards && itemId && index >= 0) {
+    const mine = itemStylesOf(def, inst, b.partId, itemId);
+    if ((reach(itemReachKey(b.owner, inst.id, itemId)) ?? (mine ? 'item' : 'all')) === 'item') {
+      const name = cardName(cards.schema, cards.items, index);
+      // "Card “Planning & layout”", or "Card title of “Planning & layout”" for another part of the card.
+      const card = t.label.toLowerCase() === words.itemLabel ? (name.startsWith('“') ? `${t.label} ${name}` : name) : `${t.label} of ${name}`;
+      const { ownItems: _others, ...rest } = t;
+      return { kind: 'single', label: `${card} in ${parent}`, where, targets: [{ ...rest, part: null, itemId, styles: mine, shared: t.styles }], repeat: { ...words, kind: 'item', itemName: name } };
+    }
+  }
+  return { kind: 'single', label: `${t.label} in ${parent}`, where, targets: [{ ...t, part: null }], repeat: { ...words, kind: 'every', ...(t.ownItems ? { keeping: t.ownItems.length } : {}) } };
 }
 
 const hasRules = (s: ResponsiveStyles | undefined) => ALL_KEYS.some((sc) => Object.keys(s?.[sc] ?? {}).length > 0);
 
-/** Take the style a selection carries now. Null when it takes none; a copy with no sets has nothing to paste. */
-export function captureStyle(state: ProjectState, ref: ElementRef): StyleCopy | null {
-  const sel = styleSelection(state, ref);
+/**
+ * Take the style a selection carries now: for one card styled on its own, that card's own styles. Null when it takes
+ * none; a copy with no sets has nothing to paste.
+ */
+export function captureStyle(state: ProjectState, ref: ElementRef, reach: ReachChoice = noChoice): StyleCopy | null {
+  const sel = styleSelection(state, ref, reach);
   if (!sel) return null;
   const sets = sel.targets.filter((t) => hasRules(t.styles)).map((t) => ({ part: t.part, label: t.label, styles: JSON.parse(JSON.stringify(t.styles)) as ResponsiveStyles }));
   return { kind: sel.kind, label: sel.label, sets, vars: effectiveTokens(state).map((t) => tokenVar(t.id)) };
@@ -253,6 +375,50 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
   return { value: v, stored: canonicalStyleValue(v) };
 }
 
+/**
+ * What one card with nothing of its own at a size shows there from the style every card shares: nothing while its
+ * own All sizes value holds (a card's own rule beats the shared one at every size), else the shared value for that
+ * size, or for all sizes. `own` reads the card's own values as they stand then: now, or once the paste is done.
+ * Nothing is promised where a container width's value (the card's own, or the shared style's) can win instead: which
+ * one shows depends on the width of the box around the card.
+ */
+function sharedShown(t: StyleTarget, sc: StyleScopeKey, property: string, own: (k: StyleScopeKey) => StyleValue | undefined): StyleValue | undefined {
+  const at = parseStyleScopeKey(sc)!;
+  const base = styleScopeKey('base', at.state);
+  if (!t.itemId || isContainerScope(at.scope) || (at.scope !== 'base' && own(base) !== undefined)) return undefined;
+  if (CONTAINER_SCOPES.some((c) => own(styleScopeKey(c, at.state)) !== undefined || t.shared?.[styleScopeKey(c, at.state)]?.[property] !== undefined)) return undefined;
+  return t.shared?.[sc]?.[property] ?? (at.scope === 'base' ? undefined : t.shared?.[base]?.[property]);
+}
+
+/**
+ * The cards that keep a value of their own over a change to the style every card shares: at each size and state where
+ * the shared value in use changes (a size with nothing of its own uses All sizes), a card showing its own value there
+ * keeps it. A card's own rule beats the shared one at every size, so at a size it shows its value for that size, else
+ * its All sizes value. Container widths count as sizes: those the paste writes, and those a card has values for,
+ * which hold wherever that width does. `before` and `after` read the shared style now and once the paste is done.
+ */
+function keptOver(items: OwnItem[], property: string, changes: PasteChange[], before: (k: StyleScopeKey) => StyleValue | undefined, after: (k: StyleScopeKey) => StyleValue | undefined): KeptValue[] {
+  const out: KeptValue[] = [];
+  for (const it of items) {
+    const seen = new Set<StyleScopeKey>();
+    for (const st of new Set(changes.map((c) => c.state))) {
+      const base = styleScopeKey('base', st);
+      const widths = CONTAINER_SCOPES.filter((c) => changes.some((x) => x.state === st && x.scope === c) || it.styles[styleScopeKey(c, st)]?.[property] !== undefined);
+      for (const size of [...STYLE_SCOPES, ...widths]) {
+        const k = styleScopeKey(size, st);
+        const used = (read: (k: StyleScopeKey) => StyleValue | undefined) => (size === 'base' ? read(k) : (read(k) ?? read(base)));
+        if (sameValue(used(before), used(after))) continue;
+        const mine = it.styles[k]?.[property] !== undefined ? k : it.styles[base]?.[property] !== undefined ? base : undefined;
+        if (!mine || seen.has(mine)) continue;
+        seen.add(mine);
+        const at = parseStyleScopeKey(mine)!;
+        out.push({ id: it.id, name: it.name, scope: at.scope, ...(at.state ? { state: at.state } : {}), value: it.styles[mine]![property] });
+      }
+    }
+  }
+  return out;
+}
+
 const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k) => s[k]?.[property] !== undefined).map((k) => changeLabel(parseStyleScopeKey(k)!));
 
 /**
@@ -263,8 +429,8 @@ const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k)
  * the copy holds for that size are written. A property the copy doesn't set, and every one the destination doesn't
  * offer, is left as it is.
  */
-export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope): PastePlan {
-  const destination = styleSelection(state, ref);
+export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope, reach: ReachChoice = noChoice): PastePlan {
+  const destination = styleSelection(state, ref, reach);
   if (!destination) return { destination, rows: [], operations: [] };
   const now = effectiveTokens(state);
   const known: Known = { tokens: new Set(now.map((t) => t.id)), vars: new Set(now.map((t) => tokenVar(t.id))), copied: new Set(copy.vars) };
@@ -316,6 +482,10 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
           continue;
         }
         const changes: PasteChange[] = [];
+        // The destination's values for this style now, and once the paste is done (every size the copy doesn't have
+        // is cleared when the paste matches it at every size).
+        const now = (k: StyleScopeKey) => target.styles?.[k]?.[property];
+        const done = (k: StyleScopeKey) => (wants.has(k) ? wants.get(k)!.stored : scope === 'every' ? undefined : now(k));
         for (const sc of scopes) {
           const want = wants.get(sc);
           // One size writes only what the copy holds there; every size also clears what it doesn't.
@@ -323,11 +493,15 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
           const have = target.styles?.[sc]?.[property];
           const at = parseStyleScopeKey(sc)!;
           const where = { scope: at.scope, ...(at.state ? { state: at.state } : {}) };
-          if (want === undefined ? have !== undefined : !sameValue(want.stored, have)) changes.push(want === undefined ? { ...where, from: have } : { ...where, from: have, to: want.value });
+          // One card: the shared value it shows now where it has none of its own, or once its own is cleared.
+          const shown = want === undefined ? (have !== undefined ? sharedShown(target, sc, property, done) : undefined) : have === undefined ? sharedShown(target, sc, property, now) : undefined;
+          if (want === undefined ? have !== undefined : !sameValue(want.stored, have)) changes.push({ ...where, from: have, ...(want !== undefined ? { to: want.value } : {}), ...(shown !== undefined ? { shared: shown } : {}) });
         }
-        rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes });
+        // Onto the style every card shares: the cards whose own values for it beat the change.
+        const kept = changes.length ? keptOver(target.ownItems ?? [], property, changes, now, done) : [];
+        rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes, ...(kept.length ? { kept } : {}) });
         for (const c of changes)
-          operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), scope: c.scope, ...(c.state ? { state: c.state } : {}), property, value: c.to ?? null });
+          operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), ...(target.itemId ? { itemId: target.itemId } : {}), scope: c.scope, ...(c.state ? { state: c.state } : {}), property, value: c.to ?? null });
       }
     }
   }
