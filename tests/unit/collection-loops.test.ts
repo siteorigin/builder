@@ -514,13 +514,17 @@ describe('last review regressions', () => {
     expect(rows.every((t) => t.computed)).toBe(true);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('counts a connected list in the shipped theme’s Team grid as rows Find cannot replace in place', async () => {
+  it('counts a connected list in the shipped theme’s Team grid as rows Find cannot replace in place', async () => {
     let { s, id } = withTeam(studio());
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
     const { renderedContent } = await import('@generator/checks');
     const rows = renderedContent(s, s.pages[s.site.homePageId]).filter((t) => t.value === 'Ana Ruiz');
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((t) => t.computed)).toBe(true);
+    // The Team grid's own words are its placement's (#1341); the collection's names are changed in the collection.
+    const { findContent, planReplace } = await import('../../src/renderer/src/lib/find-content');
+    const found = findContent(s, 'Ana Ruiz').filter((m) => !m.field.entry);
+    expect(found.map((m) => [m.field.section, m.blocked])).toEqual([['Team', expect.stringMatching(/collection entry/)]]);
+    expect(planReplace(s, found, 'Ana Ross').operations).toEqual([]);
   });
 });
