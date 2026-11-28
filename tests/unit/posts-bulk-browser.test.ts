@@ -119,7 +119,7 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     await page.evaluate(([state, usage]) => (globalThis as unknown as { mount(s: unknown, u: unknown): void }).mount(state, usage), [state as unknown, assetUsages(state)] as const);
   }
   const row = (title: string) => page.getByRole('option', { name: new RegExp(`^${title}\\b`) });
-  const selected = () => page.locator('[role="option"][aria-selected="true"]').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.post));
+  const selected = () => page.locator('[role="option"][aria-selected="true"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-post')));
   /** The picked posts' actions, from the bar above the list. */
   async function action(name: string | RegExp) {
     await page.getByTestId('posts-bulk-actions').click();
@@ -169,6 +169,9 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     // Shift+click again runs from the anchor, the row last Cmd+clicked, in place of what was picked.
     await row('Four').click({ modifiers: ['Shift'] });
     await expect.poll(selected).toEqual(['en_two', 'en_three', 'en_four']);
+    // The open post, no longer picked, is still the one marked open.
+    expect(await row('One').getAttribute('aria-current')).toBe('true');
+    expect(await row('Two').getAttribute('aria-current')).toBe(null);
     // Escape lets go of them, and the open post is the selection again.
     await row('Three').press('Escape');
     await expect.poll(selected).toEqual(['en_one']);
@@ -184,6 +187,8 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Meta+Space');
     await expect.poll(selected).toEqual(['en_two', 'en_three', 'en_four', 'en_five']);
+    await page.keyboard.press('Shift+ArrowUp');
+    await expect.poll(selected).toEqual(['en_four', 'en_five']);
     await page.keyboard.press('Meta+a');
     await expect.poll(selected).toEqual(['en_one', 'en_two', 'en_three', 'en_four', 'en_five']);
   });
@@ -242,20 +247,79 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     const dialog = page.getByRole('dialog', { name: /Categories and tags of 2 posts/ });
     const news = dialog.getByRole('checkbox', { name: 'News' });
     // One of the two is filed under it: part-checked.
-    expect(await news.evaluate((el) => (el as HTMLInputElement).indeterminate)).toBe(true);
+    const mixed = () => news.evaluate((el) => (el as unknown as { indeterminate: boolean }).indeterminate);
+    expect(await mixed()).toBe(true);
+    // On for both, off for both, then back to as it is: Apply has nothing to do.
+    await news.click();
+    expect([await news.isChecked(), await mixed()]).toEqual([true, false]);
+    await news.click();
+    expect([await news.isChecked(), await mixed()]).toEqual([false, false]);
+    await news.click();
+    expect(await mixed()).toBe(true);
+    expect(await dialog.getByRole('button', { name: 'Apply' }).isDisabled()).toBe(true);
     await news.click();
     await dialog.getByRole('button', { name: 'Apply' }).click();
     await expect.poll(async () => (await project()).collections.posts.entries.en_two.terms?.categories).toEqual(['news']);
     expect(await so<unknown[]>('batches')).toEqual([[{ type: 'entry.update', collectionId: 'posts', entryId: 'en_two', terms: { categories: ['news'] } }]]);
+    // Now every one is: clearing it takes both out.
+    await action(/Categories and tags/);
+    await dialog.getByRole('checkbox', { name: 'News' }).click();
+    await dialog.getByRole('button', { name: 'Apply' }).click();
+    await expect.poll(async () => {
+      const p = await project();
+      return [p.collections.posts.entries.en_one.terms?.categories ?? [], p.collections.posts.entries.en_two.terms?.categories ?? []];
+    }).toEqual([[], []]);
   });
 
   it('a plain click opens the post and lets go of the picked ones', async () => {
     await mount(blog());
     await row('One').click({ modifiers: ['Meta'] });
     await row('Two').click({ modifiers: ['Meta'] });
-    await row('Three').click();
+    // Even on a picked row.
+    await row('Two').click();
     // The open post is the selection again once it opens.
-    await expect.poll(selected).toEqual(['en_three']);
+    await expect.poll(selected).toEqual(['en_two']);
+    expect(await row('Two').getAttribute('aria-current')).toBe('true');
     expect(await page.getByRole('group', { name: /selected/ }).count()).toBe(0);
+  });
+
+  it('deletes nothing when a picked post drops out of the pick while the question is open', async () => {
+    await mount(blog());
+    await page.getByRole('radio', { name: /Drafts/ }).click();
+    await row('Two').click({ modifiers: ['Meta'] });
+    await row('Three').click({ modifiers: ['Meta'] });
+    await action('Delete 2 posts…');
+    const dialog = page.getByRole('alertdialog').or(page.getByRole('dialog'));
+    await expect.poll(() => dialog.textContent()).toContain('Delete 2 posts?');
+    // Published meanwhile (as another window or the assistant would): the Drafts filter hides it, and lets go of it.
+    await so('apply', [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_three', draft: false }]);
+    await expect.poll(selected).toEqual(['en_two']);
+    await dialog.getByRole('button', { name: 'Delete 2 posts' }).click();
+    await expect.poll(async () => (await so<string[]>('toasts')).join(' ')).toContain('changed meanwhile, so nothing was changed');
+    expect(Object.keys((await project()).collections.posts.entries)).toHaveLength(5);
+  });
+
+  it('deletes nothing when a link to a picked post lands while the question is open', async () => {
+    await mount(blog());
+    await row('One').click({ modifiers: ['Meta'] });
+    await row('Two').click({ modifiers: ['Meta'] });
+    await action('Delete 2 posts…');
+    const dialog = page.getByRole('alertdialog').or(page.getByRole('dialog'));
+    await expect.poll(() => dialog.textContent()).toContain('Delete 2 posts?');
+    await so('apply', [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_three', body: [{ type: 'p', spans: [{ text: 'two', link: { type: 'entry', target: 'en_two' } }] }] }]);
+    await dialog.getByRole('button', { name: 'Delete 2 posts' }).click();
+    await expect.poll(async () => (await so<string[]>('toasts')).join(' ')).toContain('changed meanwhile, so none was deleted');
+    expect(Object.keys((await project()).collections.posts.entries)).toHaveLength(5);
+  });
+
+  it('a picked row’s menu offers what is done to them all, and its own commands', async () => {
+    await mount(blog());
+    await row('Four').click({ modifiers: ['Meta'] });
+    await row('Five').click({ modifiers: ['Meta'] });
+    await row('Five').click({ button: 'right' });
+    const menu = page.getByRole('menu');
+    await expect.poll(() => menu.getByRole('menuitem').allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining('Delete 2 posts…'), expect.stringContaining('Delete post…'), expect.stringContaining('Duplicate as draft'), expect.stringContaining('Deselect post')]));
+    await menu.getByRole('menuitem', { name: /Deselect post/ }).click();
+    await expect.poll(selected).toEqual(['en_four']);
   });
 });

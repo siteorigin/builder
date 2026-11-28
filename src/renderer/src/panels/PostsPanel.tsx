@@ -9,7 +9,7 @@ import { ListPeek, Marked, fold, found, shortDate } from '../components/ListText
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, POST_STATUSES, bulkDeletePlan, bulkStatusOps, bulkTermOps, pickRows, type TermChange, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, deleteAsksWhere, deleteFingerprint, deleteHolds, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, bulkDeletePlan, bulkStatusOps, bulkTermOps, pickRows, MAX_ENTRY_TERMS, type TermChange, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, deleteAsksWhere, deleteFingerprint, deleteHolds, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
@@ -200,7 +200,6 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
  */
 function BulkTermsDialog({ collectionId, ids, onApply, onClose }: { collectionId: string; ids: string[]; onApply: (changes: TermChange[]) => Promise<boolean>; onClose: () => void }) {
   const snap = useStore((s) => s.snapshot);
-  const uid = useId();
   const [want, setWant] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const c = snap && Object.hasOwn(snap.state.collections, collectionId) ? snap.state.collections[collectionId] : undefined;
@@ -255,9 +254,8 @@ function BulkTermsDialog({ collectionId, ids, onApply, onClose }: { collectionId
               const mixed = set === undefined && x.count > 0 && x.count < n;
               const checked = set ?? x.count === n;
               return (
-                <label key={x.id} className="posts-bulk-term" htmlFor={`${uid}-${g.id}-${x.id}`}>
+                <label key={x.id} className="posts-bulk-term">
                   <input
-                    id={`${uid}-${g.id}-${x.id}`}
                     type="checkbox"
                     checked={checked}
                     aria-checked={mixed ? 'mixed' : checked}
@@ -265,7 +263,17 @@ function BulkTermsDialog({ collectionId, ids, onApply, onClose }: { collectionId
                       if (el) el.indeterminate = mixed;
                     }}
                     disabled={busy}
-                    onChange={() => setWant((w) => ({ ...w, [k]: mixed ? true : !checked }))}
+                    // One some are filed under goes on for all, off for all, then back to as it is.
+                    onChange={() =>
+                      setWant((w) => {
+                        const partial = x.count > 0 && x.count < n;
+                        if (partial && set === false) {
+                          const { [k]: _gone, ...rest } = w;
+                          return rest;
+                        }
+                        return { ...w, [k]: mixed ? true : !checked };
+                      })
+                    }
                   />
                   <span className="grow">{x.label}</span>
                   <span className="posts-bulk-count">{mixed ? `${x.count} of ${n}` : ''}</span>
@@ -429,6 +437,7 @@ export function PostsPanel() {
    */
   const [picked, setPicked] = useState<Set<string> | null>(null);
   const anchor = useRef<string | null>(null);
+  const pickedNow = useRef<{ collectionId: string | null; ids: string[] }>({ collectionId: null, ids: [] });
   /** The picked posts' categories and tags being changed, in a dialog. */
   const [filing, setFiling] = useState<string[] | null>(null);
   /** A change to the picked posts on its way: one at a time. */
@@ -487,7 +496,10 @@ export function PostsPanel() {
   useEffect(() => {
     if (!picked?.size) return;
     const shown = new Set(rows.map((r) => r.id));
-    if ([...picked].some((id) => !shown.has(id))) setPicked(new Set([...picked].filter((id) => shown.has(id))));
+    if ([...picked].some((id) => !shown.has(id))) {
+      const left = [...picked].filter((id) => shown.has(id));
+      setPicked(left.length ? new Set(left) : null);
+    }
   }, [rows, picked]);
   // When the open entry changes (from here, the SEO view, an import), its row is brought into view without taking
   // focus from the writer; scrolling the list by hand in between is left alone.
@@ -841,6 +853,9 @@ export function PostsPanel() {
 
   /** The picked posts shown, in the list's order: what the selection's actions change. */
   const chosen = picked ? rows.filter((r) => picked.has(r.id)).map((r) => r.id) : [];
+  // What the panel shows and has picked as of its last render, for an action that waited (a save, a question) to see
+  // whether it still acts on what is picked.
+  pickedNow.current = { collectionId: collection?.settings.id ?? null, ids: chosen };
   const openHere = post && collection && post.collectionId === collection.settings.id ? post.entryId : null;
   /**
    * Pick with Shift (the range from the anchor) or Cmd/Ctrl (one more, or one less), as in a file manager. The first
@@ -855,11 +870,12 @@ export function PostsPanel() {
     const from = anchor.current && shown.includes(anchor.current) ? anchor.current : start;
     const next = pickRows(shown, picked ?? new Set(start ? [start] : []), from, id, how);
     if (how === 'toggle' || !from) anchor.current = id;
-    setPicked(next);
+    setPicked(next.size ? next : null);
   };
   /** Every post the list shows now, as found and filtered. */
   const pickAll = () => {
     if (readOnly || !rows.length) return;
+    ++navigation.current;
     anchor.current = rows[0].id;
     setPicked(new Set(rows.map((r) => r.id)));
   };
@@ -879,7 +895,18 @@ export function PostsPanel() {
     if (p && p.collectionId === collectionId && ids.includes(p.entryId) && !(await openSaved())) return null;
     const s = getState().snapshot;
     if (!s || s.workspaceKey !== workspaceKey || !Object.hasOwn(s.state.collections, collectionId) || isReadOnlyCollection(s.state.collections[collectionId])) return null;
+    if (!stillPicked(ids, collectionId)) return null;
     return { s, collectionId, workspaceKey };
+  };
+  /**
+   * Whether the list still shows the collection asked about, with just those posts picked: a post a filter hid, one
+   * picked or let go of, or another collection shown meanwhile means the author is asked to choose again.
+   */
+  const stillPicked = (ids: string[], collectionId: string) => {
+    const now = pickedNow.current;
+    const same = now.collectionId === collectionId && now.ids.length === ids.length && ids.every((id) => now.ids.includes(id));
+    if (!same) toast(`The ${pluralNoun(noun)} picked changed meanwhile, so nothing was changed. Choose again.`, 'error');
+    return same;
   };
   /** Run a change to the picked posts, one at a time. */
   const bulk = async (work: () => Promise<unknown>) => {
@@ -925,7 +952,7 @@ export function PostsPanel() {
         });
         if (!ok) return;
         const now = sameProject(at.workspaceKey);
-        if (!now) return;
+        if (!now || !stillPicked(ids, at.collectionId)) return;
         const again = bulkStatusOps(now.state, at.collectionId, ids, draft, today);
         if (JSON.stringify(again) !== JSON.stringify(plan)) return void toast(`Those ${pluralNoun(noun)} changed meanwhile, so none was published. Publish them again to check them.`, 'error');
         s = now;
@@ -942,7 +969,9 @@ export function PostsPanel() {
     await bulk(async () => {
       const at = await ready(ids);
       if (!at) return;
-      const ops = bulkTermOps(at.s.state, at.collectionId, ids, changes);
+      const { ops, full } = bulkTermOps(at.s.state, at.collectionId, ids, changes);
+      // Every one is filed as asked, or none is: one already at the most it can hold says so, and the dialog stays.
+      if (full.length) return void toast(`${someOf(full)} ${full.length === 1 ? 'is' : 'are'} filed under ${MAX_ENTRY_TERMS} of one grouping, the most ${withArticle(noun)} can have. Take one off ${full.length === 1 ? 'it' : 'them'} first.`, 'error');
       if (!ops.length) return void (done = true);
       const r = await commitOps(ops, `File ${many(ops.length)}`, undefined, at.s.revision);
       if (!r?.ok) return;
@@ -981,13 +1010,13 @@ export function PostsPanel() {
       });
       if (!ok) return;
       const now = sameProject(at.workspaceKey);
-      if (!now) return;
+      if (!now || !stillPicked(ids, at.collectionId)) return;
       const again = bulkDeletePlan(now.state, at.collectionId, ids);
       if (JSON.stringify(again.free) !== JSON.stringify(plan.free)) return void toast(`What links to or names those ${pluralNoun(noun)} changed meanwhile, so none was deleted. Delete them again to check.`, 'error');
       const r = await commitOps(again.ops, `Delete ${many(n)}`, undefined, now.revision);
       if (!r?.ok) return;
-      // The ones that stay are still picked, to delete one at a time.
-      setPicked((was) => (was ? new Set(again.held.map((x) => x.id).filter((id) => was.has(id))) : was));
+      // The ones that stay are still picked, to delete one at a time: the deleted ones go from the pick as they go from
+      // the list, leaving whatever else was picked meanwhile.
       toast(`Deleted ${many(n)}`, 'info', undoOf(r));
     });
 
@@ -1105,7 +1134,10 @@ export function PostsPanel() {
     const current = post?.entryId === r.id && post.collectionId === collection?.settings.id;
     // One of several picked: what is done to them all, as a file manager offers.
     const several = !readOnly && chosen.length > 1 && chosen.includes(r.id);
-    const items: MenuItem[] = several ? bulkItems(chosen) : [
+    const isPicked = chosen.includes(r.id);
+    // Picking from the menu too, for a keyboard where ⌘Space is the system's.
+    const pickItem: MenuItem[] = readOnly ? [] : [{ label: isPicked ? `Deselect ${noun}` : `Select ${noun}`, icon: <ListChecks />, description: isPicked ? undefined : 'To publish, unpublish, file or delete it with others.', onSelect: () => pick(r.id, 'toggle') }];
+    const own: MenuItem[] = [
       { label: current ? 'Open (already open)' : `Open ${noun}`, disabled: current, onSelect: () => void open(r.id) },
       ...(readOnly
         ? []
@@ -1115,6 +1147,9 @@ export function PostsPanel() {
             { label: `Delete ${noun}…`, icon: <Trash2 />, danger: true, onSelect: () => void remove(r.id) }
           ])
     ];
+    // Of several picked: what is done to them all first, then this one's own commands (Delete asks what takes the
+    // place of one that is linked to, which deleting them all leaves).
+    const items: MenuItem[] = several ? [...bulkItems(chosen), { separator: true }, { heading: r.title }, ...own, { separator: true }, ...pickItem] : [...own, ...(pickItem.length ? [{ separator: true }, ...pickItem] : [])];
     setRowMenuFor(r.id);
     const label = several ? `${many(chosen.length)} selected` : `${r.title} options`;
     if (at instanceof HTMLElement) rowMenu.openAt(at, items, label);

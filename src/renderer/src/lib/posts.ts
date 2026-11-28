@@ -12,6 +12,7 @@ import { fold } from './fold';
 import { entryLinkUses } from '@engine/page-links';
 import { canReplaceEntry, entryReferenceUses } from '@engine/collections';
 import { deleteDestinations } from './content';
+import { resolveRedirects } from '@shared/redirects';
 
 /** A collection entry the Posts workspace has open. */
 export interface PostRef {
@@ -387,10 +388,10 @@ export function pickRows(shown: readonly string[], picked: ReadonlySet<string>, 
   return new Set(shown.slice(a, b + 1));
 }
 
-/** The picked entries still in the collection, in the order the list shows them. */
+/** The picked entries still in the collection, in the order given; none of a synced one, whose entries change there. */
 function pickedEntries(state: ProjectState, collectionId: string, ids: readonly string[]): EntryDoc[] {
   const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
-  if (!c) return [];
+  if (!c || isSyncedCollection(c.settings)) return [];
   return [...new Set(ids)].flatMap((id) => (Object.hasOwn(c.entries, id) && c.entries[id] && typeof c.entries[id] === 'object' ? [c.entries[id]] : []));
 }
 
@@ -420,9 +421,10 @@ export interface TermChange {
  * Filing the picked entries under terms of the collection's groupings, or taking them out of them, as one change: one
  * update for each entry it changes, with every change to it. Each keeps its other terms; one gone from its grouping
  * (deleted, undone away) is dropped, since the engine refuses a list naming it. Terms the collection does not have
- * change nothing.
+ * change nothing. `full` names the entries that would be filed under more terms of one grouping than an entry can
+ * hold; they are left as they are, and the caller says so rather than sending a change that leaves them out.
  */
-export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], changes: readonly TermChange[]): EditOperation[] {
+export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], changes: readonly TermChange[]): { ops: EditOperation[]; full: string[] } {
   const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
   const termsIn = (tax: string) => {
     const t = c?.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, tax) ? c.settings.taxonomies[tax] : undefined;
@@ -433,7 +435,8 @@ export function bulkTermOps(state: ProjectState, collectionId: string, ids: read
     return !!terms && Object.hasOwn(terms, x.termId);
   });
   const taxonomies = [...new Set(real.map((x) => x.taxonomyId))];
-  return pickedEntries(state, collectionId, ids).flatMap((e): EditOperation[] => {
+  const full: string[] = [];
+  const ops = pickedEntries(state, collectionId, ids).flatMap((e): EditOperation[] => {
     const next: Record<string, string[]> = {};
     for (const tax of taxonomies) {
       const terms = termsIn(tax)!;
@@ -442,11 +445,17 @@ export function bulkTermOps(state: ProjectState, collectionId: string, ids: read
       let ids = [...new Set(had.filter((x) => Object.hasOwn(terms, x)))];
       // Taken out first, so a term added in place of one taken out fits; one past the most an entry can hold is not added.
       for (const x of real) if (x.taxonomyId === tax && !x.on) ids = ids.filter((id) => id !== x.termId);
-      for (const x of real) if (x.taxonomyId === tax && x.on && !ids.includes(x.termId) && ids.length < MAX_ENTRY_TERMS) ids = [...ids, x.termId];
+      for (const x of real) if (x.taxonomyId === tax && x.on && !ids.includes(x.termId)) ids = [...ids, x.termId];
+      // More than an entry can hold (one written by hand may hold more already): it is named, and left as it is.
+      if (ids.length > MAX_ENTRY_TERMS) {
+        full.push(e.title);
+        return [];
+      }
       if (ids.length !== had.length || ids.some((id, i) => id !== had[i])) next[tax] = ids;
     }
     return Object.keys(next).length ? [{ type: 'entry.update', collectionId, entryId: e.id, terms: next }] : [];
   });
+  return { ops, full };
 }
 
 /**
@@ -463,6 +472,8 @@ export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: r
   for (const u of entryLinkUses(state, set)) holds.add(u.link.target);
   const kept: unknown = state.site.redirects;
   if (Array.isArray(kept)) for (const r of kept) if (typeof (r as { entryId?: unknown })?.entryId === 'string') holds.add((r as { entryId: string }).entryId);
+  // An old address kept by the address it goes to rather than by the entry, through other old addresses or not.
+  for (const view of ['website', 'preview'] as const) for (const r of resolveRedirects(state, view).live) if (r.entry) holds.add(r.entry.entry.id);
   for (const r of entryReferenceUses(state, set)) {
     const v: unknown = r.entry.values?.[r.field];
     for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string') holds.add(id);
