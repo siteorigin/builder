@@ -19,7 +19,8 @@
   :where(:root[data-appearance='dark']) { .btn-danger-fill { color: #2a0b09; } }
   .btn-danger:hover:not(:disabled, [aria-disabled='true']) { background: var(--red-soft); }
   .btn-sm { height: 26px; padding: 0 9px; font-size: 12px; }
-  .btn-lg { height: 38px; padding: 0 18px; font-size: 15px; }
+  .btn-lg { height: 40px; padding: 0 20px; gap: 8px; font-size: 16px; }
+  .btn-lg svg { width: 17px; height: 17px; }
   /* Unavailable, natively or kept focusable with aria-disabled (so its reason can be read): one neutral face for
      every variant, with no lift and no hover, so it reads as off rather than as a faded action. Every variant but
      ghost keeps a complete edge, so it still reads as a button where the fill is faint (dark); ghost keeps the fill

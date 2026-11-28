@@ -36,20 +36,18 @@
     .welcome-side .welcome-action.primary:not(:disabled) { box-shadow: none; }
     .welcome-side .welcome-action.primary:not(:disabled) .ico { background: rgb(16 32 63 / 0.12); }
   }
-  /* Waiting is drawn, not faded: a flat neutral face, quieter words, no lift. */
-  .welcome-side .welcome-action:disabled:not([aria-busy='true']) { opacity: 1; background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
-  .welcome-side .welcome-action:disabled:not([aria-busy='true']) :is(strong, .grow > span) { color: var(--text-3); }
-  .welcome-side .welcome-action:disabled:not([aria-busy='true']) .ico { background: var(--active); color: var(--text-3); }
-  .welcome-side .welcome-action:disabled .kbd { color: var(--text-3); background: transparent; border-color: var(--border); }
+  /* Waiting is drawn, not faded: the action card's own unavailable face (primitives.css), and its key in the same ink. */
+  .welcome-side .welcome-action:disabled .kbd { color: var(--disabled-ink); background: transparent; border-color: var(--border-strong); }
   /* The rail action that started an open is the one thing on its way: raised, ringed, and saying so. */
   .welcome-side .welcome-action[aria-busy='true'] { opacity: 1; background: var(--raised); box-shadow: 0 0 0 1px var(--accent); }
   .welcome-side .welcome-action[aria-busy='true'] .ico { background: var(--accent-soft); }
   .welcome-side .welcome-action[aria-busy='true'] strong { color: var(--text); }
   .welcome-side .welcome-action[aria-busy='true'] .grow > span:not(.title) { color: var(--accent-text); font-weight: 600; }
   .welcome-foot { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
-  /* The button's own padding hangs outside the column, so its icon and the text below share the cards' left edge. */
-  .welcome-foot .btn { justify-content: flex-start; align-self: stretch; margin-inline: -12px; }
-  .welcome-foot .btn:disabled { opacity: 1; color: var(--text-3); }
+  /* The button's own padding hangs outside the column on the left, so its icon and the text below share the cards'
+     left edge; it is as wide as its words, so its hover and waiting face never run past the column on the right. */
+  .welcome-foot .btn { justify-content: flex-start; align-self: flex-start; margin-left: -12px; }
+  .welcome-foot .btn:disabled { opacity: 1; }
   .welcome-foot p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-3); }
 
   .welcome-main { --pane-x: 40px; --measure: 880px; padding: 56px var(--pane-x) 40px; overflow: auto; }
@@ -198,47 +196,81 @@
   .recent-card > .when .recent-enter { margin-right: 8px; padding: 0 5px; line-height: 16px; font-size: 11px; color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: transparent; }
   @media (prefers-reduced-motion: reduce) { .recent-item, .recent-card, .recent-go svg { transition: none; } }
 
-  /* First run: the promise and the one action, a sketch of what it makes, then the three steps. */
-  /* First run has nothing else on the pane, so the panel sits in its optical centre (a little above the middle). */
-  .welcome-main:has(> .welcome-hero) { display: flex; flex-direction: column; padding-bottom: 72px; }
-  .welcome-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 28px 44px; align-items: center; width: 100%; max-width: 1000px; margin: auto; padding: 40px 40px 30px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: var(--card-ring); }
-  /* Its button waits like everything else while a project opens: drawn, not faded. */
-  .welcome-hero .btn-primary:disabled { opacity: 1; background: var(--panel-2); border-color: var(--border-strong); color: var(--text-3); box-shadow: none; }
+  /* First run: the promise and the one action, the site it starts you with, then the three steps. */
+  /* First run has nothing else on the pane, so the panel sits at its optical centre: the deeper bottom padding lifts
+     it above the middle, more on a tall window. */
+  .welcome-main:has(> .welcome-hero) { display: flex; flex-direction: column; padding-bottom: max(72px, 11vh); }
+  .welcome-hero { display: grid; grid-template-columns: minmax(0, 1fr) min(440px, 46%); gap: 32px 48px; align-items: center; width: 100%; max-width: 1040px; margin: auto; padding: 44px 44px 32px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: var(--card-ring); }
   .welcome-hero .hero-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
   .welcome-main .welcome-hero h2 { margin: 0; font-size: 32px; line-height: 1.15; letter-spacing: -0.025em; color: var(--text); }
-  .hero-pitch { margin: 0; max-width: 46ch; text-wrap: pretty; font-size: 15px; line-height: 1.55; color: var(--text-2); }
-  .welcome-hero .hero-copy .btn { margin-top: 6px; }
-  .first-steps { grid-column: 1 / -1; counter-reset: first-step; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 24px; margin: 0; padding: 22px 0 0; list-style: none; border-top: 1px solid var(--border); }
-  .first-steps li { counter-increment: first-step; display: grid; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: 22px auto; align-content: start; column-gap: 10px; row-gap: 2px; text-wrap: pretty; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-  .first-steps li::before { content: counter(first-step); grid-row: 1 / span 2; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text); font-size: 12px; font-weight: 600; }
-  .first-steps li b { font-size: 13px; color: var(--text); font-weight: 600; line-height: 22px; }
+  .hero-pitch { margin: 0; max-width: 40ch; text-wrap: pretty; font-size: 16px; line-height: 1.55; color: var(--text-2); }
+  .welcome-hero .hero-copy .btn { margin-top: 8px; }
+  /* Numbered by plain figures in the quiet ink: the order is the list's, and a ringed badge would outweigh the titles. */
+  .first-steps { grid-column: 1 / -1; counter-reset: first-step; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 32px; margin: 0; padding: 24px 0 0; list-style: none; border-top: 1px solid var(--border); }
+  .first-steps li { counter-increment: first-step; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-content: start; column-gap: 10px; row-gap: 2px; text-wrap: balance; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+  /* Drawn only: the list already numbers its items for a screen reader. */
+  .first-steps li::before { content: counter(first-step) / ''; grid-row: 1 / span 2; font-size: 14px; font-weight: 600; line-height: 21px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .first-steps li b { font-size: 14px; color: var(--text); font-weight: 600; line-height: 21px; }
 
-  /* The sketch: the New project dialog's wireframe bars at a larger size. The page is a website, so like the canvas it
-     keeps its own light colours in both themes; only the window chrome around it follows the app. */
-  .hero-art { align-self: stretch; display: grid; place-items: center; }
-  .sketch-window { width: 100%; max-width: 360px; border-radius: var(--r-md); background: var(--panel); box-shadow: 0 0 0 1px var(--border-strong), 0 10px 24px -14px rgb(28 39 66 / 0.24); overflow: hidden; }
-  :where(:root[data-appearance='dark']) { .sketch-window { box-shadow: 0 0 0 1px var(--border-strong), 0 12px 28px -14px rgb(0 0 0 / 0.6); } }
-  .sketch-window i { display: block; border-radius: var(--r-xs); }
-  .sketch-bar { display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px; background: var(--panel-2); box-shadow: inset 0 -1px 0 var(--border); }
-  .sketch-bar i { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--text-3) 35%, transparent); }
-  .sketch-bar b { flex: 1; height: 10px; margin-left: 10px; margin-right: 34px; border-radius: var(--r-xs); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border); }
-  .sketch-page { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; background: #ffffff; color: var(--ink); }
-  .sketch-nav { display: flex; align-items: center; gap: 10px; font-size: 8px; color: rgb(35 48 79 / 0.7); }
-  .sketch-nav .logo { margin-right: auto; font-size: 10px; font-weight: 700; letter-spacing: -0.01em; color: var(--ink); }
-  .sketch-hero { display: flex; align-items: center; gap: 12px; padding: 26px 12px 14px 14px; border-radius: var(--r-sm); background: linear-gradient(180deg, var(--sky-1), color-mix(in srgb, var(--sky-1) 45%, var(--sky-2))); }
-  .sketch-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 6px; }
-  .sketch-h1 { display: block; font-size: 16px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--ink); }
-  .sketch-p { font-size: 8.5px; line-height: 1.35; color: rgb(35 48 79 / 0.78); }
-  .sketch-cta { margin-top: 2px; padding: 3px 7px; border-radius: 3px; background: var(--ink); color: #fff; font-size: 8px; font-weight: 600; }
-  /* A little picture: a flower in the mark's sky and ink. */
-  .sketch-pic { flex: none; width: 72px; height: 72px; border-radius: var(--r-sm); box-shadow: 0 0 0 1px rgb(35 48 79 / 0.1); }
-  /* Selected the way the canvas selects: a 1.5px ring and a name tag. */
-  .sketch-selected { position: relative; padding: 3px 5px; margin: -3px -5px 2px; border-radius: 2px; box-shadow: 0 0 0 1.5px var(--select); }
-  .sketch-tag { position: absolute; left: -1.5px; bottom: calc(100% + 1.5px); padding: 1px 5px; border-radius: 3px 3px 0 0; background: var(--select); color: #fff; font-size: 9px; font-weight: 600; line-height: 13px; }
-  .sketch-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .sketch-cards span { display: flex; flex-direction: column; gap: 4px; padding: 4px 4px 5px; border-radius: var(--r-sm); background: #eff2f6; box-shadow: inset 0 0 0 1px rgb(28 39 66 / 0.08); font-size: 8px; font-weight: 600; color: var(--ink); }
-  .sketch-cards svg { display: block; width: 100%; height: 20px; border-radius: 3px; background: var(--sky-1); }
-  @media (max-width: 1200px) { .welcome-hero { grid-template-columns: minmax(0, 1fr) minmax(0, 300px); padding: 28px 28px 24px; gap: 24px 28px; } .welcome-main .welcome-hero h2 { font-size: 28px; } .sketch-h1 { font-size: 14px; } .sketch-pic { width: 60px; height: 60px; } }
+  /* The sketch: the Business starter's home page on Foundation, in a window. The page is a website, so like the canvas
+     it keeps its own colours (Foundation's paper, ink, green and display serif) in both themes; only the window around
+     it follows the app. Everything in it is sized in em from one base that follows the sketch's width, so it scales as
+     one picture and its words stay readable at every window size. */
+  .hero-art { align-self: stretch; display: grid; place-items: center; container-type: inline-size; }
+  .sketch-window { --site-paper: #fbfaf7; --site-ink: #191a18; --site-muted: #5c5f59; --site-line: #e3dfd5; --site-brand: #1f5a4c; --site-display: Georgia, 'Times New Roman', serif; width: 100%; font-size: max(8.6px, 2.273cqi); border-radius: var(--r-md); background: var(--panel); box-shadow: 0 0 0 1px var(--border-strong), 0 14px 32px -18px rgb(28 39 66 / 0.3); overflow: hidden; }
+  :where(:root[data-appearance='dark']) { .sketch-window { box-shadow: 0 0 0 1px var(--border-strong), 0 16px 36px -18px rgb(0 0 0 / 0.7); } }
+  .sketch-bar { display: flex; align-items: center; gap: 0.5em; height: 2.6em; padding: 0 1em; background: var(--panel-2); box-shadow: inset 0 -1px 0 var(--border); }
+  .sketch-bar i { display: block; width: 0.75em; height: 0.75em; border-radius: 50%; background: color-mix(in srgb, var(--text-3) 35%, transparent); }
+  .sketch-bar b { flex: 1; height: 1.2em; margin-left: 1em; margin-right: 3.4em; border-radius: var(--r-xs); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border); }
+  :where(:root[data-appearance='dark']) { .sketch-bar b { background: var(--panel); box-shadow: inset 0 0 0 1px var(--border-strong); } }
+  .sketch-page { overflow: hidden; padding: 1.3em 1.8em 0; background: var(--site-paper); color: var(--site-ink); }
+  .sketch-nav { display: flex; align-items: center; gap: 1.5em; font-size: 1.05em; white-space: nowrap; color: var(--site-muted); }
+  .sketch-nav .logo { margin-right: auto; font-family: var(--site-display); font-size: 1.3em; font-weight: 600; letter-spacing: -0.01em; color: var(--site-ink); }
+  /* The header's button as an outline, so the page has no second filled block beside the app's own button. */
+  .sketch-cta { padding: 0.4em 0.95em; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--site-brand); color: var(--site-brand); font-weight: 600; }
+  /* The page is as tall as its words: the picture takes the copy's height and runs off the window's bottom edge. */
+  .sketch-hero { display: grid; grid-template-columns: minmax(0, 1fr) 15.5em; align-items: stretch; gap: 1.8em; margin-top: 2.4em; }
+  .sketch-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 1.1em; padding: 1.6em 0 2.2em; }
+  /* Selected the way the canvas selects: a ring and a name tag in the fixed selection blue, with the caret of the
+     text being typed and the pointer that clicked it. */
+  .sketch-selected { position: relative; padding: 0.3em 0.45em; margin: 0 -0.45em 0.3em; border-radius: 0 2px 2px; box-shadow: 0 0 0 1.5px var(--select); }
+  .sketch-tag { position: absolute; left: -1.5px; bottom: calc(100% + 1.5px); padding: 0 0.55em; border-radius: 3px 3px 0 0; background: var(--select); color: #fff; font-size: 1em; font-weight: 600; line-height: 1.6em; }
+  .sketch-h1 { display: block; font-family: var(--site-display); font-size: 2.5em; font-weight: 500; line-height: 1.1; letter-spacing: -0.01em; text-wrap: balance; color: var(--site-ink); }
+  .sketch-caret { display: inline-block; width: max(1.5px, 0.06em); height: 0.95em; margin-left: 0.04em; vertical-align: -0.12em; background: var(--select); }
+  .sketch-pointer { position: absolute; right: -0.9em; bottom: -1.2em; width: 1.6em; height: 2.2em; overflow: visible; fill: #111; stroke: #fff; stroke-width: 1.3; stroke-linejoin: round; filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.3)); }
+  .sketch-p { max-width: 21em; font-size: 1.15em; line-height: 1.45; color: var(--site-muted); }
+  .sketch-pic { display: block; width: 100%; height: auto; min-height: 14em; contain: size; object-fit: cover; border-radius: 0.8em 0.8em 0 0; }
+  /* At the window's smallest sizes the sketch is narrow: the site keeps its heading, lead and picture, and lets its
+     menu links go one by one, as a narrow site would, rather than shrinking its words below reading. */
+  @container (max-width: 380px) {
+    .sketch-nav { gap: 1.2em; }
+    .sketch-nav span:nth-child(3) { display: none; }
+  }
+  @container (max-width: 355px) {
+    .sketch-nav span:nth-child(2) { display: none; }
+    .sketch-hero { grid-template-columns: minmax(0, 1fr) 13em; gap: 1.4em; }
+    .sketch-copy { padding-top: 1.2em; }
+    .sketch-h1 { font-size: 2.3em; }
+  }
+
+
+  @media (max-width: 1200px) {
+    .welcome-hero { padding: 32px 32px 26px; gap: 26px 32px; }
+    .welcome-main .welcome-hero h2 { font-size: 28px; }
+    .hero-pitch { font-size: 15px; text-wrap: balance; }
+  }
+  /* A large monitor: the panel, its words and its picture grow together, so the first run is not a postcard in an
+     empty pane. */
+  @media (min-width: 1800px) and (min-height: 1000px) {
+    .welcome-hero { grid-template-columns: minmax(0, 1fr) min(520px, 46%); max-width: 1280px; padding: 60px 60px 44px; gap: 44px 72px; }
+    .welcome-main .welcome-hero h2 { font-size: 42px; }
+    .hero-pitch { font-size: 18px; }
+    .welcome-hero .btn-lg { height: 44px; padding: 0 22px; font-size: 17px; }
+    .welcome-hero .btn-lg svg { width: 18px; height: 18px; }
+    .first-steps { padding-top: 30px; gap: 16px 40px; }
+    .first-steps li { font-size: 14.5px; }
+    .first-steps li b, .first-steps li::before { font-size: 15.5px; line-height: 23px; }
+  }
 
   .welcome { width: 100%; }
   /* The top of Welcome's main area is a window drag strip; the scrolling pane itself is not. */
