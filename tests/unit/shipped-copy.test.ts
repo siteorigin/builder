@@ -194,5 +194,6 @@ describe('a section as a publication carries it', () => {
     expect(rendersAsShipped({ ...bento, source: clean.slice(0, title) + ' data-so-text="sample"' + clean.slice(title) })).toBe(false);
     expect(rendersAsShipped({ ...bento, source: clean.replace('{featured?.title}', '{featured?.description}') })).toBe(false);
     expect(rendersAsShipped({ ...bento, source: clean, name: 'Bento (mine)' })).toBe(false);
+    expect(rendersAsShipped({ ...bento, source: clean, properties: { ...bento.properties, heading: { ...bento.properties.heading, default: 'Mine' } as PropSchema } })).toBe(false);
   });
 });

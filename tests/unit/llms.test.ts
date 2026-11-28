@@ -286,11 +286,14 @@ describe('Markdown copies', () => {
 
   it('writes the same words for a publication, whose sections carry no editor markers (#1351)', async () => {
     const { withoutCodeMarkers } = await import('../../src/main/codecheck');
-    const s = run(createStarterState('business', 'Harbor Studio', false), { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true });
+    const started = run(createStarterState('business', 'Harbor Studio', false), { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true });
+    // The comparison of plans, which the Markdown writes as a table of its own.
+    const s = insert(started, started.site.homePageId, 'pricing.compare', {}).state;
     const published = structuredClone(s);
     for (const def of Object.values(published.components)) if (def.kind === 'code' && typeof def.source === 'string') def.source = await withoutCodeMarkers(def.source);
     const home = files(s).get('static/index.html.md')!;
     expect(home).toContain('Calm, considered spaces for everyday life');
+    expect(home).toContain('| Consultation |');
     expect(files(published).get('static/index.html.md')).toBe(home);
   });
 

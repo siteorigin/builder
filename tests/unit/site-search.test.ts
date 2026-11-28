@@ -368,13 +368,42 @@ describe('site search index', () => {
     ])
       expect(homeText).toContain(words);
     expect(searchPages(pages, 'wheel throwing').results.map((r) => r.route)).toContain('/');
+    // In the order the page shows them: a table's heading over its cells, every named plan of the comparison.
+    expect(homeText.indexOf('Workshop timetable')).toBeLessThan(homeText.indexOf('Wheel throwing'));
+    expect(homeText).toContain('Full service');
+    expect(homeText).toContain('Quoted after the visit');
     // A publication carries the sections with the editor's markers taken out of their code: they show the same.
     const { withoutCodeMarkers } = await import('../../src/main/codecheck');
     const published = structuredClone(s);
     for (const def of Object.values(published.components)) if (def.kind === 'code' && typeof def.source === 'string') def.source = await withoutCodeMarkers(def.source);
     expect(buildSearchIndex(published).find((e) => e.route === '/')!.text).toBe(homeText);
-    // A table with nothing to show adds no words, and a button that goes nowhere is no part of the site.
+    // A button that goes nowhere is no part of the site.
     expect(homeText.split('\n')).not.toContain('Book a session');
+    // Prices the comparison's placement hides at every size are not found; its plans' names still are.
+    const compare = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance' && s.components[(n as InstanceNode).definitionId]?.componentId === 'pricing.compare')!;
+    const noPrices = apply(s, [{ type: 'node.setStyle', owner: home(s), nodeId: compare.id, partId: 'price', scope: 'base', property: 'hidden', value: true }]);
+    const priced = pageText(noPrices, noPrices.pages[noPrices.site.homePageId]).split('\n');
+    expect(priced).toContain('Consultation');
+    expect(priced).not.toContain('$350');
+  });
+
+  it('keeps the words of a design around the page’s own content in the order they show (#1351)', () => {
+    let s = withSearch();
+    const spec: DesignSpec = {
+      componentId: 'project.wrap',
+      name: 'Wrap',
+      properties: { before: P.str('Before', 'Design before'), after: P.str('After', 'Design after') },
+      parts: { root: { nodeId: 'root', label: 'Wrap' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'section', { name: 'Wrap' }, [b.text('before', 'p', prop('before')), b.slot('body', 'body'), b.text('after', 'p', prop('after'))])
+    } as DesignSpec;
+    const def = foundationDesign(spec);
+    projectDesign((s = structuredClone(s)), spec);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), definitionId: def.id } as EditOperation]);
+    s = apply(r.state, [{ type: 'node.insert', owner: home(s), parentId: r.results[0].nodeId, slot: 'body', primitive: 'paragraph', text: 'Page slot words' } as EditOperation]);
+    const text = pageText(s, s.pages[s.site.homePageId]);
+    expect(text).toContain('Page slot words');
+    expect([text.indexOf('Design before'), text.indexOf('Page slot words'), text.indexOf('Design after')]).toEqual([...[text.indexOf('Design before'), text.indexOf('Page slot words'), text.indexOf('Design after')]].sort((a, b) => a - b));
   });
 });
 
