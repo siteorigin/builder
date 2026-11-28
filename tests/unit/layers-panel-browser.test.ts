@@ -136,14 +136,14 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
     await sections().nth(1).locator('.layer-name').dispatchEvent('contextmenu');
     await item.waitFor();
     // As an AI run or a change on disk takes it away: a new snapshot without the section.
-    await page.evaluate((id) => {
-      const { snapshot } = (window as any).store.getState();
+    await page.evaluate(`(() => {
+      const { snapshot } = window.store.getState();
       const state = structuredClone(snapshot.state);
       const p = state.pages[state.site.homePageId];
-      p.rootIds = p.rootIds.filter((x: string) => x !== id);
-      delete p.nodes[id];
-      (window as any).store.setState({ snapshot: { ...snapshot, state, revision: 2 } });
-    }, gone);
+      p.rootIds = p.rootIds.filter((x) => x !== '${gone}');
+      delete p.nodes['${gone}'];
+      window.store.setState({ snapshot: { ...snapshot, state, revision: 2 } });
+    })()`);
     await item.click();
     expect(await chat()).toEqual(['ask', 'inspect']);
     // A row still there is edited.
