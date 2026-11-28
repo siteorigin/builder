@@ -166,7 +166,7 @@ const LOOK: Record<OperationType, Look> = {
 };
 
 /** page.update fields only search engines, sharing previews and the editor read; a language counts once it turns the text. */
-const PAGE_METADATA = new Set(['type', 'pageId', 'seoTitle', 'noindex', 'searchHidden', 'canonical', 'updatedAt', 'structuredData', 'linkTranslationTo', 'language']);
+const PAGE_METADATA = new Set(['type', 'pageId', 'preferStaticHtml', 'seoTitle', 'noindex', 'searchHidden', 'canonical', 'updatedAt', 'structuredData', 'linkTranslationTo', 'language']);
 /** page.update fields page lists elsewhere show when a card follows the page (see page-teasers.ts). */
 const PAGE_LISTED = new Set(['description', 'socialImage']);
 /** page.update fields other pages show too: navigation, links to the page and News lists. */

@@ -1233,6 +1233,10 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   if (op.searchHidden !== undefined) page.seo.searchHidden = op.searchHidden || undefined;
   if (op.showHeader !== undefined) page.showHeader = op.showHeader;
   if (op.showFooter !== undefined) page.showFooter = op.showFooter;
+  if (op.preferStaticHtml !== undefined) {
+    if (op.preferStaticHtml) page.preferStaticHtml = true;
+    else delete page.preferStaticHtml;
+  }
   if (op.language !== undefined) {
     const language = op.language.trim();
     if (language && !isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);

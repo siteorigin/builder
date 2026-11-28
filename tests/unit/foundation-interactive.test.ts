@@ -320,9 +320,10 @@ describe('without scripts (#885)', () => {
   it('shows every tab’s panel under its label and both billing periods, without the controls that would do nothing', async () => {
     const { state } = inserted(SHOWCASE);
     const files = generateProject(state);
-    // The page marks itself as running scripts in <head>, before the body shows; without that mark nothing a state
-    // hides is hidden.
-    expect(files.get('src/app.html')).toMatch(new RegExp(`<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>\\n\\t\\t%sveltekit\\.head%`));
+    // The page marks itself as running scripts first thing in <head>, before the body shows (the layout's script, on
+    // every page that runs them); without that mark nothing a state hides is hidden.
+    expect(files.get('src/routes/+layout.svelte')).toMatch(new RegExp(`<svelte:head>\\n\\t<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>`));
+    expect(files.get('src/app.html')).not.toContain(SCRIPTS_CLASS);
     const css = siteCss(state);
     // No rule hides it whether or not scripts run.
     expect(css).not.toMatch(new RegExp(`^\\s*\\.${STATE_OFF_CLASS}`, 'm'));

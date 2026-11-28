@@ -39,6 +39,7 @@ import type { MissingAssetFiles } from '@shared/api';
 import type { WriteFailure } from './save-error';
 import { EXTERNAL_SOURCE_REFUSED, HISTORY_LIMIT } from '@shared/api';
 import { CUSTOM_DIR, defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
+import { STATIC_PAGE_JS } from '@generator/static-pages';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -47,6 +48,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
+import { isSourceCode, ownPageModule } from './page-module';
 import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, declaredPackages, importedPackages, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
@@ -2993,6 +2995,10 @@ export class ProjectSession extends EventEmitter {
     // does not leaves the not-found page with the addresses it was built with, and pages without their languages, which
     // the export of the website says.
     if (ownServerHook(this.dir, known(SERVER_HOOK_FILE))) for (const files of [clean, dev]) files.delete(SERVER_HOOK_FILE);
+    // A page served as plain HTML says so in a route module of its own (generator/static-pages.ts). A page with one of
+    // the project's own keeps that instead: SvelteKit takes one.
+    const pageModules = [...clean].filter(([, content]) => content === STATIC_PAGE_JS).map(([path]) => path);
+    for (const path of pageModules) if (ownPageModule(this.dir, path, known(path))) for (const files of [clean, dev]) files.delete(path);
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
@@ -3150,6 +3156,19 @@ export class ProjectSession extends EventEmitter {
     }
     next('session.publish.variants');
     const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
+    // Generated code kept as edited outside the app, or someone else's file where it goes, may need scripts the
+    // documents know nothing of: while there is any, no page is served as plain HTML (generator/static-pages.ts).
+    if ([...keptExternal].some((path) => isSourceCode(path) && !pageModules.includes(path))) {
+      for (const path of pageModules) {
+        if (!clean.has(path) || keptExternal.has(path)) continue;
+        for (const files of [clean, dev]) files.delete(path);
+        delete desired[path];
+        delete nextFiles[path];
+        hashes.delete(safeJoin(this.dir, path));
+        const planned = plan.findIndex((f) => f.path === path);
+        if (planned >= 0) plan.splice(planned, 1);
+      }
+    }
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
     // app has no variant: the preview shows the external version, as the exported site would.

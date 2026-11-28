@@ -67,6 +67,7 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
+import { staticHtmlReason, staticHtmlVerdict } from '@generator/static-pages';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@shared/form-contract';
@@ -3480,6 +3481,33 @@ function addressNote(published: boolean, inside: number): string | undefined {
   return line.charAt(0).toUpperCase() + line.slice(1);
 }
 
+/**
+ * Whether the website serves a page as plain HTML, loading no JavaScript (generator/static-pages.ts): the author's
+ * preference, and while it is on, whether the page gets it or the first thing that keeps its scripts. The preference
+ * stays as the author set it when something that needs scripts is added, and takes effect again once that is gone.
+ */
+function PageStaticHtml({ page, state, upd }: { page: PageDoc; state: ProjectState; upd: PageUpd }) {
+  const on = page.preferStaticHtml === true;
+  const verdict = useMemo(() => (on ? staticHtmlVerdict(state, page.id) : null), [on, state, page.id]);
+  const hint = !verdict ? undefined : verdict.static ? (
+    'The website loads no JavaScript on this page'
+  ) : (
+    <>
+      Still loads JavaScript. {staticHtmlReason(verdict)}
+      {verdict.part && ` Hide the shared ${verdict.part} here to leave it out.`}
+    </>
+  );
+  return (
+    <SwitchRow
+      checked={on}
+      onChange={(v) => upd({ preferStaticHtml: v }, v ? 'Prefer static HTML for page' : 'Load scripts on page')}
+      label="Prefer static HTML"
+      hint={hint}
+      info="The website serves the page as plain HTML that loads no JavaScript, while nothing on it needs any: no form, search, tabs, carousel, entrance or menu that opens. The editor’s preview always runs it."
+    />
+  );
+}
+
 /** Which shared parts a page shows, for its closed section's heading. */
 const shellSummary = (header: boolean, footer: boolean) => (header && footer ? 'Both shown' : header ? 'Header only' : footer ? 'Footer only' : 'Both hidden');
 
@@ -3602,6 +3630,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
           <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
         </div>
+        <PageStaticHtml page={page} state={state} upd={upd} />
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
         <PageSearchSettings page={page} state={state} draft={draft} upd={upd} />

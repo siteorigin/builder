@@ -157,7 +157,7 @@ window.mountSearch = (searches, later) => {
   return chunk.code;
 }
 
-/** A page of the site, marked as running scripts as its app.html marks it (see generateAppHtml). */
+/** A page of the site, marked as running scripts as its layout marks it (see generateLayout). */
 const PAGE = `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="margin:0"><main id="app"></main><script src="${BASE}/search.js"></script></body></html>`;
 

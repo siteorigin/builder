@@ -125,6 +125,8 @@ import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
+// static-pages imports this module too: only its functions are used here, at generation time, never while loading.
+import { HYDRATED_PAGE_JS, STATIC_PAGE_JS, staticPageIds, staticPageModule, staticRouteIds } from './static-pages';
 import { generateWebManifest, siteColors, HEAD_ASSET, HEAD_ASSET_SCRIPT, siteIconLinks, themeColorMeta } from './site-icons';
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
@@ -1360,8 +1362,9 @@ export const STATE_OFF_CLASS = 'so-state-off';
  */
 export const CHOICE_OFF_CLASS = 'so-choice-off';
 /**
- * The class <html> takes as the page starts, from a script of its own (see generateAppHtml): while it is missing, the
- * buttons that change a component's state would do nothing, so all the content they choose between shows.
+ * The class <html> takes as the page starts, from a script of its own at the top of its head (see generateLayout): while
+ * it is missing, the buttons that change a component's state would do nothing, so all the content they choose between
+ * shows. A page served as plain HTML (see ./static-pages) has no such script and nothing that needs it.
  */
 export const SCRIPTS_CLASS = 'so-js';
 /**
@@ -4560,6 +4563,14 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     ? `${follow ? `\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());` : ''}\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
+  // The page says its scripts run (SCRIPTS_CLASS) before any of it is drawn, as a classic script in its head, after the
+  // remembered theme: on every page but those served as plain HTML (see ./static-pages), which load no script at all
+  // and show nothing that needs one. Worked out as a derived value, so the layout follows which pages those are, not
+  // everything that decides it. The editor's preview runs every page's scripts.
+  const statics = opts.instrument ? [] : derived(state, 'staticRouteIds', staticRouteIds);
+  const marker = `<script>document.documentElement.classList.add(${js(SCRIPTS_CLASS)});</script>`;
+  const scriptsMark = statics.length ? `\n\t{#if !staticRoutes.has(page.route.id ?? '')}${marker}{/if}` : `\n\t${marker}`;
+  const staticRoutes = statics.length ? `\n\t// The pages served as plain HTML, with no scripts (see their +page.js).\n\tconst staticRoutes = new Set(${js(statics)});` : '';
   // The site's own head code and its integrations' tags (shared/site-code.ts, shared/integrations.ts), on the published
   // website alone: never in the editor's preview, and never under `vite dev`, which the editor's canvas runs, so the
   // author's scripts never run while they edit and their analytics never count their own visits.
@@ -4600,10 +4611,10 @@ ${imports}${languages}${devBridge}
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
 	const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));
-	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));${toggleStart}
+	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));${staticRoutes}${toggleStart}
 ${editing}</script>
 
-<svelte:head>${bootstrap}
+<svelte:head>${bootstrap}${scriptsMark}
 	<link rel="icon" href={${HEAD_ASSET}(${js(iconHref)})} type=${js(iconType)} />
 	${siteIconLinks()}
 	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
@@ -4653,7 +4664,6 @@ export function generateAppHtml(state: ProjectState): string {
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<script>document.documentElement.classList.add(${js(SCRIPTS_CLASS)});</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
@@ -5701,6 +5711,10 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   // again only the pages it moves across. Written after everything else: where a draft made before archive pages sits
   // at one's address, the archive page is what the website has there, in the preview too.
   for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${hasArchiveLayout(state.collections[collectionId].settings) ? mode : ''}`, (s) => generateArchive(s, collectionId, route, opts)));
+  // A page served as plain HTML says so in a route module beside its file (see ./static-pages): only one whose file
+  // nothing written above took over. The editor's preview runs its scripts. Which pages those are decides only which
+  // files exist, so it is asked of the plain state, as for search; the layout works the same list out for itself.
+  for (const id of staticPageIds(state)) files.set(staticPageModule(state.pages[id]), opts.instrument ? HYDRATED_PAGE_JS : STATIC_PAGE_JS);
   // The not-found page and the site's server hook (in the library) that makes it work at any address both read the
   // whole site's sections; the hook also gives each page in another language than the site's its own <html lang>.
   files.set(NOT_FOUND_COMPONENT, file('not-found', generateNotFound));
