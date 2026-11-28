@@ -251,6 +251,20 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('d1'))).toMatch(/theme "studio" 1\.0\.0, which is not installed/);
   });
 
+  it('never lets an older installed release stand in for the one the project recorded (#1493)', async () => {
+    const state = (version: string) => ({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version, digest: 'd0' } } });
+    withInstalled('d1', { version: '1.1.0' });
+    for (const recorded of ['1.2.0', '1.1.1', '1.10.0', '2.0.0']) expect(themePinProblem(state(recorded)), recorded).toMatch(new RegExp(`needs "studio" ${recorded.replace(/\./g, '\\.')} or newer, but the installed copy is 1\\.1\\.0`));
+    // A newer installed release is fine, and so is the release of a prerelease the project recorded.
+    for (const recorded of ['1.0.9', '1.1.0-beta.2', '0.9.0']) expect(themePinProblem(state(recorded)), recorded).toBeNull();
+    // An installed prerelease is older than its release.
+    withInstalled('d1', { version: '1.2.0-rc.1' });
+    expect(themePinProblem(state('1.2.0'))).toMatch(/needs "studio" 1\.2\.0 or newer, but the installed copy is 1\.2\.0-rc\.1/);
+    expect(themePinProblem(state('1.2.0-rc.0'))).toBeNull();
+    expect(themePinProblem(state('1.2.0-rc.2'))).toMatch(/or newer/);
+    await restorePacks();
+  });
+
   it('opens a project whose theme is not installed read-only', async () => {
     const d = tmp();
     withInstalled('d1');
@@ -292,6 +306,23 @@ describe('pinning an installed pack', () => {
     expect((err as ProjectFormatError).readOnly).toBe(true);
     expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
     withInstalled('d1');
+    await (await ProjectSession.open(d, 'test')).close();
+  });
+
+  it('opens a project read-only rather than restyle it from an older release of its pack (#1493)', async () => {
+    const d = tmp();
+    withInstalled('d1', { version: '1.2.0' });
+    const s = await ProjectSession.create(d, applyOperations(createStarterState('business', 'Older', false), [{ type: 'theme.apply', themeId: 'studio' }]).state);
+    await s.close();
+    const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
+    withInstalled('d0', { version: '1.1.0', baseCss: 'body { color: red; }' });
+    const err = await ProjectSession.open(d, 'test').catch((e) => e);
+    expect(err).toBeInstanceOf(ProjectFormatError);
+    expect((err as ProjectFormatError).readOnly).toBe(true);
+    expect((err as Error).message).toMatch(/needs "studio" 1\.2\.0 or newer, but the installed copy is 1\.1\.0/);
+    expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
+    // A newer release opens it.
+    withInstalled('d3', { version: '1.2.1' });
     await (await ProjectSession.open(d, 'test')).close();
   });
 });
