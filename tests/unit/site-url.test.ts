@@ -166,6 +166,20 @@ describe('the export warning about the public URL', () => {
     s.site.baseUrl = 'https://studio.example/';
     expect(publicUrlWarning(s)).toBeNull();
   });
+  it('names the links between translations when pages are linked as translations', () => {
+    const s = fresh();
+    const en = s.site.pageOrder.find((id) => s.pages[id].title === 'About')!;
+    const res = applyOperations(s, [{ type: 'page.duplicate', pageId: en, title: 'À propos' }]);
+    const fr = (res.results[0] as { pageId: string }).pageId;
+    const linked = apply(res.state, { type: 'page.update', pageId: fr, route: '/fr/a-propos/', language: 'fr', linkTranslationTo: en });
+    expect(publicUrlWarning(linked)).toBe(
+      'No public site URL is set, so canonical links, social image URLs, search-engine links between translations and the sitemap were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.'
+    );
+    // A draft version is not on the website, so there are no translations to link.
+    expect(publicUrlWarning(apply(linked, { type: 'page.update', pageId: fr, draft: true }))).toMatch(/social image URLs and the sitemap were omitted\./);
+    // With a public address the links are written with full addresses and nothing is omitted.
+    expect(publicUrlWarning(apply(linked, { type: 'site.update', baseUrl: 'https://studio.example/' }))).toBeNull();
+  });
 });
 
 describe('the site language', () => {
