@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Camera, ChevronRight, CircleAlert, CircleCheck } from 'lucide-react';
+import { Camera, ChevronRight, CircleAlert, CircleCheck, CircleStop, Info } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
-import { DEFAULT_REVIEW_WIDTHS, reviewPages, type ReviewEditionManifest } from '@shared/review-edition';
+import { DEFAULT_REVIEW_WIDTHS, reviewPages, type ReviewCaptureProgress, type ReviewEditionManifest } from '@shared/review-edition';
 import { publishedState } from '@generator/index';
 import { api, getState } from '../store';
 import { Spinner } from '../components/ui';
@@ -11,7 +11,8 @@ import { afterEditsSettle } from '../lib/pending';
 /** What the review section is doing: picturing pages, or saving an edition as one file. */
 export type ReviewBusy = 'capture' | 'save';
 
-type Outcome = { ok: boolean; message: string; path?: string; editionId?: string };
+/** What the work came to; `stopped` (the author stopped a capture) is said as news, neither a success nor a failure. */
+type Outcome = { ok: boolean; message: string; path?: string; editionId?: string; stopped?: boolean };
 
 const WIDTHS_SAID = DEFAULT_REVIEW_WIDTHS.map((w) => `${w.label} · ${w.width} px`).join(' and ');
 
@@ -20,6 +21,17 @@ function madeAt(iso: string): string {
   const d = new Date(iso);
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === new Date().toDateString() ? `Today, ${time}` : `${d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}, ${time}`;
+}
+
+/**
+ * What a capture is doing now (#1413): building the website, picturing one page at one width, or keeping the edition.
+ * The pictures done count every one tried, taken or not: one a page could not give is said in the outcome.
+ */
+export function captureStatus(p: ReviewCaptureProgress | null, stopping: boolean): string {
+  if (stopping) return !p || p.phase === 'build' ? 'Stopping once the website is built…' : 'Stopping the capture…';
+  if (!p || p.phase === 'build') return 'Building the website…';
+  if (p.phase === 'saving') return `Keeping the edition of ${p.total} ${p.total === 1 ? 'picture' : 'pictures'}…`;
+  return `Picturing ${p.title || p.route} at ${p.label} · ${p.done} of ${p.total} done`;
 }
 
 function editionSummary(m: ReviewEditionManifest): string {
@@ -44,6 +56,13 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
   const [editions, setEditions] = useState<ReviewEditionManifest[] | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
+  // Where the capture running from here has got to, and whether the author asked it to stop (#1413).
+  const [progress, setProgress] = useState<ReviewCaptureProgress | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const capturing = useRef(false);
+  // Asked before the capture reached the main process (its edits still being saved): it is never asked for.
+  const stopAsked = useRef(false);
+  useEffect(() => api.on('review:progress', (p) => capturing.current && setProgress(p)), []);
   // An answer for a project no longer open is never shown.
   const key = useRef(workspaceKey);
   key.current = workspaceKey;
@@ -83,6 +102,10 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
     const opening = workspaceKey;
     onBusy('capture');
     setOutcome(null);
+    setProgress(null);
+    setStopping(false);
+    capturing.current = true;
+    stopAsked.current = false;
     try {
       const started = await afterEditsSettle(
         () => settleEdits(),
@@ -93,6 +116,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
           const live = reviewPages(publishedState(now.state));
           const lost = picked.find((r) => !live.some((p) => p.route === r));
           if (lost) return { ok: false as const, message: `The website no longer has a page at ${lost}. Check the pages to capture, then capture again.` };
+          if (stopAsked.current) return { ok: false as const, stopped: true as const, message: 'The capture was stopped before it began. No edition was kept.' };
           return await api.project.captureReviewEdition({ routes: picked });
         }
       );
@@ -100,14 +124,25 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
       if (!started.ok) return say({ ok: false, message: `The pages were not captured, because a change isn’t saved yet. ${started.problems.join(' ')}` });
       const r = started.value;
       if (!r) return;
-      if (!r.ok) return say({ ok: false, message: r.message });
+      // Stopped, nothing was kept: the editions listed are those there were before.
+      if (!r.ok) return say({ ok: false, message: r.message, stopped: !!r.stopped });
       await load(opening);
       say({ ok: true, message: r.message, editionId: r.edition.editionId });
     } catch (e) {
       say({ ok: false, message: `The pages were not captured: ${(e as Error).message}` });
     } finally {
+      capturing.current = false;
+      setProgress(null);
+      setStopping(false);
       onBusy(null);
     }
+  };
+
+  const stop = () => {
+    if (busy !== 'capture' || stopping) return;
+    setStopping(true);
+    stopAsked.current = true;
+    void api.project.stopReviewCapture().catch(() => setStopping(false));
   };
 
   const save = async (id: string, button: HTMLButtonElement) => {
@@ -162,10 +197,15 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
               <button type="button" className="btn btn-sm" aria-disabled={anyBusy || blocked || !picked.length || undefined} onClick={() => void capture()}>
                 <Camera size={13} aria-hidden /> {picked.length > 1 ? `Capture ${picked.length} pages` : 'Capture page'}
               </button>
+              {busy === 'capture' && (
+                <button type="button" className="btn btn-sm" aria-disabled={stopping || undefined} onClick={stop}>
+                  <CircleStop size={13} aria-hidden /> Stop capture
+                </button>
+              )}
               <span className="client-review-hint" role="status">
                 {busy === 'capture' ? (
                   <>
-                    <Spinner decorative /> Building the website and picturing each page…
+                    <Spinner decorative /> {captureStatus(progress, stopping)}
                   </>
                 ) : busy === 'save' ? (
                   <>
@@ -181,8 +221,8 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
               </span>
             </div>
             {outcome && (
-              <div ref={outcomeRef} tabIndex={-1} className={`scope-note ${outcome.ok ? 'shared' : 'danger'} client-review-outcome`} role={outcome.ok ? 'status' : 'alert'}>
-                {outcome.ok ? <CircleCheck /> : <CircleAlert />}
+              <div ref={outcomeRef} tabIndex={-1} className={`scope-note ${outcome.stopped ? 'instance' : outcome.ok ? 'shared' : 'danger'} client-review-outcome`} role={outcome.ok || outcome.stopped ? 'status' : 'alert'}>
+                {outcome.stopped ? <Info /> : outcome.ok ? <CircleCheck /> : <CircleAlert />}
                 <span className="export-note-body">
                   <strong>{outcome.message}</strong>
                   {outcome.path && <span className="client-review-path">{outcome.path}</span>}

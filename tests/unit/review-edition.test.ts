@@ -311,6 +311,69 @@ describe('capturing a review edition', () => {
     expect(stagingLeft()).toEqual([]);
   });
 
+  it('stops at the author’s word, keeping the editions captured before and nothing of the one stopped (#1413)', async () => {
+    const { c, dir } = await bookshop();
+    c.reviewShoot = fakeShooter().shoot;
+    const earlier = await c.captureReviewEdition({ routes: ['/'] });
+    expect(earlier.ok).toBe(true);
+    const kept = filesIn(join(dir, REVIEWS_DIR));
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { shoot, asked } = fakeShooter({ hold: held, holdAt: 2 });
+    c.reviewShoot = shoot;
+    const sent: unknown[] = [];
+    c.send = (channel: string, payload: unknown) => void (channel === 'review:progress' && sent.push(payload));
+    const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
+    await vi.waitFor(() => expect(asked.length).toBe(2), { timeout: 10000 });
+    c.stopReviewCapture();
+    // Another capture waits for the stopped one to end, rather than build beside it.
+    expect(await c.captureReviewEdition({ routes: ['/'] })).toEqual({ ok: false, message: 'The review edition stopped a moment ago is still ending. Capture again in a moment.' });
+    release();
+    expect(await capturing).toEqual({ ok: false, stopped: true, message: 'The capture was stopped. No edition was kept; the editions captured before are unchanged.' });
+    // No more pictures, no more progress, the edition captured before exactly as it was, and the build removed.
+    expect(asked.length).toBe(2);
+    expect(sent.map((p) => (p as { phase: string }).phase)).toEqual(['build', 'capture', 'capture']);
+    expect(filesIn(join(dir, REVIEWS_DIR))).toEqual(kept);
+    expect((await c.reviewEditions()).map((m) => m.editionId)).toEqual([earlier.ok && earlier.edition.editionId]);
+    expect(stagingLeft()).toEqual([]);
+    // Stopping with nothing being captured does nothing, and the next capture is whole.
+    c.stopReviewCapture();
+    c.reviewShoot = fakeShooter().shoot;
+    expect(await c.captureReviewEdition({ routes: ['/'] })).toMatchObject({ ok: true, message: 'Captured 2 pictures.' });
+    expect((await c.reviewEditions()).length).toBe(2);
+  });
+
+  it('builds nothing when stopped before the website build begins (#1413)', async () => {
+    const { c, dir } = await bookshop();
+    const { shoot, asked } = fakeShooter();
+    c.reviewShoot = shoot;
+    const capturing = c.captureReviewEdition({ routes: ['/'] });
+    c.stopReviewCapture();
+    expect(await capturing).toMatchObject({ ok: false, stopped: true });
+    expect(env.builds).toBe(0);
+    expect(asked).toEqual([]);
+    expect(await listReviewEditions(dir)).toEqual([]);
+    expect(stagingLeft()).toEqual([]);
+  });
+
+  it('says how far the capture has got: the build, each picture with those tried so far, then keeping it (#1413)', async () => {
+    const { c } = await bookshop();
+    c.reviewShoot = fakeShooter({ unavailable: { '/': [390] } }).shoot;
+    const sent: unknown[] = [];
+    c.send = (channel: string, payload: unknown) => void (channel === 'review:progress' && sent.push(payload));
+    const r = await c.captureReviewEdition({ routes: ['/', '/about/'] });
+    expect(r.ok).toBe(true);
+    const title = (route: string) => (r.ok ? r.edition.routes.find((p) => p.route === route)!.title : '');
+    expect(sent).toEqual([
+      { phase: 'build' },
+      { phase: 'capture', done: 0, total: 4, route: '/', title: title('/'), label: 'Desktop' },
+      { phase: 'capture', done: 1, total: 4, route: '/', title: title('/'), label: 'Phone' },
+      { phase: 'capture', done: 2, total: 4, route: '/about/', title: title('/about/'), label: 'Desktop' },
+      { phase: 'capture', done: 3, total: 4, route: '/about/', title: title('/about/'), label: 'Phone' },
+      { phase: 'saving', done: 4, total: 4 }
+    ]);
+  });
+
   it('says why when the build cannot be staged, rather than failing', async () => {
     const { c } = await bookshop();
     c.reviewShoot = fakeShooter().shoot;

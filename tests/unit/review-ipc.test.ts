@@ -13,6 +13,7 @@ describe('the client review’s IPC', () => {
   it.each([
     ['reviewEditions', 'controller.reviewEditions()'],
     ['captureReviewEdition', 'controller.captureReviewEdition('],
+    ['stopReviewCapture', 'controller.stopReviewCapture()'],
     ['exportReviewSheet', 'controller.exportReviewSheet(']
   ])('project.%s invokes project:%s, which the main process hands to the controller', (method, call) => {
     expect(preload).toContain(`    ${method}: invoke('project:${method}'),`);

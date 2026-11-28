@@ -75,7 +75,15 @@ export interface ReviewEditionManifest {
 }
 
 /** What capturing an edition came to: the edition kept and where, or why there is none. */
-export type ReviewEditionResult = { ok: true; edition: ReviewEditionManifest; path: string; message: string } | { ok: false; message: string; details?: string };
+/** What capturing an edition came to; `stopped` when the author stopped it, so nothing was kept and nothing went wrong (#1413). */
+export type ReviewEditionResult = { ok: true; edition: ReviewEditionManifest; path: string; message: string } | { ok: false; message: string; details?: string; stopped?: true };
+
+/**
+ * Where the edition being captured has got to (#1413), sent as `review:progress` while it is captured: the website
+ * being built, a picture about to be taken (`done` of `total` tried so far, taken or not), or every picture taken and the edition
+ * being kept.
+ */
+export type ReviewCaptureProgress = { phase: 'build' } | { phase: 'capture'; done: number; total: number; route: string; title: string; label: string } | { phase: 'saving'; done: number; total: number };
 
 /** What saving an edition's offline sheet (#1134) came to: the file written, or why there is none (no message: the chooser was closed). */
 export type ReviewSheetResult = { ok: true; path: string; message: string } | { ok: false; message?: string };

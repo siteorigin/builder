@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import type { PageCheck } from './page-check';
-import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
+import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewCaptureProgress, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
 import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
@@ -164,6 +164,10 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
 /** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */
 const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
 const STALE_INSERT = 'The page changed while the component was being inserted. Insert it again.';
+/** Why a review capture was called off when the author stopped it (Controller.stopReviewCapture), not its project closing. */
+const STOPPED = 'stopped';
+const BUILD_CALLED_OFF = 'The build was called off.';
+const REVIEW_STOPPED = 'The capture was stopped. No edition was kept; the editions captured before are unchanged.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
 
@@ -4554,7 +4558,7 @@ export class Controller {
    * address to visitors, so the project's record of published addresses, its redirects, revision, saved versions and
    * History stay exactly as they were, and the folder is neither listed among the exports nor previewed.
    */
-  async stageReviewBuild(dest: string): Promise<ExportResult> {
+  async stageReviewBuild(dest: string, signal?: AbortSignal): Promise<ExportResult> {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session!;
@@ -4563,7 +4567,8 @@ export class Controller {
     // The review shows every copy of the images just added, as the website export does (#979).
     await this.copiesMade();
     if (this.session !== s) return { ok: false, message: 'The project was closed before the review was built.', warnings: [] };
-    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true }));
+    if (signal?.aborted) return { ok: false, message: BUILD_CALLED_OFF, warnings: [] };
+    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true, ...(signal ? { signal } : {}) }));
   }
 
   /** Photographs one page of a served review build at one width; set by the app (main/review-capture). */
@@ -4600,20 +4605,30 @@ export class Controller {
     // Asked for against the project as it is now, so a mistake is said before the build; and again against the build.
     const asked = pickReviewPages(reviewPages(publishedState(s.state)), routes);
     if ('error' in asked) return { ok: false, message: asked.error };
-    // One capture at a time; one called off (its project closed) is on its way out and holds nothing up.
+    // One capture at a time; one called off (its project closed) is on its way out and holds nothing up. One the author
+    // stopped (#1413) may still be building in this project, and holds the next until it has ended.
+    if (this.reviewCapture?.signal.reason === STOPPED) return { ok: false, message: 'The review edition stopped a moment ago is still ending. Capture again in a moment.' };
     if (this.reviewCapture && !this.reviewCapture.signal.aborted) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
     const job = new AbortController();
     this.reviewCapture = job;
     const siteName = s.state.site.name;
-    const closed = 'The project was closed before the review edition was captured.';
+    const closedMessage = 'The project was closed before the review edition was captured.';
     const gone = () => job.signal.aborted || this.session !== s;
+    // Stopped by the author (stopReviewCapture), with the project still open: said as such, not as a failure (#1413).
+    const stopped = () => job.signal.reason === STOPPED && this.session === s;
+    const closed = (): ReviewEditionResult => (stopped() ? { ok: false, stopped: true, message: REVIEW_STOPPED } : { ok: false, message: closedMessage });
+    // Where it has got to, for the dialog to say (#1413); only this capture's, while it is the one being captured.
+    const progress = (p: ReviewCaptureProgress) => {
+      if (this.reviewCapture === job && !gone()) this.send('review:progress', p);
+    };
     try {
       return await this.withStaging(async (staging): Promise<ReviewEditionResult> => {
         // The staging folder took a moment: the build is of this project, or of nothing.
-        if (gone()) return { ok: false, message: closed };
+        if (gone()) return closed();
+        progress({ phase: 'build' });
         const site = join(staging, 'site');
-        const built = await this.stageReviewBuild(site);
-        if (gone()) return { ok: false, message: closed };
+        const built = await this.stageReviewBuild(site, job.signal);
+        if (gone()) return closed();
         if (!built.ok) return { ok: false, message: built.message, ...(built.details ? { details: built.details } : {}) };
         const pages = pickReviewPages(built.pages ?? [], routes);
         if ('error' in pages) return { ok: false, message: pages.error };
@@ -4622,7 +4637,7 @@ export class Controller {
         try {
           server = await this.previews.serve(site, base);
         } catch {
-          return { ok: false, message: gone() ? closed : 'The review build could not be served to be captured.' };
+          return gone() ? closed() : { ok: false, message: 'The review build could not be served to be captured.' };
         }
         try {
           const { manifest, dir } = await writeReviewEdition({
@@ -4637,13 +4652,14 @@ export class Controller {
             shoot: (url, width) => shoot(url, width, job.signal),
             work: join(staging, 'edition'),
             signal: job.signal,
+            onProgress: (p) => progress(p.step === 'shot' ? { phase: 'capture', done: p.done, total: p.total, route: p.page.route, title: p.page.title, label: p.width.label } : { phase: 'saving', done: p.done, total: p.total }),
             // Written as every write into the project is (writeFence): in its queue, only while it is the open project,
             // not closing, and owned by this app, holding its claim throughout; and looked at again just before the move.
             commit: async (publish) => {
-              if (!(await this.writeFence(s)(publish))) throw new Error(gone() || this.closing ? closed : (s.readOnly?.reason ?? READ_ONLY));
+              if (!(await this.writeFence(s)(publish))) throw new Error(gone() || this.closing ? closedMessage : (s.readOnly?.reason ?? READ_ONLY));
             },
             beforeCommit: () => {
-              if (gone() || this.closing) throw new Error(closed);
+              if (gone() || this.closing) throw new Error(closedMessage);
             }
           });
           const missing = manifest.captures.filter((c) => c.status !== 'captured').length;
@@ -4654,7 +4670,7 @@ export class Controller {
         }
       });
     } catch (e) {
-      if (gone()) return { ok: false, message: closed };
+      if (gone()) return closed();
       return { ok: false, message: `The review edition could not be saved: ${e instanceof Error ? e.message : String(e)}` };
     } finally {
       if (this.reviewCapture === job) this.reviewCapture = null;
@@ -4664,6 +4680,16 @@ export class Controller {
   /** Call off the review edition being captured, if any: nothing of it is kept (the editor closed, so nobody waits for it). */
   cancelReviewCapture() {
     this.reviewCapture?.abort();
+  }
+
+  /**
+   * Stop the review edition being captured, if any, at the author's word (#1413): no more pages are pictured and
+   * nothing of it is kept, so the editions captured before stay as they were. The website build has no stop of its
+   * own: a capture stopped while it builds ends as soon as the build does. An edition already being put in place when
+   * the word comes is kept whole, and its capture says so.
+   */
+  stopReviewCapture() {
+    if (this.reviewCapture && !this.reviewCapture.signal.aborted) this.reviewCapture.abort(STOPPED);
   }
 
   /** The open project's review editions, newest first. */
@@ -5214,7 +5240,7 @@ export class Controller {
     };
   }
 
-  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean; held?: Array<() => void> } = {}): Promise<ExportResult> {
+  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean; held?: Array<() => void>; signal?: AbortSignal } = {}): Promise<ExportResult> {
     const project = join(staging, 'project');
     // A review delivers nothing to visitors, so it saves no version either.
     const snap = await this.snapshotSource(s, project, { forBuild: true, ...(opts.review || !opts.held ? {} : { milestone: EXPORTED_SITE, held: opts.held }) });
@@ -5271,6 +5297,8 @@ export class Controller {
     if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
     if (this.session !== s) return { ok: false, message: 'The project was closed before the website was built.', warnings: [] };
     if (!(await s.stillOwner())) return { ok: false, message: s.readOnly?.reason ?? READ_ONLY, warnings: [] };
+    // A review stopped meanwhile (#1413) starts no build: one under way runs to its end, as nothing can stop it.
+    if (opts.signal?.aborted) return { ok: false, message: BUILD_CALLED_OFF, warnings: [] };
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
     // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
     if (build.exited) await timed('export.keepTools', () => tools.keep())();
