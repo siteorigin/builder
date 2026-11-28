@@ -54,7 +54,7 @@ class FakeSocket {
 }
 
 const state = createStarterState('business', 'Acme', false);
-const snapshotAt = (revision: number, extra: Partial<LiveProjectSnapshot> = {}): LiveProjectSnapshot => ({ revision, state: state as never, readOnly: false, aiBusy: false, runtime: { state: 'ready' }, ...extra });
+const snapshotAt = (revision: number, extra: Partial<LiveProjectSnapshot> = {}): LiveProjectSnapshot => ({ revision, state: state as never, readOnly: false, aiBusy: false, runtime: { state: 'ready' }, copyEditable: {}, ...extra });
 
 const managers: LiveGuestManager[] = [];
 afterEach(() => {
@@ -542,7 +542,11 @@ describe('what the review found (#766)', () => {
     g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(8), state: {} } } });
     const noHome = { ...state, pages: { ...state.pages, [state.site.homePageId]: null } };
     g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(9), state: noHome } } });
+    // Nor one that does not say, as lists of property names, what a copy editor may change (#1318).
+    for (const copyEditable of [undefined, ['heading'], { hero: 'heading' }, { hero: [1] }]) g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(10), copyEditable } } });
     expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3]);
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: snapshotAt(11, { copyEditable: { hero: ['heading'] } }) } });
+    expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3, 11]);
   });
 
   it('ends a join whose access ran out while its connection was down', async () => {

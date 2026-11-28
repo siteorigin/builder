@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, ComponentDefinition, ImageValue, InstanceNode, OwnerRef, ProjectState, PropSchema, RepeatNode, RichText, TextNode } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, ElementRef, ImageValue, InstanceNode, OwnerRef, ProjectState, PropSchema, RepeatNode, RichText, TextNode } from '@shared/types';
 import { copyEditorOperationProblem } from '@shared/live/copy-editor';
 import { catalogueComponent, listThemes, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
@@ -12,7 +12,8 @@ import { P } from '@catalogue/dsl';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyOperations } from '@engine/apply';
-import { copyEditableLookup, copyEditorBatchProblem } from '@engine/copy-editor';
+import { copyEditableLookup, copyEditableProps, copyEditorBatchProblem } from '@engine/copy-editor';
+import { copyBatchProblem, copyEditablePropsOf, copyEditableText } from '../../src/renderer/src/lib/copy-only';
 import { makeInstance } from '@engine/install';
 import { normalizePropSchema } from '@engine/schema';
 import { FOUNDATION_AUTHOR, ROOT, restorePacks } from './fixtures/packs';
@@ -631,6 +632,78 @@ describe('the copy of Foundation’s own sections', () => {
     expect(problem).toBeNull();
     expect(node<InstanceNode>(after, owner, placed).props.title).toBe('Summer offer');
     expect(copyEdit(state, [setProp(owner, placed, 'tagline', 'Book today')]).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Tagline”.' });
+  });
+});
+
+describe('what a copy editor’s editor offers (#1318)', () => {
+  const grantOf = (state: ProjectState) => ({ props: copyEditableProps(state), paused: false });
+  const at = (owner: OwnerRef, nodeId: string, extra: Partial<ElementRef> = {}): ElementRef => ({ owner, instancePath: [], nodeId, ...extra });
+
+  it('names, by design, only the properties the host lets a copy editor change', () => {
+    const { state, promo } = project();
+    const props = copyEditableProps(state);
+    expect(props[HERO]).toEqual(expect.arrayContaining(['heading', 'image']));
+    for (const [id, names] of Object.entries(props)) for (const prop of names) expect(copyEditableLookup(state)(id, prop), `${id}.${prop}`).toBe(true);
+    // Promo passes its marked title on to the hero's heading; its tagline becomes a button's label, and its note is unmarked.
+    expect(props[promo]).toEqual(['title']);
+    // A design with nothing a copy editor may change is left out.
+    expect(Object.values(props).every((names) => names.length > 0)).toBe(true);
+  });
+
+  it('names a section Foundation ships by its copy, which the guest cannot work out without its code, never its buttons', () => {
+    let state = createStarterState('blank', 'Shipped', false);
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    state = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]).state;
+    const props = copyEditableProps(state)['foundation.hero.split'];
+    expect(props).toEqual(expect.arrayContaining(['eyebrow', 'heading', 'image']));
+    for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(props).not.toContain(prop);
+  });
+
+  it('offers a page’s own text and a placement’s granted copy, and nothing in a design, the shell or a placement’s inside', () => {
+    const { state, owner, hero, paragraph, placed } = project();
+    const grant = grantOf(state);
+    expect(copyEditableText(state, at(owner, paragraph))).toBe(true);
+    expect(copyEditableText(state, at(owner, hero))).toBe(false);
+    expect(copyEditablePropsOf(state, grant, at(owner, hero))).toEqual(expect.arrayContaining(['heading', 'image']));
+    expect(copyEditablePropsOf(state, grant, at(owner, placed))).toEqual(['title']);
+    // Inside a placement, picked as a part, or in the shared header: nothing of its own.
+    expect(copyEditablePropsOf(state, grant, at(owner, hero, { partId: 'root' }))).toEqual([]);
+    expect(copyEditableText(state, at(owner, paragraph, { instancePath: [hero] }))).toBe(false);
+    const header = Object.keys(state.site.shell?.header?.nodes ?? {})[0];
+    if (header) expect(copyEditableText(state, at({ kind: 'shell', id: 'header' }, header))).toBe(false);
+    // Bound to other content: never offered.
+    const bound = withNode(state, owner, hero, { ...node<InstanceNode>(state, owner, hero), props: { ...node<InstanceNode>(state, owner, hero).props, heading: { $entry: 'title' } } });
+    expect(copyEditablePropsOf(bound, grant, at(owner, hero))).not.toContain('heading');
+  });
+
+  it('sends the host only what the host would take as a copy editor’s, and refuses the rest itself, naming it', () => {
+    const { state, owner, hero, paragraph } = project();
+    const grant = grantOf(state);
+    const allowed: EditOperation[] = [
+      { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open every day.' },
+      { type: 'instance.setProp', owner, nodeId: hero, prop: 'heading', value: 'Rooms that feel like home' },
+      { type: 'instance.setProp', owner, nodeId: hero, prop: 'image', value: { assetId: 'pic2', alt: 'The workshop' } }
+    ];
+    expect(copyBatchProblem(state, grant, allowed)).toBeNull();
+    expect(copyEdit(state, allowed).problem).toBeNull();
+    const refused: Array<[EditOperation[], number, RegExp]> = [
+      [[allowed[0], { type: 'node.remove', owner, nodeId: hero }], 1, /cannot make "node.remove"/],
+      [[{ type: 'node.setContent', owner, nodeId: hero, field: 'text', value: 'x' }], 0, /written words of a text element/],
+      [[allowed[1], { type: 'instance.setProp', owner, nodeId: hero, prop: 'nope', value: 'x' }], 1, /Only the host/],
+      [[{ type: 'node.setStyle', owner, nodeId: paragraph, partId: 'root', property: 'color', value: 'red' } as never], 0, /cannot make "node.setStyle"/]
+    ];
+    for (const [ops, operationIndex, message] of refused) {
+      expect(copyBatchProblem(state, grant, ops), JSON.stringify(ops)).toEqual({ operationIndex, message: expect.stringMatching(message) });
+      // The host refuses it too: as an edit no project takes, or as one a copy editor may not make.
+      const host = (() => {
+        try {
+          return copyEdit(state, ops).problem !== null;
+        } catch {
+          return true;
+        }
+      })();
+      expect(host, JSON.stringify(ops)).toBe(true);
+    }
   });
 });
 
