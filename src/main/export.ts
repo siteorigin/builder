@@ -1162,7 +1162,8 @@ export async function leaveOutDrafts(dir: string, state: ProjectState, live: Pro
 }
 
 /**
- * Take the editor's markers (see shared/code-markers.ts) out of a staged copy's code components, for both exports:
+ * Take the editor's markers (see shared/code-markers.ts), and the text hook they were written through (see
+ * withoutCodeMarkers), out of a staged copy's code components, for both exports:
  * the preview finds what it edits in a code component by its markers, and the published site carries none, whoever
  * owns the component. That is every file a code component's code reaches the website through: a project component's
  * own source, the generated file a theme's code is written to, and the copy of a contact form's code that declares

@@ -1741,12 +1741,13 @@ function declares(scope: Node, name: string): boolean {
 const attrName = (attr: Node, host: Node | undefined) => (host?.type === 'RegularElement' ? String(attr.name).toLowerCase() : String(attr.name));
 
 /**
- * A code component's source with every editor marker (see shared/code-markers.ts) taken out, as both exports ship it.
- * The markers are the editor's, written in the code so the preview can find what it edits; the published site carries
- * none. Source that cannot be parsed is returned as it is: it does not build either.
+ * A code component's source with every editor marker (see shared/code-markers.ts) taken out, as both exports ship it,
+ * and the text hook (see shared/code-text.ts) out of its $props() once nothing reads it. The markers and the hook are
+ * the editor's, written in the code so the preview can find what it edits; the published site carries neither. Source
+ * that cannot be parsed is returned as it is: it does not build either.
  */
 export async function withoutCodeMarkers(source: string): Promise<string> {
-  if (!mentionsCodeMarker(source)) return source;
+  if (!mentionsCodeMarker(source) && !source.includes(CODE_TEXT_HOOK)) return source;
   const { parse } = await import('svelte/compiler');
   // The parser reads past a byte order mark, so its offsets count from after it.
   const bom = source.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -1762,19 +1763,79 @@ export async function withoutCodeMarkers(source: string): Promise<string> {
     const host = around[around.length - 1];
     if (n.type === 'Attribute' && isCodeMarker(String(n.name)) && host && Array.isArray(host.attributes)) markers.push(n);
   });
-  const cuts = markers
-    .map((attr) => {
-      let start = Number(attr.start);
-      const end = Number(attr.end);
-      // With the space before it when the tag goes on with a space or ends there, so the tag reads as if the
-      // attribute was never written; otherwise that space is what parts its neighbours, and stays.
-      if (/[\s/>]/.test(body[end] ?? '')) while (start > 0 && /\s/.test(body[start - 1])) start--;
-      return { start, end };
-    })
-    .sort((a, b) => b.start - a.start);
+  const cuts = markers.map((attr) => {
+    let start = Number(attr.start);
+    const end = Number(attr.end);
+    // With the space before it when the tag goes on with a space or ends there, so the tag reads as if the
+    // attribute was never written; otherwise that space is what parts its neighbours, and stays.
+    if (/[\s/>]/.test(body[end] ?? '')) while (start > 0 && /\s/.test(body[start - 1])) start--;
+    return { start, end };
+  });
+  const hook = unreadTextHook(ast, new Set(markers));
+  if (hook) cuts.push(...propertyCuts(body, hook.pattern, hook.at));
   let out = body;
-  for (const c of cuts) out = out.slice(0, c.start) + out.slice(c.end);
+  for (const c of cuts.sort((a, b) => b.start - a.start)) out = out.slice(0, c.start) + out.slice(c.end);
   return source.slice(0, bom) + out;
+}
+
+/** Where the script's $props() pattern takes the text hook, when nothing but the markers reads the name it gives. */
+function unreadTextHook(ast: Node, markers: ReadonlySet<Node>): { pattern: Node[]; at: number } | null {
+  const prop = propsTaken(ast).get(CODE_TEXT_HOOK)?.node;
+  if (!prop) return null;
+  let value = prop.value as Node;
+  if (value?.type === 'AssignmentPattern') {
+    // A default that does something when it is worked out is the code's own.
+    const fallback = value.right as Node;
+    if (!literalValue(fallback) && !(fallback.type === 'Identifier' && fallback.name === 'undefined')) return null;
+    value = value.left as Node;
+  }
+  if (value?.type !== 'Identifier') return null;
+  const local = String(value.name);
+  let read = false;
+  let found: { pattern: Node[]; at: number } | null = null;
+  for (const root of [ast.module, ast.instance, ast.fragment])
+    walkAst(root, (n, around) => {
+      if (n.type === 'ObjectPattern' && (n.properties as Node[]).includes(prop)) found = { pattern: n.properties as Node[], at: (n.properties as Node[]).indexOf(prop) };
+      if (read || n === prop || around.includes(prop) || markers.has(n) || around.some((a) => markers.has(a))) return;
+      // A member of a TypeScript type only shares the name (`typeof so_text` there reads it).
+      const parent = around[around.length - 1];
+      if (parent?.type === 'TSPropertySignature' && parent.key === n) return;
+      // `use:so_text`, `class:so_text` and `<so_text.Part>` read it by a name written on the node itself.
+      const named = n.type === 'Identifier' || n.type === 'Component' || /Directive$/.test(String(n.type));
+      if (named && String(n.name).split('.')[0] === local) read = true;
+    });
+  return read ? null : found;
+}
+
+/** The space and comments before a comma, which is where a property's separator is. */
+const TO_COMMA = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*,/;
+
+/**
+ * What to cut so a destructured property reads as never written: its line when it has one to itself, and one comma.
+ * Comments around it stay.
+ */
+function propertyCuts(body: string, pattern: Node[], at: number): Array<{ start: number; end: number }> {
+  const start = Number(pattern[at].start);
+  const end = Number(pattern[at].end);
+  const toComma = TO_COMMA.exec(body.slice(end))?.[0];
+  const comma = toComma === undefined ? null : end + toComma.length - 1;
+  // A comment between the property and its comma: each goes by itself.
+  if (comma !== null && body.slice(end, comma).trim()) return [{ start, end }, { start: comma, end: comma + 1 }];
+  const after = comma === null ? end : comma + 1;
+  const lineStart = body.lastIndexOf('\n', start - 1) + 1;
+  const newline = /^[\t ]*\r?\n/.exec(body.slice(after))?.[0].length;
+  const ownLine = newline !== undefined && !body.slice(lineStart, start).trim();
+  // The last of the list, with no comma of its own, takes the one that led to it.
+  const previous = at > 0 ? Number(pattern[at - 1].end) : null;
+  if (comma === null && previous !== null && /^\s*,\s*$/.test(body.slice(previous, start))) {
+    const led = body.indexOf(',', previous);
+    return ownLine ? [{ start: led, end: led + 1 }, { start: lineStart, end: end + newline }] : [{ start: led, end }];
+  }
+  if (ownLine) return [{ start: lineStart, end: after + newline }];
+  const space = /^[\t ]*/.exec(body.slice(after))![0].length;
+  // The only property leaves `{}`.
+  if (pattern.length === 1 && body[start - 1] === ' ' && body[after + space] === '}') return [{ start: start - 1, end: after + space }];
+  return [{ start, end: after + space }];
 }
 
 /** The text of a string literal or a template literal without expressions; null for anything computed. */

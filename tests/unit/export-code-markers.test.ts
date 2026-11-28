@@ -124,6 +124,8 @@ describe('a theme code component’s editor markers', () => {
         const copied = readFileSync(join(out, f), 'utf8');
         expect(copied).toContain(`class="so-form__${part}"`);
         expect(copied).not.toContain('data-so-part');
+        // Nor the hook the text markers were written through, which nothing reads without them (#1538).
+        expect(copied).not.toContain('so_text');
       }
       if (webmcp) expect(readFileSync(join(out, files[1]), 'utf8')).toContain('toolname=');
       // The manifest lists the cleaned files as they are, so the copy reads as SiteOrigin Builder left it.

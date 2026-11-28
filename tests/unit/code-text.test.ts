@@ -197,6 +197,50 @@ describe('the website’s build takes text markers out of the code too', () => {
     expect(await withoutCodeMarkers(said)).toBe(said);
   });
 
+  it('takes the hook out of $props() with them, however the code lists it, and leaves ordinary Svelte (#1538)', async () => {
+    const clean = await withoutCodeMarkers(SOURCE);
+    expect(clean).not.toContain('so_text');
+    expect(clean).toContain("let { heading = '', body = [], features = [] } = $props();");
+    const code = (pattern: string, markup = '') => `<script>\n\tlet ${pattern} = $props();\n</script>\n<p data-so-text={so_text?.('heading')}>a</p>${markup}\n`;
+    for (const [written, shipped] of [
+      ['{ so_text, heading }', '{ heading }'],
+      ['{ heading, so_text, so_o }', '{ heading, so_o }'],
+      ['{ so_text }', '{}'],
+      ['{ so_text, ...rest }', '{ ...rest }'],
+      ['{\n\t\theading,\n\t\tso_text,\n\t\tso_o\n\t}', '{\n\t\theading,\n\t\tso_o\n\t}'],
+      ['{\r\n\t\theading,\r\n\t\tso_text,\r\n\t\tso_o\r\n\t}', '{\r\n\t\theading,\r\n\t\tso_o\r\n\t}'],
+      ['{\n\t\theading,\n\t\tso_text\n\t}', '{\n\t\theading\n\t}'],
+      ['{ heading, so_text = undefined }', '{ heading }'],
+      ['{ so_text, }', '{}'],
+      ['{ so_text /* a, b */, ...rest }', '{  /* a, b */ ...rest }'],
+      ['{ heading, /* a, b */ so_text }', '{ heading, /* a, b */ }'],
+      ['{\n\t\theading,\n\t\t// The hook, here\n\t\tso_text\n\t}', '{\n\t\theading,\n\t\t// The hook, here\n\t}']
+    ]) {
+      const out = await withoutCodeMarkers(code(written));
+      expect(out, written).toBe(`<script>\n\tlet ${shipped} = $props();\n</script>\n<p>a</p>\n`);
+      expect(() => compile(out, { generate: 'server', runes: true }), written).not.toThrow();
+    }
+    const typed = await withoutCodeMarkers(`<script lang="ts">\n\tlet { so_text, heading }: { so_text?: Function; heading: string } = $props();\n</script>\n<p data-so-text={so_text?.('heading')}>{heading}</p>\n`);
+    expect(typed).toContain('let { heading }:');
+    // Under another name, the same hook.
+    expect(await withoutCodeMarkers(`<script>let { so_text: mark, heading } = $props();</script>\n<p data-so-text={mark?.('heading')}>{heading}</p>\n`)).toBe('<script>let { heading } = $props();</script>\n<p>{heading}</p>\n');
+    // Taken and never used, it is still the editor's.
+    expect(await withoutCodeMarkers('<script>let { so_text, heading } = $props();</script>\n<p>{heading}</p>\n')).toBe('<script>let { heading } = $props();</script>\n<p>{heading}</p>\n');
+  });
+
+  it('keeps the hook where the code still reads it, and words that only mention it (#1538)', async () => {
+    for (const markup of ['<p>{typeof so_text}</p>', '<p class:so_text>b</p>', '<p style:so_text>b</p>']) {
+      const out = await withoutCodeMarkers(`<script>let { so_text } = $props();</script>\n<p data-so-text={so_text?.('heading')}>a</p>\n${markup}\n`);
+      expect(out, markup).toBe(`<script>let { so_text } = $props();</script>\n<p>a</p>\n${markup}\n`);
+    }
+    for (const script of ["let { so_text, label = so_text?.('label') } = $props();", 'let { so_text = hook() } = $props();']) {
+      const source = `<script>${script}</script>\n<p>b</p>\n`;
+      expect(await withoutCodeMarkers(source), script).toBe(source);
+    }
+    const said = '<p>Mark text with so_text.</p>\n';
+    expect(await withoutCodeMarkers(said)).toBe(said);
+  });
+
   it('is one of the editor’s code markers, so both exports refuse a build that still writes one', () => {
     expect(isCodeMarker('data-so-text')).toBe(true);
     expect(carriesCodeMarker('<h2 data-so-text="heading">Hello</h2>')).toBe(true);
