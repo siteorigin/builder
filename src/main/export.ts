@@ -13,6 +13,7 @@ import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
@@ -561,13 +562,15 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
  * site's (leaveOutDrafts), and `drafts` is the text the drafts add to them, as leaveOutDrafts gave it. A file the
  * website names (as pruneWebsiteAssets finds one) is never held. Of the rest, an asset record any of whose files the
  * drafts name, in that text or in a file of a component only drafts place that the website never reaches, is held
- * whole: its original and every copy, so a draft's photo goes with whichever copies its page shows. Any other file
+ * whole: its original and every copy, so a draft's photo goes with whichever copies its page shows; so is one the
+ * drafts use by its ID where the published pages and entries do not, whether or not they show it. Any other file
  * named like an imported one is held when the drafts name it. Files nothing names stay, as the editable project keeps
  * its whole library.
  */
 export async function draftOnlyAssetFiles(project: string, state: ProjectState, drafts: ReadonlyMap<string, string>): Promise<string[]> {
+  const live = publishedState(state);
+  if (live === state) return [];
   const site = await websiteFiles(project, state);
-  if (!drafts.size && !site.draftOnly.size) return [];
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
   const unreached: string[] = [];
@@ -578,9 +581,13 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
   for (const text of unreached) used.scan(text);
   const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
+  // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document
+  // in an entry's field its layout leaves out).
+  const published = assetUsages(live);
+  const drafted = new Set(Object.entries(assetUsages(state)).flatMap(([id, n]) => (n > 0 && !(published[id] > 0) ? [id] : [])));
   for (const a of Object.values(state.assets.assets)) {
     const own = [a.file, ...(a.variants ?? []).map((v) => v.file)];
-    if (own.some((f) => held.has(f))) for (const f of own) if (unshipped.has(f)) held.add(f);
+    if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) if (unshipped.has(f)) held.add(f);
   }
   return candidates.filter((rel) => held.has(rel));
 }

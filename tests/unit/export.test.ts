@@ -7,7 +7,8 @@ import { randomBytes } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
-import { generateProject, publishedState } from '@generator/index';
+import { generateProject, publishedState, RUNTIME_DIR } from '@generator/index';
+import { SEARCH_INDEX_FILE } from '@generator/search';
 import type { AssetRecord, ComponentDefinition, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { zipDirectory } from '../../src/main/zip';
@@ -374,7 +375,7 @@ describe('website export assets', () => {
     const drafts = new Map([...full].filter(([path, text]) => published.get(path) !== text));
     expect([...drafts.keys()].some((p) => p.startsWith('src/routes/soon/')), 'the draft has a page of its own').toBe(true);
 
-    expect(await draftOnlyAssetFiles(dir, state, drafts)).toEqual([
+    const held = [
       'static/assets/banner-77777777-1000w.webp',
       'static/assets/banner-77777777.jpg',
       'static/assets/gallery-cccccccc.svg',
@@ -384,9 +385,18 @@ describe('website export assets', () => {
       'static/assets/sketch-12345678-480w.jpg',
       'static/assets/sketch-12345678-480w.webp',
       'static/assets/sketch-12345678.jpg'
+    ];
+    expect(await draftOnlyAssetFiles(dir, state, drafts)).toEqual(held);
+    // Without the drafts' text, the same: the records the draft uses by their IDs, and the picture of the component
+    // only it places, whose file the website never reaches. The component's picture is in its definition, which the
+    // published site keeps, so only its file says the draft alone shows it.
+    expect(await draftOnlyAssetFiles(dir, state, new Map())).toEqual(held);
+    // A file the drafts' text names, and no draft uses by its ID, is held too; the search index's words are no use.
+    const named = new Map([
+      ['src/routes/soon/+page.svelte', '<a href="/assets/spare-aaaaaaaa.svg">Spare</a>'],
+      [`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, 'export default ["offer-1a2b3c4d.doc"];']
     ]);
-    // The file of a component only drafts place names the picture too, which the website never reaches.
-    expect(await draftOnlyAssetFiles(dir, state, new Map())).toEqual(['static/assets/gallery-cccccccc.svg']);
+    expect(await draftOnlyAssetFiles(dir, state, named)).toEqual([...held, 'static/assets/spare-aaaaaaaa.svg'].sort());
     // A project without drafts holds nothing back.
     expect(await draftOnlyAssetFiles(dir, publishedState(state), new Map())).toEqual([]);
     expect(heldDraftAssetsNote(state, ['static/assets/offer-1a2b3c4d.docx'])).toBe('offer file is used only by drafts, so its files are kept in siteorigin/draft-assets/ rather than static/assets/, and a build of the exported project leaves it out. Opening the project in SiteOrigin Builder puts it back.');
