@@ -94,7 +94,7 @@ import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@share
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, linkQuery, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
@@ -366,7 +366,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
-      href = entryRoute(found.collection, found.entry)!;
+      href = entryRoute(found.collection, found.entry)! + (typeof link.query === 'string' && link.query.startsWith('?') ? linkQuery(link.query) : '');
       break;
     }
     case 'collection': {
