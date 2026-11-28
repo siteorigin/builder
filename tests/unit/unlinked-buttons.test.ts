@@ -180,6 +180,34 @@ describe('a fresh starter', () => {
         for (const m of (await render(file)).matchAll(/<(\w+)\b[^>]*data-so-unlinked[^>]*>([\s\S]*?)<\/\1>/g)) found.push(`${file}: ${m[2].replace(/<[^>]*>/g, '').trim()}`);
       expect(found).toEqual([]);
     });
+
+  it('keeps the showcase’s buttons, each going to another of its pages unless it already had a destination', async () => {
+    const s = createStarterState('showcase', 'Test Studio', false);
+    const render = await renderSite(s);
+    const pricing = await render('src/routes/pricing/+page.svelte');
+    // The comparison table's three plans come with no destination, so each goes to Contact.
+    for (const label of ['Book a session', 'Start a project', 'Talk to us']) expect(pricing).toMatch(new RegExp(`<a\\b[^>]*href="/studio/contact/"[^>]*>\\s*${label}\\s*</a>`));
+    // The plans that come with a destination keep it.
+    expect(pricing).toContain('href="mailto:hello@example.com"');
+    // On Contact itself, a button goes on to Pricing.
+    const contact = await render('src/routes/contact/+page.svelte');
+    expect(elementWith(contact, 'See our packages')).toMatch(/^<a\b[^>]*href="\/studio\/pricing\/"/);
+    // Rows without a button's words stay as they are: facts, contact details and the footer's address lead nowhere.
+    const props = (id: string) => Object.values(s.pages).flatMap((p) => Object.values(p.nodes)).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId].componentId === id)!.props;
+    for (const id of ['block.facts', 'contact.details']) {
+      const rows = props(id).items as Array<{ label: string; link: { type: string } }>;
+      expect(rows.filter((r) => r.link.type === 'page'), id).toEqual([]);
+    }
+  });
+
+  it('leaves a section a person adds asking where its buttons go', () => {
+    const s = createStarterState('showcase', 'Test Studio', false);
+    const added = makeInstance(s.components[installComponent(s, 'content.media')]);
+    expect([added.props.actionLink, added.props.link]).toEqual([
+      { type: 'none', target: '' },
+      { type: 'none', target: '' }
+    ]);
+  });
 });
 
 describe('buttons without a destination in the editor preview', () => {

@@ -3,7 +3,8 @@
  * all of them can be clicked, edited, switched, previewed and exported in one place. Home places a few of the strongest
  * sections; then one page per kind of component (heroes, features, content and so on) places every component of that
  * kind once, and the shared header and footer link them all. Everything is read from the theme's own list, so a
- * component a theme adds lands on a page of its kind without a change here.
+ * component a theme adds lands on a page of its kind without a change here. The one thing not left at its default is a
+ * button with no destination, which goes to one of these pages.
  */
 import type { ComponentDefinition, GraphNode, ImageValue, InstanceNode, ListItem, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -13,6 +14,8 @@ import { newId } from '@shared/ids';
 import { installComponent, makeInstance } from '@engine/install';
 import { collectionCreate, entryCreate } from '@engine/collections';
 import { shownOnceSlots, slotDecl, takesComponent } from '@engine/slots';
+import { labelKeyFor } from '@generator/checks';
+import { isEmptyPropValue } from '@shared/required';
 import { getTheme } from './index';
 import type { StarterAsset } from './starters';
 
@@ -97,15 +100,22 @@ export function showcaseHome(themeId: string): string[] {
   return out;
 }
 
-/** Puts sample photos in a placement's empty images, and gives an empty gallery, carousel or page list a few rows. */
+/**
+ * Puts sample photos in a placement's empty images, gives an empty gallery, carousel or page list a few rows, and
+ * gives each button with words but no destination one of the showcase's pages: the site leaves such a button out.
+ */
 class Filler {
   private room = 0;
   private person = 0;
   /** The definition of the placement being filled. */
   private def: ComponentDefinition | null = null;
+  /** Where an unfinished button on the placement being filled goes. */
+  private destination = '';
   constructor(
     private readonly photos: { rooms: StarterAsset[]; people: StarterAsset[] } | null,
-    private readonly pageIds: string[]
+    private readonly pageIds: string[],
+    /** The pages a button may go to, the most fitting first. */
+    private readonly destinations: string[]
   ) {}
 
   private photo(field: string): ImageValue | null {
@@ -141,7 +151,18 @@ class Filler {
         if (filled !== s.default && (filled as ImageValue | undefined)?.assetId) out[k] = filled;
       }
     }
+    for (const [k, s] of Object.entries(schema)) if (s.type === 'link') this.link(schema, out, k, s);
     return out;
+  }
+
+  /** A link whose paired label has words is a button visitors are meant to see: with nowhere to go, it gets a page. */
+  private link(schema: Record<string, PropSchema>, out: Record<string, unknown>, key: string, s: PropSchema) {
+    const labelKey = labelKeyFor(key);
+    const label = Object.hasOwn(schema, labelKey) ? schema[labelKey] : undefined;
+    if (label?.type !== 'string') return;
+    const words = Object.hasOwn(out, labelKey) ? out[labelKey] : label.default;
+    if (typeof words !== 'string' || !words.trim() || !isEmptyPropValue(s, Object.hasOwn(out, key) ? out[key] : s.default)) return;
+    out[key] = { type: 'page', target: this.destination };
   }
 
   private row(schema: Extract<PropSchema, { type: 'list' }>, values: Record<string, unknown>): ListItem {
@@ -163,8 +184,10 @@ class Filler {
     return rows.map((it) => ({ ...this.fields(schema.fields, it), id: it.id }));
   }
 
-  fill(def: ComponentDefinition, node: InstanceNode): InstanceNode {
+  fill(def: ComponentDefinition, node: InstanceNode, pageId: string): InstanceNode {
     this.def = def;
+    // Never the page the button is on, while there is another.
+    this.destination = this.destinations.find((id) => id !== pageId) ?? pageId;
     node.props = this.fields(def.properties, node.props);
     this.def = null;
     return node;
@@ -193,16 +216,20 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
   const kinds = showcasePages(themeId);
   const ids = new Map(kinds.map((k) => [k.kind, newId('pg')]));
   const people = photos?.filter((a) => /^Portrait/.test(a.name)) ?? [];
-  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()]);
-  const place = (componentId: string): InstanceNode => {
+  // Buttons ask a visitor to get in touch, so they go to Contact first, then Pricing, then any other page.
+  const preferred = (['contact', 'pricing'] as const).flatMap((k) => ids.get(k) ?? []);
+  const destinations = [...new Set([...preferred, ...ids.values(), homeId])];
+  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()], destinations);
+  const placeOn = (pageId: string) => (componentId: string): InstanceNode => {
     const def = state.components[installComponent(state, componentId)];
-    return filler.fill(def, makeInstance(def));
+    return filler.fill(def, makeInstance(def), pageId);
   };
 
-  const homeNodes = showcaseHome(themeId).map(place);
+  const homeNodes = showcaseHome(themeId).map(placeOn(homeId));
   const pages: PageDoc[] = [];
   for (const k of kinds) {
     const id = ids.get(k.kind)!;
+    const place = placeOn(id);
     if (k.kind !== 'blocks') {
       const nodes = k.components.map((c) => place(c.componentId));
       // The Article header reads the page it is on as an article: this one, kept out of news lists.
