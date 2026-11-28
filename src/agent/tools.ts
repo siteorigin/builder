@@ -22,6 +22,7 @@ import { CONNECT_LIST_ARGS, CONNECT_LIST_BRIEF, CONNECT_LIST_DESCRIPTION, connec
 import { hasSources, INSPECT_SOURCE_ARGS, INSPECT_SOURCE_BRIEF, INSPECT_SOURCE_DESCRIPTION, runInspectSource, runWriteSource, WRITE_SOURCE_ARGS, WRITE_SOURCE_BRIEF, WRITE_SOURCE_DESCRIPTION, type SourceToolHost } from './source-tools';
 import { collectionToolSchemas, DEFINE_COLLECTION_ARGS, DEFINE_COLLECTION_BRIEF, DEFINE_COLLECTION_DESCRIPTION, defineCollectionSchema, runDefineCollection, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
 import { PROJECT_SECTIONS } from './budget';
+import { hasCode } from '@shared/site-code';
 import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTakesBackground, selectionTools, type SelectionTarget } from './selection';
@@ -140,6 +141,7 @@ export const TOOL_ARGS = {
     itemId: z.string().optional().describe('For a list property: the id of one item.'),
     field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
   }),
+  open_page: z.object({ page: z.string().min(1).max(600).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   update_page_seo: PAGE_SEO_ARGS,
@@ -184,7 +186,7 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names) or the installed components.',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names), the installed components, or the site\'s own head code and custom CSS in full (siteCode, read alone: read it before replacing either with site.update).',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
@@ -206,6 +208,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four concrete answers in choices, never “Other”; the user can type their own. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   locate_field:
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
+  open_page:
+    'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. When no page is found, nothing opens: tell the author. When more than one page has the title, nothing opens: ask the author which one they meant. Say it was opened only after this succeeds.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   update_page_seo: PAGE_SEO_DESCRIPTION,
@@ -235,7 +239,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names) or installed components.',
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names), installed components, or siteCode alone (the site\'s head code and custom CSS in full).',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
   search_components: 'Theme and project components by keywords, with their IDs.',
@@ -250,6 +254,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
+  open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found: say so. Several match: ask which.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
   update_page_seo: PAGE_SEO_BRIEF,
@@ -310,6 +315,43 @@ const NEVER_OFFERED = new Set<OperationType>([
 ]);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
+
+/**
+ * The most of each piece of the site's own code a run reads whole, and so may replace, measured as the result writes it
+ * (JSON, where a line break or quote takes two characters): both pieces then fit in one result (MAX_RESULT_CHARS).
+ */
+export const SITE_CODE_READ_MAX = 10000;
+/** Whether a piece of the site's code is short enough for a run to read whole. */
+const readsWhole = (code: string) => JSON.stringify(code).length <= SITE_CODE_READ_MAX;
+const SITE_CODE_FIELDS = [
+  ['headCode', 'head code'],
+  ['globalCss', 'custom CSS']
+] as const;
+
+/**
+ * The site's own code as read_project's siteCode section gives it: each piece whole, as stored (site.update replaces
+ * it whole, so an edit starts from this), or, past what a run may replace, its length and start alone.
+ */
+function siteCodeRead(state: ProjectState): Record<string, unknown> {
+  return Object.fromEntries(
+    SITE_CODE_FIELDS.map(([key]) => {
+      const v = hasCode(state.site[key]) ? state.site[key] : '';
+      return [key, readsWhole(v) ? v : { characters: v.length, start: v.slice(0, 2000), note: 'Too long to replace here: the author changes it in Site settings > Custom code.' }];
+    })
+  );
+}
+
+/** Why a batch may not replace the site's code: code too long for a run to have read whole. Null when it may. */
+function siteCodeUnread(state: ProjectState, ops: EditOperation[]): string | null {
+  for (const op of ops) {
+    if (op.type !== 'site.update') continue;
+    for (const [key, what] of SITE_CODE_FIELDS) {
+      const saved = state.site[key];
+      if (op[key] !== undefined && hasCode(saved) && !readsWhole(saved)) return `The site's ${what} is ${saved.length} characters, more than a run reads whole, so it is not replaced here. Ask the author to change it in Site settings > Custom code.`;
+    }
+  }
+  return null;
+}
 
 /** Whether an operation creates or copies code: a code operation, or a copy of a code component (as the editor checks). */
 export const copiesCode = (state: ProjectState, op: EditOperation): boolean => developerModeReason(state, op) !== null;
@@ -468,7 +510,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -646,8 +688,8 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
  * has no room left for them).
  */
-export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools }): RunTools {
-  const run = withEditorTools(runTools(opts), opts.editor, !!opts.ask);
+export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean }): RunTools {
+  const run = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
   if (!run.focused || !run.tools.some((t) => t.name === 'validate_project')) return run;
   const schema = z.toJSONSchema(z.object({ profile: VALIDATE_ARGS.shape.profile.unwrap().extract(['schema', 'component']).optional() }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete schema.$schema;
@@ -827,6 +869,81 @@ function runTools(opts: {
   // in code: that one operation, and the page tool places what it made.
   const code = focused && codeEnabled && opts.widenedFromPage && (opts.componentRequest || opts.svelteRequest) ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
   return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+}
+
+/**
+ * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357), in every mode a
+ * request can be typed in, as Pages can be clicked from any of them. It changes nothing in the site, so it widens no
+ * run; a request that never asks to go anywhere is never offered it, so no edit moves the editor. Create component
+ * keeps its own set. Ambiguity is asked about in the same run, which a set without the question tool could not do.
+ */
+function withPageOpener(run: RunTools, asked: boolean): RunTools {
+  if (!asked || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
+  const ask = run.tools.some((t) => t.name === 'request_clarification') ? [] : [narrowQuestion()];
+  return { ...run, tools: [...run.tools, plainTool('open_page'), ...ask] };
+}
+
+/** request_clarification without widenScope: asking which page widens nothing. */
+function narrowQuestion(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
+}
+
+// "Open" is going somewhere, but not a link that opens in a new tab or on a click; "show" and "display" are going
+// there when they are "show me", or say a page within a few words ("show the About page", never "show the phone
+// number on the Contact page").
+const GO_TO =
+  /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
+const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
+
+/**
+ * Whether a request typed into the chat asks to go to a page (#1357): a word for going there ("take me to", "open",
+ * "show me") with a page named, as a page, by its route (with or without its slashes), or by a title one of the
+ * project's pages has.
+ */
+export function asksToOpenPage(text: string, state?: ProjectState): boolean {
+  if (!GO_TO.test(text)) return false;
+  if (NAMES_A_PAGE.test(text)) return true;
+  const fold = (v: string) => v.normalize('NFKC').toLowerCase();
+  const words = fold(text);
+  const named = (n: string) => {
+    if (!n) return false;
+    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
+    // One Latin letter is a word of the request ("a"), never a page's name in it.
+    if (n.length < 2) return false;
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
+  };
+  return Object.values(state?.pages ?? {}).some((p) => {
+    const title = typeof p?.title === 'string' ? fold(p.title.trim()) : '';
+    const route = typeof p?.route === 'string' ? fold(p.route.replace(/^\/+|\/+$/g, '')) : '';
+    return named(title) || named(route);
+  });
+}
+
+/**
+ * The page the author named to open: by its ID, by its route when it is written as one, by its title (ignoring case),
+ * and last by a word that spells its route ("about" for /about/). A title more than one page has names none of them,
+ * even when one of those pages has it as its route.
+ */
+export function findPageToOpen(state: ProjectState, ref: string): { ok: true; pageId: string } | { ok: false; message: string } {
+  if (Object.hasOwn(state.pages, ref)) return { ok: true, pageId: ref };
+  const route = ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (route) return { ok: true, pageId: route };
+  const fold = (v: string) => v.normalize('NFKC').trim().toLowerCase();
+  const wanted = fold(ref);
+  const pages = Object.values(state.pages).filter((p) => !!p);
+  const titled = pages.filter((p) => typeof p.title === 'string' && fold(p.title) === wanted);
+  if (titled.length === 1) return { ok: true, pageId: titled[0].id };
+  const slug = !titled.length && !ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (slug) return { ok: true, pageId: slug };
+  const list = (ps: typeof pages) =>
+    ps
+      .slice(0, 20)
+      .map((p) => `"${p.title}" (${p.route})`)
+      .join(', ') + (ps.length > 20 ? `, and ${ps.length - 20} more` : '');
+  if (titled.length > 1) return { ok: false, message: `More than one page is titled "${ref.trim()}": ${list(titled)}. Nothing was opened. Ask the author which one they meant, then open it by its route.` };
+  return { ok: false, message: `No page has the ID, route or title "${ref.trim()}". Nothing was opened. Tell the author so${pages.length ? `; the site's pages are ${list(pages)}` : ''}.` };
 }
 
 /**
@@ -1202,6 +1319,11 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   switch (name as ToolName) {
     case 'read_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
+      // The site's own code is read alone, so no summary beside it can push it past what one result holds.
+      if (a.sections?.includes('siteCode')) {
+        if (a.sections.length > 1) return toolError('INVALID_ARGUMENT', 'Read siteCode on its own: sections ["siteCode"]. Read the other sections in another call.');
+        return { ok: true, content: { revision: host.revision(), siteCode: siteCodeRead(state) } };
+      }
       const out: Record<string, unknown> = projectSummary(state, host.revision());
       if (a.sections?.includes('tokens')) {
         out.tokens = tokensSummary(state);
@@ -1344,6 +1466,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       // A swap keeps every piece of content or is refused, naming what has no place: content goes only by an edit that says so.
       if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
         return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.');
+      // site.update replaces the site's code whole: a run replaces only code it can read whole (read_project siteCode).
+      const unread = siteCodeUnread(state, ops);
+      if (unread) return toolError('INVALID_ARGUMENT', unread);
       const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, undefined, a.scope);
       if (!res.ok) {
@@ -1509,6 +1634,17 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
           ...(r.label ? { label: r.label } : {}),
           note: `${did} ${r.label ? `"${r.label}"` : `${steps} changes`}. This request can change nothing more: tell the user what was ${a.direction === 'undo' ? 'undone' : 'redone'}, and that ${a.direction === 'undo' ? 'Redo puts it back' : 'Undo takes it back again'}.`
         }
+      };
+    }
+    case 'open_page': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['open_page']>;
+      const found = findPageToOpen(state, a.page);
+      if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
+      const page = state.pages[found.pageId];
+      return {
+        ok: true,
+        openPage: found.pageId,
+        content: { revision: host.revision(), opened: { pageId: page.id, title: page.title, route: page.route }, note: 'The editor now shows this page. Nothing in the site changed.' }
       };
     }
     case 'request_clarification': {

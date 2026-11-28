@@ -171,8 +171,8 @@ const PAGE_METADATA = new Set(['type', 'pageId', 'seoTitle', 'noindex', 'searchH
 const PAGE_LISTED = new Set(['description', 'socialImage']);
 /** page.update fields other pages show too: navigation, links to the page and News lists. */
 const PAGE_ELSEWHERE = new Set(['title', 'route', 'navLabel', 'articleDate', 'byline', 'excerpt', 'article', 'newsHidden']);
-/** site.update fields every page shows: the site's name and what the site says itself (a language counts once it turns the text). */
-const SITE_SHOWN = new Set(['name', 'visitorText']);
+/** site.update fields every page shows: the site's name, what the site says itself (a language counts once it turns the text) and its own CSS. */
+const SITE_SHOWN = new Set(['name', 'visitorText', 'globalCss']);
 /** site.update fields of the page shown at an address the site does not have, which no page check reaches. */
 const NOT_FOUND = new Set(['notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel']);
 

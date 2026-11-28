@@ -1872,6 +1872,17 @@ describe('context budget', () => {
       for (const id of ['s2', 's3', 's4', 'e2', 'e3', 'l2', 'l3', 'p3', 'p4']) expect(at(items, id), id).toBe(at(kept, id));
     });
 
+    it('never lets a read of the site’s code, which holds that alone, stand in for the project summary (#1485)', () => {
+      const code = JSON.stringify({ revision: 3, siteCode: { headCode: '', globalCss: pad } });
+      const items: CanonicalItem[] = [...read('p1', {}, project(), 'read_project'), ...read('c1', { sections: ['siteCode'] }, code, 'read_project'), ...read('c2', { sections: ['siteCode'] }, code, 'read_project'), ...filler('f1'), ...filler('f2')];
+      const kept = structuredClone(items);
+      applyContextBudget(items, optsWith(5000));
+      expect(at(items, 'p1')).toBe(at(kept, 'p1'));
+      // A later read of the code replaces an earlier one.
+      expect(at(items, 'c1')).toContain('[Superseded read_project');
+      expect(at(items, 'c2')).toBe(at(kept, 'c2'));
+    });
+
     it('never lets a read cut short by the size limit replace a complete one', () => {
       // A cut result keeps its ok and revision as fields of their own.
       const cut = (s: string) => JSON.stringify({ ok: true, revision: (JSON.parse(s) as { revision?: number }).revision, truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
