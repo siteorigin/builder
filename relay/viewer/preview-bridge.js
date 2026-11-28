@@ -168,6 +168,11 @@
       else stopPointing();
       return;
     }
+    // The viewer asks which page this is (the guest opened Notes): the answer carries its number back.
+    if (event.data.type === 'siteorigin-live:where') {
+      if (Number.isSafeInteger(event.data.id)) ready(event.data.id);
+      return;
+    }
     if (event.data.type !== 'siteorigin-live:reload') return;
     try {
       sessionStorage.setItem(KEY, JSON.stringify({ href: location.href, x: window.scrollX, y: window.scrollY }));
@@ -183,15 +188,19 @@
   // now on screen is left on that page (#1497). Where the browser has no Navigation API, a cheap look each half second
   // still catches it, without touching the site's code.
   let last = path();
-  const ready = () => {
+  const ready = (id) => {
     last = path();
-    window.parent.postMessage({ type: 'siteorigin-live:ready', path: last }, viewer);
+    window.parent.postMessage({ type: 'siteorigin-live:ready', path: last, ...(id === undefined ? {} : { id }) }, viewer);
   };
   const moved = () => {
     if (path() !== last) ready();
   };
   ready();
-  window.addEventListener('popstate', ready);
+  window.addEventListener('popstate', () => ready());
+  // A page put back from the browser's back-forward cache runs no script again: it says it is there.
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) ready();
+  });
   window.navigation?.addEventListener?.('currententrychange', moved);
   setInterval(moved, 500);
 })();

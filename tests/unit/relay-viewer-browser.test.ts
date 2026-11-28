@@ -70,8 +70,8 @@ interface Scene {
   done: () => Promise<void>;
 }
 
-/** A room, its host serving `site`, and a guest's tab open on the invite link. */
-async function scene(options: { site?: Site; duration?: '2h' | '30m' } = {}): Promise<Scene> {
+/** A room, its host serving `site`, and a guest's tab open on the invite link; `init` runs first in each of its pages. */
+async function scene(options: { site?: Site; duration?: '2h' | '30m'; init?: string } = {}): Promise<Scene> {
   const room = await openRoom(relay, { projectName: 'Acme Bakery', duration: options.duration });
   const site = options.site ?? new Map([['/', page('Home')], ['/about/', page('About')]]);
   const s = { room, host: room.host } as Scene;
@@ -79,6 +79,7 @@ async function scene(options: { site?: Site; duration?: '2h' | '30m' } = {}): Pr
   s.server = serve(() => s.host, site);
   s.previewOrigin = await roomPreviewOrigin(origin, room.roomId);
   s.context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  if (options.init) await s.context.addInitScript(options.init);
   s.tab = await s.context.newPage();
   await s.tab.goto(`${origin}/s/${room.roomId}`);
   s.done = async () => {
@@ -566,56 +567,91 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
     }
   });
 
-  it('leaves a note begun the moment the site’s own router shows another page on that page (#1497)', async () => {
-    // The site moves the way SvelteKit's client router does: it loads the next page, puts its address in the history
-    // with pushState, which raises no event, and shows it, all without loading a document.
-    const router = `<script>
-      document.addEventListener('click', (event) => {
-        const link = event.target.closest('a[href^="/"]');
-        if (!link) return;
-        event.preventDefault();
-        setTimeout(() => {
-          history.pushState({}, '', link.getAttribute('href'));
-          document.title = document.querySelector('h1').textContent = link.textContent;
-        }, 60);
-      });
-    </script>`;
-    const site: Site = new Map([['/', page('Home', router)], ['/about/', page('About', router)]]);
-    const s = await scene({ site });
+  it('leaves a note on the page the site’s own router moved to, as soon as it shows, and keeps a note begun there (#1497)', async () => {
+    const s = await scene({ site: routedSite(), init: HOLD_BRIDGE_POLL });
     try {
       const guestId = await ask(s);
       const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
       const frame = await admit(s, guestId);
-      const list = await s.host.next('rpc:request');
-      expect(list.method).toBe('notes.list');
-      answer(list.requestId, 'notes.list', { notes: [], guestNotes: true });
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
       await s.tab.uncheck('#follow');
-      await poll(async () => (await frame.evaluate<string | null>(`document.querySelector('h1')?.textContent ?? null`)) === 'Home', 'the home page');
+      await s.tab.click('#notes-button');
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/)', 'the note on the home page');
+
+      // The router moves to About with Notes open: the bridge's half-second look is held, so only the Navigation API
+      // can tell the viewer, and it does before the guest can start writing.
+      await frame.evaluate(`go('/about/')`);
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/about/)', 'the note on About');
+      await s.tab.fill('#note-text', 'Shorter heading');
+      await s.tab.click('#note-send');
+      const add = await s.host.next('rpc:request');
+      expect(add).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
+      answer(add.requestId, 'notes.add', { kept: true });
+      await poll(async () => (await s.tab.inputValue('#note-text')) === '', 'the note sent');
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+
+      // A note begun on About stays on About when the router moves on before it is sent.
+      await s.tab.fill('#note-text', 'Bigger logo');
+      await frame.evaluate(`go('/')`);
+      await poll(async () => (await frame.evaluate<string>(`location.pathname`)) === '/', 'the router back home');
+      await wait(100);
+      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
+      await s.tab.click('#note-send');
+      expect(await s.host.next('rpc:request')).toMatchObject({ method: 'notes.add', args: [{ text: 'Bigger logo', previewPath: '/about/' }] });
+    } finally {
+      await s.done();
+    }
+  });
+
+  it('confirms the frame’s page when Notes opens, so a note begun the moment a link lands is for that page (#1497)', async () => {
+    // Without the Navigation API, and with the bridge's half-second look held, the viewer learns of the router's move
+    // only by asking when Notes opens.
+    const s = await scene({ site: routedSite(), init: `${HOLD_BRIDGE_POLL}\n${HIDE_NAVIGATION_API}` });
+    try {
+      const guestId = await ask(s);
+      const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
+      const frame = await admit(s, guestId);
+      expect(await frame.evaluate(`window.navigation === undefined`)).toBe(true);
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      await s.tab.uncheck('#follow');
 
       await frame.click('a[href="/about/"]');
       await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`, undefined, { polling: 'raf' });
       // As soon as About shows, the guest opens Notes and starts typing: the note is for About.
       await s.tab.click('#notes-button');
       await s.tab.fill('#note-text', 'Shorter heading');
-      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
-      const opened = await s.host.next('rpc:request');
-      expect(opened.method).toBe('notes.list');
-      answer(opened.requestId, 'notes.list', { notes: [], guestNotes: true });
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/about/)', 'the note on About');
       await s.tab.click('#note-send');
-      const add = await s.host.next('rpc:request');
-      expect(add).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
-      answer(add.requestId, 'notes.add', { kept: true });
-      await poll(async () => (await s.tab.inputValue('#note-text')) === '', 'the note sent');
-
-      // A note begun on About stays on About when the guest's router moves on before it is sent.
-      await s.tab.fill('#note-text', 'Bigger logo');
-      await frame.click('a[href="/"]');
-      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'Home'`, undefined, { polling: 'raf' });
-      await s.tab.click('#notes-button');
-      expect(await s.tab.inputValue('#note-text')).toBe('Bigger logo');
-      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
+      expect(await s.host.next('rpc:request')).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
     } finally {
       await s.done();
     }
   });
 });
+
+/**
+ * Pages whose own router moves the way SvelteKit's does: it loads the next page, puts its address in the history with
+ * pushState, which raises no event, and shows it, all without loading a document. `go(path)` moves it from a test.
+ */
+function routedSite(): Site {
+  const router = `<script>
+    window.go = (href) => {
+      history.pushState({}, '', href);
+      document.title = document.querySelector('h1').textContent = href === '/' ? 'Home' : 'About';
+    };
+    document.addEventListener('click', (event) => {
+      const link = event.target.closest('a[href^="/"]');
+      if (!link) return;
+      event.preventDefault();
+      setTimeout(() => go(link.getAttribute('href')), 60);
+    });
+  </script>`;
+  return new Map([['/', page('Home', router)], ['/about/', page('About', router)]]);
+}
+
+/** In the preview's frame, the bridge's half-second look at its address never runs. */
+const HOLD_BRIDGE_POLL = `if (location.hostname.startsWith('p-')) { const every = window.setInterval; window.setInterval = (fn, ms, ...rest) => (ms === 500 ? 0 : every(fn, ms, ...rest)); }`;
+/** In the preview's frame, the browser has no Navigation API, as in older Safari and Firefox. */
+const HIDE_NAVIGATION_API = `if (location.hostname.startsWith('p-')) Object.defineProperty(window, 'navigation', { value: undefined, configurable: true });`;
