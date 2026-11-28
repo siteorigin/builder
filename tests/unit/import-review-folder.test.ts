@@ -11,6 +11,10 @@ describe('Import Review folder line', () => {
     expect(a).not.toBe(b);
     expect(a).toBe('2025/DCIM/100APPLE');
   });
+  it('keeps growing past one round when ancestors also match', () => {
+    const [a, b] = fromFolders(['/2025/archive/DCIM/100APPLE/IMG_1.png', '/2026/archive/DCIM/100APPLE/IMG_1.png']);
+    expect([a, b]).toEqual(['2025/archive/DCIM/100APPLE', '2026/archive/DCIM/100APPLE']);
+  });
   it('treats a backslash as a filename character on posix paths', () => {
     expect(fromFolders(['/Users/a/Photos/IMG\\8614.png'])).toEqual(['Users/a'.split('/').concat('Photos').slice(-2).join('/')]);
   });
