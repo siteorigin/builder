@@ -34,10 +34,16 @@ const HEADERS = [
   "Edited status",
 ];
 const ROWS = 60;
-const n = (i: number) => String(i + 1).padStart(3, "0");
-/** Each row's marker in the first column and in the last, unique across the table. */
-const FIRST = Array.from({ length: ROWS }, (_, i) => `ID${n(i)}`);
-const LAST = Array.from({ length: ROWS }, (_, i) => `ED${n(i)}`);
+const pad = (i: number, width: number) => String(i).padStart(width, "0");
+/** A value longer than any column is wide, with nowhere to wrap: printed, it breaks rather than running off the sheet. */
+const LONG =
+  "https://orders.example/warehouse/northern-distribution/requested-window/0000000001";
+/** Each cell's own marker, unique across the table (one cell holds the long value instead). */
+const CELLS = Array.from({ length: ROWS }, (_, r) =>
+  HEADERS.map((_, c) =>
+    r === 7 && c === 5 ? LONG : `r${pad(r + 1, 2)}c${pad(c + 1, 2)}`,
+  ),
+);
 
 function exportedSite() {
   const s = createStarterState("business", "Table Studio", false);
@@ -45,16 +51,7 @@ function exportedSite() {
   const columns = HEADERS.map((label, c) => ({ id: `col_${c}`, label }));
   const rows = Array.from({ length: ROWS }, (_, r) => ({
     id: `row_${r}`,
-    cells: Object.fromEntries(
-      columns.map((col, c) => [
-        col.id,
-        c === 0
-          ? FIRST[r]
-          : c === columns.length - 1
-            ? LAST[r]
-            : `Sample value ${c}`,
-      ]),
-    ),
+    cells: Object.fromEntries(columns.map((col, c) => [col.id, CELLS[r][c]])),
   }));
   const node: InstanceNode = makeInstance(
     s.components[installComponent(s, "data.table")],
@@ -124,24 +121,33 @@ describe.runIf(CAN_PRINT)("printing a wide Data table in chromium", () => {
         for (const scroll of [0, 362]) {
           await region.evaluate((el, left) => (el.scrollLeft = left), scroll);
           expect(await region.evaluate((el) => el.scrollLeft)).toBe(scroll);
-          const text = squash(
-            pdfPages(
-              await page.pdf({
-                format: "A4",
-                landscape,
-                margin: {
-                  top: "10mm",
-                  right: "10mm",
-                  bottom: "10mm",
-                  left: "10mm",
-                },
-              }),
-            ).join("\n"),
-          );
-          const missing = [...HEADERS, ...FIRST, ...LAST].filter(
+          const sheets = pdfPages(
+            await page.pdf({
+              format: "A4",
+              landscape,
+              margin: {
+                top: "10mm",
+                right: "10mm",
+                bottom: "10mm",
+                left: "10mm",
+              },
+            }),
+          ).map(squash);
+          const text = sheets.join("");
+          const missing = [...HEADERS, ...CELLS.flat()].filter(
             (value) => !text.includes(squash(value)),
           );
           expect(missing, `scrolled ${scroll}px`).toEqual([]);
+          // Every sheet the rows continue on starts with the column names again.
+          const withRows = sheets.filter((sheet) =>
+            CELLS.some((row) => sheet.includes(row[0])),
+          );
+          expect(withRows.length, `scrolled ${scroll}px`).toBeGreaterThan(1);
+          for (const sheet of withRows)
+            expect(
+              HEADERS.filter((h) => !sheet.includes(squash(h))),
+              `scrolled ${scroll}px`,
+            ).toEqual([]);
         }
         // Back on screen, the region is where the visitor left it.
         expect(await region.evaluate((el) => el.scrollLeft)).toBe(362);
