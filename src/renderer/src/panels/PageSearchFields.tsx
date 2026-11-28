@@ -40,7 +40,7 @@ export function PageSearchFields({ page, state, draft, upd, on, doc, ids = 'page
       </Field>
       {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
       <div className="col seo-field-group" style={{ gap: 4 }} data-seo-field="socialImage">
-        <fieldset className="col" disabled={locked} style={{ gap: 4 }} aria-label={`Sharing image: ${sharing.imageName ?? 'none'}`} aria-describedby={sharing.imageStatus ? `${ids}-image-status` : undefined}>
+        <fieldset className="col seo-field-group" disabled={locked} style={{ gap: 4 }} aria-label={`Sharing image: ${sharing.imageName ?? 'none'}`} aria-describedby={sharing.imageStatus ? `${ids}-image-status` : undefined}>
           <ImageEditor
             title="Sharing image"
             value={{ assetId: page.seo.socialImage || null, alt: '' }}
