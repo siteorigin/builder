@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, linkSync, mkdtempSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
@@ -17,6 +17,7 @@ import {
   cleanWebsitePhotos,
   copyProjectSource,
   copyTree,
+  duplicatedAssetFilter,
   inProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
@@ -543,6 +544,60 @@ describe('source export helpers', () => {
     expect(existsSync(join(dest, '.env'))).toBe(false);
     expect(existsSync(join(dest, 'static/linked.json'))).toBe(false);
     expect(existsSync(join(dest, '.npmrc'))).toBe(false);
+  });
+
+  it('leaves out of a duplicate only the imported files no record lists and nothing it carries names (#1378)', async () => {
+    const state = createStarterState('blank', 'Test', false);
+    // Documents are named for the hash of their bytes, as the importer names them.
+    const doc = (slug: string, text: string, ext = 'pdf') => ({ rel: `static/assets/${slug}-${sha(text).slice(0, 8)}.${ext}`, text });
+    const current = doc('guide', 'Second edition.');
+    const retired = doc('guide', 'First edition.');
+    const briefing = doc('briefing', 'Press briefing.');
+    const prices = doc('price-list', 'Prices.');
+    const offer = doc('offer', 'Offer.', 'doc');
+    const record = (id: string, file: string) => ({ id, name: id, file, mime: 'application/pdf', bytes: 1, hash: 'x', kind: 'document' as const, createdAt: '' });
+    // The project holds the guide and the price list; the folder's asset document (the one the copy carries) the guide
+    // and the briefing, and an original name that is no project file.
+    state.assets.assets = { g: record('g', current.rel), p: record('p', prices.rel) };
+    const src = temp();
+    write(src, 'siteorigin/assets.json', JSON.stringify({ assets: { g: { ...record('g', current.rel), originalName: 'old-5e6f7081.png' }, b: record('b', briefing.rel) } }));
+    for (const d of [current, retired, briefing, prices, offer]) write(src, d.rel, d.text);
+    const media = ['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg', 'sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png'];
+    for (const f of media) write(src, `static/assets/${f}`, f);
+    // An owner's dated file that only looks imported, one named otherwise, and one in a folder of its own.
+    for (const f of ['static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf']) write(src, f, f);
+    // Named by a public file, an authoring document, and hand-written source (which names the offer as a .docx only).
+    write(src, 'static/site.webmanifest', '{"icons":[{"src":"/assets/icon-1a2b3c4d.png"}]}');
+    write(src, 'siteorigin/pages/home.json', '{"background":"/assets/hall-2b3c4d5e.jpg"}');
+    write(src, 'src/routes/visit/+page.svelte', `<img src="/assets/map-3c4d5e6f.svg" alt="" /><a href="/assets/${basename(offer.rel)}x">Offer</a>`);
+    // Named only by the brief, by a file through a link, and by the editor's own data: none of them goes with the copy.
+    write(src, 'siteorigin/brief.json', '{"notes":"Try /assets/sketch-4d5e6f70.png"}');
+    const outside = temp();
+    write(outside, 'linked.svelte', '<img src="/assets/linked-708192a3.png" alt="" />');
+    symlinkSync(join(outside, 'linked.svelte'), join(src, 'src/routes/linked.svelte'));
+    write(src, '.siteorigin/history.json', `["${basename(retired.rel)}"]`);
+
+    const dest = join(temp(), 'copy');
+    await copyProjectSource(src, dest, { keepBrief: true, keepAsset: await duplicatedAssetFilter(src, state) });
+    const has = (rel: string) => existsSync(join(dest, rel));
+    for (const d of [current, briefing, prices]) expect(has(d.rel)).toBe(true);
+    for (const f of ['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg']) expect(has(`static/assets/${f}`)).toBe(true);
+    for (const f of ['static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf', 'static/site.webmanifest', 'siteorigin/brief.json']) expect(has(f)).toBe(true);
+    for (const rel of [retired.rel, offer.rel, ...['sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png'].map((f) => `static/assets/${f}`)]) expect(has(rel), rel).toBe(false);
+
+    // An asset document that can't be read for its files, or a file the search can't read, keeps every file.
+    write(src, 'siteorigin/assets.json', '{"assets":');
+    expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(true);
+    write(src, 'siteorigin/assets.json', '{"assets":{}}');
+    expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(false);
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      chmodSync(join(src, 'src/routes/visit/+page.svelte'), 0o000);
+      try {
+        expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(true);
+      } finally {
+        chmodSync(join(src, 'src/routes/visit/+page.svelte'), 0o644);
+      }
+    }
   });
 
   it('finds generated files changed outside the app', async () => {

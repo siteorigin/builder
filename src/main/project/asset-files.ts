@@ -7,6 +7,12 @@ import { join } from 'node:path';
 import type { Diagnostic, MissingAssetFiles } from '@shared/api';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { assetUsages } from '@engine/apply';
+import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
+
+/** A picture or font as the asset importer names it in static/assets/: a slug, eight hash characters, `-480w` for a responsive copy. */
+export const IMPORTED_MEDIA_FILE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
+/** A document as the asset importer names it: a slug and the first eight characters of the SHA-256 of its bytes, which it keeps as they are. */
+export const IMPORTED_DOCUMENT_FILE = new RegExp(`^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}\\.(${DOCUMENT_EXTENSIONS.join('|')})$`);
 
 /** What each library image or document is missing: its original, and which of the smaller copies it lists. Fonts are not checked. */
 export async function findMissingAssetFiles(projectDir: string, assets: Record<string, AssetRecord>): Promise<MissingAssetFiles[]> {

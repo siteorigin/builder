@@ -87,7 +87,7 @@ import { withoutCodeMarkers } from './codecheck';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
-import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
 import { ownServerHook } from './project/server-hook';
 import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -298,8 +298,67 @@ export function exportedAssetFilter(state: ProjectState): (rel: string) => boole
   };
 }
 
+/**
+ * Which project files a copy of the project that takes none of its history carries (Duplicate project, #1378). A file
+ * the importer made that no asset record lists any more (a document replaced with a new edition, a deleted image) is
+ * in the project only for undo and its saved versions, which the copy does not have: built as a plain SvelteKit
+ * project, the copy would publish it at an address the project has retired. Such a file goes with the copy only when
+ * something the copy carries names it: source and public files, hand-written or generated, and the authoring
+ * documents, drafts included. The brief is the author's notes and the asset document's names are files on the
+ * author's computer, so neither keeps one. Every file a record lists goes, used or not, as the folder lists it (the
+ * asset document the copy carries) and as the project holds it. A document counts as the importer's only when its
+ * bytes still have the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one;
+ * anything else not named as the importer names files, or in a folder of its own, goes too. Read from the project
+ * itself, before it is copied, so the copy can leave a file out as it goes.
+ */
+export async function duplicatedAssetFilter(project: string, state: ProjectState): Promise<(rel: string) => boolean> {
+  const keepAll = () => true;
+  const library = libraryAssetFiles(state);
+  // An asset document the copy would carry that can't be read for its files: every file goes with it.
+  try {
+    const text = await readIfExists(join(project, 'siteorigin', 'assets.json'));
+    const doc = text === null ? null : (JSON.parse(text) as { assets?: Record<string, { file?: unknown; variants?: Array<{ file?: unknown }> } | null> } | null);
+    for (const a of Object.values(doc?.assets ?? {})) for (const f of [a?.file, ...(Array.isArray(a?.variants) ? a.variants.map((v) => v?.file) : [])]) if (typeof f === 'string') library.add(f);
+  } catch {
+    return keepAll;
+  }
+  const retired = new Set<string>();
+  for (const e of await fs.readdir(join(project, 'static', 'assets'), { withFileTypes: true }).catch(() => [])) {
+    const rel = `static/assets/${e.name}`;
+    if (!e.isFile() || library.has(rel)) continue;
+    if (IMPORTED_MEDIA_FILE.test(e.name)) retired.add(rel);
+    else if (IMPORTED_DOCUMENT_FILE.test(e.name)) {
+      const read = await hashFileAt(join(project, rel), () => undefined);
+      if (typeof read === 'object' && read.hash.startsWith(e.name.match(/-([a-f0-9]{8})\.[^.]+$/)![1])) retired.add(rel);
+    }
+  }
+  if (!retired.size) return keepAll;
+  // Searched as the copy takes the project: no link, nothing private, none of the editor's own data.
+  const named = new NameMatcher([...retired].map((rel) => basename(rel)));
+  const scan = async (rel: string): Promise<void> => {
+    for (const e of await fs.readdir(join(project, rel), { withFileTypes: true }).catch(() => [])) {
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      const abs = join(project, child);
+      if (e.isSymbolicLink() || !sourcePathKept(project, abs) || isProjectBrief(project, abs) || isSourcesFolder(project, abs)) continue;
+      if (e.isDirectory()) await scan(child);
+      // The importer's own files name nothing; the library's files are counted above, and not by their original names.
+      else if (e.isFile() && TEXT_FILE.test(e.name) && child !== 'siteorigin/assets.json' && !(rel === 'static/assets' && (IMPORTED_MEDIA_FILE.test(e.name) || IMPORTED_DOCUMENT_FILE.test(e.name)))) {
+        // One that can't be read may name any of them: every file goes.
+        const text = await fs.readFile(abs, 'utf8').catch(() => null);
+        if (text === null) return void retired.clear();
+        named.scan(text);
+      }
+      if (!retired.size) return;
+    }
+  };
+  await scan('');
+  // A document by its whole name: `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`.
+  for (const rel of retired) if ((documentFormat(rel) ? named.whole : named.file)(basename(rel))) retired.delete(rel);
+  return (rel) => !retired.has(rel);
+}
+
 /** Files the website build reads as text, searched for the asset file names they use. */
-const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
+const TEXT_FILE =/\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
 
 /** Does `text` name `file` as a whole file name, so that `a-1234abcd.svg` is not found inside `ba-1234abcd.svg`? */
 export function namesFile(text: string, file: string): boolean {

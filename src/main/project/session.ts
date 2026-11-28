@@ -32,10 +32,9 @@ import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
-import { findMissingAssetFiles } from './asset-files';
+import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
-import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
@@ -146,9 +145,9 @@ export const LOCK_STALE_MS = 2 * 60_000;
  * often with dated names ("rates-20240131.pdf") that look imported, and a sweep must never delete one of those. A
  * removed document's file stays in the folder; exports leave it out.
  */
-const IMPORTED_ASSET_RE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
+const IMPORTED_ASSET_RE = IMPORTED_MEDIA_FILE;
 /** Documents the importer named: never swept (see above), and never searched for the names of other files. */
-const IMPORTED_DOCUMENT_RE = new RegExp(`^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}\\.(${DOCUMENT_EXTENSIONS.join('|')})$`);
+const IMPORTED_DOCUMENT_RE = IMPORTED_DOCUMENT_FILE;
 /** An imported file is never collected this soon after it was written (its asset may still be on its way in). */
 const ASSET_GRACE_MS = 10 * 60_000;
 const ASSETS_DOC = `${DOC_DIR}/assets.json`;
