@@ -140,6 +140,18 @@ describe('entry text in the project', () => {
     expect(withBody(s, long).collections.posts.entries.en_spring.body).toHaveLength(60);
     expect(() => normalizeRichText(long, s, 'Text')).toThrow(/too long/);
   });
+
+  it('holds a 20,000-word long read, and refuses text past what a post holds', () => {
+    const s = blog();
+    // 168 paragraphs of about 120 words: 20,160 words, near 120,000 characters.
+    const read = Array.from({ length: 168 }, (_, i) => `Part ${i} ${'harbour light over water '.repeat(30)}`.trim());
+    expect(read.join(' ').split(' ').length).toBeGreaterThanOrEqual(20_000);
+    // Past what a post used to hold, so the long read is what is being tested.
+    expect(read.join('').length).toBeGreaterThan(100_000);
+    const body = withBody(s, read).collections.posts.entries.en_spring.body;
+    expect(body.map((b) => ('spans' in b ? b.spans.map((sp) => sp.text).join('') : ''))).toEqual(read);
+    expect(() => withBody(s, ['x'.repeat(MAX_ENTRY_CHARS + 1)])).toThrow(/too long/);
+  });
 });
 
 describe('pictures in posts as uses of the library', () => {

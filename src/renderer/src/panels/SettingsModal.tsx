@@ -660,7 +660,7 @@ export function SettingsModal() {
                         checked={settings.gitSnapshots}
                         onChange={(v) => void update({ gitSnapshots: v })}
                         label="Git snapshots"
-                        hint="Saved versions keep a snapshot of the whole site in a Git repository inside the project, made with the Git built into SiteOrigin Builder. Versions saved before stay listed and can still be restored."
+                        hint="Saved versions keep a snapshot of the whole site in a Git repository inside the project, made with the Git built into SiteOrigin Builder. Restoring one brings back its pages, settings and media, and its review names any other files that differ. Versions saved before stay listed and can still be restored."
                       />
                       {settings.gitSnapshots && <GitStatus />}
                     </div>

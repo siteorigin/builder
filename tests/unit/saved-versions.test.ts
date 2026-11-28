@@ -4,7 +4,7 @@
  * is saved first as a version of its own, so the way back outlasts history too.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -12,7 +12,7 @@ import type { AssetRecord } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
-import { describeReview, restoredNotice } from '../../src/renderer/src/lib/versions';
+import { describeReview, othersOnly, restoredNotice } from '../../src/renderer/src/lib/versions';
 import type { VersionReview } from '@shared/api';
 import { inProcessGit, useTestGit } from './fixtures/git-in-process';
 import { openRepo } from '../../src/main/git/repo';
@@ -220,6 +220,16 @@ describe('saved versions', () => {
     for (const f of b.files) expect(existsSync(join(dir, f))).toBe(true);
     await ok(again.undo());
     expect(again.state.assets.assets.a_photo.file).toBe(b.files[0]);
+  });
+
+  both('reviews the collection entries a restore removes, brings back and changes', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_kept', title: 'Kept post', publishedAt: '2026-11-01', body: ['One.'] }] }, { label: 'Kept' }));
+    const saved = await ok(s.saveVersion('V1'));
+    await ok(s.apply({ operations: [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_after', title: 'After V1', publishedAt: '2026-11-02', body: ['Two.'] }] }, { label: 'After' }));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review).toMatchObject({ unchanged: false, entries: { back: [], gone: ['After V1'], changed: [] }, collections: { back: [], gone: [], changed: [] } });
+    expect(describeReview(review!)).toEqual(['Removes 1 entry it doesn’t have: “After V1”']);
   });
 
   both('puts back a file changed in place outside the app, and the version saved before restoring holds the changed one', async (mode) => {
@@ -1654,10 +1664,246 @@ describe('restoring with Git snapshots on (#1155)', () => {
     expect(row.id).toBe(pending.op);
     expect((await ok(again.reviewVersion(row.id))).review!.problem).toBeUndefined();
   });
+
+  it('names the hand-written files that differ from a version, which a restore doesn’t copy (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const ROUTE = 'src/routes/volunteer/+page.svelte';
+    mkdirSync(join(dir, 'src/routes/volunteer'), { recursive: true });
+    writeFileSync(join(dir, ROUTE), '<h1>Volunteer</h1>\n<p>Saturdays in April</p>\n');
+    const april = await ok(s.saveVersion('April'));
+    writeFileSync(join(dir, ROUTE), '<h1>Volunteer</h1>\n<p>Sundays in June</p>\n');
+    await ok(s.saveVersion('June'));
+    // Only the hand-written route differs: the review says so rather than that the site already matches.
+    const only = (await ok(s.reviewVersion(april.id!))).review!;
+    expect(only).toMatchObject({ unchanged: true, others: [ROUTE] });
+    // With a page changed too, the review names both, and the restore puts the page back but leaves the route.
+    const home = s.state.site.homePageId;
+    const homeTitle = s.state.pages[home].title;
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: home, title: 'June home' }] }, { label: 'Rename home' }));
+    const both = (await ok(s.reviewVersion(april.id!))).review!;
+    expect(both).toMatchObject({ unchanged: false, others: [ROUTE] });
+    expect(both.pages.changed).toEqual([homeTitle]);
+    // Another route written by hand since the review, the project's revision the same: the review is out of date.
+    const LATER = 'src/routes/later/+page.svelte';
+    mkdirSync(join(dir, 'src/routes/later'), { recursive: true });
+    writeFileSync(join(dir, LATER), '<p>Written since the review</p>\n');
+    expect(s.revision).toBe(both.revision);
+    const tip = await tipOf(dir);
+    expect(await s.restoreVersion(april.id!, both.revision, { files: both.files, replaced: both.replaced, others: both.others })).toMatchObject({ ok: false, stale: true });
+    expect(s.state.pages[home].title).toBe('June home');
+    expect(await tipOf(dir)).toBe(tip);
+    const stale = (await ok(s.reviewVersion(april.id!))).review!;
+    expect(stale.others).toEqual([LATER, ROUTE]);
+    // As many files as the review named, but not the same ones: out of date too.
+    renameSync(join(dir, 'src/routes/later'), join(dir, 'src/routes/latest'));
+    const LATEST = 'src/routes/latest/+page.svelte';
+    expect(await s.restoreVersion(april.id!, stale.revision, { files: stale.files, replaced: stale.replaced, others: stale.others })).toMatchObject({ ok: false, stale: true });
+    renameSync(join(dir, 'src/routes/latest'), join(dir, 'src/routes/later'));
+    const again = (await ok(s.reviewVersion(april.id!))).review!;
+    expect(again.others).toEqual([LATER, ROUTE]);
+    expect(LATEST).not.toBe(LATER);
+    const r = await ok(s.restoreVersion(april.id!, again.revision, { files: again.files, replaced: again.replaced, others: again.others }));
+    expect(s.state.pages[home].title).toBe(homeTitle);
+    expect(read(dir, ROUTE).toString()).toContain('Sundays in June');
+    expect(r.others).toEqual([LATER, ROUTE]);
+    // The site as restored is saved as it is, routes and all: it matches itself, and April still differs.
+    const [row] = restoredRows(dir);
+    expect(Buffer.from(await openRepo(dir).readBlob(row.git!.commit, ROUTE)).toString()).toContain('Sundays in June');
+    expect((await ok(s.reviewVersion(row.id))).review).toMatchObject({ unchanged: true, others: [] });
+    expect((await ok(s.reviewVersion(april.id!))).review).toMatchObject({ unchanged: true, others: [LATER, ROUTE] });
+    // Restoring it again changes nothing, saves nothing more, and says what still differs.
+    const last = await tipOf(dir);
+    expect(await s.restoreVersion(april.id!, s.revision)).toMatchObject({ ok: true, unchanged: true, others: [LATER, ROUTE] });
+    expect(await tipOf(dir)).toBe(last);
+  });
+
+  it('names a version’s own copy of a file the generator writes now, which restoring its pages retires (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const ROUTE = 'src/routes/signup/+page.svelte';
+    await ok(s.apply({ operations: [{ type: 'page.create', title: 'Signup' }] }, { label: 'Add page' }));
+    const bytes = read(dir, ROUTE);
+    await ok(s.undo());
+    expect(existsSync(join(dir, ROUTE))).toBe(false);
+    // Written by hand, byte for byte what the generator writes for the page, and saved so.
+    mkdirSync(join(dir, 'src/routes/signup'), { recursive: true });
+    writeFileSync(join(dir, ROUTE), bytes);
+    const april = await ok(s.saveVersion('April'));
+    // The page back: the generator takes the file for its own, since it holds just what it would write.
+    await ok(s.redo());
+    expect(JSON.parse(read(dir, 'siteorigin/generated-manifest.json').toString()).files[ROUTE]).toBe(sha(bytes));
+    const { review } = await ok(s.reviewVersion(april.id!));
+    expect(review!.pages.gone).toEqual(['Signup']);
+    // The same bytes on both sides, but April's copy isn't put back when the page goes, and the generator's goes with it.
+    expect(review!.others).toEqual([ROUTE]);
+    const r = await ok(s.restoreVersion(april.id!, review!.revision, { files: review!.files, replaced: review!.replaced, others: review!.others }));
+    expect(r.others).toEqual([ROUTE]);
+    expect(existsSync(join(dir, ROUTE))).toBe(false);
+  });
+
+  // Only a disk that tells names apart by case can hold a file named as a generated one but for its case.
+  const caseSensitive = (() => {
+    const d = mkdtempSync(join(tmpdir(), 'so-case-'));
+    writeFileSync(join(d, 'a'), '');
+    const yes = !existsSync(join(d, 'A'));
+    rmSync(d, { recursive: true, force: true });
+    return yes;
+  })();
+  it.runIf(caseSensitive)('tells a file written by hand from a generated one named the same but for its case (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    expect(JSON.parse(read(dir, 'siteorigin/generated-manifest.json').toString()).files['static/robots.txt']).toBeDefined();
+    const april = await ok(s.saveVersion('April'));
+    writeFileSync(join(dir, 'static/ROBOTS.txt'), 'User-agent: *\n');
+    expect((await ok(s.reviewVersion(april.id!))).review!.others).toEqual(['static/ROBOTS.txt']);
+  });
+
+  it.runIf(!caseSensitive)('takes a library file renamed but for its case for the one the library names (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const pic = picture(dir, 'photo', 1);
+    const early = picture(dir, 'early', 2);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...pic.asset } }, { type: 'asset.add', asset: { id: 'a_early', ...early.asset } }] }, { label: 'Import' }));
+    // One renamed before the version is saved, so its snapshot holds it by the disk's spelling; one after.
+    const rename = (file: string) => {
+      const upper = file.replace(/\/(photo|early)-/, (m) => m.toUpperCase());
+      renameSync(join(dir, file), join(dir, upper));
+      return upper;
+    };
+    const before = rename(early.files[0]);
+    const april = await ok(s.saveVersion('April'));
+    writeFileSync(join(dir, before), 'changed since');
+    writeFileSync(join(dir, rename(pic.files[0])), 'changed since');
+    const { review } = await ok(s.reviewVersion(april.id!));
+    expect(review!.replaced.sort()).toEqual([early.files[0], pic.files[0]].sort());
+    expect(review!.others).toEqual([]);
+  });
+
+  it.runIf(!caseSensitive)('names a version’s hand-written file that Builder has taken over since under another spelling (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const HAND = 'src/routes/Signup/+page.svelte';
+    mkdirSync(join(dir, 'src/routes/Signup'), { recursive: true });
+    writeFileSync(join(dir, HAND), '<p>By hand</p>\n');
+    const april = await ok(s.saveVersion('April'));
+    // The page's route written into the folder as the disk spells it: the same file, now the generator's.
+    rmSync(join(dir, HAND));
+    await ok(s.apply({ operations: [{ type: 'page.create', title: 'Signup' }] }, { label: 'Add page' }));
+    expect(JSON.parse(read(dir, 'siteorigin/generated-manifest.json').toString()).files['src/routes/signup/+page.svelte']).toBeDefined();
+    expect(readdirSync(join(dir, 'src/routes'))).toContain('Signup');
+    const { review } = await ok(s.reviewVersion(april.id!));
+    expect(review!.pages.gone).toEqual(['Signup']);
+    expect(review!.others).toEqual([HAND]);
+  });
+
+  it('reviews and restores past a file no snapshot could hold, naming it (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    writeFileSync(join(dir, 'static/grown.bin'), 'small in April');
+    const april = await ok(s.saveVersion('April'));
+    await describe1(s, 'Later', 'Later');
+    // Too large for a snapshot (sparse, so nothing is written), one new and one that grew: with Git snapshots off the
+    // work goes to the plain store.
+    git.enabled = false;
+    for (const name of ['huge.bin', 'grown.bin']) {
+      const fd = openSync(join(dir, 'static', name), 'w');
+      ftruncateSync(fd, 2 ** 31);
+      closeSync(fd);
+    }
+    const { review } = await ok(s.reviewVersion(april.id!));
+    expect(review!.problem).toBeUndefined();
+    expect(review).toMatchObject({ site: true, others: ['static/grown.bin', 'static/huge.bin'] });
+    expect(await ok(s.restoreVersion(april.id!, review!.revision, { files: review!.files, replaced: review!.replaced, others: review!.others }))).toMatchObject({ others: ['static/grown.bin', 'static/huge.bin'] });
+    expect(s.state.site.description).not.toBe('Later');
+  });
+
+  it('compares the files a restore never copies, written by hand on either side, and not Builder’s own (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const put = (rel: string, text: string) => {
+      mkdirSync(join(dir, rel, '..'), { recursive: true });
+      writeFileSync(join(dir, rel), text);
+    };
+    put('src/routes/same/+page.svelte', '<p>The same</p>\n');
+    put('src/routes/gone/+page.svelte', '<p>Deleted since</p>\n');
+    put('src/lib/schedule.js', 'export const day = "Saturday";\n');
+    put('src/lib/tool.js', 'export {};\n');
+    put('static/schedule.txt', 'Saturdays\n');
+    const pic = picture(dir, 'photo', 1);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...pic.asset } }] }, { label: 'Import photo' }));
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Badge', source: '<p>One</p>\n' }] }, { label: 'Add badge' }));
+    await ok(s.apply({ operations: [{ type: 'page.create', title: 'Volunteer' }] }, { label: 'Add page' }));
+    await ok(s.apply({ operations: [{ type: 'page.create', title: 'Events' }] }, { label: 'Add page' }));
+    const april = await ok(s.saveVersion('April'));
+    const generated = () => Object.keys(JSON.parse(read(dir, 'siteorigin/generated-manifest.json').toString()).files as Record<string, string>);
+    const volunteer = generated().find((p) => p.startsWith('src/routes/') && p.includes('volunteer'))!;
+    expect(volunteer).toBeDefined();
+
+    // Since: hand-written files changed, added, removed and made to run; the component's code, a library picture and
+    // the pages changed; and the Volunteer page removed, a hand-written route put where its generated one was.
+    put('src/lib/schedule.js', 'export const day = "Sunday";\n');
+    rmSync(join(dir, 'src/routes/gone'), { recursive: true });
+    put('src/routes/new/+page.svelte', '<p>Added since</p>\n');
+    put('static/schedule.txt', 'Sundays\n');
+    if (process.platform !== 'win32') chmodSync(join(dir, 'src/lib/tool.js'), 0o755);
+    const badge = Object.values(s.state.components).find((c) => c.name === 'Badge')!;
+    await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: badge.id, source: '<p>Two</p>\n' }] }, { label: 'Edit badge' }));
+    writeFileSync(join(dir, pic.files[1]), 'another 480');
+    const page = Object.values(s.state.pages).find((p) => p.title === 'Volunteer')!;
+    await ok(s.apply({ operations: [{ type: 'page.remove', pageId: page.id }] }, { label: 'Remove page' }));
+    expect(generated()).not.toContain(volunteer);
+    put(volunteer, '<p>Written by hand</p>\n');
+    // Generated output that only one side has is no other file: Events' route went with its page, Later's came with its.
+    const events = Object.values(s.state.pages).find((p) => p.title === 'Events')!;
+    await ok(s.apply({ operations: [{ type: 'page.remove', pageId: events.id }, { type: 'page.create', title: 'Later' }] }, { label: 'Swap pages' }));
+    expect(generated().some((p) => p.includes('events'))).toBe(false);
+    expect(generated().some((p) => p.includes('later'))).toBe(true);
+
+    const others = ['src/lib/schedule.js', ...(process.platform !== 'win32' ? ['src/lib/tool.js'] : []), 'src/routes/gone/+page.svelte', 'src/routes/new/+page.svelte', volunteer, 'static/schedule.txt'].sort();
+    const { review } = await ok(s.reviewVersion(april.id!));
+    // The component's code, the picture, the generated routes and the documents are reviewed as ever, not as other files.
+    expect(review).toMatchObject({ components: 1, replaced: [pic.files[1]], others });
+    expect(review!.pages.back.sort()).toEqual(['Events', 'Volunteer']);
+    // So whether Git snapshots are still on or not, and opened read-only, where the generator's record is only read.
+    git.enabled = false;
+    expect((await ok(s.reviewVersion(april.id!))).review!.others).toEqual(others);
+    await s.close();
+    const ro = await ProjectSession.openReadOnly(dir, { reason: 'Open elsewhere.', canUnlock: false });
+    open.push(ro);
+    expect((await ok(ro.reviewVersion(april.id!))).review!.others).toEqual(others);
+  });
+
+  it('names no other files for a version in the plain store, and asks nothing of Git for it (#1396)', async () => {
+    const { dir, s } = await make();
+    mkdirSync(join(dir, 'src/routes/volunteer'), { recursive: true });
+    writeFileSync(join(dir, 'src/routes/volunteer/+page.svelte'), '<p>April</p>\n');
+    const plain = await ok(s.saveVersion('Plain'));
+    writeFileSync(join(dir, 'src/routes/volunteer/+page.svelte'), '<p>June</p>\n');
+    git.enabled = true;
+    const calls = git.calls.length;
+    expect((await ok(s.reviewVersion(plain.id!))).review).toMatchObject({ unchanged: true, others: [] });
+    expect(git.calls.length).toBe(calls);
+  });
+
+  it('refuses a review whose saved files can’t be read, rather than say none differ (#1396)', async () => {
+    git.enabled = true;
+    const { s } = await make();
+    const saved = await ok(s.saveVersion('Saved'));
+    // A folder deep in the tree, not its top: every part of it is read.
+    const src = (await openRepo(s.dir).readTree(catalogue(s.dir).find((v) => v.id === saved.id)!.git!.tree)).find((e) => e.path === 'src')!.oid;
+    const spy = intercept((repo) => ({ readTree: async (oid, call) => (oid === src ? Promise.reject(new GitError('not-found', 'gone')) : repo.readTree(oid, call)) }));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    spy.mockRestore();
+    expect(review!.problem).toMatch(/damaged/);
+    const healthy = (await ok(s.reviewVersion(saved.id!))).review!;
+    expect(healthy.problem).toBeUndefined();
+    expect(healthy).toMatchObject({ unchanged: true, others: [] });
+  });
 });
 
 describe('the saved version wording', () => {
-  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
+  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, entries: { back: [], gone: [], changed: [] }, collections: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], others: [], missing: [], unchanged: false };
 
   it('names pages first, at most four a line, then what else changes', () => {
     const lines = describeReview({
@@ -1686,6 +1932,17 @@ describe('the saved version wording', () => {
     expect(describeReview(base)).toEqual([]);
   });
 
+  it('names collection entries a restore removes, brings back or changes', () => {
+    expect(describeReview({ ...base, entries: { back: ['Old'], gone: ['After V1'], changed: ['A', 'B'] }, collections: { back: ['Docs'], gone: ['Team'], changed: ['Posts'] } })).toEqual([
+      'Brings back 1 entry: “Old”',
+      'Removes 1 entry it doesn’t have: “After V1”',
+      'Changes 2 entries: “A” and “B”',
+      'Brings back 1 collection: “Docs”',
+      'Removes 1 collection it doesn’t have: “Team”',
+      'Changes the settings of 1 collection: “Posts”'
+    ]);
+  });
+
   it('says where the replaced work went after a restore', () => {
     expect(restoredNotice('Approved', true)).toBe('Restored “Approved”. Your work from before is kept in Saved versions.');
     expect(restoredNotice('Draft', false)).toBe('Restored “Draft”.');
@@ -1694,6 +1951,27 @@ describe('the saved version wording', () => {
     expect(restoredNotice('Approved', true, 1)).toBe('Restored “Approved”. Undo won’t bring back the 1 file it replaced, but your work from before, kept in Saved versions, has it.');
     expect(restoredNotice('Before', true, 0, ['static/a.pdf', 'static/b.pdf'])).toBe(
       'Restored “Before”. Your work from before is kept in Saved versions. 2 files the earlier restore put back stay in the project folder, since its Undo needs them: a.pdf, b.pdf.'
+    );
+  });
+
+  it('names the other files a restore doesn’t copy by their whole paths, since routes share a name (#1396)', () => {
+    const routes = ['src/routes/a/+page.svelte', 'src/routes/b/+page.svelte', 'src/routes/c/+page.svelte', 'src/routes/d/+page.svelte', 'src/routes/e/+page.svelte'];
+    expect(describeReview({ ...base, pages: { back: [], gone: [], changed: ['Home'] }, others: ['src/routes/volunteer/+page.svelte'] })).toEqual([
+      'Changes 1 page: “Home”',
+      'Doesn’t copy 1 other file from it, which stays as it is now, or as Builder generates it (removed if it no longer does): src/routes/volunteer/+page.svelte'
+    ]);
+    // A review names every one of them; a notice at most four.
+    expect(describeReview({ ...base, others: routes })).toEqual([`Doesn’t copy 5 other files from it, which stay as they are now, or as Builder generates them (removed where it no longer does): ${routes.join(', ')}`]);
+    expect(othersOnly(['package.json'])).toEqual(['Your pages, settings and media already match this version.', '1 other file differs from it, and restoring doesn’t copy it: package.json.']);
+    expect(othersOnly(routes)[1]).toBe(`5 other files differ from it, and restoring doesn’t copy them: ${routes.join(', ')}.`);
+    expect(restoredNotice('April', true, 0, [], ['src/routes/volunteer/+page.svelte'])).toBe(
+      'Restored “April”. Your work from before is kept in Saved versions. 1 other file wasn’t copied from it: src/routes/volunteer/+page.svelte.'
+    );
+    expect(restoredNotice('April', true, 0, [], routes.slice(0, 4))).toBe(
+      `Restored “April”. Your work from before is kept in Saved versions. 4 other files weren’t copied from it: ${routes.slice(0, 4).join(', ')}.`
+    );
+    expect(restoredNotice('April', true, 2, [], routes)).toBe(
+      'Restored “April”. Undo won’t bring back the 2 files it replaced, but your work from before, kept in Saved versions, has them. 5 other files weren’t copied from it: src/routes/a/+page.svelte, src/routes/b/+page.svelte, src/routes/c/+page.svelte, src/routes/d/+page.svelte and 1 more.'
     );
   });
 });

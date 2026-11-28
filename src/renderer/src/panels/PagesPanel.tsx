@@ -23,7 +23,7 @@ import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
 import { followsPageOrder } from '@engine/header-order';
 import { setHeaderMenuOrder } from '../lib/header-menu-order';
 import { listPageClicks, pageClicks } from '../lib/page-clicks';
-import { Marked, Runs, fold, found, shortDate } from '../components/ListText';
+import { ListPeek, Marked, Runs, fold, found, shortDate } from '../components/ListText';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { saveOpenPost } from '../lib/post-draft';
 
@@ -48,6 +48,8 @@ function newPageRoute(st: ProjectState, title: string, parent = '/'): { route: s
 }
 
 const levels = (route: string) => route.split('/').filter(Boolean).length;
+/** Whether a row cuts its title or its address short. */
+const rowClipped = (row: HTMLElement) => [...row.querySelectorAll<HTMLElement>('.page-title, .page-route-dir, .page-route-leaf, .page-route-text')].some((el) => el.scrollWidth > el.clientWidth + 1);
 
 /** What Add page can start a page with, in the order it offers them. */
 const PAGE_STARTERS: Array<[PageStarter, string]> = [
@@ -255,9 +257,9 @@ export function PagesPanel() {
   const [announce, setAnnounce] = useState('');
   // A move is said once: finding again starts from silence, so an old move is never read out as new.
   useEffect(() => setAnnounce(''), [query]);
-  // The row whose full title and address show in a card under it: a clipped row that keyboard focus reached.
-  const [peek, setPeek] = useState<{ id: string; top: number; left: number; width: number } | null>(null);
-  const peekRef = useRef<HTMLDivElement>(null);
+  // The row keyboard focus is on, whose full title and address show in a card beside the list while it clips them.
+  // Escape puts the card away until focus moves to another row.
+  const [peek, setPeek] = useState<{ id: string } | null>(null);
   // The page just moved here, with the pages listed under it that moved along. Pages and the header menu have orders
   // of their own, so once the project shows the move (`revision`, the project's once it was saved, and `order`, Pages
   // as it left it) the move says what it did to the menu: nothing, for pages outside it or a menu already in that
@@ -434,26 +436,6 @@ export function PagesPanel() {
       clicks.drop();
     };
   }, [clicks, opening]);
-  // The peek card goes under its row when the visible part of the list has room for it as drawn, else over the row
-  // when there is more room there.
-  useLayoutEffect(() => {
-    const card = peekRef.current;
-    const row = peek && listRef.current?.querySelector<HTMLElement>(`[data-page="${peek.id}"]`);
-    const wrap = wrapRef.current?.getBoundingClientRect();
-    const body = bodyRef.current?.getBoundingClientRect();
-    if (!peek || !card || !row || !wrap || !body) return;
-    const r = row.getBoundingClientRect();
-    const h = card.offsetHeight;
-    const below = body.bottom - r.bottom - 3;
-    const over = r.top - body.top - 3;
-    const top = below < h && over > below ? r.top - wrap.top - 3 - h : r.bottom - wrap.top + 3;
-    if (top !== peek.top || r.width !== peek.width) setPeek({ ...peek, top, width: r.width, left: r.left - wrap.left });
-  });
-  useEffect(() => {
-    const hide = () => setPeek(null);
-    window.addEventListener('resize', hide);
-    return () => window.removeEventListener('resize', hide);
-  }, []);
   // When the current page changes (from here, the toolbar, the canvas or the command menu), its row is
   // brought into view without taking focus; scrolling the list by hand in between is left alone.
   useEffect(() => {
@@ -487,15 +469,8 @@ export function PagesPanel() {
       wrapRef.current?.closest('.side-panel-view')?.querySelector<HTMLElement>(sel)?.focus();
     });
   const rowEl = (id: string) => listRef.current?.querySelector<HTMLElement>(`[data-page="${id}"]`);
-  /** Keyboard focus on a row whose title or address is cut short shows them whole in a card under it. */
-  const showPeek = (row: HTMLElement | null) => {
-    const wrap = wrapRef.current?.getBoundingClientRect();
-    const clipped = [...(row?.querySelectorAll<HTMLElement>('.page-title, .page-route-dir, .page-route-leaf, .page-route-text') ?? [])].some((el) => el.scrollWidth > el.clientWidth + 1);
-    if (!row || !wrap || !clipped || !row.matches(':focus-visible') || renaming || dragId) return setPeek(null);
-    const r = row.getBoundingClientRect();
-    // Placed under the row first; once the card is drawn it is measured and moved over the row if it does not fit.
-    setPeek({ id: row.dataset.page!, top: r.bottom - wrap.top + 3, left: r.left - wrap.left, width: r.width });
-  };
+  /** Keyboard focus on a row: its card beside the list shows while its title or address is cut short. */
+  const showPeek = (row: HTMLElement | null) => setPeek(row?.matches(':focus-visible') && !renaming && !dragId ? { id: row.dataset.page! } : null);
 
   /**
    * Open a page, at its remembered place or at `target` (null: the page itself; see selectPage). From a filtered list
@@ -1019,7 +994,8 @@ export function PagesPanel() {
               const isHome = id === homeId;
               const draft = isDraftPage(st, p);
               const article = pageArticle(p);
-              const date = article ? shortDate(article.date, p.language ?? language) : null;
+              // Always with its year: the row's date has a line to itself here (the Content list leaves this year's off).
+              const date = article ? shortDate(article.date, p.language ?? language, { withYear: true }) : null;
               const d = finding ? 0 : depthOf(id);
               const cls = [
                 'list-item',
@@ -1091,7 +1067,8 @@ export function PagesPanel() {
                     if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), open(id, true));
                     if (e.key === 'F2') (e.preventDefault(), setRenaming(id));
-                    if (e.key === 'Escape' && peek) (e.stopPropagation(), setPeek(null));
+                    // Escape puts away a card that shows (the row cut short); with none showing it leaves a find.
+                    if (e.key === 'Escape' && peek && rowClipped(e.currentTarget)) (e.stopPropagation(), setPeek(null));
                     else if (e.key === 'Escape' && finding) {
                       // Escape leaves the find and keeps this row, now in its place in the outline.
                       e.stopPropagation();
@@ -1172,11 +1149,7 @@ export function PagesPanel() {
             </div>
           )}
           {peek && st.pages[peek.id] && !menu.isOpen && !renaming && !dragId && (
-            // The row's accessible name and description already carry all of this; the card is for the eye.
-            <div ref={peekRef} className="pages-peek" aria-hidden="true" style={{ top: peek.top, left: peek.left, width: peek.width }}>
-              <span className="pages-peek-title">{st.pages[peek.id].title}</span>
-              <span className="pages-peek-route">{st.pages[peek.id].route}</span>
-            </div>
+            <ListPeek key={peek.id} row={() => rowEl(peek.id)} cut={rowClipped} title={st.pages[peek.id].title} route={st.pages[peek.id].route} />
           )}
           {renaming && st.pages[renaming] && (
             <input

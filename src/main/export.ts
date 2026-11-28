@@ -988,7 +988,7 @@ export async function locatedPhotos(project: string, state: ProjectState): Promi
   return out.sort();
 }
 
-const listNames = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]);
+export const listNames = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]);
 
 /** Why a website export stopped: built files with photo metadata that could not be taken out. */
 export function builtPhotosMessage(failed: string[]): string {

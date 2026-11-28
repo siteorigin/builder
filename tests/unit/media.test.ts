@@ -107,9 +107,16 @@ describe('image dimensions', () => {
 });
 
 /** sfnt tables a font's metadata comes from. */
-function nameTable(family: string): Buffer {
-  const s = Buffer.from(family, 'utf16le').swap16();
-  return Buffer.concat([u16(0), u16(1), u16(18), u16(3), u16(1), u16(0x409), u16(1), u16(s.length), u16(0), s]);
+function nameTable(family: string, more: Record<number, string> = {}): Buffer {
+  const names = [[1, family] as const, ...Object.entries(more).map(([id, v]) => [Number(id), v] as const)];
+  const strings = names.map(([, v]) => Buffer.from(v, 'utf16le').swap16());
+  let at = 0;
+  const records = names.map(([id], k) => {
+    const r = Buffer.concat([u16(3), u16(1), u16(0x409), u16(id), u16(strings[k].length), u16(at)]);
+    at += strings[k].length;
+    return r;
+  });
+  return Buffer.concat([u16(0), u16(names.length), u16(6 + names.length * 12), ...records, ...strings]);
 }
 function os2Table(weight: number, italic: boolean): Buffer {
   const t = Buffer.alloc(78);
@@ -203,6 +210,34 @@ describe('web font metadata', async () => {
     const badName = nameTable('Brand');
     badName.writeUInt16BE(0xfff0, 16);
     await expect(fontInfo(woff([['name', badName]]))).rejects.toThrow(/damaged|family/);
+  });
+
+  it('offers the family a legacy-named static font is a weight or style of, when its own weight and slant agree (#1469)', async () => {
+    const info = (family: string, weight: number, italic = false, more: Record<number, string> = {}) => fontInfo(woff2([[5, nameTable(family, { 2: 'Regular', ...more })], [6, os2Table(weight, italic)]]));
+    // The family stays as the file names it; the importer decides whether it joins another.
+    await expect(info('IBM Plex Mono Medium', 500)).resolves.toEqual({ family: 'IBM Plex Mono Medium', weight: '500', style: 'normal', joins: ['IBM Plex Mono'] });
+    await expect(info('Source Code Pro Semi Bold', 600)).resolves.toMatchObject({ joins: ['Source Code Pro'] });
+    await expect(info('Brand ExtraLight', 200)).resolves.toMatchObject({ joins: ['Brand'] });
+    // Older fonts give Thin and Extra Light the weights 250 and 275, which Windows once needed.
+    await expect(info('Brand Thin', 250)).resolves.toMatchObject({ weight: '250', joins: ['Brand'] });
+    await expect(info('Brand Extra-Light', 275)).resolves.toMatchObject({ joins: ['Brand'] });
+    await expect(info('Brand Light Italic', 300, true)).resolves.toMatchObject({ family: 'Brand Light Italic', style: 'italic', joins: ['Brand', 'Brand Light'] });
+    await expect(info('Brand Italic', 400, true)).resolves.toMatchObject({ joins: ['Brand'] });
+    // A word the font's own weight or slant does not bear out is part of its name: Archivo Black is a regular weight.
+    for (const [family, weight, italic] of [['Archivo Black', 400, false], ['Brand Italic', 400, false], ['Brand Bold', 400, false], ['Roboto Condensed', 400, false], ['Medium', 500, false], ['Brand Medium', 450, false], ['Brand Thin', 300, false], ['Gotham Book', 400, false], ['Brand Regular', 400, false], ['Brand Normal', 400, false]] as const) {
+      expect(await info(family, weight, italic)).not.toHaveProperty('joins');
+    }
+    // A typographic family (name ID 16) is already the whole family.
+    await expect(info('Source Serif 4 Black', 900, false, { 16: 'Source Serif 4' })).resolves.toEqual({ family: 'Source Serif 4', weight: '900', style: 'normal' });
+    // A font with no OS/2 table has no weight of its own to bear the word out.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Italic', { 2: 'Italic' })]]))).not.toHaveProperty('joins');
+    // A variable font holds every weight, so a word in its name says nothing about one.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(100, 900)]]))).not.toHaveProperty('joins');
+    // Even one whose weight axis is a single weight: its other axes (slant, width) still vary.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(500, 500)]]))).toMatchObject({ weight: '500' });
+    expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(500, 500)]]))).not.toHaveProperty('joins');
+    // A weight class of 0 is no weight, though it is read as 400.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Light')], [6, os2Table(0, false)]]))).not.toHaveProperty('joins');
   });
 
   it('keeps only characters that are safe in a CSS family name', async () => {

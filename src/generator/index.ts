@@ -90,7 +90,7 @@ import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
 import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
-import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
+import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
@@ -4436,10 +4436,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // The visitor's Light/Dark switch goes in the shared header while the page shows it (see generator/color-scheme.ts).
   // The website also applies a remembered choice before anything is drawn; the editor's preview remembers none.
   const toggle = usesThemeToggle(state);
-  const toggleImport = toggle ? `\n\timport { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';` : '';
+  const follow = toggle && !opts.instrument;
+  const toggleImport = toggle ? `\n\timport { ${follow ? 'followThemeChoice, ' : ''}startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';` : '';
   // The browser's own colour (theme-color) follows the visitor's choice too, on every page, header or not.
   const toggleStart = toggle
-    ? `\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
+    ? `${follow ? `\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());` : ''}\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
   const devBridge = opts.instrument
@@ -4455,11 +4456,12 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${searchImport}${toggleImport}
-	import { ${multilingual ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
+	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	const text = visitorText();
+	const textLang = visitorTextLang();
 	// A message typed into a form and not sent comes back when the visitor returns with Back, which says whether one
 	// they left while it was sending went.
 	keepDrafts(text);${appearStart}${searchStart}
@@ -4477,7 +4479,7 @@ ${editing}</script>
 	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
 </svelte:head>
 
-<a class="so-skip-link" href="#main">{text().skipLink}</a>
+<a class="so-skip-link" href="#main" lang={textLang('skipLink')}>{text().skipLink}</a>
 {#if showHeader}
 ${header}
 {/if}
@@ -4580,7 +4582,10 @@ export function generateVisitorTextJs(state: ProjectState): string {
   const codes = [...new Set([site, ...languagesByRoute(state).map(([, language]) => language)].map(visitorTextLanguage))].sort();
   // The Light/Dark switch's name goes only to a site that has the switch.
   const toggle = usesThemeToggle(state);
-  const text = Object.fromEntries(codes.map((code) => [code, withoutKeys(visitorTextFor(state.site, code), toggle ? [] : ['themeToggle'])]));
+  const dropped = toggle ? [] : ['themeToggle'];
+  const resolved = codes.map((code) => [code, resolveVisitorText(state.site, code)] as const);
+  const text = Object.fromEntries(resolved.map(([code, { words }]) => [code, withoutKeys(words, dropped)]));
+  const english = Object.fromEntries(resolved.map(([code, r]) => [code, r.english.filter((key) => !dropped.includes(key))] as const).filter(([, keys]) => keys.length));
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. What the site says on its
 // own, around its content, in each language its pages are in. Site styles > Visitor text changes the wording.
 import { getContext, setContext } from 'svelte';
@@ -4590,6 +4595,9 @@ const SITE = ${js(visitorTextLanguage(site))};
 
 /** The wording in each language, by lower-case language code. */
 const TEXT = ${JSON.stringify(text, null, '\t')};
+
+/** The pieces of each language's wording that are English, because the site has no wording of that language for them. */
+const ENGLISH = ${JSON.stringify(english)};
 
 const LANGUAGE = 'siteorigin:visitor-language';
 
@@ -4604,10 +4612,23 @@ export function speak(language) {
  */
 export function visitorText() {
 	const language = getContext(LANGUAGE);
-	return () => {
-		const code = String(language?.() ?? SITE).toLowerCase();
-		return Object.hasOwn(TEXT, code) ? TEXT[code] : TEXT[SITE];
-	};
+	return () => TEXT[current(language)];
+}
+
+/**
+ * The language a piece of the wording is in when it is not the page's: 'en' for a piece in English on a page in
+ * another language, to mark it with (lang={textLang('menu')}), and undefined otherwise, which leaves the attribute
+ * out. Called while the component starts, like visitorText().
+ */
+export function visitorTextLang() {
+	const language = getContext(LANGUAGE);
+	return (key) => (ENGLISH[current(language)]?.includes(key) ? 'en' : undefined);
+}
+
+/** The language whose wording the page uses: its own, or the site's when the site has none in it. */
+function current(language) {
+	const code = String(language?.() ?? SITE).toLowerCase();
+	return Object.hasOwn(TEXT, code) ? code : SITE;
 }
 
 /** Wording with each {name} in it replaced by that value. What goes in is never read for names itself. */

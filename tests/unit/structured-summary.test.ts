@@ -87,7 +87,7 @@ describe('the sections of a graph', () => {
     const { state } = seoSite();
     const s = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', author: 'Ana Ruiz', updatedAt: '2027-04-01', seoTitle: 'Book spring classes' });
     const list = sections(s, POST);
-    expect(headings(list).slice(0, 2)).toEqual(['This page', 'Blog post']);
+    expect(headings(list).slice(0, 2)).toEqual(['Blog post', 'This page']);
     const post = at(list, 'Blog post');
     expect(post.statement).toBe('The page is about a blog post, “Spring pottery classes”.');
     expect(rows(post)).toMatchObject({ Headline: 'Spring pottery classes', Author: 'Ana Ruiz', Published: '2 March 2027', 'Last modified': '1 April 2027', Image: `${ROOT}assets/img_share-1a2b3c4d.png`, Publisher: 'Riverside Studio' });
@@ -115,7 +115,7 @@ describe('the sections of a graph', () => {
     const { state } = seoSite();
     const list = sections(typed(state, { type: 'Service', serviceType: 'Pottery classes', areaServed: 'Millbrook' }));
     const service = at(list, 'Service');
-    expect(headings(list).slice(0, 2)).toEqual(['This page', 'Service']);
+    expect(headings(list).slice(0, 2)).toEqual(['Service', 'This page']);
     expect(service.statement).toBe('The page is about the service “Services”.');
     expect(rows(service)).toEqual({ Name: 'Services', Description: 'Weekly wheel classes, private lessons and commissioned tableware made to order in the studio.', 'Service type': 'Pottery classes', 'Area served': 'Millbrook', 'Provided by': 'Riverside Studio' });
   });

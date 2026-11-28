@@ -1,6 +1,8 @@
 import './SeoView.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { ArrowLeft, Check, EyeOff, FileText, Info, LayoutList, Lock, X, House, Newspaper, SearchCheck, TriangleAlert } from 'lucide-react';
+import { publicUrl } from '@shared/public-url';
+import { inspectPageStructuredData, PAGE_STRUCTURED_TYPE_LABELS } from '@shared/page-structured-data';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { leaveSeoView, setState, useStore } from '../store';
@@ -10,7 +12,8 @@ import { isDraftPage } from '@generator/index';
 import { isReadOnlyCollection } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
 import { leaveField } from '../lib/leave-field';
-import { SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
+import { SeoAiAction, SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
+import { openSiteSharing } from './SharingPreview';
 import type { DocumentPreview } from '../lib/seo-preview';
 import { StructuredDataFields } from '../components/StructuredDataFields';
 import { PageSearchFields } from './PageSearchFields';
@@ -326,7 +329,7 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
  * same way, whether or not the writer holds the post (savePostSeo). What they show as they are typed reaches the
  * previews and meters through `on`; `preview` is what the previews show now.
  */
-function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectState; subject: Extract<SeoSubject, { kind: 'entry' }>; preview: DocumentPreview | null; on: TypedSeoOn }) {
+function SeoViewPostSettings({ state, subject, preview, on, action }: { state: ProjectState; subject: Extract<SeoSubject, { kind: 'entry' }>; preview: DocumentPreview | null; on: TypedSeoOn; action: ReactNode }) {
   const headId = useId();
   const post = { collectionId: subject.collectionId, entryId: subject.entryId };
   const collection = Object.hasOwn(state.collections, post.collectionId) ? state.collections[post.collectionId] : undefined;
@@ -335,9 +338,24 @@ function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectSt
   return (
     <div className="seo-settings">
       <section className="seo-settings-group" aria-labelledby={headId}>
-        <h3 id={headId}>Search & sharing</h3>
+        <SettingsHead id={headId} action={action}>
+          Search & sharing
+        </SettingsHead>
         <PostSearchFields state={state} collection={collection} entry={entry} doc={preview} on={on} save={(edit) => savePostSeo(post, edit)} ids="seo-view" />
       </section>
+    </div>
+  );
+}
+
+/**
+ * A settings group's heading, on the same line as the previews' tabs beside it, with the group's one action at its end
+ * (Optimize with AI, which writes the title and description under it).
+ */
+function SettingsHead({ id, action, children }: { id: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="seo-settings-head">
+      <h3 id={id}>{children}</h3>
+      {action}
     </div>
   );
 }
@@ -349,7 +367,7 @@ function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectSt
  * not, so the page's text is never in two fields at once: text refused for being too long goes with the field, and
  * comes back wherever the field shows next. While they are away, nothing typed is laid over the previews.
  */
-function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectState; pageId: string; on: TypedSeoOn; preview: DocumentPreview | null }) {
+function SeoViewPageSettings({ state, pageId, on, preview, action }: { state: ProjectState; pageId: string; on: TypedSeoOn; preview: DocumentPreview | null; action: ReactNode }) {
   const locked = useLockedFields();
   useEffect(() => () => on.clear(), [on]);
   if (!Object.hasOwn(state.pages, pageId)) return null;
@@ -358,12 +376,13 @@ function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectSta
   return (
     <div className="seo-settings">
       <section className="seo-settings-group" aria-labelledby="seo-view-search-head">
-        <h3 id="seo-view-search-head">Search & sharing</h3>
+        <SettingsHead id="seo-view-search-head" action={action}>
+          Search & sharing
+        </SettingsHead>
         <PageSearchFields page={page} state={state} draft={isDraftPage(state, page)} upd={upd} on={on} doc={preview} ids="seo-view" />
       </section>
       <section className="seo-settings-group" aria-labelledby="seo-view-structured-head">
-        <h3 id="seo-view-structured-head">Structured data</h3>
-        <p className="field-hint">What the page is for search engines: a service, product, event or guide, with its facts.</p>
+        <SettingsHead id="seo-view-structured-head">Structured data</SettingsHead>
         <fieldset className="seo-field-group" disabled={locked}>
           <StructuredDataFields page={page} upd={upd} />
         </fieldset>
@@ -389,27 +408,52 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
   // A post synced from an external source is changed there, as the post writer says, whatever the project allows.
   const synced = doc.subject.kind === 'entry' && isReadOnlyCollection(Object.hasOwn(state.collections, doc.subject.collectionId) ? state.collections[doc.subject.collectionId] : undefined);
   const settingsLocked = locked || synced;
+  // Optimize with AI, with the settings it writes: left out where they can't be changed (read-only, a synced post).
+  const ai = settingsLocked ? null : <SeoAiAction subject={doc.subject} overlay={overlay} typed={typed} from="view" hint={false} />;
   // What the overview says of it, carried here so a finding is in sight, a click from the field that fixes it.
   const row = useMemo(() => seoOverviewOnce(seen).find((r) => r.key === doc.key), [seen, doc.key]);
-  const findings = row ? docFindings(row) : [];
-  const reason = row && !row.listed && !doc.draft ? (row.noindex ? 'It asks search engines to leave it out of their results, so the search result below is how it would show if they listed it. Shared links still show it: see Link preview.' : 'It is not on the website, so search engines and link previews don’t see it.') : null;
+  // The page type's own details, as its field checks them: what the overview doesn't rank, said here too, so the
+  // all-clear never stands over a Service or Product the page can't describe yet.
+  const findings = [...(row ? docFindings(row) : []), ...(page && row?.listed ? structuredFinding(seen, page) : [])];
+  const reason = row && !row.listed && !doc.draft ? (row.noindex ? 'It asks search engines to leave it out of their results. Shared links to it still show a link preview.' : 'It is not on the website, so search engines and link previews don’t see it.') : null;
+  // Site-wide, so not one of the document's own findings: without a public URL no result or shared link can give its
+  // address. Said once here, with the way to fix it, rather than under every preview.
+  const noAddress = !doc.draft && !publicUrl(seen.site);
+  const clear = !!row && row.listed && !doc.draft && !findings.length && !noAddress;
   const settingsRef = useRef<HTMLDivElement>(null);
+  const previewsRef = useRef<HTMLDivElement>(null);
   /** Bring a field into view and put the cursor in it, as a finding's link does. */
   const goTo = (field: FindingField) => {
     const box = settingsRef.current;
-    let el = field === 'image' ? box?.querySelector<HTMLElement>('[data-seo-field="socialImage"]') : box?.querySelector<HTMLElement>(`#seo-view-${field}`);
+    let el = field === 'image' ? box?.querySelector<HTMLElement>('[data-seo-field="socialImage"]') : field === 'structured' ? box?.querySelector<HTMLElement>('#page-structured-type') : box?.querySelector<HTMLElement>(`#seo-view-${field}`);
     if (field === 'image') el = el?.querySelector<HTMLElement>('button:not(:disabled)') ?? el;
     // A locked control can't take focus: its row or group does, so the jump still lands on what it shows.
     if (el && (el as HTMLButtonElement).disabled) el = el.closest<HTMLElement>('.switch-row, [data-seo-field]') ?? el;
     if (el && el.tabIndex < 0 && !el.hasAttribute('tabindex')) el.tabIndex = -1;
     (el ?? box?.querySelector<HTMLElement>('h3'))?.scrollIntoView({ block: 'center' });
     el?.focus({ preventScroll: true });
+    // "Choose an image" does what it says: the picker opens, with the field in sight behind it.
+    if (field === 'image' && !settingsLocked && el instanceof HTMLButtonElement) el.click();
   };
+  /** Back up to the previews from the settings under them (a narrow view), on the tab showing. */
+  const toPreviews = () => {
+    const tab = previewsRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    tab?.scrollIntoView({ block: 'start' });
+    tab?.focus({ preventScroll: true });
+  };
+  // The Search & sharing heading's actions: the way back up to the previews (while they are above, not beside), and AI.
+  const action = (
+    <span className="seo-settings-actions">
+      <button type="button" className="link-btn seo-to-previews" onClick={toPreviews}>
+        Back to the previews
+      </button>
+      {ai}
+    </span>
+  );
   return (
     <div className="seo-doc" data-seo-doc={doc.key}>
       <Hideable hidden={!shown}>
       <div className="seo-doc-head">
-        <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
         {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published. What follows is how it would show once it is.</p>}
         {reason && (
           <p className="seo-note seo-doc-lock">
@@ -423,7 +467,7 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
             Read-only: this post is synced from an external source. Change it there, or detach the collection to edit it here.
           </p>
         )}
-        {findings.length > 0 && (
+        {(findings.length > 0 || noAddress) && (
           <ul className="seo-findings" aria-label="What to fix">
             {findings.map((f) => (
               <li key={f.label}>
@@ -434,14 +478,18 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
                       {' '}
                       <button type="button" className="link-btn seo-finding-go" onClick={() => goTo(f.field!)}>
                         {settingsLocked
-                          ? f.field === 'image'
+                          ? f.field === 'structured'
+                            ? 'Show the page type'
+                            : f.field === 'image'
                             ? 'Show the sharing image'
                             : f.field === 'title'
                               ? 'Show the search title'
                               : f.field === 'noindex'
                                 ? 'Show the setting'
                                 : 'Show the description'
-                          : f.field === 'image'
+                          : f.field === 'structured'
+                            ? 'Edit the page type'
+                            : f.field === 'image'
                             ? 'Choose an image'
                             : f.field === 'title'
                               ? 'Edit the search title'
@@ -454,15 +502,30 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
                 </Status>
               </li>
             ))}
+            {noAddress && (
+              <li>
+                <Status tone="note">
+                  The site has no public URL yet, so search results and shared links can’t give this {doc.subject.kind === 'page' ? 'page' : 'post'}’s address.{' '}
+                  <button type="button" className="link-btn seo-finding-go" onClick={() => openSiteSharing('baseUrl')}>
+                    {settingsLocked ? 'Show Site details' : 'Set the public URL'}
+                  </button>
+                </Status>
+              </li>
+            )}
           </ul>
+        )}
+        {clear && (
+          <p className="seo-clear">
+            <Status tone="ok">Nothing to fix for search or sharing.</Status>
+          </p>
         )}
         {/* Under the previews while the view is narrow: a way straight down to the fields. */}
         <button type="button" className="link-btn seo-doc-jump" onClick={() => goTo('title')}>
           Go to Search & sharing settings
         </button>
       </div>
-      <div className="seo-doc-previews">
-        <SeoPreview state={seen} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} />
+      <div className="seo-doc-previews" ref={previewsRef}>
+        <SeoPreview state={seen} subject={doc.subject} overlay={overlay} doc={preview} shown={shown} onEditType={page ? () => goTo('structured') : undefined} />
       </div>
       </Hideable>
       {/* Locked (a project open read-only, a synced post), the settings stay in sight: their text read-only, still
@@ -475,15 +538,29 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
         onDragOverCapture={settingsLocked ? (e) => e.stopPropagation() : undefined}
       >
         <LockedFields value={settingsLocked}>
-        {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} />}
-        {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}
+        {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} action={action} />}
+        {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} action={action} />}
         </LockedFields>
       </div>
     </div>
   );
 }
 
-type FindingField = 'title' | 'description' | 'image' | 'noindex';
+type FindingField = 'title' | 'description' | 'image' | 'noindex' | 'structured';
+
+/** A page type whose details can't all be used, as a note: what search engines get without them is still the web page. */
+function structuredFinding(state: ProjectState, pageId: string): Array<{ tone: 'note'; label: string; field: FindingField }> {
+  const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
+  const found = inspectPageStructuredData(page?.seo?.structuredData);
+  if (!found.issues.length) return [];
+  const what = PAGE_STRUCTURED_TYPE_LABELS[found.type];
+  const label = found.issues.some((i) => i.field === 'type')
+    ? 'Its saved page type can’t be used, so search engines are told it is a plain web page.'
+    : found.ready
+      ? `Some of its ${what} details can’t be used, so search engines get it without them.`
+      : `Its ${what} details aren’t complete, so search engines don’t get them yet.`;
+  return [{ tone: 'note', label, field: 'structured' }];
+}
 const FINDING_FIELDS: Partial<Record<SeoOverviewProblem, FindingField>> = {
   'home-hidden': 'noindex',
   'title-missing': 'title',
@@ -590,6 +667,15 @@ export function SeoView({ shown }: { shown: boolean }) {
   useLayoutEffect(() => {
     if (doc && scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [doc?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The view's height, for the previews beside the settings: they stay in sight as the settings scroll, so they are
+  // never taller than the view, and a tab taller than that scrolls inside itself under the tabs (SeoView.css).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => el.style.setProperty('--seo-room', `${el.clientHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const back = () => {
     returnTo.current = doc?.key ?? null;
     setState({ seoSubject: null });
@@ -615,6 +701,7 @@ export function SeoView({ shown }: { shown: boolean }) {
             <span className="seo-address ellipsis" title={doc.address}>
               {doc.address}
             </span>
+            <span className="seo-kind">{kindOf(doc, collection)}</span>
           </>
         ) : (
           <>
