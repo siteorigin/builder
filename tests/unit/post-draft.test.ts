@@ -15,13 +15,14 @@ function harness() {
   let text = '';
   const saves: Array<{ body: RichText; step: number; answer: (o: DraftSaveOutcome) => void }> = [];
   const timers = new Map<number, () => void>();
+  const delays = new Map<number, number>();
   let next = 0;
   const states: Array<{ dirty: boolean; saving: boolean; problem: unknown }> = [];
   const draft = new PostDraft({
     read: () => para(text),
     save: (body, step) => new Promise((answer) => saves.push({ body, step, answer })),
     onChange: (s) => states.push(s),
-    setTimer: (fn) => (timers.set(++next, fn), next),
+    setTimer: (fn, ms) => (timers.set(++next, fn), delays.set(next, ms), next),
     clearTimer: (t) => void timers.delete(t as number)
   });
   const type = (t: string) => {
@@ -34,7 +35,7 @@ function harness() {
     due.forEach((f) => f());
   };
   const settled = () => new Promise((r) => setTimeout(r, 0));
-  return { draft, type, tick, saves, timers, states, settled, setText: (t: string) => (text = t) };
+  return { draft, type, tick, saves, timers, delays, states, settled, setText: (t: string) => (text = t) };
 }
 
 describe('the post draft', () => {
@@ -44,12 +45,55 @@ describe('the post draft', () => {
     h.type('Hello');
     expect(h.draft.dirty).toBe(true);
     expect(h.saves).toHaveLength(0);
-    expect(h.timers.size).toBe(1);
+    // The pause timer restarts with each key; the longest-wait timer is set once.
+    expect(h.timers.size).toBe(2);
     h.tick();
     expect(h.saves.map((s) => s.body)).toEqual([para('Hello')]);
     h.saves[0].answer({ kind: 'applied' });
     await h.settled();
     expect(h.draft.dirty).toBe(false);
+  });
+
+  it('saves steady typing at the longest wait even when it never pauses (#1451)', async () => {
+    const h = harness();
+    h.type('a');
+    const [pause, max] = [...h.timers.keys()];
+    expect(h.delays.get(max)).toBe(3000);
+    // Keys keep coming: the pause timer is restarted, the longest-wait one is left alone.
+    h.type('ab');
+    h.type('abc');
+    expect(h.timers.has(max)).toBe(true);
+    expect(h.timers.has(pause)).toBe(false);
+    expect(h.saves).toHaveLength(0);
+    h.timers.get(max)!();
+    h.timers.delete(max);
+    expect(h.saves.map((s) => s.body)).toEqual([para('abc')]);
+    h.saves[0].answer({ kind: 'applied' });
+    await h.settled();
+    expect(h.draft.dirty).toBe(false);
+    expect(h.timers.size).toBe(0);
+    // The next stretch of typing gets a fresh longest wait.
+    h.type('abcd');
+    expect(h.timers.size).toBe(2);
+  });
+
+  it('leaves no deadline behind once everything typed is saved, and keeps the pause as the retry while a save is on its way (#1451)', async () => {
+    const h = harness();
+    h.type('a');
+    const flushed = h.draft.flush();
+    h.type('ab');
+    const max = [...h.timers.keys()].find((k) => h.delays.get(k) === 3000)!;
+    const fire = h.timers.get(max)!;
+    h.timers.delete(max);
+    fire();
+    // The longest wait fired during a save: it does not cancel the pause timer, the retry of the newer text.
+    expect(h.timers.size).toBe(1);
+    h.saves[0].answer({ kind: 'applied' });
+    await h.settled();
+    h.saves[1].answer({ kind: 'applied' });
+    await flushed;
+    expect(h.draft.dirty).toBe(false);
+    expect(h.timers.size).toBe(0);
   });
 
   it('keeps what is typed while a save is on its way, and saves it next', async () => {
@@ -76,11 +120,12 @@ describe('the post draft', () => {
     const h = harness();
     // A pause already counting when the composition starts is stopped.
     h.type('Before ');
-    expect(h.timers.size).toBe(1);
+    expect(h.timers.size).toBe(2);
     h.draft.compositionStart();
-    expect(h.timers.size).toBe(0);
+    // Only the pause stops; the longest wait keeps counting.
+    expect(h.timers.size).toBe(1);
     h.type('にほ');
-    expect(h.timers.size).toBe(0);
+    expect(h.timers.size).toBe(1);
     expect(await h.draft.flush()).toBe(false);
     expect(h.saves).toHaveLength(0);
     h.type('日本');
@@ -152,7 +197,7 @@ describe('the post draft', () => {
     expect(h.draft.problem).toBeNull();
     expect(h.timers.size).toBe(0);
     h.type('Pending');
-    expect(h.timers.size).toBe(1);
+    expect(h.timers.size).toBe(2);
     h.draft.close();
     expect(h.timers.size).toBe(0);
     h.type('After');
