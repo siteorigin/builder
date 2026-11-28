@@ -11,6 +11,7 @@ import { seoSubjectKey } from './lib/seo-view';
 import { panelAfterSeo, rememberPanelBeforeSeo } from './lib/workspace';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
+import { waitingQuestion } from './lib/chatQuestions';
 import { attachImage, chatStatePatch, draftFor, keepAnswer, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, sendTyped, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
@@ -965,8 +966,12 @@ export function setChatDraft(conversationId: string | null | undefined, text: st
  */
 export function keepUnsentAnswer() {
   const s = getState();
-  if (!s.conversation || !s.chatAnswer.text.trim()) return;
-  setState({ chatDrafts: keepAnswer(s.chatDrafts, s.conversation.id, s.chatAnswer.text), chatAnswer: { key: '', text: '' } });
+  if (!s.chatAnswer.text.trim()) return;
+  // Only an answer to the question still waiting in the open conversation: one typed to a question since answered
+  // (by a choice, say) or asked in another thread is not the author's to recover here.
+  const asking = waitingQuestion(s.conversation, s.activeRunId, s.runStatus);
+  const mine = !!s.conversation && !!asking && s.chatAnswer.key === `${asking.runId}:${asking.question.id}`;
+  setState({ chatAnswer: { key: '', text: '' }, ...(mine ? { chatDrafts: keepAnswer(s.chatDrafts, s.conversation!.id, s.chatAnswer.text) } : {}) });
 }
 
 /** The images attached to the open conversation's unsent message. */

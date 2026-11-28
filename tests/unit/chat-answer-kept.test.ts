@@ -16,6 +16,8 @@ vi.stubGlobal("window", {
 // The editor's store is DOM code, outside this test project's types: loaded by a path the type checker does not follow.
 interface EditorState {
   conversation: { id: string } | null;
+  activeRunId: string | null;
+  runStatus: string | null;
   chatDrafts: Record<string, string>;
   chatAnswer: { key: string; text: string };
 }
@@ -49,25 +51,25 @@ describe("keepAnswer", () => {
   });
 });
 
-describe("keepUnsentAnswer on leaving", () => {
-  beforeEach(() =>
-    setState({
-      conversation: null,
-      chatDrafts: {},
-      chatAnswer: { key: "", text: "" },
-    }),
-  );
-  it("moves the typed answer into the open conversation draft and clears it", () => {
-    setState({
-      conversation: { id: "c_a" },
-      chatAnswer: { key: "r1:q1", text: "Detailed answer" },
-    });
+describe('keepUnsentAnswer on leaving', () => {
+  const asked = (id = 'c_a') => ({ id, messages: [{ id: 'm_1', role: 'assistant', runId: 'r1', text: '', questions: [{ id: 'q1', text: 'Which tone?' }] }] });
+  const waiting = (conversation: unknown, key = 'r1:q1') => setState({ conversation: conversation as never, activeRunId: 'r1', runStatus: 'awaiting-input', chatAnswer: { key, text: 'Detailed answer' } });
+  beforeEach(() => setState({ conversation: null, activeRunId: null, runStatus: null, chatDrafts: {}, chatAnswer: { key: '', text: '' } }));
+
+  it('moves the answer typed to the waiting question into the conversation draft and clears it', () => {
+    waiting(asked());
     keepUnsentAnswer();
-    expect(getState().chatDrafts).toEqual({ c_a: "Detailed answer" });
-    expect(getState().chatAnswer.text).toBe("");
+    expect(getState().chatDrafts).toEqual({ c_a: 'Detailed answer' });
+    expect(getState().chatAnswer.text).toBe('');
   });
-  it("does nothing with no answer typed", () => {
-    setState({ conversation: { id: "c_a" } });
+  it('drops text typed to a question that is no longer the one waiting', () => {
+    waiting(asked(), 'r0:q0');
+    keepUnsentAnswer();
+    expect(getState().chatDrafts).toEqual({});
+    expect(getState().chatAnswer.text).toBe('');
+  });
+  it('does nothing with no answer typed', () => {
+    setState({ conversation: asked() });
     const before = getState().chatDrafts;
     keepUnsentAnswer();
     expect(getState().chatDrafts).toBe(before);
