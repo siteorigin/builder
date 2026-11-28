@@ -24,7 +24,8 @@ const ENTRY = [
   '  mount: (which, site, developer) => {',
   '    root?.unmount();',
   "    root = createRoot(document.getElementById('root'));",
-  '    const onChange = (patch) => (window.patches.push(patch), undefined);',
+  // A refused change (the AI is changing the site) answers null, as the store's applyOps does.
+  '    const onChange = (patch) => (window.patches.push(patch), window.refuse ? null : undefined);',
   "    flushSync(() => root.render(h(which === 'code' ? SiteCodeFields : IntegrationFields, { site, developer, onChange })));",
   '  },',
   '};'
@@ -117,9 +118,16 @@ describe.skipIf(!browserInstalled)('Integrations and Custom code in Site setting
     await page.getByRole('button', { name: 'Add Fathom Analytics' }).click();
     expect(await page.getByRole('alert').textContent()).toMatch(/short code of letters and digits/);
     expect(await patches()).toEqual([]);
+    // Refused while the AI changes the site, the form keeps what was typed, to add once it is done.
+    await page.evaluate('window.refuse = true');
     await page.getByRole('textbox', { name: 'Site ID' }).fill('  ABCDEFGH ');
     await page.keyboard.press('Enter');
     expect(await patches()).toEqual([{ integrations: { fathom: { siteId: 'ABCDEFGH' } } }]);
+    expect(await page.getByRole('textbox', { name: 'Site ID' }).inputValue()).toBe('  ABCDEFGH ');
+    await page.evaluate('window.refuse = false');
+    await page.keyboard.press('Enter');
+    expect(await patches()).toHaveLength(2);
+    expect(await page.getByRole('textbox', { name: 'Site ID' }).count()).toBe(0);
   });
 
   it('changes an added integration’s ID as it is left, and removes it with Remove', async () => {

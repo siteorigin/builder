@@ -1168,7 +1168,10 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
     case 'read_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
       // The site's own code is read alone, so no summary beside it can push it past what one result holds.
-      if (a.sections?.includes('siteCode')) return { ok: true, content: { revision: host.revision(), siteCode: siteCodeRead(state) } };
+      if (a.sections?.includes('siteCode')) {
+        if (a.sections.length > 1) return toolError('INVALID_ARGUMENT', 'Read siteCode on its own: sections ["siteCode"]. Read the other sections in another call.');
+        return { ok: true, content: { revision: host.revision(), siteCode: siteCodeRead(state) } };
+      }
       const out: Record<string, unknown> = projectSummary(state, host.revision());
       if (a.sections?.includes('tokens')) {
         out.tokens = tokensSummary(state);

@@ -113,6 +113,7 @@ export function SiteCodeFields({ site, developer, onChange }: { site: SiteDoc; d
  * Site settings' Integrations section: services the website works with, each added from what it needs (its site ID)
  * and removed with one button (shared/integrations.ts). A new one's ID stays in its form until Add saves it, so
  * putting it back (Cancel, or Escape) adds nothing; an added one's ID saves as it is changed, as other settings do.
+ * `onChange` gives null when the change is refused.
  */
 export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange: (patch: Record<string, unknown>) => unknown }) {
   const added = addedIntegrations(site);
@@ -131,12 +132,12 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
         const working = on && !!fathomSiteId(site);
         const savedProblem = on && !problem ? fathomSiteIdProblem(saved) : null;
         const shown = problem?.message ?? savedProblem;
-        const add = (e: FormEvent) => {
+        const add = async (e: FormEvent) => {
           e.preventDefault();
           const p = fathomSiteIdProblem(typed);
           if (p) return setAddProblem(p);
-          stopAdding();
-          void onChange({ integrations: { [id]: { siteId: fathomIdText(typed) } } });
+          // The form keeps the ID until the change is taken: refused (the AI is changing the site), it is still there.
+          if ((await onChange({ integrations: { [id]: { siteId: fathomIdText(typed) } } })) !== null) stopAdding();
         };
         return (
           <div className={`site-integration${on ? ' on' : ''}`} key={id} role="group" aria-labelledby={`integration-${id}`}>

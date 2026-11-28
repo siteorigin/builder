@@ -60,6 +60,7 @@ beforeAll(async () => {
   put('über/index.html', page('Über', '', '<p>Über uns</p>'));
   put('broken/index.html', page('Broken', '', '<img src="/client/corrupt.png" width="40" height="40">'));
   put('analytics/index.html', page('Analytics', '', '<p>Counted</p>').replace('</head>', '<script src="https://cdn.usefathom.com/script.js" data-site="ABCDEFGH" data-spa="auto" defer></script></head>'));
+  put('blocked-style/index.html', page('Blocked', '', '<p>Unstyled</p>').replace('</head>', '<link rel="stylesheet" href="/client/blocked.css"></head>'));
   put('lazy/index.html', page('Lazy', '', `${tall(3000)}<img id="late" loading="lazy" src="/client/blue.png" width="40" height="40" style="display:block">`));
   server = await previews.serve(root, '/client');
   if (browserInstalled) browser = await chromium.launch();
@@ -120,6 +121,9 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
     // The app's capture window cancels an integration's script (main/hidden-page), which Chromium reports as blocked.
     const blocked = async (context: BrowserContext) => void (await context.route('https://cdn.usefathom.com/**', (route) => route.abort('blockedbyclient')));
     expect(await shoot('analytics/', 800, {}, blocked)).toMatchObject({ ok: true });
+    // Anything else left out is still a page that did not load whole.
+    const stylesheet = async (context: BrowserContext) => void (await context.route('**/client/blocked.css', (route) => route.abort('blockedbyclient')));
+    expect(await shoot('blocked-style/', 800, {}, stylesheet)).toMatchObject({ ok: false, reason: 'assets' });
   });
 
   it('lays the page out at a phone width', async () => {

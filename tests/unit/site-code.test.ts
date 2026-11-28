@@ -106,7 +106,9 @@ describe('head code', () => {
       ['<meta name="a>', /never closed with its "/],
       ['<script>1</script x>', /holds nothing but its name/],
       ['<style></style>Text', /Text follows <\/style>/],
-      ['<script></script><!-- note -->Text', /Text cannot go in the head/]
+      ['<script></script><!-- note -->Text', /Text cannot go in the head/],
+      // Vite reads its own markers wherever they are in what it builds, and stops at one it did not write.
+      ['<meta name="verification" content="__VITE_ASSET__AAAAAAAAAAAAAAAAAAAAAA__">', /build’s own marker/]
     ];
     for (const [code, message] of cases) expect(headCodeProblem(code)?.message, code).toMatch(message);
     expect(headCodeProblem('<meta name="a" content="b">\n\n  <span>')).toMatchObject({ line: 3, column: 3 });
@@ -122,6 +124,8 @@ describe('head code', () => {
     expect(headCodeWithoutComments('<style>/* <!-- x --> */</style>')).toBe('<style>/* <!-- x --> */</style>');
     const script = '<script>const text = `one\n\n\ntwo`;</script>';
     expect(headCodeWithoutComments(script)).toBe(script);
+    // A comment followed by more than a short run of space before its line ends still goes with its line.
+    expect(headCodeWithoutComments(`<meta name="a" content="b">\n<!-- x -->${' '.repeat(80)}\n<meta name="c" content="d">`)).toBe('<meta name="a" content="b">\n<meta name="c" content="d">');
   });
 });
 
@@ -243,7 +247,14 @@ describe('custom CSS', () => {
       ['a { background: url(https://?x=y) }', /https:\/\//],
       ['a { background: url(https://example.org/x/*/), url(images/logo.svg) }', /url\(images\/logo\.svg\)/],
       ['@media screen {'.repeat(70) + '}'.repeat(70), /nest at most 64 deep/],
-      [':is('.repeat(70) + 'a' + ')'.repeat(70) + ' { color: red }', /nest at most 64 deep/]
+      [':is('.repeat(70) + 'a' + ')'.repeat(70) + ' { color: red }', /nest at most 64 deep/],
+      // lightningcss reads brackets by native recursion: thousands deep, it crashes the build.
+      [`a { width: ${'calc('.repeat(8500)}1px${')'.repeat(8500)} }`, /Brackets can nest at most 64 deep/],
+      [`li:nth-child(1 of ${':is('.repeat(100)}a${')'.repeat(100)}) { color: red }`, /nest at most 64 deep/],
+      ['a { content: "__VITE_ASSET__AAAAAAAAAAAAAAAAAAAAAA__" }', /build’s own marker/],
+      ['a { color: red !important"x"; background: url(#x) }', /!important at its end/],
+      ['a { background: url(https://:443/x) }', /https:\/\//],
+      ['a { background: im\\61 ge-set("relative.png" 1x) }', /function’s name cannot hold an escape/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });
@@ -351,6 +362,9 @@ describe('the AI', () => {
     expect(projectSummary(fresh(), 1).site).not.toHaveProperty('siteCode');
     const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as Record<string, unknown>;
     expect(read).toEqual({ ok: true, revision: 7, siteCode: { headCode: GA, globalCss: 'a { color: red }' } });
+    // Read on its own, never beside sections it would leave out.
+    const mixed = (await executeTool('read_project', JSON.stringify({ sections: ['tokens', 'siteCode'] }), host(s), 'c3')).content as { error?: { message: string } };
+    expect(mixed.error?.message).toMatch(/Read siteCode on its own/);
   });
 
   it('reads each piece whole only while both fit one result as written, and replaces no other', async () => {

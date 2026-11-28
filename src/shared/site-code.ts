@@ -52,6 +52,9 @@ function checked(text: string, check: () => void): CodeProblem | null {
 }
 
 const WS = /[\t\n\f\r ]/;
+/** The markers Vite's build writes into its output and then replaces (__VITE_ASSET__…__): one typed by hand stops it. */
+const VITE_MARKER = /__VITE_[A-Z_]*__/;
+const VITE_MARKER_TEXT = (where: string) => `“__VITE_…__” is the website build’s own marker and cannot be in ${where}.`;
 /** How deep blocks, and selectors inside :is() and the like, may nest in the site's CSS. */
 const MAX_DEPTH = 64;
 
@@ -88,6 +91,8 @@ function readHead(src: string): void {
   if (nul >= 0) throw new Refusal('Head code cannot hold a NUL character.', nul);
   const placeholder = src.search(/%sveltekit\./i);
   if (placeholder >= 0) throw new Refusal('“%sveltekit.” is SvelteKit’s own placeholder and cannot be in head code.', placeholder);
+  const marker = src.search(VITE_MARKER);
+  if (marker >= 0) throw new Refusal(VITE_MARKER_TEXT('head code'), marker);
   let i = 0;
   // The last raw-text element read, for the hint when text follows its end tag early.
   let lastRaw: string | null = null;
@@ -124,6 +129,9 @@ function decodedAttr(v: string): string {
   return v.replace(/&#(?:x([0-9a-f]+)|(\d+));?/gi, (_, hex: string | undefined, dec: string | undefined) => String.fromCodePoint(Math.min(parseInt(hex ?? dec!, hex ? 16 : 10), 0x10ffff))).replace(/&amp;/gi, '&');
 }
 
+/** The rest of a line, if nothing but space: what follows a comment that stands on a line of its own. */
+const LINE_END = /[\t ]*(?:\r?\n|$)/y;
+
 /**
  * Head markup as the website writes it: without its comments, which visitors never see, so none can be taken for
  * a marker Svelte's hydration looks for. Markup that does not pass its check is given back as it is.
@@ -137,7 +145,8 @@ export function headCodeWithoutComments(text: string): string {
       const end = readComment(text, i);
       // A comment on a line of its own goes with its line.
       const lineStart = text.lastIndexOf('\n', i - 1) + 1;
-      const after = /^[\t ]*(?:\r?\n|$)/.exec(text.slice(end, end + 64));
+      LINE_END.lastIndex = end;
+      const after = LINE_END.exec(text);
       const alone = lineStart >= from && /^[\t ]*$/.test(text.slice(lineStart, i)) && after;
       out += text.slice(from, alone ? lineStart : i);
       i = from = alone ? end + after[0].length : end;
@@ -264,6 +273,8 @@ type Block = 'rules' | 'mixed' | 'declarations' | 'keyframes';
 export function globalCssProblem(text: string): CodeProblem | null {
   return checked(text, () => {
     if (text.length > GLOBAL_CSS_MAX) throw new Refusal(`The site’s CSS can be at most ${GLOBAL_CSS_MAX.toLocaleString('en')} characters long.`, GLOBAL_CSS_MAX);
+    const marker = text.search(VITE_MARKER);
+    if (marker >= 0) throw new Refusal(VITE_MARKER_TEXT('the site’s CSS'), marker);
     // A source map comment names a map the build then reads, and stops at when it cannot.
     const map = text.search(/\/\*\s*[#@]\s*source(?:Mapping)?URL\s*=/i);
     if (map >= 0) throw new Refusal('A source map comment cannot be in the site’s CSS: remove it.', map);
@@ -358,7 +369,11 @@ class CssReader {
         }
       }
       if (!open.length && stops.includes(c)) return j;
-      if (c === '(' || c === '[' || (braces && c === '{')) open.push([pairs[c], j]);
+      if (c === '(' || c === '[' || (braces && c === '{')) {
+        // The build's minifier reads brackets by recursion, natively: nested deep enough, it crashes the build.
+        if (open.length >= MAX_DEPTH) this.fail(`Brackets can nest at most ${MAX_DEPTH} deep.`, j);
+        open.push([pairs[c], j]);
+      }
       else if (c === ')' || c === ']' || (braces && c === '}')) {
         const top = open.pop();
         if (!top || top[0] !== c) this.fail(`This “${c}” closes nothing.`, j);
@@ -510,7 +525,7 @@ interface ScannedValue {
   /** The value at its own length, only its own tokens left: what is left is never part of a string, comment or address. */
   masked: string;
   /** Each address the value names (a url() or an image-set() string), with where it starts. */
-  addresses: Array<{ target: string; at: number; set: boolean }>;
+  addresses: Array<{ target: string; at: number; set: boolean; escaped?: boolean }>;
 }
 
 /** Reads a value as CSS tokenizes it: strings, comments and url() tokens first, so none of them hides another. */
@@ -519,8 +534,9 @@ function scanValue(value: string): ScannedValue {
   const addresses: ScannedValue['addresses'] = [];
   // The functions open around each point, innermost last ('' for plain parentheses).
   const fns: string[] = [];
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to; k++) out[k] = ' ';
+  // A comment is white space between tokens; a string, an escape or an address is a token, though nothing of the value's own.
+  const blank = (from: number, to: number, fill = 'x') => {
+    for (let k = from; k < to; k++) out[k] = fill;
   };
   let j = 0;
   while (j < value.length) {
@@ -533,7 +549,7 @@ function scanValue(value: string): ScannedValue {
     if (value.startsWith('/*', j)) {
       const end = value.indexOf('*/', j + 2);
       const to = end < 0 ? value.length : end + 2;
-      blank(j, to);
+      blank(j, to, ' ');
       j = to;
       continue;
     }
@@ -547,7 +563,14 @@ function scanValue(value: string): ScannedValue {
       j = to;
       continue;
     }
-    const fn = /[-a-zA-Z0-9_\\]/.test(value[j - 1] ?? '') ? null : /^(-?[a-zA-Z_][-a-zA-Z0-9_]*)\(/.exec(value.slice(j, j + 64));
+    const fn = /[-a-zA-Z0-9_\\]/.test(value[j - 1] ?? '') ? null : /^(-?(?:[a-zA-Z_]|\\[^\n\r\f])(?:[-a-zA-Z0-9_]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f])*)\(/.exec(value.slice(j, j + 64));
+    // A function named with an escape (im\61 ge-set) is read by the build as the function it spells: refused here.
+    if (fn && fn[1].includes('\\')) {
+      addresses.push({ target: '', at: j, set: false, escaped: true });
+      j += fn[0].length;
+      fns.push('');
+      continue;
+    }
     if (fn) {
       const name = fn[1].toLowerCase();
       j += fn[0].length;
@@ -593,12 +616,13 @@ function checkValue(r: CssReader, value: string, at: number, custom: boolean): v
 
 /** Each address points somewhere every page can load it from. */
 function checkAddresses(r: CssReader, addresses: ScannedValue['addresses'], at: number): void {
-  for (const a of addresses) if (!usableUrl(a.target)) r.fail(a.set ? `“${a.target.slice(0, 60)}” in image-set() ${URL_NEEDS}` : `url(${a.target.slice(0, 60)}) ${URL_NEEDS}`, at + a.at);
+  for (const a of addresses) if (a.escaped) r.fail('A function’s name cannot hold an escape.', at + a.at);
+  else if (!usableUrl(a.target)) r.fail(a.set ? `“${a.target.slice(0, 60)}” in image-set() ${URL_NEEDS}` : `url(${a.target.slice(0, 60)}) ${URL_NEEDS}`, at + a.at);
 }
 
 const URL_NEEDS = 'needs a full https:// address, a data: URL or a path from the site’s root (/…): a relative path would break from pages at other addresses.';
 
-const usableUrl = (target: string) => /^(https:\/\/[^/\\\s?#]|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
+const usableUrl = (target: string) => /^(https:\/\/[^/\\\s?#:@]|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
 
 /** The offsets a @keyframes rule names: from, to, or percentages. */
 function keyframeSelectors(r: CssReader, prelude: string, at: number): void {

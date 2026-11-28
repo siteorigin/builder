@@ -2226,7 +2226,8 @@ export function SiteStyles() {
 
       <Section title="Integrations" id="site-integrations" defaultOpen={false} keepMounted scope={integrationsScope(site)}>
         {/* Keyed by the project's opening: a site ID typed in one project is never offered in the next. */}
-        <IntegrationFields key={`integrations-${snap?.workspaceKey}`} site={site} onChange={updSite} />
+        {/* Its saves report back, so an ID refused while the AI changes the site stays in its form. */}
+        <IntegrationFields key={`integrations-${snap?.workspaceKey}`} site={site} onChange={(patch) => applyOps([{ type: 'site.update', ...patch }], 'Update site settings')} />
       </Section>
 
       <Section title="Custom code" id="site-code" defaultOpen={false} keepMounted scope={siteCodeScope(site)}>
