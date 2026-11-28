@@ -1,5 +1,7 @@
 @layer components {
   /* Find and replace: a steady frame once there is a search, so the footer never moves under the pointer. */
+  /* The compact form grows once there is a search, so it hangs from the top: the field never moves under the caret. */
+  .overlay-backdrop:has(> .modal > .modal-body > .find-body) { align-items: start; padding-top: 11vh; }
   .modal:has(> .modal-body > .find-body.filled) { height: min(760px, calc(89vh - 32px)); }
   .modal-body:has(> .find-body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
   .find-body { flex: 1; min-height: 0; gap: 12px; }

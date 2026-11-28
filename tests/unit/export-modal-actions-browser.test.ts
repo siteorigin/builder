@@ -218,6 +218,12 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(below).toBeGreaterThanOrEqual(Math.max(31, band));
   });
 
+  it('keeps the dialog header in view when the notices leave less room than the dialog needs (#1632)', async () => {
+    await open(1100, 300);
+    await page.evaluate(`document.documentElement.style.setProperty('--toast-band', '230px')`);
+    expect((await page.locator('.modal-head h2').boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  });
+
   // Where the header, the exports and a strip of body don't fit: zoomed to 150% and 200% in the smallest window, and
   // that window under a tall stack of notices (the band Toasts measures).
   it.each([

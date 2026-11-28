@@ -402,7 +402,7 @@
   :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
   :where(:root[data-appearance='dark']) :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--bg); }
 
-  .overlay-backdrop { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: grid; place-items: center; box-sizing: border-box; padding: 32px 0 max(32px, var(--toast-band, 0px)); animation: fade-in 140ms; }
+  .overlay-backdrop { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: grid; align-items: safe center; justify-items: center; box-sizing: border-box; padding: 32px 0 max(32px, var(--toast-band, 0px)); animation: fade-in 140ms; }
   /* The command palette is a launcher, not a dialog: it stays near the top, where the eye already is. */
   .overlay-backdrop.light { place-items: start center; padding: 11vh 0 0; }
   /* A visible notice keeps its own band at the bottom (--toast-band, measured by Toasts in ui.tsx: the stack's
