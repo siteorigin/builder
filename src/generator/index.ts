@@ -4308,14 +4308,14 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   if (hero) head.splice(1, 0, hero);
   // The page's Markdown copy beside it, for AI agents, while the site writes one (see generator/llms.ts).
   if (hasMarkdownMirror(state, { kind: 'page', pageId: page.id })) head.push(MARKDOWN_ALTERNATE);
-  // The same page in other languages, and this one among them: each version lists the same set.
-  // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
-  for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + routeUrl(alt.route)) : `resolve(${js(alt.route)})`}} />`);
+  // The same page in other languages, and this one among them: each version lists the same set. Search engines read
+  // only full addresses here, so without a public address there are none, as there are no canonical links.
+  if (base) for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${js(base + routeUrl(alt.route))}} />`);
   // Structured data: one connected graph of who publishes the site, the website, this page and its trail from Home,
   // its FAQ and contact sections. A page search engines are asked not to list, or one with no public URL, has none.
   const graph = graphScript(state, { kind: 'page', pageId: page.id });
   if (graph) head.push(`\t{@html ${js(graph)}}`);
-  const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : '', hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
+  const imports = [renderImports(ctx.imports), hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
