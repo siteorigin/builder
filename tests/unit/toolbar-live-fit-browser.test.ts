@@ -170,7 +170,7 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
     } else {
       const kind = session.live ? (session.live.phase === 'reconnecting' ? 'reconnecting' : 'live') : 'idle';
       expect(await page.locator(`.share-btn.${kind}`).count()).toBe(1);
-      if (session.live) expect(await page.locator('.share-btn').evaluate((b) => [b.querySelector('.share-count')?.textContent, b.querySelector('.share-badge')?.textContent, !!b.querySelector('.share-lock')])).toEqual(['2', '2', true]);
+      if (session.live) expect(await page.evaluate(`(() => { const b = document.querySelector('.share-btn'); return [b.querySelector('.share-count')?.textContent, b.querySelector('.share-badge')?.textContent, !!b.querySelector('.share-lock')]; })()`)).toEqual(['2', '2', true]);
     }
     return (await page.evaluate(`(() => {
       const bar = document.querySelector('.toolbar');
