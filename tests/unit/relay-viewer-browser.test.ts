@@ -598,7 +598,11 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await wait(100);
       expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
       await s.tab.click('#note-send');
-      expect(await s.host.next('rpc:request')).toMatchObject({ method: 'notes.add', args: [{ text: 'Bigger logo', previewPath: '/about/' }] });
+      const kept = await s.host.next('rpc:request');
+      expect(kept).toMatchObject({ method: 'notes.add', args: [{ text: 'Bigger logo', previewPath: '/about/' }] });
+      answer(kept.requestId, 'notes.add', { kept: true });
+      // The next note is for Home, where the router went meanwhile.
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/)', 'the next note on the home page');
     } finally {
       await s.done();
     }
@@ -625,6 +629,53 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/about/)', 'the note on About');
       await s.tab.click('#note-send');
       expect(await s.host.next('rpc:request')).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
+    } finally {
+      await s.done();
+    }
+  });
+  it('waits for the frame’s own answer before a note can be begun, and asks again when a new page replaces it (#1497)', async () => {
+    // Home's bridge never hears the viewer's ask; About's records each ask it hears, and answers as usual.
+    const site: Site = new Map([['/', page('Home')], ['/about/', page('About')]]);
+    const asks = `if (location.hostname.startsWith('p-')) {
+      window.__asks = [];
+      window.addEventListener('message', (event) => {
+        if (event.data?.type !== 'siteorigin-live:where') return;
+        if (location.pathname === '/') event.stopImmediatePropagation();
+        else window.__asks.push(event.data.id);
+      });
+    }`;
+    const s = await scene({ site, init: `${HOLD_BRIDGE_POLL}\n${asks}` });
+    try {
+      const guestId = await ask(s);
+      const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
+      const frame = await admit(s, guestId);
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      await s.tab.uncheck('#follow');
+      await s.tab.click('#notes-button');
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      // Until the frame answers, the note has no page and cannot be begun, whatever else the frame says meanwhile.
+      const viewerOrigin = origin;
+      await frame.evaluate(`parent.postMessage({ type: 'siteorigin-live:ready', path: '/' }, ${JSON.stringify(viewerOrigin)}); parent.postMessage({ type: 'siteorigin-live:ready', path: '/', id: 9999 }, ${JSON.stringify(viewerOrigin)})`);
+      await wait(150);
+      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page');
+      expect(await s.tab.getAttribute('#note-text', 'readonly')).not.toBeNull();
+      expect(await s.tab.isDisabled('#note-send')).toBe(true);
+      // A page whose bridge never answers is taken as it last said, after a moment.
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/)', 'the unanswered ask given up');
+      expect(await s.tab.getAttribute('#note-text', 'readonly')).toBeNull();
+
+      // Asked again on opening, the frame loads About before Home answers: About is asked, answers, and the note is for it.
+      await s.tab.keyboard.press('Escape');
+      await s.tab.click('#notes-button');
+      answer((await s.host.next('rpc:request')).requestId, 'notes.list', { notes: [], guestNotes: true });
+      expect(await s.tab.getAttribute('#note-text', 'readonly')).not.toBeNull();
+      await frame.evaluate(`location.href = '/about/'`);
+      const about = await preview(s);
+      await poll(async () => (await about.evaluate<number>(`window.__asks?.length ?? 0`).catch(() => 0)) === 1, 'About asked');
+      await poll(async () => (await s.tab.textContent('#note-where')) === 'Leave a note on this page (/about/)', 'the note on About');
+      await s.tab.fill('#note-text', 'Shorter heading');
+      await s.tab.click('#note-send');
+      expect(await s.host.next('rpc:request')).toMatchObject({ method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
     } finally {
       await s.done();
     }

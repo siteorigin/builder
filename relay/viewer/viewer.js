@@ -219,8 +219,10 @@ let notePath = null;
 let noteSending = false;
 /**
  * A new note's page is confirmed when Notes opens (#1497): the frame's bridge is asked where it is, since the page the
- * guest sees may be newer than its last word, and until it answers the note has no page. The ask is numbered, so an
- * older word still on its way is never taken for the answer; a page whose bridge says nothing is taken as last said.
+ * guest sees may be newer than its last word, and until it answers the note has no page and cannot be begun (a word
+ * typed meanwhile would be pinned to whatever page the answer names, even one shown only after it). The ask is
+ * numbered, so an older word still on its way is never taken for the answer; a page whose bridge says nothing is
+ * taken as last said.
  * @type {{ id: number; timer: ReturnType<typeof setTimeout> } | null}
  */
 let pageAsk = null;
@@ -769,6 +771,7 @@ window.addEventListener('message', (event) => {
     framePath = data.path;
     shownPath = data.path;
     const first = !bridgeReady;
+    bridgeReady = true;
     if (pageAsk) {
       if (data.id === pageAsk.id) settlePage();
       // A new page replaced the one asked, which can no longer answer: this one is asked instead.
@@ -776,7 +779,6 @@ window.addEventListener('message', (event) => {
     }
     // A note begun before any page was confirmed is for the first page the frame says it shows, wherever it goes next.
     else if (!notePath && ui.noteText.value.trim()) notePath = data.path;
-    bridgeReady = true;
     frameReady();
     if (stale && previewReady && hostConnected && !reconnecting) catchUp();
     if (!ui.notes.hidden) renderNotes();
@@ -1421,8 +1423,9 @@ function renderNotes() {
   ui.noteLength.textContent = `${length}/${config.noteMax}`;
   ui.noteLength.dataset.over = String(length > config.noteMax);
   ui.noteSend.disabled = noteSending || !page || length === 0 || length > config.noteMax;
-  // What is typed while a note is being sent would be lost when the field empties for it.
-  ui.noteText.readOnly = noteSending;
+  // What is typed while a note is being sent would be lost when the field empties for it, and a note begun before the
+  // frame confirms its page could be pinned to one the guest had not yet seen.
+  ui.noteText.readOnly = noteSending || !!pageAsk;
   ui.noteSend.textContent = noteSending ? 'Sending…' : 'Send note';
   const items = open.map((note) => {
     const li = document.createElement('li');
