@@ -19,7 +19,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
-import { briefWriteIntent, updateBriefTool } from './brief-tools';
+import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool } from './brief-tools';
 import type { BriefWriteGrant } from '@shared/brief';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
@@ -1828,7 +1828,7 @@ export class Orchestrator {
     const pageAsked = !run.delegation && asksToOpenPage(userMsg.text, session.state);
     // The brief is the author's own (#518): only their own message, asking in so many words, lets a run change it
     // (#1407). Never a guest's, a question, a layout's run (which never widens), or the request a "Continue" carries on.
-    const briefActions = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : [];
+    const briefAllowance = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : null;
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1869,8 +1869,11 @@ export class Orchestrator {
      * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
      * the run is decided: one taken away while it finished leaves nothing of it.
      */
-    const completeRun = (label: string) =>
-      delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    const completeRun = (named: string) => {
+      // A run that changed only the brief is named for that, never with the request's (or the reply's) private words.
+      const label = briefOnly(executedOps) ? BRIEF_RUN_LABEL : named;
+      return delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    };
     const selected = selectionTarget(userMsg.context?.selection);
     if (selected && partTexts) selected.texts = partTexts;
     /** The component design the run starts limited to, if any: its definition tools address it for the whole turn. */
@@ -1901,7 +1904,7 @@ export class Orchestrator {
     };
     /** The run's tools, with update_project_brief when the author's message asked to change the brief. A narrower scope
      *  keeps it: the project's scope check asks the author to widen before it changes anything. */
-    const withBriefTool = (t: RunTools): RunTools => (briefActions.length && t.mode !== 'ask' && t.mode !== 'layout' ? { ...t, tools: [...t.tools, updateBriefTool(briefActions)] } : t);
+    const withBriefTool = (t: RunTools): RunTools => (briefAllowance && t.mode !== 'ask' && t.mode !== 'layout' ? { ...t, tools: [...t.tools, updateBriefTool(briefAllowance.actions)] } : t);
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
     const runTools = (): RunTools => withBriefTool(
       toolsForRun({
@@ -2286,7 +2289,7 @@ export class Orchestrator {
             }
           }
         : {}),
-      briefWrite: () => (briefActions.length ? { actions: briefActions } : null),
+      briefWrite: () => briefAllowance,
       apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
@@ -3011,9 +3014,11 @@ export class Orchestrator {
             // A run may not call itself finished with requested pages left as stubs. It is told once.
             // A run limited to one page is held to that page.
             const limitedTo = authority.kind === 'page' ? authority.pageId : null;
-            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
+            // A change to the brief alone is no page work: a note about pages to build later never asks for them now.
+            const noted = briefOnly(executedOps);
+            const stubs = !noted && (authority.kind === 'site' || limitedTo) ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
             const rejected = [...macros.drafts.keys()];
-            const absent = missing();
+            const absent = noted ? [] : missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
               resumeForNudge(completenessNudge(stubs, links.missing, current.tools.some((t) => t.name === 'upsert_page_with_sections'), rejected, absent, authority.kind === 'page' ? authority.label : undefined));
               continue outer;
