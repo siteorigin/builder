@@ -8,12 +8,19 @@
  * editor's preview never does: it shows the form as the author made it.
  */
 import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
+import { formNoun } from '@shared/form-contract';
 import { isWebMcpForm, toolOverrides, uniqueToolNames, WEBMCP_NAME_MAX, WEBMCP_SEARCH_TOOL, webMcpText, webMcpToolName } from '@shared/webmcp';
 import { siteShowsCode } from './checks';
 import { searchesSite, usesSiteSearch } from './search';
 
-/** The name a form takes when the author gives it none, or one with nothing usable in it. */
+/** The name a contact form takes when the author gives it none, or one with nothing usable in it. */
 export const DEFAULT_FORM_TOOL = 'contact';
+
+/** The same for a signup form. */
+export const DEFAULT_SIGNUP_TOOL = 'signup';
+
+/** The name a form takes when its placement gives it none: a signup form's, else a contact form's. */
+export const defaultFormTool = (def: ComponentDefinition | undefined): string => (formNoun(def) === 'signup form' ? DEFAULT_SIGNUP_TOOL : DEFAULT_FORM_TOOL);
 
 /** The registration of `search_site`, in the runtime folder beside the search code it runs. */
 export const WEBMCP_SEARCH_FILE = 'webmcp-search.js';
@@ -225,35 +232,39 @@ export function showsSiteSearch(state: ProjectState): boolean {
   return usesSiteSearch(state) && siteShowsCode(state, searchesSite, { throughCode: true });
 }
 
-/** Whether the published website shows a contact form that declares a tool while WebMCP is on. */
+/** Whether the published website shows a contact or signup form that declares a tool while WebMCP is on. */
 export function showsFormTool(state: ProjectState): boolean {
   return siteShowsCode(state, declaresFormTool);
 }
 
-/** Whether a definition is a contact form whose code takes the tool attributes. */
+/** Whether a definition is a contact or signup form whose code takes the tool attributes. */
 export function declaresFormTool(def: ComponentDefinition | undefined): def is ComponentDefinition {
   return isWebMcpForm(def) && typeof def.source === 'string' && adaptedForm(def.source) !== null;
 }
 
 /**
- * The tool name a placement asks for: its own, as a tool name, else DEFAULT_FORM_TOOL. Never with a ".", which only a
- * form inside a design takes (before its ID), so a name given here can never be one of theirs.
+ * The tool name a placement of the form `def` asks for: its own, as a tool name, else the form's default
+ * (defaultFormTool). Never with a ".", which only a form inside a design takes (before its ID), so a name given here
+ * can never be one of theirs.
  */
-export function formToolBase(node: Pick<InstanceNode, 'webmcp'>): string {
+export function formToolBase(node: Pick<InstanceNode, 'webmcp'>, def: ComponentDefinition | undefined): string {
   const own = webMcpToolName(toolOverrides(node).toolName).replace(/\./g, '_').replace(/^[_-]+|[_-]+$/g, '');
-  return own || DEFAULT_FORM_TOOL;
+  return own || defaultFormTool(def);
 }
 
 /**
- * What a placement's form tells agents it does: the author's own words, else what a contact form does, with the
- * heading it shows when that is text of its own (one read from the design is the same for every form, and says nothing).
+ * What a placement's form tells agents it does: the author's own words, else what a contact form (or a signup form)
+ * does, with the heading it shows when that is text of its own (one read from the design is the same for every form,
+ * and says nothing).
  */
-export function formToolDescription(state: ProjectState, node: Pick<InstanceNode, 'webmcp' | 'props'>): string {
+export function formToolDescription(state: ProjectState, node: Pick<InstanceNode, 'webmcp' | 'props' | 'definitionId'>): string {
   const own = webMcpText(toolOverrides(node).toolDescription);
   if (own) return own;
-  const site = webMcpText(state.site.name, 120);
+  const site = webMcpText(state.site.name, 120) || 'this website';
   const heading = webMcpText(node.props?.heading, 120);
-  const does = `Contact ${site || 'this website'}: fills in this form with a message, which the visitor checks and sends.`;
+  const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+  const does =
+    formNoun(def) === 'signup form' ? `Sign up with ${site}: fills in this form, which the visitor checks and sends.` : `Contact ${site}: fills in this form with a message, which the visitor checks and sends.`;
   return heading ? webMcpText(`${heading.replace(/[.:!?]+$/, '')}. ${does}`) : does;
 }
 
@@ -285,7 +296,7 @@ function directForms(state: ProjectState, tree: NodeTree): InstanceNode[] {
 function allocate(state: ProjectState, trees: NodeTree[], taken: readonly string[]): Array<Map<string, string>> {
   const forms = trees.map((t) => directForms(state, t));
   const names = uniqueToolNames(
-    forms.flat().map((n) => formToolBase(n).slice(0, WEBMCP_NAME_MAX)),
+    forms.flat().map((n) => formToolBase(n, state.components[n.definitionId]).slice(0, WEBMCP_NAME_MAX)),
     [WEBMCP_SEARCH_TOOL, ...taken]
   );
   let at = 0;
@@ -306,7 +317,7 @@ export function pageToolNames(state: ProjectState, tree: NodeTree, shell: readon
 /** What a placement hands its form: the tool's name (or, inside a design, the start of it) and what it does. */
 export function formTool(state: ProjectState, node: InstanceNode, name: string | undefined): { name: string; description: string; unique?: true } {
   const description = formToolDescription(state, node);
-  return name ? { name, description } : { name: formToolBase(node), description, unique: true };
+  return name ? { name, description } : { name: formToolBase(node, Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined), description, unique: true };
 }
 
 /**
