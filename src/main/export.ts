@@ -2230,7 +2230,7 @@ export async function writeNodeServerFiles(out: string, live: ProjectState, proj
     engines: record(own.engines) ?? NODE_ENGINES,
     // With a lockfile, what it lists, so npm ci installs from it: the build's tools too, which --omit=dev leaves out.
     // Without one, only what the server imports: npm install would fetch the build's tools all the same.
-    ...(deps ? { dependencies: deps, ...(lock !== null && record(own.devDependencies) ? { devDependencies: own.devDependencies } : {}), ...(lock !== null && record(own.optionalDependencies) ? { optionalDependencies: own.optionalDependencies } : {}), ...(record(own.overrides) ? { overrides: own.overrides } : {}) } : {})
+    ...(deps ? { dependencies: deps, ...(lock !== null && record(own.devDependencies) ? { devDependencies: own.devDependencies } : {}), ...(record(own.optionalDependencies) ? { optionalDependencies: own.optionalDependencies } : {}), ...(record(own.overrides) ? { overrides: own.overrides } : {}) } : {})
   };
   await fs.writeFile(join(out, 'package.json'), JSON.stringify(manifest, null, '\t') + '\n');
   if (lock !== null) await fs.writeFile(join(out, 'package-lock.json'), lock);

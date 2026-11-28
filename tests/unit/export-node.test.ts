@@ -229,8 +229,11 @@ describe('what a Node.js server goes out with', () => {
     expect(existsSync(stopped)).toBe(false);
     for (const ctl of controllers.splice(0)) await ctl.close();
     // Without a lockfile, the manifest is checked the same way.
-    const inManifest = await site('node', { manifest: JSON.stringify({ name: 'harbour', type: 'module', dependencies: { secretpkg: 'https://ci:npm_abcdefghijklmnop@registry.example.com/secretpkg-1.0.0.tgz' } }) });
-    expect(await inManifest.c.buildStaticTo(join(temp('out'), 'server'))).toMatchObject({ ok: false, message: expect.stringContaining('package.json that names a package address') });
+    for (const url of ['https://ci:npm_abcdefghijklmnop@registry.example.com/secretpkg-1.0.0.tgz', 'https://registry.example.com/secretpkg-1.0.0.tgz?access_token=abcdefghijklmnop']) {
+      const inManifest = await site('node', { manifest: JSON.stringify({ name: 'harbour', type: 'module', dependencies: { secretpkg: url } }) });
+      expect(await inManifest.c.buildStaticTo(join(temp('out'), 'server')), url).toMatchObject({ ok: false, message: expect.stringContaining('package.json that names a package address') });
+      for (const ctl of controllers.splice(0)) await ctl.close();
+    }
   });
 });
 

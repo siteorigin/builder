@@ -5648,7 +5648,8 @@ export class Controller {
       for (const name of ['package.json', 'package-lock.json']) {
         const file = join(out, name);
         if (!existsSync(file)) continue;
-        if (await credentialProblem([{ path: name, read: () => fs.readFile(file) }], []))
+        // Held to a lockfile's rules, which also read a token in an address's query, whichever file it is.
+        if (await credentialProblem([{ path: `${name}/package-lock.json`, read: () => fs.readFile(file) }], []))
           return { ok: false, message: `The Node.js server would go out with a ${name} that names a package address with a password or token in it. Install that package from an address without one, then export again.`, warnings: warnings() };
       }
     }
