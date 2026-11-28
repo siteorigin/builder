@@ -14,6 +14,7 @@ import { validateOperation } from '@shared/ops';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
+import { MAX_ENTRY_CHARS } from '@engine/values';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
 import { readMarkdownFolder } from '../../src/main/posts-import/folder';
 import { checkPlan, planOperations, planPostImport } from '../../src/main/posts-import/plan';
@@ -368,7 +369,7 @@ describe('planning an import from a read it may spend', () => {
   });
 
   it('still tells a published post that it links to one arriving as a draft, from the text as read', () => {
-    const big = 'w'.repeat(100_001);
+    const big = 'w'.repeat(MAX_ENTRY_CHARS + 1);
     const link = (target: string) => ({ type: 'p' as const, spans: [{ text: 'see', link: { type: 'entry' as const, target: `post:${target}` } }] });
     const posts = [post('a', { body: [link('b'), link('b'), link('c'), link('d')] }), post('b', { body: [{ type: 'p', spans: [{ text: big }] }] }), post('c', { draft: true }), post('d')];
     const plain = planPostImport(site(), src(structuredClone(posts)), '2026-11-24');
@@ -902,8 +903,31 @@ describe('planning an import: limits, drafts and the review', () => {
     expect(postImportPreview('r', plan).posts[1].categories).toEqual(['Local News']);
   });
 
+  it('brings a 20,000-word long read whole and published, with its pictures', () => {
+    // 168 paragraphs of 20,040 words, 113,398 characters: a magazine's long read, as the report measured it.
+    const words = Array.from({ length: 20_040 }, (_, i) => ['harbour', 'light', 'over', 'the', 'water', 'and', 'nets'][i % 7]);
+    const paragraphs = Array.from({ length: 168 }, (_, i) => words.slice(Math.floor((i * words.length) / 168), Math.floor(((i + 1) * words.length) / 168)).join(' '));
+    const pad = 113_398 - paragraphs.join('').length;
+    paragraphs[0] = `${'w'.repeat(pad)} ${paragraphs[0]}`.slice(1);
+    expect(paragraphs.join('').length).toBe(113_398);
+    const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
+    const body: RichText = [...paragraphs.map((text) => ({ type: 'p' as const, spans: [{ text }] })), { type: 'image', assetId: 'm1', alt: 'The harbour at dusk', caption: 'The last boat in.' }];
+    const { plan, after } = commit(site(), src([post('long', { body, oldPath: '/2024/05/twenty-k/' })], media));
+    expect(plan.posts[0]).toMatchObject({ draft: false, redirectFrom: '/2024/05/twenty-k/' });
+    expect(plan.posts[0].draftReason).toBeUndefined();
+    expect(plan.posts[0].notes.join(' ')).not.toMatch(/longer than a post holds/);
+    expect(plan.posts[0].body).toHaveLength(169);
+    expect(plan.media).toHaveLength(1);
+    const entry = Object.values(after.collections.posts.entries).find((e) => e.title === 'long')!;
+    expect(entry.draft).toBeFalsy();
+    expect(text(entry.body!).slice(0, 168)).toEqual(paragraphs);
+    // Published at its old address, as it was on the old site.
+    expect(after.site.redirects).toEqual([{ from: '/2024/05/twenty-k/', entryId: entry.id }]);
+    expect(entry.body!.at(-1)).toMatchObject({ type: 'image', caption: 'The last boat in.' });
+  });
+
   it('keeps a post whose text had to be cut as a draft, importing only the pictures it still shows', () => {
-    const big = 'x'.repeat(100_001);
+    const big = 'x'.repeat(MAX_ENTRY_CHARS + 1);
     const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
     const plan = planPostImport(site(), src([post('long', { body: [{ type: 'p', spans: [{ text: big }] }, { type: 'image', assetId: 'm1', alt: '' }] })], media), '2026-11-24');
     expect(plan.posts[0]).toMatchObject({ draft: true, draftReason: 'its text was longer than a post holds, so it was cut', body: [] });
@@ -1081,7 +1105,7 @@ describe('second review: drafts, sizes and links read as written', () => {
       skipped: [],
       posts: [
         { key: 'a', from: 'a', title: 'A', slug: 'a', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'See B', link: { type: 'entry', target: 'post:b' } }] }] },
-        { key: 'b', from: 'b', title: 'B', slug: 'b', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'x'.repeat(100_001) }] }] }
+        { key: 'b', from: 'b', title: 'B', slug: 'b', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'x'.repeat(MAX_ENTRY_CHARS + 1) }] }] }
       ]
     };
     const plan = planPostImport(site(), src2, '2026-11-24');
