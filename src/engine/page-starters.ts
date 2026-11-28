@@ -2,6 +2,7 @@ import type { ComponentDefinition, InstanceNode, PageDoc, ProjectState } from '@
 import type { EditOperation } from '@shared/ops';
 import { catalogueComponent } from '@catalogue/index';
 import { installComponent, makeInstance } from './install';
+import { fillBusinessDetails } from './business-details';
 import { normalizeProp } from './values';
 
 /** What a new page starts with (page.create's `starter`): "empty" is a blank page. */
@@ -78,6 +79,8 @@ export function addPageStarter(state: ProjectState, page: PageDoc, starter: Page
     const def = state.components[installComponent(state, section.componentId)];
     const node = makeInstance(def, {}, section.variant);
     Object.assign(node.props, props);
+    // The site's business details where the design shows the samples (#1368); the starter's own texts stay.
+    fillBusinessDetails(state, { kind: 'page', id: page.id }, node, props);
     section.settle?.(state, page, node);
     page.nodes[node.id] = node;
     page.rootIds.push(node.id);

@@ -5,6 +5,7 @@
  * applies `site.update`, and when the website is built from a file edited by hand, which keeps only what passes.
  */
 import type { EntityKind, SiteDoc, SiteIdentity } from './types';
+import { dialString } from './contact-links';
 
 export const ENTITY_KINDS: readonly EntityKind[] = ['Organization', 'LocalBusiness', 'Person'];
 export const ENTITY_KIND_LABELS: Record<EntityKind, string> = { Organization: 'Organization', LocalBusiness: 'Local business', Person: 'Person' };
@@ -59,19 +60,25 @@ export function checkTwitterHandle(input: string): Checked<string> {
   return ok(`@${body}`);
 }
 
-/** An email address: one mailbox, nothing around it. */
+/**
+ * An email address: one mailbox, nothing around it. A ? in it would end the address in the email links that open it
+ * (mailto:), so none is taken.
+ */
 export function checkEmail(input: string): Checked<string> {
   const text = input.trim();
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
+  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\?]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
   return ok(text);
 }
 
-/** A telephone number as people dial it: digits, with spaces, “+”, brackets, dots or dashes between them. */
+/**
+ * A telephone number as people dial it: digits, with spaces, “+”, brackets, dots or dashes between them, and at least
+ * three of them left to dial once a bracketed trunk zero is dropped (“+358 (0)” dials nothing).
+ */
 export function checkTelephone(input: string): Checked<string> {
   const text = oneLine(input);
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.telephone || !/^\+?[\d\s().\-/]+$/.test(text) || (text.match(/\d/g) ?? []).length < 3) return no(`“${text}” is not a telephone number, such as +27 21 555 0134.`);
+  if (text.length > IDENTITY_LIMITS.telephone || !/^\+?[\d\s().\-/]+$/.test(text) || (dialString(text).match(/\d/g) ?? []).length < 3) return no(`“${text}” is not a telephone number, such as +27 21 555 0134.`);
   return ok(text);
 }
 
@@ -98,6 +105,99 @@ export function checkOpeningHours(input: string): Checked<string> {
   // The limit is on the period as it is kept (hours padded), so one saved is never dropped when the website reads it.
   const period = from && to ? `${days} ${from}-${to}` : '';
   return period && period.length <= IDENTITY_LIMITS.hoursLine ? ok(period) : refused;
+}
+
+const DAY_CODES = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'] as const;
+const ENGLISH_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+/** "9am", "9:30am", "12pm" at noon, "12am" at its start and "midnight" at its end, as English writes opening hours. */
+function englishTime(h: number, min: number): string {
+  if (h === 24) return 'midnight';
+  const shown = `${h % 12 || 12}${min ? `:${String(min).padStart(2, '0')}` : ''}`;
+  return `${shown}${h < 12 ? 'am' : 'pm'}`;
+}
+
+/** "Monday, Wednesday and Friday": the last two joined by "and". */
+const englishList = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+
+/** How one language names the days and the hours, from the platform's own names for them. */
+interface LocalWords {
+  locale: string;
+  day: (i: number) => string;
+  time: (h: number, min: number) => string;
+  list: (parts: string[]) => string;
+}
+
+/**
+ * The platform's words for `language`, or for its language alone when the platform takes no more of it ("zh" for
+ * "zh-cmn-Hans"); null for English, which says hours its own way, and for a language the platform does not know.
+ */
+function localWords(language: string): LocalWords | null {
+  for (const tag of [language, language.split('-')[0]]) {
+    let locale: string;
+    try {
+      locale = new Intl.DateTimeFormat(tag).resolvedOptions().locale;
+    } catch {
+      continue;
+    }
+    // A language the platform has no words for resolves to its own default, which is no answer. An old name for a
+    // language ("iw") resolves to its own ("he").
+    let asked: string;
+    try {
+      asked = Intl.getCanonicalLocales(tag)[0];
+    } catch {
+      continue;
+    }
+    if (locale.split('-')[0].toLowerCase() !== asked.split('-')[0].toLowerCase()) continue;
+    if (/^en\b/i.test(locale)) return null;
+    const day = new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' });
+    const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
+    // The end of the day is 24:00, which a clock that starts the day at 0:00 cannot say.
+    const end = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h24', timeZone: 'UTC' });
+    const list = new Intl.ListFormat(locale, { type: 'conjunction' });
+    // 2024-01-01 was a Monday.
+    return {
+      locale,
+      day: (i) => day.format(Date.UTC(2024, 0, 1 + i)),
+      time: (h, min) => (h === 24 ? end : clock).format(Date.UTC(2024, 0, 1, h % 24, min)),
+      list: (parts) => list.format(parts)
+    };
+  }
+  return null;
+}
+
+/**
+ * Opening hours as visitors read them, in the site's language: “Monday to Friday, 9am – 5pm” for Schema.org's
+ * “Mo-Fr 09:00-17:00”, the periods joined with semicolons. A period of days alone is open all day: “all day” in
+ * English, the whole day's hours in another language. Each period is checked as Site details keeps it, and one that
+ * is not usable is left out. A language the platform does not know is written in English.
+ */
+export function openingHoursText(periods: readonly string[], language = 'en'): string {
+  const words = localWords(language);
+  const dayName = (code: string) => {
+    const i = DAY_CODES.indexOf(code.toLowerCase() as (typeof DAY_CODES)[number]);
+    return words ? words.day(i) : ENGLISH_DAYS[i];
+  };
+  const time = words ? words.time : englishTime;
+  const out: string[] = [];
+  for (const raw of periods) {
+    const c = checkOpeningHours(raw);
+    if (!c.ok || !c.value) continue;
+    const [days, hours] = c.value.split(' ');
+    const groups = days.split(',').map((g) => {
+      const [from, to] = g.split('-');
+      return to ? `${dayName(from)}${words ? ' – ' : ' to '}${dayName(to)}` : dayName(from);
+    });
+    const named = words ? words.list(groups) : englishList(groups);
+    let text: string;
+    if (!hours) text = words ? `${named}, ${time(0, 0)} – ${time(24, 0)}` : `${named}, all day`;
+    else {
+      const [from, to] = hours.split('-').map((t) => t.split(':').map(Number));
+      text = `${named}, ${time(from[0], from[1])} – ${time(to[0], to[1])}`;
+    }
+    out.push(text.charAt(0).toLocaleUpperCase(words?.locale ?? 'en') + text.slice(1));
+  }
+  return out.join('; ');
 }
 
 /** A map position typed as “latitude, longitude” (“-33.92, 18.42”). Empty text is none. */

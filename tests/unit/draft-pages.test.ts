@@ -247,7 +247,7 @@ describe('what the website publishes', () => {
       t.pages[t.site.homePageId].rootIds.push('n_typed001');
       return publicationPlan(t).draftLinks.filter((l) => l.nodeId === 'n_typed001');
     };
-    expect(typed('https://books.example/shop/winter/#arrivals')).toEqual([{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: 'n_typed001', label: 'Winter', inText: false, pageId: draft, anchor: 'arrivals' }]);
+    expect(typed('https://books.example/shop/winter/#arrivals')).toEqual([{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: 'n_typed001', label: 'Winter', key: ':n_typed001:', inText: false, pageId: draft, anchor: 'arrivals' }]);
     expect(typed('https://books.example/shop/Winter')).toHaveLength(1);
     expect(typed('https://books.example/shop/%77inter/')).toMatchObject([{ pageId: draft }]);
     expect(typed('https://books.example/shop/winter/index.html#details')).toMatchObject([{ pageId: draft, anchor: 'details' }]);
