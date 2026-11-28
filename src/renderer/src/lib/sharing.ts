@@ -8,6 +8,9 @@ import { publicUrl } from '@shared/public-url';
 import { assetLabels } from '@shared/asset-order';
 import { pageSharing, type SharingImageSource } from '@shared/sharing';
 
+/** The shape a sharing picture is best in, said under the picker: the apps crop to about 1.91:1 (see SeoView's Link preview). */
+export const SHARING_IMAGE_SHAPE = 'A wide picture, about 1200 × 630 pixels, suits most apps.';
+
 /**
  * What a picture-only image picker needs to stand for another image while its field has none of its own: `inherited`
  * is the library image it falls back to (null when there is none), `from` says whose it is, `none` is said when there

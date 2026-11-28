@@ -157,7 +157,7 @@ export function previewDocument(state: ProjectState, subject: SeoSubject, route?
       image: picture,
       imageAlt: picture ? meta.imageAlt : '',
       imageSaid: picture
-        ? `Image: ${nameOf(state, meta.imageId) ?? picture.name}, ${whose}.`
+        ? `Picture: ${nameOf(state, meta.imageId) ?? picture.name}, ${meta.imageSource === 'featured' ? whose : `${whose} sharing image`}.`
         : meta.imageId
           ? `No sharing image: the one chosen (${whose}) isn’t a picture in Assets.`
           : 'No sharing image.',
@@ -282,7 +282,7 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
           : `This ${what} is not on the website, so it carries no structured data.`
         : meta.noindex
           ? `This ${what} is hidden from search engines, so its page carries no structured data.`
-          : 'Structured data names everything by its public URL, so pages carry none until the site has one. Set the Public URL in Site details.'
+          : 'Structured data names everything by its public URL, so pages carry none until the site has one.'
     };
   } else {
     try {

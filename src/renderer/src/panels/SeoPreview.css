@@ -2,10 +2,17 @@
   /* Search & sharing previews (#597): a search result on a computer or a phone, the link card, and the structured data. */
   .seo-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .seo-preview .tabs { margin: 0; padding: 0; }
-  .seo-preview .tab { height: 30px; padding: 0 8px; font-size: 12px; }
+  /* 34px and the rule under them: the settings' heading row beside them is the same 35px, so both rules meet. */
+  .seo-preview .tab { height: 34px; padding: 0 8px; font-size: 12px; }
+  /* The first tab's words start at the column's edge, level with what the panels show under them. */
+  .seo-preview .tab:first-child { margin-left: -8px; }
   .seo-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
   .post-fields > .seo-inline-actions { grid-column: 1 / -1; margin-bottom: 6px; }
   .seo-preview-ai { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  /* Why the results page shows a page search engines won't list: over the page, which stays in sight while the
+     settings scroll. */
+  .seo-preview-state { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); color: var(--text-2); line-height: 1.45; }
+  .seo-preview-state svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
   .seo-preview-ai .field-hint { margin: 0; }
   .serp-previews { display: flex; flex-direction: column; gap: 8px; }
   .serp-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -13,12 +20,17 @@
   /* The results page (#704) is laid out at its real size and scaled to fit (see ScaledPage). Its width is the container's
      alone, so the page inside never widens the panel around it. */
   .serp-fit { min-width: 0; contain: inline-size; overflow: hidden; }
-  .serp-row { position: relative; display: flex; width: fit-content; margin: 0 auto; }
+  /* The page centred in its column, the marker's margin on its left taken from the room either side, never added to
+     one side only. */
+  .serp-row { position: relative; display: grid; grid-template-columns: minmax(76px, 1fr) auto minmax(0, 1fr); }
   .serp-slot { flex: none; overflow: hidden; }
-  /* The marker for the site's own result: in the margin left of the page, level with the result, never inside the page. */
-  .serp-mark { position: relative; flex: none; width: 28px; }
-  .serp-mark-tag { position: absolute; left: 3px; display: inline-flex; align-items: center; justify-content: center; aspect-ratio: 1; border-radius: 50%; background: var(--accent); color: var(--on-accent); pointer-events: none; }
-  .serp-mark-tag svg { width: 64%; height: 64%; }
+  /* The marker for the site's own result: in the margin left of the page, level with the result, never inside the page.
+     A note, not a control: "Your page" in the accent's ink beside a rule the height of the result, so it says which
+     result it is and how far it runs, and nothing about it looks pressable. */
+  .serp-mark { position: relative; min-width: 76px; }
+  .serp-mark-tag { position: absolute; left: 0; right: 6px; display: flex; justify-content: flex-end; gap: 6px; pointer-events: none; }
+  .serp-mark-label { min-width: 0; padding-top: 1px; font-size: 12px; font-weight: 600; line-height: 1.25; text-align: right; color: var(--accent-text); }
+  .serp-mark-rule { flex: none; width: 3px; border-radius: 2px; background: var(--accent); }
   .serp-scaled { transform-origin: top left; }
   /* A results page's own colours, light and dark: nothing here follows the editor's appearance. */
   .serp-page {
@@ -83,53 +95,81 @@
   .serp-title.none, .serp-desc.none { font-style: italic; color: var(--serp-text-3); }
   .serp-note { margin: 0; line-height: 1.45; }
   .seo-meter { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-variant-numeric: tabular-nums; }
-  .seo-meter-bar { position: relative; flex: none; width: 44px; height: 4px; overflow: hidden; border-radius: 2px; background: var(--border); }
+  /* The track's own edge holds 3:1, so the bar's whole length reads and a short fill never floats (WCAG 1.4.11). */
+  .seo-meter-bar { position: relative; flex: none; width: 44px; height: 6px; overflow: hidden; border-radius: 3px; background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control); }
   /* Green is the shared header and footer's hue (tokens.css), and amber is kept for what is to fix: the fill is ink. */
-  .seo-meter-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--text-3); }
-  .seo-meter.short .seo-meter-bar > span, .seo-meter.none .seo-meter-bar > span { background: var(--border-control); }
+  .seo-meter-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--text-2); }
+  /* Short is said in words; its fill stays at 3:1 on the track like any other (WCAG 1.4.11). */
+  .seo-meter.none .seo-meter-bar > span { background: var(--border-control); }
   /* Cut short is a note, as the overview ranks a length: amber is kept for what is to fix. The words say where. */
-  .seo-meter.cut .seo-meter-bar > span { background: var(--text); }
-  .seo-meter.cut .seo-meter-text { color: var(--text); }
-  .seo-data { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  .seo-status { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; }
-  .seo-status-row { display: grid; grid-template-columns: minmax(84px, 38%) 1fr; gap: 8px; }
-  .seo-status-row dt { color: var(--text-2); }
+  /* Cut on a computer too is said in full ink; cut on phones alone is the usual state of a full description. */
+  .seo-meter.cut[data-cut~='desktop'] .seo-meter-bar > span { background: var(--text); }
+  .seo-meter.cut[data-cut~='desktop'] .seo-meter-text { color: var(--text); }
+  /* Structured data: where the page appears, then what it tells search engines, each under its own heading. Every
+     label column in the tab is the same width, so the values run down one line. */
+  .seo-data { --seo-label: minmax(96px, 150px); display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .seo-data-part { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .seo-data-part > .field-hint { margin: -4px 0 0; }
+  .seo-data-head { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .seo-data-headrow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .seo-data-headrow .link-btn { font-size: 12px; }
+  .seo-data-part + .seo-data-part { padding-top: 16px; border-top: 1px solid var(--border); }
+  .seo-status { display: flex; flex-direction: column; gap: 5px; margin: 0; font-size: 12px; }
+  .seo-status-row { display: grid; grid-template-columns: var(--seo-label) 1fr; gap: 12px; }
+  .seo-status-row dt { display: flex; align-items: flex-start; gap: 6px; min-width: 0; color: var(--text-2); }
   .seo-status-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
   .seo-status-row.on dd { color: var(--text); }
-  .seo-status-row dd::before { content: '○ '; color: var(--text-3); }
-  .seo-status-row.on dd::before { content: '● '; color: var(--text-2); }
+  .seo-status-row dt svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+  .seo-status-row.on dt svg { color: var(--text-2); }
   .seo-data-problem { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--border)); border-radius: var(--r-md); background: color-mix(in srgb, var(--amber) 8%, transparent); font-size: 12px; line-height: 1.45; }
   .seo-data-problem p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .seo-data-problem > p:first-child { display: flex; align-items: flex-start; gap: 6px; font-weight: 600; color: var(--text); }
+  .seo-data-problem > p:first-child svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--amber); }
+  /* On the amber tint the quiet ink would fall under 4.5:1: the explanation takes the next step up. */
+  .seo-data-problem .field-hint { color: var(--text-2); }
   .seo-summary { display: flex; flex-direction: column; min-width: 0; }
-  .seo-entity { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 10px 0; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; user-select: text; }
-  .seo-entity h4 { margin: 0; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
+  .seo-entity { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 10px 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; user-select: text; }
+  .seo-entity + .seo-entity { border-top: 1px solid var(--border); }
+  .seo-entity h5 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-3); }
   .seo-entity p { margin: 0; }
   .seo-entity-statement { font-size: 13px; color: var(--text); }
   .seo-entity dl { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 0; }
-  .seo-entity-row { display: grid; grid-template-columns: minmax(84px, 30%) 1fr; gap: 8px; }
+  .seo-entity-row { display: grid; grid-template-columns: var(--seo-label, minmax(84px, 30%)) 1fr; gap: 12px; }
   .seo-entity-row dt { color: var(--text-2); }
   .seo-entity-row dd { margin: 0; min-width: 0; white-space: pre-line; color: var(--text); }
+  /* A list of facts (a trail, steps) takes the same label column as the single facts above it. */
+  .seo-entity-list { display: grid; grid-template-columns: var(--seo-label, minmax(84px, 30%)) 1fr; gap: 12px; margin-top: 2px; }
   .seo-entity-list-label { color: var(--text-2); }
-  .seo-entity-list ol, .seo-entity-list ul { margin: 2px 0 0; padding-left: 20px; color: var(--text); }
+  .seo-entity-list ol, .seo-entity-list ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style-position: inside; color: var(--text); }
   .seo-entity-list ol { list-style: decimal; }
   .seo-entity-list ul { list-style: disc; }
   .seo-entity-detail { display: block; white-space: pre-line; color: var(--text-2); }
-  .code-view.seo-graph { height: auto; max-height: 340px; padding: 10px 12px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Laid out a value to a line: long lines scroll sideways rather than wrap back to the margin. */
+  .code-view.seo-graph { height: auto; max-height: 340px; padding: 10px 12px; overflow: auto; background: var(--panel); font-size: 11px; line-height: 1.5; white-space: pre; }
+  .seo-json-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 6px; }
+  .seo-json-tools .field-hint { margin: 0; }
+  .copy-text { flex: none; gap: 4px; font-weight: 500; color: var(--text-2); }
+  .copy-text svg { width: 13px; height: 13px; }
   /* Link cards (#705): each as its platform lays one out. They are samples of other people's apps, so their colours are
      their own and don't follow the editor's appearance. A card is drawn at its platform's width (--w, in pixels) and
      every length in it is a count of --u: one pixel, or less where there is less room, so a narrower card shrinks as one
      piece and crops its picture and breaks its lines where the full one does. */
-  .share-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .share-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; container-type: inline-size; }
+  .share-jumps { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0 -4px; padding: 6px 4px; background: var(--bg); box-shadow: 0 1px 0 var(--border); }
+  /* A card jumped to lands under the row of jumps, not behind it. */
+  .share-preview:has(.share-jumps) .share-sample { scroll-margin-top: 40px; }
+  .share-samples { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px 24px; min-width: 0; }
+  /* As wide as the platform's card (set inline), and narrower only where the column is. */
+  .share-samples > .share-sample { flex: none; max-width: 100%; }
   .share-preview-image { margin: 0; overflow-wrap: anywhere; }
   .share-preview-note { margin: 0; line-height: 1.45; }
   .share-sample { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .seo-preview-wide .share-sample + .share-sample { margin-top: 10px; }
   .share-sample-name { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
   .share-sample-note { margin: 0; line-height: 1.45; }
   .share-card-fit { container-type: inline-size; min-width: 0; }
   .share-card {
     --u: min(1px, calc(100cqw / var(--w)));
-    --card-bg: #ffffff; --card-soft: #f0f1f3; --card-line: #d6d8dc; --card-text: #17181a; --card-muted: #5f636a; --card-link: #1a5aa8;
+    --card-bg: #ffffff; --card-soft: #f0f1f3; --card-line: #c9cdd3; --card-text: #17181a; --card-muted: #5f636a; --card-link: #1a5aa8;
     color-scheme: light; display: flex; flex-direction: column; gap: calc(var(--u) * 4); width: calc(var(--u) * var(--w));
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: left; color: var(--card-text);
   }
@@ -156,8 +196,10 @@
   /* A timeline's large card: the picture alone, the title in a chip over it and the host under the card. */
   .share-card-x .share-card-frame { border-radius: calc(var(--u) * 16); }
   .share-card.overlay .share-card-title { z-index: 1; position: absolute; left: calc(var(--u) * 12); bottom: calc(var(--u) * 12); display: block; max-width: calc(100% - var(--u) * 24); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 calc(var(--u) * 6); border-radius: calc(var(--u) * 4); background: rgb(0 0 0 / 0.77); color: #ffffff; font-size: calc(var(--u) * 14); font-weight: 400; line-height: calc(var(--u) * 20); }
-  .share-card-x { background: var(--card-bg); border-radius: calc(var(--u) * 16) calc(var(--u) * 16) calc(var(--u) * 4) calc(var(--u) * 4); }
-  .share-card-from { display: flex; gap: 0.3em; min-width: 0; padding: 0 calc(var(--u) * 8) calc(var(--u) * 4); font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); color: var(--card-muted); }
+  /* The host under X's card sits on the timeline, not in the card: nothing is painted behind it, and it takes the
+     editor's quiet ink, which holds its contrast on either theme. */
+  .share-card-from { display: flex; gap: 0.3em; min-width: 0; padding: 0; font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); color: var(--text-3); }
+  .share-card-from .share-card-host { color: inherit; }
   /* A message thread: a bubble that holds the card. */
   .share-card-messages .share-card-frame { padding: calc(var(--u) * 3); border-radius: calc(var(--u) * 14) calc(var(--u) * 14) calc(var(--u) * 4) calc(var(--u) * 14); background: var(--card-soft); }
   .share-card-messages .share-card-image { border-radius: calc(var(--u) * 10); background: var(--card-line); }
@@ -165,8 +207,11 @@
   .share-card-messages .share-card-title { font-size: calc(var(--u) * 14); line-height: calc(var(--u) * 18); }
   .share-card-messages .share-card-desc { font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); }
   /* A team chat: an unfurl behind a bar, the whole picture under its text. */
-  .share-card-chat .share-card-frame { border-left: calc(var(--u) * 4) solid var(--card-line); border-radius: 0; padding: calc(var(--u) * 4) calc(var(--u) * 8); }
-  .share-card-chat .share-card-frame::after { content: none; }
+  /* The message the unfurl sits in: a rounded white tile with its hairline, and the unfurl's bar drawn inside it as a
+     rounded rule of its own, never as one edge of the tile. */
+  /* Its sides take the 20 the old bar and padding did, so the unfurl keeps the width its picture is measured for. */
+  .share-card-chat .share-card-frame { border-radius: calc(var(--u) * 8); padding: calc(var(--u) * 8) calc(var(--u) * 4) calc(var(--u) * 8) calc(var(--u) * 16); }
+  .share-card-chat .share-card-frame::before { content: ''; position: absolute; left: calc(var(--u) * 6); top: calc(var(--u) * 8); bottom: calc(var(--u) * 8); width: calc(var(--u) * 4); border-radius: calc(var(--u) * 2); background: var(--card-line); }
   .share-card-chat .share-card-frame.beside { align-items: flex-start; }
   .share-card-chat .share-card-text { flex: none; padding: 0 0 calc(var(--u) * 6); }
   .share-card-chat .share-card-title { color: var(--card-link); }

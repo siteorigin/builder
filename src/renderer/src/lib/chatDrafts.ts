@@ -21,6 +21,17 @@ export function withDraft(drafts: ChatDrafts, conversationId: string, text: stri
   return next;
 }
 
+/**
+ * An answer typed to a waiting question and left unsent, kept as the conversation's unsent message when the project is
+ * left (the request stops, and the question comes back as not answered): after any message already being written, so
+ * neither is lost.
+ */
+export function keepAnswer(drafts: ChatDrafts, conversationId: string, answer: string): ChatDrafts {
+  if (!answer.trim()) return drafts;
+  const draft = draftFor(drafts, conversationId);
+  return withDraft(drafts, conversationId, draft.trim() ? `${draft.replace(/\s+$/, '')}\n\n${answer}` : answer);
+}
+
 /** Clear a sent message from its conversation, unless the draft has changed since it was sent. */
 export function afterSend(drafts: ChatDrafts, conversationId: string, sent: string): ChatDrafts {
   return draftFor(drafts, conversationId) === sent ? withDraft(drafts, conversationId, '') : drafts;

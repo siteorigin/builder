@@ -69,3 +69,50 @@ describe('column layouts in Insert (#514)', () => {
     expect(new Set(BASICS.map((b) => b.id)).size).toBe(BASICS.length);
   });
 });
+
+describe('word forms in Insert (#1360)', () => {
+  const names = (q: string) => searchItems(offered(), q).map((it) => it.name);
+  const pricing = ['Pricing', 'Pricing with billing switch', 'Pricing comparison'];
+
+  it('finds every pricing section by price, prices or pricing, ahead of what only mentions a price', () => {
+    for (const q of ['price', 'prices', 'pricing', 'Prices']) expect(names(q).slice(0, 3), q).toEqual(pricing);
+    expect(names('price')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+    expect(names('prices')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+  });
+
+  it('matches another form only as a whole word, and only for the words listed', () => {
+    const items = ['Repricing notes', 'Sitemap'].map((name) => ({ name, hay: `${name} location_x relocation`.toLowerCase() }));
+    expect(searchItems(items, 'prices')).toEqual([]);
+    expect(searchItems(items, 'map').map((it) => it.name)).toEqual(['Sitemap']);
+    expect(searchItems(items, 'constructor')).toEqual([]);
+    // General plurals are not stripped: Contact details says "There is no form".
+    expect(names('forms')).not.toContain('Contact details');
+  });
+
+  it('still needs every word, so a second word narrows what price finds', () => {
+    expect(names('price list')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+    expect(names('price list')).not.toContain('Pricing');
+    expect(names('prices billing')).toEqual(['Pricing with billing switch']);
+  });
+
+  it('ranks names: as typed, then named by another form, starting with it, holding it, and last a description', () => {
+    const item = (name: string, about = '') => ({ name, hay: `${name} ${about}`.toLowerCase() });
+    const ranked = (items: ReturnType<typeof item>[], q: string) => searchItems(items, q).map((it) => it.name);
+    // Listed worst first, so panel order alone would give the reverse.
+    expect(ranked([item('Rates', 'a price list'), item('All pricing options'), item('Pricing: seasonal'), item('Pricing'), item('Price card')], 'price')).toEqual(['Price card', 'Pricing', 'Pricing: seasonal', 'All pricing options', 'Rates']);
+    // A project's own component, listed first, does not displace the section named for the search.
+    expect(ranked([item('Pricing plans comparison'), item('Pricing comparison')], 'price comparison')).toEqual(['Pricing comparison', 'Pricing plans comparison']);
+  });
+
+  it('reads another form in any word, beside punctuation, and in the name an item shows', () => {
+    const items = [
+      { name: 'Rates', hay: 'rates dark pricing variant', shownAs: 'Rates Light' },
+      { name: 'Plans', hay: 'plans (pricing) dark variant', shownAs: 'Plans (pricing) Dark' }
+    ];
+    expect(searchItems(items, 'dark price', (it) => it.shownAs).map((it) => it.name)).toEqual(['Plans', 'Rates']);
+  });
+
+  it('finds the contact details by map', () => {
+    expect(names('map')).toEqual(['Contact details']);
+  });
+});

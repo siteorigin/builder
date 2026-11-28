@@ -24,7 +24,7 @@ export interface ComposerScope {
   post?: { collectionId: string; entryId: string; title: string } | null;
   /**
    * The Posts writer is in front with no post open: no page shows, so nothing on the page out of sight under it is
-   * offered. A change waits for a post (lib/workspace changeWithoutDocument); a question reads the site.
+   * offered. A change goes to the whole site, from the home page (#1424), and a question reads the site.
    */
   empty?: true;
   /** The collection layout open on the canvas, while it is: the next message is about it alone (#679). */
@@ -99,9 +99,11 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
 
 /**
  * How far the next message goes, from the composer's choice: the selected element only while one is selected. With
- * nothing selected, the choice to keep to a selection keeps to the page, so an edit starts there by default.
+ * nothing selected, the choice to keep to a selection keeps to the page, so an edit starts there by default. With the
+ * writer showing no post, no page or element is in sight, so an edit reaches the whole site (#1424).
  */
-export function editScope(scope: Pick<ComposerScope, 'selection'>, chosen: ChatEditScope): ChatEditScope {
+export function editScope(scope: Pick<ComposerScope, 'selection' | 'empty'>, chosen: ChatEditScope): ChatEditScope {
+  if (scope.empty) return 'site';
   return chosen === 'selection' && !scope.selection ? 'page' : chosen;
 }
 
