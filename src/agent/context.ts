@@ -1099,7 +1099,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
   // What a newer theme version of the selected component adds, and whether this project can take it.
   const update = themeUpdateNote(state, def);
   // The text a code component's part shows, which is all of the placement's content it may change.
-  const codeReach = def && !def.tree && ref.instancePath.length === 1 ? codePartReach(def, { partId: ref.partId, itemId: selectedItem }, opts.texts) : null;
+  const codeReach = def && !def.tree && ref.instancePath.length === 1 ? codePartReach(def, { partId: ref.partId, itemId: selectedItem }, opts.texts, inst) : null;
   // A property shown in a part repeated per item shows in every item: not the selected item's to change.
   const codeTexts = codeReach ? [...(selectedItem !== undefined && codeReach.repeated ? [] : codeReach.props), ...[...codeReach.itemFields].flatMap(([list, fields]) => [...fields].map((f) => `${list}.${f}`))] : [];
   return {

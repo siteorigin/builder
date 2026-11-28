@@ -5893,7 +5893,7 @@ export class ProjectSession extends EventEmitter {
   }
 
   /** The text each part of a code component's code shows, by part, for an AI run limited to one part (#1416). */
-  codePartTexts(source: string): Promise<Record<string, string[]> | null> {
+  codePartTexts(source: string): ReturnType<typeof codePartTexts> {
     return codePartTexts(source);
   }
 

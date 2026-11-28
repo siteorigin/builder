@@ -129,7 +129,7 @@ export interface RunSession {
   discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
   /** The text each part of a code component's code shows, by part (main/codecheck.ts codePartTexts); null when it cannot be read. */
-  codePartTexts?(source: string): Promise<Record<string, string[]> | null>;
+  codePartTexts?(source: string): Promise<Record<string, { paths: string[]; keep: string[] }> | null>;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
   /**
    * `formRouting`: the grant `grantFormRouting` gave, once the user allowed a batch that changes where a form sends
@@ -3043,8 +3043,8 @@ async function withCodePartTexts(session: RunSession, authority: Authority): Pro
   if (def?.kind !== 'code' || def.tree || typeof def.source !== 'string') return authority;
   const source = def.source;
   const read = await session.codePartTexts(source).catch(() => null);
-  const paths = read && Object.hasOwn(read, authority.part.partId) ? read[authority.part.partId] : [];
-  return { ...authority, part: { ...authority.part, texts: { sourceHash: sourceHash(source), paths } } };
+  const own = read && Object.hasOwn(read, authority.part.partId) ? read[authority.part.partId] : null;
+  return { ...authority, part: { ...authority.part, texts: { sourceHash: sourceHash(source), paths: own?.paths ?? [], keep: own?.keep ?? [] } } };
 }
 
 function activityLabel(call: ToolCall, state: ProjectState): string {

@@ -43,6 +43,20 @@ export interface PartAuthority {
 export interface CodePartTexts {
   sourceHash: string;
   paths: string[];
+  /** Properties whose presence also decides what shows outside the part: a change may not empty or fill them. */
+  keep?: string[];
+}
+
+/** Whether Builder's `has()` says a value is there (runtime util.js): text with more than spaces, a non-empty list, a set link or picture. */
+function hasValue(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') {
+    if ('href' in value) return !!(value as { href?: unknown }).href;
+    if ('src' in value) return !!(value as { src?: unknown }).src;
+    return true;
+  }
+  return !!value;
 }
 
 /**
@@ -155,16 +169,19 @@ const NOTHING: PartReach = { props: new Set(), itemFields: new Map(), nodes: new
 /**
  * What a part of a code component shows (#1416), which has no tree to say: the text its code marks inside it, as read
  * from the code the request started with (`texts`), among the properties and list fields the component still declares
- * as text the canvas can type over. Without that reading, or once the code has changed, the part reaches nothing but
- * its own styles. A part picked in one item of a list is shown once per item.
+ * as text the canvas can type over (`inst`: the placement, whose lists filled from a collection show the entries' text).
+ * Without that reading, or once the code has changed, the part reaches nothing but its own styles. A part picked in
+ * one item of a list is shown once per item.
  */
-export function codePartReach(def: ComponentDefinition, part: { partId?: string; itemId?: string }, texts: CodePartTexts | undefined): PartReach {
+export function codePartReach(def: ComponentDefinition, part: { partId?: string; itemId?: string }, texts: CodePartTexts | undefined, inst?: GraphNode): PartReach {
   if (!texts || !part.partId || def.kind !== 'code' || typeof def.source !== 'string' || sourceHash(def.source) !== texts.sourceHash) return NOTHING;
   const props = new Set<string>();
   const itemFields = new Map<string, Set<string>>();
   for (const written of texts.paths) {
     const path = parseCodeTextPath(written);
     if (!path || 'problem' in codeTextField(def.properties, path)) continue;
+    // A list the placement fills from a collection shows the entries' text, which changes in the collection.
+    if (path.field !== undefined && inst?.kind === 'instance' && Object.hasOwn(inst.listSources ?? {}, path.prop)) continue;
     if (path.field === undefined) props.add(path.prop);
     else itemFields.set(path.prop, (itemFields.get(path.prop) ?? new Set()).add(path.field));
   }
@@ -260,7 +277,7 @@ function selectedPart(state: ProjectState, authority: Extract<Authority, { kind:
   // A code component's root part is the placement itself.
   if (!part.nested && !def.tree && part.partId === 'root') return null;
   if (part.nested) return { def, inst, reach: NOTHING, part };
-  if (!def.tree) return { def, inst, reach: codePartReach(def, part, part.texts), part };
+  if (!def.tree) return { def, inst, reach: codePartReach(def, part, part.texts, inst), part };
   // Only the first top-level node is the placement itself; another is a part like any other.
   if (def.tree.rootIds[0] === part.regionNodeId) return null;
   return { def, inst, reach: partReach(def, part.regionNodeId), part };
@@ -291,7 +308,16 @@ function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selec
     }
     case 'instance.setProp': {
       // The engine treats an empty item ID as none: the whole list.
-      if (!op.itemId) return whole(op.prop) ? null : beyond;
+      if (!op.itemId) {
+        if (!whole(op.prop)) return beyond;
+        // A code part's text whose presence also decides what shows outside it may change, but not come or go.
+        if (!def.tree && part.texts?.keep?.includes(op.prop) && !op.field) {
+          const props = (sel.inst.props ?? {}) as Record<string, unknown>;
+          const was = Object.hasOwn(props, op.prop) ? props[op.prop] : def.properties[op.prop]?.default;
+          if (hasValue(was) !== hasValue(op.value)) return `${op.type} would ${hasValue(was) ? 'empty' : 'fill'} "${op.prop}", whose text also decides what else ${label} shows: more than the selected part. Change its words instead, or ask the user first.`;
+        }
+        return null;
+      }
       if (whole(op.prop)) return null;
       const fields = reach.itemFields.get(op.prop);
       if (!fields) return beyond;

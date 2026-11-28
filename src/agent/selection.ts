@@ -165,7 +165,7 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
 function selectedPartReach(r: Resolved, target: SelectionTarget): PartReach | null {
   if (!target.partId || !r.def || !Object.hasOwn(r.def.parts, target.partId)) return null;
   // A code component has no tree to say what its parts show: only the text its code marks inside the part.
-  if (!r.def.tree) return target.partId === 'root' ? null : codePartReach(r.def, target, target.texts);
+  if (!r.def.tree) return target.partId === 'root' ? null : codePartReach(r.def, target, target.texts, r.node);
   const nodeId = r.def.parts[target.partId].nodeId;
   return r.def.tree.rootIds[0] === nodeId ? null : partReach(r.def, nodeId);
 }
