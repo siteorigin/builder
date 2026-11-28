@@ -787,6 +787,13 @@ describe('page scope (#513)', () => {
     // Its own settings, but not its address or translations, which reach other pages.
     allow({ type: 'page.update', pageId: about, title: 'About us', navLabel: 'About', description: 'Who we are', showFooter: false, seoTitle: 'About us' });
     deny(/page\.update route changes more than the About page/, { type: 'page.update', pageId: about, route: '/team/' });
+    // Publishing it is its own too, except where the site keeps an old address working at its route: it takes that over (#1363).
+    const drafted = structuredClone(state);
+    drafted.pages[about].draft = true;
+    expect(checkAuthority(drafted, [{ type: 'page.update', pageId: about, draft: false }], authority)).toBeNull();
+    drafted.site.redirects = [{ from: drafted.pages[about].route.toUpperCase(), pageId: home }];
+    expect(checkAuthority(drafted, [{ type: 'page.update', pageId: about, draft: false }], authority)).toMatch(/page\.update draft publishes the About page at \/about\/, an old address the site keeps sending visitors on from/);
+    expect(checkAuthority(drafted, [{ type: 'page.update', pageId: about, title: 'About us' }], authority)).toBeNull();
     deny(/linkTranslationTo/, { type: 'page.update', pageId: about, linkTranslationTo: null });
     deny(/another page/, { type: 'page.update', pageId: home, title: 'Start' });
     // Another page, the shared header and footer, site styles and components' designs.

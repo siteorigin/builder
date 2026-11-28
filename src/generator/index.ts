@@ -4826,8 +4826,9 @@ export function isDraftPage(state: ProjectState, page: PageDoc): boolean {
 
 /**
  * The site as visitors get it: every draft page and draft entry left out, with the old addresses that lead to one.
- * The old addresses are chosen on the whole site first, so a draft's route never frees an address another redirect
- * could then take. Links to a draft resolve as links to a missing page. A site without drafts is returned as it is.
+ * The old addresses are worked out as the website has them: an old address kept at a draft page's address keeps
+ * sending visitors on until the draft is published (#1363), and one leading there goes on through it. Links to a draft
+ * resolve as links to a missing page. A site without drafts is returned as it is.
  */
 export function publishedState(state: ProjectState): ProjectState {
   const drafts = new Set(Object.values(state.pages).filter((p) => isDraftPage(state, p)).map((p) => p.id));
@@ -4838,7 +4839,7 @@ export function publishedState(state: ProjectState): ProjectState {
   if (!drafts.size && !draftEntries) return state;
   // Each followed to where it ends, so one leading to a draft through other old addresses is left out with it, and kept
   // as leading straight there: what is left of a chain still arrives.
-  const redirects = liveRedirects(state).flatMap((r): SiteRedirect[] =>
+  const redirects = resolveRedirects(state, 'website').live.flatMap((r): SiteRedirect[] =>
     r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : r.entry ? (unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]) : [{ from: r.from, to: r.to }]
   );
   const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };

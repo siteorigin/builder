@@ -682,7 +682,7 @@ describe('after the focused review', () => {
     // The archive page is what the website and the preview have there, and the export does not count it as the draft's.
     expect(generateProject(s).get(route('/blog/page/2/'))).toContain('so-archive');
     // Only a file of its own at that address besides the archive's page (route.html) would show the draft.
-    expect(withheldRoutes(s, live).find((r) => r.route === '/blog/page/2/')).toMatchObject({ archived: true });
+    expect(withheldRoutes(s, live).find((r) => r.route === '/blog/page/2/')).toMatchObject({ answered: true });
     expect(validateState(s).find((d) => d.code === 'ARCHIVE_ADDRESS_TAKEN')?.message).toMatch(/can show one of them there instead/);
   });
 

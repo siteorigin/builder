@@ -803,7 +803,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const pageId = page?.id ?? newId('pg');
   const title = (args.title ?? page?.title ?? titleFromRoute(route)).trim();
   if (!title) return fieldError([{ field: 'title', message: 'the title is empty' }], 'Nothing was applied.');
-  const createOp: EditOperation | null = page ? null : { type: 'page.create', pageId, title, route };
+  // A new draft is made one as it is created, so it never takes over an old address kept at its route (#1363).
+  const createOp: EditOperation | null = page ? null : { type: 'page.create', pageId, title, route, ...(args.draft ? { draft: true } : {}) };
   const scratch = structuredClone(state);
   if (createOp) {
     try {

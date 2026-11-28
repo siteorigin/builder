@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -4989,6 +4989,10 @@ export class Controller {
     // A 404.html of the author's own would stop the build from writing the generated one.
     const ownNotFound = ownNotFoundFileStop(project);
     if (ownNotFound) return { ok: false, message: ownNotFound, warnings: [] };
+    // A file of the author's own at a draft's address the website answers at (an old address kept working there) would
+    // be built with the website's page there: the built page alone cannot tell (#1363).
+    const around = await answeredAddressFile(project, state, live);
+    if (around) return { ok: false, message: `The website has ${around.file} at ${around.route}, the address of the draft ${around.draft}. Remove or move the file, then export again.`, warnings: [] };
     // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
     // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
     const missingFiles = await timed('export.assets.missing', () => missingWebsiteAssets(project, state))();
@@ -5086,9 +5090,10 @@ export class Controller {
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
-    // An archive page the website has at such an address is its own (route/index.html); any other file there is not.
-    for (const { route, draft, archived } of withheldRoutes(state, live)) {
-      if ((!archived && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
+    // An archive page, or an old address kept working, the website has at such an address is its own
+    // (route/index.html); any other file there is not.
+    for (const { route, draft, answered } of withheldRoutes(state, live)) {
+      if ((!answered && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
         return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings: warnings() };
       // The website never writes a Markdown copy at such an address (an archive page has none): one there is a file of the draft's.
       if (isPlainFile(join(out, markdownMirrorRoute(route))))

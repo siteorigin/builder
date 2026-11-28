@@ -7,7 +7,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
 import { describeDraftLink, publicationPlan } from '@generator/checks';
-import { defFile, defKey, generateProject, isDraftPage, pageFile, publishedState, redirectFile } from '@generator/index';
+import { defFile, defKey, generateProject, generateRedirect, isDraftPage, pageFile, publishedState, redirectFile } from '@generator/index';
 import { draftLinksStop, draftSourceNotes, editedGeneratedFile, isGeneratedReadme, leaveOutDrafts, projectReadme, publishedChanged, pruneWebsiteAssets } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
 import { withPublished } from '@shared/published';
@@ -122,7 +122,7 @@ describe('what the website publishes', () => {
     expect(hidden.get('static/sitemap.xml')).toContain('/contact/');
   });
 
-  it('leaves out drafts and the old addresses that lead to them, and nothing else', () => {
+  it('leaves out drafts and the old addresses that lead to them, and nothing else (#1363)', () => {
     let { s, draft } = withDraft('Shop', '/shop/');
     s = exported(applyOperations(s, [{ type: 'page.create', pageId: 'pg_books001', title: 'Books', route: '/shop/books/' }]).state);
     s = exported(applyOperations(s, [{ type: 'page.update', pageId: draft, route: '/winter-shop/' }]).state);
@@ -131,7 +131,7 @@ describe('what the website publishes', () => {
       { from: '/old-books/', pageId: 'pg_books001' }
     ];
     s = applyOperations(s, [{ type: 'page.update', pageId: draft, route: '/shop/' }]).state;
-    // An old address of Books that the draft now uses: the draft keeps it, so it stays out of the website too.
+    // An old address of Books that the draft now uses: the website keeps sending visitors on from it to Books.
     s.site.redirects = [...s.site.redirects!, { from: '/shop/', pageId: 'pg_books001' }];
     const live = publishedState(s);
     expect(live.site.pageOrder).not.toContain(draft);
@@ -139,13 +139,16 @@ describe('what the website publishes', () => {
     // Books moved with the draft it is inside and back (#169): its address while away still leads to it.
     expect(live.site.redirects).toEqual([
       { from: '/old-books/', pageId: 'pg_books001' },
-      { from: '/winter-shop/books/', pageId: 'pg_books001' }
+      { from: '/winter-shop/books/', pageId: 'pg_books001' },
+      { from: '/shop/', pageId: 'pg_books001' }
     ]);
     const full = generateProject(s);
     const published = generateProject(live);
-    expect(full.has('src/routes/shop/+page.svelte')).toBe(true);
+    // The editor shows the draft at its address.
+    expect(full.get('src/routes/shop/+page.svelte')).not.toContain('is an old address of a page');
     expect(full.has(redirectFile('/winter-preview/'))).toBe(true);
-    expect(published.has('src/routes/shop/+page.svelte')).toBe(false);
+    // The draft's page there is the old address's in the website, sending visitors on to Books.
+    expect(published.get('src/routes/shop/+page.svelte')).toBe(generateRedirect(live, '/shop/', live.pages.pg_books001));
     expect(published.has(redirectFile('/winter-preview/'))).toBe(false);
     expect(published.has('src/routes/shop/books/+page.svelte')).toBe(true);
     expect(published.has(redirectFile('/old-books/'))).toBe(true);
@@ -371,6 +374,26 @@ describe('a staged copy without its drafts', () => {
     const published = generateProject(publishedState(s), { instrument: false });
     expect(manifest.files).toEqual(Object.fromEntries([...published].map(([path, content]) => [path, sha(content)]).sort()));
     for (const [path, content] of published) expect(readFileSync(join(dir, path), 'utf8'), path).toBe(content);
+  });
+
+  it('puts the old address’s page where the draft’s was when a redirect is kept at the draft’s address (#1363)', async () => {
+    let { s, draft } = withDraft('Shop', '/shop/');
+    s = applyOperations(s, [{ type: 'page.create', pageId: 'pg_books001', title: 'Books', route: '/books/' }]).state;
+    // The only old address the site keeps, at the draft's address: the website still sends visitors on from it.
+    s.site.redirects = [{ from: '/shop/', pageId: 'pg_books001' }];
+    const dir = project(s);
+    const written = JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8'));
+    writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ ...written, pending: { 'src/routes/shop/+page.svelte': 'abc' } }));
+    expect(existsSync(join(dir, 'static/_redirects'))).toBe(false);
+    await leaveOutDrafts(dir, s);
+    const live = publishedState(s);
+    expect(readFileSync(join(dir, 'src/routes/shop/+page.svelte'), 'utf8')).toBe(generateRedirect(live, '/shop/', live.pages.pg_books001));
+    expect(readFileSync(join(dir, 'static/_redirects'), 'utf8')).toContain('/shop/ /books/ 301');
+    expect(existsSync(join(dir, 'siteorigin', 'pages', `${draft}.json`))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8'));
+    expect(manifest.pending).toEqual({});
+    const published = generateProject(live, { instrument: false });
+    expect(manifest.files).toEqual(Object.fromEntries([...published].map(([path, content]) => [path, sha(content)]).sort()));
   });
 
   it('rewrites published files that link to a draft, and records their new content', async () => {

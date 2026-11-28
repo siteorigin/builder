@@ -242,6 +242,41 @@ describe('exporting a project with a draft', () => {
     expect(readFileSync(join(source.path!, 'README.md'), 'utf8')).toContain('copy `vercel.json` into `build/` after each build');
   });
 
+  it('issue 1363: publishes an old address kept at a draft’s address, and still refuses a file of the draft’s there', async () => {
+    const dir = temp('project');
+    let state = createStarterState('business', 'Bookshop', false);
+    const about = Object.values(state.pages).find((p) => p.title === 'About')!.id;
+    state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview', route: '/winter/' }, { type: 'page.update', pageId: 'pg_winter01', draft: true }]).state;
+    state.site.redirects = [{ from: '/winter/', pageId: about }];
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    // The editor shows the draft there.
+    expect(readFileSync(join(dir, 'src/routes/winter/+page.svelte'), 'utf8')).not.toContain('is an old address of a page');
+    const ok = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(ok).toMatchObject({ ok: true });
+    const page = readFileSync(join(ok.path!, 'winter/index.html'), 'utf8');
+    expect(page).toContain('/winter/ is an old address of a page');
+    expect(page).not.toContain('Winter stock preview');
+    expect(readFileSync(join(ok.path!, '_redirects'), 'utf8')).toContain('/winter/ /about/ 301');
+    // Nothing else of the author's at that address is the old address's own: each would publish the draft.
+    const dest = join(temp('out'), 'site');
+    const refused = async (file: string, message: string) => {
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      writeFileSync(join(dir, file), '<p>An older copy of Winter stock preview</p>');
+      expect(await c.buildStaticTo(dest)).toMatchObject({ ok: false, message });
+      expect(existsSync(dest)).toBe(false);
+      rmSync(join(dir, file));
+    };
+    await refused('static/winter.html', 'The website has a page at /winter/, which leads to the draft Winter stock preview. Remove the file that puts it there, then export again.');
+    await refused('static/winter/index.html.md', 'The website has a Markdown copy of the draft Winter stock preview at /winter/index.html.md. Remove the file that puts it there, then export again.');
+    await refused('static/winter/index.html', 'The website has static/winter/index.html at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    await refused('src/routes/winter/+layout.svelte', 'The website has src/routes/winter/+layout.svelte at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    await refused('src/routes/winter/+page.server.ts', 'The website has src/routes/winter/+page.server.ts at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    // A backup, or an error page, shows nothing in the old address's place.
+    for (const file of ['src/routes/winter/+layout.svelte.bak', 'src/routes/winter/+error.svelte']) writeFileSync(join(dir, file), '<p>An older copy</p>');
+    expect((await c.buildStaticTo(dest)).ok).toBe(true);
+  });
+
   it('refuses to publish anything at a draft’s address, even a file of the author’s own', async () => {
     const { c, dir } = await projectWithDraft();
     mkdirSync(join(dir, 'static/winter-stock-preview'), { recursive: true });

@@ -160,6 +160,21 @@ describe('held edit field check', () => {
     expect(fieldKey([op])).not.toBe(fieldKey([{ ...op, state: undefined }]));
   });
 
+  it('holds a Publish on the old address kept where the draft is, and a move on whether the page is a draft (#1363)', () => {
+    const s = apply(fresh(), [{ type: 'redirect.add', from: '/old-team/', to: '/contact/' }, { type: 'page.create', pageId: 'pg_draft', title: 'Rewrite' }, { type: 'page.update', pageId: 'pg_draft', draft: true }]);
+    const publish: EditOperation[] = [{ type: 'page.update', pageId: 'pg_draft', draft: false }];
+    // Published where it was held, the draft takes nothing over; moved meanwhile onto the old address, it would.
+    expect(check(s, apply(s, [{ type: 'page.update', pageId: 'pg_draft', title: 'Rewrite 2' }]), publish)).toEqual({ kind: 'apply' });
+    expect(check(s, apply(s, [{ type: 'page.update', pageId: 'pg_draft', route: '/old-team/' }]), publish).kind).toBe('changed');
+    // Held at the old address, it takes over whichever redirect is kept there: one sent elsewhere meanwhile is a conflict.
+    const atOld = apply(s, [{ type: 'page.update', pageId: 'pg_draft', route: '/old-team/' }]);
+    expect(atOld.site.redirects).toHaveLength(1);
+    expect(check(atOld, apply(atOld, [{ type: 'redirect.update', from: '/old-team/', to: '/about/' }]), publish).kind).toBe('changed');
+    // A page moved onto the old address takes it over only while it is published.
+    const move: EditOperation[] = [{ type: 'page.update', pageId: about(s), route: '/old-team/' }];
+    expect(check(s, apply(s, [{ type: 'page.update', pageId: about(s), draft: true }]), move).kind).toBe('changed');
+  });
+
   it('reads the routes for text with a link, a custom style whole, and the project for a font rename', () => {
     const s = fresh();
     const { owner, node, prop, items } = listInstance(s);

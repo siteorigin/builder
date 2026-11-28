@@ -114,7 +114,7 @@ function beyondGuestGrant(op: EditOperation): string | null {
   // A new page is held to the same: dating it (an article starter is dated today) or keeping it out of News is the host's.
   if (op.type === 'page.create') {
     if (op.starter === 'article') return 'Only the host can start an article.';
-    const fields = (['articleDate', 'newsHidden'] as const).filter((k) => op[k] !== undefined);
+    const fields = (['articleDate', 'newsHidden', 'draft'] as const).filter((k) => op[k] !== undefined);
     if (fields.length) return `Only the host can set a new page’s ${fields.join(', ')}.`;
   }
   return null;

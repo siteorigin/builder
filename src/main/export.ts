@@ -19,7 +19,7 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
@@ -1177,21 +1177,49 @@ export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ f
 
 /**
  * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
- * and each old address that leads to one. `live` is the published state of `state`.
+ * and each old address that leads to one. `live` is the published state of `state`. `answered` marks one the website's
+ * own page answers at instead (route/index.html): a collection's archive page, or an old address kept working there.
  */
-export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; archived?: true }> {
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; answered?: true }> {
   if (live === state) return [];
   const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
   const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
   // A collection's archive page shows at a draft's address made before archive pages: its own page there is the
   // archive's, so only another file at that address (a copy of the draft as route.html) would publish the draft.
-  const archived = new Set(archivePages(live).map((p) => p.route.toLowerCase()));
+  // So does the page of an old address kept at a draft page's address, sending visitors on until it is published (#1363).
+  const answered = new Set([...archivePages(live).map((p) => p.route.toLowerCase()), ...kept]);
   const routes: Array<{ route: string; draft: string }> = [
     ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
     ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
   ];
-  return routes.map((r) => (archived.has(r.route.toLowerCase()) ? { ...r, archived: true as const } : r));
+  return routes.map((r) => (answered.has(r.route.toLowerCase()) ? { ...r, answered: true as const } : r));
+}
+
+/** A route module SvelteKit builds a page with: a page, a layout or a load, or an endpoint (never a backup's name). */
+const ROUTE_MODULE = /^\+(?:page|layout|server)(?:@[^.]*)?(?:\.server)?\.(?:svelte|[cm]?[jt]s)$/;
+
+/**
+ * A file of the author's own at an address the website keeps back from a draft but answers at with a page of its own
+ * (withheldRoutes' `answered`: an old address kept working there, say), in the staged copy `dir`: a copy of the page in
+ * static/, or a route module beside or around the generated page there (a layout, a load, an endpoint) that
+ * generated-manifest.json does not list as SiteOrigin Builder's. Built with the website's page, it would publish what
+ * the author kept back. Null when there is none.
+ */
+export async function answeredAddressFile(dir: string, state: ProjectState, live: ProjectState): Promise<{ file: string; route: string; draft: string } | null> {
+  const answered = withheldRoutes(state, live).filter((r) => r.answered);
+  if (!answered.length) return null;
+  const owned = new Set(Object.keys((JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> }).files ?? {}));
+  for (const { route, draft } of answered) {
+    const copy = `static${route}index.html`;
+    if (isPlainFile(join(dir, copy))) return { file: copy, route, draft };
+    const folder = dirname(redirectFile(route));
+    const names = await fs.readdir(join(dir, folder)).catch(() => [] as string[]);
+    // An error page there shows only for a page that fails, never in place of the old address's.
+    const file = names.map((n) => `${folder}/${n}`).find((f) => ROUTE_MODULE.test(basename(f)) && !owned.has(f));
+    if (file) return { file, route, draft };
+  }
+  return null;
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */

@@ -2361,9 +2361,11 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : r.entry && isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
-  // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive.
+  // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive, and one
+  // an old address is kept working at (a draft's, until it is published) leads where that sends visitors (#1363).
   const archives = archivePages(state);
   for (const p of archives) withheld.delete(p.route.toLowerCase());
+  for (const r of liveRedirects(live)) withheld.delete(r.from.toLowerCase());
   // An entry shows both shared parts, and its collection's layout; so does a collection's index (an archive page).
   const entryShown = entries.length > draftEntries.length || archives.length > 0;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));

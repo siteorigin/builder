@@ -198,6 +198,9 @@ export function coreValidation(state: ProjectState, cache?: ValidationCache): Co
 function siteDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   const routes = new Map<string, string>();
+  // The addresses only a draft page holds: the first old address kept at one shares it, sending visitors on until the
+  // draft is published and takes it over (#1363).
+  const draftOnly = new Set<string>();
   if (!Object.hasOwn(state.pages, state.site.homePageId)) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
   for (const id of state.site.pageOrder) {
     const p = state.pages[id];
@@ -209,6 +212,8 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
     if (err) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `${p.title}: ${err}`, owner: { kind: 'page', id } });
     const key = p.route.toLowerCase();
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${p.title} and ${routes.get(key)} share ${p.route}.`, owner: { kind: 'page', id } });
+    if (!routes.has(key) && isDraftPage(state, p)) draftOnly.add(key);
+    else draftOnly.delete(key);
     routes.set(key, p.title);
     if (p.language !== undefined && !isLanguageCode(p.language))
       out.push({ severity: 'warning', code: 'LANGUAGE_INVALID', message: `${p.title}: “${shownValue(p.language)}” is not a language code, so the page uses the site language.`, owner: { kind: 'page', id } });
@@ -249,12 +254,12 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
     const toErr = to === undefined ? null : redirectTargetProblem(to);
     if (toErr) out.push({ severity: 'error', code: 'REDIRECT_PATH_INVALID', message: `The old address ${from} sends visitors to ${to}, which is not an address of the site: ${toErr} The website leaves it out until it is corrected in Site settings, under Redirects.`, site: redirectPlace(from) });
     const key = from.toLowerCase();
-    if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
+    if (routes.has(key) && !draftOnly.delete(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
     routes.set(key, `The old address ${from}`);
   }
-  // Where each leads, followed through other old addresses: one that never arrives is left out of the website.
-  // One that is not an address of the site is named above, with its redirect.
-  for (const p of resolveRedirects(state).problems) if (p.kind !== 'invalid') out.push(redirectDiagnostic(p));
+  // Where each leads as the website has it, followed through other old addresses (one kept at a draft's address too):
+  // one that never arrives is left out of the website. One that is not an address of the site is named above.
+  for (const p of resolveRedirects(state, 'website').problems) if (p.kind !== 'invalid') out.push(redirectDiagnostic(p));
   // Collections and their entries hold addresses of their own, in the same namespace.
   out.push(...collectionDiagnostics(state, routes));
   out.push(...sourceDiagnostics(state));

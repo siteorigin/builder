@@ -79,7 +79,7 @@ export function pagesWithin(pages: Record<string, PageLike>, pageId: string): st
 export type RouteMove = { pageId: string; from: string; to: string };
 
 type MoveSite = {
-  pages: Record<string, PageLike & { title: string }>;
+  pages: Record<string, PageLike & { title: string; draft?: boolean }>;
   site: { homePageId: string; redirects?: unknown };
 };
 
@@ -91,7 +91,8 @@ const quoteTitle = (p: { title: string }) => `“${p.title}”`;
  * "/work/lookbook/kitchens/"). Returns why it cannot happen instead, naming the page and address in the way: an
  * address inside the page itself, too deep, or taken by a page that stays put. The page given the address may take
  * over an old address kept working for another page, as an address chosen on purpose always could; a page moved
- * along with it never takes one silently. Nothing changes when the address is the one the page already has.
+ * along with it never takes one silently, though a draft may land on one, which it leaves working (#1363). Nothing
+ * changes when the address is the one the page already has.
  */
 export function planRouteMove(state: MoveSite, pageId: string, to: string, validate: (route: string) => string | null): { moves: RouteMove[] } | { error: string } {
   const page = state.pages[pageId];
@@ -116,7 +117,7 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
     if (before && before.id !== p.id) return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, the address ${quoteTitle(before)} has now, so links to ${quoteTitle(before)} would open ${quoteTitle(p)}.` };
     if (p.id !== pageId) {
       const old = kept.find((r): r is { from: string; pageId?: unknown; entryId?: unknown; to?: unknown } => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === next.toLowerCase());
-      if (old && old.pageId !== p.id) {
+      if (old && old.pageId !== p.id && !(p.draft === true && p.id !== state.site.homePageId)) {
         const owner = typeof old.pageId === 'string' && Object.hasOwn(state.pages, old.pageId) ? state.pages[old.pageId] : undefined;
         return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, an old address kept working for ${owner ? quoteTitle(owner) : typeof old.entryId === 'string' ? 'a collection entry' : typeof old.to === 'string' ? `visitors going to ${old.to}` : 'another page'}.` };
       }

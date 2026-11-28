@@ -68,8 +68,11 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
     if (editing !== null) kindsRef.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
   }, [editing]);
   const list = redirectRecords(state);
-  // Worked out once per project state, never per keystroke in the form.
-  const live = useMemo(() => new Map(resolveRedirects(state).live.map((r) => [r.from, r])), [state]);
+  // Worked out once per project state, never per keystroke in the form, as the website has them: one kept at a draft's
+  // address still sends visitors on.
+  const live = useMemo(() => new Map(resolveRedirects(state, 'website').live.map((r) => [r.from, r])), [state]);
+  // The drafts by address: one at an old address takes it over once it is published (#1363).
+  const draftAt = useMemo(() => new Map(Object.values(state.pages).flatMap((p) => (isDraftPage(state, p) ? [[p.route.toLowerCase(), p] as const] : []))), [state]);
   // What the project is now, for a save that comes back refused after it has moved on.
   const now = useRef({ state, revision });
   now.current = { state, revision };
@@ -220,6 +223,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         <ul className="so-redirects" aria-label="Redirects">
           {list.map((r) => {
             const where = destination(state, r, live.get(r.from));
+            const held = draftAt.get(r.from.toLowerCase());
             const found = findings(r.from);
             const tone = found.some((d) => d.severity === 'error') ? ' has-error' : found.length ? ' has-warning' : '';
             return (
@@ -232,6 +236,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
                   <div className="so-redirect-meta faint">
                     {r.custom ? 'Added by you' : 'Recorded when it moved'}
                     {where.draft ? ' · Draft: left out of the website until it is published' : ''}
+                    {held ? ` · The draft “${held.title}” has this address and takes it over once it is published` : ''}
                   </div>
                   {/* A problem leads with its glyph, in its tone: never the card's colour alone. */}
                   {found.map((d, i) =>
