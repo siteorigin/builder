@@ -65,7 +65,7 @@ import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { ICONS } from '@shared/icons';
 import { resolveFontStack } from '@catalogue/fonts';
-import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, variantProp, CUSTOM_DIR } from '@generator/index';
+import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, isDraftPage, variantProp, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
 import { isPictureAsset } from '@shared/background-image';
@@ -931,7 +931,10 @@ function refuseCollectionRoute(state: ProjectState, route: string) {
   if (owner) fail(`${route} is the address of ${owner.label}. Choose another address for the page.`);
 }
 
-/** A page now uses `route`: an old address kept working there stops redirecting, because the page takes it over. */
+/**
+ * A published page now uses `route`: an old address kept working there stops redirecting, because the page takes it
+ * over. A draft never does: the website leaves it out and keeps sending visitors on from there until it is published.
+ */
 function claimRoute(state: ProjectState, route: string) {
   const i = redirectIndex(state, route);
   if (i < 0) return;
@@ -973,9 +976,12 @@ function redirectTarget(state: ProjectState, op: Op<'redirect.add'> | Op<'redire
   return { to };
 }
 
-/** Refuses a redirect that would never arrive anywhere: one leading to itself, or round a loop of old addresses. */
+/**
+ * Refuses a redirect that would never arrive anywhere: one leading to itself, or round a loop of old addresses, as the
+ * website has them (one kept at a draft's address included, see resolveRedirects).
+ */
 function refuseRedirectLoop(state: ProjectState, from: string) {
-  const problem = resolveRedirects(state).problems.find((p) => p.from.toLowerCase() === from.toLowerCase());
+  const problem = resolveRedirects(state, 'website').problems.find((p) => p.from.toLowerCase() === from.toLowerCase());
   if (problem?.kind === 'loop') fail(`Sending ${from} there would make a loop of old addresses (${loopText(problem.cycle, from)}) that never arrives anywhere. Choose another address.`);
   if (problem?.kind === 'self') fail(`${from} would only lead back to itself. Choose another address.`);
 }
@@ -1102,6 +1108,13 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   let moved: RouteMove[] | undefined;
   if (op.title !== undefined) page.title = op.title.trim();
+  // Whether the page is a draft is settled before it moves: a draft keeps an old address kept at its new one working.
+  const wasDraft = isDraftPage(state, page);
+  if (op.draft !== undefined) {
+    if (op.draft && page.id === state.site.homePageId) fail('The Home page cannot be a draft. Make another page Home first.');
+    if (op.draft) page.draft = true;
+    else delete page.draft;
+  }
   if (op.route !== undefined) {
     const plan = planPageAddress(state, page.id, op.route);
     if ('error' in plan) fail(plan.error);
@@ -1109,6 +1122,8 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
     movePages(state, plan.moves, ctx.addressesAtStart);
     if (plan.moves.length > 1) moved = plan.moves;
   }
+  // A draft published takes over an old address kept where it is now (one it moved to has been taken over already).
+  if (wasDraft && !isDraftPage(state, page)) claimRoute(state, page.route);
   if (op.navLabel !== undefined) page.navLabel = op.navLabel || undefined;
   // A page whose search settings were written by hand as something else starts them afresh before any is set, so what
   // this edit saves there (its structured data, and a search setting beside it) keeps.
@@ -1117,11 +1132,6 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   if (op.description !== undefined) page.seo.description = op.description || undefined;
   if (op.noindex !== undefined) page.seo.noindex = op.noindex || undefined;
   if (op.searchHidden !== undefined) page.seo.searchHidden = op.searchHidden || undefined;
-  if (op.draft !== undefined) {
-    if (op.draft && page.id === state.site.homePageId) fail('The Home page cannot be a draft. Make another page Home first.');
-    if (op.draft) page.draft = true;
-    else delete page.draft;
-  }
   if (op.showHeader !== undefined) page.showHeader = op.showHeader;
   if (op.showFooter !== undefined) page.showFooter = op.showFooter;
   if (op.language !== undefined) {
@@ -1167,14 +1177,15 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
 }
 
 /**
- * Give pages the addresses `moves` plans. Each takes over any old address kept at its new one, and each exported
- * address a page left that no page now uses is kept working for it, so old links and bookmarks still arrive (a page
- * moved again keeps every earlier address leading to where it is now, because kept addresses name the page). An
- * address no export delivered for the page was never given to anyone: correcting it leaves nothing behind.
+ * Give pages the addresses `moves` plans. Each published one takes over any old address kept at its new one (a draft
+ * leaves it working, see claimRoute), and each exported address a page left that no page now uses is kept working for
+ * it, so old links and bookmarks still arrive (a page moved again keeps every earlier address leading to where it is
+ * now, because kept addresses name the page). An address no export delivered for the page was never given to anyone:
+ * correcting it leaves nothing behind.
  */
 function movePages(state: ProjectState, moves: RouteMove[], atStart?: ReadonlySet<string>) {
   for (const m of moves) state.pages[m.pageId].route = m.to;
-  for (const m of moves) claimRoute(state, m.to);
+  for (const m of moves) if (!isDraftPage(state, state.pages[m.pageId])) claimRoute(state, m.to);
   const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
   // Not an address the page only passed through in this batch, nor one that is not a valid route (a hand-written
   // one), which could not be kept working.

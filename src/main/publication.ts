@@ -361,8 +361,8 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   await settleServerHook(dir, projected);
   // A route file the generator does not own (one of the author's own beside a draft's page, or a page it no longer
   // lists as its own) would still answer at an address kept back.
-  // A route group's folder (`(shop)`) is no part of the address. An archive's own page at such an address is the
-  // generator's; any other route file there is not.
+  // A route group's folder (`(shop)`) is no part of the address. An archive's own page at such an address, or an old
+  // address's kept working there, is the generator's; any other route file there is not.
   const owned = new Set(Object.keys((JSON.parse((await readIfExists(join(dir, 'siteorigin/generated-manifest.json'))) ?? '{}') as { files?: Record<string, string> }).files ?? {}));
   const answering = new Map<string, string[]>();
   for (const f of await stagedFiles(dir)) {
@@ -371,8 +371,8 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
     const url = `/${(m[1] ?? '').split('/').filter((seg) => seg && !/^\(.*\)$/.test(seg)).join('/')}/`.replace(/^\/\/$/, '/').toLowerCase();
     answering.set(url, [...(answering.get(url) ?? []), f]);
   }
-  for (const { route, draft, archived } of withheldRoutes(state, live)) {
-    const file = (answering.get(route.toLowerCase()) ?? []).find((f) => !archived || !owned.has(f));
+  for (const { route, draft, answered } of withheldRoutes(state, live)) {
+    const file = (answering.get(route.toLowerCase()) ?? []).find((f) => !answered || !owned.has(f));
     if (file) return stop(`${file} answers at ${route}, the address of the draft ${draft}, so publishing the website would publish it there. Remove or move the file, then prepare the publication again.`);
   }
   const missing = (await missingWebsiteAssets(dir, projected)).filter((m) => m.used);

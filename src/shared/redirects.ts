@@ -84,19 +84,31 @@ export function redirectRecords(state: Pick<ProjectState, 'site'>): SiteRedirect
 }
 
 /**
+ * Where old addresses are worked out for: the editor's `preview`, where every page holds its address, or the `website`,
+ * where a draft page holds none. There an old address kept at a draft's address keeps sending visitors on until the
+ * draft is published, and one leading to that address goes on through it.
+ */
+export type RedirectView = 'preview' | 'website';
+
+/**
  * Every old address the website keeps working, followed to where it sends visitors, with what keeps the others from
  * working. One that a page or an entry uses now, that is not a valid route, or that leads to a page or entry that is
  * gone, is left out without a problem (Project health names those already): a page or entry always wins its route,
  * and the first redirect kept at an address wins it. One leading to another address is left out at the address of a
  * collection's archive page, which is what the website has there. Drafts are places like any other here: the website
- * leaves out the redirects that end at one (see publishedState).
+ * leaves out the redirects that end at one (see publishedState). In the `website` view a draft page wins no route.
  */
-export function resolveRedirects(state: ProjectState): { live: LiveRedirect[]; problems: RedirectProblem[] } {
+export function resolveRedirects(state: ProjectState, view: RedirectView = 'preview'): { live: LiveRedirect[]; problems: RedirectProblem[] } {
   const list = redirectRecords(state);
   if (!list.length) return { live: [], problems: [] };
-  const entries = siteEntries(state);
+  const draftPage = (p: PageDoc) => p.draft === true && p.id !== state.site.homePageId;
+  // The pages holding their addresses, and in the website's view the drafts apart, where visitors are never sent.
+  const holders = view === 'website' ? Object.values(state.pages).filter((p) => !draftPage(p)) : Object.values(state.pages);
+  const draftAt = new Map(view === 'website' ? Object.values(state.pages).flatMap((p) => (draftPage(p) ? [[p.route.toLowerCase(), p] as const] : [])) : []);
+  // An entry a draft page's address hid (a hand-edited clash) has its page on the website.
+  const entries = siteEntries(view === 'website' ? { ...state, pages: Object.fromEntries(holders.map((p) => [p.id, p])) } : state);
   const entryById = new Map(entries.map((e) => [e.entry.id, e]));
-  const pageAt = new Map(Object.values(state.pages).map((p) => [p.route.toLowerCase(), p]));
+  const pageAt = new Map(holders.map((p) => [p.route.toLowerCase(), p]));
   const entryAt = new Map(entries.map((e) => [e.route.toLowerCase(), e]));
   // A collection's archive pages, by address: places an address can lead to, worked out only when one might. Archive
   // pages never depend on redirects to other addresses, so working them out here never comes back round.
@@ -108,7 +120,6 @@ export function resolveRedirects(state: ProjectState): { live: LiveRedirect[]; p
     archives ??= new Map(archivePages(state).map((p) => [p.route.toLowerCase(), { route: p.route, title: state.collections[p.collectionId]?.settings?.name ?? p.route }]));
     return archives.get(key);
   };
-  const draftPage = (p: PageDoc) => p.draft === true && p.id !== state.site.homePageId;
   // The redirects kept, by their old address in lowercase, as case-insensitive file systems compare them.
   const rules = new Map<string, SiteRedirect>();
   for (const r of list) {
@@ -139,7 +150,10 @@ export function resolveRedirects(state: ProjectState): { live: LiveRedirect[]; p
     if (page && !(archive && draftPage(page))) return { ok: true, to: page.route, title: page.title, via: [], hops: 0, page };
     if (entry && !(archive && isDraftEntry(entry.entry))) return { ok: true, to: entry.route, title: entry.entry.title, via: [], hops: 0, entry };
     if (archive) return { ok: true, to: archive.route, title: archive.title, via: [], hops: 0 };
-    return rules.has(at) ? { next: at } : { ok: false, kind: 'missing', to };
+    if (rules.has(at)) return { next: at };
+    // The website has nothing at a draft's address: a redirect ending there is left out with it (see publishedState).
+    const draft = draftAt.get(at);
+    return draft ? { ok: true, to: draft.route, title: draft.title, via: [], hops: 0, page: draft } : { ok: false, kind: 'missing', to };
   };
   const outcomes = new Map<string, Outcome>();
   const from = (key: string) => rules.get(key)!.from;

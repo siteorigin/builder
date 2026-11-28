@@ -5086,9 +5086,10 @@ export class Controller {
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
-    // An archive page the website has at such an address is its own (route/index.html); any other file there is not.
-    for (const { route, draft, archived } of withheldRoutes(state, live)) {
-      if ((!archived && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
+    // An archive page, or an old address kept working, the website has at such an address is its own
+    // (route/index.html); any other file there is not.
+    for (const { route, draft, answered } of withheldRoutes(state, live)) {
+      if ((!answered && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
         return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings: warnings() };
       // The website never writes a Markdown copy at such an address (an archive page has none): one there is a file of the draft's.
       if (isPlainFile(join(out, markdownMirrorRoute(route))))

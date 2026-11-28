@@ -169,6 +169,14 @@ function withRoutes(state: ProjectState, value: unknown, read: Record<string, un
   return found({ ...read, links: Object.fromEntries(paths.map((p) => [p, pageAt(p)])) });
 }
 
+/** Whose the old address kept at `route` is (a page's ID, an entry or an address it sends visitors to), or null. */
+function keptFor(state: ProjectState, route: string): unknown {
+  const key = route.toLowerCase();
+  const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+  const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === key) as { pageId?: unknown; entryId?: unknown; to?: unknown } | undefined;
+  return holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : holder?.to !== undefined ? { to: holder.to } : null);
+}
+
 /**
  * Read the field `op` writes, as it is in `state`. Returns null for an operation that is not a field
  * edit (it is never held).
@@ -192,13 +200,16 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       }
       const read = Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])]));
       // A new address moves the pages inside the page too: pages added there, or moved, since change what it does.
-      // And it takes over an old address kept at its destination: whose that is matters as well.
+      // And a published page takes over an old address kept at its destination, a draft never (#1363): whose that is,
+      // and whether the page is a draft, matter as well.
       if (op.route !== undefined) {
         read.inside = Object.fromEntries(pagesWithin(state.pages, page.id).map((id) => [id, state.pages[id].route]));
-        const to = normalizeRoute(op.route).toLowerCase();
-        const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
-        const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown; entryId?: unknown; to?: unknown } | undefined;
-        read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : holder?.to !== undefined ? { to: holder.to } : null);
+        read.keptFor = keptFor(state, normalizeRoute(op.route));
+        if (op.draft === undefined) read.draft = at(page, PAGE_FIELDS.draft);
+      } else if (op.draft === false) {
+        // Publishing a draft takes over an old address kept where it is: where that is, and whose, matter too.
+        read.address = page.route;
+        read.keptFor = keptFor(state, page.route);
       }
       // What the page is, fact by fact: a held price waits on no change to the currency. A fact belongs to the type it
       // was typed for, though: a page made another type meanwhile is a conflict, never turned back by the fact.

@@ -1177,21 +1177,23 @@ export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ f
 
 /**
  * The addresses the website keeps back, each with the draft it would show: every draft page's and draft entry's own,
- * and each old address that leads to one. `live` is the published state of `state`.
+ * and each old address that leads to one. `live` is the published state of `state`. `answered` marks one the website's
+ * own page answers at instead (route/index.html): a collection's archive page, or an old address kept working there.
  */
-export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; archived?: true }> {
+export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{ route: string; draft: string; answered?: true }> {
   if (live === state) return [];
   const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
   const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
   // A collection's archive page shows at a draft's address made before archive pages: its own page there is the
   // archive's, so only another file at that address (a copy of the draft as route.html) would publish the draft.
-  const archived = new Set(archivePages(live).map((p) => p.route.toLowerCase()));
+  // So does the page of an old address kept at a draft page's address, sending visitors on until it is published (#1363).
+  const answered = new Set([...archivePages(live).map((p) => p.route.toLowerCase()), ...kept]);
   const routes: Array<{ route: string; draft: string }> = [
     ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
     ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
   ];
-  return routes.map((r) => (archived.has(r.route.toLowerCase()) ? { ...r, archived: true as const } : r));
+  return routes.map((r) => (answered.has(r.route.toLowerCase()) ? { ...r, answered: true as const } : r));
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */
