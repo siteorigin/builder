@@ -49,8 +49,9 @@ const ENTRY = [
   "  packsReady: () => setState({ packs: { ready: true, refused: [], userDir: '' } }),",
   '  opening: () => getState().openingProject,',
   '  set: (p) => setState(p),',
+  '  layout: () => { const s = getState(); return { leftTab: s.leftTab, leftWidth: s.leftWidth, rightWidth: s.rightWidth, viewport: s.viewport, zoom: s.zoom }; },',
   // The project's snapshot arriving, with the layout its workspace file holds, as the main process sends it.
-  "  openSnapshot: (localState) => openSnapshot({ workspaceKey: '/sites/coast#1', revision: 1, runtime: { state: 'idle' }, localState, state: { manifest: {}, site: { name: 'Coast Florist', homePageId: 'home' }, pages: { home: {} }, components: {}, tokens: {}, assets: { assets: {} }, collections: {} }, missingAssets: [] }),",
+  "  openSnapshot: (localState) => openSnapshot({ workspaceKey: '/sites/opened#1', revision: 1, runtime: { state: 'idle' }, localState, state: { manifest: {}, site: { name: 'Coast Florist', homePageId: 'home' }, pages: { home: {} }, components: {}, tokens: {}, assets: { assets: {} }, collections: {} }, missingAssets: [] }),",
   '  status: (props) => flushSync(() => showStatus(props))',
   '};'
 ].join('\n');
@@ -246,8 +247,12 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     // Its saved sidebar and dock widths, and its page at half of its 768px preview width.
     const clicked = await outlineSizes();
     expect(clicked).toEqual({ side: 300, dock: 400, page: 384 });
+    // Its own sidebar view too, which the editor opens on.
+    expect(await so('layout')).toEqual({ leftTab: 'layers', leftWidth: 300, rightWidth: 400, viewport: 768, zoom: 0.5 });
     await expect.poll(opens).toEqual([['open', '/sites/coast', null]]);
     await answerOpen({ ok: true });
+    // The snapshot is what sets the editor's layout: from anything, it lands where the click drew.
+    await so('set', { leftWidth: 420, rightWidth: 560, viewport: 390, zoom: 1.25 });
     await so('openSnapshot', { leftTab: 'layers', leftWidth: 300, rightWidth: 400, viewport: 768, zoom: 0.5 });
     await page.clock.runFor(FRAME_MS);
     expect(await so('opening')).toBeNull();
@@ -261,11 +266,13 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await so('set', { leftTab: null, dockOpen: true, leftWidth: 420, rightWidth: 560, viewport: 390, zoom: 1.25 });
     expect((await clickAndLook('Acme Bakery')).outline).toBe(true);
     const clicked = await outlineSizes();
-    expect(clicked.side).toBe(260);
-    expect(clicked.dock).toBe(340);
+    // The default panels, and the 1280px desktop page at Fit, narrowed to the canvas between them.
+    expect(clicked).toEqual({ side: 260, dock: 340, page: 1280 - 48 - 260 - 340 - 56 });
+    expect(await so('layout')).toEqual({ leftTab: 'pages', leftWidth: 260, rightWidth: 340, viewport: 1280, zoom: 'fit' });
     await expect.poll(opens).toHaveLength(1);
     await answerOpen({ ok: true });
-    await so('openSnapshot', {});
+    // A hand-edited file's values of the wrong kind, which the card's list leaves out, open on the same defaults.
+    await so('openSnapshot', { leftTab: false, leftWidth: '300', viewport: 'wide', zoom: 0.6 });
     await page.clock.runFor(FRAME_MS);
     expect(await outlineSizes()).toEqual(clicked);
   });

@@ -4,6 +4,7 @@
  * outline shown from a click is drawn at the sizes the editor opens with. Nothing else in the file reaches Welcome, and
  * a file that cannot be used leaves the card without a layout.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,7 +52,7 @@ describe('Recent projects saved layout', () => {
   });
 
   it('leaves out a field of the wrong kind, for the editor’s defaults', async () => {
-    const dir = await listed('dental', (p) => writeFileSync(p, JSON.stringify({ leftTab: null, leftWidth: '300', rightWidth: { w: 1 }, viewport: 768, zoom: 'half' })));
+    const dir = await listed('dental', (p) => writeFileSync(p, JSON.stringify({ leftTab: false, leftWidth: '300', rightWidth: { w: 1 }, viewport: 768, zoom: 'half' })));
     expect(await layoutOf(dir)).toEqual({ viewport: 768 });
   });
 
@@ -70,6 +71,11 @@ describe('Recent projects saved layout', () => {
     const elsewhere = join(root, 'elsewhere.json');
     writeFileSync(elsewhere, JSON.stringify({ leftWidth: 300 }));
     expect(await layoutOf(await listed('linked', (p) => symlinkSync(elsewhere, p)))).toEqual({ leftWidth: 300 });
+  });
+
+  // A read of a pipe would wait for a writer, and the whole list with it.
+  it.skipIf(process.platform === 'win32')('does not read a pipe in place of the file', async () => {
+    expect(await layoutOf(await listed('piped', (p) => execFileSync('mkfifo', [p])))).toBeUndefined();
   });
 
   it('has no layout for a missing folder', async () => {

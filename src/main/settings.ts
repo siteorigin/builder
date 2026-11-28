@@ -435,7 +435,10 @@ const LAYOUT_FIELDS: Record<keyof SavedLayout, (v: unknown) => boolean> = {
  */
 async function savedLayout(dir: string): Promise<SavedLayout | null> {
   try {
-    const saved: unknown = JSON.parse((await readIfExists(join(dir, '.siteorigin', 'workspace.json'))) ?? 'null');
+    const file = join(dir, '.siteorigin', 'workspace.json');
+    // Only a file, where a link leads too: never a pipe or a device, which a read would wait on with every card.
+    if (!(await fs.stat(file)).isFile()) return null;
+    const saved: unknown = JSON.parse((await readIfExists(file)) ?? 'null');
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null;
     const layout: Record<string, unknown> = {};
     for (const [key, fits] of Object.entries(LAYOUT_FIELDS)) {

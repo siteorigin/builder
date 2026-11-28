@@ -40,6 +40,7 @@ export const transport = createTransport(() => window.builder);
 export const api = transport.api;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets' | 'seo';
+const LEFT_TABS: readonly LeftTab[] = ['pages', 'posts', 'layers', 'insert', 'assets', 'seo'];
 export type { PostRef };
 export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 /** Every view of the right panel, in the order the dock shows them: the AI first, as the view a new window opens on. */
@@ -52,7 +53,8 @@ export const restoreRightTab = (saved: unknown): RightTab => RIGHT_TABS.find((t)
  * same saved state, so the outline shown between is drawn where the editor will draw (#1758).
  */
 export const restoreLayout = (saved: SavedLayout): { leftTab: LeftTab; leftWidth: number; rightWidth: number; viewport: number; zoom: Zoom } => ({
-  leftTab: (saved.leftTab as LeftTab | undefined) ?? 'pages',
+  // A sidebar that was closed, or a view this version does not have (a hand-edited file), opens on Pages.
+  leftTab: LEFT_TABS.find((t) => t === saved.leftTab) ?? 'pages',
   // Every project opens with its own panel widths (or the defaults), never the last project's.
   leftWidth: restorePanelWidth('left', saved.leftWidth),
   rightWidth: restorePanelWidth('right', saved.rightWidth),
