@@ -988,6 +988,8 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     link.type = to!.type;
     link.target = to!.target;
     delete link.anchor;
+    // A query stays with a post's address: a page link has none.
+    if (to!.type !== 'entry') delete link.query;
   }
   // Each reference names the replacement where it named the entry, once: a list already naming it keeps it where it was.
   for (const { entry: holder, field } of refs) {
