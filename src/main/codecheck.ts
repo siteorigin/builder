@@ -11,6 +11,7 @@
  */
 import { posix } from 'node:path';
 import type { ComponentDefinition, ProjectState } from '@shared/types';
+import type { CodePropsTaken } from '@shared/api';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { codeTakesBlocks, effectiveTokens, propKey, slotIdent } from '@generator/index';
@@ -917,6 +918,40 @@ function manifestProblems(ast: Node, manifest: CodeManifest, strict: boolean): A
     out.push({ severity, message: `The code's default for ${name} (${short(written.value)}) is not the “${labelOf(name)}” property's default (${short(expected.value)}): write the manifest's default, or none.`, node: right });
   }
   return out;
+}
+
+/**
+ * The props a code component's code takes from $props() that a property could set (see manifestProblems): by name
+ * in the destructuring, in the order written, with the default written for each when it is a literal (`computed` when
+ * it is not one), then those it reads by name from the whole props object or the rest of them. The editor's own props, the slots' and the axes'
+ * are left out. `handed` says the code hands the props object or the rest on, where any property may be read. Null
+ * when the code cannot be parsed, or for a design's file, which takes its properties by other keys.
+ */
+export async function codePropsTaken(source: string, manifest: Pick<CodeManifest, 'variantAxes' | 'designFile'> = {}): Promise<CodePropsTaken | null> {
+  if (manifest.designFile) return null;
+  const { parse } = await import('svelte/compiler');
+  let ast: Node;
+  try {
+    ast = parse(source, { modern: true }) as unknown as Node;
+  } catch {
+    return null;
+  }
+  const axisProps = new Set(axesOf(manifest).flatMap(([, a]) => (typeof a.prop === 'string' ? [a.prop] : [])));
+  const editors = (name: string) => EDITOR_PROPS.has(name) || name.startsWith('slot_') || axisProps.has(name);
+  const whole = wholePropsReads(ast);
+  const props: CodePropsTaken['props'] = [];
+  const seen = new Set<string>();
+  for (const [name, { right }] of propsTaken(ast)) {
+    if (editors(name)) continue;
+    seen.add(name);
+    // A bindable prop's default is the one handed to $bindable().
+    const callee = right?.type === 'CallExpression' ? (right.callee as Node) : undefined;
+    const fallback = callee?.type === 'Identifier' && callee.name === '$bindable' ? ((right!.arguments as Node[]) ?? [])[0] : right;
+    const written = literalValue(fallback);
+    props.push({ name, ...(written ? { default: written } : fallback ? { computed: true } : {}) });
+  }
+  for (const name of whole.read) if (!seen.has(name) && !editors(name)) props.push({ name });
+  return { props, handed: whole.handed, axes: [...axisProps] };
 }
 
 /**

@@ -29,7 +29,7 @@ import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
-import { checkSvelteSource, codeContractNames, componentSources, projectTokenVars } from './codecheck';
+import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, projectTokenVars } from './codecheck';
 import { designCalled } from '@generator/index';
 import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -56,6 +56,10 @@ import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
 import { createMainErrorReporter, errorText } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
+import { recordedAdapter, type ChatRecord } from '@agent/learning';
+import { newId } from '@shared/ids';
+import { historyChanges, LearningRecorder, readLearningConfig, type HistoryStep } from './learning';
+import { redact } from '@agent/types';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
 import type { ComponentDefinition } from '@shared/types';
@@ -403,9 +407,9 @@ const markedAdapter = (open: (typeof orchestratorDeps)['adapter']): (typeof orch
         if ('error' in made) return made;
         const { adapter } = made;
         const stream = adapter.streamTurn.bind(adapter);
-        adapter.streamTurn = (req, sig) => {
+        adapter.streamTurn = (req, sig, note) => {
           perf.mark('ai.modelRequest');
-          return stream(req, sig);
+          return stream(req, sig, note);
         };
         return made;
       }
@@ -434,8 +438,27 @@ const compileCacheFor = (session: object): CompileCache => {
   return cache;
 };
 
+/** Learning mode's recorder (#1566), made at launch once the log is open (below); null while learning mode is off. */
+let learning: LearningRecorder | null = null;
+
+/**
+ * `act`, a change of History, with learning mode told of each AI run it took back or brought back (#1566), however it
+ * was asked for: the chat's Undo, the toolbar, History, or a reviewed undo of one turn (learning.ts historyChanges). It
+ * runs at once, as it would with learning mode off; two that overlap may both see a change, which is recorded once.
+ */
+async function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
+  const session = learning ? controller.session : null;
+  const steps = (): HistoryStep[] => (session ? session.historyInfo().entries.map((e) => ({ id: e.id, applied: e.applied, ...(e.source === 'ai' && e.runId ? { runId: e.runId } : {}), ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })) : []);
+  const before = session ? steps() : null;
+  const result = await act();
+  // A step refused (another one got there first) changed nothing of its own.
+  if (learning && session && before && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) for (const c of historyChanges(before, steps())) learning.recordRun(c.runId, { type: c.type, via });
+  return result;
+}
+
 const orchestrator = new Orchestrator({
   session: () => controller.session,
+  learning: () => learning,
   ...(perf.on ? { perfSpan: (name: string) => perf.span(name) } : {}),
   adapter: markedAdapter(orchestratorDeps.adapter),
   emit: (e) => {
@@ -706,10 +729,10 @@ function registerIpc() {
   // these only when a text field owns history; project history goes through project:undo and project:redo.
   handle('edit:undo', () => win?.webContents.undo());
   handle('edit:redo', () => win?.webContents.redo());
-  handle('project:undo', () => controller.session?.undo());
+  handle('project:undo', () => learnHistory('undo', () => controller.session?.undo()));
   handle('project:undoEntry', (entryId: unknown, key: unknown) =>
     typeof entryId === 'string' && typeof key === 'string'
-      ? controller.undoEntry(entryId, key)
+      ? learnHistory('history', () => controller.undoEntry(entryId, key))
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:reviewAiTurn', (entryId: unknown, key: unknown) =>
@@ -718,10 +741,10 @@ function registerIpc() {
   handle('project:revertAiTurn', (entryId: unknown, expected: unknown, key: unknown) => {
     const { revision, history } = (expected ?? {}) as { revision?: unknown; history?: unknown };
     return typeof entryId === 'string' && typeof key === 'string' && Number.isInteger(revision) && typeof history === 'string'
-      ? controller.revertAiTurn(entryId, { revision: revision as number, history }, key)
+      ? learnHistory('review', () => controller.revertAiTurn(entryId, { revision: revision as number, history }, key))
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } };
   });
-  handle('project:redo', () => controller.session?.redo());
+  handle('project:redo', () => learnHistory('redo', () => controller.session?.redo()));
   // What History showed: the revision it stood at and how many changes the step takes.
   const shown = (v: unknown): v is { revision: number; count: number } => {
     const o = v as Record<string, unknown> | null;
@@ -729,7 +752,7 @@ function registerIpc() {
   };
   handle('project:stepHistory', (entryId: unknown, direction: unknown, expected: unknown, key: unknown) =>
     typeof entryId === 'string' && (direction === 'undo' || direction === 'redo') && shown(expected) && typeof key === 'string'
-      ? controller.stepHistory(entryId, direction, expected, key)
+      ? learnHistory('history', () => controller.stepHistory(entryId, direction, expected, key))
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to step to.', recoverable: false } }
   );
   const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
@@ -866,7 +889,9 @@ function registerIpc() {
     const modules = session ? { modules: session.draftModules(String(source), typeof given.definitionId === 'string' ? given.definitionId : undefined) } : {};
     const problems = await checkSvelteSource(String(source), { contract, ...held, ...modules, ...(state ? { tokens: projectTokenVars(state) } : {}) });
     const errors = problems.filter((p) => p.severity === 'error');
-    return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
+    // What the code takes from $props(), so the editor can declare its properties from it.
+    const props = await codePropsTaken(String(source), { variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) });
+    return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems, props };
   });
   // Save's last step: resolves once the project's queued writes are on disk, saying whether they all got there.
   handle('project:flush', (opening?: unknown) => controller.flush(typeof opening === 'string' ? opening : undefined));
@@ -987,7 +1012,7 @@ function registerIpc() {
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));
-  handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
+  handle('ai:undoTurn', (runId: string) => learnHistory('chat', () => orchestrator.undoTurn(runId)));
   handle('ai:fixCode', async (source: string, definitionId?: unknown) => {
     if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     // One fix at a time; closing the code editor cancels it (ai:cancelFix). The controller is registered
@@ -1002,7 +1027,15 @@ function registerIpc() {
       // must the project components it imports.
       const session = controller.session;
       const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: session ? componentSources(session.state.components) : undefined, ...(session ? { tokens: projectTokenVars(session.state), modules: session.draftModules(src, typeof definitionId === 'string' ? definitionId : undefined) } : {}) });
-      return await fixComponentSource(ad.adapter, ad.model, String(source), check, abort.signal);
+      // Learning mode keeps each fix as a conversation of its own: the code editor's, in no chat.
+      const recorder = learning;
+      if (!recorder) return await fixComponentSource(ad.adapter, ad.model, String(source), check, abort.signal);
+      const fixId = newId('fix');
+      const learn = (record: ChatRecord) => recorder.record(fixId, record);
+      learn({ type: 'fix', call: 'fixer', provider: ad.provider, model: ad.model, source: String(source) });
+      const result = await fixComponentSource(recordedAdapter(ad.adapter, learn, { call: 'fixer', provider: ad.provider }), ad.model, String(source), check, abort.signal);
+      learn({ type: 'outcome', call: 'fixer', result });
+      return result;
     } finally {
       if (fixAbort === abort) fixAbort = null;
     }
@@ -1423,6 +1456,17 @@ if (logging) {
   captureMainErrors(mainLog, { console, process });
   mainLog.write('start', launchLine());
 }
+// Learning mode (#1566, learning.ts): on only when SITEORIGIN_LEARNING turns it on at launch, and never in an automated
+// run, so a test never writes a person's recordings.
+const learningConfig = automated ? null : readLearningConfig(process.env, join(app.getPath('userData'), 'learning'));
+if (learningConfig) {
+  learning = new LearningRecorder({ dir: learningConfig.dir, labels: learningConfig.labels, app: { name: app.name, version: app.getVersion(), commit: BUILD.commit }, warn: (m) => mainLog.write('warn', m) });
+  const labels = Object.entries(learningConfig.labels).map(([k, v]) => `${k}=${v}`);
+  mainLog.write('start', redact(`Learning mode is on: every AI chat is recorded to ${learningConfig.dir}${labels.length ? `, labelled ${labels.join(', ')}` : ''}.`));
+  for (const problem of learningConfig.problems) mainLog.write('warn', redact(problem));
+}
+/** Learning mode's last records written before the app quits, waiting no more than two seconds. */
+const drainLearning = (): Promise<void> => (learning?.busy ? Promise.race([learning.flush(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]) : Promise.resolve());
 /** Settles once startup (IPC, the menu) is done: no window may open before then. */
 let markStarted!: () => void;
 const started = new Promise<void>((resolve) => (markStarted = resolve));
@@ -1520,6 +1564,16 @@ let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 let quitAccepted = false;
 app.on('before-quit', (e) => {
   if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.remote.active && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
+    // Learning mode's last records are written first (a project closed just before may have left some).
+    if (quitState === 'idle' && learning?.busy) {
+      e.preventDefault();
+      quitState = 'closing';
+      void drainLearning().finally(() => {
+        quitState = 'done';
+        app.quit();
+      });
+      return;
+    }
     // Nothing to ask: the app quits now, and a crash meanwhile is not asked about.
     quitAccepted = true;
     return;
@@ -1546,6 +1600,8 @@ app.on('before-quit', (e) => {
       controller.remote.dispose();
       await controller.close();
     } finally {
+      // Even when the close failed: what the project's last request left is written before the app goes.
+      await drainLearning();
       quitState = 'done';
       app.quit();
     }
