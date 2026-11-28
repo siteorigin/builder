@@ -2293,8 +2293,9 @@ const emptyImage = (v: unknown): boolean => !!v && typeof v === 'object' && !isB
 function namesFor(source: string, names: string[]): string[] {
   const out = new Set(names);
   const script = [...source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-  // The script's declarations, and the markup's own (`{@const hasMedia = !!image?.src}`).
-  const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g), ...source.matchAll(/\{@const\s+([A-Za-z_$][\w$]*)\s*=([^}]*)\}/g)].map((m) => [m[1], m[2]] as const);
+  // The script's declarations, and the markup's own (`{@const hasMedia = !!image?.src}`), outside its comments.
+  const markup = source.replace(/<!--[\s\S]*?-->/g, '');
+  const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g), ...markup.matchAll(/\{@const\s+([A-Za-z_$][\w$]*)\s*=([^}]*)\}/g)].map((m) => [m[1], m[2]] as const);
   for (let grew = true; grew; ) {
     grew = false;
     for (const [name, rhs] of decls) if (!out.has(name) && [...out].some((n) => mentions(rhs, n))) (out.add(name), (grew = true));

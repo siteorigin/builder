@@ -9,7 +9,7 @@ import type { OwnerRef, ProjectState } from '@shared/types';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { blocksSaving, stopsExportOnly, validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, diagnosticKey, stopsExportOnly, validateState, type Diagnostic } from '@engine/validate';
 import { describeDraftLink, publicationPlan, unfilledImages } from '@generator/checks';
 import { draftLinksStop } from '../../src/main/export';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
@@ -88,7 +88,11 @@ describe('links on the published website to drafts', () => {
     const s = banner(site(), { kind: 'template', id: 'posts' }, 'n_layout', { type: 'page', target: 'pg_soon' });
     const found = of(s, 'LINK_TO_DRAFT').filter((d) => d.owner?.kind === 'template');
     expect(found).toHaveLength(1);
+    // The finding says which entry's page shows it, outside what tells it apart, and its row opens that entry's page.
+    expect(found[0].entryId).toBe('en_winter');
     expect(destinationForDiagnostic(s, found[0])).toEqual({ kind: 'element', owner: { kind: 'template', id: 'posts' }, nodeId: 'n_layout', entryId: 'en_winter' });
+    expect(destinationForDiagnostic(s, { ...found[0], entryId: 'en_other' })).toMatchObject({ entryId: 'en_other' });
+    expect(diagnosticKey({ ...found[0], entryId: 'en_other' })).toBe(diagnosticKey(found[0]));
   });
 
   it('are left out of the Export dialog’s count of other notes, since the dialog lists them itself', () => {

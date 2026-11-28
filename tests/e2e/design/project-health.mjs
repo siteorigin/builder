@@ -160,10 +160,11 @@ await pause(1500);
 // The starter's sample contact details are kept on purpose, as an author can, so the project checks out (#1633).
 await openHealth();
 const sampleRow = win.locator('.modal .health-row', { hasText: 'came with the starter' });
-while (await sampleRow.count()) {
+for (let kept = 0; (await sampleRow.count()) && kept < 3; kept++) {
   await sampleRow.first().getByRole('button', { name: 'Keep it' }).click();
   await pause(200);
 }
+if (await sampleRow.count()) throw new Error('the starter’s sample contact details are still listed after keeping them');
 await closeHealth();
 
 await shot('sb-clean', '.status-bar .problems', { area: 'status', text: 'No problems' });

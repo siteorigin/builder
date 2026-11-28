@@ -129,6 +129,8 @@ export interface Diagnostic {
   nodeId?: string;
   /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
   site?: string;
+  /** For a finding in a collection's layout: the published entry whose page shows it (see the engine's Diagnostic). */
+  entryId?: string;
 }
 
 /**

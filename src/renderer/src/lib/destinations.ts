@@ -2,7 +2,7 @@ import type { Diagnostic, EditorDestination, ExportNote } from '@shared/api';
 import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
 import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@shared/form-contract';
-import { draftLinkShownOn, websiteTrees } from '@engine/validate';
+import { websiteTrees } from '@engine/validate';
 import { findEntry } from '@shared/collections';
 import { publishedState } from '@generator/index';
 import { treeFor } from './model';
@@ -45,8 +45,7 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
       return found ? { kind: 'entry', collectionId: found.collection.settings.id, entryId: id, field: 'body' } : null;
     }
     if ((kind === 'template' || kind === 'archive') && d.nodeId) {
-      const shownOn = draftLinkShownOn(state, d);
-      return { kind: 'element', owner: { kind, id }, nodeId: d.nodeId, ...(shownOn ? { entryId: shownOn } : {}) };
+      return { kind: 'element', owner: { kind, id }, nodeId: d.nodeId, ...(kind === 'template' && d.entryId ? { entryId: d.entryId } : {}) };
     }
     return null;
   }

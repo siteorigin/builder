@@ -53,6 +53,11 @@ export interface Diagnostic {
    * message names a line that moves), or which of several links in one placement it is.
    */
   site?: string;
+  /**
+   * For a finding in a collection's layout (a link to a draft): the published entry whose page shows it, so Project
+   * health opens the layout on that entry. Where to look, not what the problem is: no part of telling it apart.
+   */
+  entryId?: string;
 }
 
 /**
@@ -704,21 +709,9 @@ export function draftLinkDiagnostics(state: ProjectState, parts?: CheckParts): D
     message: `${describeDraftLink(state, l)}, a draft the website leaves out. The website export stops until the link is changed or the ${l.entryId !== undefined ? 'entry' : 'page'} is published.`,
     owner: l.owner,
     ...(l.nodeId ? { nodeId: l.nodeId } : {}),
-    site: draftLinkSite(l)
+    site: draftLinkSite(l),
+    ...(l.owner.kind === 'template' && l.shownOn ? { entryId: l.shownOn } : {})
   }));
-}
-
-const plans = new WeakMap<ProjectState, ReturnType<typeof publicationPlan>>();
-
-/**
- * The entry whose page shows a link to a draft that Project health found in a collection's layout (the first published
- * one that does), so the layout can be opened on it. Worked out once for each state.
- */
-export function draftLinkShownOn(state: ProjectState, d: Diagnostic): string | undefined {
-  if (d.code !== 'LINK_TO_DRAFT' || d.owner?.kind !== 'template') return undefined;
-  let plan = plans.get(state);
-  if (!plan) plans.set(state, (plan = publicationPlan(state)));
-  return plan.draftLinks.find((l) => l.owner.kind === 'template' && l.owner.id === d.owner!.id && draftLinkSite(l) === d.site)?.shownOn;
 }
 
 /**
