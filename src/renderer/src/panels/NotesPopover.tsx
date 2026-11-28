@@ -145,7 +145,9 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
         </button>
       </div>
       <div className="share-body">
-        {canAdd ? <NoteForm /> : <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
+        {!canAdd && <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
+        {/* Stays mounted while notes are off, so a draft is kept (and still offered back when the session ends). */}
+        <NoteForm locked={!canAdd} />
         <div className="share-scroll notes-scroll">
           {!notes ? (
             <p className="share-quiet notes-empty">Reading the notes…</p>
@@ -176,7 +178,7 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
 }
 
 /** A note to pin to what is selected now, or to the page shown. */
-function NoteForm() {
+function NoteForm({ locked }: { locked: boolean }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const counterId = useId();
@@ -195,12 +197,14 @@ function NoteForm() {
   const length = [...text.normalize('NFC').replace(/\s+/gu, ' ').trim()].length;
   const usable = normalizeNoteText(text) !== null;
   const send = async () => {
-    if (!usable || sending) return;
+    if (locked || !usable || sending) return;
     setSending(true);
     const kept = await addNote(text);
     setSending(false);
     if (kept) setText('');
   };
+  // Nothing to show while notes are off and nothing was written; a draft stays visible, read-only.
+  if (locked && !text) return null;
   return (
     <form
       className="notes-form"
@@ -215,7 +219,7 @@ function NoteForm() {
         rows={2}
         value={text}
         // What is typed while a note is being sent would be lost when the field empties for it.
-        readOnly={sending}
+        readOnly={sending || locked}
         placeholder={where ? 'Swap this photo, check this price…' : 'Open a page to leave a note on it.'}
         disabled={!where}
         onChange={(e) => setText(e.target.value)}
@@ -232,7 +236,7 @@ function NoteForm() {
         <span id={counterId} className={`share-quiet notes-count${length > NOTE_TEXT_MAX ? ' over' : ''}`} aria-live="polite">
           {length}/{NOTE_TEXT_MAX}
         </span>
-        <button type="submit" className="btn btn-sm btn-primary" disabled={!where || !usable || sending}>
+        <button type="submit" className="btn btn-sm btn-primary" disabled={locked || !where || !usable || sending}>
           Pin note
         </button>
       </div>
