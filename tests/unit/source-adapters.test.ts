@@ -399,6 +399,21 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(v5.seen[0].url.pathname).toBe('/api/articles');
   });
 
+  it('Strapi: asks for the count of pages, which a server with counts off by default gives only when asked', async () => {
+    // Strapi 5 with rest.withCount off: page and pageSize always, pageCount only for pagination[withCount]=true.
+    const counting = await server((req, res) => {
+      const page = Number(req.url.searchParams.get('pagination[page]'));
+      const counted = req.url.searchParams.get('pagination[withCount]') === 'true';
+      send(res, { data: page <= 2 ? [{ id: page, documentId: `doc-${page}`, title: `Post ${page}` }] : [], meta: { pagination: { page, pageSize: 100, ...(counted ? { pageCount: 2, total: 2 } : {}) } } });
+    });
+    const read = await run({ adapter: 'strapi', config: { url: counting.origin, resource: 'articles' } });
+    expect(read.ok && read.records.map((r) => r.externalId)).toEqual(['doc-1', 'doc-2']);
+    expect(counting.seen.map((r) => r.url.searchParams.get('pagination[withCount]'))).toEqual(['true', 'true']);
+    // A server that still gives no count is refused rather than read in part.
+    const silent = await server((req, res) => send(res, { data: [{ id: 1, title: 'One' }], meta: { pagination: { page: Number(req.url.searchParams.get('pagination[page]')), pageSize: 100 } } }));
+    expect(await run({ adapter: 'strapi', config: { url: silent.origin, resource: 'articles' } })).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
   it('WordPress: reads every page its headers count, with each post’s featured image, author and words as text', async () => {
     const api = await server((req, res) => {
       const page = Number(req.url.searchParams.get('page'));
