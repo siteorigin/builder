@@ -12,7 +12,7 @@
  * comes from the Builder: the site needs nothing else to run them.
  */
 import type { ProjectState } from '@shared/types';
-import { categoryTerms } from '@shared/archives';
+import { archiveTerms } from '@shared/archives';
 import { browseFilterKind, browseSortKind, collectionBrowse, type BrowseFilterKind, type BrowseSortKind } from '@shared/collection-browse';
 import { hasArchivePages } from '@shared/collections';
 import { entryFieldLabel, entryFieldValue, type EntryReadContext } from '@shared/entry-fields';
@@ -154,10 +154,10 @@ export function buildBrowseIndex(state: ProjectState, collectionId: string): Bro
   const controls = browseControls(state, collectionId);
   const archives = new Map(
     siteArchives(state)
-      .filter((p) => p.collectionId === collectionId && p.category && p.page === 1)
-      .map((p) => [p.category!, p.route])
+      .filter((p) => p.collectionId === collectionId && p.term?.taxonomy === 'categories' && p.page === 1)
+      .map((p) => [p.term!.id, p.route])
   );
-  const terms = new Map(categoryTerms(collection).map((t) => [t.id, t.label]));
+  const terms = new Map(archiveTerms(collection, 'categories').map((t) => [t.id, t.label]));
   const keys = [...new Set([...controls.filters.map((f) => f.key), ...controls.sorts.map((s) => s.key)])];
   const kinds = new Map<string, BrowseFilterKind | BrowseSortKind>([...controls.sorts.map((s) => [s.key, s.kind] as const), ...controls.filters.map((f) => [f.key, f.kind] as const)]);
   const choices = controls.filters.filter((f): f is Extract<BrowseFilter, { kind: 'choice' }> => f.kind === 'choice');

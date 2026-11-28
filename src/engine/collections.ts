@@ -148,7 +148,7 @@ function refuseSlugTaken(state: ProjectState, c: Collection, slug: string, entry
 /**
  * Refuses an address for collection `collectionId`'s pages where an archive's could not have theirs: one inside
  * another collection's archive folders, or, when it has an archive (`archive`), one whose own archive folders (`page/`,
- * `category/`) already hold a page, an old address or another collection's pages (see ARCHIVE_FOLDERS).
+ * `category/`, `tag/`) already hold a page, an old address or another collection's pages (see ARCHIVE_FOLDERS).
  */
 function refuseArchiveClash(state: ProjectState, route: string, collectionId: string, archive = true) {
   const key = route.toLowerCase();
@@ -165,11 +165,11 @@ function refuseArchiveClash(state: ProjectState, route: string, collectionId: st
   const inFolder = (o: RouteOwner) => underArchiveFolder(route, o.route) || (o.kind === 'collection' && ARCHIVE_FOLDERS.some((f) => o.route.toLowerCase() === `${key}${f}/`));
   const clash = routeOwners(state).find((o) => !mine(o) && inFolder(o));
   if (clash)
-    fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
+    fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/, ${route}category/ and ${route}tag/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
   // Nor one whose entries have pages there, with or without an archive of its own, or entries yet.
   const nested = Object.values(state.collections).find((c) => c.settings.id !== collectionId && ARCHIVE_FOLDERS.some((f) => pagesPrefix(c)?.toLowerCase().startsWith(`${key}${f}/`)));
   if (nested)
-    fail(`${nested.settings.route} is the address of the ${nested.settings.name} collection's pages, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
+    fail(`${nested.settings.route} is the address of the ${nested.settings.name} collection's pages, and the addresses under ${route}page/, ${route}category/ and ${route}tag/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
 }
 
 /** A page size as given: a whole number of entries from 1 to MAX_PAGE_SIZE. */
@@ -280,12 +280,20 @@ export function archivesAtStartOf(state: ProjectState): ArchivesAtStart {
   };
 }
 
-/** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, or none for the index). */
-const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
+/** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, `tag/nitrogen/`, or none for the index). */
+const ARCHIVE_REST = /^(?:page\/\d+\/|(?:category|tag)\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
+
+/** Whether `route` is where one of collection `c`'s archive pages is, or would be once it has entries to list there. */
+export function isArchiveAddressOf(c: Collection, route: string): boolean {
+  const prefix = c.settings.route;
+  if (typeof prefix !== 'string' || prefix === '/' || !hasArchivePages(c.settings)) return false;
+  const key = route.toLowerCase();
+  return key.startsWith(prefix.toLowerCase()) && ARCHIVE_REST.test(key.slice(prefix.length));
+}
 
 /**
  * Keeps the archive pages collection `collectionId` had at `from` (`before`) working at their old addresses now it
- * is at `prefix` (#1548): each old address of its index, of a later page or of a category's archive sends visitors on
+ * is at `prefix` (#1548): each old address of its index, of a later page or of a category's or tag's archive sends visitors on
  * to the same page at the new address, where the website has one. Only an address visitors had as the batch began
  * (`atStart`) is kept, not one the collection only passed through in it, and never one anything else holds now. The
  * old addresses an earlier move kept are sent straight to the new one too, so they never lead through each other;
@@ -317,7 +325,7 @@ function keepArchiveAddresses(state: ProjectState, collectionId: string, from: s
   const holder = routeIndex({ ...state, site: { ...state.site, redirects: list } });
   const visited = before.length ? atStart?.get() : undefined;
   for (const p of before) {
-    const to = archiveRoute(prefix, p.category, p.page);
+    const to = archiveRoute(prefix, p.term, p.page);
     if (!after.has(to.toLowerCase()) || (visited && !visited.has(archiveAddressKey(collectionId, p.route)))) continue;
     if (after.has(p.route.toLowerCase()) || underArchiveFolder(prefix, p.route) || holder(p.route) || archiveRouteOwner(state, p.route, collectionId)) continue;
     list.push({ from: p.route, to, archiveOf: collectionId });
@@ -572,7 +580,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   settings.template = defaultLayout(state, settings);
   if (pages) settings.pages = pages;
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
-  if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
+  if (op.termArchives !== undefined) settings.termArchives = op.termArchives;
   if (typeof op.rss === 'boolean') settings.rss = op.rss;
   if (op.browse) setBrowse(settings, browseOf(settings, op.browse));
   state.collections[op.collectionId] = { settings, entries: {} };
@@ -670,7 +678,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     else setArchiveLayout(state, c, op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
-  if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
+  if (op.termArchives !== undefined) c.settings.termArchives = op.termArchives;
   // In or out of the site's RSS feed, or back to what its kind says.
   if (op.rss === null) delete c.settings.rss;
   else if (op.rss !== undefined) c.settings.rss = op.rss;

@@ -103,6 +103,11 @@ export interface LinkValue {
    * spells it (see linkQuery), and left out when there is none.
    */
   query?: string;
+  /**
+   * On a `collection` link: the archive of one of the collection's categories or tags, in place of its index. Only an
+   * entry's linked terms (`categories.links`, `tags.links`) are given one, as the site is generated; it is never stored.
+   */
+  term?: { taxonomy: 'categories' | 'tags'; id: string };
   newTab?: boolean;
   /**
    * What a web address link says about where it goes (a paid placement, an untrusted citation): kept on `url` links
@@ -1535,8 +1540,8 @@ export interface CollectionDoc {
    * category's archive lists, newest first. Absent: 10.
    */
   pageSize?: number;
-  /** Whether each category with a published entry gets an archive at `category/<term ID>/`. Absent: it does. */
-  categoryArchives?: boolean;
+  /** Whether each category and tag with a published entry gets an archive at `category/<term ID>/` or `tag/<term ID>/`. Absent: it does. */
+  termArchives?: boolean;
   /**
    * Whether its published entries with pages of their own are listed in the website's RSS feed. Absent: as its kind
    * says, so a blog's posts are and a structured collection's records (staff, listings) are not.

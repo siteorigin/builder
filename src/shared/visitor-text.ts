@@ -80,6 +80,7 @@ export const VISITOR_TEXT_KEYS = [
   'archivePage',
   'archivePageOf',
   'archiveCategory',
+  'archiveTag',
   'archiveEmpty',
   'archiveDescription',
   'archiveCategoryDescription',
@@ -108,7 +109,8 @@ export const VISITOR_TEXT_KEYS = [
   'browseNone',
   'browseOne',
   'browseMany',
-  'browseMore'
+  'browseMore',
+  'archiveTagDescription'
 ] as const;
 
 export type VisitorTextKey = (typeof VISITOR_TEXT_KEYS)[number];
@@ -208,15 +210,17 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'entryNav', label: 'Links between posts', hint: 'The name screen readers give a post’s links to the posts beside it.' },
       { key: 'entryPrevious', label: 'Previous post', hint: 'A post’s link to the one listed before it.', fills: ['title'], optionalFills: ['title'] },
       { key: 'entryNext', label: 'Next post', hint: 'A post’s link to the one listed after it.', fills: ['title'], optionalFills: ['title'] },
-      { key: 'archiveNav', label: 'Page links', hint: 'The name screen readers give the links between the pages of a blog’s index or category archive.' },
+      { key: 'archiveNav', label: 'Page links', hint: 'The name screen readers give the links between the pages of a blog’s index or of a category’s or tag’s archive.' },
       { key: 'archivePrevious', label: 'Previous page', hint: 'The link to the page of newer posts before it.' },
       { key: 'archiveNext', label: 'Next page', hint: 'The link to the page of older posts after it.' },
       { key: 'archivePage', label: 'Page link', hint: 'Read out on the link to one numbered page.', fills: ['page'] },
       { key: 'archivePageOf', label: 'Page number', hint: 'Under the heading of every page after the first.', fills: ['page', 'count'] },
       { key: 'archiveCategory', label: 'Category', hint: 'Above the category’s name on its archive page.' },
+      { key: 'archiveTag', label: 'Tag', hint: 'Above the tag’s name on its archive page.' },
       { key: 'archiveEmpty', label: 'Nothing published', hint: 'On a blog’s index before anything is published.' },
       { key: 'archiveDescription', label: 'Index description', hint: 'What a blog’s index says of itself to search engines and link previews, when neither it nor the site has a description.', fills: ['collection', 'site'] },
-      { key: 'archiveCategoryDescription', label: 'Category description', hint: 'What a category’s archive says of itself to search engines and link previews, when the category has no description.', fills: ['collection', 'category', 'site'] }
+      { key: 'archiveCategoryDescription', label: 'Category description', hint: 'What a category’s archive says of itself to search engines and link previews, when the category has no description.', fills: ['collection', 'category', 'site'] },
+      { key: 'archiveTagDescription', label: 'Tag description', hint: 'What a tag’s archive says of itself to search engines and link previews, when the tag has no description.', fills: ['collection', 'tag', 'site'] }
     ]
   },
   {
@@ -310,6 +314,7 @@ const EN: VisitorText = {
   archivePage: 'Page {page}',
   archivePageOf: 'Page {page} of {count}',
   archiveCategory: 'Category',
+  archiveTag: 'Tag',
   archiveEmpty: 'Nothing has been published here yet.',
   archiveDescription: '{collection} from {site}.',
   archiveCategoryDescription: '{collection} filed under {category}, from {site}.',
@@ -338,7 +343,8 @@ const EN: VisitorText = {
   browseNone: 'Nothing matches.',
   browseOne: '1 match',
   browseMany: '{count} matches',
-  browseMore: 'Show more'
+  browseMore: 'Show more',
+  archiveTagDescription: '{collection} tagged {tag}, from {site}.'
 };
 
 const AR: VisitorText = {
@@ -399,6 +405,7 @@ const AR: VisitorText = {
   archivePage: 'الصفحة {page}',
   archivePageOf: 'الصفحة {page} من {count}',
   archiveCategory: 'التصنيف',
+  archiveTag: 'الوسم',
   archiveEmpty: 'لم يُنشر شيء هنا بعد.',
   archiveDescription: '{collection} من {site}.',
   archiveCategoryDescription: '{collection} في تصنيف {category}، من {site}.',
@@ -427,7 +434,8 @@ const AR: VisitorText = {
   browseNone: 'لا توجد نتائج مطابقة.',
   browseOne: 'نتيجة واحدة مطابقة',
   browseMany: 'عدد النتائج المطابقة: {count}',
-  browseMore: 'عرض المزيد'
+  browseMore: 'عرض المزيد',
+  archiveTagDescription: '{collection} بالوسم {tag}، من {site}.'
 };
 
 const HE: VisitorText = {
@@ -488,6 +496,7 @@ const HE: VisitorText = {
   archivePage: 'עמוד {page}',
   archivePageOf: 'עמוד {page} מתוך {count}',
   archiveCategory: 'קטגוריה',
+  archiveTag: 'תגית',
   archiveEmpty: 'עדיין לא פורסם כאן דבר.',
   archiveDescription: '{collection} מאת {site}.',
   archiveCategoryDescription: '{collection} בקטגוריה {category}, מאת {site}.',
@@ -516,7 +525,8 @@ const HE: VisitorText = {
   browseNone: 'אין התאמות.',
   browseOne: 'התאמה אחת',
   browseMany: 'התאמות: {count}',
-  browseMore: 'הצגת עוד'
+  browseMore: 'הצגת עוד',
+  archiveTagDescription: '{collection} עם התגית {tag}, מאת {site}.'
 };
 
 /** Built-in wording by primary language subtag. Hebrew is also known by its old code. */

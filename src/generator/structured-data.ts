@@ -228,16 +228,29 @@ export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revise
  * kept once the run ends.
  */
 let runResolvers: WeakMap<ProjectState, SeoResolver> | null = null;
+/** Other values every document of a run reads, by state and name, kept as the resolvers are (see perRun). */
+let runValues: WeakMap<ProjectState, Map<string, unknown>> | null = null;
 
 /** Runs `generate` as one generator run, sharing what every document's structured data reads. */
 export function inGenerationRun<T>(generate: () => T): T {
   if (runResolvers) return generate();
   runResolvers = new WeakMap();
+  runValues = new WeakMap();
   try {
     return generate();
   } finally {
     runResolvers = null;
+    runValues = null;
   }
+}
+
+/** A value of `state` worked out once per generator run (and each time outside one), as every document reads it. */
+export function perRun<T>(state: ProjectState, name: string, compute: (state: ProjectState) => T): T {
+  if (!runValues) return compute(state);
+  let values = runValues.get(state);
+  if (!values) runValues.set(state, (values = new Map()));
+  if (!values.has(name)) values.set(name, compute(state));
+  return values.get(name) as T;
 }
 
 function resolverFor(state: ProjectState): SeoResolver {

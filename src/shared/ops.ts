@@ -84,7 +84,7 @@ export const MODEL_BINDING = z
 export const LAYOUT_BINDING = z
   .union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()])
   .nullable()
-  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
+  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "categories.links" or "tags.links" (rich text: each term a link to its archive page) or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
@@ -292,7 +292,7 @@ const COLLECTION_SETTINGS = {
     .nullable()
     .optional()
     .describe('Whether its published entries are listed in the website\'s RSS feed (rss.xml). Default: as its kind says, editorial yes and structured no. null goes back to that default.'),
-  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
+  termArchives: z.boolean().optional().describe('Whether each category and tag with a published entry gets an archive page under the collection\'s address, at category/<term ID>/ or tag/<term ID>/. Default true.'),
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
     .optional()
@@ -809,7 +809,12 @@ export const OPERATION_SCHEMAS = {
     .object({
       type: z.literal('redirect.add'),
       from: z.string().max(REDIRECT_PATH_MAX).describe('The old address, as a route such as "/old-services/".'),
-      ...REDIRECT_TARGET
+      ...REDIRECT_TARGET,
+      archiveOf: z
+        .string()
+        .max(60)
+        .optional()
+        .describe('With `to`, a collection (by ID) whose archive page `to` is (its index, a later page, or a category\'s or tag\'s archive): the redirect then follows the collection when it moves, even while that page has nothing to list yet.')
     })
     .describe('Keep an old address working: visitors and search engines are sent on with a permanent redirect (HTTP 301). Give exactly one of pageId, entryId or to.'),
   'redirect.update': z

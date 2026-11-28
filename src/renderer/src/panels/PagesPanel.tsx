@@ -2,7 +2,7 @@ import './PagesPanel.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronRight, Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
-import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives, hasDetailPages } from '@shared/collections';
+import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasTermArchives, hasDetailPages } from '@shared/collections';
 import { defaultArchiveDescription } from '@shared/archives';
 import type { CollectionBrowse, CollectionDoc, ElementRef, ProjectState } from '@shared/types';
 import { MAX_BROWSE_KEYS, browseChoices, storedBrowse, type BrowseFilterKind } from '@shared/collection-browse';
@@ -1325,7 +1325,7 @@ function CollectionArchive(props: { id: string; collectionId: string; name: stri
   // The text the field shows, so the fallback is named as soon as the description is cleared, before it is saved.
   const [shown, setShown] = useState(description);
   useEffect(() => setShown(description), [description]);
-  const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
+  const update = (patch: { pageSize?: number; termArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
     // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
     if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
@@ -1402,7 +1402,7 @@ function CollectionArchive(props: { id: string; collectionId: string; name: stri
           </select>
         </Field>
       </div>
-      <SwitchRow checked={categories} label="Category pages" hint="Each category gets a page listing its entries." onChange={(on) => void update({ categoryArchives: on }, on ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />
+      <SwitchRow checked={categories} label="Category and tag pages" hint="Each category and tag gets a page listing its entries." onChange={(on) => void update({ termArchives: on }, on ? 'Give categories and tags their own pages' : 'Stop giving categories and tags their own pages')} />
       <CollectionBrowsing collectionId={collectionId} name={name} settings={settings} designed={designed} />
       <Field label="Index description" hint={shown.trim() ? 'For search results and link previews.' : <>For search results and link previews. While it is empty, this index uses: <q>{fallback}</q></>}>
         <DraftInput
@@ -1504,7 +1504,7 @@ function CollectionRow({ state, id, open }: { state: ProjectState; id: string; o
             name={name}
             route={c.settings.route ?? ''}
             pageSize={archivePageSize(c.settings)}
-            categories={hasCategoryArchives(c.settings)}
+            categories={hasTermArchives(c.settings)}
             designed={!!c.settings.archiveTemplate}
             description={c.settings.description ?? ''}
             fallback={defaultArchiveDescription(state, id)}

@@ -57,7 +57,7 @@ const before = (await snapshot()).revision;
 await chooseImport(/WordPress export/, { dialog: 'open', paths: [join(wp, 'export.xml')] });
 await modal.getByRole('heading', { name: 'Import 3 posts' }).waitFor({ timeout: 30000 });
 const summary = await modal.locator('.import-summary').innerText();
-for (const fact of [/Posts\s+2 published · 1 draft/, /Pictures\s+3 found · 1 missing/, /Into\s+Posts, a new collection at \/blog\//, /From\s+export\.xml \(https:\/\/riverside\.example\)/, /Old addresses\s+2 keep working/, /Categories: News, Workshops · Tag: Bread/, /1 page \(“About us”\): only posts are imported\./]) assert.match(summary, fact, summary);
+for (const fact of [/Posts\s+2 published · 1 draft/, /Pictures\s+3 found · 1 missing/, /Into\s+Posts, a new collection at \/blog\//, /From\s+export\.xml \(https:\/\/riverside\.example\)/, /Old addresses\s+5 keep working/, /Categories: News, Workshops · Tag: Bread/, /1 page \(“About us”\): only posts are imported\./]) assert.match(summary, fact, summary);
 assert.equal(await modal.getByTestId('post-import-row').count(), 3);
 const winterRow = await modal.getByTestId('post-import-row').first().innerText();
 assert.match(winterRow, /was \/2019\/03\/winter-workshop\//, winterRow);
@@ -95,7 +95,10 @@ for (const f of [loaf.file, ...loaf.variants.map((v) => v.file)]) assert.ok(exis
 assert.ok(winter.featuredImage && s1.state.assets.assets[winter.featuredImage].name === 'snow', 'the featured picture is imported');
 assert.deepEqual(s1.state.site.redirects, [
   { from: '/2019/03/winter-workshop/', entryId: winter.id },
-  { from: '/2019/04/spring-menu/', entryId: spring.id }
+  { from: '/2019/04/spring-menu/', entryId: spring.id },
+  { from: '/category/news/', custom: true, to: '/blog/category/news/', archiveOf: 'posts' },
+  { from: '/category/workshops/', custom: true, to: '/blog/category/workshops/', archiveOf: 'posts' },
+  { from: '/tag/bread/', custom: true, to: '/blog/tag/bread/', archiveOf: 'posts' }
 ]);
 assert.ok(JSON.stringify(spring.body).includes(`"target":"${winter.id}"`), 'a link between imported posts goes to the entry');
 const applied = s1.history.entries.filter((e) => e.applied).map((e) => e.label);
@@ -182,6 +185,9 @@ assert.match(page('blog', 'open-day'), /We open our doors on <strong>Saturday<\/
 assert.ok(existsSync(join(stat.path, 'blog', 'winter-hours', 'index.html')), 'the post published since has its page');
 assert.ok(!existsSync(join(stat.path, 'blog', 'summer-plans')) && !existsSync(join(stat.path, 'blog', 'bad-draft')), 'drafts have no page');
 assert.ok(existsSync(join(stat.path, 'blog', 'category', 'news', 'index.html')), 'categories get their archives');
+assert.ok(existsSync(join(stat.path, 'blog', 'tag', 'bread', 'index.html')), 'and tags theirs');
+const oldTag = page('tag', 'bread').match(/<meta http-equiv="refresh" content="0; url=([^"]*)"/)?.[1];
+assert.equal(oldTag && new URL(oldTag.replace(/&amp;/g, '&'), 'https://riverside.example/tag/bread/').href, 'https://riverside.example/blog/tag/bread/', 'the old tag archive address sends visitors to the new one');
 const sitemap = readFileSync(join(stat.path, 'sitemap.xml'), 'utf8');
 assert.ok(sitemap.includes('<url><loc>https://riverside.example/blog/winter-workshop/</loc><lastmod>2019-03-01</lastmod></url>'), `the sitemap lists the imported post: ${sitemap}`);
 assert.ok(!sitemap.includes('summer-plans'), 'and never a draft');
