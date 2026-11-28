@@ -383,7 +383,15 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
     expect(ok.ok && ok.op.type === 'asset.add' && ok.op.asset.font).toEqual({ family: 'Brand Sans', weight: '400', style: 'normal', category: 'serif' });
     const upd = validateOperation({ type: 'asset.update', assetId: 'f1', font: { family: 'Mono', weight: '400', style: 'normal', category: 'monospace' } });
     expect(upd.ok && upd.op.type === 'asset.update' && upd.op.font?.category).toBe('monospace');
+    const sans = validateOperation(add(kind(face('f2', '400'), 'sans-serif')));
+    expect(sans.ok && sans.op.type === 'asset.add' && sans.op.asset.font?.category).toBe('sans-serif');
     expect(validateOperation({ type: 'asset.update', assetId: 'f1', font: { family: 'Mono', weight: '400', style: 'normal', category: 'cursive' } }).ok).toBe(false);
+  });
+
+  it('keeps a face kind when an edit of its weight, style or family does not say it', () => {
+    const st = createStarterState('business', 'Fonts', false);
+    const r = applyOperations(st, [add(kind(face('f1', '400', 'normal', 'Acme'), 'serif')), { type: 'asset.update', assetId: 'f1', font: { family: 'Acme Serif', weight: '700', style: 'normal' } }]);
+    expect(r.state.assets.assets.f1.font).toEqual({ family: 'Acme Serif', weight: '700', style: 'normal', category: 'serif' });
   });
 
   it('ends a stack in a fallback of its kind, and in sans-serif when the kind is unknown', () => {
@@ -403,6 +411,7 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
     };
     // An italic that says nothing takes its upright's kind.
     expect(set(kind(face('f1', '400'), 'serif'), face('f2', '400', 'italic'))).toBe('serif');
+    expect(set(kind(face('f1', '400'), 'serif'), kind(face('f2', '700'), 'serif'))).toBe('serif');
     expect(set(face('f2', '400', 'italic'), kind(face('f1', '400'), 'serif'))).toBe('serif');
     // Files that disagree leave it unknown, whichever comes first.
     expect(set(kind(face('f1', '400'), 'serif'), kind(face('f2', '700'), 'monospace'), kind(face('f3', '500'), 'serif'))).toBeUndefined();
@@ -413,7 +422,8 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
 
   it('gives a bare imported name the stack of its kind, into the CSS the site is built from', async () => {
     const { dir, s } = await make();
-    await s.apply({ operations: [add(kind(face('f1', '300', 'normal', 'Source Serif 4'), 'serif')), add(kind(face('f2', '400', 'normal', 'IBM Plex Mono'), 'monospace'))] }, { label: 'Import' });
+    // A file that says nothing listed first still takes its family's kind.
+    await s.apply({ operations: [add(face('f0', '300', 'italic', 'Source Serif 4')), add(kind(face('f1', '300', 'normal', 'Source Serif 4'), 'serif')), add(kind(face('f2', '400', 'normal', 'IBM Plex Mono'), 'monospace'))] }, { label: 'Import' });
     expect(resolveFontStack(s.state, 'source serif 4')).toEqual({ stack: "'Source Serif 4', Georgia, 'Times New Roman', serif" });
     // An author's own stack is kept as written.
     expect(resolveFontStack(s.state, "'IBM Plex Mono', Arial, sans-serif")).toEqual({ stack: "'IBM Plex Mono', Arial, sans-serif" });
@@ -423,7 +433,7 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
     expect(css).toMatch(/--so-font-display:\s*'Source Serif 4', Georgia, 'Times New Roman', serif;/);
     expect(css).toMatch(/--so-font-body:\s*'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;/);
     // Removing the family keeps the fallback of its kind.
-    expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f1', fontUses: 'fallback' }] }, { label: 'Remove' })).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'asset.remove', assetId: 'f0', fontUses: 'keep' }, { type: 'asset.remove', assetId: 'f1', fontUses: 'fallback' }] }, { label: 'Remove' })).ok).toBe(true);
     expect(s.state.tokens.overrides['font.display']).toBe("Georgia, 'Times New Roman', serif");
   });
 
@@ -431,6 +441,7 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
     expect(stackFallback("'Lora', system-ui, sans-serif")).toBe('sans-serif');
     expect(stackFallback("'Lora',Georgia,  'Times New Roman',serif")).toBe('serif');
     expect(stackFallback("'Lora', Arial, serif")).toBeNull();
+    expect(stackFallback("'Lora', ui-monospace, \"SF Mono\", Menlo, Consolas, monospace")).toBe('monospace');
     expect(stackFallback("'Lora'")).toBeUndefined();
     expect(withFallback("'Lora', system-ui, sans-serif", 'serif')).toBe("'Lora', Georgia, 'Times New Roman', serif");
     expect(withFallback("'Lora', Arial, serif", 'monospace')).toBe("'Lora', ui-monospace, 'SF Mono', Menlo, Consolas, monospace");

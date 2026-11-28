@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import type { FontCategory, ProjectState } from '@shared/types';
-import { importedFontStack, isFontCategory, projectFontFamilies, projectFontStack, stackFallback, withFallback } from '@shared/fonts';
+import { FAMILY_KEYWORDS, importedFontStack, isFontCategory, projectFontFamilies, projectFontStack, stackFallback, withFallback } from '@shared/fonts';
 import { fontFamilies, installedFonts } from '@catalogue/fonts';
 import { Upload } from 'lucide-react';
 import { api, getState, toast } from '../store';
@@ -67,7 +67,8 @@ export function FontSelect({
   const selected = all.find((f) => f.value === stack) ?? all.find((f) => fontFamilies(f.value)[0]?.toLowerCase() === primary);
   const fallbackId = `${useId()}-fallback`;
   // An imported font whose files do not say what kind of face it is: the author says which fallback it ends in (#1490).
-  const askFallback = !follows && !!selected && 'unknownKind' in selected && selected.unknownKind;
+  // A bare keyword ("serif") is no font, even beside an imported family of that name.
+  const askFallback = !follows && !!selected && 'unknownKind' in selected && selected.unknownKind && !FAMILY_KEYWORDS.has(stack.split(',')[0].trim().toLowerCase());
   const fallback = askFallback ? stackFallback(stack) : undefined;
   /** Bring in a web font and use it straight away. */
   const importFont = async () => {
@@ -121,30 +122,32 @@ export function FontSelect({
   ) : (
     select
   );
-  if (!askFallback) return control;
+  // The same wrapper either way, so the font select keeps focus when the fallback row comes or goes.
   return (
     <div className="font-select-group">
       {control}
-      <div className="font-select-fallback">
-        <label htmlFor={fallbackId}>Fallback</label>
-        <select
-          id={fallbackId}
-          className="select sm"
-          title="Shown while the font loads, and for any character its file lacks"
-          value={fallback ?? ''}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (isFontCategory(v)) onChoose(withFallback(stack, v));
-          }}
-        >
-          {!fallback && <option value="">{fallback === null ? 'Custom fallback' : 'None'}</option>}
-          {FALLBACK_CHOICES.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {askFallback && (
+        <div className="font-select-fallback">
+          <label htmlFor={fallbackId}>Fallback</label>
+          <select
+            id={fallbackId}
+            className="select sm"
+            title="Shown while the font loads, and for any character its file lacks"
+            value={fallback ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (isFontCategory(v)) onChoose(withFallback(stack, v));
+            }}
+          >
+            {!fallback && <option value="">{fallback === null ? 'Custom fallback' : 'None'}</option>}
+            {FALLBACK_CHOICES.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   );
 }

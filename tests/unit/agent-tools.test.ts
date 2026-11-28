@@ -833,6 +833,17 @@ describe('update_site_brand', () => {
     expect(session.state.tokens.overrides['font.body']).toBe("'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace");
   });
 
+  it("keeps the fallback an author chose for an imported font the brand names again (#1490)", async () => {
+    const lora = { id: 'lora', name: 'Lora', file: 'static/assets/lora-1a2b3c4d.woff2', mime: 'font/woff2', bytes: 1000, hash: 'hash-lora', kind: 'font' as const, createdAt: '2026-01-01T00:00:00.000Z', font: { family: 'Lora', weight: '400', style: 'normal' as const } };
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { siteName: 'Renamed', bodyFont: 'Lora' })], () => finish()], {}, 'business', (s) => {
+      s.assets.assets.lora = lora;
+      s.tokens.overrides['font.body'] = "'Lora', Georgia, 'Times New Roman', serif";
+    });
+    await run('Rename the site and keep Lora for body text');
+    expect(session.state.site.name).toBe('Renamed');
+    expect(session.state.tokens.overrides['font.body']).toBe("'Lora', Georgia, 'Times New Roman', serif");
+  });
+
   it('refuses a type scale it does not have, naming the field, and changes nothing', async () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'huge' })], () => finish()]);
     await run('Make the type huge');

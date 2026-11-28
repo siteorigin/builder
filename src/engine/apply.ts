@@ -474,7 +474,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       if (op.font !== undefined) {
         if (a.kind !== 'font') fail(`"${a.name}" is not a font.`);
         const from = a.font?.family;
-        a.font = { ...op.font };
+        // The kind of face is the file's own: an update that does not say keeps it (#1490).
+        a.font = { ...(a.font?.category && !op.font.category ? { category: a.font.category } : {}), ...op.font };
         // Once no file provides the old family name, styles that named it follow the rename.
         if (from && from !== op.font.family && !projectFontFamilies(state).some((f) => f.family.toLowerCase() === from.toLowerCase())) renameFontFamily(state, from, op.font.family);
       }

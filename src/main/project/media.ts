@@ -588,7 +588,8 @@ export function fontCategory(os2: Buffer | undefined, post: Buffer | undefined):
   if ([1, 2, 3, 4, 5, 7].includes(familyClass)) return 'serif';
   if (familyClass === 8) return 'sans-serif';
   if (familyClass) return undefined;
-  const serifStyle = panose?.[1] ?? 0;
+  // The serif style means this only for Latin text.
+  const serifStyle = panose?.[0] === 2 ? panose[1] : 0;
   if (serifStyle >= 2 && serifStyle <= 10) return 'serif';
   if (serifStyle >= 11 && serifStyle <= 15) return 'sans-serif';
   return undefined;

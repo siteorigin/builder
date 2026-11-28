@@ -80,7 +80,7 @@ export function stackFallback(stack: string): FontCategory | null | undefined {
   const tail = stack
     .slice(at + 1)
     .split(',')
-    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .map((part) => part.replace(/\s+/g, ' ').replace(/"/g, "'").trim())
     .join(', ');
   return FONT_CATEGORIES.find((c) => FALLBACK_STACKS[c] === tail) ?? null;
 }

@@ -27,7 +27,7 @@ const ENTRY = [
   'function Host() {',
   '  const [stack, setStack] = useState(window.__stack);',
   '  window.setStack = setStack;',
-  "  return h(FontSelect, { id: 'font', label: 'Display font', state, stack, onChoose: (next) => { window.chosen.push(next); setStack(next); } });",
+  "  return h(FontSelect, { id: 'font', label: 'Display font', state, stack, follows: window.__follows, onChoose: (next) => { window.chosen.push(next); setStack(next); } });",
   '}',
   "createRoot(document.getElementById('root')).render(h(Host));"
 ].join('\n');
@@ -79,7 +79,7 @@ describe.skipIf(!browserInstalled)("FontSelect's fallback for imported fonts (#1
   let page: Page;
   let errors: string[];
   const state = createStarterState('business', 'Fonts', false);
-  for (const a of [face('lora', 'Lora'), face('serif4', 'Source Serif 4', 'serif'), face('plex', 'IBM Plex Mono', 'monospace')]) state.assets.assets[a.id] = a;
+  for (const a of [face('lora', 'Lora'), face('serif4', 'Source Serif 4', 'serif'), face('plex', 'IBM Plex Mono', 'monospace'), face('kw', 'Serif')]) state.assets.assets[a.id] = a;
   const project = JSON.stringify(state).replace(/</g, '\\u003c');
   const theme = JSON.stringify(findTheme(state.site.themeId)).replace(/</g, '\\u003c');
 
@@ -89,14 +89,14 @@ describe.skipIf(!browserInstalled)("FontSelect's fallback for imported fonts (#1
   afterAll(async () => {
     await browser?.close();
   }, 60_000);
-  const open = async (stack: string) => {
+  const open = async (stack: string, follows: string | null = null) => {
     page = await (await browser.newContext()).newPage();
     errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.route(`${SITE}/**`, (route) =>
       new URL(route.request().url()).pathname === '/app.js'
         ? route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script })
-        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}window.__theme = ${theme}; window.__project = ${project}; window.__stack = ${JSON.stringify(stack)};</script><script src="/app.js"></script>` })
+        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}window.__theme = ${theme}; window.__project = ${project}; window.__stack = ${JSON.stringify(stack)}; window.__follows = ${JSON.stringify(follows)};</script><script src="/app.js"></script>` })
     );
     await page.goto(`${SITE}/`);
     await page.locator('#font').waitFor();
@@ -114,10 +114,11 @@ describe.skipIf(!browserInstalled)("FontSelect's fallback for imported fonts (#1
 
   it('offers each imported font with a fallback of its kind, and asks for none when the kind is known', async () => {
     await open("'Source Serif 4', Georgia, 'Times New Roman', serif");
-    const values = await page.locator('#font optgroup[label="Imported fonts"] option').evaluateAll((os) => os.map((o) => [o.textContent, (o as HTMLOptionElement).value]));
+    const values = await page.evaluate<string[][]>(`[...document.querySelectorAll('#font optgroup[label="Imported fonts"] option')].map((o) => [o.textContent, o.value])`);
     expect(values).toEqual([
       ['IBM Plex Mono', "'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"],
       ['Lora', "'Lora', system-ui, sans-serif"],
+      ['Serif', "'Serif', system-ui, sans-serif"],
       ['Source Serif 4', "'Source Serif 4', Georgia, 'Times New Roman', serif"]
     ]);
     expect(await fallback().count()).toBe(0);
@@ -142,8 +143,26 @@ describe.skipIf(!browserInstalled)("FontSelect's fallback for imported fonts (#1
     expect(await fallback().locator('option:checked').textContent()).toBe('Custom fallback');
     await fallback().selectOption({ label: 'Monospace' });
     expect((await chosen()).at(-1)).toBe("'Lora', ui-monospace, 'SF Mono', Menlo, Consolas, monospace");
-    // A built-in font asks for no fallback.
+    // The stack's own spelling of the family is kept: the fallback is rewritten, never the font.
+    await page.evaluate(`window.setStack('"lOrA", Arial, serif')`);
+    const writes = (await chosen()).length;
+    expect(await fallback().inputValue()).toBe('');
+    expect(await chosen()).toHaveLength(writes);
+    await fallback().selectOption({ label: 'Serif' });
+    expect((await chosen()).at(-1)).toBe(`"lOrA", Georgia, 'Times New Roman', serif`);
+    // A built-in font asks for no fallback, and the font select keeps focus as the row goes.
+    await page.locator('#font').focus();
     await page.locator('#font').selectOption({ label: 'Georgia (serif)' });
+    expect(await fallback().count()).toBe(0);
+    expect(await page.evaluate('document.activeElement?.id')).toBe('font');
+  });
+
+  it('asks nothing for a font that follows another, or for a bare keyword beside a family of its name', async () => {
+    await open("'Lora', system-ui, sans-serif", 'Body font');
+    expect(await page.locator('#font option:checked').textContent()).toBe('Same as Body font');
+    expect(await fallback().count()).toBe(0);
+    await page.context().close();
+    await open('serif');
     expect(await fallback().count()).toBe(0);
   });
 });

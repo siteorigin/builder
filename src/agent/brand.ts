@@ -5,12 +5,12 @@
 import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { importedFontStack, projectFontFamilies, stackLeadsWith } from '@shared/fonts';
 import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { parseColor } from '@shared/color';
 import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
-import { installedFonts, resolveFontStack } from '@catalogue/fonts';
+import { fontFamilies, installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
@@ -252,8 +252,10 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     const name = args[field];
     if (name === undefined) continue;
     const font = fontStackFor(state, name);
+    const current = tokens.get(tokenId)?.value;
     if ('error' in font) issues.push({ field, message: font.error });
-    else setToken(tokenId, font.stack);
+    // The font it already uses keeps its stack, and so the fallback the author chose for it (#1490).
+    else if (!(typeof current === 'string' && stackLeadsWith(current, fontFamilies(font.stack)[0] ?? ''))) setToken(tokenId, font.stack);
   }
   if (args.typeScale !== undefined) {
     const themeTokens = getTheme(state.site.themeId).tokens;

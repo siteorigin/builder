@@ -603,7 +603,9 @@ export async function importAsset(
  */
 async function keptDuplicate(projectDir: string, dup: AssetRecord, p: PreparedFile, fence: WriteFence, restoring?: Promise<boolean>): Promise<{ record: AssetRecord; existing: true; restored?: true; font?: AssetRecord['font'] }> {
   const restored = dup.kind === 'font' && (await (restoring ?? restoreFontFile(projectDir, dup, p.buf, fence)));
-  return { record: dup, existing: true, ...(restored ? { restored: true as const } : {}), ...(p.font && !dup.font ? { font: p.font } : {}) };
+  // One recorded without the kind of face it is gets that alone, keeping the family, weight and style it was given.
+  const font = p.font && !dup.font ? p.font : p.font?.category && dup.font && !dup.font.category ? { ...dup.font, category: p.font.category } : undefined;
+  return { record: dup, existing: true, ...(restored ? { restored: true as const } : {}), ...(font ? { font } : {}) };
 }
 
 /**

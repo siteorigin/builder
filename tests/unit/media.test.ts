@@ -278,6 +278,7 @@ describe('web font metadata', async () => {
     const kind = async (os2: Buffer, more: Array<[string, Buffer]> = []) => (await fontInfo(woff([['name', nameTable('Brand')], ['OS/2', os2], ...more]))).category;
     // Fixed pitch in post wins over a sans class: IBM Plex Mono says both. Any non-zero value is fixed pitch.
     expect(await kind(classed(8, [2, 11, 5, 9]), [['post', post(1)]])).toBe('monospace');
+    expect(await kind(classed(8, [2, 11, 5, 3]), [['post', post(1)]])).toBe('monospace');
     expect(await kind(classed(0), [['post', post(0x100)]])).toBe('monospace');
     // A monospaced PANOSE proportion, for Latin text or with no family kind given (Roboto Mono sets only that).
     expect(await kind(classed(0, [2, 0, 0, 9]))).toBe('monospace');
@@ -288,6 +289,8 @@ describe('web font metadata', async () => {
     expect(await kind(classed(8, [2, 2]))).toBe('sans-serif');
     expect(await kind(classed(0, [2, 4, 6, 3]))).toBe('serif');
     expect(await kind(classed(0, [2, 11, 5, 3]))).toBe('sans-serif');
+    // The serif style means that only for Latin text; a monospaced proportion is read with no family kind given.
+    expect(await kind(classed(0, [0, 4, 6, 3]))).toBeUndefined();
     // A script, ornamental or symbol class, a PANOSE of another family kind, and all zeros (as most web fonts ship) say nothing.
     for (const c of [9, 10, 12]) expect(await kind(classed(c, [2, 11]))).toBeUndefined();
     expect(await kind(classed(0, [3, 11, 5, 9]))).toBeUndefined();
