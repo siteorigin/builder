@@ -16,10 +16,10 @@
      status need, and the preview controls, then the actions, wrap onto rows under it, the actions to the right.
      Nothing is drawn over anything else or runs out of the window; the bar grows instead (the editor's first row is
      the bar's height). The floor is measured: the mark, Sidebar, a working copy's names at their floors and the AI's
-     longest state, plus the traffic lights on macOS. */
+     longest state, plus the traffic lights on macOS, with room for wider system fonts (Linux's set the measure). */
   .toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; row-gap: 0; }
-  .toolbar[data-tier='overflow'] .toolbar-start { flex: 1 1 0; min-width: min(100%, 370px); min-height: calc(var(--toolbar-h) - 2px); }
-  .toolbar.mac[data-tier='overflow'] .toolbar-start { min-width: min(100%, 440px); }
+  .toolbar[data-tier='overflow'] .toolbar-start { flex: 1 1 0; min-width: min(100%, 400px); min-height: calc(var(--toolbar-h) - 2px); }
+  .toolbar.mac[data-tier='overflow'] .toolbar-start { min-width: min(100%, 470px); }
   /* A wrapped row is shorter than the bar's own: 6px above and below its controls. */
   .toolbar[data-tier='overflow'] :is(.toolbar-center, .toolbar-end) { flex: none; min-height: 40px; }
   .toolbar[data-tier='overflow'] .toolbar-end { margin-left: auto; }
