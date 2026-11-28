@@ -6,8 +6,8 @@
   .get-started { flex: none; margin: 4px 10px 10px; padding: 4px 4px 6px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
   /* An open card never takes more than 40% of the sidebar (#1316): a short sidebar (the editor zoomed, a site with
      several collections) keeps most of its height for the pages, and the steps scroll under the card's heading,
-     which stays in view with Hide and the meter. */
-  .get-started:not(.folded) { display: flex; flex-direction: column; max-height: 40%; }
+     which stays in view with Hide and the meter. In the shortest sidebars it keeps room for a step under them. */
+  .get-started:not(.folded) { display: flex; flex-direction: column; max-height: max(40%, 92px); }
   .get-started-head, .get-started-meter { flex: none; }
   .get-started-body { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
   .get-started.folded { padding-bottom: 4px; }

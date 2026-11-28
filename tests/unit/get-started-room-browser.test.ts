@@ -209,8 +209,9 @@ describe.skipIf(!browserInstalled)('Get started beside the Pages list (#1316)', 
         `(() => { const port = document.querySelector('.pages-panel .panel-body').getBoundingClientRect(); return [...document.querySelectorAll('.pages-list .page-row')].map((r) => { const b = r.getBoundingClientRect(); return b.top >= port.top - 0.5 && b.bottom <= port.bottom + 0.5 && (${HIT})(r); }); })()`
       );
       expect(whole).toEqual(whole.map(() => true));
-      // What the card no longer has room for scrolls inside it, under its heading, to the last step.
+      // What the card no longer has room for scrolls inside it, under its heading, to the last step, by wheel too.
       expect(room.steps.scroll).toBeGreaterThan(room.steps.client);
+      expect(await page.locator('.get-started-body').evaluate((el) => getComputedStyle(el).overflowY)).toBe('auto');
       expect(await reachable(page, '.gs-step', 4)).toBe(true);
       expect((await measure(page)).cardHead).toBe(true);
     } finally {
@@ -246,6 +247,21 @@ describe.skipIf(!browserInstalled)('Get started beside the Pages list (#1316)', 
       const last = page.locator('.pages-collection-toggle').last();
       await last.click();
       expect(await last.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  // Far past any usual zoom (a 130px sidebar), the card still shows a step under its heading and meter: a one-line
+  // step fits whole.
+  it('keeps a step in view in the shortest sidebar', async () => {
+    const page = await open(business, 200, 130);
+    try {
+      const room = await measure(page);
+      expect(room.cardHead).toBe(true);
+      expect(room.card.bottom).toBeLessThanOrEqual(room.view.bottom + 0.5);
+      expect(room.steps.client).toBeGreaterThanOrEqual(30);
+      expect(await reachable(page, '.gs-step', 2)).toBe(true);
     } finally {
       await page.context().close();
     }
