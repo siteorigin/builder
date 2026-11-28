@@ -25,7 +25,8 @@ export const FIELD_TYPE_LABELS: Record<CollectionFieldType, string> = {
   image: 'Image',
   link: 'Link',
   date: 'Date',
-  reference: 'Entries of a collection'
+  reference: 'Entries of a collection',
+  gallery: 'Gallery'
 };
 
 /** A collection the Content tab's empty state makes in one click. */
@@ -480,6 +481,8 @@ export function newFieldSchema(type: CollectionFieldType, label: string, collect
       return { type, label, default: '' };
     case 'reference':
       return { type, label, collection: collectionId, default: '' };
+    case 'gallery':
+      return { type, label, default: [] };
   }
 }
 

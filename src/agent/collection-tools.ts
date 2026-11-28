@@ -8,13 +8,15 @@
  */
 import { z } from 'zod';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
-import { COLLECTION_FIELD_TYPES } from '@shared/types';
+import { COLLECTION_FIELD_TYPES, MAX_GALLERY_PHOTOS } from '@shared/types';
+import { galleryRows } from '@shared/gallery-field';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
 import { ENTRY_LINK_PREFIX, entryTarget, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
 import { sha256Hex } from '@shared/sha256';
-import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
+import { MAX_CAPTION, MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -34,9 +36,19 @@ const collectionId = z.string().min(1).max(60).describe('From read_project colle
 const MAX_GROUPINGS = 10;
 const MAX_VALUES = 40;
 /** A custom field's value as a call sends it, read as the field's type takes it (see entryValue). */
-const FIELD_VALUE = z.union([z.string().max(MAX_ENTRY_CHARS), z.number(), z.boolean(), z.array(z.string().max(MAX_ENTRY_CHARS)).max(50), z.null()]);
+/** One photo of a gallery field as a call sends it: its picture, its own words, and its ID to keep the one it edits or moves. */
+const GALLERY_PHOTO = z
+  .object({
+    id: z.string().min(1).max(64).optional().describe('The photo\'s ID as values shows it, to keep that photo (its place, words, description); leave it out for a new photo.'),
+    assetId: z.string().min(1).max(80).describe('A library image\'s assetId.'),
+    alt: z.string().max(TEXT_LIMITS.imageAlt).optional().describe('Its description; left out, a kept photo keeps its own and a new one shows the library\'s suggestion.'),
+    caption: z.string().max(MAX_CAPTION).optional().describe('"" or left out for none.')
+  })
+  .strict();
+type GalleryPhoto = z.infer<typeof GALLERY_PHOTO>;
+const FIELD_VALUE = z.union([z.string().max(MAX_ENTRY_CHARS), z.number(), z.boolean(), z.array(z.string().max(MAX_ENTRY_CHARS)).max(50), z.array(GALLERY_PHOTO).max(MAX_GALLERY_PHOTOS), z.null()]);
 const VALUE_FORMAT =
-  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId ("" for none; the one it shows, sent back, keeps its alt text); a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown; a reference an entry ID of its collection ("" for none), a list of them when it takes several. null goes back to the field\'s default.';
+  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId ("" for none; the one it shows, sent back, keeps its alt text); a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown; a reference an entry ID of its collection ("" for none), a list of them when it takes several; a gallery every photo in order, each { id?, assetId, alt?, caption? } ([] for none). null goes back to the field\'s default.';
 const entryId = z.string().min(1).max(40).describe('en_… from list_collection_entries.');
 const offset = z.number().int().min(0).optional().describe('Go on from the next a previous call returned.');
 
@@ -173,6 +185,8 @@ function linkShown(v: CollectionFieldValue, pages: ProjectState['pages']): strin
 
 /** A custom field's value as values writes it back, and whether it was cut short or is the editor's to change. */
 function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; clipped?: true; editorOnly?: true } {
+  // A gallery's photos in order, each by its ID, so a call sending them back edits or moves the ones it names.
+  if (schema.type === 'gallery') return { value: galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.caption ? { caption: r.caption } : {}) })) };
   // An image by its asset ID ("" for one emptied on purpose); written back as read, it keeps its alt text as it is.
   if (schema.type === 'image') return { value: v && typeof v === 'object' && 'assetId' in v ? (v.assetId ?? '') : null };
   // A long list of entries is shown in part, and read whole with field.
@@ -473,7 +487,7 @@ function termsValue(collection: Collection, categories: string[] | undefined, te
  * One custom field's value as the operation takes it, read as the field's type takes it: the engine checks the rest
  * (an enum's options, a reference's entries, an image in the library). Null goes back to the field's default.
  */
-function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue, library?: ProjectState['assets']['assets']): unknown {
+function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | GalleryPhoto[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue, library?: ProjectState['assets']['assets']): unknown {
   if (v === null) return null;
   const wrong = (wants: string) => (issues.push({ field: at, message: `“${field}” is a ${schema.type} field: ${wants}` }), undefined);
   switch (schema.type) {
@@ -482,12 +496,24 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
     case 'boolean':
       return typeof v === 'boolean' ? v : wrong('send true or false');
     case 'reference':
-      if (schema.multiple) return Array.isArray(v) ? v : wrong('send a list of entry IDs ([] for none)');
+      if (schema.multiple) return Array.isArray(v) && v.every((id) => typeof id === 'string') ? v : wrong('send a list of entry IDs ([] for none)');
       return typeof v === 'string' ? v : wrong('send one entry ID ("" for none)');
+    case 'gallery': {
+      if (!Array.isArray(v) || !v.every((p) => p && typeof p === 'object')) return wrong('send every photo in order, each { id?, assetId, alt?, caption? } ([] for none)');
+      // A photo sent with its ID and the picture it shows keeps its description and whether it is decorative unless
+      // the call gives another; the engine checks the rest (the ID, the picture in the library).
+      const before = new Map(galleryRows(stored).map((r) => [r.id, r]));
+      return (v as GalleryPhoto[]).map((p) => {
+        const was = p.id !== undefined ? before.get(p.id) : undefined;
+        const kept = was && was.image.assetId === p.assetId ? was.image : undefined;
+        const image = p.alt !== undefined ? { assetId: p.assetId, alt: p.alt } : kept ? structuredClone(kept) : { assetId: p.assetId, alt: '' };
+        return { ...(p.id !== undefined ? { id: p.id } : {}), image, caption: p.caption ?? '' };
+      });
+    }
     case 'richtext':
       // Markdown as read: one string, which the field reads as its text is written (a hard break stays in its block),
       // or one block per line.
-      return typeof v === 'string' || Array.isArray(v) ? v : wrong('send its text as Markdown');
+      return typeof v === 'string' || (Array.isArray(v) && v.every((line) => typeof line === 'string')) ? v : wrong('send its text as Markdown');
     case 'link':
       if (typeof v !== 'string') return wrong('send an address: "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"');
       return v.trim().startsWith(ENTRY_LINK_PREFIX) ? { type: 'entry', ...entryTarget(v.trim().slice(ENTRY_LINK_PREFIX.length)) } : v.trim();

@@ -8,12 +8,14 @@
 import './PostTerms.css';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
-import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
+import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, GalleryFieldSchema, ListItem, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
 import { isDraftEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { MAX_REFERENCES } from '@engine/collections';
 import { DraftInput, Field } from '../components/ui';
-import { ScalarField } from './PropEditors';
+import { PropField, ScalarField, type ListOp } from './PropEditors';
+import { galleryListProp, galleryRows } from '@shared/gallery-field';
+import { editGallery, type GalleryEdit } from '../lib/gallery-value';
 import type { PendingEdit } from '../store';
 
 /** The value an entry shows for a field: its own, else the field's default. */
@@ -75,8 +77,35 @@ function EntryValueField({
   const label = `Change ${schema.label.toLowerCase()}`;
   if (schema.type === 'date') return <DateValue schema={schema} value={value} onSet={(v) => set(name, v, label)} refuse={refuse} />;
   if (schema.type === 'reference') return <ReferenceValue key={schema.collection} state={state} schema={schema} value={value} self={self} disabled={readOnly} onSet={(v) => set(name, v, label)} />;
+  if (schema.type === 'gallery') return <GalleryValue state={state} name={name} schema={schema} value={value} set={set} />;
   // A link to a section can come with the change that gives the section its anchor (`edit`): sent together.
   return <ScalarField schema={schema as ScalarPropSchema} value={value} state={state} onChange={(v, edit) => (JSON.stringify(v) === JSON.stringify(value) && !edit?.operations.length ? undefined : set(name, v, label, edit))} />;
+}
+
+/**
+ * A gallery's photos (#1320), in the list editor a Gallery's images have in the Inspector: Choose images… adds several
+ * from Assets at once, in the order chosen, and each photo can be moved, removed, given a caption, or described. Each
+ * of those is the gallery's whole new value, one undo step. A photo is only ever added with its picture.
+ */
+function GalleryValue({ state, name, schema, value, set }: { state: ProjectState; name: string; schema: GalleryFieldSchema; value: unknown; set: (name: string, value: unknown, label: string) => unknown }) {
+  const list = galleryListProp(schema);
+  const rows = galleryRows(value);
+  const field = schema.label.toLowerCase();
+  const onList = (op: ListOp) => {
+    const edit: GalleryEdit | null =
+      op.kind === 'pick' ? { kind: 'pick', assetIds: op.assetIds } : op.kind === 'remove' ? { kind: 'remove', itemId: op.itemId } : op.kind === 'move' ? { kind: 'move', itemId: op.itemId, index: op.index } : op.kind === 'field' ? { kind: 'field', itemId: op.itemId, field: op.field, value: op.value } : null;
+    const next = edit && editGallery(rows, edit, state.assets.assets);
+    if (!next) return op.kind === 'pick' ? Promise.resolve(null) : undefined;
+    const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : op.kind === 'remove' ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
+    const saved = Promise.resolve(set(name, next.rows, label));
+    // Choose images… opens the photos it added once they show.
+    return op.kind === 'pick' ? saved.then((ok) => (ok ? { added: next.added, replaced: 0 } : null)) : saved;
+  };
+  return (
+    <div className="entry-gallery" data-testid={`entry-gallery-${name}`}>
+      <PropField name={name} schema={list} value={rows as unknown as ListItem[]} label={schema.label} hint={schema.description} onChange={() => undefined} onList={onList} onTable={() => Promise.resolve(false)} state={state} pickImages="image" pickOnly />
+    </div>
+  );
 }
 
 /**

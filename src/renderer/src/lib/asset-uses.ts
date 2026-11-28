@@ -139,10 +139,14 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
     const key = t ? useKey(t) : `unnamed:${i}`;
     if (u.entry) {
       const e = u.entry;
-      const key = JSON.stringify(['entry', e.collectionId, e.entryId, e.field, e.label ?? '', e.n ?? 0]);
-      const what = e.field === 'featured' ? 'Featured image' : e.field === 'sharing' ? 'Sharing image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : (e.label ?? 'Picture');
+      // A gallery's photo by its field and its own ID, so the row stays the same while the gallery is reordered.
+      const key = JSON.stringify(['entry', e.collectionId, e.entryId, e.field, e.field === 'gallery' ? (e.name ?? '') : (e.label ?? ''), e.field === 'gallery' ? (e.photo ?? '') : (e.n ?? 0)]);
+      const what =
+        e.field === 'featured' ? 'Featured image' : e.field === 'sharing' ? 'Sharing image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : e.field === 'gallery' ? `${e.label ?? 'Gallery'}: photo ${e.n}` : (e.label ?? 'Picture');
       // A collection's default is in no one entry: there is no post to open for it.
       if (e.field === 'default') return { key, target: null, icon: 'post', where: e.title, what };
+      // A gallery's photo opens its entry; `n` names a picture in the text, which a photo is not.
+      if (e.field === 'gallery') return { key, target: null, icon: 'post', where: e.title, what, post: { collectionId: e.collectionId, entryId: e.entryId } };
       return { key, target: null, icon: 'post', where: e.title, what, post: { collectionId: e.collectionId, entryId: e.entryId, ...(e.n ? { n: e.n } : {}) } };
     }
     if (!u.place) {

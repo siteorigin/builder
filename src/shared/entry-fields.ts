@@ -20,6 +20,8 @@
  *   `publishedAt` is; a number is written as the site's language writes it and a choice shows its option's label,
  *   while a condition, a placed section's number or choice, and a sort read the value stored; a reference field shows
  *   the titles of the entries it names, separated by commas, and a condition reads their IDs.
+ *   A gallery field is its photos, a list of `{ id, image, caption }` (each picture as a picture field's is, and one the
+ *   library no longer has left out), which a placed Gallery's images or Carousel's slides take.
  * - `field.<name>.links`: a reference field's titles as rich text, each a link to the entry's page while it has one
  *   (a published entry of a collection with entry pages), the others as text: what the ready-made layout shows.
  *
@@ -32,6 +34,7 @@ import { formatArticleDate, isArticleDate } from './articles';
 import { siteLanguage } from './languages';
 import { richTextToPlain, isRichBlock } from './richtext';
 import { visitorTextFor } from './visitor-text';
+import { galleryListProp, galleryRows } from './gallery-field';
 
 /** The fields every entry has, in the order they are offered. */
 export const ENTRY_FIELD_NAMES = [
@@ -98,10 +101,11 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 
 /**
  * The property a custom field behaves as: a date or a reference as text (a date written out, the titles of the entries
- * named), every other kind as the property of its kind.
+ * named), a gallery as a list of photos, every other kind as the property of its kind.
  */
 function fieldAsProp(f: CollectionFieldSchema): PropSchema {
   if (f.type === 'date' || f.type === 'reference') return text(typeof f.label === 'string' ? f.label : '', f.description);
+  if (f.type === 'gallery') return galleryListProp(f);
   return f;
 }
 
@@ -184,6 +188,7 @@ export function isEntryDateField(collection: Pick<Collection, 'settings'>, field
  */
 export function entryComparisonProblem(collection: Pick<Collection, 'settings'>, field: string): string | null {
   const f = customField(collection, field);
+  if (f?.type === 'gallery') return `"${f.label}" is a list of photos, so it equals no single value: test whether it has any instead.`;
   return f?.type === 'reference' && f.multiple ? `"${f.label}" names several entries, so it equals no single value: test whether it names any instead.` : null;
 }
 
@@ -370,6 +375,8 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     const v = own(entry.values, name);
     const value = v === undefined ? schema.default : v;
     if (schema.type === 'image') return storedPicture(state, value);
+    // Each photo as a picture field shows its picture; one whose picture is gone, or a damaged one, shows nothing.
+    if (schema.type === 'gallery') return galleryPhotos(state, v);
     if (schema.type === 'date') return date(value);
     // A reference names no entry unless the entry chooses one, whatever a damaged default says.
     if (schema.type === 'reference') return referenceValue(state, schema, v, form);
@@ -387,6 +394,14 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     return value;
   }
   return undefined;
+}
+
+/** A gallery's photos as an entry's layout shows them, in its order: each picture as storedPicture reads it, the ones the library no longer has left out. */
+function galleryPhotos(state: Pick<ProjectState, 'assets'>, value: unknown): Array<{ id: string; image: ImageValue; caption: string }> {
+  return galleryRows(value).flatMap((row) => {
+    const image = storedPicture(state, row.image);
+    return image.assetId ? [{ id: row.id, image, caption: row.caption.trim() }] : [];
+  });
 }
 
 /** A number as readers of `language` write it, every digit the author gave kept. */

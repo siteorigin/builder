@@ -12,6 +12,7 @@ import { loopCollection, loopMembers } from './collection-sources';
 import { formDestinationLookup } from './form-destinations';
 import { codeImports } from './code-imports';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
+import { galleryFitProblem } from '@shared/gallery-field';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -937,6 +938,12 @@ function entrySetBinding(state: ProjectState, op: Op<'node.setBinding'>, at: { t
   if (ok && !ok.includes(schema.type)) fail(`"${schema.label}" cannot be shown as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}: it needs a ${ok.join(' or ')} field.`);
   const choice = entryChoiceProblem(schema, nested);
   if (choice) fail(`"${schema.label}" ${choice}`);
+  // A gallery's photos fill a list of pictures, item by item; a list filled from a collection shows its entries instead.
+  if (field === 'prop' && schema.type === 'list') {
+    const fit = galleryFitProblem(schema, nested);
+    if (fit) fail(fit);
+    if (own((node as InstanceNode).listSources, op.prop!) !== undefined) fail(`${describeNode(node)} shows entries of a collection as “${nested?.label ?? op.prop}”. Disconnect it from the collection first.`);
+  }
   const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
   const compared = comparison ? entryComparisonProblem(collection, read) : null;
   if (compared) fail(compared);

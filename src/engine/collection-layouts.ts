@@ -4,13 +4,14 @@
  * collection's own fields in it. A layout nobody has edited is the collection's default, and keeps up with its fields,
  * its text and its kind as they change; once edited it is the author's.
  */
-import type { CollectionDoc, CollectionFieldSchema, GraphNode, NodeTree, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { CollectionDoc, CollectionFieldSchema, ComponentDefinition, GraphNode, NodeTree, ProjectState, ResponsiveStyles } from '@shared/types';
 import { conditionRef, isEntryBinding } from '@shared/types';
 import { collectionHasBody, collectionKind } from '@shared/collections';
 import { newId } from '@shared/ids';
-import { articleTemplateFor } from '@catalogue/index';
+import { articleTemplateFor, catalogueComponent, getTheme } from '@catalogue/index';
 import { declaredTokens } from './tokens';
 import { bindingSlots } from './schema';
+import { installComponent } from './install';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 const EMPTY: NodeTree = { rootIds: [], nodes: {} };
@@ -54,11 +55,13 @@ const BYLINE: ReadonlySet<string> = new Set(['publishedAt', 'updatedAt', 'author
 /**
  * How a record's page shows one field: a fact in its list of details (text, a number, a choice, a date, entries it
  * names, each linked to its page), a feature shown by its name when it holds (yes/no), a link to follow, a passage of its own under its name
- * (rich or multi-line text), or a picture.
+ * (rich or multi-line text), a picture, or a gallery of photos (a band of its own after the page's content).
  */
-type FieldBlock = 'fact' | 'feature' | 'link' | 'passage' | 'picture';
+type FieldBlock = 'fact' | 'feature' | 'link' | 'passage' | 'picture' | 'gallery';
 function blockOf(f: CollectionFieldSchema): FieldBlock {
   switch (f.type) {
+    case 'gallery':
+      return 'gallery';
     case 'boolean':
       return 'feature';
     case 'link':
@@ -124,7 +127,7 @@ function parentOf(tree: NodeTree, id: string): GraphNode | undefined {
  * shows only while its field holds something, and is named after the field, so an author finds, moves or removes it by
  * name.
  */
-function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: ResponsiveStyles) => ResponsiveStyles) {
+function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: ResponsiveStyles) => ResponsiveStyles, gallery: ComponentDefinition | undefined) {
   const nodes: Record<string, GraphNode> = {};
   const add = (n: Record<string, unknown>) => {
     const id = newId('n');
@@ -137,6 +140,7 @@ function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: 
   const lead: string[] = [];
   const pictures: string[] = [];
   const passages: string[] = [];
+  const galleries: string[] = [];
 
   // The facts: a description list as the theme's Key facts lays one out, each fact its label over its value under a
   // hairline, as many to a row as fit the column.
@@ -189,7 +193,14 @@ function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: 
     const body = add(f.type === 'richtext' ? { kind: 'text', tag: 'div', name: 'Text', text: bound, rich: true } : { kind: 'text', tag: 'p', name: 'Text', text: bound, styles: { base: { customCss: 'white-space: pre-line' } } });
     passages.push(add({ kind: 'element', tag: 'div', name: label(f), children: [heading, body], when: bound, styles: { base: { layout: 'stack', gap: { token: 'space.sm' } } } }));
   }
-  return { nodes, lead, pictures, passages };
+  // Galleries: the theme's Gallery, under the field's name, showing the entry's photos while it has any. A theme
+  // without a Gallery shows none; an author can place one of their own.
+  if (gallery)
+    for (const [name, f] of of('gallery')) {
+      const bound = { $entry: `field.${name}` };
+      galleries.push(add({ kind: 'instance', name: label(f), definitionId: gallery.id, props: { eyebrow: '', heading: label(f), images: bound }, when: bound }));
+    }
+  return { nodes, lead, pictures, passages, galleries };
 }
 
 /**
@@ -202,7 +213,7 @@ export function recordTemplate(state: ProjectState, settings: Pick<CollectionDoc
   const unwanted = new Set([...BYLINE, ...(hasBody ? [] : ['body'])]);
   removeNodes(tree, new Set(Object.values(tree.nodes).filter((n) => reads(n, unwanted)).map((n) => n.id)));
   const tokens = new Set(declaredTokens(state).map((t) => t.id));
-  const blocks = fieldBlocks(settings.fields ?? {}, (s) => keptStyles(s, tokens));
+  const blocks = fieldBlocks(settings.fields ?? {}, (s) => keptStyles(s, tokens), themeGallery(state));
   Object.assign(tree.nodes, blocks.nodes);
   const find = (field: string) => Object.values(tree.nodes).find((n) => reads(n, new Set([field])) && !Object.hasOwn(blocks.nodes, n.id));
   const insert = (ids: string[], at: { after: GraphNode }) => {
@@ -219,7 +230,7 @@ export function recordTemplate(state: ProjectState, settings: Pick<CollectionDoc
     const [root, title] = [newId('n'), newId('n')];
     tree.nodes[title] = { id: title, kind: 'text', tag: 'h1', name: 'Title', text: { $entry: 'title' } } as GraphNode;
     tree.nodes[root] = { id: root, kind: 'element', tag: 'article', name: 'Article', children: [title, ...blocks.lead, ...blocks.pictures, ...blocks.passages], styles: keptStyles({ base: { layout: 'stack', gap: { token: 'space.xl' } } }, tokens) } as GraphNode;
-    tree.rootIds = [root];
+    tree.rootIds = [root, ...blocks.galleries];
     return tree;
   }
   insert(blocks.lead, { after: summary });
@@ -230,7 +241,26 @@ export function recordTemplate(state: ProjectState, settings: Pick<CollectionDoc
   insert(blocks.pictures, { after: picture ?? lastLead });
   insert(blocks.passages, { after: text ?? last(blocks.pictures, picture ?? lastLead) });
   collapseWhenEmpty(tree);
+  // Each gallery is a band of its own after the page's content, as a Gallery placed on a page is.
+  tree.rootIds.push(...blocks.galleries);
   return tree;
+}
+
+/** The theme's Gallery, which a record's layout shows a gallery field with; undefined in a theme without one. */
+const themeGallery = (state: ProjectState): ComponentDefinition | undefined => catalogueComponent(state.site.themeId, 'media.gallery');
+
+/**
+ * Puts in the project every theme component a collection's layout places that it does not have yet: a default layout
+ * names the theme's Gallery without installing it (defaultLayout is worked out to compare with as well), so whatever
+ * writes one into a collection installs what it places.
+ */
+export function installLayoutComponents(state: ProjectState, tree: NodeTree) {
+  const theme = getTheme(state.site.themeId);
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind !== 'instance' || Object.hasOwn(state.components, n.definitionId)) continue;
+    const def = theme.components.find((c) => c.id === n.definitionId);
+    if (def) installComponent(state, def.componentId);
+  }
 }
 
 /**

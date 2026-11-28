@@ -2,6 +2,7 @@
  * Export helpers: copying a clean snapshot of a project, checking it, and making the exported source ready
  * to hand over. Nothing here depends on Electron, so it is unit tested directly.
  */
+import { galleryAssetIds } from '@shared/gallery-field';
 import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync, type Dirent } from 'node:fs';
@@ -283,6 +284,27 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
   return out;
 }
 
+/**
+ * The originals of the photos published entries' gallery fields hold (#1320): the website keeps each one even where
+ * no page shows it (a layout that leaves the gallery out), as the entry's own photos. Drafts' photos are not the
+ * website's, and the responsive copies only ship where a page shows them.
+ */
+export function publishedGalleryFiles(state: ProjectState): Set<string> {
+  const live = publishedState(state);
+  const out = new Set<string>();
+  for (const c of Object.values(live.collections ?? {})) {
+    const galleries = Object.entries(c?.settings?.fields ?? {}).filter(([, f]) => f?.type === 'gallery');
+    if (!galleries.length) continue;
+    for (const e of Object.values(c.entries ?? {}))
+      for (const [name] of galleries)
+        for (const id of galleryAssetIds(e?.values && Object.hasOwn(e.values, name) ? e.values[name] : undefined)) {
+          const a = Object.hasOwn(live.assets.assets, id) ? live.assets.assets[id] : undefined;
+          if (a?.kind === 'image' && typeof a.file === 'string') out.add(a.file);
+        }
+  }
+  return out;
+}
+
 /** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
 const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
@@ -537,10 +559,11 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
   const named = await websiteNames(project, site, candidates.map((rel) => basename(rel)));
+  const photos = publishedGalleryFiles(state);
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
-    if (namesAsset(named, rel)) shipped.add(rel);
+    if (namesAsset(named, rel) || photos.has(rel)) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -571,7 +594,9 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   if (!candidates.length) return [];
   const unreached: string[] = [];
   const shipped = await websiteNames(project, site, candidates.map((rel) => basename(rel)), unreached);
-  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel)));
+  // A published entry's gallery photo is the website's whether or not a page shows it (pruneWebsiteAssets).
+  const photos = publishedGalleryFiles(state);
+  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
   for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
@@ -629,10 +654,12 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   };
   // Searched for exactly the names the answers below ask about, so a damaged record elsewhere in the library is no name.
   const found = await websiteNames(project, await websiteFiles(project, state), missing.flatMap((m) => Object.values(asked(m)).flat().map((f) => basename(f))));
+  // A published entry's gallery photo ships whether or not a page shows it, so its original being gone matters too.
+  const photos = publishedGalleryFiles(state);
   return missing.map((m) => {
     const { direct, copies } = asked(m);
     const named = (f: string) => found.whole(basename(f));
-    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) };
+    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) || (m.original && photos.has(state.assets.assets[m.assetId].file)) };
   });
 }
 
