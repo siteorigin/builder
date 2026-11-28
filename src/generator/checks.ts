@@ -22,7 +22,6 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
-import { shippedOutline } from './shipped-outlines';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
