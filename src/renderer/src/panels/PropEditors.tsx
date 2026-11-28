@@ -2050,7 +2050,8 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
-      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} />;
+      // A text with a limit of its own (a photo's caption) counts against it, and keeps text over it to shorten.
+      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} {...(schema.maxLength !== undefined ? { limit: schema.maxLength, quietCount: true } : {})} />;
     case 'richtext':
       return (
         <RichTextField
@@ -2654,7 +2655,7 @@ export interface ListOrder {
   locked: string | null;
 }
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused, setProps, copyOnly }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, pickOnly, fill, order, refused, setProps, copyOnly }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -2691,6 +2692,8 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   everywhere?: boolean;
   /** For a list that takes several library images at once (a Gallery): the item field each image goes in. */
   pickImages?: string | null;
+  /** With `pickImages`: rows are added only by choosing images, never as a row to fill in by hand. */
+  pickOnly?: boolean;
   /** For a list: a way to fill it from elsewhere in the project in one step. */
   fill?: ListFill;
   /** For a list: its order, when that is chosen elsewhere. */
@@ -2710,7 +2713,7 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} refused={refused} error={refused?.({}) ?? missingNote(schema, value)} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} pickOnly={pickOnly} fill={fill} order={order} refused={refused} error={refused?.({}) ?? missingNote(schema, value)} />
       </FieldHome>
     );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} refused={refused?.({})} />;
@@ -3295,7 +3298,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * reason once the list is full or at its minimum. While the order is set elsewhere the rows have no moves at all,
  * and the note above them says why.
  */
-function ListEditor({ name, schema, items, onList, read, itemAlive, state, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order, refused, error }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder; refused?: (at: { field?: string; itemId?: string }) => string | undefined; /** A problem with the list as a whole (a required list with no items, or a refused removal of its last). */ error?: string }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, pickOnly, fill, order, refused, error }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; /** Rows come only from Choose images… (an entry's gallery, whose every photo has its picture): no row to fill in by hand. */ pickOnly?: boolean; fill?: ListFill; order?: ListOrder; refused?: (at: { field?: string; itemId?: string }) => string | undefined; /** A problem with the list as a whole (a required list with no items, or a refused removal of its last). */ error?: string }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -3337,7 +3340,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, openI
     const a = after.current;
     if (!a) return;
     const root = rootRef.current;
-    const focusRow = (id: string | null) => ((id && root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(id)}`)) || root?.querySelector<HTMLElement>('.insp-add'))?.focus();
+    const focusRow = (id: string | null) => ((id && root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(id)}`)) || root?.querySelector<HTMLElement>('.insp-add, .insp-pick-open'))?.focus();
     if (a.kind === 'added') {
       const added = items.find((i) => !a.before.includes(i.id));
       if (!added) return;
@@ -3795,7 +3798,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, openI
           ) : (
             <p className="insp-note muted">{items.length ? 'Every other page of the site is in this list.' : 'Add another page to the site to list it here.'}</p>
           )
-        ) : (
+        ) : pickOnly ? null : (
           <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
               if (addNote) return;
               after.current = { kind: 'added', before: items.map((x) => x.id) };

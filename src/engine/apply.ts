@@ -52,7 +52,7 @@ import { codeProblemText, globalCssProblem, hasCode, headCodeProblem } from '@sh
 import { fathomIdText, fathomSiteIdProblem } from '@shared/integrations';
 import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
-import { defaultLayout, isDefaultLayout } from './collection-layouts';
+import { defaultLayout, installLayoutComponents, isDefaultLayout } from './collection-layouts';
 import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectSourceProblem, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
@@ -586,7 +586,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
         else if (alt !== was && alt !== now) altReview.push({ ...u.place, reason: 'custom', alt: v.alt });
       }
       // Collections' uses have no place a replacement can name yet, so they change only with every other use: each
-      // entry's featured image and the pictures in its text, and their picture fields' defaults and each entry's value.
+      // entry's featured image and the pictures in its text, their picture fields' defaults, each entry's value and
+      // each photo of its galleries.
       // A description that was the old image's suggestion follows the new one, as above; entries have no place in the
       // review list yet.
       if (!op.uses) {
@@ -738,9 +739,9 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const v of variantBackgrounds(state)) fn(v.value);
   for (const p of Object.values(state.pages)) walk(p.seo);
   for (const c of Object.values(state.collections ?? {})) {
-    // A custom field's default, and each entry's value of a picture, link or rich text field: only those hold a
-    // picture or a link to a document.
-    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'link' || f?.type === 'richtext');
+    // A custom field's default, and each entry's value of a picture, gallery, link or rich text field: only those hold
+    // a picture or a link to a document.
+    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'gallery' || f?.type === 'link' || f?.type === 'richtext');
     for (const [, f] of holding) walk(f.default);
     for (const e of Object.values(c.entries)) {
       for (const [name] of holding) if (Object.hasOwn(e.values ?? {}, name)) walk(e.values[name]);
@@ -791,11 +792,11 @@ function componentUses(state: ProjectState): Map<string, number> {
   return out;
 }
 
-/** The assets the collections' fields use: each picture, link or rich text field's default, and each entry's value and text. */
+/** The assets the collections' fields use: each picture, gallery, link or rich text field's default, and each entry's value and text. */
 function collectionUses(state: ProjectState): Map<string, number> {
   const out = new Map<string, number>();
   for (const c of Object.values(state.collections ?? {})) {
-    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'link' || f?.type === 'richtext');
+    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'gallery' || f?.type === 'link' || f?.type === 'richtext');
     for (const [, f] of holding) valueUses(f.default, out);
     for (const e of Object.values(c.entries)) {
       for (const [name] of holding) if (Object.hasOwn(e.values ?? {}, name)) valueUses(e.values[name], out);
@@ -819,7 +820,10 @@ function entryBodyImages(state: ProjectState, assetId: string): Array<{ assetId:
   return collectionEntries(state).flatMap((e) => (Array.isArray(e.body) ? e.body.filter((b) => b && typeof b === 'object' && b.type === 'image' && b.assetId === assetId) : [])) as Array<{ assetId: string; alt: string; decorative?: boolean }>;
 }
 
-/** The picture values of collections' image fields showing `assetId`: each field's default and each entry's value. */
+/**
+ * The picture values of collections' image and gallery fields showing `assetId`: each picture field's default and each
+ * entry's value, and the picture of each photo of each entry's gallery.
+ */
 function collectionImageValues(state: ProjectState, assetId: string): ImageValue[] {
   const out: ImageValue[] = [];
   const pick = (v: unknown) => {
@@ -827,6 +831,11 @@ function collectionImageValues(state: ProjectState, assetId: string): ImageValue
   };
   for (const c of Object.values(state.collections ?? {}))
     for (const [name, f] of Object.entries(c.settings.fields ?? {})) {
+      if (f?.type === 'gallery') {
+        // The photo's own picture value, so its ID, place, caption and description stay as they are.
+        for (const e of Object.values(c.entries)) if (Object.hasOwn(e.values ?? {}, name) && Array.isArray(e.values[name])) for (const row of e.values[name] as unknown[]) pick((row as { image?: unknown } | null)?.image);
+        continue;
+      }
       if (f?.type !== 'image') continue;
       pick(f.default);
       for (const e of Object.values(c.entries)) if (Object.hasOwn(e.values ?? {}, name)) pick(e.values[name]);
@@ -4414,6 +4423,9 @@ function themeApply(state: ProjectState, themeId: string, ctx: ApplyContext): Op
     }
   };
   for (const next of mapping.values()) install(next);
+  // A records layout nobody has edited is the new theme's record layout, as a collection made now would start with:
+  // judged before its sections move to the new theme's, against the layout the old theme would give it.
+  const untouched = Object.values(state.collections).filter((c) => collectionKind(c.settings) === 'structured' && isDefaultLayout(state, c.settings));
   // Only pages and the shared shell move to the new theme. Project components keep their pinned theme
   // dependencies, and theme definitions retained for them stay exactly as they were.
   for (const t of allTrees(state)) {
@@ -4442,11 +4454,12 @@ function themeApply(state: ProjectState, themeId: string, ctx: ApplyContext): Op
       dropped = true;
     }
   }
-  // A records layout nobody has edited is the new theme's record layout, as a collection made now would start with.
-  const untouched = Object.values(state.collections).filter((c) => collectionKind(c.settings) === 'structured' && isDefaultLayout(state, c.settings));
   state.site.themeId = theme.id;
   state.themeLock.theme = themeLockEntry(theme);
-  for (const c of untouched) c.settings.template = defaultLayout(state, c.settings);
+  for (const c of untouched) {
+    c.settings.template = defaultLayout(state, c.settings);
+    installLayoutComponents(state, c.settings.template);
+  }
   return { rebound: mapping.size };
 }
 

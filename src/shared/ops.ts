@@ -285,7 +285,7 @@ const COLLECTION_SETTINGS = {
   fields: z
     .record(z.string(), z.record(z.string(), z.unknown()))
     .optional()
-    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD) or reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them). Replaces the whole set: a field left out is removed from every entry.'),
+    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD), reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them) or gallery (an ordered list of library photos, default []). Replaces the whole set: a field left out is removed from every entry.'),
   pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
   rss: z
     .boolean()
@@ -350,7 +350,7 @@ const ENTRY_FIELDS = {
   featuredImage: z.string().nullable().optional().describe('A library image\'s asset ID; null removes it.'),
   featuredImageAlt: limited(TEXT_LIMITS.imageAlt).nullable().optional().describe('What the featured image shows, for people who cannot see it, on one line. null or "" goes back to the library\'s suggested alt text for the picture. A different featured image given without it starts with none.'),
   terms: z.record(z.string(), z.array(z.string()).max(50)).optional().describe('Term IDs by taxonomy ID. Each taxonomy given replaces that taxonomy\'s terms; others stay.'),
-  values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay. A date is "YYYY-MM-DD" or ""; a reference is an entry ID ("" for none), or a list of them.'),
+  values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay. A date is "YYYY-MM-DD" or ""; a reference is an entry ID ("" for none), or a list of them; a gallery is every photo in order, each { id?, image: assetId or { assetId, alt }, caption? } (a photo sent with its id keeps it; [] for none).'),
   body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`),
   seoTitle: limited(TEXT_LIMITS.seoTitle).optional().describe('The browser title and link-preview title, used as written. "" goes back to the entry\'s title and the site name.'),
   description: limited(TEXT_LIMITS.pageDescription).optional().describe('What search engines and link previews show. "" goes back to the excerpt, else the site description.'),

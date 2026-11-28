@@ -127,6 +127,7 @@ export function fieldValue(v: unknown, kind: string | undefined, read: LinkRead 
     case 'richtext':
       return richTextOf(v, typeof v === 'string' && /<\/?[a-z][^>]*>/i.test(v) ? 'html' : 'text', read)?.filter((b) => b.type !== 'image');
     case 'reference':
+    case 'gallery':
       return undefined;
     default: {
       const t = text(v);
@@ -141,6 +142,8 @@ export function mappingFieldsProblem(mapping: SourceMapping, fields: FieldKinds)
     if (!Object.hasOwn(fields, field)) return `the collection has no field “${field.slice(0, 60)}”, which its mapping reads`;
     // Which entries a record names is not synced (records are matched to entries by their own IDs).
     if (fields[field] === 'reference') return `the ${field.slice(0, 60)} field names other entries, which a sync does not fill in`;
+    // A gallery's photos are library pictures chosen in the editor; a sync brings none in yet.
+    if (fields[field] === 'gallery') return `the ${field.slice(0, 60)} field is a gallery of library photos, which a sync does not fill in`;
   }
   return null;
 }
@@ -193,6 +196,7 @@ export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKi
     // Which entries a record names is not synced (records are matched to entries by their own IDs), so a mapping to it
     // is said rather than left empty.
     if (fields[field] === 'reference') throw new MappingError(`the ${field.slice(0, 60)} field names other entries, which a sync does not fill in`);
+    if (fields[field] === 'gallery') throw new MappingError(`the ${field.slice(0, 60)} field is a gallery of library photos, which a sync does not fill in`);
     const raw = readPath(item, path);
     const v = fieldValue(raw, fields[field], read);
     // A value there that is not one its field holds is said, never cleared from the entry.

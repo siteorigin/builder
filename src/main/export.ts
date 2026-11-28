@@ -2,6 +2,7 @@
  * Export helpers: copying a clean snapshot of a project, checking it, and making the exported source ready
  * to hand over. Nothing here depends on Electron, so it is unit tested directly.
  */
+import { galleryAssetIds } from '@shared/gallery-field';
 import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync, type Dirent } from 'node:fs';
@@ -294,6 +295,47 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
   return out;
 }
 
+/**
+ * The files of the photos published entries' gallery fields hold (#1320), each original and its responsive copies:
+ * the website keeps them even where no page shows them (a layout that leaves the gallery out), as the entry's own
+ * photos, and the library it publishes names every copy. Drafts' photos are not the website's. Each is spelled as the
+ * record has it: keptFiles finds them among a staged copy's files.
+ */
+export function publishedGalleryFiles(state: ProjectState): Set<string> {
+  const live = publishedState(state);
+  const out = new Set<string>();
+  for (const c of Object.values(live.collections ?? {})) {
+    const galleries = Object.entries(c?.settings?.fields ?? {}).filter(([, f]) => f?.type === 'gallery');
+    if (!galleries.length) continue;
+    for (const e of Object.values(c.entries ?? {}))
+      for (const [name] of galleries)
+        for (const id of galleryAssetIds(e?.values && Object.hasOwn(e.values, name) ? e.values[name] : undefined)) {
+          const a = Object.hasOwn(live.assets.assets, id) ? live.assets.assets[id] : undefined;
+          if (a?.kind !== 'image') continue;
+          for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) if (typeof f === 'string') out.add(f);
+        }
+  }
+  return out;
+}
+
+/**
+ * The staged files that are `kept` (publishedGalleryFiles): each by its very path, or, where the copy has no file of
+ * that spelling, the ones a disk that ignores case reads as it (`Photo-…` for the record's `photo-…`) that no other
+ * record of `library` (libraryAssetFiles) spells so.
+ */
+function keptFiles(kept: ReadonlySet<string>, files: readonly string[], library: ReadonlySet<string>): Set<string> {
+  const exact = new Set(files);
+  const out = new Set<string>();
+  const wanted = new Set<string>();
+  for (const f of kept) {
+    if (exact.has(f)) out.add(f);
+    else wanted.add(f.toLowerCase());
+  }
+  // Never a file that is another library record's own by its very spelling.
+  for (const rel of files) if (wanted.has(rel.toLowerCase()) && !library.has(rel)) out.add(rel);
+  return out;
+}
+
 /** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
 const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
@@ -580,10 +622,11 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
   const named = await websiteNames(project, site, candidates.map((rel) => basename(rel)));
+  const photos = keptFiles(publishedGalleryFiles(state), candidates, libraryAssetFiles(state));
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
-    if (namesAsset(named, rel)) shipped.add(rel);
+    if (namesAsset(named, rel) || photos.has(rel)) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -614,7 +657,9 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   if (!candidates.length) return [];
   const unreached: string[] = [];
   const shipped = await websiteNames(project, site, candidates.map((rel) => basename(rel)), unreached);
-  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel)));
+  // A published entry's gallery photo is the website's whether or not a page shows it (pruneWebsiteAssets).
+  const photos = keptFiles(publishedGalleryFiles(state), candidates, libraryAssetFiles(state));
+  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
   for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text, site.browse));
@@ -672,10 +717,13 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   };
   // Searched for exactly the names the answers below ask about, so a damaged record elsewhere in the library is no name.
   const found = await websiteNames(project, await websiteFiles(project, state), missing.flatMap((m) => Object.values(asked(m)).flat().map((f) => basename(f))));
+  // A published entry's gallery photo ships whether or not a page shows it, so its original being gone matters too; a
+  // copy no page names does not.
+  const photos = publishedGalleryFiles(state);
   return missing.map((m) => {
     const { direct, copies } = asked(m);
     const named = (f: string) => found.whole(basename(f));
-    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) };
+    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) || (m.original && photos.has(state.assets.assets[m.assetId].file)) };
   });
 }
 
