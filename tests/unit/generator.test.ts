@@ -1203,7 +1203,7 @@ describe('section links', () => {
     headerOf(s).props.links = [{ id: 'i1', label: 'Services', link: { type: 'anchor', target: 'services' } }];
     instanceOf(s, 'features.grid').anchor = 'services';
     // Only IDs every page with the header has are safe for its "on this page" links.
-    expect([...sharedPageIds(s, 'header')].sort()).toEqual(['main', 'so-site-nav', 'top']);
+    expect([...sharedPageIds(s, 'header')].sort()).toEqual(['main', 'so-site-nav', 'so-site-nav-name', 'top']);
     let found = missing(s);
     expect(found).toHaveLength(1);
     expect(found[0].nodeId).toBe(headerOf(s).id);

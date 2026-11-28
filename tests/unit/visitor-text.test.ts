@@ -18,7 +18,7 @@ import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
 import { RUNTIME_DIR, STYLES_DIR, generateProject, routeId } from '@generator/index';
 import { languageDirection, pageDirection, siteDirection } from '@shared/languages';
-import { VISITOR_TEXT_GROUPS, VISITOR_TEXT_KEYS, builtInVisitorText, visitorTextFor } from '@shared/visitor-text';
+import { VISITOR_TEXT_GROUPS, VISITOR_TEXT_KEYS, builtInVisitorText, resolveVisitorText, visitorTextFor } from '@shared/visitor-text';
 import { notFoundCopy } from '@shared/not-found';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -78,6 +78,20 @@ describe('visitor text', () => {
     // site.json edited by hand: anything but text, or text that shows nothing, is no wording.
     for (const visitorText of [null, 'x', [], { ar: 'x' }, { ar: { menu: 7 } }, { ar: { menu: ' \u200b ' } }] as unknown[])
       expect(visitorTextFor({ visitorText } as never, 'ar').menu).toBe('القائمة');
+  });
+
+  it('names the pieces that fall back to English on a page in another language, and only those (issue #1464)', () => {
+    const site = { visitorText: { ar: { menu: 'اعرض القائمة' }, fr: { menu: 'Menu', skipLink: ' \u200b ' } } };
+    // French and Urdu have no built-in wording: every piece the author left is English. The author's own French
+    // "Menu" is French, even though it reads the same as the English.
+    const fr = resolveVisitorText(site, 'fr');
+    expect(fr.english).toEqual(VISITOR_TEXT_KEYS.filter((k) => k !== 'menu'));
+    expect(fr.english).toContain('skipLink');
+    expect(resolveVisitorText(site, 'fr-CA').english).not.toContain('menu');
+    expect(resolveVisitorText(site, 'ur').english).toEqual([...VISITOR_TEXT_KEYS]);
+    expect(resolveVisitorText(site, 'fr').words).toEqual(visitorTextFor(site, 'fr'));
+    // English pages, and languages with built-in wording or the author's, have nothing to mark.
+    for (const code of ['en', 'en-GB', 'EN-us', 'ar', 'ar-MA', 'he', 'iw']) expect(resolveVisitorText(site, code).english, code).toEqual([]);
   });
 
   it('is set piece by piece through the site’s settings, and cleared back to the built-in wording', () => {
@@ -144,7 +158,9 @@ describe('the generated wording', () => {
     // A site in one language carries that language alone, and its layout names no other.
     const one = generateProject(fresh());
     expect(one.get(`${RUNTIME_DIR}/visitor-text.js`)).toContain('const SITE = "en";');
-    expect(one.get('src/routes/+layout.svelte')).toContain("import { visitorText } from '../lib/siteorigin/runtime/visitor-text.js';");
+    expect(one.get('src/routes/+layout.svelte')).toContain("import { visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';");
+    // An English site has no English to mark.
+    expect(one.get(`${RUNTIME_DIR}/visitor-text.js`)).toContain('const ENGLISH = {};');
     expect(one.get('src/routes/+layout.svelte')).not.toContain('speak(');
   });
 });
@@ -382,6 +398,89 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
       await expect.poll(() => page.locator('.so-form__status--error[role="alert"]').innerText()).toBe(ar.formFailed);
       // An email address is typed left to right, whichever way the page runs.
       await expect(form.locator('[name="email"]').evaluate((el) => (globalThis as unknown as { getComputedStyle: (e: unknown) => { direction: string } }).getComputedStyle(el).direction)).resolves.toBe('ltr');
+    } finally {
+      await page.close();
+    }
+  });
+});
+
+/**
+ * A site in French, with an About page in Urdu and a Contact page in British English, and no French or Urdu wording
+ * of the site's own but the menu button's (the author's "Menu", which reads the same as the English). Contact sits
+ * in the header's About submenu (issue #1464).
+ */
+function englishFallbackSite() {
+  let s = fresh();
+  s = apply(s, { type: 'site.update', language: 'fr', visitorText: { language: 'fr', text: { menu: 'Menu' } } });
+  s = apply(s, { type: 'page.update', pageId: byTitle(s, 'About').id, language: 'ur' });
+  s = apply(s, { type: 'page.update', pageId: byTitle(s, 'Contact').id, language: 'en-GB' });
+  const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  header.props = { ...header.props, links: (header.props.links as Array<{ label: string }>).map((l) => (l.label === 'Contact' ? { ...l, sub: true } : l)) };
+  const files = generateProject(s);
+  const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
+  return { files, css, routes: { home: '/', ur: routeId(byTitle(s, 'About').route), en: routeId(byTitle(s, 'Contact').route) } };
+}
+
+/** The language each of the header's and the skip link's own words are marked with, read in the page. */
+const READ_LANGUAGES = `(() => {
+  const nav = document.getElementById('so-site-nav');
+  const name = document.getElementById(nav.getAttribute('aria-labelledby'));
+  const sub = document.querySelector('.so-header__sub-toggle .so-visually-hidden');
+  const skip = document.querySelector('.so-skip-link');
+  skip.focus();
+  const at = skip.getBoundingClientRect();
+  return {
+    html: document.documentElement.lang,
+    skip: skip.getAttribute('lang'),
+    skipSide: at.left + at.width / 2 < innerWidth / 2 ? 'left' : 'right',
+    menu: document.querySelector('.so-header__toggle .so-visually-hidden').getAttribute('lang'),
+    nav: nav.getAttribute('lang'),
+    name: name.getAttribute('lang'),
+    submenu: [...sub.childNodes].filter((n) => n.textContent).map((n) => [n.textContent, n.nodeType === 1 ? n.getAttribute('lang') : null]),
+    link: nav.querySelector('a').closest('[lang]').getAttribute('lang')
+  };
+})()`;
+
+describe.skipIf(!browserInstalled)('English wording on a page in French or Urdu, in a browser', () => {
+  let browser: Browser;
+  let script: string;
+  let site: ReturnType<typeof englishFallbackSite>;
+
+  beforeAll(async () => {
+    site = englishFallbackSite();
+    const [bundled, launched] = await Promise.allSettled([bundleSite(site.files), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
+    if (launched.status === 'fulfilled') browser = launched.value;
+    if (bundled.status === 'rejected') throw bundled.reason;
+    if (launched.status === 'rejected') throw launched.reason;
+    script = bundled.value;
+  });
+  afterAll(() => browser?.close());
+
+  it('marks the skip link, the menu, the navigation and the submenu as English where they fall back to it, without a reload', async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
+    try {
+      await page.setContent(`<!doctype html><html lang="fr" dir="ltr"><head><meta charset="utf-8"><style>${site.css}</style></head><body><div id="app"></div></body></html>`);
+      await page.addScriptTag({ content: script });
+      const english = (en: string | null, link: string, side: string) => ({ skip: en, skipSide: side, nav: null, name: en, submenu: [['About', null], [' submenu', en]], link });
+      const steps: Array<[string, string, string | null, ReturnType<typeof english>]> = [
+        // route, the page's language, the menu button's mark (the author's French "Menu" is French), the rest
+        [site.routes.home, 'fr', null, english('en', 'fr', 'left')],
+        [site.routes.ur, 'ur', 'en', english('en', 'ur', 'right')],
+        // English on an English page is the page's own language: nothing is marked.
+        [site.routes.en, 'en-GB', null, english(null, 'en-GB', 'left')],
+        [site.routes.home, 'fr', null, english('en', 'fr', 'left')]
+      ];
+      for (const [route, lang, menu, rest] of steps) {
+        await page.evaluate((id) => (globalThis as unknown as { go: (id: string) => void }).go(id), route);
+        expect([route, await page.evaluate(READ_LANGUAGES)]).toEqual([route, { html: lang, menu, ...rest }]);
+        // What a screen reader is told stays the same words: the marks change only the language they are said in.
+        expect(await menuName(page)).toBe('Menu');
+        await expect(page.getByRole('link', { name: 'Skip to content', exact: true }).count()).resolves.toBe(1);
+        await page.locator('.so-header__toggle').click();
+        await expect(page.getByRole('navigation', { name: 'Main', exact: true }).count()).resolves.toBe(1);
+        await expect(page.getByRole('button', { name: 'About submenu', exact: true }).count()).resolves.toBe(1);
+        await page.locator('.so-header__toggle').click();
+      }
     } finally {
       await page.close();
     }
