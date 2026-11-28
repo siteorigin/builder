@@ -651,7 +651,7 @@ describe('reading a WordPress export: galleries (#1513)', () => {
         attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('First "pic" <b>')),
         attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
         attachment(5002, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg'),
-        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5002,5000,5001" columns="3"]\n\nAfter.')
+        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5002,5000,5002,5001" columns="3"]\n\nAfter.')
       ]),
       ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
     );
@@ -683,22 +683,24 @@ describe('reading a WordPress export: galleries (#1513)', () => {
   it('shows a gallery that names no pictures with the pictures attached to its post, in their order', async () => {
     const path = withUploads(
       wxr([
+        attachment(5005, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
         attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
         attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>1</wp:menu_order>'),
-        attachment(5005, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5007, 'https://site.example/wp-content/uploads/2018/01/g4%2Ejpg?download=menu.pdf', '<wp:post_parent>1</wp:post_parent><wp:menu_order>3</wp:menu_order>'),
         attachment(5004, 'https://site.example/wp-content/uploads/2018/01/menu.pdf', '<wp:post_parent>1</wp:post_parent><wp:post_mime_type>application/pdf</wp:post_mime_type>'),
         attachment(5006, 'https://site.example/wp-content/uploads/2018/01/song.mp3', '<wp:post_parent>1</wp:post_parent>'),
         attachment(5003, 'https://site.example/wp-content/uploads/2018/01/other.jpg', '<wp:post_parent>2</wp:post_parent>'),
         item(1, published, '[gallery]'),
         item(2, { ...published, title: 'Empty' }, 'Text\n\n[gallery exclude="5003"]')
       ]),
-      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg', 'g4.jpg']
     );
     const source = await readWordPress(path, {});
     const [one, two] = source.posts;
-    // By menu order, then by ID; the document and the sound are no pictures of the gallery.
-    expect(text(one.body)).toEqual(['[m1]', '[m2]', '[m3]']);
-    expect(source.media.map((m) => m.ref.split('/').pop())).toEqual(['g2-100.jpg', 'g1-100.jpg', 'g3-100.jpg']);
+    // By menu order, then by ID; the document and the sound are no pictures of the gallery, and a picture's address
+    // is judged by its file's name, not its query.
+    expect(text(one.body)).toEqual(['[m1]', '[m2]', '[m3]', '[m4]']);
+    expect(source.media.map((m) => m.ref.split('/').pop())).toEqual(['g2-100.jpg', 'g1-100.jpg', 'g3-100.jpg', 'g4%2Ejpg?download=menu.pdf']);
     expect(one.notes).toEqual([]);
     expect(text(two.body)).toEqual(['Text']);
     expect(two.notes).toEqual(['Left out a gallery: the export lists no pictures for it.']);
@@ -733,13 +735,15 @@ describe('reading a WordPress export: galleries (#1513)', () => {
         item(3, published, '[gallery ids="" include=8]'),
         item(4, published, `[gallery ids="${ids}"]`),
         item(5, published, '[gallery ids="9,404"]'),
-        item(6, published, '[gallery ids="404"]')
+        item(6, published, '[gallery ids="404"]'),
+        item(7, published, `[gallery ids="8" ids="7"${' '.repeat(11_000)}]`)
       ]),
       ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
     );
     const source = await readWordPress(path, {});
     const refs = (p: SourcePost) => p.body.map((b) => source.media.find((m) => 'assetId' in b && m.key === b.assetId)?.ref.split('/').pop());
-    const [named, closed, included, long, half, gone] = source.posts;
+    const [named, closed, included, long, half, gone, later] = source.posts;
+    expect(refs(later)).toEqual(['g1-100.jpg']);
     expect(refs(named)).toEqual(['g1-100.jpg']);
     expect(refs(closed)).toEqual(['g1-100.jpg', 'g2-100.jpg']);
     expect(refs(included)).toEqual(['g2-100.jpg']);

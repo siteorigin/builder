@@ -219,7 +219,8 @@ export const MAX_POST_GALLERY_PICTURES = 500;
  */
 function shortcodeAttrs(attrs: string): Map<string, string> {
   const out = new Map<string, string>();
-  const text = attrs.replace(/\s*\/\s*$/, '');
+  const trimmed = attrs.trimEnd();
+  const text = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
   for (const m of text.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))|"[^"]*"|'[^']*'|\S+/g)) {
     if (m[1]) out.set(m[1].toLowerCase(), decodeEntities(m[2] ?? m[3] ?? m[4] ?? ''));
   }

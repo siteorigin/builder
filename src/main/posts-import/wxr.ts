@@ -292,7 +292,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
 function isImageAttachment(item: XmlElement): boolean {
   const mime = childText(item, 'wp:post_mime_type').trim().toLowerCase();
   if (mime) return mime.startsWith('image/');
-  const ext = /\.([a-z0-9]{1,5})(?:[?#]|$)/i.exec(childText(item, 'wp:attachment_url').trim())?.[1].toLowerCase();
+  // The file's own name, without the address's query or section, as the uploads folder holds it.
+  const name = childText(item, 'wp:attachment_url').trim().split(/[?#]/)[0].split('/').pop() ?? '';
+  const ext = /\.([a-z0-9]{1,5})$/i.exec(decodeSlug(name))?.[1].toLowerCase();
   return !ext || [...PICTURE_EXTENSIONS, 'svg', 'bmp', 'tif', 'tiff', 'heic', 'ico'].includes(ext);
 }
 
