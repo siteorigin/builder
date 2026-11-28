@@ -15,7 +15,7 @@ import { checkRelayUrl } from '@shared/live/relay-url';
 
 interface SettingsFile {
   settings: AppSettings;
-  recents: RecentProject[];
+  recents: RecentEntry[];
   trusted: Record<string, string>;
   /** The folder the last new project was created in, so the next New project proposes it. */
   lastProjectParent?: string;
@@ -213,6 +213,14 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   return s.settings;
 }
 
+/**
+ * A recent project as the settings keep it. `folderId` is the folder's identity on its disk (device and inode) when it
+ * was last opened, which a move or rename keeps and a copy does not: it tells a moved folder already listed on its own
+ * from another working copy of the same project when the author finds where a missing entry went (#1541). It stays in
+ * the main process.
+ */
+type RecentEntry = RecentProject & { folderId?: string };
+
 const MAX_RECENTS = 20;
 const MANIFEST = 'siteorigin.project.json';
 
@@ -258,15 +266,15 @@ function folderIdentity(dir: string): string | undefined {
  * long ago is never rotated off by others opened since. `keep` is an entry this opening may not push off the end
  * (#217): it holds one of the places, and the newest of the others fill the rest.
  */
-function capped(list: RecentProject[], keep?: RecentProject): RecentProject[] {
+function capped(list: RecentEntry[], keep?: RecentEntry): RecentEntry[] {
   let room = MAX_RECENTS - (keep && keep.pinned !== true ? 1 : 0);
   return list.filter((r) => r.pinned === true || r === keep || room-- > 0);
 }
 
 /** An entry with its pin as given; an unpinned one carries no flag at all, as entries listed before pins did. */
-function withPin(r: RecentProject, pinned: boolean): RecentProject {
+function withPin<T extends RecentProject>(r: T, pinned: boolean): T {
   const { pinned: _was, ...rest } = r;
-  return pinned ? { ...rest, pinned: true } : rest;
+  return (pinned ? { ...rest, pinned: true } : rest) as T;
 }
 
 /**
@@ -286,7 +294,7 @@ export async function addRecent(dir: string, name: string, projectId: string, re
   const same = s.recents.filter((r) => r.dir === dir || canonicalDir(r.dir) === real);
   let rest = s.recents.filter((r) => !same.includes(r));
   const folderId = folderIdentity(dir);
-  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId, ...(folderId ? { folderId } : {}) };
+  const entry: RecentEntry = { dir, name, openedAt: new Date().toISOString(), projectId, ...(folderId ? { folderId } : {}) };
   // The pin stays with its project: another project put in a pinned project's old folder is not pinned for it. An
   // entry listed before IDs were kept cannot be told apart, so its pin is kept.
   let pinned = same.some((r) => r.pinned === true && (typeof r.projectId !== 'string' || r.projectId === '' || r.projectId === projectId));
@@ -376,7 +384,7 @@ export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
   // Only a pin given as one counts: a hand-edited file can hold anything.
   return Promise.all(
-    s.recents.map(async (r) => {
+    s.recents.map(async ({ folderId: _kept, ...r }) => {
       // Checked without blocking: a folder on a share that has stopped answering holds up this card, never every request.
       const missing = !(await fs.access(join(r.dir, MANIFEST)).then(() => true, () => false));
       // Read from the folder each time, so a card says what the project's brief says now, however it was changed.

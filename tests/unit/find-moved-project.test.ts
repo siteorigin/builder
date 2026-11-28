@@ -255,6 +255,9 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
       [source, true, true]
     ]);
     expect(saved(root).map((r) => r.dir)).toEqual([staging, source]);
+    // Each folder's identity is kept in the settings, and never handed to the Welcome screen.
+    expect(saved(root).every((r) => typeof (r as { folderId?: unknown }).folderId === 'string')).toBe(true);
+    expect((await listed(root)).some((r) => 'folderId' in r)).toBe(false);
 
     // The source's own folder, found for its entry, takes it over with its pin.
     pick(join(root, 'elsewhere'));

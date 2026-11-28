@@ -41,12 +41,6 @@ export interface RecentProject {
    */
   projectId?: string;
   /**
-   * The folder's identity on its disk (device and inode) when it was last opened, which a move or rename keeps and a
-   * copy does not: it tells a moved folder already listed on its own from another working copy of the same project
-   * when the author finds where a missing entry went (#1541).
-   */
-  folderId?: string;
-  /**
    * Pinned by the author (#259): kept on the list however many other projects are opened after it, and shown above
    * the rest. Absent on an entry that is not pinned.
    */
