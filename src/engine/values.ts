@@ -152,6 +152,8 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string, s
 }
 
 export const MAX_RICH_CHARS = 20000;
+/** The most characters a plain text property takes when its schema sets no `maxLength`. */
+export const DEFAULT_TEXT_MAX = 2000;
 export const MAX_RICH_BLOCKS = 500;
 /** A collection entry's text is a whole article, so it has room for one: a long read of 20,000 words and more, with its pictures. */
 export const MAX_ENTRY_CHARS = 150_000;
@@ -237,7 +239,11 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   const out = mergeLists(cleanBlocks(blocks!));
   // Every character counts, the line breaks inside a block included; the gaps between blocks do not.
   const chars = out.reduce((n, b) => n + (isImageBlock(b) ? b.alt.length + (b.caption?.length ?? 0) : spanRuns(b).flat().reduce((m, sp) => m + sp.text.length, 0)), 0);
-  if (out.length > (isArticle ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS) || chars > (isArticle ? MAX_ENTRY_CHARS : MAX_RICH_CHARS)) fail(`${label}: text is too long.`);
+  // Said with the limit, so text refused on the canvas says how far to shorten it (#1447).
+  const maxBlocks = isArticle ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS;
+  const maxChars = isArticle ? MAX_ENTRY_CHARS : MAX_RICH_CHARS;
+  if (out.length > maxBlocks) fail(`${label}: text is too long: it has more than ${maxBlocks} paragraphs, headings and lists.`);
+  if (chars > maxChars) fail(`${label}: text is too long: it is longer than ${maxChars} characters.`);
   return out;
 }
 
@@ -361,7 +367,7 @@ function scalarValue(schema: ScalarPropSchema, v: unknown, state: ProjectState, 
     case 'string': {
       if (typeof v !== 'string' && typeof v !== 'number') fail(`${label}: expected text.`);
       const s = String(v);
-      const max = schema.maxLength ?? 2000;
+      const max = schema.maxLength ?? DEFAULT_TEXT_MAX;
       if (s.length > max) fail(`${label}: text is longer than ${max} characters.`);
       return schema.multiline ? s : s.replace(/\s*\n\s*/g, ' ');
     }

@@ -1,7 +1,10 @@
 import type { ApplyResult, EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
+import type { ElementRef, GraphNode, OwnerRef, ProjectState, PropSchema, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
-import { sameRichText, toRichText } from '@shared/richtext';
+import { richTextToMarkdown, sameRichText, toRichText } from '@shared/richtext';
+import { propBindingSchema } from '@shared/bindings';
+import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
+import { tooLongMessage } from '@shared/text-limits';
 import { isBinding, refKey } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
@@ -9,7 +12,7 @@ import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, confirmDialog, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { sameSubject, seoDocument } from './seo-view';
 import { postAt, postWorkspace } from './posts';
@@ -957,6 +960,68 @@ function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; va
   return null;
 }
 
+/**
+ * Apply a text edit typed on the canvas. The page puts its old text back when the edit is refused, so a refusal of the
+ * text itself (longer than its field takes, say) is said with the text offered back to copy, never only dropped (#1447).
+ */
+function applyTyped(operations: EditOperation[], label: string, text: string | RichText, state: ProjectState) {
+  const typed = typeof text === 'string' ? text : richTextToMarkdown(text, state.pages);
+  return claimRefusals((e) => {
+    if (e.code !== 'INVALID_ARGUMENT' || !typed.trim()) return false;
+    toast(e.message, 'error', copyTextAction(typed, label));
+    return true;
+  }, () => applyOps(operations, label));
+}
+
+/** The most characters a field takes: a plain text property's limit, rich text's, or null when nothing limits it. */
+function schemaTextLimit(schema: PropSchema | undefined, rich: boolean): number | null {
+  if (schema?.type === 'string') return schema.maxLength ?? DEFAULT_TEXT_MAX;
+  return schema?.type === 'richtext' || (!schema && rich) ? MAX_RICH_CHARS : null;
+}
+
+/**
+ * The most characters the field a canvas text edit writes takes, as `snapshot` holds it: the property or list field
+ * a placement's text shows, or the element's own text. Null when nothing limits it (an element's own plain text).
+ */
+export function canvasTextLimit(snapshot: ProjectSnapshot, edit: { ref: ElementRef; code?: CodeTextTarget }): number | null {
+  const state = snapshot.state;
+  if (edit.code) {
+    const t = edit.code;
+    const placement = treeFor(state, t.owner)?.nodes[t.nodeId];
+    const def = placement?.kind === 'instance' && Object.hasOwn(state.components, placement.definitionId) ? state.components[placement.definitionId] : undefined;
+    const prop = def && Object.hasOwn(def.properties, t.prop) ? def.properties[t.prop] : undefined;
+    const schema = t.field === undefined ? prop : prop?.type === 'list' && Object.hasOwn(prop.fields, t.field) ? prop.fields[t.field] : undefined;
+    return schema ? schemaTextLimit(schema, t.rich) : t.rich ? MAX_RICH_CHARS : null;
+  }
+  const ref = edit.ref;
+  const r = resolveRef(state, ref);
+  const node = r.node as GraphNode | undefined;
+  const target = inlineField(node);
+  if (!target) return null;
+  const rich = node?.kind === 'text' && !!node.rich;
+  if (!isBinding(target.value)) return schemaTextLimit(undefined, rich);
+  // A placement's text shows its property; a component's own design, edited everywhere, its property's default.
+  const def = ref.instancePath.length ? r.def : ref.owner.kind === 'component' && Object.hasOwn(state.components, ref.owner.id) ? state.components[ref.owner.id] : undefined;
+  if (!def) return null;
+  const binding = target.value;
+  if ('$prop' in binding) return schemaTextLimit(propBindingSchema(def.properties, binding), rich);
+  if (!('$item' in binding)) return null;
+  const listProp = listPropFor(def, ref.nodeId);
+  const list = listProp && Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
+  return list?.type === 'list' && Object.hasOwn(list.fields, binding.$item) ? schemaTextLimit(list.fields[binding.$item], rich) : null;
+}
+
+/**
+ * What the canvas says of text its page could not send (see the bridge's commitEdit): longer than the field takes
+ * (`limit`, when the field has one), too long to send at all, or formatted too intricately to copy (`structure`).
+ */
+export function canvasTooLargeReport(cancel: { length?: unknown; structure?: unknown }, limit: number | null): string {
+  if (cancel.structure === true) return 'That text has too much formatting to keep, so it was not kept. Paste it in smaller parts, or with Paste and Match Style.';
+  const length = typeof cancel.length === 'number' && Number.isInteger(cancel.length) && cancel.length > 0 ? cancel.length : null;
+  if (length !== null && limit !== null && length > limit) return `That text was not kept: ${tooLongMessage(length, limit)}`;
+  return `That text is too long to send from the page${length !== null ? ` (${length} characters)` : ''}, so it was not kept.`;
+}
+
 /** Whether a text shows a placement's copyright line, which the page shows with its `{year}` as the year. */
 const showsCopyright = (value: unknown): boolean => isBinding(value) && '$prop' in value && value.$prop === COPYRIGHT_PROP && value.field === undefined;
 
@@ -1009,7 +1074,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   // The element as the page shows it ("Edit Heading on About"), in a component's design when edited everywhere.
   const label = editLabel(snapshot.state, 'Edit', ref);
-  if (!ref.instancePath.length) return (await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label)) ? undefined : 'restore';
+  if (!ref.instancePath.length) return (await applyTyped([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label, text, snapshot.state)) ? undefined : 'restore';
   if (ref.instancePath.length > 1) {
     toast('Edit nested component text from the inspector.', 'error');
     return 'restore';
@@ -1022,14 +1087,14 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   if ('$prop' in binding) {
     // Text bound to one field of an object property changes that field alone.
-    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label))) return 'restore';
+    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label, text, snapshot.state))) return 'restore';
   } else {
     // The list the repeated item belongs to: the one the enclosing repeat shows (matching field names alone
     // cannot tell a footer's links from its contact links).
     const listProp = listPropFor(r.def!, ref.nodeId);
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
     if (!listProp || !itemId) return 'restore';
-    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label))) return 'restore';
+    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label, text, snapshot.state))) return 'restore';
   }
 }
 
@@ -1080,7 +1145,7 @@ export async function commitCodeText(t: CodeTextTarget, text: string | RichText,
   const placement = { owner: t.owner, instancePath: [], nodeId: t.nodeId };
   const label = t.field === undefined ? fieldLabel(snapshot.state, t.label, placement) : listEditLabel(snapshot.state, t.owner, t.nodeId, t.prop, { kind: 'field', itemId: t.itemId!, field: t.field }, fieldLabel(snapshot.state, t.label, placement));
   const op: EditOperation = t.field === undefined ? { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, value: text } : { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, itemId: t.itemId, field: t.field, value: text };
-  if (!(await applyOps([op], label))) return 'restore';
+  if (!(await applyTyped([op], label, text, snapshot.state))) return 'restore';
 }
 
 /** Whether a code placement's marked text can be typed over on the canvas now. */

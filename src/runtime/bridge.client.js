@@ -3315,11 +3315,14 @@ function commitEdit(detached = false) {
   // to turn into its stored form; plain text as its words.
   const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: (moved ? editing.typed.text : el.innerText).replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
-  // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
-  if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
+  // Too much to send: put the text back and say why, rather than lose the edit on the way. Anything less goes to the
+  // editor, which holds it to its field's own limit and offers back text the field refuses (#1447).
+  if ((rich && !payload.rich) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
     if (!moved) el.innerHTML = original;
     endEdit();
-    return send('textCancel', { desc, editId, reason: 'too-large' });
+    // Rich text whose structure could not be copied is too intricate, not too long: the editor says which.
+    const length = (rich ? (left.innerText ?? '') : payload.text).length;
+    return send('textCancel', { desc, editId, reason: 'too-large', length, ...(rich && !payload.rich ? { structure: true } : {}) });
   }
   // A row the page gave another item without writing over what was typed (that item's words are the same as the
   // ones it showed) still shows the typing: it shows the words the page last wrote there again.
