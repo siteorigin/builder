@@ -628,6 +628,7 @@ describe('page languages in the website', () => {
       // staged copy of the project keeps theirs too.
       expect(readFileSync(join(dir, HANDLE), 'utf8')).toBe(generateSiteHandle(session.state));
       expect(readFileSync(join(dir, HANDLE), 'utf8')).toContain('"/about": "fr"');
+      expect(readFileSync(join(dir, '.siteorigin', 'cache', 'dev', HANDLE), 'utf8')).toContain('"/about": "fr"');
       await settleServerHook(dir);
       expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(theirs);
       expect(readFileSync(join(dir, HANDLE), 'utf8')).toContain('"/about": "fr"');
@@ -813,6 +814,8 @@ describe('page languages in the website', () => {
     expect(declaredLanguage('<!doctype html><html class="x" lang=\'fr-CA\'>')).toBe('fr-CA');
     expect(declaredLanguage('<html xml:lang="fr">')).toBeNull();
     expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="FR" dir="ltr">')).toBeNull();
+    // Both say a server hook of the project's own needs to run the site's.
+    for (const html of ['<html lang="en" dir="ltr">', '<html lang="fr" dir="rtl">']) expect(pageLanguageWarning(s, s.pages[fr], html)).toMatch(/: the project’s own src\/app\.html or server hook may be setting it\. A server hook of the project’s own needs to run siteoriginHandle \(see README\.md\)\.$/);
     expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="en">')).toMatch(/“À propos” \(\/fr\/a-propos\/\) was built as “en”, not “fr”/);
     expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html>')).toMatch(/built without a language, not “fr”/);
     // A page in the site language is checked too.
@@ -864,8 +867,10 @@ describe('page languages in the website', () => {
     try {
       const about = byTitle(session.state, 'About').id;
       expect((await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'fr' }] }, { label: 'French' })).ok).toBe(true);
-      // Theirs is kept; ours is not written, in the project or the preview's copies; nothing blocks editing.
+      // Theirs is kept; ours is not written, in the project or the preview's copies; nothing blocks editing. The site's
+      // is, in both, for theirs to run.
       expect(readFileSync(join(dir, 'src', 'hooks.server.ts'), 'utf8')).toBe(theirs);
+      for (const root of [dir, join(dir, '.siteorigin', 'cache', 'dev')]) expect(readFileSync(join(root, HANDLE), 'utf8')).toContain('"/about": "fr"');
       expect(existsSync(join(dir, SERVER_HOOK_FILE))).toBe(false);
       expect(existsSync(join(dir, '.siteorigin', 'cache', 'dev', SERVER_HOOK_FILE))).toBe(false);
       expect(session.conflicts).toEqual([]);
@@ -877,6 +882,7 @@ describe('page languages in the website', () => {
       writeFileSync(join(dir, 'src', 'hooks.server.ts'), theirs);
       await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'nl' }] }, { label: 'Dutch' });
       expect(existsSync(join(dir, SERVER_HOOK_FILE))).toBe(false);
+      for (const root of [dir, join(dir, '.siteorigin', 'cache', 'dev')]) expect(readFileSync(join(root, HANDLE), 'utf8')).toContain('"/about": "nl"');
       expect(session.conflicts).toEqual([]);
     } finally {
       await session.close();

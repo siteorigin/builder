@@ -1111,6 +1111,9 @@ export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<strin
     }
     // Read as bytes: a theme's font files are generated output too.
     const disk = await readExportFile(join(dir, path)).catch(() => null);
+    // The generated server hook deleted for one of the project's own, as README.md says to: the staged copy is settled
+    // (settleServerHook) as the next regeneration would.
+    if (disk === null && path === SERVER_HOOK_FILE && ownServerHook(dir, true)) continue;
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;
@@ -2055,6 +2058,18 @@ export function ownNotFoundFileNote(project: string): string | null {
   return ownNotFoundFile(project)
     ? `static/${NOT_FOUND_FILE} takes the place of the not-found page SiteOrigin Builder generates, so a build of the exported project fails until it is deleted or renamed.`
     : null;
+}
+
+/**
+ * The note for an editable project whose server hook of its own does not name the site's (SITE_HANDLE), or null. A
+ * build of it then runs theirs alone: the not-found page keeps the addresses it was built with, and pages in another
+ * language say the site's. A hook that runs it from another file of its own is told to check, never stopped.
+ */
+export async function ownServerHookNote(dir: string): Promise<string | null> {
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const own = ownServerHook(dir, Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE));
+  if (!own || ((await readExportText(join(dir, own))) ?? '').includes(SITE_HANDLE)) return null;
+  return `The project's own server hook, ${own}, takes the place of the generated one and does not name ${SITE_HANDLE}. Unless it runs it, a build of the exported project leaves ${NOT_FOUND_FILE} with addresses that break at deeper missing addresses, and pages written in another language without their own language. Run it beside yours with sequence(), as Server hook in README.md shows.`;
 }
 
 /** The export note for a not-found page that keeps addresses relative to where it was built, or null. */

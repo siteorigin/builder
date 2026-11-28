@@ -18,7 +18,7 @@ import { notFoundSectionRoutes, pageIds } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { NOT_FOUND_DEFAULTS, NOT_FOUND_ROUTE, clipText, notFoundCopy, notFoundPath } from '@shared/not-found';
-import { settleServerHook, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, ownNotFoundFileStop, pageRelativeAddresses, readNotFoundPage, srcsetUrls } from '../../src/main/export';
+import { editedGeneratedFile, settleServerHook, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, ownNotFoundFileStop, pageRelativeAddresses, readNotFoundPage, srcsetUrls } from '../../src/main/export';
 import { StaticPreviews } from '../../src/main/static-preview';
 import { ProjectSession } from '../../src/main/project/session';
 
@@ -701,6 +701,15 @@ describe('a server hook added or removed while the project is open', () => {
     expect(existsSync(join(dir, SERVER_HOOK_FILE))).toBe(false);
     expect(readFileSync(join(dir, 'src/hooks.server.ts'), 'utf8')).toBe('// mine');
     expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).toEqual({ 'src/app.html': 'def' });
+    // The generated hook deleted for one of the project's own, as README.md says to, is no outside edit: the staged
+    // copy is settled. Deleted with no hook in its place, it is.
+    const deleted = scratch('not-found-deleted');
+    mkdirSync(join(deleted, 'src'), { recursive: true });
+    mkdirSync(join(deleted, 'siteorigin'), { recursive: true });
+    writeFileSync(join(deleted, 'siteorigin/generated-manifest.json'), JSON.stringify({ generator: 1, files: { [SERVER_HOOK_FILE]: 'abc' } }));
+    expect(await editedGeneratedFile(deleted)).toBe(SERVER_HOOK_FILE);
+    writeFileSync(join(deleted, 'src/hooks.server.ts'), '// mine');
+    expect(await editedGeneratedFile(deleted)).toBeNull();
     // Its own hook gone again before the next regeneration, the copy gets the generated one back.
     rmSync(join(dir, 'src/hooks.server.ts'));
     await settleServerHook(dir);

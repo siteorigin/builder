@@ -234,7 +234,9 @@ try {
   const source = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
   assert.equal(source.ok, true, `the source export succeeds: ${source.message}`);
   assert.equal(readFileSync(join(source.path, 'src', 'hooks.server.js'), 'utf8'), readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), 'the source export has the server hook');
-  assert.match(readFileSync(join(source.path, 'src', 'lib', 'siteorigin', 'runtime', 'handle.server.js'), 'utf8'), /"\/fr\/a-propos": "fr"/);
+  const handle = (root) => readFileSync(join(root, 'src', 'lib', 'siteorigin', 'runtime', 'handle.server.js'), 'utf8');
+  assert.equal(handle(source.path), handle(dir), 'the source export has the site’s server hook');
+  assert.match(handle(source.path), /"\/fr\/a-propos": "fr"/);
 
   step('unlinked and back to the site language: one language again, and the hook lists no languages');
   await pageSettings('À propos');
