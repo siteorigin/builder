@@ -6955,5 +6955,11 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
     expect(selected).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read/) });
     const theme = await env.orch.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 'foundation.shell.header', name: 'Header' }, viewport: 1280 });
     expect(theme).toMatchObject({ ok: false, message: expect.stringMatching(/Header is no longer in the site/) });
+    // Removed while Developer mode was read: no edit of it is sent.
+    const removing = new Orchestrator({ ...(env.orch as unknown as { deps: ConstructorParameters<typeof Orchestrator>[0] }).deps, codeEnabled: async () => {
+      await env.session.apply({ operations: [{ type: 'component.remove', definitionId: note }] }, { label: 'Remove', source: 'user' });
+      return true;
+    } });
+    expect(await removing.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: note, name: 'Note' }, viewport: 1280 })).toMatchObject({ ok: false, message: expect.stringMatching(/Note is no longer in the site/) });
   });
 });

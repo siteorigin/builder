@@ -292,6 +292,9 @@ function attachedImages(state: ProjectState, ids: unknown): { images: ChatImageR
   return { images };
 }
 
+/** A project code component the project still has, which a request about it edits through its source (#1410). */
+const codeDesignIn = (state: ProjectState, id: string) => Object.hasOwn(state.components, id) && state.components[id].kind === 'code' && state.components[id].owner === 'project';
+
 /** A request's selection: none, or an element reference whose parts can be read. */
 /** What the model is told about the component the author is editing everywhere. */
 function editingComponent(state: ProjectState, component: { id: string; name: string }) {
@@ -1415,6 +1418,7 @@ export class Orchestrator {
       if (code && this.run) return { ok: false, message: 'The AI is already working on a request.' };
       if (code && this.clearing) return clearing;
       if (code && this.closing) return { ok: false, message: 'The project is closing.' };
+      if (code && !codeDesignIn(session.state, context.component.id)) return { ok: false, message: `${context.component.name || 'That component'} is no longer in the site. Choose what to change, then send again.` };
       if (code && (this.conversation !== conv || this.deps.session() !== session)) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
       if (context.selection && (context.selection.owner.kind !== 'component' || context.selection.owner.id !== def.id)) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
       if (context.selection && !Object.hasOwn(def!.tree!.nodes, context.selection.instancePath[0] ?? context.selection.nodeId))

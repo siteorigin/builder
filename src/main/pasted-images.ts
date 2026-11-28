@@ -53,6 +53,8 @@ interface Batch {
 export class PastedImages {
   /** Each paste, by the batch ID the renderer releases it with: counted from the moment it is asked for. */
   private readonly batches = new Map<string, Batch>();
+  /** Folders that could not be removed when released: tried again at quit. */
+  private readonly leftovers = new Set<string>();
 
   constructor(private readonly root: () => string = tmpdir) {}
 
@@ -69,7 +71,10 @@ export class PastedImages {
       entry.dir = await mkdtemp(join(this.root(), 'siteorigin-paste-'));
       const dir = entry.dir;
       const paths = read.map((f, i) => join(dir, `Pasted image${read.length > 1 ? ` ${i + 1}` : ''}.${PASTED_IMAGE_TYPES[f.type]}`));
-      await Promise.all(read.map((f, i) => writeFile(paths[i], f.bytes, { mode: 0o600 })));
+      // Every write settles before a failure is reported, so none is still going when the folder is removed.
+      const written = await Promise.allSettled(read.map((f, i) => writeFile(paths[i], f.bytes, { mode: 0o600 })));
+      const failed = written.find((w): w is PromiseRejectedResult => w.status === 'rejected');
+      if (failed) throw failed.reason;
       if (entry.released) return { ok: false, message: 'The pasted image could not be added: the editor was reloaded.' };
       return { ok: true, batch, paths };
     } catch (e) {
@@ -120,20 +125,24 @@ export class PastedImages {
   removeAll(): void {
     for (const entry of this.batches.values()) {
       entry.released = true;
-      if (!entry.dir) continue;
+      if (entry.dir) this.leftovers.add(entry.dir);
+    }
+    this.batches.clear();
+    for (const dir of this.leftovers) {
       try {
-        rmSync(entry.dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
       } catch {
         // The system's temporary folder is cleared in time anyway.
       }
     }
-    this.batches.clear();
+    this.leftovers.clear();
   }
 
   /** A released paste no longer being made or read is removed. */
   private async settle(batch: string, entry: Batch): Promise<void> {
     if (!entry.released || entry.reading > 0 || this.batches.get(batch) !== entry) return;
     this.batches.delete(batch);
-    if (entry.dir) await rm(entry.dir, { recursive: true, force: true }).catch(() => undefined);
+    const dir = entry.dir;
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => void this.leftovers.add(dir));
   }
 }

@@ -3,7 +3,7 @@
  * private folder for the importer, refused when they are not pictures the library takes, and removed once released
  * or when the app quits.
  */
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -103,5 +103,23 @@ describe('pasted images written for the importer (#1410)', () => {
     expect(await writing).toEqual({ ok: false, message: expect.stringMatching(/reloaded/) });
     await new Promise((r) => setTimeout(r, 20));
     expect(readdirSync(root)).toHaveLength(0);
+  });
+
+  it('tries again at quit to remove a released paste whose folder could not be removed', async () => {
+    const { root, pasted } = store();
+    const staged = await pasted.stage([{ type: 'image/png', bytes: png }]);
+    if (!staged.ok) throw new Error('not staged');
+    const dir = dirname(staged.paths[0]);
+    // A folder that refuses removal while it is released (its parent made read-only).
+    if (process.platform === 'win32') return;
+    chmodSync(root, 0o500);
+    try {
+      await pasted.release(staged.batch);
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      chmodSync(root, 0o700);
+    }
+    pasted.removeAll();
+    expect(existsSync(dir)).toBe(false);
   });
 });
