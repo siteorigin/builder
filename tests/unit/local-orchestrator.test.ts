@@ -673,9 +673,14 @@ describe('the loaded context window', () => {
     const { result } = await run('What is on this page?', null, null, 'ask');
     expect(result?.status).toBe('failed');
     // A small model's question measures whole pages and validates with the two document profiles (#1409): smaller.
-    const [first, second] = chatPosts().map((p) => JSON.stringify(p.body.tools));
     expect(chatPosts()).toHaveLength(2);
-    expect(second.length).toBeLessThan(first.length);
+    const [first, second] = chatPosts().map((p) => p.body.tools as Array<{ function: { name: string; parameters: { properties: Record<string, { enum?: string[] }> } } }>);
+    expect(JSON.stringify(second).length).toBeLessThan(JSON.stringify(first).length);
+    // The same tools, both checks among them, only in their smaller shapes.
+    expect(second.map((t) => t.function.name)).toEqual(first.map((t) => t.function.name));
+    const fn = (tools: typeof first, name: string) => tools.find((t) => t.function.name === name)!.function.parameters.properties;
+    expect([Object.keys(fn(first, 'inspect_layout')).includes('refs'), Object.keys(fn(second, 'inspect_layout')).includes('refs')]).toEqual([true, false]);
+    expect(fn(second, 'validate_project').profile.enum).toEqual(['schema', 'component']);
   });
 
   it('keeps the tools a run started with when the server reports a smaller window part way through', async () => {

@@ -464,7 +464,8 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
     delete schema.$schema;
     // A question asks back only when it is ambiguous, which the question's own instructions say.
     const brief = name === 'request_clarification' ? 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' : name === 'inspect_layout' && focused ? ASK_FOCUSED_INSPECT_BRIEF : undefined;
-    return { name, ...describe(name), ...(brief ? { brief } : {}), parameters: schema };
+    // A small native model reads the description rather than the brief: it says the same.
+    return { name, ...describe(name), ...(brief ? { brief } : {}), ...(name === 'inspect_layout' && focused ? { description: ASK_FOCUSED_INSPECT_BRIEF } : {}), parameters: schema };
   });
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
   // A question about the post open in the Posts workspace reads that post, never another with a title like it.

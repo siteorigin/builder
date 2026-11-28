@@ -404,7 +404,7 @@ function askPrompt(state: ProjectState, constrained = false): string {
 Answer in a few plain sentences, without headings.`;
   return `You answer an author's questions about their small business website inside SiteOrigin Builder, a desktop website editor. This is a read-only question: you can read the site but not change it, and nothing you do changes it. The page the author is viewing, anything they selected and a project summary are in <editor_context>.
 - read_page shows a page's sections with their content and IDs; inspect_element shows one element with its component's property labels; read_project lists the pages, and with sections ["catalogue"] the theme's components; audit_seo says what keeps the site, or one page, from being found and shared (titles, descriptions, sharing images, links between pages).
-- When the author asks you to check the site or a page, check it rather than reading through its content: validate_project lists the problems Project health shows (links to pages or sections that are missing, forms that send nowhere; profile "component" also builds every component, "project" also checks image files and lists routes), and inspect_layout measures one page in the live preview at phone, tablet or desktop width (overflow, cut-off text, small tap targets, contrast, images, runtime errors). Run inspect_layout on each page and width the author names (the home page at phone width when they name none), then say which pages and widths you checked. Neither opens links to other websites.
+- When the author asks you to check the site or a page, check it rather than reading through its content: validate_project lists problems in the site's pages and settings (links to pages or sections that are missing, forms that send nowhere; profile "component" also builds every component), and inspect_layout measures one page in the live preview at phone, tablet or desktop width (overflow, cut-off text, small tap targets, contrast, images, runtime errors). Run inspect_layout on each page and width the author names (the home page at phone width when they name none), then say which pages and widths you checked. Neither opens links to other websites.
 - Read the actual content before you answer, and quote text from the site exactly as written in the tool results.
 - When the author asks where to change something, or where something is set, call locate_field for each field you point to (the owner and component node ID from read_page, the property, and for a list item its itemId and field). Give the path it returns exactly as written, joined with →. Never make up Inspector labels from property names or IDs. The chat shows an "Open in inspector" button for each field you locate.
 - If the author asks you to change something, say that this question cannot change the site, and either tell them where to change it themselves or that they can switch the message box to Edit and ask again.
@@ -1659,6 +1659,12 @@ export class Orchestrator {
     const startState = structuredClone(session.state);
     // A question reads the site as it was asked about, even while the author goes on editing it.
     const startRevision = session.revision;
+    // Problems the project already had (including components that already fail to build) are not the run's. Each is
+    // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
+    // message somewhere new is a new problem. Read with the state a question answers about, before anything is awaited.
+    // A collaborator's request hears nothing of the project's external sources, whose problems name them.
+    const projectDiagnostics = (): Diagnostic[] => (run.delegation ? session.diagnostics().filter((d) => !d.code?.startsWith('SOURCE_') && d.owner?.kind !== 'source') : session.diagnostics());
+    const startDiagnostics: Diagnostic[] = projectDiagnostics();
     /** History as the request starts: whether each earlier turn's change is in the site it reads. */
     const steps = session.historyInfo();
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
@@ -1678,6 +1684,8 @@ export class Orchestrator {
      */
     const askedAbout = (name: string, outcome: ResultOutcome): ResultOutcome => {
       if (!outcome.ok || (name !== 'validate_project' && name !== 'inspect_layout')) return outcome;
+      // Checking the documents alone (validation's default profile) reads only the site as asked about.
+      if (name === 'validate_project' && (outcome.content as { profile?: unknown }).profile === 'schema') return outcome;
       const content = outcome.content as { pageId?: unknown; viewport?: unknown; report?: { previewRevision?: unknown } };
       const served = name === 'inspect_layout' ? content.report?.previewRevision : startRevision;
       if (session.revision === startRevision && served === startRevision) return outcome;
@@ -1702,13 +1710,6 @@ export class Orchestrator {
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
-    // Problems the project already had (including components that already fail to build) are not the run's. Each is
-    // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
-    // message somewhere new is a new problem.
-    // Read with the state a question answers about: nothing has run since it was copied.
-    // A collaborator's request hears nothing of the project's external sources, whose problems name them.
-    const projectDiagnostics = (): Diagnostic[] => (run.delegation ? session.diagnostics().filter((d) => !d.code?.startsWith('SOURCE_') && d.owner?.kind !== 'source') : session.diagnostics());
-    const startDiagnostics: Diagnostic[] = projectDiagnostics();
     /** The build's errors as an edit starts (a question compiles nothing). */
     // Stopped meanwhile, the run ends without waiting for the build (it goes on in its workers, its result unused).
     const startBuild: Diagnostic[] = ask ? [] : await untilStopped(this.deps.compileAll(), signal).catch(() => []);
@@ -2227,7 +2228,8 @@ export class Orchestrator {
         return res;
       },
       compileAll: () => this.deps.compileAll(),
-      inspectLayout: (pageId, width, opts) => (opts ? this.deps.inspectLayout(pageId, width, opts) : this.deps.inspectLayout(pageId, width)),
+      // Stop never waits for a page the preview is still measuring: its answer, when it comes, goes unused.
+      inspectLayout: (pageId, width, opts) => untilStopped(opts ? this.deps.inspectLayout(pageId, width, opts) : this.deps.inspectLayout(pageId, width), signal),
       // The pages the preview check would measure before the run finishes: those it changed, and a few that show a shared change.
       changedPageIds: () => [...new Set(preview.plan(session.state).targets.map((t) => t.pageId))],
       ...(this.deps.fileDiagnostics ? { fileDiagnostics: () => this.deps.fileDiagnostics!() } : {}),
@@ -2764,8 +2766,12 @@ export class Orchestrator {
             }
             msg.text = finalText;
             if (!finalText) await finish('failed', 'The AI finished without an answer. Try asking again.', { usage, error: 'empty answer' });
-            // The layout checks it ran are on its card, as an edit's are.
-            else await finish('no-changes', finalText, { usage, locations: [...locations.values()], checks: inspections.checks(readState()), ...needs(finalText, true) });
+            else {
+              // The layout checks it ran are on its card, as an edit's are; once the author has changed the site since,
+              // each says it was of the site before those changes.
+              if (session.revision !== startRevision) inspections.invalidate('all');
+              await finish('no-changes', finalText, { usage, locations: [...locations.values()], checks: inspections.checks(readState()), ...needs(finalText, true) });
+            }
             return;
           }
           const resumeForNudge = (text: string) => {

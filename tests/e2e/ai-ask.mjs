@@ -110,7 +110,9 @@ try {
   assert.ok(fits, 'long code scrolls in its own block, not the whole panel');
   // The model heard the exact path and value from the app, and was never offered a way to change the site.
   assert.ok(JSON.stringify(posts()[2].body.messages).includes(PATH.replaceAll('→', '\\u2192')) || JSON.stringify(posts()[2].body.messages).includes(PATH), 'locate_field gave the model the path');
-  for (const p of posts()) assert.doesNotMatch(JSON.stringify(p.body), /apply_operations|apply_source_patch|upsert_page_with_sections|update_site_brand|update_selected_props|edit_selected_list|style_selected_element|request_wider_scope|inspect_layout|validate_project/);
+  for (const p of posts()) assert.doesNotMatch(JSON.stringify(p.body), /apply_operations|apply_source_patch|upsert_page_with_sections|update_site_brand|update_selected_props|edit_selected_list|style_selected_element|request_wider_scope/);
+  // It can still check the site without changing it (#1409).
+  for (const name of ['validate_project', 'inspect_layout']) assert.ok(JSON.stringify(posts()[0].body).includes(name), `a question is offered ${name}`);
   snap = await snapshot();
   assert.equal(snap.state.pages[contact.id].nodes[nodeId].props.heading, 'Visit the studio', 'the author’s edit made during the question is kept');
   await win.locator('.chat').screenshot({ path: join(SHOTS, 'ai-ask-answer.png') });
