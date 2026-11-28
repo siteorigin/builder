@@ -43,7 +43,7 @@ import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definiti
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -1312,14 +1312,16 @@ export function Canvas() {
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
           const live = getState().snapshot?.state;
           const rich = dom ? blocksFromDom(dom, live?.pages ?? {}, undefined, live ? collectionIndexRoutes(live) : {}) : null;
-          const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
+          // Plain text of any length the page could send is held to its field's own limit when it is saved (#1447).
+          const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' ? p.text : null;
           if (rich?.droppedLinks) {
             toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
             reportRefused('A link pointed to something that is not a page, web address, email or phone number, so it was removed.');
           }
-          if (value === null || (Array.isArray(value) && value.length > 500)) {
-            toast('That text change could not be saved. Try editing it in the Inspector.', 'error');
-            reportRefused('That text change could not be saved. Try editing it in the Inspector.');
+          // Rich text with more blocks than a field takes goes on to be refused there, with its text offered back.
+          if (value === null) {
+            toast('That text change could not be saved.', 'error');
+            reportRefused('That text change could not be saved.');
             putBack();
             break;
           }
@@ -1359,14 +1361,19 @@ export function Canvas() {
             reportRefused('The link you were typing on the page was not applied, so it was left out.');
           }
           break;
-        case 'textCancel':
-          if (!pendingEdits.current.has(String(p.editId))) break;
+        case 'textCancel': {
+          const edit = pendingEdits.current.get(String(p.editId));
+          if (!edit) break;
           endInlineEdit(String(p.editId));
           if (p.reason === 'too-large') {
-            toast('That text is too long to edit on the page. Edit it in the Inspector instead.', 'error');
-            reportRefused('That text is too long to edit on the page. Edit it in the Inspector instead.');
+            // Said with the limit of the field the text was for, which no other panel lifts (#1447).
+            const snap = getState().snapshot;
+            const message = canvasTooLargeReport(p, snap ? canvasTextLimit(snap, edit) : null);
+            toast(message, 'error');
+            reportRefused(message);
           }
           break;
+        }
         case 'key':
           // Shortcuts are taken from trusted keyboard input (see App), never from the page. Escape only hides the
           // hover name (WCAG 1.4.13), which changes nothing in the project, so the page's report of it counts.
@@ -3213,6 +3220,8 @@ export function Canvas() {
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
   const revertOffered = cause?.revert && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly && stillNewest(snapshot.history, cause.revert.key) ? cause.revert : null;
   const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
+  /** What went wrong, under the bar's own words, naming the component it was put down to (#1526). */
+  const issueDetail = cause && frameReady && !slowPage ? (sourceOffered ? `${snapshot!.state.components[sourceOffered].name}: ${cause.message}` : cause.message) : null;
   /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
   const restartPreview = () => {
     if (reverting) return;
@@ -3485,7 +3494,7 @@ export function Canvas() {
         {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
             restart that fails is announced again. */}
         <p className="sr-only" role="alert">
-          {issueShown && !retrying ? `${issueText} Your work is safe.` : stoppedAnnouncement(runtime)}
+          {issueShown && !retrying ? `${issueText}${issueDetail ? ` ${issueDetail}.` : ''} Your work is safe.` : stoppedAnnouncement(runtime)}
         </p>
         <p className="sr-only" role="status">
           {issueShown && retrying ? 'Reloading the page…' : ''}
@@ -3497,6 +3506,11 @@ export function Canvas() {
             <span className="canvas-notice-icon">{retrying ? <Spinner decorative /> : <TriangleAlert aria-hidden="true" />}</span>
             <span className="canvas-notice-text issue-text">
               <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
+              {issueDetail && !retrying && (
+                <span className="issue-detail" title={issueDetail}>
+                  {issueDetail}
+                </span>
+              )}
             </span>
             {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
                 the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the
