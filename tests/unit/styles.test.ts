@@ -35,6 +35,25 @@ const PHONE = '(max-width: 767.98px)';
 const WIDE = '(min-width: 768px)';
 const TABLET = '(min-width: 768px) and (max-width: 1023.98px)';
 
+describe('element font weight (#1463)', () => {
+  it('offers the full 100 to 900 range that text styles and font files offer', () => {
+    expect(STYLE_PROP_MAP.fontWeight.options).toEqual([
+      { value: '100', label: 'Thin' }, { value: '200', label: 'Extra light' }, { value: '300', label: 'Light' },
+      { value: '400', label: 'Regular' }, { value: '500', label: 'Medium' }, { value: '600', label: 'Semibold' },
+      { value: '700', label: 'Bold' }, { value: '800', label: 'Extra bold' }, { value: '900', label: 'Black' }
+    ]);
+  });
+
+  it('accepts a Thin or Black weight on an element and still refuses one outside the range', () => {
+    for (const w of ['100', '200', '900']) expect(validateStyleValue('fontWeight', w), w).toBeNull();
+    expect(validateStyleValue('fontWeight', '950')).toMatch(/must be one of: 100, 200, 300, 400, 500, 600, 700, 800, 900\./);
+  });
+
+  it('writes a Black weight into the generated CSS', () => {
+    expect(styleToCss('fontWeight', '900')).toEqual(['font-weight: 900']);
+  });
+});
+
 describe('length values (#205)', () => {
   const NON_NEGATIVE = ['paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd', 'gap', 'rowGap', 'columnGap', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'radius', 'fontSize', 'lineHeight'];
   const SIGNED = ['marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd', 'letterSpacing'];
