@@ -226,6 +226,7 @@ export function createTransport(local: () => BuilderApi): Transport {
     on,
     inspectResult: (...args: Parameters<BuilderApi['inspectResult']>) => local().inspectResult(...args),
     componentPreviewResult: (...args: Parameters<BuilderApi['componentPreviewResult']>) => local().componentPreviewResult(...args),
+    previewControlResult: (...args: Parameters<BuilderApi['previewControlResult']>) => local().previewControlResult(...args),
     menuReady: () => local().menuReady(),
     menuReceived: (id: number) => local().menuReceived(id),
     leaveResult: (...args: Parameters<BuilderApi['leaveResult']>) => local().leaveResult(...args),

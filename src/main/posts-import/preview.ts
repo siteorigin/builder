@@ -46,6 +46,8 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
     redirects: plan.posts.filter((p) => p.redirectFrom).length,
     redirectsPending: plan.posts.filter((p) => p.redirectFrom && p.draft).length,
     redirectsLost: plan.posts.filter((p) => p.lostAddress).length,
+    // Only new posts are given them: one already here keeps its own, whichever way the import goes.
+    searchSettings: plan.posts.filter((p) => !p.existing && p.seo).length,
     skipped: plan.skipped,
     oldSiteLinks: skip.oldSiteLinks,
     problems: skip.problems,
