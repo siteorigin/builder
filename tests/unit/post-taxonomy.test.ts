@@ -75,6 +75,10 @@ describe('adding a term', () => {
     // Never an object-prototype name.
     expect(result(s, { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Constructor' })).toMatchObject({ termId: 'constructor-2' });
     expect(termIdFor({}, 'Constructor')).toBe('constructor-2');
+    // A term's ID is a folder of its archive's address: never a name some systems keep for a device.
+    expect(termIdFor({}, 'AUX')).toBe('aux-2');
+    expect(termIdFor({}, 'Com1')).toBe('com1-2');
+    for (const name of ['con', 'NUL', 'prn', 'lpt1']) expect(termIdFor({}, name)).toBe(`${name.toLowerCase()}-2`);
     // Or the ID asked for.
     expect(result(s, { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Kyoto', termId: 'kyoto-trip' })).toMatchObject({ termId: 'kyoto-trip' });
   });
@@ -111,7 +115,7 @@ describe('renaming a term', () => {
     expect(s.collections.posts.entries.en_secret.terms.categories).toEqual(['studio-updates']);
     expect(entriesWithTerm(s.collections.posts, 'categories', 'news')).toEqual([]);
     // Its archive moves to the new address with its posts.
-    const archives = (st: ProjectState) => archivePages(publishedState(st)).filter((p) => p.category).map((p) => [p.route, p.entryIds]);
+    const archives = (st: ProjectState) => archivePages(publishedState(st)).filter((p) => p.term?.taxonomy === 'categories').map((p) => [p.route, p.entryIds]);
     expect(archives(before)).toContainEqual(['/blog/category/news/', ['en_kiln', 'en_glaze']]);
     expect(archives(s)).toContainEqual(['/blog/category/studio-updates/', ['en_kiln', 'en_glaze']]);
     expect(archives(s).map(([route]) => route)).not.toContain('/blog/category/news/');

@@ -168,7 +168,7 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
 }
 
 /**
- * What one page of a collection's index or category archive says of itself (see shared/archives.ts for its words): its
+ * What one page of a collection's index or of a category's or tag's archive says of itself (see shared/archives.ts for its words): its
  * own address as its canonical one, the site's sharing image, and the same place on the website as a page: listed by
  * search engines, and given structured data once the site has a public URL. Site search and the files for AI agents
  * list documents with text of their own, and an archive page has none.
@@ -182,7 +182,7 @@ export function archiveMetadata(state: ProjectState, archive: ArchivePage): Arch
   const image = found?.kind === 'image' ? found : undefined;
   const url = urlOf(base, archive.route);
   return {
-    subject: { kind: 'archive', collectionId: archive.collectionId, ...(archive.category ? { category: archive.category } : {}), page: archive.page, pages: archive.pages, route: archive.route },
+    subject: { kind: 'archive', collectionId: archive.collectionId, ...(archive.term ? { term: archive.term } : {}), page: archive.page, pages: archive.pages, route: archive.route },
     route: archive.route,
     url,
     canonical: url,

@@ -1,4 +1,5 @@
 import type { SiteDoc } from './types';
+import { isLoopbackHost } from './local';
 
 /** The most characters a public URL keeps, as typed and once normalized. */
 export const PUBLIC_URL_MAX = 200;
@@ -103,4 +104,30 @@ export function publicUrl(site: Pick<SiteDoc, 'baseUrl'>): string | undefined {
   if (typeof site.baseUrl !== 'string') return undefined;
   const check = checkPublicUrl(site.baseUrl);
   return check.ok && check.url ? check.url : undefined;
+}
+
+/** The reserved example domains (RFC 2606, RFC 6761), each with every name under it. */
+const EXAMPLE_DOMAINS = ['example.com', 'example.org', 'example.net'];
+/** Top-level names reserved for examples, tests and addresses that never resolve, and the local machine's own. */
+const RESERVED_TLDS = ['example', 'test', 'invalid'];
+
+/**
+ * What kind of stand-in a web address's host is, when it is one: a reserved example or test domain that is nobody's
+ * website (`example.com`, `studio.test`), or this computer (`localhost`, `127.0.0.1`, `[::1]`), which every visitor's
+ * own computer answers instead. Null for any other host, and for text that is no http(s) address.
+ */
+export function placeholderHost(address: string): { host: string; kind: 'placeholder' | 'local' } | null {
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (!host) return null;
+  const tld = host.slice(host.lastIndexOf('.') + 1);
+  if (tld === 'localhost' || isLoopbackHost(host)) return { host, kind: 'local' };
+  if (RESERVED_TLDS.includes(tld) || EXAMPLE_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`))) return { host, kind: 'placeholder' };
+  return null;
 }

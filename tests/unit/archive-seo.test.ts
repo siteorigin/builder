@@ -335,7 +335,7 @@ describe('a collection that moves (#1548)', () => {
   it('keeps no old address for a page the moved archive no longer has, and none while the archive is turned off', () => {
     const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 2 });
     // Page 2 exists before the move; turning category archives off in the same change leaves no equivalents for them.
-    const moved = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/', categoryArchives: false });
+    const moved = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/', termArchives: false });
     expect((moved.site.redirects ?? []).filter((r) => r.archiveOf).map((r) => r.from)).toEqual(['/blog/', '/blog/page/2/']);
     const off = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/', pages: { detail: true, archive: false } });
     expect((off.site.redirects ?? []).filter((r) => r.archiveOf)).toEqual([]);
