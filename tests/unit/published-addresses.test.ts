@@ -138,6 +138,9 @@ describe('addresses exported for a page that has left them some other way (#1382
       { type: 'page.update', pageId: 'pg_temp', route: '/temporary/' }
     ]);
     expect(kept(passing)).toEqual([]);
+    // Sent to another page by its ID, the same.
+    const toHome = applyOperations(moved, [{ type: 'redirect.update', from: '/services/', pageId: moved.site.homePageId }]).state;
+    expect(kept(applyOperations(toHome, [{ type: 'redirect.remove', from: '/services/' }]).state)).toEqual([]);
   });
 
   it('is sent somewhere else as a redirect of the site’s own, and refused as a new one', () => {
@@ -378,7 +381,9 @@ describe('recording an export in the project', () => {
     const live = publishedState(s.state);
     expect(liveRedirects(live).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
     expect(generateHostRedirects(live)).toContain('/what-we-do/ /services/ 301');
-    expect(generateProject(live).get(redirectFile('/what-we-do/'))).toContain('/services/');
+    const fallback = generateProject(live).get(redirectFile('/what-we-do/'));
+    expect(fallback).toContain('http-equiv="refresh"');
+    expect(fallback).toContain('resolve("/services/")');
     // Redo still puts the page back where it was moved, keeping its first address working.
     expect((await s.redo()).ok).toBe(true);
     expect(s.state.pages.pg_services.route).toBe('/what-we-do/');

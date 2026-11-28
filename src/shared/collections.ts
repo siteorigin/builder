@@ -256,7 +256,10 @@ export function collectionRoutes(state: ProjectState): RouteOwner[] {
  */
 export function keptPublishedAddresses(state: ProjectState): SiteRedirect[] {
   const left = addressesLeft(state);
-  return left.length ? left.filter((r) => !collectionRouteOwner(state, r.from)) : left;
+  if (!left.length) return left;
+  // The collections' own addresses once, however many addresses there are (as collectionRouteOwner finds each).
+  const held = new Set(collectionRoutes(state).map((o) => o.route.toLowerCase()));
+  return left.filter((r) => !held.has(r.from) && !archiveRouteOwner(state, r.from));
 }
 
 /** Every address of the site: pages, old addresses kept working (of pages and of entries), collections and entries. */
