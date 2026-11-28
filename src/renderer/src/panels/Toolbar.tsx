@@ -7,6 +7,7 @@ import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, openRunThread, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
 import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { selectPage, setMode } from '../lib/actions';
 import { pageMenuItems } from '../lib/page-switch';
 import { templateOwner } from '../lib/template-view';
@@ -27,6 +28,8 @@ import { shownLive } from '../lib/live-host';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
+  // The form-routing review open over the editor (#1322): the waiting state stays, but says where the answer goes.
+  const reviewing = useRoutingReviewShown();
   // Another computer's project, as a guest in its live session (#766): its host alone exports, shares and versions it.
   const remoteShell = useStore(isRemoteShell);
   const pageId = useStore((s) => s.pageId);
@@ -170,7 +173,7 @@ export function Toolbar() {
     : phase === 'stopping' || stoppingForEdit
       ? { kind: 'ai', icon: ai, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone. Open the AI panel' : 'Anything the AI changed in this request is undone. Open the AI panel' }
       : phase === 'asking'
-        ? { kind: 'ask', icon: ai, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel' }
+        ? { kind: 'ask', icon: ai, text: 'AI is waiting for you', title: reviewing ? 'The AI asked to change where your forms send. Answer it in the review that is open' : 'The AI asked a question. Answer it in the AI panel' }
         : handoff
           ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
           : phase === 'checking'
