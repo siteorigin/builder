@@ -80,10 +80,11 @@ async function deletePost(ref: PostRef, title: string, replacement: { replacemen
   // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
   // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
   const ops = [{ type: 'entry.remove' as const, collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }];
+  // Read before sending: the newer project may arrive ahead of the answer that says it moved on.
+  const was = getState().snapshot;
   let r = await commitOps(ops, 'Delete post', undefined, revision, { replanStale: true });
   // Only moved on (a save landing): sent again if what was checked still holds — the same links and old addresses.
   if (r && !r.ok) {
-    const was = getState().snapshot;
     const now = await api.project.snapshot().catch(() => null);
     const same = (s: typeof now) => (s ? `${entryLinkUses(s.state, ref.entryId).length}/${keptAddresses(s.state, ref.entryId)}` : '');
     const gone = !!now && chosen !== null && !isDeleteDestination(now.state, ref, chosen);
@@ -126,7 +127,10 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
     setBusy(true);
     const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision);
     setBusy(false);
-    if (done) onClose();
+    if (done) return onClose();
+    // Lost while it was being sent: what is chosen is what the list shows.
+    const latest = getState().snapshot;
+    if (latest && !isDeleteDestination(latest.state, target, to)) setTo(`page:${latest.state.site.homePageId}`);
   };
   return (
     <Modal

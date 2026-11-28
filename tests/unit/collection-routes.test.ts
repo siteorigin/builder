@@ -196,6 +196,8 @@ describe('old addresses of entries', () => {
     // An old address alone is refused too.
     const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
     expect(() => run(unlinked, remove('en_winter'))).toThrow(/has no page of its own/);
+    // And a link alone.
+    expect(() => run(s, { type: 'redirect.remove', from: '/blog/winter-workshop/' }, remove('en_winter'))).toThrow(/has no page of its own/);
     // With nothing to hand over, the replacement is never used.
     expect(run(unlinked, remove('en_secret')).collections.posts.entries).not.toHaveProperty('en_secret');
   });
@@ -209,14 +211,10 @@ describe('old addresses of entries', () => {
       { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false }
     );
     // Taken back, and the spare address's own redirect removed: only the reclaimed address is left to hand over.
-    expect(() =>
-      run(
-        s,
-        rename('en_winter', 'winter-workshop'),
-        { type: 'site.update', redirects: [] },
-        { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_ruiz' }
-      )
-    ).toThrow(/has no page of its own/);
+    const remove = (replacementEntryId: string) =>
+      run(s, rename('en_winter', 'winter-workshop'), { type: 'redirect.remove', from: '/blog/glazing-evenings/' }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId });
+    expect(() => remove('en_ruiz')).toThrow(/has no page of its own/);
+    expect(kept(remove('en_spring'))).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_spring' }]);
   });
 
   it('lets a record with no page take over where reference fields leave no other choice, and brings its address back with the pages (#1495)', () => {
@@ -227,6 +225,8 @@ describe('old addresses of entries', () => {
       rename('en_winter', 'glazing-evenings'),
       { type: 'collection.update', collectionId: 'posts', pages: { detail: false, archive: false } }
     );
+    // With no reference to move, a sibling with no page is no way out either.
+    expect(() => run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', values: { next: null } }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' })).toThrow(/has no page of its own/);
     const gone = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' });
     expect(gone.collections.posts.entries.en_secret.values.next).toBe('en_spring');
     expect(kept(gone)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_spring' }]);

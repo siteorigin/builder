@@ -32,6 +32,17 @@ describe('destinations for a deleted entry', () => {
     expect(deleteDestinations(s, target).pages.map((p) => p.value)).toContain(`page:${s.site.homePageId}`);
     expect(isDeleteDestination(s, target, 'entry:en_spring')).toBe(true);
     expect(isDeleteDestination(s, target, 'entry:en_ruiz')).toBe(false);
+    expect(isDeleteDestination(s, target, `page:${s.site.homePageId}`)).toBe(true);
+    // The deleted entry gone meanwhile, nothing is left to choose for it.
+    const without = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' });
+    expect(isDeleteDestination(without, target, 'entry:en_spring')).toBe(false);
+  });
+
+  it('offers published pages, and leaves out drafts', () => {
+    const s = run(site(), { type: 'page.create', pageId: 'pg_open', title: 'Open', route: '/open/' }, { type: 'page.create', pageId: 'pg_later', title: 'Later', route: '/later/' }, { type: 'page.update', pageId: 'pg_later', draft: true });
+    const offered = deleteDestinations(s, target).pages.map((p) => p.value);
+    expect(offered).toContain('page:pg_open');
+    expect(offered).not.toContain('page:pg_later');
   });
 
   it('turns away a chosen entry whose pages have since been turned off', () => {
