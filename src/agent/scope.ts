@@ -17,6 +17,7 @@ import { normalizeRoute } from '@shared/routes';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { sourceHash, walkOperations } from '@engine/apply';
+import { normalizeProp } from '@engine/values';
 import { codeTextField, parseCodeTextPath } from '@shared/code-text';
 import type { CollectionWriteGrant, LayoutOwner } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -284,7 +285,7 @@ function selectedPart(state: ProjectState, authority: Extract<Authority, { kind:
 }
 
 /** Why an operation on the placement itself reaches beyond its selected part, or null when it stays inside. */
-function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selectedPart>>, label: string): string | null {
+function outsidePart(state: ProjectState, op: EditOperation, sel: NonNullable<ReturnType<typeof selectedPart>>, label: string): string | null {
   const { def, reach, part } = sel;
   const beyond = `${op.type} changes more of ${label} than the selected part.`;
   if (part.nested) return `${op.type} changes more than the selected part, which is inside another component placed in ${label}.`;
@@ -313,8 +314,16 @@ function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selec
         // A code part's text whose presence also decides what shows outside it may change, but not come or go.
         if (!def.tree && part.texts?.keep?.includes(op.prop) && !op.field) {
           const props = (sel.inst.props ?? {}) as Record<string, unknown>;
-          const was = Object.hasOwn(props, op.prop) ? props[op.prop] : def.properties[op.prop]?.default;
-          if (hasValue(was) !== hasValue(op.value)) return `${op.type} would ${hasValue(was) ? 'empty' : 'fill'} "${op.prop}", whose text also decides what else ${label} shows: more than the selected part. Change its words instead, or ask the user first.`;
+          const schema = Object.hasOwn(def.properties, op.prop) ? def.properties[op.prop] : undefined;
+          const was = Object.hasOwn(props, op.prop) ? props[op.prop] : schema?.default;
+          // Judged as the engine will save it (text given as a number, rich text of only spaces); one it refuses is its to refuse.
+          let next: unknown;
+          try {
+            next = schema ? normalizeProp(schema, op.value, state, op.prop, was) : op.value;
+          } catch {
+            return null;
+          }
+          if (hasValue(was) !== hasValue(next)) return `${op.type} would ${hasValue(was) ? 'empty' : 'fill'} "${op.prop}", whose text also decides what else ${label} shows: more than the selected part. Change its words instead, or ask the user first.`;
         }
         return null;
       }
@@ -778,7 +787,7 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
       // What the selected element holds would take its place, beside it: outside it.
       if (op.type === 'node.removeKeepContent' && o.nodeId === authority.nodeId) return `node.removeKeepContent would put what ${authority.label} holds outside it.`;
       if (part) {
-        if (o.nodeId === authority.nodeId) return outsidePart(op, part, authority.label);
+        if (o.nodeId === authority.nodeId) return outsidePart(state, op, part, authority.label);
         // Content placed in a slot the part renders is inside it, and may move only within such content.
         const placed = slotContent(state, authority.owner, part);
         if (!placed.has(o.nodeId)) return `${op.type} changes content of ${authority.label} outside the selected part.`;

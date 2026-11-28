@@ -182,16 +182,27 @@ ${HAS}\tlet { label = '', so_text, so_o = undefined } = $props();
 {#if true}{@const has = (x) => x === 'Open'}{#if has(label)}<p>Open now</p>{/if}{/if}
 `)
     ).toMatchObject({ label: [] });
+    expect(
+      await paths(`<script>
+${HAS}	let { label = '', check, so_text, so_o = undefined } = $props();
+</script>
+<p class={so_o?.label} data-so-text={so_text?.('label')}>{label}</p>
+{#await check then has}{#if has(label)}<p>Open now</p>{/if}{/await}
+`)
+    ).toMatchObject({ label: [] });
   });
 
   it('takes the part an element is only where it is certain: its written-out marker, else its one part class', async () => {
     expect(
-      await paths(`${script(`label = '', note = '', tip = '', hint = '', flip = false`)}
+      await paths(`${script(`label = '', note = '', tip = '', hint = '', flip = false, kind = '', extra = ''`)}
 <div>
 \t<a href="/" class={so_o?.actions} data-so-text={so_text?.('label')}>{label}</a>
 \t<p data-so-part="caption" class={so_o?.actions} data-so-text={so_text?.('note')}>{note}</p>
 \t<b class={flip ? so_o?.tip : so_o?.actions} data-so-text={so_text?.('tip')}>{tip}</b>
 \t<i class={[so_o?.actions, so_o?.hint]} data-so-text={so_text?.('hint')}>{hint}</i>
+\t<u class={{ wrapper: so_o?.actions }} data-so-text={so_text?.('flip')}>x</u>
+\t<s class={[so_o?.actions, so_o?.[kind]]} data-so-text={so_text?.('kind')}>{kind}</s>
+\t<em data-so-part="actions" {...{ title: 'More' }} data-so-text={so_text?.('extra')}>{extra}</em>
 </div>
 `)
     ).toEqual({ actions: ['label'], caption: ['note'] });
@@ -212,11 +223,57 @@ ${HAS}\tlet { label = '', so_text, so_o = undefined } = $props();
     ).toMatchObject({ actions: [], panel: [], tip: [] });
   });
 
-  it('gives no part of code that changes anything as it runs, or reads its properties as one object', async () => {
+  it('follows what the code changes as it runs, and gives nothing of code it cannot follow', async () => {
+    // A copy kept in state, in a map, or worked out as a store, shows the text where it is shown.
     expect(
-      await paths(`${script(`label = ''`)}<p class={so_o?.label} data-so-text={so_text?.('label')}>{label}</p>\n<button onclick={() => (label = 'x')}>Go</button>\n`)
-    ).toEqual({});
-    expect(await paths(`<script>let props = $props();</script>\n<p class={props.so_o?.label} data-so-text={props.so_text?.('label')}>{props.label}</p>\n`)).toEqual({});
+      await paths(`<script>
+	import { readable } from 'svelte/store';
+	let { label = '', title = '', note = '', heading = '', so_id = heading, so_text, so_o = undefined } = $props();
+	let copy = $state('');
+	let open = $state(false);
+	const map = new Map();
+	$effect(() => {
+		copy = label;
+		map.set('title', title);
+	});
+	const shown = $derived(readable(note));
+</script>
+<p class={so_o?.label} data-so-text={so_text?.('label')}>{label}</p>
+<footer>{copy}</footer>
+<p class={so_o?.title} data-so-text={so_text?.('title')}>{title}</p>
+<i>{map.get('title')}</i>
+<p class={so_o?.note} data-so-text={so_text?.('note')}>{note}</p>
+<b>{$shown}</b>
+<h2 class={so_o?.heading} data-so-text={so_text?.('heading')}>{heading}</h2>
+<section id={so_id}></section>
+<div class={so_o?.more}>{#if open}More{/if}</div>
+<button onclick={() => (open = !open)}>Toggle</button>
+`)
+    ).toMatchObject({ label: [], title: [], note: [], heading: [] });
+    // State of the code's own that nothing the placement gives reaches leaves the rest as it is.
+    expect(await paths(`${script(`heading = ''`)}<h2 class={so_o?.heading} data-so-text={so_text?.('heading')}>{heading}</h2>\n<button onclick={() => (open = !open)}>Toggle</button>\n`)).toMatchObject({ heading: ['heading'] });
+    // Code that reads its properties as one object, or keeps code in a module script, is not followed.
+    expect(await paths(`<script>let props = $props(); let { so_text } = props;</script>\n<p class={props.so_o?.label} data-so-text={so_text?.('label')}>{props.label}</p>\n`)).toEqual({});
+    expect(await paths(`<script module>export const shared = new Map();</script>\n${script(`label = ''`)}<p class={so_o?.label} data-so-text={so_text?.('label')}>{label}</p>\n`)).toEqual({});
+  });
+
+  it('gives nothing to a part that is itself in a component other than the Builder’s own, or in a snippet', async () => {
+    expect(
+      await paths(`<script>
+	import Viewer from './Viewer.svelte';
+	let { caption = '', note = '', so_text, so_o = undefined } = $props();
+</script>
+<Viewer><figcaption class={so_o?.caption} data-so-text={so_text?.('caption')}>{caption}</figcaption></Viewer>
+{#snippet box()}<p class={so_o?.note} data-so-text={so_text?.('note')}>{note}</p>{/snippet}
+{@render box()}
+`)
+    ).toMatchObject({ caption: [], note: [] });
+  });
+
+  it('names no item by a name given again on the way to the marker', async () => {
+    expect(
+      await paths(`${script(`plans = []`)}{#each plans as row (row.id)}<li class={[so_o?.card, so_oi?.[row.id]?.card]}>{@const row = plans[0]}<h3 data-so-text={so_text?.('plans.name', row.id)}>{row.name}</h3></li>{/each}\n`)
+    ).toMatchObject({ card: [] });
   });
 
   it('reads nothing from code without the text hook, and nothing from code that does not parse', async () => {
@@ -296,8 +353,13 @@ describe('a selected part of a code component', () => {
     expect(part('actions').part?.texts?.keep).toEqual(['label']);
     expect(checkAuthority(state, [set('See plans')], part('actions'))).toBeNull();
     expect(checkAuthority(state, [set('  ')], part('actions'))).toMatch(/would empty "label"/);
-    // Judged against the batch as it goes: emptied and filled again in one batch, each step is refused.
+    // Judged against the batch as it goes: a later step that empties it is refused.
     expect(checkAuthority(state, [set('See plans'), set('')], part('actions'))).toMatch(/would empty/);
+    // Judged as the engine saves it: a number is saved as its text.
+    expect(checkAuthority(state, [set(0)], part('actions'))).toBeNull();
+    const emptied = structuredClone(state);
+    ((emptied.pages[owner.id].nodes[nodeId] as InstanceNode).props as Record<string, unknown>).label = '';
+    expect(checkAuthority(emptied, [set('See plans')], part('actions'))).toMatch(/would fill "label"/);
   });
 
   it('may change the selected card’s marked field, never another card’s or an unmarked field', async () => {

@@ -2123,7 +2123,7 @@ export class Orchestrator {
               false
             );
         }
-        if (shellRoot) return refused('SCOPE_MISMATCH', 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.', true);
+        if (shellRoot) return refused('SCOPE_MISMATCH', 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.', true, 'The shared header and footer can’t be removed, so nothing was changed.');
         const beyond = (denied: string) => {
           // Named as the run is offered it: the small selection tools ask with their own tool.
           const widen = current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification (widenScope: true)';
