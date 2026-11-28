@@ -320,7 +320,7 @@ function takesDefault(schema: Record<string, unknown>, value: string | number | 
   if (typeof value === 'number') return !(typeof schema.min === 'number' && value < schema.min) && !(typeof schema.max === 'number' && value > schema.max);
   if (typeof value !== 'string') return true;
   const max = typeof schema.maxLength === 'number' ? schema.maxLength : DEFAULT_TEXT_MAX;
-  return value.length <= max && !(schema.required && !value.trim()) && (!!schema.multiline || !/[\r\n]/.test(value));
+  return value.length <= max && !(schema.required && !value.trim()) && (!!schema.multiline || !/\n/.test(value));
 }
 
 /**
@@ -349,7 +349,7 @@ export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePro
       continue;
     }
     const schema: Record<string, unknown> = { type: isPrimitive(value) ? typeof value : 'string', label: labelFromCodeName(name), default: isPrimitive(value) ? value : '' };
-    if (typeof value === 'string' && /[\r\n]/.test(value)) schema.multiline = true;
+    if (typeof value === 'string' && /\n/.test(value)) schema.multiline = true;
     if ((written || computed) && !(isPrimitive(value) && takesDefault(schema, value))) out.manual.push(name);
     else out.add.push({ name, schema });
   }

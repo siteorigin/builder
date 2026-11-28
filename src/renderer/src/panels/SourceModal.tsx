@@ -717,9 +717,9 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
         {src?.editable && (
           <CodePropsNote
             rows={rows}
-            taken={taken?.source === code ? taken.props : null}
+            taken={taken && sameCode(taken.source, code) ? taken.props : null}
             // A newer version of the code or the properties on its way, or one refused: settle that first.
-            disabled={saving || loading || refreshFailed || !!refused || codeStale || propsStale}
+            disabled={saving || loading || refreshFailed || !!refused || codeStale || propsStale || behind}
             onRows={syncRows}
             onReview={() => setTab('manifest')}
             stored
@@ -735,7 +735,13 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
 }
 
 /** Names joined for a sentence: “a”, “a and b”, “a, b and c”. */
-const joined = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+const joined = (names: string[]) => {
+  // A long list says how many more there are, so the note never crowds out the editor.
+  const shown = names.length > 6 ? [...names.slice(0, 5), `${names.length - 5} more`] : names;
+  return shown.length < 2 ? shown.join('') : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+};
+/** Code as the editor holds it, with its line endings made one, for telling whether a check read this code. */
+const sameCode = (a: string, b: string) => a.replace(/\r\n?/g, '\n') === b.replace(/\r\n?/g, '\n');
 
 /** A default as the note quotes it. */
 const quoted = (v: unknown) => (typeof v === 'string' ? `“${v.length > 40 ? `${v.slice(0, 39)}…` : v}”` : typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
@@ -1103,7 +1109,7 @@ export function NewCodeComponentModal() {
         />
         <CodePropsNote
             rows={rows}
-            taken={taken?.source === source ? taken.props : null}
+            taken={taken && sameCode(taken.source, source) ? taken.props : null}
             disabled={saving}
             untouched={starterUntouched}
             onReview={() => setTab('manifest')}
