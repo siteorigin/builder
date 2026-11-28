@@ -9,7 +9,7 @@ import type { AdapterNote, AgentModelAdapter, CanonicalModelRequest, ModelEvent 
 import { recordedAdapter, recordedStream, type ChatRecord } from '@agent/learning';
 import { fixComponentSource } from '@agent/fixer';
 import { ProjectSession } from '../../src/main/project/session';
-import { LearningRecorder, PROJECT_MARKER, fileKey, parseLearningLabels, projectHolding, readLearningConfig } from '../../src/main/learning';
+import { LearningRecorder, PROJECT_MARKER, fileKey, historyChanges, parseLearningLabels, projectHolding, readLearningConfig, type HistoryStep } from '../../src/main/learning';
 import { MANIFEST_FILE } from '../../src/main/project/documents';
 import type { ChatRecorder } from '@agent/learning';
 
@@ -359,6 +359,15 @@ describe('learning mode recording a chat (#1566)', () => {
     expect(JSON.parse(text[3])).toMatchObject({ type: 'user', text: 'again' });
   });
 
+  it('adds to a whole file without a blank line', async () => {
+    const dir = scratch('so-learning');
+    writeFileSync(join(dir, '20261101T000000000Z-c_ok.jsonl'), '{"type":"header","conversationId":"c_ok"}\n');
+    const learning = recorder(dir);
+    learning.record('c_ok', { type: 'user', text: 'again' });
+    await learning.flush();
+    expect(readFileSync(join(dir, '20261101T000000000Z-c_ok.jsonl'), 'utf8').split('\n').slice(0, -1).every(Boolean)).toBe(true);
+  });
+
   it('finds a run by its own records, not a label that names it, and keeps its place among later steps', async () => {
     const dir = scratch('so-learning');
     writeFileSync(join(dir, '20261101T000000000Z-c_a.jsonl'), `${JSON.stringify({ type: 'user', runId: 'run_r', conversationId: 'c_a' })}\n`);
@@ -445,5 +454,36 @@ describe('learning mode recording model calls outside a chat turn (#1566)', () =
     expect(seen).toEqual([{ type: 'done', stopReason: 'end', text: 'OK', toolCalls: [] }]);
     expect(got.map((r) => r.type)).toEqual(['request', 'resend', 'response']);
     expect(got[1]).toMatchObject({ reason: 'correction', reply: '{oops', provider: 'local', step: 1 });
+  });
+});
+
+describe('learning mode reading a change of History (#1566)', () => {
+  const step = (id: string, applied: boolean, more: Partial<HistoryStep> = {}): HistoryStep => ({ id, applied, ...more });
+
+  it('names the AI runs a step back or forward crossed, in the order History crossed them', () => {
+    const at = (cursor: number) => [step('e1', cursor > 0, { runId: 'run_a' }), step('e2', cursor > 1), step('e3', cursor > 2, { runId: 'run_b' })];
+    expect(historyChanges(at(3), at(0))).toEqual([
+      { type: 'undo', runId: 'run_b' },
+      { type: 'undo', runId: 'run_a' }
+    ]);
+    expect(historyChanges(at(0), at(3))).toEqual([
+      { type: 'redo', runId: 'run_a' },
+      { type: 'redo', runId: 'run_b' }
+    ]);
+    expect(historyChanges(at(3), at(2))).toEqual([{ type: 'undo', runId: 'run_b' }]);
+    // The author's own step crossed: no AI run changed.
+    expect(historyChanges(at(2), at(1))).toEqual([]);
+  });
+
+  it('reads a reviewed undo of one turn as that turn undone, and stepping back over it as the turn brought back', () => {
+    const before = [step('e1', true, { runId: 'run_a' }), step('e2', true, { runId: 'run_b' })];
+    const reverted = [...before, step('e3', true, { revertsRunId: 'run_a' })];
+    expect(historyChanges(before, reverted)).toEqual([{ type: 'undo', runId: 'run_a' }]);
+    // Back over the reviewed undo, then over B: A comes back first, then B goes.
+    const back = [step('e1', true, { runId: 'run_a' }), step('e2', false, { runId: 'run_b' }), step('e3', false, { revertsRunId: 'run_a' })];
+    expect(historyChanges(reverted, back)).toEqual([
+      { type: 'redo', runId: 'run_a' },
+      { type: 'undo', runId: 'run_b' }
+    ]);
   });
 });

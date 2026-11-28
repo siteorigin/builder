@@ -1545,6 +1545,8 @@ export class Orchestrator {
       q.answered = text;
       if (chosen) q.answeredAssetId = chosen.assetId;
     }
+    // The author's answer, as it was taken: a stop while it waits for a save to land still leaves it given.
+    run.learn?.({ type: 'answer', questionId, answer: text, ...(chosen ? { assetId: chosen.assetId } : {}) });
     this.emitMessage(run.message, runId);
     // An edit the author is saving as they answer reaches the project first, and the model hears of it with the answer.
     // Meanwhile no other save is admitted, and the editor hears so at once.
@@ -2084,10 +2086,8 @@ export class Orchestrator {
           edits: [],
           resolve: (a) => {
             lastResume = Date.now();
-            // Stop settles the question too; the run is stopping, not working again. Its stop is recorded, not an answer.
+            // Stop settles the question too; the run is stopping, not working again.
             if (signal.aborted) return resolve(a);
-            const assetId = msg.questions?.find((q) => q.id === id)?.answeredAssetId;
-            run.learn?.({ type: 'answer', questionId: id, answer: a, ...(assetId ? { assetId } : {}) });
             this.setStatus(resume);
             if (widen && (a === yes || TYPED_YES.test(a))) {
               authority = { kind: 'site' };
@@ -3015,8 +3015,9 @@ export class Orchestrator {
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
               : await (startReads(index), started.get(call) ?? runCall(call));
-          // Kept before a repeated failure can end the run with this result never sent; a call Stop cut short is not.
-          if (!signal.aborted) learnResult(call, outcome);
+          // Kept before a repeated failure can end the run with this result never sent. A call Stop cut short is not,
+          // unless its change landed first: the outcome says whether it was rolled back.
+          if (!signal.aborted || outcome.mutated) learnResult(call, outcome);
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.ok && outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.

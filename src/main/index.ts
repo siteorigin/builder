@@ -57,7 +57,7 @@ import { createMainErrorReporter, errorText } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
 import { recordedAdapter, type ChatRecord } from '@agent/learning';
 import { newId } from '@shared/ids';
-import { LearningRecorder, readLearningConfig } from './learning';
+import { historyChanges, LearningRecorder, readLearningConfig, type HistoryStep } from './learning';
 import { redact } from '@agent/types';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
@@ -438,29 +438,27 @@ const compileCacheFor = (session: object): CompileCache => {
 /** Learning mode's recorder (#1566), made at launch once the log is open (below); null while learning mode is off. */
 let learning: LearningRecorder | null = null;
 
+/** History changes made while learning mode is on, one after another, so each compares only what it changed itself. */
+let historyChain: Promise<unknown> = Promise.resolve();
+
 /**
  * `act`, a change of History, with learning mode told of each AI run it took back or brought back (#1566), however it
- * was asked for: the chat's Undo, the toolbar, History, or a reviewed undo of one turn. A run's changes stand while its
- * History step is applied and no applied step takes them back on their own.
+ * was asked for: the chat's Undo, the toolbar, History, or a reviewed undo of one turn (learning.ts historyChanges).
  */
-async function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
-  const session = learning ? controller.session : null;
-  const standing = () => {
-    const entries = session!.historyInfo().entries;
-    const reverted = new Set(entries.filter((e) => e.applied && e.revertsRunId).map((e) => e.revertsRunId));
-    return new Map(entries.filter((e) => e.source === 'ai' && e.runId).map((e) => [e.runId!, e.applied && !reverted.has(e.runId)]));
+function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
+  if (!learning) return Promise.resolve(act()) as Promise<Awaited<T>>;
+  const step = async (): Promise<Awaited<T>> => {
+    const session = controller.session;
+    const steps = (): HistoryStep[] => (session ? session.historyInfo().entries.map((e) => ({ id: e.id, applied: e.applied, ...(e.source === 'ai' && e.runId ? { runId: e.runId } : {}), ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })) : []);
+    const before = steps();
+    const result = await act();
+    // A step refused (another one got there first) changed nothing of its own.
+    if (learning && session && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) for (const c of historyChanges(before, steps())) learning.recordRun(c.runId, { type: c.type, via });
+    return result;
   };
-  const before = session ? standing() : null;
-  const result = await act();
-  // A step refused (another one got there first) changed nothing of its own.
-  if (learning && session && before && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) {
-    const changed = [...standing()].filter(([runId, stands]) => before.has(runId) && before.get(runId) !== stands);
-    // In the order History took them: back from the newest, forward from the oldest.
-    const undone = changed.filter(([, stands]) => !stands).reverse();
-    for (const [runId] of undone) learning.recordRun(runId, { type: 'undo', via });
-    for (const [runId, stands] of changed) if (stands) learning.recordRun(runId, { type: 'redo', via });
-  }
-  return result;
+  const done = historyChain.then(step, step);
+  historyChain = done.catch(() => undefined);
+  return done;
 }
 
 const orchestrator = new Orchestrator({

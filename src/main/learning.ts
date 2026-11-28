@@ -134,8 +134,6 @@ export class LearningRecorder implements ChatRecorder {
   private runs = new Map<string, string>();
   /** Files whose last write failed, which may end part way through a line: the next write starts a line of its own. */
   private torn = new Set<string>();
-  /** The project the folder is in, looked for once per launch: a folder in a project is never written to. */
-  private holder: string | null | undefined;
   private queue: Promise<void> = Promise.resolve();
   private pending = 0;
   /** What has been reported (the folder, or one file): each is reported once. */
@@ -249,7 +247,8 @@ export class LearningRecorder implements ChatRecorder {
   /** Add one line to `file`, on a line of its own even when the last write to it failed part way. */
   private async append(file: string, line: string) {
     try {
-      await appendFile(file, `${this.torn.has(file) ? '\n' : ''}${line}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+      const after = this.torn.has(file) && !(await endsWithNewline(file).catch(() => true));
+      await appendFile(file, `${after ? '\n' : ''}${line}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
       this.torn.delete(file);
     } catch (e) {
       this.torn.add(file);
@@ -260,8 +259,9 @@ export class LearningRecorder implements ChatRecorder {
   /** The conversation's file, found or made, with this launch's header written to it. */
   private async open(conversationId: string, time: Date): Promise<string> {
     const { dir } = this.opts;
-    if (this.holder === undefined) this.holder = projectHolding(dir);
-    if (this.holder) throw new RefusedFolder(`Learning mode does not write to ${dir}: it is inside the project ${this.holder}, and its recordings must stay outside every project. Chats go on unrecorded.`);
+    // Looked for as each conversation's file is opened, so a folder that has come to be in a project since is refused.
+    const holder = projectHolding(dir);
+    if (holder) throw new RefusedFolder(`Learning mode does not write to ${dir}: it is inside the project ${holder}, and its recordings must stay outside every project. Chats go on unrecorded.`);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const suffix = `-${fileKey(conversationId)}.jsonl`;
     // Only a file of the folder's own: never one a link points to elsewhere.
@@ -270,12 +270,17 @@ export class LearningRecorder implements ChatRecorder {
       .map((d) => d.name)
       .sort()[0];
     const file = join(dir, existing ?? `${fileStamp(time)}${suffix}`);
-    // A new file is made only when none is there: `wx` never replaces one.
-    if (!existing) await writeFile(file, '', { flag: 'wx', mode: 0o600 }).catch((e: NodeJS.ErrnoException) => (e.code === 'EEXIST' ? undefined : Promise.reject(e)));
-    else if (!(await endsWithNewline(file))) this.torn.add(file);
-    const { name, version, commit } = this.opts.app;
-    const header = { type: 'header', conversationId, time: time.toISOString(), continued: !!existing, labels: this.opts.labels, app: { name, version, commit } };
-    await this.append(file, redact(JSON.stringify(header)));
+    try {
+      // A new file is made only when none is there: `wx` never replaces one.
+      if (!existing) await writeFile(file, '', { flag: 'wx', mode: 0o600 }).catch((e: NodeJS.ErrnoException) => (e.code === 'EEXIST' ? undefined : Promise.reject(e)));
+      // One an earlier launch may have left part way through a line is looked at before it is added to.
+      else this.torn.add(file);
+      const { name, version, commit } = this.opts.app;
+      const header = { type: 'header', conversationId, time: time.toISOString(), continued: !!existing, labels: this.opts.labels, app: { name, version, commit } };
+      await this.append(file, redact(JSON.stringify(header)));
+    } catch (e) {
+      throw Object.assign(e as Error, { learningFile: file });
+    }
     this.files.set(conversationId, file);
     return file;
   }
@@ -293,6 +298,34 @@ export class LearningRecorder implements ChatRecorder {
       // Reporting is best effort.
     }
   }
+}
+
+/** One History step as learning mode compares them (ProjectSession.historyInfo's entries). */
+export interface HistoryStep {
+  id: string;
+  applied: boolean;
+  /** The AI run whose changes the step is. */
+  runId?: string;
+  /** The AI run whose changes the step takes back on their own (a reviewed undo of one turn). */
+  revertsRunId?: string;
+}
+
+/**
+ * The AI runs whose changes a change of History took back or brought back, in the order History crossed their steps:
+ * back from the newest, forward from the oldest. Crossing a run's own step undoes or redoes it; crossing a step that
+ * took it back on its own does the opposite. A step that is new and applied (a reviewed undo, just made) is crossed
+ * forward.
+ */
+export function historyChanges(before: HistoryStep[], after: HistoryStep[]): Array<{ type: 'undo' | 'redo'; runId: string }> {
+  const was = new Map(before.map((s) => [s.id, s.applied]));
+  const crossed = after.filter((s) => (was.get(s.id) ?? false) !== s.applied);
+  const back = crossed.some((s) => !s.applied);
+  const out: Array<{ type: 'undo' | 'redo'; runId: string }> = [];
+  for (const s of back ? crossed.reverse() : crossed) {
+    if (s.runId) out.push({ type: s.applied ? 'redo' : 'undo', runId: s.runId });
+    if (s.revertsRunId) out.push({ type: s.applied ? 'undo' : 'redo', runId: s.revertsRunId });
+  }
+  return out;
 }
 
 /** Whether a file is empty or ends a line: one that does not was cut off part way through its last line. */
