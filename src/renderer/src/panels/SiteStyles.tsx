@@ -9,7 +9,6 @@ import { ColorSchemeControls } from './ColorSchemeControls';
 import { PaletteHarmony } from './PaletteHarmony';
 import { getTheme, listThemes, themePinProblem, type ThemePack } from '@catalogue/index';
 import { comparePackVersions, PACK_VERSION_RE } from '@catalogue/pack';
-import { isRemoteOpening } from '../lib/remote-snapshot';
 import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
@@ -840,9 +839,7 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
   const [done, setDone] = useState<{ from: ThemePack; to: string; kept: number; undo: ReturnType<typeof undoAction> } | null>(null);
   const missing = theme.id !== st.site.themeId;
   // Why the project is open read-only because of its theme: not installed, or not the copy it was made with.
-  // A live guest edits the host's project, whose pin the host judges against its own packs: its read-only reason
-  // arrives in the snapshot, and this computer's copy of the theme says nothing about it.
-  const pin = isRemoteOpening(snap?.workspaceKey) ? null : themePinProblem(st);
+  const pin = themePinProblem(st);
   const readOnly = snap?.readOnly;
   const live = !!done && done.to === st.site.themeId && !!done.undo?.undoes && undoAvailable(done.undo.undoes, snap);
   // Undone, by any route: said once. The switch is kept, so a redo brings its receipt and Undo back.
