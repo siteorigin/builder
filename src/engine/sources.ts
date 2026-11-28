@@ -9,6 +9,7 @@ import type { EntryDoc, EntrySource, ProjectState, SourceConfig, SourceDoc, Sour
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { cleanMapping, CONVERTER_FILE, isSourceId, sourceDocProblem } from '@shared/sources';
+import { galleryAssetIds } from '@shared/gallery-field';
 import { EngineError, fail } from './tree';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -172,6 +173,7 @@ function entryNeeds(e: EntryDoc, fields: Record<string, { type?: unknown }>): { 
   for (const [name, f] of Object.entries(fields)) {
     const v: unknown = e.values && Object.hasOwn(e.values, name) ? e.values[name] : undefined;
     if (f?.type === 'image' && typeof (v as { assetId?: unknown })?.assetId === 'string') out.assets.add((v as { assetId: string }).assetId);
+    else if (f?.type === 'gallery') for (const id of galleryAssetIds(v)) out.assets.add(id);
     else if (f?.type === 'richtext') rich(v);
     else if (f?.type === 'link') link(v);
     else if (f?.type === 'reference') for (const id of [v].flat()) if (typeof id === 'string' && id) out.entries.add(id);

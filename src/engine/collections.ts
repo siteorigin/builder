@@ -3,8 +3,8 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionBrowse, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
-import { COLLECTION_FIELD_TYPES, COLLECTION_KINDS, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
+import type { Collection, CollectionBrowse, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GalleryItem, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
+import { COLLECTION_FIELD_TYPES, COLLECTION_KINDS, MAX_GALLERY_PHOTOS, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import {
   ARCHIVE_FOLDERS,
@@ -35,13 +35,14 @@ import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
-import { TEXT_LIMITS } from '@shared/text-limits';
+import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
 import { EngineError, allTrees, fail } from './tree';
 import { starterArchiveLayout } from './collection-sources';
-import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
+import { normalizeImage, normalizeLink, normalizeRichText, normalizeScalar } from './values';
+import { GALLERY_CAPTION_MAX, GALLERY_ITEM_ID, galleryRows } from '@shared/gallery-field';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { collectionLinkUses, entryLinkUses, type LinkHolder, type PageLinkUse } from './page-links';
-import { defaultLayout, isDefaultLayout } from './collection-layouts';
+import { defaultLayout, installLayoutComponents, isDefaultLayout } from './collection-layouts';
 
 type OpResult = Record<string, unknown>;
 
@@ -397,7 +398,7 @@ function normalizeField(name: string, raw: Record<string, unknown>, state: Proje
   checkPropName(name, 'Field');
   const type = raw?.type;
   if (!(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(type)) fail(`Field "${name}" needs a type of ${COLLECTION_FIELD_TYPES.join(', ')}.`);
-  if (type !== 'date' && type !== 'reference') {
+  if (type !== 'date' && type !== 'reference' && type !== 'gallery') {
     // An entry's field has no sample content to mark: every entry is written by its author (shared/sample-defaults.ts).
     const { sampleDefault: _sample, ...field } = normalizePropSchema(raw, state, name, true) as CollectionFieldSchema & { sampleDefault?: true };
     void _sample;
@@ -411,6 +412,11 @@ function normalizeField(name: string, raw: Record<string, unknown>, state: Proje
     const d = raw.default ?? '';
     if (d !== '' && !(typeof d === 'string' && isArticleDate(d))) fail(`${what}: its default must be a calendar date written YYYY-MM-DD, or "" for none.`);
     return { type: 'date', ...base, default: d as string };
+  }
+  if (type === 'gallery') {
+    // Which photos it shows is each entry's own, as a reference's entries are: a default would follow every new entry.
+    if (raw.default !== undefined && !(Array.isArray(raw.default) && !raw.default.length)) fail(`${what}: a gallery holds no photo until an entry adds one, so its default is [].`);
+    return { type: 'gallery', ...base, default: [] };
   }
   const target = raw.collection;
   if (typeof target !== 'string' || (target !== collectionId && !Object.hasOwn(state.collections, target)))
@@ -450,6 +456,42 @@ function referenceValue(state: ProjectState, schema: ReferenceFieldSchema, v: un
 }
 
 /**
+ * The photos a gallery field holds, as given: at most MAX_GALLERY_PHOTOS, in their order, each a library picture
+ * (`image`: its asset ID, or `{ assetId, alt?, decorative? }`) with an optional caption. A photo keeps the `id` it is
+ * sent with, which is how an edit or a move names the one it changes; one sent without is a new photo and gets its
+ * own. The same picture may be in it twice, each photo with its own words; the same photo may not.
+ */
+function galleryValue(state: ProjectState, v: unknown, label: string, stored?: unknown): GalleryItem[] {
+  if (!Array.isArray(v)) fail(`${label}: expected a list of photos, each { image, caption? }.`);
+  const rows = v as unknown[];
+  if (rows.length > MAX_GALLERY_PHOTOS) fail(`${label}: a gallery holds at most ${MAX_GALLERY_PHOTOS} photos.`);
+  const before = new Map((Array.isArray(stored) ? stored : []).flatMap((r) => (r && typeof r === 'object' && typeof (r as GalleryItem).id === 'string' ? [[(r as GalleryItem).id, r as GalleryItem]] : [])));
+  const seen = new Set<string>();
+  const out = rows.map((row, i) => {
+    const at = `${label} → Photo ${i + 1}`;
+    if (!row || typeof row !== 'object' || Array.isArray(row)) fail(`${at}: expected { image, caption? }.`);
+    const r = row as Record<string, unknown>;
+    const extra = Object.keys(r).filter((k) => k !== 'id' && k !== 'image' && k !== 'caption');
+    if (extra.length) fail(`${at}: a photo has an image and a caption, not ${extra.map((k) => `"${k.slice(0, 40)}"`).join(', ')}.`);
+    if (r.id !== undefined && (typeof r.id !== 'string' || !GALLERY_ITEM_ID.test(r.id))) fail(`${at}: ${JSON.stringify(r.id)?.slice(0, 60)} is not a photo ID.`);
+    const id = typeof r.id === 'string' ? r.id : newId('i');
+    if (seen.has(id)) fail(`${at}: the photo "${id}" is in the gallery twice. Add the picture again as a new photo (with no id) to show it twice.`);
+    seen.add(id);
+    const given = r.image;
+    if (given === undefined || given === null || given === '' || (typeof given === 'object' && !(given as { assetId?: unknown }).assetId)) fail(`${at}: choose its picture from Assets.`);
+    if (typeof given !== 'string' && (typeof given !== 'object' || Array.isArray(given))) fail(`${at}: its image is an asset ID or { assetId, alt }.`);
+    const image = normalizeImage(given, state, at, before.get(id)?.image?.alt);
+    const caption = r.caption === undefined ? '' : r.caption;
+    if (typeof caption !== 'string') fail(`${at}: its caption is text.`);
+    if (caption.length > GALLERY_CAPTION_MAX) fail(`${at}: its caption: ${tooLongMessage(caption.length, GALLERY_CAPTION_MAX)}`);
+    return { id, image, caption: caption as string };
+  });
+  // Unchanged, it is kept exactly as stored (its keys in whatever order a hand edit wrote them), so a change elsewhere
+  // in the collection never reads it as changed (see settleEntries).
+  return stored !== undefined && JSON.stringify(v) === JSON.stringify(stored) ? (v as GalleryItem[]) : out;
+}
+
+/**
  * A value an entry gives one of its collection's custom fields, as stored. `stored` is the value it has now, kept while
  * it is unchanged (see normalizeScalar). Its links may go to entries, as the entry's own text's may; its rich text is
  * not an article (no section headings or pictures).
@@ -462,6 +504,8 @@ function fieldValue(state: ProjectState, schema: CollectionFieldSchema, v: unkno
       return v as string;
     case 'reference':
       return referenceValue(state, schema, v, label);
+    case 'gallery':
+      return galleryValue(state, v, label, stored);
     case 'link':
       return unchanged && v && typeof v === 'object' ? (v as LinkValue) : normalizeLink(v, state, label, { entries: true });
     case 'richtext':
@@ -578,6 +622,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (op.hasBody !== undefined) settings.hasBody = op.hasBody;
   // Articles start with the theme's article layout, records with a page of their own fields (see collection-layouts).
   settings.template = defaultLayout(state, settings);
+  installLayoutComponents(state, settings.template);
   if (pages) settings.pages = pages;
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.termArchives !== undefined) settings.termArchives = op.termArchives;
@@ -715,7 +760,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   // Once its fields and groupings are what the change makes them.
   if (op.browse === null) delete c.settings.browse;
   else if (op.browse !== undefined) setBrowse(c.settings, browseOf(c.settings, op.browse));
-  if (follows && !isDefaultLayout(state, c.settings)) c.settings.template = defaultLayout(state, c.settings);
+  if (follows && !isDefaultLayout(state, c.settings)) {
+    c.settings.template = defaultLayout(state, c.settings);
+    installLayoutComponents(state, c.settings.template);
+  }
   if (op.categoryDescription !== undefined) {
     const { termId } = op.categoryDescription;
     const terms = c.settings.taxonomies?.categories?.terms;
@@ -1314,6 +1362,18 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
           else if (a && a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what}: ${f.label} shows “${a.name}”, which is a ${a.kind}, not a picture.`, owner: eo, site: `values|${k}|${a.id}` });
           continue;
         }
+        if (f.type === 'gallery') {
+          // The photos it can show still show; a damaged one is left out, and each picture gone is a problem of its own.
+          const rows = galleryRows(v);
+          if (!Array.isArray(v) || rows.length !== v.length || v.length > MAX_GALLERY_PHOTOS || rows.some((r) => r.caption.length > GALLERY_CAPTION_MAX))
+            out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a list of at most ${MAX_GALLERY_PHOTOS} photos, each with its own ID, a picture and a caption of at most ${GALLERY_CAPTION_MAX} characters, so the ones that are not show nothing.`, owner: eo, site: `values|${k}` });
+          for (const row of rows) {
+            const a = own(assets, row.image.assetId as string);
+            if (!a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${what}: a photo of ${f.label} shows an image that is not in the library.`, owner: eo, site: `values|${k}|${row.id}` });
+            else if (a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what}: a photo of ${f.label} shows “${a.name}”, which is a ${a.kind}, not a picture.`, owner: eo, site: `values|${k}|${row.id}|${a.id}` });
+          }
+          continue;
+        }
         if (f.type === 'link' || f.type === 'richtext') {
           // A rich text field's text is no article: a section heading or a picture in it is left out, and the rest shows.
           const readable = f.type === 'link' ? !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string' : Array.isArray(v) && v.every(isRichBlock);
@@ -1439,6 +1499,8 @@ function fieldDamaged(state: ProjectState, f: CollectionFieldSchema | undefined)
   // A reference names no entry by default (see normalizeField): one that did would escape the guard on removing it.
   if (f.type === 'reference') return typeof f.collection !== 'string' || !Object.hasOwn(state.collections, f.collection) || JSON.stringify(f.default) !== JSON.stringify(f.multiple ? [] : '');
   if (f.type === 'date') return f.default !== '' && !(typeof f.default === 'string' && isArticleDate(f.default));
+  // A gallery holds no photo by default (see normalizeField).
+  if (f.type === 'gallery') return !Array.isArray(f.default) || f.default.length > 0;
   if (f.type === 'link') return !f.default || typeof f.default !== 'object';
   if (f.type === 'richtext') return !Array.isArray(f.default) || !f.default.every((b) => isRichBlock(b) && !isArticleBlock(b));
   return false;

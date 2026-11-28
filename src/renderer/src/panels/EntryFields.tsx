@@ -9,6 +9,7 @@ import { conditionRef, isBinding, isEntryBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { entryChoiceProblem, entryFieldLabel, entryFieldSchemas, isEntryDateField } from '@shared/entry-fields';
 import { rowFieldSchemas } from '@shared/collection-rows';
+import { galleryFitProblem } from '@shared/gallery-field';
 import { acceptedTypes, type BindField } from '@engine/schema';
 import { loopCollection, loopMembers } from '@engine/collection-sources';
 import { formDestinationLookup } from '@engine/form-destinations';
@@ -25,8 +26,8 @@ interface Place {
   value: unknown;
 }
 
-/** The places of a node that can show an entry's field. */
-function placesOf(state: ProjectState, node: GraphNode): Place[] {
+/** The places of a node that can show an entry's field, of those `fields` (the ones it reads entries through). */
+function placesOf(state: ProjectState, node: GraphNode, fields: Record<string, PropSchema>): Place[] {
   const r = node as unknown as Record<string, unknown>;
   switch (node.kind) {
     case 'text':
@@ -49,8 +50,11 @@ function placesOf(state: ProjectState, node: GraphNode): Place[] {
       // an entry (written by hand), so it can be set back to its own value.
       const destination = formDestinationLookup(state);
       const bound = (prop: string) => Object.hasOwn(node.props, prop) && isBinding(node.props[prop]);
+      // A list of pictures (a Gallery's images, a Carousel's slides) can show a gallery field's photos, while it is
+      // not showing a collection's entries instead.
+      const photos = (prop: string, s: PropSchema) => s.type === 'list' && !Object.hasOwn(node.listSources ?? {}, prop) && Object.values(fields).some((f) => f.type === 'list' && !galleryFitProblem(f, s));
       return Object.entries(def.properties)
-        .filter(([prop, s]) => kinds.has(s.type) && (bound(prop) || !destination(def.id, prop)))
+        .filter(([prop, s]) => (kinds.has(s.type) || photos(prop, s) || (s.type === 'list' && bound(prop))) && (bound(prop) || !destination(def.id, prop)))
         .map(([prop, s]) => ({ field: 'prop' as const, prop, label: s.label, nested: s, value: Object.hasOwn(node.props, prop) ? node.props[prop] : undefined }));
     }
     default:
@@ -61,8 +65,8 @@ function placesOf(state: ProjectState, node: GraphNode): Place[] {
 /** Which of a collection's fields a place can show: those of a type it takes. */
 function fitting(fields: Record<string, PropSchema>, node: GraphNode, place: Place): string[] {
   const ok = acceptedTypes(node, place.field, place.nested);
-  // A choice must offer only what the placed section's choice offers.
-  return Object.keys(fields).filter((f) => (!ok || ok.includes(fields[f].type)) && !entryChoiceProblem(fields[f], place.nested));
+  // A choice must offer only what the placed section's choice offers; a gallery, only a list that shows its photos.
+  return Object.keys(fields).filter((f) => (!ok || ok.includes(fields[f].type)) && !entryChoiceProblem(fields[f], place.nested) && !(fields[f].type === 'list' && galleryFitProblem(fields[f] as Extract<PropSchema, { type: 'list' }>, place.nested)));
 }
 
 /** What an element reads entries through: a collection's layout (`$entry`), or the collection loop it is in (`$item`). */
@@ -97,7 +101,7 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
   const { collection, fields, key } = reader;
   const shown = (v: unknown) => readOf(v, key);
   const ref = (field: string) => (key === '$entry' ? { $entry: field } : { $item: field });
-  const places = placesOf(state, node);
+  const places = placesOf(state, node, fields);
   // What decides whether it shows: one entry field being there (`with:`) or not (`without:`). A condition read from
   // anything else (a hand edit) shows as it is, and choosing On every entry clears both.
   const when = conditionRef(node.when);

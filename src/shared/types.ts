@@ -1336,10 +1336,31 @@ export interface ReferenceFieldSchema extends PropBase {
   multiple?: boolean;
   default: string | string[];
 }
-/** The kinds of custom field a collection's entries can fill in: one plain value, a picture, a link, rich text, a date or other entries. */
-export type CollectionFieldSchema = StringProp | NumberProp | BooleanProp | EnumProp | ImageProp | LinkProp | RichTextProp | DateFieldSchema | ReferenceFieldSchema;
-export const COLLECTION_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'image', 'link', 'richtext', 'date', 'reference'] as const;
-export type CollectionFieldValue = string | number | boolean | ImageValue | LinkValue | RichText | string[];
+/**
+ * One photo of a gallery field: a library picture with the entry's own description of it, and a caption. Its `id` is
+ * the photo's own, given once when it is added and kept through every edit and move, so the same picture can be in a
+ * gallery twice with different words.
+ */
+export interface GalleryItem {
+  id: string;
+  image: ImageValue;
+  caption: string;
+}
+/**
+ * An ordered list of library pictures each entry chooses its own of: a listing's photos, a project's shots. Empty
+ * until an entry adds one. A layout shows it as a list of photos (`image`, `caption`), which a Gallery's images or a
+ * Carousel's slides take.
+ */
+export interface GalleryFieldSchema extends PropBase {
+  type: 'gallery';
+  default: GalleryItem[];
+}
+/** The most photos one entry's gallery field holds: as many as a Gallery or a Carousel shows. */
+export const MAX_GALLERY_PHOTOS = 24;
+/** The kinds of custom field a collection's entries can fill in: one plain value, a picture, a link, rich text, a date, other entries or photos. */
+export type CollectionFieldSchema = StringProp | NumberProp | BooleanProp | EnumProp | ImageProp | LinkProp | RichTextProp | DateFieldSchema | ReferenceFieldSchema | GalleryFieldSchema;
+export const COLLECTION_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'image', 'link', 'richtext', 'date', 'reference', 'gallery'] as const;
+export type CollectionFieldValue = string | number | boolean | ImageValue | LinkValue | RichText | string[] | GalleryItem[];
 
 /** What a collection holds: dated articles (a blog, news) or structured records (team members, projects, events). */
 export type CollectionKind = 'editorial' | 'structured';
