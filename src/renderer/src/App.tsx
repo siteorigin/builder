@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, claimNavigation, toast, transport, useStore, whenThemesReady } from './store';
+import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreLayout, restoreRightTab, saveLocal, setState, showConversation, claimNavigation, toast, transport, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanGrants, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
@@ -9,7 +9,6 @@ import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { FormRoutingHost } from './components/FormRoutingHost';
 import { forgetComponentThumbs } from './components/ComponentThumb';
-import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { runWriterHistory } from './lib/post-draft';
 import { closeProject, endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
@@ -349,16 +348,12 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     snapshot: snap,
     runtime: snap.runtime,
     pageId,
-    viewport: restoreViewport(local.viewport),
+    // Its sidebar, panel widths and page, as the outline from a click on its card already drew them (Welcome).
+    ...restoreLayout(local),
     previewScheme: 'system',
-    zoom: restoreZoom(local.zoom),
-    leftTab: (local.leftTab as never) ?? 'pages',
     // No saved view, or one this version does not have (a newer one's, a hand-edited file), opens the AI. The host's
     // project in a live session opens on the Inspector: its AI is the host's (#766).
     rightTab: isRemoteOpening(snap.workspaceKey) ? 'inspect' : restoreRightTab(local.rightTab),
-    // Every project opens with its own panel widths (or the defaults), never the last project's.
-    leftWidth: restorePanelWidth('left', local.leftWidth),
-    rightWidth: restorePanelWidth('right', local.rightWidth),
     // Drafts and the open conversation are this project's own; the conversation follows once it is loaded.
     chatDrafts: cleanDrafts(local.chatDrafts),
     chatImages: cleanImages(local.chatImages),

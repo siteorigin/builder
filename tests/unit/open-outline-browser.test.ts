@@ -32,7 +32,7 @@ const ENTRY = [
   "import { createElement as h, useState } from 'react';",
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
-  `import { App } from ${renderer('App')};`,
+  `import { App, openSnapshot } from ${renderer('App')};`,
   `import { PreviewStatus, useSlowWait } from ${renderer('panels/PreviewStatus')};`,
   `import { getState, setState } from ${renderer('store')};`,
   "createRoot(document.getElementById('root')).render(h(App));",
@@ -48,6 +48,9 @@ const ENTRY = [
   'window.so = {',
   "  packsReady: () => setState({ packs: { ready: true, refused: [], userDir: '' } }),",
   '  opening: () => getState().openingProject,',
+  '  set: (p) => setState(p),',
+  // The project's snapshot arriving, with the layout its workspace file holds, as the main process sends it.
+  "  openSnapshot: (localState) => openSnapshot({ workspaceKey: '/sites/coast#1', revision: 1, runtime: { state: 'idle' }, localState, state: { manifest: {}, site: { name: 'Coast Florist', homePageId: 'home' }, pages: { home: {} }, components: {}, tokens: {}, assets: { assets: {} }, collections: {} }, missingAssets: [] }),",
   '  status: (props) => flushSync(() => showStatus(props))',
   '};'
 ].join('\n');
@@ -64,7 +67,8 @@ const BRIDGE = `
   const recents = [
     { dir: '/sites/acme', name: 'Acme Bakery', openedAt: now },
     { dir: '/sites/harbour', name: 'Harbour Dental', openedAt: now },
-    { dir: '/sites/gone', name: 'Gone Studio', openedAt: now, missing: true }
+    { dir: '/sites/gone', name: 'Gone Studio', openedAt: now, missing: true },
+    { dir: '/sites/coast', name: 'Coast Florist', openedAt: now, layout: { leftTab: 'layers', leftWidth: 300, rightWidth: 400, viewport: 768, zoom: 0.5 } }
   ];
   const never = () => new Promise(() => {});
   const ns = (impl) => new Proxy(impl, { get: (t, k) => (k in t ? t[k] : typeof k === 'symbol' || k === 'then' ? undefined : () => never()) });
@@ -226,6 +230,44 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(() => visible('.welcome')).toBe(true);
     await expect.poll(() => count('.editor-skeleton')).toBe(0);
     expect(await so('opening')).toBeNull();
+  });
+
+  /** The outline's panels and page, as drawn: what would visibly jump if the project's own layout replaced them. */
+  const outlineSizes = () =>
+    page.evaluate(() => {
+      const g = globalThis as unknown as { document: { querySelector(s: string): { getBoundingClientRect(): { width: number } } | null } };
+      const w = (sel: string) => g.document.querySelector(sel)?.getBoundingClientRect().width ?? null;
+      return { side: w('.editor-skeleton .sk-side'), dock: w('.editor-skeleton .sk-dock'), page: w('.editor-skeleton .sk-page') };
+    });
+
+  it('draws the outline at the project’s own panel widths and page size from the click, so its snapshot moves nothing', async () => {
+    await so('packsReady');
+    expect((await clickAndLook('Coast Florist')).outline).toBe(true);
+    // Its saved sidebar and dock widths, and its page at half of its 768px preview width.
+    const clicked = await outlineSizes();
+    expect(clicked).toEqual({ side: 300, dock: 400, page: 384 });
+    await expect.poll(opens).toEqual([['open', '/sites/coast', null]]);
+    await answerOpen({ ok: true });
+    await so('openSnapshot', { leftTab: 'layers', leftWidth: 300, rightWidth: 400, viewport: 768, zoom: 0.5 });
+    await page.clock.runFor(FRAME_MS);
+    expect(await so('opening')).toBeNull();
+    expect(await visible('.editor-skeleton')).toBe(true);
+    expect(await outlineSizes()).toEqual(clicked);
+  });
+
+  it('draws a project with no saved layout at the defaults, not at the last project’s sizes', async () => {
+    await so('packsReady');
+    // The project before this one left its own layout in the store.
+    await so('set', { leftTab: null, dockOpen: true, leftWidth: 420, rightWidth: 560, viewport: 390, zoom: 1.25 });
+    expect((await clickAndLook('Acme Bakery')).outline).toBe(true);
+    const clicked = await outlineSizes();
+    expect(clicked.side).toBe(260);
+    expect(clicked.dock).toBe(340);
+    await expect.poll(opens).toHaveLength(1);
+    await answerOpen({ ok: true });
+    await so('openSnapshot', {});
+    await page.clock.runFor(FRAME_MS);
+    expect(await outlineSizes()).toEqual(clicked);
   });
 
   it('brings Welcome back with the trust prompt when the project needs trusting', async () => {
