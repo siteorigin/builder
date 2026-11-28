@@ -342,7 +342,7 @@ describe('the library through the app (#372)', () => {
     const file = join(tmp('so-lib-export-'), 'shore.socomponent.json');
     const exported = await a.exportComponent(id, file);
     expect(exported.ok).toBe(false);
-    expect(exported.message).toMatch(/^“Shore window” was not exported: another project would refuse it on import\./);
+    expect(exported.message).toMatch(/^“Shore window” was not exported: another project would refuse it on import\. .*line 2: The code's default for heading/);
     expect(readdirSync(join(file, '..'))).toEqual([]);
     await a.close();
   });

@@ -57,6 +57,15 @@ export async function buildComponentPackage(projectDir: string, state: ProjectSt
   return { text, notes, pkg };
 }
 
+/** A blank project on `themeId`, or on the default theme when that theme can't make one here (a release without its shell). */
+function blankOn(themeId: string): ProjectState {
+  try {
+    return createStarterState('blank', 'Package check', false, themeId);
+  } catch {
+    return createStarterState('blank', 'Package check', false);
+  }
+}
+
 /**
  * Import a package as the editor does, with Developer mode on, into a blank project on the theme it was made on (`themeId`),
  * made for it in a folder of its own and removed afterwards: whatever that import refuses, a new project on that theme
@@ -69,7 +78,7 @@ async function trialImport(pkg: ComponentPackage, themeId: string): Promise<void
   try {
     dir = await fs.mkdtemp(join(tmpdir(), 'so-package-check-'));
     // Kept before its first file is written, so a project that fails to be made is still closed.
-    session = ProjectSession.starting(dir, createStarterState('blank', 'Package check', false, themeId));
+    session = ProjectSession.starting(dir, blankOn(themeId));
     await session.writeNew();
     // As the editor imports: the package's images are written before their records land, with sweeping held off.
     const trial = session;
