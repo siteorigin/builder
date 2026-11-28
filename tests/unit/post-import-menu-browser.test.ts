@@ -192,13 +192,17 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await page.getByText(/^3 keep working · 1 once its post is published · 2 can’t$/).waitFor();
   });
 
-  it('counts the posts that bring their SEO plugin’s search settings, for a WordPress export only (#1514)', async () => {
-    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml', searchSettings: 300 }));
-    expect(await page.getByTestId('post-import-search-settings').textContent()).toBe('300 posts bring their own from the SEO plugin');
-    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml', searchSettings: 1 }));
-    await page.getByText(/^1 post brings its own from the SEO plugin$/).waitFor();
-    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml' }));
-    await page.getByText(/^None in the export: each post’s title and excerpt stand in$/).waitFor();
+  const wordpress = { kind: 'wordpress' as const, source: 'export.xml' };
+  it.each([
+    { more: { ...wordpress, searchSettings: 300 }, said: '300 posts bring their own from the SEO plugin' },
+    { more: { ...wordpress, searchSettings: 1 }, said: '1 post brings its own from the SEO plugin' },
+    { more: wordpress, said: 'None in the export: each post’s title and excerpt stand in' }
+  ])('counts the posts that bring their SEO plugin’s search settings (#1514): $said', async ({ more, said }) => {
+    await mount(site, preview(true, more));
+    expect(await page.getByTestId('post-import-search-settings').textContent()).toBe(said);
+  });
+
+  it('says nothing of search settings for a Markdown folder (#1514)', async () => {
     await mount(site, preview(true));
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await page.getByTestId('post-import-search-settings').count()).toBe(0);
