@@ -256,6 +256,17 @@ describe('trying a request about a component again (#191)', () => {
   });
 });
 
+describe('the page on screen, sent only for finding a section (#1406)', () => {
+  it('is sent apart when the request leaves its page out, and not at all when it names it', () => {
+    const { state, home, about } = project();
+    const onAbout = composerScope(state, { pageId: about, selection: null, definitionMode: null });
+    expect(chatContextFor(state, onAbout, { enabled: { page: false, scope: 'page' }, viewport: 1280 })).toMatchObject({ pageId: home, shownPageId: about });
+    expect(chatContextFor(state, onAbout, { enabled, viewport: 1280 })).not.toHaveProperty('shownPageId');
+    const onHome = composerScope(state, { pageId: home, selection: null, definitionMode: null });
+    expect(chatContextFor(state, onHome, { enabled: { page: false, scope: 'page' }, viewport: 1280 })).not.toHaveProperty('shownPageId');
+  });
+});
+
 describe('the composer on a page: selection, this page or the whole site (#513)', () => {
   it('sends an edit with nothing selected about this page, and one with a selection about the selection', () => {
     const { state, home, about } = project();

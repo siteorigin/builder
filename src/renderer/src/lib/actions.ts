@@ -7,12 +7,12 @@ import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
 import { tooLongMessage } from '@shared/text-limits';
 import { isBinding, refKey, sameRef } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
-import { copiesWrong, type ProjectSnapshot } from '@shared/api';
+import { copiesWrong, type EditorOpening, type ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setEditorOpener, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type Modal, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
@@ -20,7 +20,7 @@ import { postAt, postWorkspace } from './posts';
 import { withTypedSeo, type TypedSeo } from './seo-preview';
 import type { SeoSubject } from '@shared/seo';
 import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
-import { flushOpenPost, savePostIfOpen } from './post-draft';
+import { flushOpenPost, saveOpenPost, savePostIfOpen } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { COPYRIGHT_PROP, keptCopyrightYear, shownCopyright } from '@shared/site-name';
@@ -1644,4 +1644,96 @@ export async function openPost(collectionId: string, entryId: string, picture?: 
   }
   setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
   return true;
+}
+
+/**
+ * Bring a placed section into view on its page, selected, as the command menu's "On the site" results do: the page
+ * opens first when it is out of sight, and the section is scrolled to even when it is selected already (#902).
+ */
+export function revealSection(pageId: string, ref: ElementRef) {
+  if (pageOutOfSight(getState(), pageId)) selectPage(pageId);
+  setState({ mode: 'edit', selection: ref, rightTab: 'inspect', dockOpen: true, showSelection: getState().showSelection + 1 });
+}
+
+/**
+ * Open what the author asked Chat to open (#1406), as the editor's own control for it does. `still` says whether the
+ * request is still the one to follow; an entry checks it again once the entry open now has saved what it holds. A
+ * dialog the author has open (a draft in it, a choice half made) is never closed or replaced: Chat says what it could
+ * not open instead.
+ */
+export function openFromChat(opening: EditorOpening, still: () => boolean) {
+  if (dialogInTheWay()) return toast(`Close the open dialog to see ${chatOpeningName(opening)}.`, 'info');
+  // A dialog Chat opened that holds nothing typed gives way to what Chat opens next, which it would otherwise cover.
+  if (getState().modal) setState({ modal: null });
+  if (opening.kind === 'entry') return void openEntryFromChat(opening, still);
+  if (opening.kind === 'section') return revealSection(opening.pageId, opening.ref);
+  switch (opening.view) {
+    case 'site_styles':
+      return openSiteStyles();
+    case 'seo':
+      return void openSeoView();
+    case 'content':
+      return setState({ leftTab: 'posts' });
+    case 'pages':
+      return setState({ leftTab: 'pages' });
+    case 'layers':
+      return setState({ leftTab: 'layers' });
+    case 'assets':
+      return setState({ leftTab: 'assets' });
+    case 'settings':
+      return chatDialog({ kind: 'settings' });
+    case 'project_health':
+      return chatDialog({ kind: 'health' });
+    case 'history':
+      return chatDialog({ kind: 'history' });
+    case 'versions':
+      return chatDialog({ kind: 'history', tab: 'versions' });
+    case 'project_brief':
+      return setState({ rightTab: 'project', dockOpen: true });
+    case 'export':
+      return chatDialog({ kind: 'export' });
+    case 'share':
+      return setState({ shareOpen: true });
+  }
+}
+setEditorOpener(openFromChat);
+
+/**
+ * The dialog Chat itself opened last, when it holds nothing the author could type (Project health, the History list):
+ * what Chat is asked for after it ("open History, then Versions") may take its place. Settings, Export and Versions
+ * take typing (a key, a folder, a version's name), so once open they stay until the author closes them.
+ */
+let chatModal: Modal = null;
+function chatDialog(modal: Modal) {
+  chatModal = modal?.kind === 'health' || (modal?.kind === 'history' && !modal.tab) ? modal : null;
+  setState({ modal });
+}
+
+/**
+ * Whether a dialog the author has open is in the way: the editor's own (`modal`), or one a panel keeps of its own (the
+ * writer's picture dialog), which may hold a draft that closing it would lose. Only the dialog Chat opened is not.
+ */
+function dialogInTheWay(): boolean {
+  const modal = getState().modal;
+  if (modal) return modal !== chatModal;
+  return typeof document !== 'undefined' && !!document.querySelector('[role="dialog"][aria-modal="true"]');
+}
+
+/** What Chat was opening, for a notice that it could not. */
+function chatOpeningName(o: EditorOpening): string {
+  if (o.kind === 'entry') return 'the entry Chat opened';
+  if (o.kind === 'section') return 'the section Chat found';
+  return o.view === 'export' ? 'Export' : o.view === 'share' ? 'Share' : 'what Chat opened';
+}
+
+/**
+ * An entry Chat opens in Content's writer: as the Content panel opens one, everything the entry open now holds is
+ * saved first (its fields as well as its text, #675), and it stays when something could not be. Asked for again once
+ * that save is done, the request may have moved on, or a dialog been opened meanwhile.
+ */
+async function openEntryFromChat(o: Extract<EditorOpening, { kind: 'entry' }>, still: () => boolean) {
+  const saved = getState().post?.entryId === o.entryId || (await saveOpenPost());
+  if (!still() || dialogInTheWay()) return;
+  if (!saved) return toast('The entry you are writing has a change that is not saved yet, so Chat could not open another. See the note beside it.', 'error');
+  setState({ leftTab: 'posts', post: { collectionId: o.collectionId, entryId: o.entryId }, postView: 'write', postReveal: null });
 }

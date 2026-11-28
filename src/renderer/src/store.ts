@@ -1,12 +1,13 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SavedLayout, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, EditorOpening, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SavedLayout, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
 import type { SeoSubject } from '@shared/seo';
+import { openingInSite } from '@shared/editor-opening';
 import { seoSubjectKey } from './lib/seo-view';
 import { panelAfterSeo, rememberPanelBeforeSeo } from './lib/workspace';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
@@ -853,6 +854,16 @@ export function trackHistory<T extends ApplyResult | null | undefined>(start: ()
 let pageOpener: ((pageId: string) => void) | null = null;
 export function setPageOpener(open: (pageId: string) => void) {
   pageOpener = open;
+}
+
+/**
+ * How Chat opens an entry, a section or an editor view the author asked for (#1406): lib/actions openFromChat, handed
+ * over from there as the page opener is. `still` says whether the request that asked is still the one to follow,
+ * checked again after anything the opening waits for.
+ */
+let editorOpener: ((opening: EditorOpening, still: () => boolean) => void) | null = null;
+export function setEditorOpener(open: (opening: EditorOpening, still: () => boolean) => void) {
+  editorOpener = open;
 }
 
 /** How long a saved Undo or Redo waits for the editor to show it before asking for the whole project again (projectHistory). */
@@ -1952,6 +1963,18 @@ export function applyAiEvent(e: AiEvent) {
     // and only if the page is still in the site this window shows.
     const pageId = e.pageId;
     if (pageId && s.activeRunId === e.runId && s.snapshot && Object.hasOwn(s.snapshot.state.pages, pageId)) pageOpener?.(pageId);
+    return;
+  }
+  if (e.kind === 'open-editor') {
+    // An entry, a section or an editor view the author asked for (#1406), on the same terms as a page, checked again
+    // after anything the opening waits for (an entry open in the writer saving its text first).
+    const opening = e.opening;
+    const key = s.snapshot?.workspaceKey;
+    const still = () => {
+      const now = getState();
+      return !!opening && !!now.snapshot && now.snapshot.workspaceKey === key && now.conversation?.id === e.conversationId && now.activeRunId === e.runId && now.runStatus !== 'stopping' && openingInSite(now.snapshot.state, opening);
+    };
+    if (opening && still()) editorOpener?.(opening, still);
     return;
   }
   if (e.kind === 'message' && e.message) {
