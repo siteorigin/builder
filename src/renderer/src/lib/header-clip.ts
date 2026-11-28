@@ -38,7 +38,8 @@ export function headerClip(headers: AddBox[], origin: { left: number; top: numbe
   const area = headerArea(headers).map((r) => ({ ...r, left: r.left - origin.left, top: r.top - origin.top }));
   if (!area.length) return undefined;
   const n = (v: number) => String(Math.round(v * 100) / 100);
-  const far = 100000;
+  // Past every hole, however far down a long page the box is: a hole outside the plane would be filled instead.
+  const far = 100000 + Math.ceil(Math.max(...area.flatMap((r) => [Math.abs(r.left), Math.abs(r.top), Math.abs(r.left + r.width), Math.abs(r.top + r.height)])));
   // The whole plane, with each part of the headers cut out of it: the parts never overlap, so evenodd leaves each out.
   const holes = area.map((r) => `M${n(r.left)} ${n(r.top)}H${n(r.left + r.width)}V${n(r.top + r.height)}H${n(r.left)}Z`).join('');
   return `path(evenodd, "M${-far} ${-far}H${far}V${far}H${-far}Z${holes}")`;
@@ -85,7 +86,8 @@ export function tagPlace(b: AddBox, tall: boolean, headers: AddBox[], right = fa
   const left = right ? b.left + b.width - w : b.left;
   const inside = (): TagPlace => (bottom - shown >= TAG_H + TAG_INSET * 2 ? { at: 'inside', top: shown - b.top + TAG_INSET } : null);
   if (tall) return bottom > shown + 30 ? { at: 'inside', top: shown - b.top + TAG_INSET } : null;
-  if (bottom <= shown) return null;
+  // Wholly under the header, or out of the page (a box with no height, below the page's top and clear of the header, keeps its name).
+  if (bottom <= 0 || bottom < shown || (bottom === shown && b.height > 0)) return null;
   if (b.top >= 24 && !crosses(left, w, b.top - 19, b.top + 1, headers)) return { at: 'above' };
   if (!crosses(left, w, bottom - 1, bottom + 19, headers)) return { at: 'below' };
   return inside();

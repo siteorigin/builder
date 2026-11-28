@@ -3345,7 +3345,9 @@ export function Canvas() {
   const headerBoxes = rects.headers.map(toBox);
   // The page's own elements are neither outlined nor named on the shared header (#1315): one scrolled under a header
   // that stays in view shows its outline only where the element shows. The header's own elements are outlined whole.
-  const headerOwned = (desc: BridgeDesc | null, ref: ElementRef | null) => inHeader(desc?.ctx) || (ref?.owner.kind === 'shell' && ref.owner.id === 'header');
+  // Told by what the boxes were measured for (a part of a header placement can be a component's in Edit Everywhere),
+  // not what is picked now: until the page measures a new pick, the boxes drawn are still the last one's.
+  const headerOwned = (desc: BridgeDesc | null, ref: ElementRef | null) => (desc ? inHeader(desc.ctx) : ref?.owner.kind === 'shell' && ref.owner.id === 'header');
   const selHeaders = headerOwned(rectsFor.current.selected, selection) ? [] : headerBoxes;
   const hovHeaders = headerOwned(rectsFor.current.hovered, hover) ? [] : headerBoxes;
   const placedAdds = placeAdds(

@@ -593,7 +593,9 @@ function placeGhost(boxes, headers) {
   // is cut out where it is this frame. The header's own elements are outlined whole.
   const n = (v) => String(Math.round(v * 100) / 100);
   const holes = headerCtx(selected) ? [] : headerArea(headers).map((r) => `M${n(r.x - at.left)} ${n(r.y - at.top)}H${n(r.x + r.width - at.left)}V${n(r.y + r.height - at.top)}H${n(r.x - at.left)}Z`);
-  const clip = holes.length ? `path(evenodd, "M-100000 -100000H100000V100000H-100000Z${holes.join('')}")` : '';
+  // The plane reaches past every hole, however far down a long document: a hole outside it would be filled instead.
+  const far = 100000 + Math.ceil(Math.max(0, ...headers.flatMap((r) => [Math.abs(r.x - at.left), Math.abs(r.y - at.top), Math.abs(r.x + r.width - at.left), Math.abs(r.y + r.height - at.top)])));
+  const clip = holes.length ? `path(evenodd, "M-${far} -${far}H${far}V${far}H-${far}Z${holes.join('')}")` : '';
   // In the document's own pixels: unchanged while the document scrolls, so nothing is drawn again for it (but a cut
   // for a header that stays in view moves with it).
   if (clip !== (ghost.clip ?? '')) {

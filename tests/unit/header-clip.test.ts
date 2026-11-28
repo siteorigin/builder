@@ -11,17 +11,25 @@ describe('the headers’ area', () => {
     expect(headerArea([box(0, 0, 1000, 80), box(0, 60, 400, 40)])).toEqual([box(0, 0, 1000, 60), box(0, 60, 1000, 20), box(0, 80, 400, 20)]);
     expect(headerArea([box(0, 0, 100, 10), box(50, 0, 100, 10), box(300, 0, 10, 10)])).toEqual([box(0, 0, 150, 10), box(300, 0, 10, 10)]);
     expect(headerArea([box(0, 0, 0, 10)])).toEqual([]);
+    // Given in any order, between pixels.
+    expect(headerArea([box(300, 0, 10, 10.25), box(50, 0, 100, 10.25), box(0, 0, 100, 10.25)])).toEqual([box(0, 0, 150, 10.25), box(300, 0, 10, 10.25)]);
   });
 
   it('cuts the header out of a box’s clip, in the box’s own pixels, and clips nothing without one', () => {
-    expect(headerClip([HEADER], { left: 40, top: -30 })).toBe('path(evenodd, "M-100000 -100000H100000V100000H-100000ZM-40 30H960V110H-40Z")');
+    expect(headerClip([HEADER], { left: 40, top: -30 })).toBe('path(evenodd, "M-100960 -100960H100960V100960H-100960ZM-40 30H960V110H-40Z")');
+    expect(headerClip([box(0, 0, 1000, 80.25)])).toBe('path(evenodd, "M-101000 -101000H101000V101000H-101000ZM0 0H1000V80.25H0Z")');
     expect(headerClip([])).toBeUndefined();
+  });
+
+  it('keeps the plane past a header far down a long page, so the header is still left out', () => {
+    expect(headerClip([HEADER], { left: 0, top: -150000 })).toBe('path(evenodd, "M-250080 -250080H250080V250080H-250080ZM0 150000H1000V150080H0Z")');
   });
 
   it('knows the header’s own elements, at any depth of placement, from the page’s', () => {
     expect(inHeader('shell:header')).toBe(true);
     expect(inHeader('shell:header|logo|x')).toBe(true);
     expect(inHeader('shell:footer')).toBe(false);
+    expect(inHeader('shell:header-extra')).toBe(false);
     expect(inHeader('page:home')).toBe(false);
     expect(inHeader(null)).toBe(false);
   });
@@ -45,6 +53,13 @@ describe('where the hovered element’s name goes', () => {
     expect(tagPlace(box(40, 100, 200, 30), false, [])).toEqual({ at: 'above' });
     expect(tagPlace(box(40, 10, 200, 30), false, [])).toEqual({ at: 'below' });
     expect(tagPlace(box(40, -50, 600, 70), true, [])).toBeNull();
+    // At the edges: just room above, exactly 30px of a tall box showing, a divider with no height.
+    expect(tagPlace(box(40, 24, 200, 30), false, [])).toEqual({ at: 'above' });
+    expect(tagPlace(box(40, 23, 200, 30), false, [])).toEqual({ at: 'below' });
+    expect(tagPlace(box(40, -50, 600, 80), true, [])).toBeNull();
+    expect(tagPlace(box(40, -50, 600, 81), true, [])).toEqual({ at: 'inside', top: 54 });
+    expect(tagPlace(box(40, 50, 600, 0), false, [])).toEqual({ at: 'above' });
+    expect(tagPlace(box(40, -5, 600, 5), false, [])).toBeNull();
   });
 
   it('keeps a tall container’s name below the header its top has scrolled under', () => {
@@ -58,6 +73,8 @@ describe('where the hovered element’s name goes', () => {
     expect(tagPlace(box(40, 90, 300, 40), false, [HEADER])).toEqual({ at: 'below' });
     // A heading with a second header right under it: inside, below the header.
     expect(tagPlace(box(40, 60, 300, 60), false, [HEADER, box(0, 120, 1000, 40)])).toEqual({ at: 'inside', top: 24 });
+    // Neither side clear and too little showing inside: none.
+    expect(tagPlace(box(40, 60, 300, 30), false, [HEADER, box(0, 90, 1000, 40)])).toBeNull();
     // Wholly under the header: none.
     expect(tagPlace(box(40, 20, 300, 40), false, [HEADER])).toBeNull();
   });
@@ -65,6 +82,8 @@ describe('where the hovered element’s name goes', () => {
   it('looks for a header across the name, which can be wider than its element', () => {
     // A 40px icon beside a header that ends at x 100: the name, wider, reaches it.
     expect(tagPlace(box(60, 100, 40, 30), false, [box(100, 0, 500, 90)])).toEqual({ at: 'below' });
+    expect(tagPlace(box(60, 100, 40, 30), false, [box(210, 0, 500, 90)])).toEqual({ at: 'below' });
+    expect(tagPlace(box(60, 100, 40, 30), false, [box(230, 0, 500, 90)])).toEqual({ at: 'above' });
     // Anchored right, the name runs left from the element's right edge, away from a header past it.
     expect(tagPlace(box(860, 100, 40, 30), false, [box(0, 0, 800, 90)], true)).toEqual({ at: 'below' });
     expect(tagPlace(box(860, 100, 40, 30), false, [box(0, 0, 700, 90)], true)).toEqual({ at: 'above' });
