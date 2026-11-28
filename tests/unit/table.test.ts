@@ -151,6 +151,7 @@ describe('table edits by ID', () => {
     expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
     // The Business starter's own sample text is named (#1640); nothing about the table is.
     expect(validateState(removed).filter((d) => d.severity !== 'info' && !isSampleFinding(d))).toEqual([]);
+    expect(validateState(removed).filter((d) => isSampleFinding(d) && d.nodeId === nodeId)).toEqual([]);
   });
 
   it('keeps a cell typed just before its column was moved: each step names its cell, never the whole table', () => {

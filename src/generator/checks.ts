@@ -13,7 +13,7 @@ import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
-import { SO_ID_ATTR, anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
+import { SO_ID_ATTR, anchorCapable, anchorsInUse, childLists, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
@@ -1637,15 +1637,17 @@ export function renderedContentKnown(state: ProjectState, tree: NodeTree): { con
 }
 
 /**
- * The tables a page or shell tree renders, each once, by the placement's own table property that holds it: a table
- * only code shows (the theme's Table, or a project's code), placed in the tree or handed a placement's table by the
- * design it is placed in. Its words are cells, which renderedContent does not list.
+ * The tables a page or shell tree renders, each once, by the placement's own table property that holds it: the theme's
+ * Table (or a copy of it), whose markup shows its table, placed in the tree or handed a placement's table by the design
+ * it is placed in. Its words are cells, which renderedContent does not list. Any other code's markup decides what it
+ * shows of a table it is given.
  */
 export function renderedTables(state: ProjectState, tree: NodeTree): Array<{ nodeId: string; prop: string }> {
   const out: Array<{ nodeId: string; prop: string }> = [];
   const seen = new Set<string>();
   walkRendered(state, tree, {
     code: (def, _props, reportId, _placement, n, scope, inDef) => {
+      if (shippedCode(state, def) !== 'data.table') return;
       for (const [key, schema] of Object.entries(def.properties)) {
         if (schema.type !== 'table') continue;
         const field = inDef ? placementField(n.props[key], scope) : { prop: key };
@@ -1655,6 +1657,27 @@ export function renderedTables(state: ProjectState, tree: NodeTree): Array<{ nod
       }
     }
   });
+  return out;
+}
+
+/**
+ * Whether the site hides a node of a page or shell tree at every size: by its own styles, or a container's around it.
+ * `parents` gives each node's container in the tree (treeParents), worked out once for many questions.
+ */
+export function hiddenInTree(tree: NodeTree, nodeId: string, parents: ReadonlyMap<string, string> = treeParents(tree)): boolean {
+  const seen = new Set<string>();
+  for (let id: string | undefined = nodeId; id && !seen.has(id); id = parents.get(id)) {
+    seen.add(id);
+    const n = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+    if (n && typeof n === 'object' && hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined)) return true;
+  }
+  return false;
+}
+
+/** Each node's container in a tree (its parent, or the placement whose slot holds it), by node ID. */
+export function treeParents(tree: NodeTree): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [id, n] of Object.entries(tree.nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of Array.isArray(cl.ids) ? cl.ids : []) if (typeof c === 'string' && !out.has(c)) out.set(c, id);
   return out;
 }
 

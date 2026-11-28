@@ -19,12 +19,25 @@ export const SAMPLE_CONTACT_VALUES: Array<{ kind: SampleContactKind; value: stri
   { kind: 'address', value: SAMPLE_CONTACT.address, label: 'Sample street address' }
 ];
 
+/** What may stand between the digits of a written telephone number: spaces (\s covers the non-breaking ones), dots, dashes and brackets. */
+const DIAL_GAP = '[\\s().\\p{Pd}]*';
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
- * Whether words hold one of the sample details, as written (any case; the telephone number in any spacing): what the
- * export's review of sample contact details already names, so no other check names it again.
+ * Each sample detail as visitors may read it, found generously so none goes out unreviewed: the address not inside a
+ * longer mailbox or domain (myhello@…, …example.com.au), the number's digits in order with any spacing, the street
+ * address with any spacing.
+ */
+export const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
+  email: new RegExp(`(?<![\\p{L}\\p{N}_.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'giu'),
+  phone: new RegExp(`(?<![\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{N}_])`, 'gu'),
+  address: new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_])`, 'giu')
+};
+
+/**
+ * Whether words hold one of the sample details, as the export's review of them finds it (SAMPLE_PATTERNS): what that
+ * review names already, so no other check names it again.
  */
 export function holdsSampleContact(text: string): boolean {
-  const lower = text.toLowerCase();
-  if (lower.includes(SAMPLE_CONTACT.email) || lower.replace(/\s+/g, ' ').includes(SAMPLE_CONTACT.address.toLowerCase())) return true;
-  return text.replace(/[^\d+]/g, '').includes(SAMPLE_CONTACT.phoneDial.replace(/^\+/, ''));
+  return Object.values(SAMPLE_PATTERNS).some((re) => new RegExp(re.source, re.flags.replace('g', '')).test(text));
 }

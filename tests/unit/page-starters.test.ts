@@ -278,7 +278,7 @@ describe('page starters and project health (#873)', () => {
   it('names the sample text a page starter fills in, until it is replaced (#1640)', () => {
     const { state, page } = created(createStarterState('blank', 'Starter Studio', false), 'about');
     const named = validateState(state).filter((d) => isSampleFinding(d) && d.owner?.kind === 'page' && d.owner.id === page.id);
-    expect(named.map((d) => d.message)).toContain('Our work: Person 1 of Team’s People still shows sample text, “Hannah Wells”. Write your own, or keep it as it is.');
+    expect(named.map((d) => d.message)).toContain('Our work: Person 1 of Team’s People → Name still shows sample text, “Hannah Wells”. Write your own, or keep it as it is.');
     expect(named.every((d) => d.severity === 'warning')).toBe(true);
   });
 });

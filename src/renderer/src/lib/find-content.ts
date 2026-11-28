@@ -14,7 +14,7 @@ import { normalizeLink } from '@engine/values';
 import { childLists, displayName, itemLinkPairs } from '@engine/tree';
 import { partIdFor } from './model';
 import { pageShowing, pagesShowing } from '@shared/page-shell';
-import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
+import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, SAMPLE_PATTERNS, type SampleContactKind } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
 import { entryRoute, hasDetailPages, isSyncedCollection, orderedEntries } from '@shared/collections';
@@ -533,20 +533,7 @@ function matchAt(f: ContentField, part: Part, start: number, end: number, held?:
 // Sample contact details
 // ---------------------------------------------------------------------------
 
-/** What may stand between the digits of a written telephone number: spaces (\s covers the non-breaking ones), dots, dashes and brackets. */
-const DIAL_GAP = '[\\s().\\p{Pd}]*';
-const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/**
- * Each sample detail as visitors may read it, found generously so none goes out unreviewed: the address not inside a
- * longer mailbox or domain (myhello@…, …example.com.au), the number's digits in order with any spacing, the street
- * address with any spacing.
- */
-const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
-  email: new RegExp(`(?<![\\p{L}\\p{N}_.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'giu'),
-  phone: new RegExp(`(?<![\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{N}_])`, 'gu'),
-  address: new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_])`, 'giu')
-};
+// The patterns each sample detail is found by are the shared ones (shared/sample-contact.ts), which other checks use too.
 
 /**
  * Why a sample in words is not replaced from here: it runs into more of an address, number or name, so it may be part

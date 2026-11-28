@@ -1054,7 +1054,9 @@ export function HealthModal() {
           ) : undefined;
     return (
       <HealthRow
-        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
+        // A sample finding by its own place and value: several on one section, one kept, never hand the next its row
+        // (and its focused Keep as is) by their order.
+        key={isSampleFinding(d) ? keptSampleKey(d) : `${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={
