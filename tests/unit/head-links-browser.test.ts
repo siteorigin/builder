@@ -1,8 +1,8 @@
 /**
  * The links in every page's head (the favicon, the home-screen icon and the web manifest) after the visitor moves to
- * another page, in a real headless browser. The site is published under a sub-path and its About page is the one
- * opened first: SvelteKit writes the page's addresses relative to it ("../manifest.webmanifest"), and on the client
- * the same addresses come from the site's root. The root layout's head is never drawn again as the visitor moves on,
+ * another page, in a real headless browser. The site is published under a sub-path. SvelteKit writes the addresses
+ * of the page opened first relative to it ("../manifest.webmanifest" on About), and in the browser the same
+ * addresses come from the site's root. The root layout's head is never drawn again as the visitor moves on,
  * so each link must lead to the site's own file from every page, however the visitor arrived.
  */
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,20 +18,21 @@ import { generateProject } from '@generator/index';
 
 const ORIGIN = 'https://quay.test';
 const ROOT = '/archive/paper.edition_1';
+const HOME = `${ROOT}/`;
 const ABOUT = `${ROOT}/about/`;
 
-/** `$app/paths` as SvelteKit gives it while About is rendered on the server (relative), and in the browser (from the root). */
-const PATHS = {
-  server: 'export const base = ".."; export const resolve = (p) => ".." + p; export const asset = (p) => "../" + p;',
-  client: `export const base = ${JSON.stringify(ROOT)}; export const resolve = (p) => ${JSON.stringify(ROOT)} + p; export const asset = (p) => ${JSON.stringify(ROOT + '/')} + p;`
-};
+/** `$app/paths` as SvelteKit gives it on the server, relative to the page rendered (`base` ".." on About), and in the browser. */
+const paths = (base: string) => `export const base = ${JSON.stringify(base)}; export const resolve = (p) => base + p; export const asset = (p) => base + "/" + p;`;
 const STUBS: Record<string, string> = {
-  '\0$app/state': 'export const page = { route: { id: "/about" }, url: new URL("https://quay.test/archive/paper.edition_1/about/") };',
+  '\0$app/state': 'export const page = { route: { id: "/" }, url: new URL("https://quay.test/archive/paper.edition_1/") };',
   '\0$app/navigation': 'export function afterNavigate() {} export function beforeNavigate() {} export function snapshot() {}'
 };
 
-/** The site's root layout around a stand-in page, bundled for the server (`render`) or the browser (`window.startSite`). */
-async function bundleLayout(files: Map<string, string>, generate: 'server' | 'client'): Promise<string> {
+/**
+ * The site's root layout around a stand-in page, bundled for the server (`render`), with SvelteKit's base for the page
+ * rendered, or for the browser (`window.startSite`).
+ */
+async function bundleLayout(files: Map<string, string>, generate: 'server' | 'client', base = ROOT): Promise<string> {
   const src = new Map<string, string>([...files].map(([p, text]) => [`\0site/${p}`, text]));
   src.set('\0site/Entry.svelte', `<script>import Layout from './src/routes/+layout.svelte';</script><Layout><p>About</p></Layout>`);
   const entry =
@@ -59,7 +60,7 @@ async function bundleLayout(files: Map<string, string>, generate: 'server' | 'cl
         load(id) {
           if (id === '\0entry') return entry;
           if (id === '\0empty') return '';
-          if (id === '\0$app/paths') return PATHS[generate];
+          if (id === '\0$app/paths') return paths(base);
           if (STUBS[id]) return STUBS[id];
           const text = src.get(id);
           if (text === undefined) return null;
@@ -83,17 +84,20 @@ async function bundleLayout(files: Map<string, string>, generate: 'server' | 'cl
 describe.skipIf(!existsSync(chromium.executablePath()))('the head links after moving to another page', () => {
   let browser: Browser;
   let script = '';
-  let markup = { head: '', body: '' };
+  /** Each page's head and body as the server rendered it. */
+  const markup: Record<string, { head: string; body: string }> = {};
   let dir = '';
 
   beforeAll(async () => {
     const files = generateProject(createStarterState('business', 'Quay Paper', false));
-    const [server, client] = await Promise.all([bundleLayout(files, 'server'), bundleLayout(files, 'client')]);
+    const [home, about, client] = await Promise.all([bundleLayout(files, 'server', '.'), bundleLayout(files, 'server', '..'), bundleLayout(files, 'client')]);
     script = client;
     dir = mkdtempSync(join(tmpdir(), 'so-head-links-'));
-    const file = join(dir, 'server.mjs');
-    writeFileSync(file, server);
-    markup = ((await import(pathToFileURL(file).href)) as { renderSite: () => { head: string; body: string } }).renderSite();
+    for (const [path, server] of [[HOME, home], [ABOUT, about]]) {
+      const file = join(dir, `server-${Object.keys(markup).length}.mjs`);
+      writeFileSync(file, server);
+      markup[path] = ((await import(pathToFileURL(file).href)) as { renderSite: () => { head: string; body: string } }).renderSite();
+    }
     browser = await chromium.launch();
   }, 90_000);
 
@@ -102,22 +106,25 @@ describe.skipIf(!existsSync(chromium.executablePath()))('the head links after mo
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('lead to the site’s own files from Home after About was opened first', async () => {
-    // As served: About's head has the addresses relative to About.
-    expect(markup.head).toContain('<link rel="manifest" href="../manifest.webmanifest"/>');
+  it.each([
+    ['About', ABOUT, HOME, '../manifest.webmanifest'],
+    ['Home', HOME, ABOUT, './manifest.webmanifest']
+  ])('lead to the site’s own files from the next page after %s was opened first', async (_, first, next, served) => {
+    // As served: the head has the addresses relative to the page.
+    expect(markup[first].head).toContain(`<link rel="manifest" href="${served}"/>`);
     const context = await browser.newContext();
     try {
       const page = await context.newPage();
       await page.route(`${ORIGIN}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === '/site.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
-        if (path !== ABOUT) return route.fulfill({ status: 404, body: '' });
+        if (path !== first) return route.fulfill({ status: 404, body: '' });
         return route.fulfill({
           contentType: 'text/html; charset=utf-8',
-          body: `<!doctype html><html lang="en"><head><meta charset="utf-8">${markup.head}</head><body><div id="app" style="display: contents">${markup.body}</div><script src="/site.js"></script><script>startSite()</script></body></html>`
+          body: `<!doctype html><html lang="en"><head><meta charset="utf-8">${markup[first].head}</head><body><div id="app" style="display: contents">${markup[first].body}</div><script src="/site.js"></script><script>startSite()</script></body></html>`
         });
       });
-      await page.goto(`${ORIGIN}${ABOUT}`);
+      await page.goto(`${ORIGIN}${first}`);
       await page.waitForFunction('window.started === true');
       const links = () =>
         page.evaluate<Record<string, string>>(
@@ -129,8 +136,8 @@ describe.skipIf(!existsSync(chromium.executablePath()))('the head links after mo
         manifest: `${ORIGIN}${ROOT}/manifest.webmanifest`
       };
       expect(await links()).toEqual(expected);
-      // The site's link to Home, as SvelteKit's router follows it: the same document at another address.
-      await page.evaluate(`history.pushState({}, '', ${JSON.stringify(ROOT + '/')})`);
+      // The site's link to the next page, as SvelteKit's router follows it: the same document at another address.
+      await page.evaluate(`history.pushState({}, '', ${JSON.stringify(next)})`);
       expect(await links()).toEqual(expected);
     } finally {
       await context.close();
