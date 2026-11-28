@@ -229,6 +229,7 @@ export function createTransport(local: () => BuilderApi): Transport {
     previewControlResult: (...args: Parameters<BuilderApi['previewControlResult']>) => local().previewControlResult(...args),
     menuReady: () => local().menuReady(),
     menuReceived: (id: number) => local().menuReceived(id),
+    popupMenu: (at: { x: number; y: number }) => local().popupMenu(at),
     leaveResult: (...args: Parameters<BuilderApi['leaveResult']>) => local().leaveResult(...args),
     pathForFile: (file: File) => local().pathForFile(file)
   } as unknown as BuilderApi;

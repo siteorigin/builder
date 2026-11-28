@@ -1,0 +1,8 @@
+@layer components {
+  /* The application menu's button (WindowMenuButton.tsx): fixed at the top bar's left on every screen, as macOS's
+     traffic lights are, above the top bar but under dialogs (which make it inert while they are open). Each screen
+     keeps its room free (--chrome-start). */
+  .window-menu-button { position: fixed; z-index: calc(var(--z-chrome) + 1); color: var(--text-2); }
+  .window-menu-button[aria-expanded='true'] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+  :where(:root[data-appearance='dark']) .window-menu-button[aria-expanded='true'] { background: var(--hover); }
+}

@@ -1848,6 +1848,11 @@ export interface BuilderApi {
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */
   menuReceived(id: number): void;
+  /**
+   * Open the application menu under a point of the page, in CSS pixels (the menu button's bottom-left corner), on the
+   * platforms that show the menu button rather than a menu bar (#1355). Resolves once the menu has closed.
+   */
+  popupMenu(at: { x: number; y: number }): Promise<void>;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
   leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;

@@ -69,28 +69,42 @@ export function resizePanel(side: PanelSide, requested: number, windowWidth: num
  * How much of the toolbar shows, by window width. 'full' has everything. 'compact' drops the Edit, Preview
  * and SEO labels (the icons keep their names), lets the project and page names shorten, and turns Leave
  * session into its icon. 'overflow' also moves Zoom and Settings into a More menu. The thresholds are for
- * macOS, whose traffic lights take 70px of the toolbar. Elsewhere that room is free: the compact toolbar
- * comes 70px later, and the full one 30px later, since its start column keeps a floor 30px narrower there
- * (Toolbar.css). The full toolbar needs about 1390px on macOS, with Notes counting open notes, Preview
- * colors for a website with a dark palette, and the Mode group's third option, SEO (#1583).
+ * macOS, whose traffic lights take 70px of the toolbar. Elsewhere the window's own chrome takes other room
+ * (ToolbarChrome): the menu button at the start, and on Windows the caption buttons at the end (#1355). The
+ * full toolbar needs about 1390px on macOS, with Notes counting open notes, Preview colors for a website
+ * with a dark palette, and the Mode group's third option, SEO (#1583).
  *
  * A live session widens the toolbar's end (#1342): a host's Share pill says how long is left, who is in and
  * who waits (about 1505px in all), and a guest has Notes, the session pill ("Collaborator · 2h 00m left") and
  * Leave session in place of Share and Export (about 1505px; a guest has no SEO view), so each gets the full
- * toolbar only once that fits. The compact toolbar fits the author's own and a guest's at the 1100px minimum,
- * with the names shortened. A host's needs about 1105px, so it moves Zoom and Settings into More below 1120px.
+ * toolbar only once that fits. On macOS the compact toolbar fits the author's own and a guest's at the 1100px
+ * minimum, with the names shortened. A host's needs about 1105px, so it moves Zoom and Settings into More below 1120px.
  */
 export type ToolbarTier = 'full' | 'compact' | 'overflow';
 /** Whose toolbar it is: the author's own project, a project the author is hosting a live session of, or another computer's session this app is a guest in. */
 export type ToolbarSession = 'local' | 'hosting' | 'guest';
+/** The widths the full and compact toolbars need on macOS. */
 export const TOOLBAR_FULL_MIN: Readonly<Record<ToolbarSession, number>> = { local: 1392, hosting: 1512, guest: 1528 };
 export const TOOLBAR_COMPACT_MIN: Readonly<Record<ToolbarSession, number>> = { local: 1080, hosting: 1120, guest: 1080 };
 export const MAC_TRAFFIC_LIGHTS = 70;
 /** How much narrower the full toolbar's start column is on macOS, net of the traffic lights it holds: 460px against 430px. */
 export const MAC_FULL_START_EXTRA = 30;
-export function toolbarTier(windowWidth: number, mac: boolean, session: ToolbarSession = 'local'): ToolbarTier {
-  if (windowWidth + (mac ? 0 : MAC_FULL_START_EXTRA) >= TOOLBAR_FULL_MIN[session]) return 'full';
-  return windowWidth + (mac ? 0 : MAC_TRAFFIC_LIGHTS) >= TOOLBAR_COMPACT_MIN[session] ? 'compact' : 'overflow';
+
+/**
+ * The room the window's own chrome takes from the toolbar, in CSS pixels: `start` at its left (the traffic lights, or
+ * the menu button), `end` at its right (the caption buttons on Windows), and `fullStart`, what the start takes from
+ * the full toolbar (macOS's traffic lights sit inside its wider start column, so they cost it only 30px).
+ */
+export interface ToolbarChrome {
+  start: number;
+  end: number;
+  fullStart: number;
+}
+export const MAC_TOOLBAR_CHROME: ToolbarChrome = { start: MAC_TRAFFIC_LIGHTS, end: 0, fullStart: MAC_FULL_START_EXTRA };
+
+export function toolbarTier(windowWidth: number, chrome: ToolbarChrome, session: ToolbarSession = 'local'): ToolbarTier {
+  if (windowWidth - chrome.fullStart - chrome.end >= TOOLBAR_FULL_MIN[session] - MAC_FULL_START_EXTRA) return 'full';
+  return windowWidth - chrome.start - chrome.end >= TOOLBAR_COMPACT_MIN[session] - MAC_TRAFFIC_LIGHTS ? 'compact' : 'overflow';
 }
 
 /** The widths the preview can be set to, by the width field and the frame's resize handles alike. */

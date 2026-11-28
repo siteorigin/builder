@@ -8,17 +8,31 @@ import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
 import { RenderFailure } from './components/RenderFailure';
 import { CatalogueFailed, NoThemes } from './components/StartupFailure';
+import { WindowChrome } from './components/WindowMenuButton';
+import { markWindowChrome } from './lib/window-chrome';
+import type { ReactNode } from 'react';
 
 // Every module the editor's script imports up front has been evaluated (src/shared/perf.ts).
 perfMark('launch.scriptEvaluated');
 
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
+// Every screen keeps the window's own chrome free from its first paint (#1355).
+markWindowChrome();
 const root = createRoot(document.getElementById('root')!);
+/** A screen, with the application menu's button off macOS beside it and outside its failure boundary, so whatever the
+ *  screen (a failure too) the menu is a click away (#1355). Always the first in the page, so Tab reaches it first. */
+const render = (screen: ReactNode) =>
+  root.render(
+    <>
+      <WindowChrome />
+      {screen}
+    </>
+  );
 // Welcome needs no theme, so it shows while the main process verifies the theme packs. The catalogue is registered
 // before anything reads it: a project opens only once the packs are verified, and the editor waits for it (App.tsx).
 // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
-root.render(
+render(
   <RenderFailure onFailure={abandonLeaves}>
     <App />
   </RenderFailure>
@@ -28,7 +42,7 @@ api.app
   .then((catalogue) => {
     // Without any theme there is nothing to make or open a site with: say why, rather than fail part way in.
     if (!catalogue.packs.length) {
-      root.render(<NoThemes refused={catalogue.refused} userDir={catalogue.userDir} />);
+      render(<NoThemes refused={catalogue.refused} userDir={catalogue.userDir} />);
       return;
     }
     registerPacks(catalogue.packs);
@@ -36,5 +50,5 @@ api.app
     perfMark('launch.catalogueReceived');
   })
   .catch((e: Error) => {
-    root.render(<CatalogueFailed message={e.message} />);
+    render(<CatalogueFailed message={e.message} />);
   });

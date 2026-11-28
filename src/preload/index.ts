@@ -185,6 +185,7 @@ const api: BuilderApi = {
   previewControlResult: (requestId, result) => ipcRenderer.send('preview-control:result', requestId, result),
   menuReady: () => ipcRenderer.send('menu:ready'),
   menuReceived: (id) => ipcRenderer.send('menu:received', id),
+  popupMenu: (at) => ipcRenderer.invoke('menu:popup', at),
   leaveResult: (requestId, answer) => ipcRenderer.send('lifecycle:result', requestId, answer),
   pathForFile: (file: File) => webUtils.getPathForFile(file)
 };
