@@ -603,7 +603,7 @@ function sourcePrompt(code: boolean, constrained: boolean): string {
 ${rules}`;
   return `You edit one code component of a small business website: editingComponent in <editor_context>. Its design is its Svelte source and its properties, and every placement shows each change.
 - read_source returns its source with the revision, hash and propertiesHash a patch needs; read it again after any change, and before a patch when one is refused as stale.
-- apply_source_patch changes it: edits that each match exactly once, or the whole source. Pass properties (with expectedPropertiesHash) only to change what authors fill in on each placement; renames carry placements' values to a renamed property.
+- apply_source_patch changes it, with scope { kind: "component", targetIds: [its id] }: edits that each match exactly once, or the whole source. Pass properties (with expectedPropertiesHash) only to change what authors fill in on each placement; renames carry placements' values to a renamed property.
 - ${CODE_SOURCE_GUIDANCE.replace("Writing a code component's source (component.createCode): it", 'The source')}
 - A patch that does not compile is reported with its errors: fix them in the next patch.
 - Change only this component. Ask first with request_clarification (widenScope: true) when the request needs anything else: pages, other components or the site's styles.

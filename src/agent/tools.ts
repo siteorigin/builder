@@ -775,12 +775,14 @@ function definitionRead(definitionId: string): ToolDefinition {
   };
 }
 
-/** read_source and apply_source_patch for the one code component a run edits: no other definition can be named. */
+/** read_source and apply_source_patch for the one code component a run edits: no other definition can be named, and a
+ *  patch's scope is that component. */
 function sourceTools(definitionId: string): ToolDefinition[] {
+  const scope = { type: 'object', properties: { kind: { type: 'string', enum: ['component'] }, targetIds: { type: 'array', items: { type: 'string', enum: [definitionId] }, minItems: 1, maxItems: 1 } }, required: ['kind', 'targetIds'], additionalProperties: false };
   return (['read_source', 'apply_source_patch'] as const).map((name) => {
     const t = plainTool(name);
     const schema = t.parameters as { properties: Record<string, unknown> };
-    return { ...t, parameters: { ...schema, properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] } } } };
+    return { ...t, parameters: { ...schema, properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] }, ...(name === 'apply_source_patch' ? { scope } : {}) } } };
   });
 }
 

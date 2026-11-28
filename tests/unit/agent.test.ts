@@ -6838,3 +6838,114 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect(Object.keys((session.state.components[id].properties.items as { fields: object }).fields)).toEqual(['title']);
   });
 });
+
+describe('a code component open in Component Studio, edited from Chat (#1410)', () => {
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  /** Two project code components: the one open in the studio, and another. */
+  const withCode = async (session: ProjectSession) => {
+    const made = await session.apply(
+      {
+        operations: [
+          { type: 'component.createCode', name: 'Note', source: '<script>\n  let { text = "Hi" } = $props();\n</script>\n<p>{text}</p>\n', properties: { text: { type: 'string', label: 'Text', default: 'Hi' } } },
+          { type: 'component.createCode', name: 'Other', source: '<p>Other</p>\n', properties: {} }
+        ]
+      },
+      { label: 'Add code', source: 'user' }
+    );
+    expect(made.ok).toBe(true);
+    const [note, other] = (made.results ?? []).map((r) => (r as { definitionId: string }).definitionId);
+    return { note, other };
+  };
+
+  for (const window of [200_000, 8_000])
+    it(`patches only that component's source, on a ${window > 8_000 ? 'large' : 'small'} model`, async () => {
+      let ids = { note: '', other: '' };
+      let offered: string[] = [];
+      let system = '';
+      let context = '';
+      let elsewhere: { error?: { code?: string; message?: string } } = {};
+      let onPage: { error?: { code?: string } } = {};
+      let read: { revision: number; hash: string } = { revision: 0, hash: '' };
+      let patched: { ok?: boolean; error?: unknown } = {};
+      const env = await setup(
+        [
+          (req) => {
+            offered = req.tools.map((t) => t.name);
+            system = req.system;
+            context = JSON.stringify(req.items.at(-1));
+            // Another code component, though the tools name only the one open: reading it changes nothing.
+            return [call('s0', 'read_source', { definitionId: ids.other })];
+          },
+          (req) => {
+            const other = resultOf(req) as { revision: number; hash: string };
+            return [call('s0b', 'apply_source_patch', { definitionId: ids.other, expectedRevision: other.revision, expectedHash: other.hash, scope: { kind: 'component', targetIds: [ids.note] }, source: '<p>Changed</p>\n' })];
+          },
+          (req) => {
+            elsewhere = resultOf(req);
+            return [call('s1', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.update', pageId: env.session.state.site.homePageId, patch: { title: 'Changed' } }] })];
+          },
+          (req) => {
+            onPage = resultOf(req);
+            return [call('s2', 'read_source', { definitionId: ids.note })];
+          },
+          (req) => {
+            read = resultOf(req);
+            return [call('s3', 'apply_source_patch', { definitionId: ids.note, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [ids.note] }, edits: [{ find: '<p>{text}</p>', replace: '<p class="note">{text}</p>' }] })];
+          },
+          (req) => {
+            patched = resultOf(req);
+            return finish('Gave the note a class.');
+          }
+        ],
+        { codeEnabled: true, capabilities: { contextWindowTokens: window } }
+      );
+      ids = await withCode(env.session);
+      const page = structuredClone(env.session.state.pages[env.session.state.site.homePageId]);
+      const { result } = await env.run('Give the paragraph a class', { component: { id: ids.note, name: 'Note' } });
+      // Every model gets the same small set: the source to read and patch, pinned to this component.
+      expect(offered).toEqual(['read_source', 'apply_source_patch', 'search_assets', 'request_clarification']);
+      expect(system).toMatch(/one code component/);
+      expect(context).toContain('editingComponent');
+      // Refused as it arrives: the tool names only this component.
+      expect(elsewhere.error?.code).toBe('SCOPE_MISMATCH');
+      expect(elsewhere.error?.message).toMatch(/outside Note/);
+      // A page change is no tool the run has.
+      expect(onPage.error?.code).toBe('INVALID_ARGUMENT');
+      expect(patched.error).toBeUndefined();
+      expect(result?.status).toBe('completed');
+      expect(env.session.state.components[ids.note].source).toContain('<p class="note">{text}</p>');
+      expect(env.session.state.components[ids.other].source).toBe('<p>Other</p>\n');
+      expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
+    });
+
+  it('changes nothing without Developer mode, and says how', async () => {
+    let offered: string[] = [];
+    let system = '';
+    const env = await setup(
+      [
+        (req) => {
+          offered = req.tools.map((t) => t.name);
+          system = req.system;
+          return finish('Developer mode lets the AI edit its code.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    const { note } = await withCode(env.session);
+    const before = env.session.state.components[note].source;
+    await env.run('Give the paragraph a class', { component: { id: note, name: 'Note' } });
+    expect(offered).toEqual(['request_clarification']);
+    expect(system).toMatch(/Developer mode/);
+    expect(env.session.state.components[note].source).toBe(before);
+  });
+
+  it('refuses a selection sent with a code component, and a theme’s code', async () => {
+    const env = await setup([() => finish('Done.')], { codeEnabled: true });
+    const { note } = await withCode(env.session);
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    const selected = await env.orch.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: { owner: { kind: 'component', id: note }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'Text', component: { id: note, name: 'Note' }, viewport: 1280 });
+    expect(selected).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read/) });
+    const theme = await env.orch.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 'foundation.shell.header', name: 'Header' }, viewport: 1280 });
+    expect(theme).toMatchObject({ ok: false, message: expect.stringMatching(/Header is no longer in the site/) });
+  });
+});
