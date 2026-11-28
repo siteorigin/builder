@@ -42,16 +42,15 @@ describe.skipIf(!browserInstalled)("the split hero's printed layout", () => {
 
   it('starts the heading on the first sheet when the hero only just misses it', async () => {
     await page.setViewportSize({ width: SHEET_WIDTH, height: 1032 });
-    const at = await page.evaluate(() => {
-      const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
-      return { grid: box('.hero__grid').bottom, hero: box('.hero').bottom, heading: box('.hero h1').bottom };
-    });
+    const at = await page.evaluate<{ grid: number; hero: number; heading: number }>(
+      `(() => { const box = (sel) => document.querySelector(sel).getBoundingClientRect(); return { grid: box('.hero__grid').bottom, hero: box('.hero').bottom, heading: box('.hero h1').bottom }; })()`
+    );
     // The hero's copy and picture fit the sheet; the section's padding below them does not.
     expect(at.hero).toBeGreaterThan(at.grid + 8);
     const sheet = Math.round((at.grid + at.hero) / 2);
     expect(at.heading).toBeLessThan(sheet);
     await page.addStyleTag({ content: `html { columns: ${SHEET_WIDTH}px; column-gap: 0; column-fill: auto; height: ${sheet}px; }` });
-    const heading = await page.evaluate(() => document.querySelector('.hero h1')!.getBoundingClientRect().toJSON());
+    const heading = await page.evaluate<{ left: number; bottom: number }>(`document.querySelector('.hero h1').getBoundingClientRect().toJSON()`);
     // The first column is the first sheet: the heading sits on it, not one sheet along.
     expect(heading.left).toBeLessThan(SHEET_WIDTH);
     expect(heading.bottom).toBeLessThanOrEqual(sheet);
@@ -62,9 +61,10 @@ describe.skipIf(!browserInstalled)("the split hero's printed layout", () => {
     await p.setContent(await page.content());
     await p.emulateMedia({ media: 'print' });
     await p.setViewportSize({ width: 1123, height: 794 });
-    expect(await p.evaluate(() => getComputedStyle(document.querySelector('.hero__grid')!).display)).toBe('grid');
+    const display = () => p.evaluate<string>(`getComputedStyle(document.querySelector('.hero__grid')).display`);
+    expect(await display()).toBe('grid');
     await p.setViewportSize({ width: SHEET_WIDTH, height: 1032 });
-    expect(await p.evaluate(() => getComputedStyle(document.querySelector('.hero__grid')!).display)).toBe('flex');
+    expect(await display()).toBe('flex');
     await p.close();
   });
 });
