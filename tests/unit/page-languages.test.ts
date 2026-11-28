@@ -522,7 +522,8 @@ describe('page languages in the website', () => {
       const files = generateProject(s, { instrument });
       // One hook, at the one path SvelteKit runs, made by the one generator; no other file is a server hook.
       expect([...files.keys()].filter((p) => /hooks\.server/.test(p))).toEqual([SERVER_HOOK_FILE]);
-      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(s));
+      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(s, instrument));
+      expect(files.get(SERVER_HOOK_FILE)!.includes('export function handleError(')).toBe(instrument);
       expect(files.get(SERVER_HOOK_FILE)).toContain('const SECTIONS = {};');
       expect(files.get(SERVER_HOOK_FILE)).toMatch(/const LANGUAGES = \{\n\t"\/de\/ueber-uns": "de",\n\t"\/fr\/a-propos": "fr"\n\};/);
     }
@@ -585,15 +586,15 @@ describe('page languages in the website', () => {
     made(s);
     // A page in another language: the hook appears, the layout follows, and that page says so; the others are kept.
     s = apply(s, { type: 'page.update', pageId: en, language: 'fr' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js', 'layout#clean', `page:${en}#clean`]));
+    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean', 'layout#clean', `page:${en}#clean`]));
     // Linking a translation remakes both versions, and a language change on one of them remakes the hook and layout.
     s = apply(s, { type: 'page.update', pageId: contact, language: 'de', linkTranslationTo: en });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js', 'layout#clean']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js#clean', 'layout#clean']));
     s = apply(s, { type: 'page.update', pageId: contact, route: '/kontakt/' });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js#clean']));
     // Back in one language: the hook is the not-found page's alone again and every file is as a full run makes it.
     s = apply(s, { type: 'page.update', pageId: contact, linkTranslationTo: null }, { type: 'page.update', pageId: contact, language: '' }, { type: 'page.update', pageId: en, language: '' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js']));
+    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean']));
     expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).toBe(generateServerHook(s));
     expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).not.toContain('LANGUAGES');
   });

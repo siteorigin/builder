@@ -1,4 +1,5 @@
 import { installedFonts } from '@catalogue/fonts';
+import { cutAtWord, plainText, turnName } from './turn-name';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type FormRoutingPrompt, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
@@ -2358,7 +2359,7 @@ export class Orchestrator {
       }
       v.status = 'done';
       const changes = describeOps(executedOps, startState, session.state, opResults);
-      const committed = await completeRun(`AI (partial): ${requestText.slice(0, 60)}`);
+      const committed = await completeRun(`AI (partial): ${cutAtWord(plainText(requestText), 60)}`);
       msg.text = '';
       // Connecting links can take the project back to how it was: then nothing is kept, and nothing is partial.
       if (!committed) {
@@ -2824,9 +2825,9 @@ export class Orchestrator {
             }
             const checks: ChatCheck[] = [...buildChecks(diags, unresolved), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
             const changes = describeOps(executedOps, startState, session.state, opResults);
-            const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
+            const label = turnName(finalText, userMsg.text);
             // An unfinished request is never labelled with the model's claim that it is done.
-            const committed = await completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
+            const committed = await completeRun(unfinished.length ? `AI (partial): ${cutAtWord(plainText(requestText), 60)}` : `AI: ${label}`);
             msg.text = finalText;
             // The model's own summary may call the request done; what is missing is the project's to say.
             // Links left on other pages say how to connect them: Continue would send the same limited request again.

@@ -98,6 +98,11 @@ export interface LinkValue {
   target: string;
   /** Optional in-page anchor for page links. */
   anchor?: string;
+  /**
+   * What follows an entry's address, from its "?" on ("?mode=briefing"): kept on `entry` links only, as the address
+   * spells it (see linkQuery), and left out when there is none.
+   */
+  query?: string;
   newTab?: boolean;
   /**
    * What a web address link says about where it goes (a paid placement, an untrusted citation): kept on `url` links
