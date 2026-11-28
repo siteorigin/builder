@@ -565,6 +565,9 @@ export interface ExportNote {
   destination?: EditorDestination;
 }
 
+/** A production build's failure when nothing in its output names where it was: no page, address or component (#1395). */
+export const BUILD_FAILED_UNPLACED = 'The production build failed.';
+
 export interface ExportResult {
   ok: boolean;
   path?: string;
@@ -1046,6 +1049,12 @@ export interface PostImportPreview {
   redirectsLost?: number;
   /** What is not imported at all. */
   skipped: string[];
+  /**
+   * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
+   * the new address an old category archive's sends visitors to, when the import keeps it working; `pending` while no
+   * published post is filed under that category, so the archive is not there yet.
+   */
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
 }
@@ -1419,7 +1428,7 @@ export interface BuilderApi {
      * review: which photos become web-sized copies, and the opening the review was made in. `note` says what was
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
-    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
     /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.

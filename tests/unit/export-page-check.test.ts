@@ -34,6 +34,8 @@ const LOOPS = `console.error(new Error('https://svelte.dev/e/effect_update_depth
 // `$effect` in it fails once its script runs; every other one starts.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The website tools are set up: the stand-in build needs none.
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     const out = join(dir, 'build');
     if (existsSync(join(dir, 'static'))) cpSync(join(dir, 'static'), out, { recursive: true });

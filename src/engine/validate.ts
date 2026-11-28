@@ -5,6 +5,7 @@ import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
 import { sourceDiagnostics } from './sources';
 import { isPictureAsset } from '@shared/background-image';
+import { overPixelLimit } from '@shared/picture-formats';
 import type { BackgroundImageValue, ComponentDefinition, GraphNode, ImageValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
@@ -608,12 +609,18 @@ function defaultDiagnostics(state: ProjectState): Diagnostic[] {
   return out;
 }
 
+/** What Project health and a website export say of a library image too large to make copies of (overPixelLimit). */
+export const pixelLimitMessage = (a: { name: string; width?: number; height?: number }) =>
+  `${a.name} is ${(a.width ?? 0).toLocaleString('en-US')} × ${(a.height ?? 0).toLocaleString('en-US')} pixels, too large to make smaller web copies of, so a page showing it sends all of it. Replace it everywhere in Assets with a copy under 100 megapixels, then remove it.`;
+
 /** Library images too large for fast pages: what coreValidation reports last. */
 function assetSizeDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   for (const a of Object.values(state.assets.assets)) {
+    // A picture too large to make copies of is sent whole to every visitor, however small its file (#1444).
+    if (a.kind === 'image' && overPixelLimit(a.mime, a.width, a.height)) out.push({ severity: 'warning', code: 'ASSET_PIXEL_LIMIT', message: pixelLimitMessage(a), owner: { kind: 'asset', id: a.id } });
     // A download is the size it is; only what pages load and show is worth making smaller.
-    if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+    else if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
   }
   return out;
 }

@@ -149,7 +149,7 @@ describe('the sections of a graph', () => {
 
   it('says an FAQ page’s questions with their answers, and where the website is searched', () => {
     // The FAQ built in the editor (fixtures/nested-output-designs.ts), whose questions the generator reads from its
-    // tree: the release's is code (the Release gap test below).
+    // tree. The release's is code, read through its outline (the test below).
     const s = withEditorStructure(copy(faqPage()));
     const graph = documentGraph(publishedState(s), { kind: 'page', pageId: 'pg_faq' })!;
     const asked = graph['@graph'].find((n) => n['@id'] === `${ROOT}faq/#webpage`)!.mainEntity as Array<{ name: string; acceptedAnswer: { text: string } }>;
@@ -165,8 +165,7 @@ describe('the sections of a graph', () => {
     expect(rows(at(summarizeGraph(searched), 'Website'))).toMatchObject({ 'Search address': `${ROOT}search/?q={search_term_string}`, 'Search words': expect.stringMatching(/^Required/) });
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('says the questions of the shipped theme’s FAQ on its page', () => {
+  it('says the questions of the shipped theme’s FAQ on its page', () => {
     const graph = documentGraph(publishedState(faqPage()), { kind: 'page', pageId: 'pg_faq' })!;
     expect(at(summarizeGraph(graph), 'This page').statement).toBe('This is an FAQ page.');
   });

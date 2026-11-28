@@ -8,43 +8,94 @@
  * editor's preview never does: it shows the form as the author made it.
  */
 import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
+import { formNoun } from '@shared/form-contract';
 import { isWebMcpForm, toolOverrides, uniqueToolNames, WEBMCP_NAME_MAX, WEBMCP_SEARCH_TOOL, webMcpText, webMcpToolName } from '@shared/webmcp';
 import { siteShowsCode } from './checks';
 import { searchesSite, usesSiteSearch } from './search';
 
-/** The name a form takes when the author gives it none, or one with nothing usable in it. */
+/** The name a contact form takes when the author gives it none, or one with nothing usable in it. */
 export const DEFAULT_FORM_TOOL = 'contact';
+
+/** The same for a signup form. */
+export const DEFAULT_SIGNUP_TOOL = 'signup';
+
+/** The name a form takes when its placement gives it none: a signup form's, else a contact form's. */
+export const defaultFormTool = (def: ComponentDefinition | undefined): string => (formNoun(def) === 'signup form' ? DEFAULT_SIGNUP_TOOL : DEFAULT_FORM_TOOL);
 
 /** The registration of `search_site`, in the runtime folder beside the search code it runs. */
 export const WEBMCP_SEARCH_FILE = 'webmcp-search.js';
 
 /**
- * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form
- * with its fields' names on lines of their own writes it. Code that writes any of them differently (a copy the author
- * changed, or the very first form) is left as it is, and its form declares no tool.
+ * The pieces of the theme's forms (the Contact form and the Signup form, written alike) the tool attributes are added
+ * at, each exactly as the theme writes it. Code that writes any of them differently (a copy the author changed) is
+ * left as it is, and its form declares no tool.
  */
 const PROPS_END = "\n\t\tclass: className = ''\n\t} = $props();";
 const UID = '\n\tconst uid = $props.id();';
 const STATUS = "\n\tlet status = $state('idle');";
 const HONEYPOT = '\n\tconst honeypot = $derived(';
-const FORM_OPEN = '\n\t\t<form\n\t\t\tclass="so-form__form"';
-const FIELD_LOOP = '\t\t\t{#each fields as field, i (field.id)}';
-const FIELD_LOOP_END = '\n\t\t\t{/each}';
 const SUBMIT = '\n\tasync function submit(event) {\n\t\tevent.preventDefault();';
 const RESET = 'HTMLFormElement.prototype.reset.call(form);';
-/** The name each field the visitor fills in is sent under, on a line of its own: today's form, and the first ones. */
-const FIELD_NAME = /\n(\t+)(name=\{(?:names\[i\]|fieldName\(field, i\))\})/g;
+/** Where the form's own checks stop a send: the first field with something wrong is focused, and nothing is sent. */
+const INVALID = '\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn;';
+/** Where a form that cannot send yet (or is sending already) turns a send away. */
+const UNREADY = "\n\t\tif (!ready || status === 'sending') return;";
+/** Where a message a bot filled the trap of is dropped as though it were sent. */
+const TRAPPED = `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn;`;
+/** The form's opening tag, its class on the line after it. */
+const FORM_OPEN = /\n(\t+)<form\n(\t+)class="so-form__form"/g;
+/**
+ * The two places the form writes the fields the visitor fills in: the snippet that writes a short or long text field,
+ * and the loop over the fields (single-choice questions and checkboxes, and where the snippet is placed). Each runs to
+ * its closing line at its own indentation, so a list inside it never ends it.
+ */
+const REGIONS = [
+  { open: /\n(\t*)\{#snippet control\(field, i\)\}/g, close: '{/snippet}' },
+  { open: /\n(\t+)\{#each fields as field, i \(field\.id\)\}/g, close: '{/each}' }
+];
+/** The name each field the visitor fills in is sent under, on a line of its own. */
+const FIELD_NAME = /\n(\t+)(name=\{names\[i\]\})/g;
 /** A single-choice question's group, whose description agents read for all of its answers. */
-const CHOICES_OPEN = '<fieldset class="so-form__field so-form__field--wide so-form__choices"';
+const CHOICES_OPEN = '<fieldset class="so-form__field so-form__choices"';
+/**
+ * The names the form's markup gives outside the field regions, each once: the form's own (Netlify's form name) and the
+ * service's hidden fields, which agents never fill in. The spam trap's are the only others.
+ */
+const OTHER_NAMES: Array<[string, number]> = [
+  ["name={provider === 'netlify' ? netlifyName : undefined}", 1],
+  ['name="form-name"', 1],
+  ['name="access_key"', 1]
+];
+/** A name, and what locks a control, however the attribute is spaced (`aria-disabled` aside). */
+const NAME_ATTR = /(?<![\w-])name\s*=/g;
+const LOCK_ATTR = /(?<![\w-])(?:readonly|disabled)\s*=/g;
+/** The one lock outside the fields: the send button's, while the form cannot send. */
+const SEND_LOCK = 'disabled={!ready}';
 /** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
 /** What makes a field read-only, or a question unanswerable, while a message sends. */
 const WHILE_SENDING = /(readonly|disabled)=\{status === (['"])sending\2\}/g;
 
-const count = (text: string, piece: string) => text.split(piece).length - 1;
+const count = (text: string, piece: string | RegExp) => (typeof piece === 'string' ? text.split(piece).length - 1 : (text.match(piece)?.length ?? 0));
 const LABEL = "so_webmcp ? String(field.label ?? '').trim() || undefined : undefined";
 /** Every module path the code imports, statically or not. */
 const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
+
+/** Where each of the field regions is in the markup, as [start, end) pairs in order; null unless each is there once. */
+function fieldRegions(markup: string): Array<[number, number]> | null {
+  const out: Array<[number, number]> = [];
+  for (const { open, close } of REGIONS) {
+    const found = [...markup.matchAll(open)];
+    if (found.length !== 1) return null;
+    const at = found[0].index!;
+    const end = markup.indexOf(`\n${found[0][1]}${close}`, at + found[0][0].length);
+    if (end < 0) return null;
+    out.push([at, end]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  // One after the other, never one inside the other.
+  return out[0][1] <= out[1][0] ? out : null;
+}
 
 /**
  * The form's code with the tool attributes added: `toolname` and `tooldescription` on the form; on each field the
@@ -54,9 +105,10 @@ const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
  * the `so_webmcp` the placement hands the form, and render nothing without it.
  *
  * No `toolautosubmit`: the browser fills the form in, and the visitor checks and sends it. Once they do, the agent is
- * told whether the message was sent (`respondWith`). While it waits, the fields stay as they are (a field the browser
- * sees change would change the tool under it), and the form is emptied only once the agent has its answer, since
- * emptying it first would tell the agent its request was cancelled.
+ * told whether the message was sent (`respondWith`), or why not: the form's own checks found something wrong, or the
+ * spam trap was filled in. While it waits, the fields stay as they are (a field the browser sees change would change
+ * the tool under it), and the form is emptied only once the agent has its answer, since emptying it first would tell
+ * the agent its request was cancelled.
  *
  * Null when the code is not the theme's form as it is written (see the pieces above); already speaks of WebMCP, or
  * spreads attributes from elsewhere that might (an existing `toolautosubmit` would send without the visitor); or
@@ -72,17 +124,41 @@ export function adaptFormSource(source: string): string | null {
   if (cut < 0) return null;
   const script = source.slice(0, cut);
   const markup = source.slice(cut);
-  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
-  if ([FORM_OPEN, FIELD_LOOP].some((piece) => count(markup, piece) !== 1)) return null;
-  // Every field the loop places names itself on a line of its own, and locks itself while sending only as the form
-  // does, so none is left without its description or changes under an agent.
-  const at = markup.indexOf(FIELD_LOOP);
-  const loop = markup.slice(at, markup.indexOf(FIELD_LOOP_END, at));
-  const fields = loop.match(FIELD_NAME)?.length ?? 0;
-  if (!fields || fields !== (loop.match(/\bname=/g)?.length ?? 0)) return null;
-  if ((loop.match(WHILE_SENDING)?.length ?? 0) !== (loop.match(/\b(?:readonly|disabled)=/g)?.length ?? 0)) return null;
+  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT, UNREADY, INVALID, TRAPPED].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
+  if (count(markup, FORM_OPEN) !== 1 || count(markup, TRAP) < 1) return null;
+  const regions = fieldRegions(markup);
+  if (!regions) return null;
+  // Every field the visitor fills in names itself on a line of its own, and locks itself while sending only as the
+  // form does, so none is left without its description or changes under an agent.
+  const fields = regions.map(([a, b]) => markup.slice(a, b));
+  const all = fields.join('\n');
+  const named = count(all, FIELD_NAME);
+  if (!named || named !== count(all, NAME_ATTR)) return null;
+  if (count(all, WHILE_SENDING) !== count(all, LOCK_ATTR)) return null;
+  if (count(all, CHOICES_OPEN) !== 1) return null;
+  // Outside them, nothing an agent fills in: only the form's own name, the service's hidden fields and the trap, and
+  // nothing that locks itself while sending.
+  const outside = [markup.slice(0, regions[0][0]), markup.slice(regions[0][1], regions[1][0]), markup.slice(regions[1][1])].join('\n');
+  if (OTHER_NAMES.some(([name, n]) => count(outside, name) !== n)) return null;
+  if (count(outside, NAME_ATTR) !== OTHER_NAMES.length + count(outside, TRAP) || count(outside, LOCK_ATTR) !== count(outside, SEND_LOCK)) return null;
+  const adaptFields = (text: string) =>
+    text
+      .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
+      .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+      .replace(WHILE_SENDING, (_m, attr: string, q: string) => `${attr}={status === ${q}sending${q} && !so_answering}`);
+  let marked = '';
+  let from = 0;
+  for (const [a, b] of regions) {
+    marked += markup.slice(from, a) + adaptFields(markup.slice(a, b));
+    from = b;
+  }
+  marked += markup.slice(from);
   const code = script
-    // First, so the emptying the agent's answer waits for is not itself made to wait.
+    // Each way a send ends without sending says so, for the agent's answer (see submit).
+    .replace(UNREADY, "\n\t\tif (!ready || status === 'sending') return 'unready';")
+    .replace(INVALID, "\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn 'invalid';")
+    .replace(TRAPPED, `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn 'trapped';`)
+    // Then, so the emptying the agent's answer waits for is not itself made to wait.
     .replaceAll(RESET, 'so_reset(form);')
     .replace(PROPS_END, "\n\t\tclass: className = '',\n\t\tso_webmcp = null\n\t} = $props();")
     .replace(
@@ -127,18 +203,21 @@ export function adaptFormSource(source: string): string | null {
 \t\tso_told = told;
 \t\tso_sent = so_values(form);
 \t\tso_answering = true;
-\t\t// Read from the fields as the form's data would hold them, so nothing that adds to that data runs twice for one send.
-\t\tconst trapped = so_controls(form).some((el) => el.name === honeypot && !el.matches(':disabled') && (el.type === 'checkbox' || el.type === 'radio' ? el.checked : !!el.value));
-\t\tconst answer = () => {
-\t\t\tif (trapped) return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
+\t\t// How this send ended: what turned it away, the form's own checks, its spam trap or an error, else what the status
+\t\t// it left says.
+\t\tconst answer = (outcome) => {
+\t\t\tif (outcome === 'unready') return { sent: false, message: 'The form cannot be sent yet.' };
+\t\t\tif (outcome === 'failed') return { sent: false, message: 'The message could not be sent. The visitor can try again.' };
+\t\t\tif (outcome === 'invalid') return { sent: false, message: 'Some fields are missing or not valid. The form shows what is wrong with each; correct them and send again.' };
+\t\t\tif (outcome === 'trapped') return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
 \t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };
 \t\t\treturn { sent: false, message: status === 'error' ? 'The message could not be sent. The visitor can try again.' : 'The form cannot be sent yet.' };
 \t\t};
-\t\tconst done = () => {
+\t\tconst done = (outcome) => {
 \t\t\tso_answering = false;
-\t\t\ttell(answer());
+\t\t\ttell(answer(outcome));
 \t\t};
-\t\tso_send(event).then(done, done);
+\t\tso_send(event).then(done, () => done('failed'));
 \t\tevent.respondWith(told);
 \t\ttold.then(() => {
 \t\t\tif (so_told !== told) return;
@@ -152,12 +231,9 @@ export function adaptFormSource(source: string): string | null {
     );
   return (
     code +
-    markup
-      .replace(FORM_OPEN, `${FORM_OPEN}\n\t\t\ttoolname={so_webmcpName}\n\t\t\ttooldescription={so_webmcp?.description}`)
-      .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
-      .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+    marked
+      .replace(FORM_OPEN, (open, _tabs: string, inner: string) => `${open}\n${inner}toolname={so_webmcpName}\n${inner}tooldescription={so_webmcp?.description}`)
       .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
-      .replace(WHILE_SENDING, (_m, attr: string, q: string) => `${attr}={status === ${q}sending${q} && !so_answering}`)
   );
 }
 
@@ -181,35 +257,39 @@ export function showsSiteSearch(state: ProjectState): boolean {
   return usesSiteSearch(state) && siteShowsCode(state, searchesSite, { throughCode: true });
 }
 
-/** Whether the published website shows a contact form that declares a tool while WebMCP is on. */
+/** Whether the published website shows a contact or signup form that declares a tool while WebMCP is on. */
 export function showsFormTool(state: ProjectState): boolean {
   return siteShowsCode(state, declaresFormTool);
 }
 
-/** Whether a definition is a contact form whose code takes the tool attributes. */
+/** Whether a definition is a contact or signup form whose code takes the tool attributes. */
 export function declaresFormTool(def: ComponentDefinition | undefined): def is ComponentDefinition {
   return isWebMcpForm(def) && typeof def.source === 'string' && adaptedForm(def.source) !== null;
 }
 
 /**
- * The tool name a placement asks for: its own, as a tool name, else DEFAULT_FORM_TOOL. Never with a ".", which only a
- * form inside a design takes (before its ID), so a name given here can never be one of theirs.
+ * The tool name a placement of the form `def` asks for: its own, as a tool name, else the form's default
+ * (defaultFormTool). Never with a ".", which only a form inside a design takes (before its ID), so a name given here
+ * can never be one of theirs.
  */
-export function formToolBase(node: Pick<InstanceNode, 'webmcp'>): string {
+export function formToolBase(node: Pick<InstanceNode, 'webmcp'>, def: ComponentDefinition | undefined): string {
   const own = webMcpToolName(toolOverrides(node).toolName).replace(/\./g, '_').replace(/^[_-]+|[_-]+$/g, '');
-  return own || DEFAULT_FORM_TOOL;
+  return own || defaultFormTool(def);
 }
 
 /**
- * What a placement's form tells agents it does: the author's own words, else what a contact form does, with the
- * heading it shows when that is text of its own (one read from the design is the same for every form, and says nothing).
+ * What a placement's form tells agents it does: the author's own words, else what a contact form (or a signup form)
+ * does, with the heading it shows when that is text of its own (one read from the design is the same for every form,
+ * and says nothing).
  */
-export function formToolDescription(state: ProjectState, node: Pick<InstanceNode, 'webmcp' | 'props'>): string {
+export function formToolDescription(state: ProjectState, node: Pick<InstanceNode, 'webmcp' | 'props' | 'definitionId'>): string {
   const own = webMcpText(toolOverrides(node).toolDescription);
   if (own) return own;
-  const site = webMcpText(state.site.name, 120);
+  const site = webMcpText(state.site.name, 120) || 'this website';
   const heading = webMcpText(node.props?.heading, 120);
-  const does = `Contact ${site || 'this website'}: fills in this form with a message, which the visitor checks and sends.`;
+  const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+  const does =
+    formNoun(def) === 'signup form' ? `Sign up with ${site}: fills in this form, which the visitor checks and sends.` : `Contact ${site}: fills in this form with a message, which the visitor checks and sends.`;
   return heading ? webMcpText(`${heading.replace(/[.:!?]+$/, '')}. ${does}`) : does;
 }
 
@@ -241,7 +321,7 @@ function directForms(state: ProjectState, tree: NodeTree): InstanceNode[] {
 function allocate(state: ProjectState, trees: NodeTree[], taken: readonly string[]): Array<Map<string, string>> {
   const forms = trees.map((t) => directForms(state, t));
   const names = uniqueToolNames(
-    forms.flat().map((n) => formToolBase(n).slice(0, WEBMCP_NAME_MAX)),
+    forms.flat().map((n) => formToolBase(n, state.components[n.definitionId]).slice(0, WEBMCP_NAME_MAX)),
     [WEBMCP_SEARCH_TOOL, ...taken]
   );
   let at = 0;
@@ -262,7 +342,7 @@ export function pageToolNames(state: ProjectState, tree: NodeTree, shell: readon
 /** What a placement hands its form: the tool's name (or, inside a design, the start of it) and what it does. */
 export function formTool(state: ProjectState, node: InstanceNode, name: string | undefined): { name: string; description: string; unique?: true } {
   const description = formToolDescription(state, node);
-  return name ? { name, description } : { name: formToolBase(node), description, unique: true };
+  return name ? { name, description } : { name: formToolBase(node, Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined), description, unique: true };
 }
 
 /**

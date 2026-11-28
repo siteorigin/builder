@@ -859,8 +859,10 @@ export function HealthModal() {
   };
 
   const diagnosticRow = (d: Diagnostic, i: number, rest?: string) => {
-    // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
-    const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
+    // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed. One too large
+    // to make copies of is opened there too, to be replaced everywhere.
+    const missing = d.code === 'ASSET_FILE_MISSING';
+    const asset = (missing || d.code === 'ASSET_PIXEL_LIMIT') && d.owner?.kind === 'asset' ? d.owner.id : null;
     const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
     // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
@@ -909,7 +911,7 @@ export function HealthModal() {
         ) : (
           d.message
         )}
-        {asset && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
+        {asset && missing && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
       </HealthRow>
     );
   };

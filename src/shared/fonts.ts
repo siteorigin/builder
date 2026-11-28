@@ -7,7 +7,8 @@ import type { AssetRecord, OwnerRef, ProjectState } from './types';
 /** A family becomes a quoted CSS name, so only plain characters are allowed. */
 export const FONT_FAMILY_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,59}$/u;
 export const FONT_WEIGHT_RE = /^([1-9]\d{0,2}|1000)( ([1-9]\d{0,2}|1000))?$/;
-const FONT_FILE_RE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.woff2?$/;
+/** Where a font's file may be: a name the importer could have given it, in static/assets/. */
+export const FONT_FILE_RE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.woff2?$/;
 
 /**
  * Is this record safe to emit as a @font-face rule? Checked here as well as in the operation schema, because
