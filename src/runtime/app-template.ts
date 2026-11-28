@@ -17,7 +17,7 @@ type Hot = { send: (...args: unknown[]) => void };
 
 /** What this uses of a Vite dev server. */
 export type TemplateServer = {
-  watcher: { emit: Emit };
+  watcher?: { emit: Emit };
   ws?: Hot;
   environments?: Record<string, { hot?: Hot } | undefined>;
 };
@@ -45,6 +45,9 @@ const read = (path: string): string | null => {
 };
 
 export function keepPageThroughAppTemplate(server: TemplateServer, templates: string[]): void {
+  // A server that watches no files (one serving previews alone) hears of no change to answer.
+  const watcher = server.watcher;
+  if (!watcher) return;
   /** Each name a template goes by, to the file itself: a project opened through a link has two. */
   const fileOf = new Map(
     templates.map((path) => {
@@ -59,8 +62,8 @@ export function keepPageThroughAppTemplate(server: TemplateServer, templates: st
   const known = new Map([...new Set(fileOf.values())].map((file) => [file, read(file)] as const));
   /** While the watcher reports a change to a template that named only another language or direction. */
   let reporting = false;
-  const emit = server.watcher.emit.bind(server.watcher);
-  server.watcher.emit = (event: string | symbol, ...args: unknown[]) => {
+  const emit = watcher.emit.bind(watcher);
+  watcher.emit = (event: string | symbol, ...args: unknown[]) => {
     const file = typeof args[0] === 'string' ? fileOf.get(same(args[0])) : undefined;
     if (event !== 'change' || !file) return emit(event, ...args);
     const was = known.get(file) ?? null;
