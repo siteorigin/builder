@@ -132,8 +132,21 @@ describe.skipIf(!browserInstalled)('An image description still being typed survi
     await description().fill('Red barn');
     await page.evaluate("window.replace({ assetId: 'hero', alt: 'City skyline' })");
     await decorative().click();
-    // The description's save is checked against where typing began (and held by the project); the switch is not.
-    expect((await writes()).at(-1)).toEqual({ assetId: 'hero', alt: 'City skyline', decorative: true });
+    // The description's save is still made, for the project to check against where typing began (and hold); the
+    // switch builds on the image shown, not on that save.
+    expect(await writes()).toEqual([
+      { assetId: 'hero', alt: 'Red barn' },
+      { assetId: 'hero', alt: 'City skyline', decorative: true }
+    ]);
+  });
+
+  it('builds on what the project shows once the description came back, an Undo of it included', async () => {
+    await description().fill('A new description');
+    await description().blur();
+    await expect.poll(settled).toEqual({ assetId: 'hero', alt: 'A new description' });
+    await page.evaluate("window.replace({ assetId: 'hero', alt: 'Old description' })");
+    await decorative().click();
+    expect((await writes()).at(-1)).toEqual({ assetId: 'hero', alt: 'Old description', decorative: true });
   });
 
   it('keeps the new description when the image is removed straight from the field', async () => {

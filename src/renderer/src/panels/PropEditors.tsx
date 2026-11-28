@@ -812,19 +812,17 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
   const asset = named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  // What this editor last sent, and the value it was shown with then. Until the value shown moves on from that one,
-  // the next change builds on what was sent, not on what is shown: leaving the description for the Decorative switch
-  // (or Remove) saves it, and the switch's change is made before that save comes back from the project (#1393).
-  const sent = useRef<{ value: ImageValue; from: ImageValue } | null>(null);
-  if (sent.current && !sameImage(sent.current.from, v)) sent.current = null;
+  // A description saved on leaving its field, and the value shown then (#1393). Leaving the description for the
+  // Decorative switch, or Remove, saves it, and that change is made before the save comes back from the project: until
+  // the value shown moves on (the save came back, or something else changed the image), changes build on it.
+  const saving = useRef<{ alt: string; from: ImageValue; field?: string } | null>(null);
+  if (saving.current && (!sameImage(saving.current.from, v) || saving.current.field !== home?.key)) saving.current = null;
   // The value as it is now, for work that finishes later (an import) and for each change made from here.
   const latest = useRef(v);
-  latest.current = sent.current?.value ?? v;
-  const emit = (next: ImageValue) => {
-    sent.current = { value: next, from: v };
-    latest.current = next;
-    onChange(next);
-  };
+  latest.current = saving.current ? { ...v, alt: saving.current.alt } : v;
+  // The same, as this render has it: what a description typed from here is saved onto. The field may save it with the
+  // callback it had when typing began (the AI ran meanwhile), and then it must be saved onto the image shown then.
+  const shownNow = latest.current;
   // The value shown when the description began to be typed. Its save is checked against where typing began, and held
   // when the image changed since (another window replaced it): then nothing builds on it (see commitDraft).
   const typedOn = useRef<ImageValue | null>(null);
@@ -849,10 +847,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     const cur = latest.current;
     if (id === cur.assetId) return;
     // A picture with no description to carry over: only the choice is written.
-    if (picture) return emit({ assetId: id, alt: '' });
+    if (picture) return onChange({ assetId: id, alt: '' });
     const next = chosen(cur, id, suggestion);
     setCarried(next.carried, next.value);
-    emit(next.value);
+    onChange(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
   const [over, setOver] = useState(false);
@@ -1034,7 +1032,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
                 onClick={() => {
                   if (!picture) setCarried(false);
                   removedAt.current = Date.now();
-                  emit({ assetId: null, alt: latest.current.alt, decorative: latest.current.decorative });
+                  onChange({ assetId: null, alt: latest.current.alt, decorative: latest.current.decorative });
                 }}
               >
                 {picture ? picture.back : 'Remove'}
@@ -1100,9 +1098,12 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             }}
             onCommit={(alt) => {
               setCarried(false);
-              const next = { ...latest.current, alt };
-              if (!typedOn.current || sameImage(typedOn.current, v)) emit(next);
-              else onChange(next);
+              // Built on only when the save will be made: typed on the image shown, with the AI idle.
+              if ((!typedOn.current || sameImage(typedOn.current, v)) && !useStore.getState().snapshot?.aiBusy) {
+                saving.current = { alt, from: v, field: home?.key };
+                latest.current = { ...latest.current, alt };
+              }
+              onChange({ ...shownNow, alt });
             }}
           />
         </Field>
@@ -1119,7 +1120,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
           It still fits
         </button>
       )}
-      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => emit({ ...latest.current, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
+      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...latest.current, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
     </div>
   );
 }
