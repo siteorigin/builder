@@ -5,6 +5,7 @@
  * own `source-secrets.json`, outside the project (see main/sources/secrets.ts).
  */
 import type { SourceDoc, SourceMapping, SourceRemoval } from './types';
+import type { SourceDroppedLinks } from './api';
 import { isCollectionId } from './collections';
 import { interpolatedSecretNames, isPath, secretTemplateProblem } from './source-paths';
 
@@ -17,6 +18,19 @@ export const SOURCE_REMOVALS: readonly SourceRemoval[] = ['unpublish', 'remove',
 /** The removal a source asks for: its own, or `unpublish`, which keeps every link to the entry working. */
 export function sourceRemoval(doc: { removal?: unknown } | undefined): SourceRemoval {
   return SOURCE_REMOVALS.includes(doc?.removal as SourceRemoval) ? (doc!.removal as SourceRemoval) : 'unpublish';
+}
+
+/**
+ * What a source's dropped links are, in words for the author: how many links keep only their words, which records
+ * they are in, and what puts them right (an entry's text is written over by every sync, so only the source can).
+ */
+export function droppedLinksText(d: SourceDroppedLinks): string {
+  const one = d.count === 1;
+  const titles = d.titles.map((t) => `“${t.length > 60 ? `${t.slice(0, 59).trimEnd()}…` : t}”`);
+  const more = d.records - titles.length;
+  const names = more > 0 ? [...titles, `${more} more`] : titles;
+  const where = names.length ? ` (in ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]})` : '';
+  return `${one ? 'A link keeps only its' : `${d.count} links keep only their`} words: ${one ? 'its address is not one' : 'their addresses are not ones'} an entry can keep${where}. Give ${one ? 'it' : 'them'} a web address at the source.`;
 }
 
 /** A kind of source, as a source names it: a lowercase word ("rest", "contentful"). */

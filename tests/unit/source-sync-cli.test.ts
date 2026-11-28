@@ -69,7 +69,7 @@ async function api(people: () => unknown[]) {
 const person = (id: string, name: string, role: string, photo?: string) => ({ id, name, role, joined: '2026-03-04', ...(photo ? { photo } : {}) });
 
 /** A project with a Team collection synced from the API by a mapping that names its token, written and closed. */
-async function project(origin: string, removal?: 'remove'): Promise<string> {
+async function project(origin: string, removal?: 'remove', mapping: Record<string, unknown> = {}): Promise<string> {
   const dir = temp('so-sync-cli-');
   const s = await ProjectSession.create(dir, createStarterState('business', 'Crew', false));
   const r = await s.apply(
@@ -83,7 +83,7 @@ async function project(origin: string, removal?: 'remove'): Promise<string> {
           adapter: 'rest',
           collectionId: 'team',
           config: { url: `${origin}/v1/people`, itemsPath: 'data', headers: { Authorization: 'Bearer ${secret:crew-token}' } },
-          mapping: { externalId: 'id', title: 'name', publishedAt: 'joined', featuredImageUrl: 'photo', values: { role: 'role' } },
+          mapping: { externalId: 'id', title: 'name', publishedAt: 'joined', featuredImageUrl: 'photo', values: { role: 'role' }, ...mapping },
           ...(removal ? { removal } : {})
         }
       ] as EditOperation[]
@@ -159,6 +159,19 @@ describe('syncing a project without the app', () => {
       ['Ana Ruiz', true],
       ['Ben O.', false]
     ]);
+  });
+
+  it('says which records have links that kept only their words, on every sync until the source puts them right (#1426)', async () => {
+    const server = await api(() => [{ ...person('1', 'Ana Ruiz', 'Architect'), bio: '<p>See <a href="/work/">her work</a>.</p>' }, person('2', 'Ben Okafor', 'Engineer')]);
+    const dir = await project(server.origin, undefined, { body: 'bio', bodyFormat: 'html' });
+    const { runner } = await inline();
+    const dropped = 'Crew API: A link keeps only its words: its address is not one an entry can keep (in “Ana Ruiz”). Give it a web address at the source.';
+    const lines: string[] = [];
+    await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) });
+    expect(lines).toEqual([dropped, 'Crew API: 2 added, 0 updated, 0 made drafts, 0 removed, 0 unchanged, 0 new pictures.']);
+    lines.length = 0;
+    await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) });
+    expect(lines).toEqual([dropped, 'Crew API: up to date (2 unchanged).']);
   });
 
   it('writes nothing when a source cannot be read, or its secret is not set', async () => {

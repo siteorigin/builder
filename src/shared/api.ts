@@ -1253,14 +1253,25 @@ export type LiveCommandResult = { ok: true } | { ok: false; message: string };
 /** An external source's settings as the Connect dialog saves them: `source.upsert`, whole. */
 export type SourceSettingsDraft = Omit<Op<'source.upsert'>, 'type'>;
 
+/**
+ * The links in a source's records whose address an entry cannot keep (script, or a relative one with no page to read it
+ * from): their words are kept as plain text. How many, how many records have one, and the titles of the first few of
+ * those (none when a converter read them).
+ */
+export interface SourceDroppedLinks {
+  count: number;
+  records: number;
+  titles: string[];
+}
+
 /** What a Test of a source's settings found: the first few records as the source sent them and as entries, and what a sync would do. */
 export type SourceSampleResult =
-  | { ok: true; raw: unknown[]; records: unknown[]; total: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number }
+  | { ok: true; raw: unknown[]; records: unknown[]; total: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; droppedLinks?: SourceDroppedLinks }
   | { ok: false; message: string; code?: string };
 
 /** What a sync of a source changed, or why it changed nothing. */
 export type SourceSyncResult =
-  | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
+  | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number; droppedLinks?: SourceDroppedLinks }
   | { ok: false; message: string; code?: string };
 
 /** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */

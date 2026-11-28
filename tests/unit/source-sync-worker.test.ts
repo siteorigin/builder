@@ -46,6 +46,33 @@ describe('the sync worker client', () => {
     expect(spawned[0].sent[0].secrets).toEqual({ team: SECRET });
   });
 
+  it('passes on the links whose words alone were kept, and refuses a report of them that is not one (#1426)', async () => {
+    const reply = (droppedLinks: unknown, mode?: SyncRequest['mode']) =>
+      createSyncRunner(fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records: [record('1'), record('2'), record('3'), record('4')], images: [], ...(mode === 'sample' ? { raw: [] } : {}), droppedLinks } as SyncReply)).spawn).run('Team', { ...request, ...(mode ? { mode } : {}) });
+    await expect(reply({ count: 9, records: 4, first: [0, 1, 3] })).resolves.toMatchObject({ droppedLinks: { count: 9, records: 4, first: [0, 1, 3] } });
+    await expect(reply({ count: 2, records: 1, first: [2] }, 'sample')).resolves.toMatchObject({ droppedLinks: { count: 2, records: 1, first: [2] } });
+    // A converter's are counted only.
+    await expect(reply({ count: 2, records: 0, first: [] })).resolves.toMatchObject({ droppedLinks: { count: 2, records: 0, first: [] } });
+    await expect(reply(undefined)).resolves.not.toHaveProperty('droppedLinks');
+    for (const bad of [
+      { count: 0, records: 0, first: [] },
+      { count: 1, records: 2, first: [0, 1] },
+      { count: 3, records: 1, first: [4] },
+      { count: 3, records: 2, first: [1, 1] },
+      { count: 3, records: 2, first: [2, 1] },
+      { count: 5, records: 4, first: [0, 1] },
+      { count: 1.5, records: 1, first: [0] },
+      { count: 9, records: 5, first: [0, 1, 2] },
+      [3],
+      'three'
+    ])
+      await expect(reply(bad)).rejects.toMatchObject({ code: 'invalid' });
+    // An inspection reads no record into an entry, so drops none of its links.
+    await expect(
+      createSyncRunner(fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records: [], images: [], raw: [], total: 0, droppedLinks: { count: 1, records: 0, first: [] } } as SyncReply)).spawn).run('Team', { ...request, mode: 'inspect' })
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('ends a worker that stalls, crashes or fails, says why in its own words, and gives no secret away', async () => {
     const slow = fakeWorker(() => undefined);
     const timedOut = createSyncRunner(slow.spawn, { timeoutMs: 20 }).run('Team', request);

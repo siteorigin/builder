@@ -16,8 +16,9 @@ import { AdapterError, type AdapterEnv, type SourceAdapter } from './registry';
 import { createTransport, type Fetch } from './transport';
 import { mappingFieldsProblem, mapRecord, MappingError, shapeConverted } from './mapping';
 import { ConverterError, runConverter } from './converter';
-import { contentfulRichText, htmlRichText, markdownRichText } from './richtext';
+import { contentfulRichText, htmlRichText, markdownRichText, type LinkRead } from './richtext';
 import {
+  DROPPED_LINK_RECORDS,
   imageAddressProblem,
   imageKey,
   MAX_DETAIL,
@@ -29,6 +30,7 @@ import {
   spoolFile,
   recordImages,
   recordProblem,
+  type DroppedLinks,
   type NormalizedRecord,
   type SourceImage,
   type SyncFailure,
@@ -151,6 +153,9 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
   const fields = req.fields ?? {};
   let records: NormalizedRecord[];
   let raw: unknown[] | undefined;
+  // The links in records' text that keep only their words, said beside the records (never in them: a record is what
+  // its entry is, and what it is hashed by).
+  const dropped: DroppedLinks = { count: 0, records: 0, first: [] };
   try {
     // A reader that puts its records in shape itself has no records as sent to show.
     if (adapter.read && req.mode === 'inspect') return failed('adapter-unavailable');
@@ -183,10 +188,12 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
       let read: unknown[];
       let shaped: unknown;
       if (typeof req.converter === 'string') {
+        // What a converter reads as text is no record's own page, so its relative links have nowhere to be read from.
+        const links: LinkRead = { dropped: 0 };
         const out = await runConverter(
           req.converter,
           {
-            richText: (kind, text) => (kind === 'contentful' ? contentfulRichText(JSON.parse(text)) : kind === 'html' ? htmlRichText(text) : markdownRichText(text)),
+            richText: (kind, text) => (kind === 'contentful' ? contentfulRichText(JSON.parse(text), links) : kind === 'html' ? htmlRichText(text, links) : markdownRichText(text, links)),
             fetchJson: async (url, init) => {
               const r = converterRequest(init as Record<string, unknown>, given, req.adapter);
               let u: URL;
@@ -214,13 +221,22 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
         read = out.items;
         if (!Array.isArray(out.records)) return failed('converter', 'its convert gave no list of records');
         shaped = out.records.map((r) => shapeConverted(r, fields));
+        dropped.count = links.dropped;
       } else {
         const mapping = effectiveMapping(req.adapter, req.mapping);
         // Said before anything is read, so a source with no records yet never makes a mapping look right.
         const wrong = mappingFieldsProblem(mapping, fields);
         if (wrong) return failed('invalid', wrong);
         read = await items();
-        shaped = read.map((item, i) => mapRecord(item, mapping, fields, i));
+        shaped = read.map((item, i) => {
+          const links: LinkRead = { base: adapter.pageOf?.(item), dropped: 0 };
+          const r = mapRecord(item, mapping, fields, i, links);
+          if (links.dropped) {
+            dropped.count += links.dropped;
+            if (dropped.records++ < DROPPED_LINK_RECORDS) dropped.first.push(i);
+          }
+          return r;
+        });
       }
       records = shaped as NormalizedRecord[];
       if (req.mode === 'sample') raw = read.slice(0, SAMPLE_SIZE);
@@ -262,7 +278,7 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
         if (refused) return failed('image', refused);
       }
     try {
-      return { id: req.id, ok: true, records, images: [], raw: (raw ?? []).map(sampleView) };
+      return { id: req.id, ok: true, records, images: [], raw: (raw ?? []).map(sampleView), ...(dropped.count ? { droppedLinks: dropped } : {}) };
     } catch {
       return failed('invalid', 'a record cannot be read');
     }
@@ -320,5 +336,5 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
     if (size > MAX_IMAGE_BYTES || total > MAX_IMAGES_BYTES) return failed('too-large', 'its pictures are too large to sync');
     images.push(spool !== undefined ? { key, mime, ext, size } : { key, mime, ext, size, bytes: got.bytes });
   }
-  return { id: req.id, ok: true, records, images };
+  return { id: req.id, ok: true, records, images, ...(dropped.count ? { droppedLinks: dropped } : {}) };
 }

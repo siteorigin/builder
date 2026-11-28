@@ -103,9 +103,32 @@ export interface SyncRequest {
 /** How many records a sample shows as the source sent them. */
 export const SAMPLE_SIZE = 3;
 
+/**
+ * The links in records' formatted text whose address an entry cannot keep (script, or a relative one with no page to
+ * read it from), their words kept: how many, how many records had one, and the places in the list of the first few of
+ * those. A converter's are counted only: what it read need not be any one record's.
+ */
+export interface DroppedLinks {
+  count: number;
+  records: number;
+  first: number[];
+}
+
+/** How many records a report of dropped links names. */
+export const DROPPED_LINK_RECORDS = 3;
+
 export type SyncReply =
-  | { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[]; raw?: unknown[]; total?: number }
+  | { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[]; raw?: unknown[]; total?: number; droppedLinks?: DroppedLinks }
   | { id: number; ok: false; code: SyncFailure; detail?: string };
+
+/** Whether a worker's report of dropped links is one, for a reply of `total` records: each record it names among them, in order. */
+export function isDroppedLinks(v: unknown, total: number): v is DroppedLinks {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const { count, records, first } = v as Partial<DroppedLinks>;
+  if (!Number.isSafeInteger(count) || (count as number) < 1 || !Number.isSafeInteger(records) || (records as number) < 0 || (records as number) > Math.min(count as number, total)) return false;
+  if (!Array.isArray(first) || first.length !== Math.min(records as number, DROPPED_LINK_RECORDS)) return false;
+  return first.every((i, n) => Number.isSafeInteger(i) && i >= 0 && i < total && (n === 0 || i > first[n - 1]));
+}
 
 /** The most records a sync reads, and the most a record's or a picture's bytes may be. */
 export const MAX_RECORDS = 5000;

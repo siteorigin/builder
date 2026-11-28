@@ -47,6 +47,11 @@ export interface SourceAdapter {
    * part way (a page of results that would not load) rejects, so no record ever looks removed because it was not read.
    */
   items?(ctx: ReadContext): Promise<unknown[]>;
+  /**
+   * The web address of the page a record (as `items` gave it) is shown on, which the relative links in its formatted
+   * text are read from: a WordPress post's own. Absent, or undefined for a record: they cannot be read.
+   */
+  pageOf?(item: unknown): string | undefined;
   /** A reader that puts its records in shape itself (a test's fixture). */
   read?(config: SourceConfig, secrets: Readonly<Record<string, string>>, signal: AbortSignal): Promise<NormalizedRecord[]>;
 }

@@ -140,7 +140,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     tickets.set(ticket, { project: new WeakRef(project), sourceId, candidate: sourceFingerprint(made.source) });
     // A run that never applied what it tested leaves nothing behind for long.
     while (tickets.size > 20) tickets.delete(tickets.keys().next().value!);
-    return { ok: true, operation: { ...draft, type: 'source.upsert' } as EditOperation, grant: { sourceId, base, change: sourceConversionKey(draft) }, ticket, records: r.records, total: r.total, created: r.created, updated: r.updated, unchanged: r.unchanged, unpublished: r.unpublished, removed: r.removed, kept: r.kept };
+    return { ok: true, operation: { ...draft, type: 'source.upsert' } as EditOperation, grant: { sourceId, base, change: sourceConversionKey(draft) }, ticket, records: r.records, total: r.total, created: r.created, updated: r.updated, unchanged: r.unchanged, unpublished: r.unpublished, removed: r.removed, kept: r.kept, ...(r.droppedLinks ? { droppedLinks: r.droppedLinks } : {}) };
   };
 
   /**

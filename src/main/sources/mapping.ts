@@ -6,7 +6,7 @@
  */
 import type { LinkValue, RichText, SourceMapping } from '@shared/types';
 import { readPath } from '@shared/source-paths';
-import { contentfulRichText, htmlRichText, markdownRichText, plainRichText } from './richtext';
+import { contentfulRichText, htmlRichText, markdownRichText, plainRichText, type LinkRead } from './richtext';
 import { decodeEntities } from '../posts-import/html';
 import type { FieldKinds, NormalizedRecord, SourceImageRef } from './protocol';
 
@@ -82,22 +82,22 @@ export function imageRef(v: unknown, alt?: string): SourceImageRef | undefined {
   return { $image: { url, ...(given ? { alt: given } : {}) } };
 }
 
-/** Formatted text as an entry's text, in the format given or the one it is plainly in. */
-export function richTextOf(v: unknown, format: SourceMapping['bodyFormat']): RichText | undefined {
+/** Formatted text as an entry's text, in the format given or the one it is plainly in, its links read as `read` says. */
+export function richTextOf(v: unknown, format: SourceMapping['bodyFormat'], read: LinkRead = { dropped: 0 }): RichText | undefined {
   if (v === undefined || v === null) return undefined;
-  if (v && typeof v === 'object' && (v as { nodeType?: unknown }).nodeType === 'document') return contentfulRichText(v);
+  if (v && typeof v === 'object' && (v as { nodeType?: unknown }).nodeType === 'document') return contentfulRichText(v, read);
   const t = text(v);
   if (t === undefined) return undefined;
-  if (format === 'html') return htmlRichText(t);
-  if (format === 'markdown') return markdownRichText(t);
-  if (format === 'contentful') return contentfulRichText(t);
+  if (format === 'html') return htmlRichText(t, read);
+  if (format === 'markdown') return markdownRichText(t, read);
+  if (format === 'contentful') return contentfulRichText(t, read);
   return plainRichText(t);
 }
 
 const KIND_WORDS: Record<string, string> = { number: 'a number', boolean: 'true or false', date: 'a date', image: 'a picture’s web address', link: 'a web, email or phone address', richtext: 'text' };
 
 /** A value as the kind of custom field it is synced into holds it, or undefined when it cannot be. */
-export function fieldValue(v: unknown, kind: string | undefined): unknown {
+export function fieldValue(v: unknown, kind: string | undefined, read: LinkRead = { dropped: 0 }): unknown {
   if (v === undefined || v === null) return undefined;
   switch (kind) {
     case 'number': {
@@ -116,7 +116,7 @@ export function fieldValue(v: unknown, kind: string | undefined): unknown {
     }
     // A rich text field holds words, never pictures (an entry's own text does).
     case 'richtext':
-      return richTextOf(v, typeof v === 'string' && /<\/?[a-z][^>]*>/i.test(v) ? 'html' : 'text')?.filter((b) => b.type !== 'image');
+      return richTextOf(v, typeof v === 'string' && /<\/?[a-z][^>]*>/i.test(v) ? 'html' : 'text', read)?.filter((b) => b.type !== 'image');
     case 'reference':
       return undefined;
     default: {
@@ -139,9 +139,10 @@ export function mappingFieldsProblem(mapping: SourceMapping, fields: FieldKinds)
 /**
  * A record as an entry: each detail read where the mapping says, else where the kind of source reads it. `fields` are
  * the collection's custom fields: a value the mapping reads for a field the collection lacks is refused, so a typo is
- * said instead of dropped.
+ * said instead of dropped. `read` is where the record's formatted text was shown, for its relative links, and counts
+ * the links in it whose address cannot be kept.
  */
-export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKinds, index: number): NormalizedRecord {
+export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKinds, index: number, read: LinkRead = { dropped: 0 }): NormalizedRecord {
   const where = `record ${index + 1}`;
   const at = (k: keyof Omit<SourceMapping, 'values' | 'bodyFormat'>) => (mapping[k] !== undefined ? readPath(item, mapping[k]!) : undefined);
   const id = text(at('externalId'));
@@ -171,7 +172,7 @@ export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKi
     if (!ref) throw new MappingError(`${where}’s featured image at ${mapping.featuredImageUrl!.slice(0, 60)} is not a picture’s web address`);
     r.featuredImage = ref;
   }
-  const body = richTextOf(at('body'), mapping.bodyFormat);
+  const body = richTextOf(at('body'), mapping.bodyFormat, read);
   if (body?.length) r.body = body;
   const values: Record<string, unknown> = {};
   for (const [field, path] of Object.entries(mapping.values ?? {})) {
@@ -180,7 +181,7 @@ export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKi
     // is said rather than left empty.
     if (fields[field] === 'reference') throw new MappingError(`the ${field.slice(0, 60)} field names other entries, which a sync does not fill in`);
     const raw = readPath(item, path);
-    const v = fieldValue(raw, fields[field]);
+    const v = fieldValue(raw, fields[field], read);
     // A value there that is not one its field holds is said, never cleared from the entry.
     if (v === undefined && raw !== undefined && raw !== null) throw new MappingError(`${where}’s ${field.slice(0, 60)} at ${path.slice(0, 60)} is not ${KIND_WORDS[fields[field]] ?? 'text'}`);
     if (v !== undefined) values[field] = v;

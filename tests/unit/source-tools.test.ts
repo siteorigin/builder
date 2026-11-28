@@ -220,6 +220,49 @@ describe('in an AI turn', () => {
   });
 });
 
+describe('links in the records’ text that keep only their words (#1426)', () => {
+  const LINKED = PEOPLE.map((p, i) => (i === 1 ? { ...p, bio: '<p>Builds <a href="/bridges/">bridges</a> and <a href="javascript:void 0">more</a>.</p>' } : p));
+
+  it('are said by the record they are in when a mapping reads them, and counted when a converter does', async () => {
+    const { host } = await setup(() => ({ data: LINKED }));
+    const mapped = await host.verify('crew', { mapping: { externalId: 'uuid', title: 'headline', body: 'bio', bodyFormat: 'html' } });
+    expect(mapped).toMatchObject({ ok: true, total: 2, droppedLinks: { count: 2, records: 1, titles: ['Ben Okafor'] } });
+    expect(await host.verify('crew', { converter: GOOD })).toMatchObject({ ok: true, droppedLinks: { count: 2, records: 0, titles: [] } });
+    const clean = await (await setup()).host.verify('crew', { converter: GOOD });
+    expect(clean).toMatchObject({ ok: true });
+    expect(clean).not.toHaveProperty('droppedLinks');
+  });
+
+  it('are told to the AI with what it tested', async () => {
+    const env2 = await setup(() => ({ data: LINKED }));
+    const { s } = env2;
+    // Read here, once the run is over: what a turn throws only ends the run.
+    let written: Record<string, unknown> | undefined;
+    const adapter = new FakeAdapter([
+      () => [call('c1', 'inspect_source_sample', { sourceId: 'crew' })],
+      () => [call('c2', 'write_source_converter', { sourceId: 'crew', converter: GOOD })],
+      (req) => {
+        written = lastResult(req);
+        return finish('Wrote a converter.');
+      }
+    ]);
+    const orch = new Orchestrator({
+      session: () => s,
+      adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
+      emit: () => undefined,
+      compileAll: async () => [],
+      inspectLayout: async () => ({ issues: [] }),
+      onBusyChange: () => undefined,
+      sources: (signal) => createAgentSources({ project: () => s, runner: env2.runner, secrets: env2.secrets, approvals: env2.approvals })(signal)
+    });
+    const r = await orch.send('Map the Crew API into the Team collection', { pageId: s.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, scope: 'site' });
+    expect(r.message).toBeUndefined();
+    while (orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(adapter.requests).toHaveLength(3);
+    expect(written, JSON.stringify(written).slice(0, 300)).toMatchObject({ ok: true, tested: { records: 2, wouldCreate: 2, linksKeptAsWords: '2 links keep only their words: their addresses are not ones an entry can keep. Give them a web address at the source.' } });
+  });
+});
+
 describe('the source tools’ host', () => {
   /** The session holds its project frozen: a source edited outside the app is a changed copy put in its place. */
   type Held = { state: import('@shared/types').ProjectState };
