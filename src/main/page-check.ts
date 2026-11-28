@@ -2,8 +2,8 @@
  * One page of a built website opened as a visitor's browser opens it (#1534), to see whether it still shows its content
  * once its script has started. A code component can fail only in the browser (an `$effect` that writes the state it
  * reads never runs while the site is prerendered): SvelteKit then puts the site's error page in place of every section,
- * and nothing in the build says so. The page is opened, its scripts load, SvelteKit says it has started, and the page
- * is read once it has had a moment more: it failed when the site's error page has taken the place of what was built.
+ * and nothing in the build says so. The page is opened, SvelteKit says it has started, and the page is watched until
+ * its scripts have been quiet a moment: it failed when the site's error page has taken the place of what was built.
  *
  * It speaks to the page through the Chrome DevTools Protocol only (a session on one page), so the app's hidden window
  * (main/page-check-window) and a test's headless Chromium run exactly the same steps.
@@ -16,7 +16,7 @@ export type PageCheck =
   | { status: 'working' }
   /**
    * The site's error page took the place of the page's content: its heading ("Error 500"), the error the browser was
-   * told of last before it appeared (null when none was), and every error it was told of, in order.
+   * told of last before it appeared (null when none was), and the errors it was told of, in order.
    */
   | { status: 'error-page'; heading: string; cause: string | null; logged: string[] }
   /** The page could not be opened, or did not start in time: nothing is known of it. */
@@ -30,37 +30,41 @@ export interface PageCheckOptions {
 }
 
 const CHECK_MS = 8000;
-/** How long the page's scripts are left quiet after the last one arrived, so one a script asks for is seen. */
-const QUIET_MS = 100;
 /**
- * How long a page that has started is watched before it is taken as working: SvelteKit shows its error page after an
- * awaited error hook, which may come a moment after it says it has started.
+ * How long a page that has started is watched, with no script on its way, before it is taken as working: a script it
+ * asks for meanwhile starts the wait again, and SvelteKit shows its error page only once its error hook has answered.
  */
 const SETTLE_MS = 150;
 /** What SvelteKit's start script in a built page names its globals by: a page without it runs no script of SvelteKit's. */
 const SVELTEKIT_START = '__sveltekit_';
-/** How many errors a check keeps, and how much of each. */
+/** How many errors a check keeps (the latest), and how much of each. */
 const LOGGED = 20;
 const LOGGED_CHARS = 2000;
+/** Run before the page's own scripts: a page that asks to be printed opens no print dialog from the hidden window. */
+const NO_PRINT = 'window.print = () => {};';
 
-/** The site's error page in place of a page's content: the layout's main element holds its section and nothing else. */
-const shows = (root: string) => `(() => {
+/**
+ * The site's error page (the generated +error.svelte) in place of a page's content: the layout's main element holds
+ * its section, with its "Error 500" heading, and nothing else. Its heading when it shows, or ''.
+ */
+const errorShown = (root: string) => `(() => {
   const main = ${root}.querySelector('main#main');
   const only = main && main.children.length === 1 ? main.firstElementChild : null;
-  return !!only && only.matches('section.${ERROR_SECTION_CLASS}');
+  const heading = only && only.matches('section.${ERROR_SECTION_CLASS}') ? (only.querySelector('h1')?.textContent ?? '').trim() : '';
+  return /^Error \\d{3}$/.test(heading) ? heading : '';
 })()`;
 
-/** Run in the page: whether it shows the error page, its heading, and whether SvelteKit says it has started. */
+/** Run in the page: the error page's heading when it shows, whether its main element is empty, and whether SvelteKit says it has started. */
 const LOOK = `(() => ({
-  error: ${shows('document')},
-  heading: (document.querySelector('main#main > section.${ERROR_SECTION_CLASS} h1')?.textContent ?? '').trim().slice(0, 80),
+  error: ${errorShown('document')},
+  empty: document.querySelector('main#main')?.children.length === 0,
   started: !!document.getElementById('svelte-announcer')
 }))()`;
 
-/** Run in the page: whether the HTML the server sent already showed the error page, before any script ran. */
+/** Run in the page: what the HTML the server sent showed before any script ran. */
 const BUILT = (html: string) => `(() => {
   const built = new DOMParser().parseFromString(${JSON.stringify(html)}, 'text/html');
-  return ${shows('built')};
+  return { error: ${errorShown('built')}, content: (built.querySelector('main#main')?.children.length ?? 0) > 0 };
 })()`;
 
 class Unchecked extends Error {}
@@ -80,17 +84,17 @@ function described(arg: unknown): string {
 export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheckOptions = {}): Promise<PageCheck> {
   /** The scripts on their way, by request ID. */
   const pending = new Set<string>();
-  /** Every error the page logged or threw, with when. */
+  /** The latest errors the page logged or threw, with when. */
   const logged: Array<{ at: number; text: string }> = [];
-  let lastScript = Date.now();
+  let lastScript = 0;
   let mainFrame = '';
   let document: { requestId: string; status: number; url: string } | null = null;
   let documentFailed: string | null = null;
   let documentLoaded = false;
-  let loaded = false;
   let wake: (() => void) | null = null;
   const tell = (text: string) => {
-    if (logged.length < LOGGED) logged.push({ at: Date.now(), text: text.slice(0, LOGGED_CHARS) });
+    if (logged.length >= LOGGED) logged.shift();
+    logged.push({ at: Date.now(), text: text.slice(0, LOGGED_CHARS) });
   };
 
   const stopListening = page.listen((method, p) => {
@@ -113,9 +117,6 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
       case 'Network.loadingFailed':
         if (p.type === 'Document' && !document) documentFailed = String(p.errorText ?? 'failed');
         if (pending.delete(id)) lastScript = Date.now();
-        break;
-      case 'Page.loadEventFired':
-        loaded = true;
         break;
       case 'Runtime.consoleAPICalled':
         if (p.type === 'error' || p.type === 'assert') tell(((p.args as unknown[] | undefined) ?? []).map(described).join(' '));
@@ -142,7 +143,7 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
   });
   ended.catch(() => undefined);
   const race = <T>(p: Promise<T>): Promise<T> => Promise.race([p, ended]);
-  /** Wait until `ready` holds, looking again on every event of the page and every 50 ms. */
+  /** Wait until `ready` holds, looking again on every event of the page and every 50 ms, one look at a time. */
   const until = async (ready: () => boolean | Promise<boolean>) => {
     let tick: ReturnType<typeof setInterval> | undefined;
     let looking = false;
@@ -152,13 +153,12 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
           const look = () => {
             if (looking) return;
             looking = true;
-            Promise.resolve(ready()).then(
-              (yes) => {
+            Promise.resolve()
+              .then(ready)
+              .then((yes) => {
                 looking = false;
                 if (yes) resolve();
-              },
-              (e: unknown) => reject(e)
-            );
+              }, reject);
           };
           tick = setInterval(look, 50);
           wake = look;
@@ -175,22 +175,18 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     if (r.exceptionDetails) throw new Unchecked(`The page could not be read: ${r.exceptionDetails.text ?? 'it threw an error'}.`);
     return r.result?.value as T;
   };
-  const look = () => evaluate<{ error: boolean; heading: string; started: boolean }>(LOOK);
-  /** The page shown as the site's error page: what it says, and the error the browser was told of last before it. */
-  const failed = (heading: string, seenAt: number): PageCheck => {
-    const before = logged.filter((l) => l.at <= seenAt);
-    return { status: 'error-page', heading: heading || 'Error', cause: before.length ? before[before.length - 1].text : null, logged: logged.map((l) => l.text) };
-  };
 
   try {
     await race(page.send('Page.enable'));
     await race(page.send('Runtime.enable'));
     await race(page.send('Network.enable'));
+    await race(page.send('Page.addScriptToEvaluateOnNewDocument', { source: NO_PRINT }));
     const tree = (await race(page.send('Page.getFrameTree'))) as { frameTree: { frame: { id: string } } };
     mainFrame = tree.frameTree.frame.id;
     const nav = (await race(page.send('Page.navigate', { url }))) as { errorText?: string };
     if (nav.errorText) throw new Unchecked(`The page could not be opened (${nav.errorText}).`);
-    await until(() => (loaded && documentLoaded) || !!documentFailed);
+    // The page itself, not what it shows: an image still on its way (a slow host's) holds up nothing.
+    await until(() => documentLoaded || !!documentFailed);
     if (documentFailed) throw new Unchecked(`The page could not be opened (${documentFailed}).`);
     const doc = document as { requestId: string; status: number; url: string } | null;
     if (!doc || doc.status < 200 || doc.status >= 300) throw new Unchecked(`The website’s preview answered ${doc ? doc.status : 'nothing'} for this page.`);
@@ -199,25 +195,28 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     const html = body.base64Encoded ? Buffer.from(body.body, 'base64').toString('utf8') : body.body;
     // A page built without SvelteKit's script (a project's own `csr = false`) never starts: nothing of it runs to fail.
     if (!html.includes(SVELTEKIT_START)) return { status: 'working' };
-    // A page whose own content is the error page's section, as it was built, cannot be told from one that failed.
-    if (await evaluate<boolean>(BUILT(html))) return { status: 'working' };
-    // Started: SvelteKit has hydrated the page and run its first navigation callbacks, and no script is on its way.
+    const built = await evaluate<{ error: string; content: boolean }>(BUILT(html));
+    // A page whose own content is the error page, as it was built, cannot be told from one that failed.
+    if (built.error) return { status: 'working' };
     let seen = null as { heading: string; at: number } | null;
+    let startedAt = 0;
     await until(async () => {
-      const now = await look();
-      if (now.error) seen = { heading: now.heading, at: Date.now() };
-      return !!seen || (now.started && pending.size === 0 && Date.now() - lastScript >= QUIET_MS);
+      const now = await evaluate<{ error: string; empty: boolean; started: boolean }>(LOOK);
+      if (now.error) {
+        seen = { heading: now.error, at: Date.now() };
+        return true;
+      }
+      if (!now.started) return false;
+      startedAt ||= Date.now();
+      // SvelteKit takes away what failed before an awaited error hook answers: a page built with content that shows
+      // none is failing still, until the error page comes or the check runs out of time.
+      if (built.content && now.empty) return false;
+      return pending.size === 0 && Date.now() - Math.max(startedAt, lastScript) >= SETTLE_MS;
     });
-    if (seen) return failed(seen.heading, seen.at);
-    // Watched a moment more, for an error SvelteKit shows once its error hook has answered.
-    const settled = Date.now() + SETTLE_MS;
-    await until(async () => {
-      const now = await look();
-      if (now.error) seen = { heading: now.heading, at: Date.now() };
-      return !!seen || Date.now() >= settled;
-    });
-    if (seen) return failed(seen.heading, seen.at);
-    return { status: 'working' };
+    if (!seen) return { status: 'working' };
+    const { heading, at } = seen as { heading: string; at: number };
+    const before = logged.filter((l) => l.at <= at);
+    return { status: 'error-page', heading, cause: before.length ? before[before.length - 1].text : null, logged: logged.map((l) => l.text) };
   } catch (e) {
     if (e instanceof Unchecked) return { status: 'unchecked', detail: e.message };
     return { status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` };

@@ -105,13 +105,14 @@ afterEach(async () => {
 });
 
 /** A business site with the issue's code component on its Home page, open in a controller whose pages are checked by `check`. */
-async function siteWithLoop(check: (url: string, signal: AbortSignal) => Promise<PageCheck>, opts: { base?: string; source?: string } = {}) {
+async function siteWithLoop(check: (url: string, signal: AbortSignal) => Promise<PageCheck>, opts: { base?: string; source?: string; pages?: string[] } = {}) {
   const dir = temp('project');
   let state = createStarterState('business', 'Harbour Lane', false);
   if (opts.base) state.site.baseUrl = `https://harbour.example${opts.base}`;
   state = applyOperations(state, [{ type: 'component.createCode', name: 'Visit counter', source: opts.source ?? LOOP_SOURCE, properties: {} }]).state;
   const defId = Object.values(state.components).find((d) => d.name === 'Visit counter')!.id;
   state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, definitionId: defId }]).state;
+  for (const [i, title] of (opts.pages ?? []).entries()) state = applyOperations(state, [{ type: 'page.create', pageId: `pg_extra${i}`, title }]).state;
   await (await ProjectSession.create(dir, state)).close();
   const c = new Controller(() => null);
   c.send = () => undefined;
@@ -134,6 +135,7 @@ describe.skipIf(!browserInstalled)('a website export opens its pages in a browse
     expect(r.message).toBe('“Home” (/) shows “Error 500” in place of its content once it opens in a browser, so visitors would see an error page. Fix it, then export again.');
     expect(r.warnings[0]).toBe('The browser reported: Error: https://svelte.dev/e/effect_update_depth_exceeded');
     expect(r.warnings[1]).toBe(`It shows one code component, the “Visit counter” component (${file}). Look there first: code that runs only in the browser, such as an $effect, does not run while the site is built.`);
+    expect(r.details).toContain(`Code components: Visit counter (${file})`);
     expect(r.details).toContain('Browser errors:');
     expect(r.details).toContain('effect_update_depth_exceeded');
     // Nothing was delivered or listed, and the build's own server is gone.
@@ -158,14 +160,46 @@ describe.skipIf(!browserInstalled)('a website export opens its pages in a browse
     expect(r).toMatchObject({ ok: true });
     expect(r.warnings.join('\n')).not.toMatch(/browser/);
     const routes = reviewPages(publishedState(c.snapshot()!.state)).map((p) => p.route);
+    expect(routes).toEqual(expect.arrayContaining(['/', '/contact/']));
     expect(asked.map((u) => new URL(u).pathname).sort()).toEqual(routes.map((r) => `/harbour${r}`).sort());
     expect(existsSync(join(dest, 'index.html'))).toBe(true);
+    await expect(fetch(asked[0])).rejects.toThrow();
   });
+});
 
+describe('how a website export opens its pages', () => {
   it('builds a review without opening its pages', async () => {
-    const { c, asked } = await siteWithLoop(inChromium);
+    const { c, asked } = await siteWithLoop(async () => ({ status: 'working' }));
     expect((await c.stageReviewBuild(join(temp('out'), 'review'))).ok).toBe(true);
     expect(asked).toEqual([]);
+  });
+
+  it('begins no page once one has failed, and calls off those under way', async () => {
+    const called: string[] = [];
+    const { c, asked } = await siteWithLoop(
+      (url, signal) =>
+        new URL(url).pathname === '/'
+          ? Promise.resolve({ status: 'error-page', heading: 'Error 500', cause: 'Error: broken', logged: ['Error: broken'] })
+          : new Promise<PageCheck>((resolve) => signal.addEventListener('abort', () => (called.push(url), resolve({ status: 'unchecked', detail: 'The check was stopped.' })), { once: true })),
+      { pages: ['Services', 'Team', 'Prices'] }
+    );
+    expect(reviewPages(publishedState(c.snapshot()!.state)).length).toBeGreaterThan(3);
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining('“Home” (/) shows “Error 500”') });
+    // Only the first few were begun, and those still under way were called off rather than waited for.
+    expect(asked).toHaveLength(3);
+    expect(called).toHaveLength(2);
+  });
+
+  it('stops waiting once its time is up, even for a check that never ends, and says which pages it could not open', async () => {
+    const { c, asked } = await siteWithLoop(() => new Promise<PageCheck>(() => undefined));
+    c.pageChecksMs = 200;
+    const pages = reviewPages(publishedState(c.snapshot()!.state)).length;
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(true);
+    expect(asked).toHaveLength(3);
+    expect(r.warnings).toContain(`${pages} pages could not be opened in a browser to check that they still show their content once they start, such as “Home” (/): the export ran out of time to open it.`);
+    await expect(fetch(asked[0])).rejects.toThrow();
   });
 });
 
@@ -230,7 +264,8 @@ describe('what the export says of a page that fails in a browser', () => {
     expect(stop.warnings[0]).toBe('The browser reported: Error: https://svelte.dev/e/effect_update_depth_exceeded');
     expect(stop.warnings[1]).toMatch(/^It shows 2 code components\. .*the “Opening hours” component \(src\/lib\/siteorigin\/custom\/[^)]+\), the “Visit counter” component/);
     expect(stop.warnings[2]).toBe('“About” (/about/) shows it too.');
-    expect(stop.details).toContain('Page: “About” (/about/)\nShown: Error 500\nBrowser errors: none');
+    expect(stop.details).toContain('Page: “About” (/about/)\nShown: Error 500\nCode components: none\nBrowser errors: none');
+    expect(stop.details).toMatch(/Page: “Home” \(\/\)\nShown: Error 500\nCode components: Opening hours \(src\/lib\/siteorigin\/custom\/[^)]+\), Visit counter \(/);
   });
 
   it('says so when the browser was told of no error, and when the page shows no code component', () => {

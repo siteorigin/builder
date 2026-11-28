@@ -4402,6 +4402,8 @@ export class Controller {
   pageCheck: ((url: string, signal: AbortSignal) => Promise<PageCheck>) | null = null;
   /** The website exports opening their pages, called off when their project closes. */
   private pageChecks = new Set<AbortController>();
+  /** How long a website export spends opening its pages, at most (tests shorten it). */
+  pageChecksMs = PAGE_CHECKS_MS;
   /** The review edition being captured, called off when its project closes. */
   private reviewCapture: AbortController | null = null;
 
@@ -5221,10 +5223,11 @@ export class Controller {
   }
 
   /**
-   * Open each page of the website built in `out` in a browser (pageCheck), a few at a time and for PAGE_CHECKS_MS at
+   * Open each page of the website built in `out` in a browser (pageCheck), a few at a time and for pageChecksMs at
    * most, served as the exported website's preview serves it: a stop naming the first that shows the site's error
-   * page once started, or a warning for those that could not be opened. Nothing when there is no browser to open
-   * them in, or the project closes meanwhile (the export then stops as it is put in place).
+   * page once started, or a warning for those that could not be opened. Once a page has failed, or the time is up,
+   * the checks under way are called off and no more are begun. Nothing when there is no browser to open them in, or
+   * the project closes meanwhile (the export then stops as it is put in place).
    */
   private async openBuiltPages(s: ProjectSession, out: string, live: ProjectState): Promise<{ stop?: { message: string; warnings: string[]; details: string }; unchecked?: string }> {
     const check = this.pageCheck;
@@ -5233,6 +5236,12 @@ export class Controller {
     const job = new AbortController();
     this.pageChecks.add(job);
     const gone = () => job.signal.aborted || this.session !== s;
+    // Ends the checks under way: the project closed, a page failed, or the time is up.
+    const rest = new AbortController();
+    const endRest = () => rest.abort();
+    job.signal.addEventListener('abort', endRest, { once: true });
+    let timeUp = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let server: string | undefined;
     try {
       try {
@@ -5242,16 +5251,34 @@ export class Controller {
       }
       if (gone()) return {};
       const at = server;
-      const deadline = Date.now() + PAGE_CHECKS_MS;
+      timer = setTimeout(() => {
+        timeUp = true;
+        rest.abort();
+      }, this.pageChecksMs);
       let failed = false;
+      const outOfTime = (page: ReviewPage) => ({ page, check: { status: 'unchecked' as const, detail: 'the export ran out of time to open it' } });
       const checks = await inBatches(
         pages,
         async (page): Promise<{ page: ReviewPage; check: PageCheck } | null> => {
-          // Once a page has failed the export stops: the rest are not opened.
           if (failed || gone()) return null;
-          if (Date.now() >= deadline) return { page, check: { status: 'unchecked', detail: 'the export ran out of time to open it' } };
-          const r = await check(new URL(routeUrl(page.route).slice(1), at).href, job.signal).catch((e: unknown): PageCheck => ({ status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` }));
-          if (r.status === 'error-page') failed = true;
+          if (timeUp) return outOfTime(page);
+          // A check that does not end when called off is not waited for.
+          let onEnd: (() => void) | undefined;
+          const ended = new Promise<PageCheck>((resolve) => {
+            onEnd = () => resolve({ status: 'unchecked', detail: 'The check was stopped.' });
+            rest.signal.addEventListener('abort', onEnd, { once: true });
+          });
+          const r = await Promise.race([
+            check(new URL(routeUrl(page.route).slice(1), at).href, rest.signal).catch((e: unknown): PageCheck => ({ status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` })),
+            ended
+          ]).finally(() => rest.signal.removeEventListener('abort', onEnd!));
+          if (r.status === 'error-page') {
+            failed = true;
+            rest.abort();
+            return { page, check: r };
+          }
+          // Called off: the export stops for another page or its project, or ran out of time for this one.
+          if (rest.signal.aborted) return failed || gone() ? null : outOfTime(page);
           return { page, check: r };
         },
         PAGE_CHECKS_AT_ONCE
@@ -5262,6 +5289,9 @@ export class Controller {
       const unchecked = checks.flatMap((c) => (c?.check.status === 'unchecked' ? [{ page: c.page, detail: c.check.detail }] : []));
       return { unchecked: uncheckedPagesWarning(unchecked) ?? undefined };
     } finally {
+      clearTimeout(timer);
+      job.signal.removeEventListener('abort', endRest);
+      rest.abort();
       this.pageChecks.delete(job);
       if (server) this.previews.stop(server);
     }

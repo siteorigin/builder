@@ -1870,7 +1870,18 @@ export function brokenPagesStop(live: ProjectState, broken: Array<{ page: Review
   const others = broken.slice(1).map((b) => namedPage(b.page));
   if (others.length === 1) warnings.push(`${others[0]} shows it too.`);
   else if (others.length) warnings.push(`${others.length} other pages show it too: ${others.slice(0, COMPONENTS_LISTED).join(', ')}${others.length > COMPONENTS_LISTED ? ', and more' : ''}.`);
-  const details = [message, '', ...broken.flatMap((b) => [`Page: ${namedPage(b.page)}`, `Shown: ${b.check.heading}`, ...(b.check.logged.length ? ['Browser errors:', ...b.check.logged] : ['Browser errors: none']), ''])].join('\n').trimEnd();
+  // The report names every candidate of every page, however many the warnings sum up.
+  const report = (b: (typeof broken)[number]) => {
+    const shown = routeCodeComponents(live, b.page.route);
+    return [
+      `Page: ${namedPage(b.page)}`,
+      `Shown: ${b.check.heading}`,
+      shown.length ? `Code components: ${shown.map((c) => `${c.name} (${c.file})`).join(', ')}` : 'Code components: none',
+      ...(b.check.logged.length ? ['Browser errors:', ...b.check.logged] : ['Browser errors: none']),
+      ''
+    ];
+  };
+  const details = [message, '', ...broken.flatMap(report)].join('\n').trimEnd();
   return { message, warnings, details };
 }
 
