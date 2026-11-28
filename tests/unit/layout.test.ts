@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_MIN, DEFAULT_VIEWPORT, FRAME_KEY_STEP, INSERT_NARROW_MAX, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, VIEWPORT_LIMITS, ZOOM_LEVELS, clampViewport, fitPanels, frameKeyResize, narrowLayout, panelMax, resizePanel, restorePanelWidth, restoreViewport, restoreZoom, toolbarTier } from '../../src/renderer/src/lib/layout';
+import { CANVAS_MIN, DEFAULT_VIEWPORT, FRAME_KEY_STEP, INSERT_NARROW_MAX, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, VIEWPORT_LIMITS, ZOOM_LEVELS, clampViewport, fitPanels, frameKeyResize, narrowLayout, panelMax, resizePanel, restorePanelWidth, restoreViewport, restoreZoom, toolbarTier, MAC_TOOLBAR_CHROME } from '../../src/renderer/src/lib/layout';
 
 const canvas = (win: number, w: { left: number; right: number }) => win - RAIL_WIDTH - w.left - w.right;
 
@@ -134,50 +134,65 @@ describe('splitter limits', () => {
 });
 
 describe('toolbar tiers', () => {
+  const mac = MAC_TOOLBAR_CHROME;
   it('compacts the toolbar at the 1100px minimum on macOS, and shows it all from 1392px', () => {
-    expect(toolbarTier(1100, true)).toBe('compact');
-    expect(toolbarTier(1391, true)).toBe('compact');
-    expect(toolbarTier(1392, true)).toBe('full');
-    expect(toolbarTier(1440, true)).toBe('full');
+    expect(toolbarTier(1100, mac)).toBe('compact');
+    expect(toolbarTier(1391, mac)).toBe('compact');
+    expect(toolbarTier(1392, mac)).toBe('full');
+    expect(toolbarTier(1440, mac)).toBe('full');
   });
 
   it('shows a live session’s wider toolbar in full only once it fits (#1342)', () => {
     // A host's live Share pill, with its time, people and waiting counts.
-    expect(toolbarTier(1511, true, 'hosting')).toBe('compact');
-    expect(toolbarTier(1512, true, 'hosting')).toBe('full');
+    expect(toolbarTier(1511, mac, 'hosting')).toBe('compact');
+    expect(toolbarTier(1512, mac, 'hosting')).toBe('full');
     // A guest's Notes, session pill and Leave session: a 1440px window gives Leave session its icon, not its words.
-    expect(toolbarTier(1440, true, 'guest')).toBe('compact');
-    expect(toolbarTier(1527, true, 'guest')).toBe('compact');
-    expect(toolbarTier(1528, true, 'guest')).toBe('full');
+    expect(toolbarTier(1440, mac, 'guest')).toBe('compact');
+    expect(toolbarTier(1527, mac, 'guest')).toBe('compact');
+    expect(toolbarTier(1528, mac, 'guest')).toBe('full');
     // The compact toolbar has room for a guest's at the minimum window, so the More menu comes no sooner.
-    expect(toolbarTier(1100, true, 'guest')).toBe('compact');
-    expect(toolbarTier(1080, true, 'guest')).toBe('compact');
-    expect(toolbarTier(1079, true, 'guest')).toBe('overflow');
+    expect(toolbarTier(1100, mac, 'guest')).toBe('compact');
+    expect(toolbarTier(1080, mac, 'guest')).toBe('compact');
+    expect(toolbarTier(1079, mac, 'guest')).toBe('overflow');
     // A host's, beside a three-option Mode group (#1583), moves Zoom and Settings into More a little sooner.
-    expect(toolbarTier(1120, true, 'hosting')).toBe('compact');
-    expect(toolbarTier(1119, true, 'hosting')).toBe('overflow');
-    expect(toolbarTier(1100, true, 'hosting')).toBe('overflow');
+    expect(toolbarTier(1120, mac, 'hosting')).toBe('compact');
+    expect(toolbarTier(1119, mac, 'hosting')).toBe('overflow');
+    expect(toolbarTier(1100, mac, 'hosting')).toBe('overflow');
   });
 
   it('moves controls into the More menu only below the compact toolbar’s room', () => {
-    expect(toolbarTier(1080, true)).toBe('compact');
-    expect(toolbarTier(1079, true)).toBe('overflow');
+    expect(toolbarTier(1080, mac)).toBe('compact');
+    expect(toolbarTier(1079, mac)).toBe('overflow');
     // A zoomed-in interface at the minimum window: 1100px at 110% is 1000 CSS pixels.
-    expect(toolbarTier(1000, true)).toBe('overflow');
+    expect(toolbarTier(1000, mac)).toBe('overflow');
   });
 
-  it('gives Windows and Linux the room macOS keeps for its window buttons: 70px compact, 30px in full', () => {
-    expect(toolbarTier(1362, false)).toBe('full');
-    expect(toolbarTier(1361, false)).toBe('compact');
-    expect(toolbarTier(1482, false, 'hosting')).toBe('full');
-    expect(toolbarTier(1481, false, 'hosting')).toBe('compact');
-    expect(toolbarTier(1050, false, 'hosting')).toBe('compact');
-    expect(toolbarTier(1049, false, 'hosting')).toBe('overflow');
-    expect(toolbarTier(1498, false, 'guest')).toBe('full');
-    expect(toolbarTier(1497, false, 'guest')).toBe('compact');
-    expect(toolbarTier(1100, false)).toBe('compact');
-    expect(toolbarTier(1010, false)).toBe('compact');
-    expect(toolbarTier(1009, false)).toBe('overflow');
+  it('takes the menu button’s room on Linux, and the caption buttons’ too on Windows (#1355)', () => {
+    const linux = { start: 36, end: 0, fullStart: 36 };
+    expect(toolbarTier(1398, linux)).toBe('full');
+    expect(toolbarTier(1397, linux)).toBe('compact');
+    expect(toolbarTier(1518, linux, 'hosting')).toBe('full');
+    expect(toolbarTier(1517, linux, 'hosting')).toBe('compact');
+    expect(toolbarTier(1086, linux, 'hosting')).toBe('compact');
+    expect(toolbarTier(1085, linux, 'hosting')).toBe('overflow');
+    expect(toolbarTier(1534, linux, 'guest')).toBe('full');
+    expect(toolbarTier(1533, linux, 'guest')).toBe('compact');
+    expect(toolbarTier(1100, linux)).toBe('compact');
+    expect(toolbarTier(1046, linux)).toBe('compact');
+    expect(toolbarTier(1045, linux)).toBe('overflow');
+    // Windows's three 46px caption buttons: the minimum window has room only for the overflow toolbar.
+    const windows = { start: 36, end: 138, fullStart: 36 };
+    expect(toolbarTier(1536, windows)).toBe('full');
+    expect(toolbarTier(1535, windows)).toBe('compact');
+    expect(toolbarTier(1672, windows, 'guest')).toBe('full');
+    expect(toolbarTier(1671, windows, 'guest')).toBe('compact');
+    expect(toolbarTier(1184, windows)).toBe('compact');
+    expect(toolbarTier(1183, windows)).toBe('overflow');
+    expect(toolbarTier(1224, windows, 'hosting')).toBe('compact');
+    expect(toolbarTier(1223, windows, 'hosting')).toBe('overflow');
+    expect(toolbarTier(1100, windows)).toBe('overflow');
+    // Full screen hides the caption buttons, and their room comes back.
+    expect(toolbarTier(1398, { ...windows, end: 0 })).toBe('full');
   });
 });
 
