@@ -118,12 +118,13 @@ describe.skipIf(!browserInstalled)(
       );
 
     describe.each(THEMES)("%s", (theme) => {
-      // The last case narrows the theme's gutter to 16 px, which leaves the menu's rows less than a focus ring's room.
+      // The last two cases narrow the theme's gutter to 16 px, which leaves the menu's rows less than a focus ring's room.
       it.each([
         [false, 320, 720, ""],
         [false, 390, 844, ""],
         [true, 820, 1180, ""],
         [false, 320, 720, "16px"],
+        [true, 820, 1180, "16px"],
       ])(
         "compact %s, %ipx: each focused control in the open menu keeps its whole outline inside it %s",
         async (compact, width, height, gutter) => {
@@ -161,6 +162,10 @@ describe.skipIf(!browserInstalled)(
                 `getComputedStyle(document.querySelector('.so-header__list')).marginInlineEnd`,
               ),
             ).toBe("0px");
+            // The controls the open menu shows, which Tab has to reach every one of.
+            const controls = (await page.evaluate(
+              `[...document.querySelectorAll('.so-header__nav :is(a[href], button)')].filter((el) => el.getClientRects().length).length`,
+            )) as number;
             const clipped: string[] = [];
             let visited = 0;
             for (let press = 0; press < 40; press++) {
@@ -192,7 +197,8 @@ describe.skipIf(!browserInstalled)(
                   `${at.name}: ${at.left.toFixed(1)}px start, ${at.right.toFixed(1)}px end`,
                 );
             }
-            expect(visited).toBeGreaterThan(2);
+            expect(controls).toBeGreaterThan(2);
+            expect(visited).toBe(controls);
             expect(clipped).toEqual([]);
           } finally {
             await page.close();
