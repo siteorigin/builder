@@ -2,6 +2,7 @@ import { axesOf, selectedVariants } from '@shared/variants';
 import { storedBrowse } from '@shared/collection-browse';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
+import { searchService } from '@shared/site-search';
 import { hasCode } from '@shared/site-code';
 import { fathomSiteId } from '@shared/integrations';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
@@ -226,6 +227,8 @@ export function projectSummary(state: ProjectState, revision: number) {
       notFoundPage: notFoundCopy(state.site),
       // What the website offers AI agents beside its pages (site.update llmsTxt, llmsFull, markdownMirrors, llmsSummary, webmcp).
       ...agentDiscoverySummary(state.site),
+      // Which search Site search runs, once it is not the site's own index (site.update search).
+      ...(searchService(state.site) ? { search: { provider: 'searchsocket', ...searchService(state.site) } } : {}),
       // Which crawlers robots.txt keeps out, as the website reads the policy, once it differs from the default (site.update crawlerPolicy).
       ...crawlerPolicySummary(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.

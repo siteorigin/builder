@@ -138,7 +138,7 @@ try {
   assert.equal(await language.getAttribute('placeholder'), 'English', 'an empty language shows, by name, the site language it uses');
   const languageSection = win.locator('#dock-panel-inspect .section', { has: win.locator('[aria-label="Page language"]') });
   // Still in the site language like every other page, the copy has nothing to link yet, and says why in place of the button.
-  assert.match(await languageSection.innerText(), /pages are in English too/, 'nothing can be linked while every page is English');
+  assert.match(await languageSection.innerText(), /No page in another language yet/, 'nothing can be linked while every page is English');
   assert.equal(await win.locator('#dock-panel-inspect [data-link-translation]').count(), 0, 'no Link button while nothing can be linked');
   // Typed by name, saved as the code.
   await language.fill('French');

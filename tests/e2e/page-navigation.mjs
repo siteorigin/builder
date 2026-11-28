@@ -79,10 +79,10 @@ await pageRow('Lookbook').click();
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 const titleField = win.locator('#dock-panel-inspect').getByRole('textbox', { name: 'Title', exact: true });
 await titleField.fill('Gallery');
-// Leaving the field for the next one commits the rename, and focus stays where the author put it.
+// Leaving the field for the next control commits the rename, and focus stays where the author put it.
 await titleField.press('Tab');
 await offer.waitFor();
-assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Page address', 'focus moved on to the address');
+assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'About Address', 'focus moved to the address explanation');
 await offer.getByRole('checkbox', { name: 'Header menu link' }).uncheck();
 await offer.getByRole('button', { name: 'Update label' }).click();
 await offer.waitFor({ state: 'detached' });

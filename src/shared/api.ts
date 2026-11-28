@@ -1968,6 +1968,8 @@ export interface BuilderApi {
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   previewControlResult(requestId: string, result: PreviewControlResult): void;
+  /** One step of the editor's, for the app's trace on this computer (src/main/trace.ts): short text, never sent anywhere. */
+  trace(area: string, message: string): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */

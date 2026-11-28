@@ -193,6 +193,7 @@ const api: BuilderApi = {
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
   componentPreviewResult: (requestId, results) => ipcRenderer.send('component-preview:result', requestId, results),
   previewControlResult: (requestId, result) => ipcRenderer.send('preview-control:result', requestId, result),
+  trace: (area, message) => ipcRenderer.send('app:trace', area, message),
   menuReady: () => ipcRenderer.send('menu:ready'),
   menuReceived: (id) => ipcRenderer.send('menu:received', id),
   popupMenu: (at) => ipcRenderer.invoke('menu:popup', at),

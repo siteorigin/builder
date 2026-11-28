@@ -24,7 +24,7 @@ export interface MainLogOptions {
   now?: () => Date;
 }
 
-export type LogLevel = 'start' | 'build' | 'error' | 'warn' | 'uncaught';
+export type LogLevel = 'start' | 'build' | 'error' | 'warn' | 'uncaught' | 'trace';
 
 export interface MainLog {
   readonly file: string;

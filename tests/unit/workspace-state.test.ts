@@ -2,7 +2,7 @@
  * Workspace state (open page, tabs, unsent AI drafts) belongs to the project it was saved in. Creating or opening
  * another project starts from that project's own state, and a save meant for one project never lands in another.
  */
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -169,6 +169,36 @@ describe('workspace state per project', () => {
     c.saveLocalState({ chatDrafts: {} }, opening(c));
     await c.close();
     expect(onDisk(a).chatDrafts).toEqual({});
+  });
+
+  it('opens a project whose workspace file holds no object (null, a list, a number, text) as one with no saved state', async () => {
+    const { c, parent } = setup();
+    const sent: Array<[string, unknown]> = [];
+    const send = c.send.bind(c);
+    c.send = (channel, payload) => {
+      sent.push([channel, payload]);
+      send(channel, payload);
+    };
+    /** What the opening sent the editor once attached in the background: its first snapshot, or why it was closed again. */
+    const outcome = async () => {
+      const failed = () => sent.filter(([ch, p]) => ch === 'runtime:status' && (p as { state?: string })?.state === 'error').map(([, p]) => (p as { message?: string }).message);
+      const shown = () => sent.some(([ch]) => ch === 'project:changed');
+      await vi.waitFor(() => expect(shown() || failed().length > 0).toBe(true));
+      return { shown: shown(), failed: failed() };
+    };
+    // A new project from a starter reaches the editor.
+    const dir = await create(c, parent, 'Harbour Lane Studio');
+    expect(await outcome()).toEqual({ shown: true, failed: [] });
+    for (const text of ['null', '[]', '42', '"pages"']) {
+      await c.close();
+      writeFileSync(workspaceFile(dir), text);
+      sent.length = 0;
+      expect(await c.open(dir)).toEqual({ ok: true });
+      // The editor gets the project, and the project stays open.
+      expect(await outcome(), text).toEqual({ shown: true, failed: [] });
+      expect(c.snapshot()?.dir, text).toBe(dir);
+      expect(c.snapshot()!.localState, text).toEqual({});
+    }
   });
 
   it('restores the preview width and zoom chosen in a project when it reopens', async () => {

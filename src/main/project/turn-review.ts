@@ -166,6 +166,7 @@ function siteChanges(a: Obj, b: Obj, state: ProjectState): StepChange[] {
   const out = SITE_FIELDS.map(([key, name]) => valueChange(owner, name, a[key], b[key])).filter((c): c is StepChange => !!c);
   if (!same(a.favicon, b.favicon)) out.push({ owner, property: 'Site icon', change: 'changed' });
   if (!same(a.socialImage, b.socialImage)) out.push({ owner, property: 'Sharing image', change: 'changed' });
+  if (!same(a.search, b.search)) out.push({ owner, property: 'Site search', change: 'changed' });
   if (a.homePageId !== b.homePageId) out.push({ owner, property: 'Home page', change: 'changed' });
   if (!same(a.pageOrder, b.pageOrder)) {
     const [p, q] = [Array.isArray(a.pageOrder) ? a.pageOrder : [], Array.isArray(b.pageOrder) ? b.pageOrder : []];
