@@ -145,10 +145,19 @@ await closeSettings(settings);
 assert.equal(await saved(), 'system', 'System is saved');
 await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), `on System the toggle shows this computer’s ${system}`));
 await inTopRight('with recent projects');
-// In the tab order, straight after the rail.
+// The page's recent project comes before the appearance switch in keyboard order.
 await win.locator('.welcome-foot').getByRole('button', { name: 'Settings' }).focus();
 await win.keyboard.press('Tab');
-assert.ok(await toggle().evaluate((el) => el === document.activeElement), 'Tab moves from the rail to the toggle');
+assert.ok(await win.locator('.recent-card').first().evaluate((el) => el === document.activeElement), 'Tab moves from the rail into the page');
+let reachedToggle = false;
+for (let i = 0; i < 16; i++) {
+  if (await toggle().evaluate((el) => el === document.activeElement)) {
+    reachedToggle = true;
+    break;
+  }
+  await win.keyboard.press('Tab');
+}
+assert.ok(reachedToggle, 'Tab reaches the appearance switch after the page');
 await win.keyboard.press('Space');
 await toggledTo(other, 'Space');
 await win.keyboard.press('Enter');

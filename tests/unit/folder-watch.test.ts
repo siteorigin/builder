@@ -5,8 +5,7 @@
  * run on every platform, and on Linux against the default.
  */
 import fs, { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { watchTree, type FolderWatch } from '../../src/main/folder-watch';
 
@@ -37,7 +36,9 @@ afterEach(() => {
 });
 
 function temp() {
-  const d = realpathSync(mkdtempSync(join(tmpdir(), 'so-watch-')));
+  const scratch = resolve('.tmp');
+  mkdirSync(scratch, { recursive: true });
+  const d = realpathSync(mkdtempSync(join(scratch, 'so-watch-')));
   dirs.push(d);
   return d;
 }
@@ -65,7 +66,7 @@ async function untilWatching(dir: string, events: Array<string | null>) {
           touched = Date.now();
           writeFileSync(join(dir, `probe-${touched}.txt`), String(touched));
         }
-        throw new Error('The watch has not reported yet.');
+        throw new Error(`The watch has not reported yet: ${JSON.stringify(events.slice(-20))}`);
       }
     },
     { timeout: 15_000, interval: 50 }
@@ -85,7 +86,7 @@ async function reported(events: Array<string | null>, dir: string, file: string)
           rmSync(join(dir, file), { force: true });
           writeFileSync(join(dir, file), String(wrote));
         }
-        throw new Error(`${file} was not reported.`);
+        throw new Error(`${file} was not reported: ${JSON.stringify(events.slice(-20))}`);
       }
     },
     { timeout: 15_000, interval: 50 }
