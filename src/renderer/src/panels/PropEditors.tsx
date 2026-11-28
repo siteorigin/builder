@@ -825,6 +825,9 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     latest.current = next;
     onChange(next);
   };
+  // The value shown when the description began to be typed. Its save is checked against where typing began, and held
+  // when the image changed since (another window replaced it): then nothing builds on it (see commitDraft).
+  const typedOn = useRef<ImageValue | null>(null);
   // A description carried over from the previous image may no longer be true; say so until it is checked or edited.
   const [, redraw] = useState(0);
   const project = snapshot?.workspaceKey;
@@ -1091,7 +1094,16 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             limit={TEXT_LIMITS.imageAlt}
             keep={home ? `${home.key}|alt` : undefined}
             keepWhile={home?.alive}
-            onCommit={(alt) => (setCarried(false), emit({ ...latest.current, alt }))}
+            onDirty={(dirty) => {
+              if (!dirty) typedOn.current = null;
+              else typedOn.current ??= v;
+            }}
+            onCommit={(alt) => {
+              setCarried(false);
+              const next = { ...latest.current, alt };
+              if (!typedOn.current || sameImage(typedOn.current, v)) emit(next);
+              else onChange(next);
+            }}
           />
         </Field>
       )}

@@ -32,6 +32,8 @@ const ENTRY = [
   'function Host({ state, start }) {',
   '  const [value, setValue] = useState(start);',
   "  window.value = () => value;",
+  // Another window's change, heard while the author types.
+  '  window.replace = setValue;',
   '  return h(ImageEditor, { value, state, title: "Image", onChange: (v) => { window.writes.push(v); setValue((was) => ({ ...was })); setTimeout(() => setValue(v), 150); } });',
   '}',
   'window.image = (state, start) => {',
@@ -124,6 +126,14 @@ describe.skipIf(!browserInstalled)('An image description still being typed survi
     await decorative().click();
     await expect.poll(settled).toEqual({ assetId: 'hero', alt: 'A new description', decorative: false });
     expect(await description().inputValue()).toBe('A new description');
+  });
+
+  it('builds the switch on an image another window put there while the description was typed, not on the typing', async () => {
+    await description().fill('Red barn');
+    await page.evaluate("window.replace({ assetId: 'hero', alt: 'City skyline' })");
+    await decorative().click();
+    // The description's save is checked against where typing began (and held by the project); the switch is not.
+    expect((await writes()).at(-1)).toEqual({ assetId: 'hero', alt: 'City skyline', decorative: true });
   });
 
   it('keeps the new description when the image is removed straight from the field', async () => {
