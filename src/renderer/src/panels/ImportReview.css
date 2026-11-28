@@ -78,6 +78,7 @@
   /* With no details switch to show it whole, an address wraps rather than being cut. */
   .post-import-lines.wrap .import-review-meta { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .post-import-missing ul { padding-left: 20px; }
+  .post-import-menu { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 13px; color: var(--text); }
   /* Every line's details, on demand: the whole address wraps instead of being cut. */
   .post-import-details { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 12px; color: var(--text-2); }
   .post-import-line.full { flex-direction: column; gap: 2px; }

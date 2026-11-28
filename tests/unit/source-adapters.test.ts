@@ -399,6 +399,23 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(v5.seen[0].url.pathname).toBe('/api/articles');
   });
 
+  it('Strapi: asks for the count of pages, which a server with counts off by default gives only when asked', async () => {
+    // Strapi 5 with rest.withCount off: page and pageSize always, pageCount only for pagination[withCount]=true.
+    const counting = await server((req, res) => {
+      const page = Number(req.url.searchParams.get('pagination[page]'));
+      const counted = req.url.searchParams.get('pagination[withCount]') === 'true';
+      send(res, { data: page <= 2 ? [{ id: page, documentId: `doc-${page}`, title: `Post ${page}` }] : [], meta: { pagination: { page, pageSize: 100, ...(counted ? { pageCount: 2, total: 150 } : {}) } } });
+    });
+    // A Site address that turns the count off is overruled: without it no read can be known whole.
+    const read = await run({ adapter: 'strapi', config: { url: `${counting.origin}/?pagination[withCount]=false&locale=en`, resource: 'articles' } });
+    expect(read.ok && read.records.map((r) => r.externalId)).toEqual(['doc-1', 'doc-2']);
+    expect(counting.seen.map((r) => r.url.searchParams.getAll('pagination[withCount]'))).toEqual([['true'], ['true']]);
+    expect(counting.seen[0].url.searchParams.get('locale')).toBe('en');
+    // A server that still gives no count is refused rather than read in part.
+    const silent = await server((req, res) => send(res, { data: [{ id: 1, title: 'One' }], meta: { pagination: { page: Number(req.url.searchParams.get('pagination[page]')), pageSize: 100 } } }));
+    expect(await run({ adapter: 'strapi', config: { url: silent.origin, resource: 'articles' } })).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
   it('WordPress: reads every page its headers count, with each post’s featured image, author and words as text', async () => {
     const api = await server((req, res) => {
       const page = Number(req.url.searchParams.get('page'));
@@ -565,6 +582,31 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { featuredImageUrl: 'img' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 1’s featured image at img is not a picture’s web address' });
     const words = await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { values: { bio: 'bio' } }, fields: { bio: 'richtext' }, mode: 'sample' });
     expect(words.ok && words.records[0].values).toEqual({ bio: [{ type: 'p', spans: [{ text: 'Hi' }] }] });
+  });
+
+  // A date there that cannot be read is said, by record and the format it takes, never published as the sync's day (#1498).
+  it('refuses a source date it cannot read, where a missing one is left to the fallback', async () => {
+    const dates: Record<string, unknown> = { slashed: '18/11/2026', http: 'Wed, 18 Nov 2026 13:30:00 GMT', rolled: '2026-02-30', listed: ['2026-11-18'], trailing: '2026-11-18garbage', iso: '2026-11-18T13:30:00Z', local: '2026-11-18 13:30:00', lower: '2026-11-18t13:30:00z', day: '2026-11-18', blank: '  ', none: null };
+    const api = await server((req, res) => send(res, [{ id: 1, title: 'A' }, { id: 2, title: 'B', timestamp: dates[req.url.pathname.slice(1)] }]));
+    const at = (name: string, mapping: Partial<SyncRequest['mapping']> = { publishedAt: 'timestamp' }) => run({ adapter: 'rest', config: { url: `${api.origin}/${name}` }, mapping });
+    for (const name of ['slashed', 'http', 'rolled', 'listed', 'trailing'])
+      expect(await at(name), name).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s published date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    expect(await at('slashed', { updatedAt: 'timestamp' })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s updated date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    // The value itself is never repeated: what a source sends may hold what it was sent.
+    const shown = await at('slashed');
+    expect(!shown.ok && shown.detail).not.toContain('18/11');
+    const iso = await at('iso');
+    expect(iso.ok && iso.records.map((r) => r.publishedAt)).toEqual([undefined, '2026-11-18']);
+    for (const name of ['local', 'lower', 'day']) {
+      const read = await at(name);
+      expect(read.ok && read.records.map((r) => r.publishedAt), name).toEqual([undefined, '2026-11-18']);
+    }
+    for (const name of ['blank', 'none']) {
+      const empty = await at(name);
+      expect(empty.ok && empty.records.map((r) => r.publishedAt), name).toEqual([undefined, undefined]);
+    }
+    // A date field names the format it takes too.
+    expect(await run({ adapter: 'rest', config: { url: `${api.origin}/slashed` }, mapping: { values: { when: 'timestamp' } }, fields: { when: 'date' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s when at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
   });
 
   // A literal backslash is two on the wire (a quoted pair), so the quote after them closes the title (#1530).

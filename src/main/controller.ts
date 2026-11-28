@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -468,6 +468,8 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
+  /** Look at what the watches were told while an AI request held the project, now that it has ended (#1533). */
+  private lookAfterAi: () => void = () => undefined;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -691,7 +693,7 @@ export class Controller {
       history: s.historyInfo(),
       versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s), ...s.refusedSourceDiagnostics()],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -714,6 +716,11 @@ export class Controller {
   broadcast() {
     this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /** An AI request that held the project ended: what the file watches were told meanwhile is looked at. */
+  aiEnded() {
+    this.lookAfterAi();
   }
 
   /**
@@ -1662,6 +1669,10 @@ export class Controller {
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
     });
+    // An outside edit of a code component refused for its errors, or one no longer refused, is told at once (#1533).
+    session.on('refused-sources', () => {
+      if (this.session === session) this.broadcast();
+    });
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
@@ -2430,6 +2441,13 @@ export class Controller {
     const onChange = (path: string | null) => {
       if (path === null) owed = true;
       else named.add(path);
+      lookSoon();
+    };
+    // A change told while an AI request held the project waited for it, with no later one to bring it to a look.
+    this.lookAfterAi = () => {
+      if (current() && (named.size || owed)) lookSoon();
+    };
+    const lookSoon = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         // The watch has seen the documents change and gone quiet: what follows is the look at them.
@@ -2600,6 +2618,8 @@ export class Controller {
     this.watchers = [];
     this.unwatched.clear();
     this.watchGeneration++;
+    // Its watches' look holds the closed session: let it go with them.
+    this.lookAfterAi = () => undefined;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);
@@ -3059,7 +3079,7 @@ export class Controller {
   }
 
   /** Restore saved version `id` as reviewed at `revision` with the `reviewed` files to put back, in the opening `key` only. */
-  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, key: string): Promise<RestoreVersionResult> {
+  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, key: string): Promise<RestoreVersionResult> {
     const s = this.openedAs(key);
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
@@ -3733,23 +3753,23 @@ export class Controller {
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
    * does. Refused once the project has changed since the review.
    */
-  commitPostImport(id: string, opening: string): Promise<PostImportResult> {
-    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
   }
 
-  private async commitPostImportNow(id: string, opening: string): Promise<PostImportResult> {
+  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     // Taken, once: its plan on disk goes whatever comes of it.
     this.postImport = null;
     try {
-      return await this.commitPending(pending, opening);
+      return await this.commitPending(pending, opening, addToNavigation);
     } finally {
       this.dropReview(pending.stored);
     }
   }
 
-  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string): Promise<PostImportResult> {
+  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
     const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
@@ -3819,12 +3839,15 @@ export class Controller {
         if (!open()) return closed;
         if (this.aiBusy()) return busy;
         const n = plan.posts.length;
-        const r = await s.apply({ operations: planOperations(plan, assetIds, added), expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        const operations = planOperations(plan, assetIds, added, { addToNavigation });
+        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
         if (!r.ok) {
           if (r.error?.code === 'STALE_REVISION') return stale;
           return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
-        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
+        // Whether the blog's link joined the header menu, when one was asked for.
+        const joined = r.results?.[operations.findIndex((o) => o.type === 'collection.create')]?.addedToNavigation;
+        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
       })
     );
   }
@@ -4363,7 +4386,7 @@ export class Controller {
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
-      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
       // just before it is delivered, once everything said about the copy's files has looked at them where they are.
       const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
@@ -5233,7 +5256,7 @@ export class Controller {
     if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
     if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    warn(...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     warn(...missingUnusedWarnings(missingFiles));
