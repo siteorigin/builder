@@ -44,6 +44,7 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
     missing: missing(skip),
     newTerms: newTerms(skip),
     redirects: plan.posts.filter((p) => p.redirectFrom).length,
+    redirectsPending: plan.posts.filter((p) => p.redirectFrom && p.draft).length,
     redirectsLost: plan.posts.filter((p) => p.lostAddress).length,
     skipped: plan.skipped,
     oldSiteLinks: skip.oldSiteLinks,

@@ -38,7 +38,10 @@
   .status-bar .problems.error:hover, .status-bar .preview-status.error:hover { background: var(--red-soft); box-shadow: inset 0 0 0 1px var(--red); }
   .status-bar .problems.warn:hover { background: var(--amber-soft); }
   .status-bar .preview-status.error, .status-bar .preview-status.error > svg:not(.go) { color: var(--red); font-weight: 600; }
-  .status-bar > button.read-only, .status-bar > button.read-only > svg:not(.go) { color: var(--amber); font-weight: 600; }
+  /* The host's project in a live session is a plain span, not a button: it shares the badge's layout, icon size and amber. */
+  .status-bar > span.read-only { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; font-size: 12px; }
+  .status-bar > span.read-only > svg { width: 13px; height: 13px; }
+  .status-bar > :is(button, span).read-only, .status-bar > :is(button, span).read-only > svg:not(.go) { color: var(--amber); font-weight: 600; }
   .status-bar > button.read-only:hover { background: var(--amber-soft); }
   .status-bar .preview-status .status-dot { margin: 0 3px; }
   .status-bar > button .go { width: 11px; height: 11px; margin-left: -2px; color: var(--text-3); }
@@ -205,7 +208,7 @@
   .seo-readiness .health-details-body { max-width: 72ch; line-height: 1.45; text-wrap: pretty; }
   /* Pages sharing one description: each page's own way to its fix, the names in one column and their actions lined
      up beside them, however long a name is (to a point). */
-  .seo-shared-pages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, min(28ch, max-content)) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+  .seo-shared-pages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: fit-content(28ch) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
   .seo-shared-pages > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
   .seo-shared-name { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
   .seo-shared-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }

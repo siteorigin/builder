@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
-import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
+import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
@@ -4167,7 +4167,7 @@ export class Controller {
    * image's file (one step that can be undone), so every use, with its alt text, shows it. A font takes only its very
    * file, put back the same way (#1425). `path` skips the dialog.
    */
-  async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }> {
+  async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string; entryId?: string; revision?: number; altReview?: AltReview[] }> {
     const s = this.session;
     if (!s) return { ok: false };
     if (s.readOnly) return { ok: false, message: s.readOnly.reason };
@@ -4218,7 +4218,10 @@ export class Controller {
         if (r.error?.code === 'STALE_REVISION' && still?.file === record.file && still.hash === record.hash) r = await relink(s.revision);
         if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
-        return { ok: true, message: document ? `Every link to ${name} now downloads ${basename(file)}.` : `${basename(file)} now shows wherever ${name} is used.` };
+        if (document) return { ok: true, message: `Every link to ${name} now downloads ${basename(file)}.` };
+        // Every use now shows the new picture with the alt text it had: those are listed for the author to check.
+        const altReview = (r.results?.[0]?.altReview ?? []) as AltReview[];
+        return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.`, entryId: r.entryId, revision: r.revision, altReview };
       } catch (e) {
         if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
         return { ok: false, message: (e as Error).message };

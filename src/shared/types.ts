@@ -243,6 +243,13 @@ interface PropBase {
    * placement or a binding. What counts as empty for each type is set out in shared/required.ts.
    */
   required?: boolean;
+  /**
+   * The default is sample content (see shared/sample-defaults.ts), which an author is expected to replace or knowingly
+   * keep before publishing, unlike a default ready to publish as it is ("Search", "Send message"). Only a text, rich
+   * text, list (its starting items) or table property, or a text or rich text field of a list (what a new item holds)
+   * or of an object, can be marked.
+   */
+  sampleDefault?: true;
 }
 export interface StringProp extends PropBase {
   type: 'string';

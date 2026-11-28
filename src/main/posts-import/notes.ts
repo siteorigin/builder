@@ -18,6 +18,10 @@ export function reportNotes(r: HtmlReport): string[] {
   if (r.forms) out.push(`Removed ${count(r.forms, 'form', 'forms')}.`);
   if (r.tables) out.push(`${cap(count(r.tables, 'table', 'tables'))} became plain lines of text.`);
   if (r.shortcodes.length) out.push(`Removed the shortcode${r.shortcodes.length === 1 ? '' : 's'} ${r.shortcodes.map((s) => `[${s}]`).join(', ')}.`);
+  if (r.code) out.push(`${cap(count(r.code, 'block of code or preformatted text', 'blocks of code or preformatted text'))} became ordinary text.`);
+  if (r.raised) out.push(`${cap(count(r.raised, 'superscript or subscript', 'superscripts and subscripts'))} became ordinary text on the line.`);
+  if (r.struck) out.push(`Kept ${count(r.struck, 'struck-through passage', 'struck-through passages')} as ordinary text, no longer struck through.`);
+  if (r.ticked) out.push(`Left out the tick of ${count(r.ticked, 'done task', 'done tasks')}: a check list shows every item alike.`);
   const empty = r.galleries.filter((g) => !g.pictures).length;
   if (empty) out.push(`Left out ${empty === 1 ? 'a gallery' : `${empty} galleries`}: the export lists no pictures for ${empty === 1 ? 'it' : 'them'}.`);
   const short = r.galleries.filter((g) => g.missing);
@@ -35,6 +39,9 @@ export function reportNotes(r: HtmlReport): string[] {
     out.push(`Left out ${what}: the export does not include ${missing === 1 ? 'it' : 'them'}. Export All content to bring pictures’ details along.`);
   }
   if (r.galleryOverflow) out.push(`Left out ${count(r.galleryOverflow, 'gallery picture', 'gallery pictures')} past the first ${MAX_POST_GALLERY_PICTURES}: a post brings at most ${MAX_POST_GALLERY_PICTURES} from its galleries.`);
+  if (r.footnotes) out.push(r.footnotes === 1 ? 'Its footnote is under a Footnotes heading, and its number no longer links to it.' : `Its ${r.footnotes} footnotes are a numbered list under a Footnotes heading, and their numbers no longer link to them.`);
+  if (r.lostFootnotes) out.push(r.lostFootnotes === 1 ? 'The text of its footnote was not in the export: its number is left without a note.' : `The text of ${r.lostFootnotes} of its footnotes was not in the export: their numbers are left without notes.`);
+  if (r.inPostLinks) out.push(`${r.inPostLinks === 1 ? 'A link to a place in the post itself (a note number, say) is plain words now' : `${r.inPostLinks} links to places in the post itself (its note numbers, say) are plain words now`}: an imported post can’t link within itself.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }
