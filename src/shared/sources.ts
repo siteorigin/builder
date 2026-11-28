@@ -5,6 +5,7 @@
  * own `source-secrets.json`, outside the project (see main/sources/secrets.ts).
  */
 import type { SourceDoc, SourceMapping, SourceRemoval } from './types';
+import type { SourceDroppedLinks } from './api';
 import { isCollectionId } from './collections';
 import { interpolatedSecretNames, isPath, secretTemplateProblem } from './source-paths';
 
@@ -17,6 +18,28 @@ export const SOURCE_REMOVALS: readonly SourceRemoval[] = ['unpublish', 'remove',
 /** The removal a source asks for: its own, or `unpublish`, which keeps every link to the entry working. */
 export function sourceRemoval(doc: { removal?: unknown } | undefined): SourceRemoval {
   return SOURCE_REMOVALS.includes(doc?.removal as SourceRemoval) ? (doc!.removal as SourceRemoval) : 'unpublish';
+}
+
+/** A record's title as a notice quotes it: one line with nothing a terminal acts on, cut at a character. */
+function quotedTitle(t: string): string {
+  const chars = Array.from(t.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim());
+  return `“${chars.length > 60 ? `${chars.slice(0, 59).join('').trimEnd()}…` : chars.join('')}”`;
+}
+
+/**
+ * What a source's dropped links are, in words for the author: how many links keep only their words and which records
+ * they are in, or for a converter (whose records name none) how many it read; and what puts them right (an entry's
+ * text is written over by every sync, so only the source, or the converter, can).
+ */
+export function droppedLinksText(d: SourceDroppedLinks): string {
+  const one = d.count === 1;
+  const links = one ? 'a link' : `${d.count} links`;
+  if (!d.records) return `The converter read ${links} with no address an entry can keep, so any entry given ${one ? 'it keeps only its' : 'them keeps only their'} words. Change ${one ? 'it' : 'them'} at the source or in the converter if ${one ? 'it' : 'they'} should go somewhere.`;
+  const titles = d.titles.map(quotedTitle);
+  const more = d.records - titles.length;
+  const names = !titles.length ? [d.records === 1 ? 'a record' : `${d.records} records`] : more > 0 ? [...titles, `${more} more`] : titles;
+  const where = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+  return `${one ? 'A link keeps only its' : `${d.count} links keep only their`} words, with no address an entry can keep (in ${where}). Change ${one ? 'it' : 'them'} at the source if ${one ? 'it' : 'they'} should go somewhere.`;
 }
 
 /** A kind of source, as a source names it: a lowercase word ("rest", "contentful"). */

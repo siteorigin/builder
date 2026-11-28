@@ -19,7 +19,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { tags as t } from '@lezer/highlight';
 import { Check, KeyRound, Plug, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { SourceSampleResult } from '@shared/api';
-import { SOURCE_ADAPTERS, SOURCE_REMOVALS, effectiveMapping, isBuiltInAdapter, isSecretName, sourceFingerprint } from '@shared/sources';
+import { SOURCE_ADAPTERS, SOURCE_REMOVALS, droppedLinksText, effectiveMapping, isBuiltInAdapter, isSecretName, sourceFingerprint } from '@shared/sources';
 import { api, toast, useStore } from '../store';
 import { ChoiceField, Disclosure, Field, Modal } from '../components/ui';
 import { ADAPTER_IDS, MAPPED_DETAILS, draftSecretNames, sourceDraft, sourceForm, sourceOfCollection, type PairRow, type SourceForm } from '../lib/sources';
@@ -996,6 +996,12 @@ export function SourceDialog({ collectionId, onClose }: { collectionId: string; 
               </p>
             )}
             {sample.result.total === 0 && <p className="sd-part-hint">The source has no records, so nothing shows these settings make entries it can hold.</p>}
+            {sample.result.droppedLinks && (
+              <p className="sd-sample-note">
+                <TriangleAlert aria-hidden="true" />
+                <span>{droppedLinksText(sample.result.droppedLinks)}</span>
+              </p>
+            )}
             {gaps.length > 0 && (
               <div className="sd-gaps" role="group" aria-labelledby={`${uid}-gaps`}>
                 <p className="sd-gaps-head" id={`${uid}-gaps`}>

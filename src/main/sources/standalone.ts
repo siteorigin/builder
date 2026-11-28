@@ -17,14 +17,14 @@ import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
 import { registerPacks, type ThemePack } from '@catalogue/index';
-import { MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
+import { droppedLinksText, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { readState, stateToDocs } from '../project/documents';
 import { imageProblem, imageInfo } from '../project/media';
 import { sha } from '../project/fsutil';
 import { createSyncRunner, SyncError, type SyncHandle, type SyncRunner } from './client';
-import { holdsSecret, pictureHoldsSecret, pictureName, SECRET_IN_RECORDS, sourceRequest, syncPreflight } from './sync';
+import { droppedLinksOf, holdsSecret, pictureHoldsSecret, pictureName, SECRET_IN_RECORDS, sourceRequest, syncPreflight } from './sync';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations } from './reconcile';
 import { redactSecrets } from './redact';
 import type { SyncImage, SyncReply, SyncRequest } from './protocol';
@@ -312,6 +312,9 @@ async function syncSources(dir: string, start: ProjectState, sources: readonly S
     const refused = syncPreflight(state, source, result.records, now, values);
     if (refused) throw say(refused === SECRET_IN_RECORDS ? `${SECRET_IN_RECORDS}.` : refused);
     const plan = planSourceSync(state, source, result.records, now);
+    // Said on every sync until the source's text is put right, whether or not it changed anything.
+    const { droppedLinks } = droppedLinksOf(result, values);
+    if (droppedLinks) log(`${source.name}: ${droppedLinksText(droppedLinks)}`);
     if (planIsEmpty(plan)) {
       log(`${source.name}: up to date (${plan.unchanged} unchanged).`);
       out.push({ sourceId: source.id, created: 0, updated: 0, removed: 0, unpublished: 0, images: 0 });

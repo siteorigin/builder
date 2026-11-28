@@ -7,6 +7,7 @@ import type { SourceConfig, SourcePagination } from '@shared/types';
 import { fillSecrets, readPath } from '@shared/source-paths';
 import { AdapterError, type AdapterEnv, type ReadContext, type SourceAdapter } from './registry';
 import { MAX_RECORDS } from './protocol';
+import { linkBase } from './richtext';
 
 /** Text with each `${secret:NAME}` filled in; a secret the store does not have stops the read. */
 function filled(text: string, secrets: Readonly<Record<string, string>>): string {
@@ -417,6 +418,8 @@ export function wordpressView(p: unknown): Record<string, unknown> {
 
 const wordpress: SourceAdapter = {
   origin: (config) => originOf(config.url),
+  // Each post's own address, wherever the site shows it (never its API's): its relative links were read from there.
+  pageOf: (item) => linkBase(readPath(item, 'link')),
   async items({ config, transport }) {
     const out: unknown[] = [];
     let expected: number | null = null;

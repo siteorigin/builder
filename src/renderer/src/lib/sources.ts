@@ -6,7 +6,7 @@
 import type { CollectionDoc, ProjectState, SourceAdapterId, SourceDoc, SourceMapping, SourcePagination, SourceRemoval } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import type { SourceSettingsDraft, SourceSyncResult } from '@shared/api';
-import { SOURCE_ADAPTERS, sourceSecretNames } from '@shared/sources';
+import { droppedLinksText, SOURCE_ADAPTERS, sourceSecretNames } from '@shared/sources';
 
 export const ADAPTER_IDS = Object.keys(SOURCE_ADAPTERS) as SourceAdapterId[];
 
@@ -248,8 +248,13 @@ export function sourceDraft(f: SourceForm, collectionId: string): SourceSettings
 /** The secrets a draft signs in with, by name. */
 export const draftSecretNames = (d: SourceSettingsDraft): string[] => sourceSecretNames({ config: d.config as SourceDoc['config'] });
 
-/** What a sync changed, in a sentence. */
+/** What a sync changed, in a sentence, then the links in what it read that kept only their words. */
 export function syncSummary(name: string, r: Extract<SourceSyncResult, { ok: true }>): string {
+  const changed = syncChanges(name, r);
+  return r.droppedLinks ? `${changed} ${droppedLinksText(r.droppedLinks)}` : changed;
+}
+
+function syncChanges(name: string, r: Extract<SourceSyncResult, { ok: true }>): string {
   const parts = [
     r.created && `${r.created} added`,
     r.updated && `${r.updated} changed`,

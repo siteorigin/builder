@@ -5,7 +5,7 @@
  * What the worker says is put in the app's own words here: a server's reply never reaches the author as it is.
  */
 import { redactSecrets } from './redact';
-import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_IMAGES_BYTES, MAX_RECORDS, recordProblem, SAMPLE_SIZE, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
+import { isDroppedLinks, MAX_DETAIL, MAX_IMAGE_BYTES, MAX_IMAGES_BYTES, MAX_RECORDS, recordProblem, SAMPLE_SIZE, type DroppedLinks, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
 
 /**
  * A picture as a reply may give it: its size within a picture's limit and, for a sync with a spool, no bytes (its file
@@ -81,6 +81,8 @@ export interface SyncResult {
   raw?: unknown[];
   /** For an inspection: how many records the source has. */
   total?: number;
+  /** The links in the records' text that kept only their words, when there were any. */
+  droppedLinks?: DroppedLinks;
 }
 
 export interface SyncRunner {
@@ -155,10 +157,21 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
               (m.raw !== undefined && (!Array.isArray(m.raw) || m.raw.length > SAMPLE_SIZE)) ||
               // An inspection is only ever the records as sent and how many there are: never one that reads as a sync of none.
               (inspected && (m.records.length || m.images.length || !Array.isArray(m.raw) || !Number.isSafeInteger(m.total) || (m.total as number) < m.raw.length)) ||
-              (!inspected && m.total !== undefined)
+              (!inspected && m.total !== undefined) ||
+              // Only records read into entries have links that were dropped.
+              (m.droppedLinks !== undefined && (inspected || !isDroppedLinks(m.droppedLinks, m.records.length, typeof request.converter === 'string')))
             )
               fail('invalid');
-            else finish(() => resolve({ records: m.records, images: m.images, ...(m.raw ? { raw: m.raw } : {}), ...(inspected ? { total: m.total } : {}) }));
+            else
+              finish(() =>
+                resolve({
+                  records: m.records,
+                  images: m.images,
+                  ...(m.raw ? { raw: m.raw } : {}),
+                  ...(inspected ? { total: m.total } : {}),
+                  ...(m.droppedLinks ? { droppedLinks: { count: m.droppedLinks.count, records: m.droppedLinks.records, first: [...m.droppedLinks.first] } } : {})
+                })
+              );
           }
           else if (m.ok === false && typeof m.code === 'string' && Object.hasOwn(REASONS, m.code)) fail(m.code, m.detail);
           else fail('failed');

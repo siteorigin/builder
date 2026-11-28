@@ -9,7 +9,8 @@
 import { z } from 'zod';
 import type { ProjectState, SourceDoc, SourceMapping } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { isSourceId, MAX_CONVERTER, sourceFingerprint, type SourceWriteGrant } from '@shared/sources';
+import type { SourceDroppedLinks } from '@shared/api';
+import { droppedLinksText, isSourceId, MAX_CONVERTER, sourceFingerprint, type SourceWriteGrant } from '@shared/sources';
 import { collectionsSummary } from './context';
 import type { ToolHost, ToolOutcome } from './tools';
 import { applyFailure, toolError } from './result';
@@ -33,6 +34,8 @@ export interface SourceTestCounts {
   unpublished: number;
   removed: number;
   kept: number;
+  /** The links in the records' text that keep only their words, when there are any. */
+  droppedLinks?: SourceDroppedLinks;
 }
 
 export type SourceVerifyResult =
@@ -243,7 +246,16 @@ export async function runWriteSource(args: WriteSourceArgs, host: ToolHost, call
       revision: res.revision,
       sourceId: source.id,
       saved: what === 'converter' ? `siteorigin/sources/${source.id}/converter.mjs` : 'mapping',
-      tested: { records: tested.total, wouldCreate: tested.created, wouldUpdate: tested.updated, unchanged: tested.unchanged, wouldUnpublish: tested.unpublished, wouldRemove: tested.removed, kept: tested.kept },
+      tested: {
+        records: tested.total,
+        wouldCreate: tested.created,
+        wouldUpdate: tested.updated,
+        unchanged: tested.unchanged,
+        wouldUnpublish: tested.unpublished,
+        wouldRemove: tested.removed,
+        kept: tested.kept,
+        ...(tested.droppedLinks ? { linksKeptAsWords: droppedLinksText(tested.droppedLinks) } : {})
+      },
       entries: fitSample(tested.records, 4000).records,
       note: `Saved: “${source.name}” reads its records this way from its next sync, which the author starts with Sync now. Its entries have not changed yet.${approved ? '' : ' It signs in with the user\'s secrets only once the author saves its settings again in Connect external source.'}`
     }

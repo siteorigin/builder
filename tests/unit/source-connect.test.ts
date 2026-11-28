@@ -40,7 +40,7 @@ const { runSync } = await import('../../src/main/sources/run');
 const { ADAPTERS } = await import('../../src/main/sources/adapters');
 const { createSecretStore } = await import('../../src/main/sources/secrets');
 const { createApprovalStore } = await import('../../src/main/sources/approvals');
-const { sampleSource, syncSource } = await import('../../src/main/sources/sync');
+const { droppedLinksOf, sampleSource, syncSource } = await import('../../src/main/sources/sync');
 const { applyOperations } = await import('@engine/apply');
 const { generateEntry } = await import('@generator/index');
 const { generateArchive } = await import('../../src/generator/archive');
@@ -72,13 +72,13 @@ const temp = (name: string) => {
 };
 
 /** A server on this computer answering every request with `body(url)`, counting what it was asked. */
-async function server(body: (url: URL, auth: string | undefined) => { status?: number; json: unknown }) {
+async function server(body: (url: URL, auth: string | undefined) => { status?: number; json: unknown; headers?: Record<string, string> }) {
   const seen: string[] = [];
   const s = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
     seen.push(url.pathname + url.search);
     const r = body(url, req.headers.authorization);
-    res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
+    res.writeHead(r.status ?? 200, { 'content-type': 'application/json', ...r.headers });
     res.end(JSON.stringify(r.json));
   });
   servers.push(s);
@@ -357,6 +357,61 @@ describe('connecting a collection to an external source', () => {
     const leaked = await syncSource(deps, 'crew');
     expect(leaked).toMatchObject({ ok: false, code: 'secret' });
     expect(s.state.collections.crew.entries).toEqual({});
+  });
+
+  it('keeps a WordPress post’s relative links going where they went, and says each sync which links kept only their words (#1426)', async () => {
+    const post = (id: number, title: string, html: string) => ({ id, slug: `post-${id}`, status: 'publish', date_gmt: '2026-05-01T09:00:00', title: { rendered: title }, link: `https://old.example/news/post-${id}/`, content: { rendered: html } });
+    const visiting = '<p><a href="/visit/access/?from=notice">Access</a>, <a href="../calendar/">the calendar</a>, <a href="#quiet-hours">quiet hours</a> and <a href="https://example.org/map">the map</a>.</p>';
+    let broken = '<p>Book <a href="javascript:book()">here</a>.</p>';
+    const api = await server(() => ({ json: [post(1, 'Visiting', visiting), post(2, 'Two', '<p>Two.</p>'), post(3, 'Three', '<p>Three.</p>'), post(4, 'Tickets', broken)], headers: { 'x-wp-totalpages': '1' } }));
+    const { s, deps, test, save } = await setup();
+    const made = await s.apply({ operations: [{ type: 'collection.create', collectionId: 'news', name: 'News', route: '/news/' }] as EditOperation[] }, { label: 'News' });
+    expect(made.error?.message).toBeUndefined();
+    const draft: SourceSettingsDraft = { sourceId: 'blog', name: 'Old blog', adapter: 'wordpress', collectionId: 'news', config: { url: api.origin } };
+    // The Test names the post past the three it shows.
+    const sample = await test(draft);
+    expect(sample).toMatchObject({ ok: true, total: 4, created: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } });
+    if (!sample.ok) return;
+    expect(sample.records).toHaveLength(3);
+
+    expect((await save(draft)).error?.message).toBeUndefined();
+    expect(await syncSource(deps, 'blog')).toMatchObject({ ok: true, created: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } });
+    const entries = Object.values(s.state.collections.news.entries);
+    const linksOf = (body: unknown) =>
+      (body as Array<{ spans?: Array<{ text: string; link?: { type: string; target: string } }> }>).flatMap((b) => (b.spans ?? []).map((x) => [x.text, x.link ? `${x.link.type} ${x.link.target}` : null]));
+    const visited = entries.find((e) => e.title === 'Visiting')!;
+    expect(linksOf(visited.body).filter(([, l]) => l)).toEqual([
+      ['Access', 'url https://old.example/visit/access/?from=notice'],
+      ['the calendar', 'url https://old.example/news/calendar/'],
+      ['quiet hours', 'url https://old.example/news/post-1/#quiet-hours'],
+      ['the map', 'url https://example.org/map']
+    ]);
+    const page = generateEntry(s.state, 'news', visited.id);
+    for (const href of ['https://old.example/visit/access/?from=notice', 'https://old.example/news/calendar/', 'https://old.example/news/post-1/#quiet-hours', 'https://example.org/map']) expect(page).toContain(href);
+    // Said again on a sync that changes nothing, until it is put right at the source.
+    const revision = s.revision;
+    expect(await syncSource(deps, 'blog')).toMatchObject({ ok: true, created: 0, updated: 0, unchanged: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } });
+    expect(s.revision).toBe(revision);
+    const tickets = entries.find((e) => e.title === 'Tickets')!.id;
+    expect(linksOf(s.state.collections.news.entries[tickets].body)).toEqual([['Book here.', null]]);
+    broken = '<p>Book <a href="/tickets/">here</a>.</p>';
+    const fixed = await syncSource(deps, 'blog');
+    expect(fixed).toMatchObject({ ok: true, created: 0, updated: 1, unchanged: 3 });
+    expect(fixed).not.toHaveProperty('droppedLinks');
+    // The same entry, its link now kept.
+    expect(Object.keys(s.state.collections.news.entries)).toHaveLength(4);
+    expect(linksOf(s.state.collections.news.entries[tickets].body)).toEqual([
+      ['Book ', null],
+      ['here', 'url https://old.example/tickets/'],
+      ['.', null]
+    ]);
+  });
+
+  it('never names the records whose dropped links, put in words together, spell a secret (#1426)', () => {
+    const result = { records: [{ externalId: '1', title: 'cedar-tree' }, { externalId: '2', title: 'orchid-bloom' }], droppedLinks: { count: 2, records: 2, first: [0, 1] } };
+    expect(droppedLinksOf(result, [])).toEqual({ droppedLinks: { count: 2, records: 2, titles: ['cedar-tree', 'orchid-bloom'] } });
+    expect(droppedLinksOf(result, ['cedar-tree” and “orchid-bloom'])).toEqual({ droppedLinks: { count: 2, records: 2, titles: [] } });
+    expect(droppedLinksOf({ records: result.records }, [])).toEqual({});
   });
 
   it('refuses a converter that may not run, or records the collection cannot hold, at the Test, with every file left as it was', async () => {

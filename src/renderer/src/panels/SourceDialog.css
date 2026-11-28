@@ -56,8 +56,9 @@
 
   /* The sample a passing Test read: what it read and what a sync would do, the fields it would leave empty, then each
      record beside the entry it became. */
-  .sd-sample-stale { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--amber-soft); font-size: 12px; line-height: 1.45; color: var(--text); }
-  .sd-sample-stale svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--amber); }
+  .sd-sample-stale, .sd-sample-note { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--amber-soft); font-size: 12px; line-height: 1.45; color: var(--text); }
+  .sd-sample-stale svg, .sd-sample-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--amber); }
+  .sd-sample-note { margin: 0; }
   .sd-sample-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: -4px 0 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .sd-count-read { font-weight: 600; color: var(--text); }
   .sd-count-sep { width: 1px; height: 14px; background: var(--border-strong); }

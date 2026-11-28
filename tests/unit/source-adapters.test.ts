@@ -9,6 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { afterEach, describe, expect, it } from 'vitest';
 import { runSync } from '../../src/main/sources/run';
 import { ADAPTERS } from '../../src/main/sources/adapters';
+import { contentfulRichText, markdownRichText, type LinkRead } from '../../src/main/sources/richtext';
 import type { SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import { graphqlReadProblem, sourceDocProblem, sourceSecretNames } from '@shared/sources';
 import { pathSteps, readPath } from '@shared/source-paths';
@@ -316,6 +317,30 @@ describe('a Contentful source', () => {
     const refused = await run({ adapter: 'contentful', config: { spaceId: 'space1', contentType: 'teamMember', credentials: { token: { $secret: 'cda' } } }, secrets: { cda: 'wrong-token' } }, { contentful: api.origin });
     expect(refused).toMatchObject({ ok: false, code: 'auth' });
   });
+
+  it('counts each link in Rich Text it cannot keep once, however many runs its words are (#1426)', () => {
+    const text = (value: string, marks: string[] = []) => ({ nodeType: 'text', value, marks: marks.map((type) => ({ type })) });
+    const doc = {
+      nodeType: 'document',
+      content: [
+        { nodeType: 'paragraph', content: [{ nodeType: 'hyperlink', data: { uri: '/about/' }, content: [text('our '), text('studio', ['bold'])] }, text(' and '), { nodeType: 'entry-hyperlink', data: { target: { sys: { id: 'x' } } }, content: [text('Ben')] }] },
+        { nodeType: 'unordered-list', content: [{ nodeType: 'list-item', content: [{ nodeType: 'paragraph', content: [{ nodeType: 'hyperlink', data: { uri: 'https://example.com/' }, content: [text('kept')] }] }] }] }
+      ]
+    };
+    const read: LinkRead = { dropped: 0 };
+    const blocks = contentfulRichText(doc, read);
+    expect(read.dropped).toBe(2);
+    expect(blocks[0]).toEqual({ type: 'p', spans: [{ text: 'our ' }, { text: 'studio', strong: true }, { text: ' and Ben' }] });
+    expect(blocks[1]).toEqual({ type: 'ul', items: [[{ text: 'kept', link: { type: 'url', target: 'https://example.com/' } }]] });
+    // Read from a page it was shown on, a relative one goes where it went there.
+    const based: LinkRead = { base: 'https://old.example/posts/a/', dropped: 0 };
+    expect(JSON.stringify(contentfulRichText(doc, based))).toContain('https://old.example/about/');
+    expect(based.dropped).toBe(1);
+    // Markdown's links are read as HTML's are.
+    const md: LinkRead = { dropped: 0 };
+    expect(markdownRichText('[home](/) and [mail](mailto:a@example.org)', md)).toEqual([{ type: 'p', spans: [{ text: 'home and ' }, { text: 'mail', link: { type: 'email', target: 'a@example.org' } }] }]);
+    expect(md.dropped).toBe(1);
+  });
 });
 
 describe('a Contentful source read page by page', () => {
@@ -413,6 +438,97 @@ describe('Sanity, Strapi and WordPress sources', () => {
     // A full page with no count of pages beside it may not be the last.
     const uncounted = await server((_req, res) => send(res, Array.from({ length: 100 }, (_, i) => ({ id: i + 1, title: { rendered: `P${i}` } }))));
     expect(await run({ adapter: 'wordpress', config: { url: uncounted.origin } })).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
+  it('WordPress: a post’s relative links go where they went on its own page (#1426)', async () => {
+    const linksOf = (body: unknown) =>
+      (body as Array<{ spans?: Array<{ text: string; link?: { type: string; target: string } }> }>).flatMap((b) => (b.spans ?? []).filter((s) => s.link).map((s) => [s.text, s.link!.type, s.link!.target]));
+    const content =
+      '<p><a href="/visit/access/?from=notice">Access</a>, <a href="../calendar/">the calendar</a>, <a href="#quiet-hours">quiet hours</a> and <a href="https://example.org/map">the map</a>.</p>';
+    const api = await server((_req, res) => send(res, [{ id: 7, title: { rendered: 'Visiting' }, link: 'https://old.example/news/visiting/', content: { rendered: content } }], { 'x-wp-totalpages': '1' }));
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    // Its own page has no sections an entry can name, so a section goes to its place on that page.
+    expect(linksOf(reply.records[0].body)).toEqual([
+      ['Access', 'url', 'https://old.example/visit/access/?from=notice'],
+      ['the calendar', 'url', 'https://old.example/news/calendar/'],
+      ['quiet hours', 'url', 'https://old.example/news/visiting/#quiet-hours'],
+      ['the map', 'url', 'https://example.org/map']
+    ]);
+    expect(reply.droppedLinks).toBeUndefined();
+
+    // Each post from its own page, never another's: one with a query on its address, one with no web address at all.
+    const posts = [
+      {
+        id: 1,
+        title: { rendered: 'Edition' },
+        link: 'https://old.example/news/visiting/?edition=2',
+        content: {
+          rendered:
+            '<p><a href="../calendar/">a</a> <a href="?p=12">b</a> <a href="#quiet-hours">c</a> <a href="//media.example/x">d</a> <a href=" /a?x=1&amp;y=2 ">e</a> <a href="javascript:alert(1)">f</a> <a href="data:text/html,hi">g</a> <a href="https://[">h</a> <a href="">i</a> <a href="mailto:hi@example.org">j</a></p>'
+        }
+      },
+      { id: 2, title: { rendered: 'No page' }, link: 'file:///etc/passwd', content: { rendered: '<p><a href="/visit/">k</a> <a href="https://example.org/ok">l</a></p>' } },
+      { id: 3, title: { rendered: 'Missing' }, content: { rendered: '<p><a href="../x/">m</a></p>' } },
+      // Another site's post, deeper: never read from the first post's page. Its name and password are never passed on.
+      { id: 4, title: { rendered: 'Clean' }, link: 'https://editor:pw@other.example/deep/clean/', content: { rendered: '<p><a href="../ok/">n</a> <a href="tel:+44 20 7946 0000">o</a></p>' } },
+      // Addresses a link cannot hold as they are, which would stop the whole sync: a quote in a host, mail and a number that are neither.
+      { id: 5, title: { rendered: 'Odd' }, link: 'https://old.example/odd/', content: { rendered: '<p><a href="//a%22b.example/p">p</a> <a href="mailto:nobody">q</a> <a href="tel:abc">r</a></p>' } },
+      // A page address so long that its sections are not read from it, though its site's other pages are.
+      { id: 6, title: { rendered: 'Long' }, link: `https://old.example/${'a'.repeat(3000)}/`, content: { rendered: '<p><a href="#x">s</a> <a href="/short/">t</a></p>' } }
+    ];
+    const many = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
+    const two = await run({ adapter: 'wordpress', config: { url: many.origin } });
+    expect(two.ok).toBe(true);
+    if (!two.ok) return;
+    expect(linksOf(two.records[0].body)).toEqual([
+      ['a', 'url', 'https://old.example/news/calendar/'],
+      ['b', 'url', 'https://old.example/news/visiting/?p=12'],
+      ['c', 'url', 'https://old.example/news/visiting/?edition=2#quiet-hours'],
+      ['d', 'url', 'https://media.example/x'],
+      ['e', 'url', 'https://old.example/a?x=1&y=2'],
+      ['j', 'email', 'hi@example.org']
+    ]);
+    // A post whose address is not a page on the web reads none of its relative links, and keeps its whole ones.
+    expect(linksOf(two.records[1].body)).toEqual([['l', 'url', 'https://example.org/ok']]);
+    expect(linksOf(two.records[2].body)).toEqual([]);
+    expect(linksOf(two.records[3].body)).toEqual([
+      ['n', 'url', 'https://other.example/deep/ok/'],
+      ['o', 'tel', '+44 20 7946 0000']
+    ]);
+    expect(linksOf(two.records[4].body)).toEqual([]);
+    expect(linksOf(two.records[5].body)).toEqual([['t', 'url', 'https://old.example/short/']]);
+    // Every link it could not keep keeps its words.
+    const words = (body: unknown) => (body as Array<{ spans: Array<{ text: string }> }>).map((b) => b.spans.map((x) => x.text).join('')).join('|');
+    expect(words(two.records[0].body)).toBe('a b c d e f g h i j');
+    expect(words(two.records[4].body)).toBe('p q r');
+    expect(words(two.records[5].body)).toBe('s t');
+    // Script, data, a broken address and a link to nowhere keep their words, and are said, by the records they are in.
+    expect(two.droppedLinks).toEqual({ count: 10, records: 5, first: [0, 1, 2] });
+  });
+
+  it('WordPress: never reads links from a post address that holds a secret the source was sent, however it is spelled (#1426)', async () => {
+    const encoded = SECRET.replace(/^t/, '%74');
+    const api = await server((_req, res) =>
+      send(res, [{ id: 1, title: { rendered: 'Shared' }, link: `https://old.example/post/?share=${encoded}`, content: { rendered: '<p><a href="#part">part</a> <a href="https://example.org/">kept</a></p>' } }], { 'x-wp-totalpages': '1' })
+    );
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin }, secrets: { wp: SECRET } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    expect(JSON.stringify(reply.records)).not.toContain(encoded);
+    expect(reply.records[0].body).toEqual([{ type: 'p', spans: [{ text: 'part ' }, { text: 'kept', link: { type: 'url', target: 'https://example.org/' } }] }]);
+    expect(reply.droppedLinks).toEqual({ count: 1, records: 1, first: [0] });
+  });
+
+  it('A source with no page to read its text from says the relative links it could not keep (#1426)', async () => {
+    const rest = await server((_req, res) => send(res, [{ id: 'a', title: 'A', body: '<p><a href="/about/">About</a> and <a href="https://example.org/">us</a></p>' }, { id: 'b', title: 'B', body: '<p>None</p>' }]));
+    const reply = await run({ adapter: 'rest', config: { url: rest.origin }, mapping: { body: 'body', bodyFormat: 'html' } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    // Its API's address is not where its text was shown, so it is never read from.
+    expect(reply.records[0].body).toEqual([{ type: 'p', spans: [{ text: 'About and ' }, { text: 'us', link: { type: 'url', target: 'https://example.org/' } }] }]);
+    expect(reply.droppedLinks).toEqual({ count: 1, records: 1, first: [0] });
   });
 });
 

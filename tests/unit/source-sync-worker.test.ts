@@ -46,6 +46,47 @@ describe('the sync worker client', () => {
     expect(spawned[0].sent[0].secrets).toEqual({ team: SECRET });
   });
 
+  it('passes on the links whose words alone were kept, and refuses a report of them that is not one (#1426)', async () => {
+    const records = [record('1'), record('2'), record('3'), record('4'), record('5')];
+    const reply = (droppedLinks: unknown, req: Partial<SyncRequest> = {}) =>
+      createSyncRunner(fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records, images: [], ...(m.mode === 'sample' ? { raw: [] } : {}), droppedLinks } as SyncReply)).spawn).run('Team', { ...request, ...req });
+    await expect(reply({ count: 9, records: 4, first: [0, 1, 3] })).resolves.toMatchObject({ droppedLinks: { count: 9, records: 4, first: [0, 1, 3] } });
+    await expect(reply({ count: 5, records: 5, first: [0, 1, 2] })).resolves.toMatchObject({ droppedLinks: { count: 5, records: 5, first: [0, 1, 2] } });
+    await expect(reply({ count: 2, records: 1, first: [4] }, { mode: 'sample' })).resolves.toMatchObject({ droppedLinks: { count: 2, records: 1, first: [4] } });
+    // A converter's are counted only.
+    const converter = 'export function convert(items) { return []; }';
+    await expect(reply({ count: 2, records: 0, first: [] }, { converter })).resolves.toMatchObject({ droppedLinks: { count: 2, records: 0, first: [] } });
+    await expect(reply(undefined)).resolves.not.toHaveProperty('droppedLinks');
+    const sparse: number[] = [];
+    sparse.length = 1;
+    for (const [bad, req] of [
+      [{ count: 0, records: 0, first: [] }, {}],
+      [{ count: 1, records: 2, first: [0, 1] }, {}],
+      [{ count: 3, records: 1, first: [5] }, {}],
+      [{ count: 3, records: 1, first: [-1] }, {}],
+      [{ count: 3, records: 1, first: [0.5] }, {}],
+      [{ count: 3, records: 1, first: sparse }, {}],
+      [{ count: 3, records: 2, first: [1, 1] }, {}],
+      [{ count: 3, records: 2, first: [2, 1] }, {}],
+      [{ count: 5, records: 4, first: [0, 1] }, {}],
+      [{ count: 1.5, records: 1, first: [0] }, {}],
+      [{ count: 9, records: 6, first: [0, 1, 2] }, {}],
+      // Five records with a link each: the first three are the first three, or one is left with nowhere to be.
+      [{ count: 9, records: 5, first: [0, 1, 3] }, {}],
+      [{ count: 9, records: 4, first: [1, 2, 4] }, {}],
+      // A mapping's always name a record; a converter's never do.
+      [{ count: 2, records: 0, first: [] }, {}],
+      [{ count: 2, records: 1, first: [0] }, { converter }],
+      [[3], {}],
+      ['three', {}]
+    ] as Array<[unknown, Partial<SyncRequest>]>)
+      await expect(reply(bad, req), JSON.stringify(bad)).rejects.toMatchObject({ code: 'invalid' });
+    // An inspection reads no record into an entry, so drops none of its links.
+    await expect(
+      createSyncRunner(fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records: [], images: [], raw: [], total: 0, droppedLinks: { count: 1, records: 0, first: [] } } as SyncReply)).spawn).run('Team', { ...request, mode: 'inspect' })
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('ends a worker that stalls, crashes or fails, says why in its own words, and gives no secret away', async () => {
     const slow = fakeWorker(() => undefined);
     const timedOut = createSyncRunner(slow.spawn, { timeoutMs: 20 }).run('Team', request);
