@@ -185,6 +185,12 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
   };
   const fits = (r: Fit) => ({ width: r.width, clipped: r.clipped, overflow: r.overflow, overlap: r.overlap });
   const fitted = (width: number) => ({ width, clipped: [], overflow: 0, overlap: 0 });
+  /** The toolbar at `width` fits, and at its full toolbar's first width (`full`) it is the full one. */
+  const fitsAt = async (width: number, full: number, session: Session, palettes: 'single' | 'dual') => {
+    const r = await fit(width, session, palettes);
+    expect(fits(r)).toEqual(fitted(width));
+    if (width === full) expect(r.tier).toBe('full');
+  };
 
   // A 13" laptop's default 1440px, a smaller laptop's 1366px and 1280px, the width the full toolbar used to start at,
   // and the window's 1100px minimum; then roomy windows the full toolbar fits in whatever the fonts.
@@ -194,7 +200,7 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
 
   it('keeps every control of a collaborator’s toolbar inside the window, Leave session too', async () => {
     for (const palettes of ['single', 'dual'] as const) {
-      for (const width of widths(TOOLBAR_FULL_MIN.guest)) expect(fits(await fit(width, guest('collaborator'), palettes))).toEqual(fitted(width));
+      for (const width of widths(TOOLBAR_FULL_MIN.guest)) await fitsAt(width, TOOLBAR_FULL_MIN.guest, guest('collaborator'), palettes);
     }
     // At 1440px Leave session keeps its place as its icon, and takes a click there.
     const r = await fit(1440, guest('collaborator'));
@@ -221,7 +227,7 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
   it('keeps a host’s live Share pill and Export inside the window', async () => {
     for (const session of [host(), host({ phase: 'reconnecting' })]) {
       for (const palettes of ['single', 'dual'] as const) {
-        for (const width of widths(TOOLBAR_FULL_MIN.hosting)) expect(fits(await fit(width, session, palettes))).toEqual(fitted(width));
+        for (const width of widths(TOOLBAR_FULL_MIN.hosting)) await fitsAt(width, TOOLBAR_FULL_MIN.hosting, session, palettes);
       }
     }
     expect((await fit(1440, host())).tier).toBe('compact');
@@ -230,7 +236,7 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
 
   it('gives a project with no session the full toolbar from its first width, Notes counting open notes', async () => {
     for (const palettes of ['single', 'dual'] as const) {
-      for (const width of widths(TOOLBAR_FULL_MIN.local)) expect(fits(await fit(width, {}, palettes))).toEqual(fitted(width));
+      for (const width of widths(TOOLBAR_FULL_MIN.local)) await fitsAt(width, TOOLBAR_FULL_MIN.local, {}, palettes);
     }
     expect((await fit(1440)).tier).toBe('full');
   });
