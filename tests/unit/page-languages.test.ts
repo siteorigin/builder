@@ -8,12 +8,13 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { NOT_FOUND_DIR, SERVER_HOOK_FILE, generateAppHtml, generateProject, generateServerHook, pageAlternates, pageFile, publishedState, routeLanguages } from '@generator/index';
+import { NOT_FOUND_DIR, RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, generateAppHtml, generateProject, generateServerHook, generateSiteHandle, pageAlternates, pageFile, publishedState, routeLanguages } from '@generator/index';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
 import { GenerationCache } from '@generator/cache';
 import { declaredLanguage, languageKey, linkClash, lookAlikePages, pageLanguage, translationPeers } from '@shared/languages';
-import { pageLanguageWarning, rivalHookStop, settleServerHook } from '../../src/main/export';
+import { pageLanguageWarning, projectReadme, settleServerHook } from '../../src/main/export';
+import { ownServerHook } from '../../src/main/project/server-hook';
 import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -53,24 +54,39 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** The library file that exports the site's server hook. */
+const HANDLE = `${RUNTIME_DIR}/${SITE_HANDLE_FILE}`;
+
+type Handle = (input: { event: unknown; resolve: (event: unknown, opts?: { transformPageChunk?: (c: { html: string; done: boolean }) => unknown }) => unknown }) => unknown;
+
 /**
- * Load the generated server hook as the site would, from where the project keeps it, with what it imports from
- * SvelteKit (whether the site is being built) and from the generated not-found runtime.
+ * Write the generated server hook and the library it runs where the project keeps them, with what the library imports
+ * from SvelteKit (whether the site is being built) in a file of its own. Gives the folder.
  */
-async function loadHook(files: Map<string, string>, { building = true } = {}) {
+function writeHook(files: Map<string, string>, building: boolean): string {
   const dir = tempDir();
-  mkdirSync(join(dir, 'src'));
+  mkdirSync(join(dir, RUNTIME_DIR), { recursive: true });
   writeFileSync(join(dir, 'env.mjs'), `export const building = ${building};\n`);
-  writeFileSync(join(dir, 'not-found.mjs'), NOT_FOUND_JS);
-  const source = files.get(SERVER_HOOK_FILE)!.replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))).replace("'./lib/siteorigin/runtime/not-found.js'", JSON.stringify(join(dir, 'not-found.mjs')));
-  writeFileSync(join(dir, SERVER_HOOK_FILE), source);
-  const hook = (await import(/* @vite-ignore */ pathToFileURL(join(dir, SERVER_HOOK_FILE)).href)) as { handle: (input: unknown) => unknown };
-  /** What the hook makes of each chunk of HTML SvelteKit renders for a route, at that route under the sub-path `base`. */
-  return (routeId: string | null, chunks: string[], base = '') =>
-    hook.handle({
+  writeFileSync(join(dir, RUNTIME_DIR, 'not-found.js'), NOT_FOUND_JS);
+  writeFileSync(join(dir, HANDLE), files.get(HANDLE)!.replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))));
+  writeFileSync(join(dir, SERVER_HOOK_FILE), files.get(SERVER_HOOK_FILE)!);
+  return dir;
+}
+
+/** What a server hook makes of each chunk of HTML SvelteKit renders for a route, at that route under the sub-path `base`. */
+const renderWith =
+  (handle: Handle) =>
+  (routeId: string | null, chunks: string[], base = '') =>
+    handle({
       event: { route: { id: routeId }, url: new URL(`http://sveltekit-prerender${base}${routeId ?? '/missing/'}`) },
-      resolve: (_e: unknown, opts?: { transformPageChunk: (c: { html: string; done: boolean }) => string }) => chunks.map((html, i) => (opts ? opts.transformPageChunk({ html, done: i === chunks.length - 1 }) : html))
+      resolve: (_e, opts) => chunks.map((html, i) => (opts?.transformPageChunk ? opts.transformPageChunk({ html, done: i === chunks.length - 1 }) : html))
     }) as string[];
+
+/** Load the generated server hook as the site would, from where the project keeps it, with the library it runs. */
+async function loadHook(files: Map<string, string>, { building = true } = {}) {
+  const dir = writeHook(files, building);
+  const hook = (await import(/* @vite-ignore */ pathToFileURL(join(dir, SERVER_HOOK_FILE)).href)) as { handle: Handle };
+  return renderWith(hook.handle);
 }
 
 /** The page's alternate links: the language and the address, a site path given as `resolve(...)` written as it. */
@@ -385,8 +401,9 @@ describe('page languages in the website', () => {
     const s = apply(fresh(), { type: 'site.update', baseUrl: 'https://example.com/' });
     const files = generateProject(s);
     // The server hook is the not-found page's alone: it carries no languages.
-    expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(fresh()));
-    expect(files.get(SERVER_HOOK_FILE)).not.toMatch(/LANGUAGES|lang/);
+    expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook());
+    expect(files.get(HANDLE)).toBe(generateSiteHandle(fresh()));
+    expect(files.get(HANDLE)).not.toMatch(/LANGUAGES|lang/);
     expect([...files.keys()].filter((p) => /language/.test(p))).toEqual([]);
     expect(files.get('src/app.html')).toBe(
       '<!doctype html>\n<html lang="en" dir="ltr">\n\t<head>\n\t\t<meta charset="utf-8" />\n\t\t<meta name="viewport" content="width=device-width, initial-scale=1" />\n\t\t<script>document.documentElement.classList.add("so-js");</script>\n\t\t%sveltekit.head%\n\t</head>\n\t<body data-sveltekit-preload-data="hover">\n\t\t<div style="display: contents">%sveltekit.body%</div>\n\t</body>\n</html>\n'
@@ -416,8 +433,8 @@ describe('page languages in the website', () => {
     for (const instrument of [false, true]) {
       const files = generateProject(s, { instrument });
       // One hook does both jobs: it imports only what the not-found page needs, the build flag and the generated runtime.
-      const hook = files.get(SERVER_HOOK_FILE)!;
-      expect([...hook.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['$app/env', './lib/siteorigin/runtime/not-found.js']);
+      const hook = files.get(HANDLE)!;
+      expect([...hook.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['$app/env', './not-found.js']);
       expect([...files.values()].some((f) => f.includes('$lib'))).toBe(false);
       // app.html keeps naming the site's language: every page in it needs nothing more.
       expect(files.get('src/app.html')).toBe(generateAppHtml(fresh()));
@@ -474,7 +491,7 @@ describe('page languages in the website', () => {
     for (const instrument of [false, true]) {
       const files = generateProject(t, { instrument });
       expect(files.get('src/app.html')).toContain('<html lang="en" dir="ltr">');
-      expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
+      expect(files.get(HANDLE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
       const render = await loadHook(files);
       expect(render('/he/odot', [html])[0]).toBe('<!doctype html>\n<html lang="he" dir="rtl"><head></head>');
       expect(render('/fr/a-propos', [html])[0]).toBe('<!doctype html>\n<html lang="fr" dir="ltr"><head></head>');
@@ -491,13 +508,13 @@ describe('page languages in the website', () => {
     t = apply(t, { type: 'site.update', language: 'ar' });
     let files = generateProject(t);
     expect(files.get('src/app.html')).toContain('<html lang="ar" dir="rtl">');
-    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
+    expect(files.get(HANDLE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
     expect((await loadHook(files))('/he/odot', ['<html lang="ar" dir="rtl">'])[0]).toBe('<html lang="he" dir="rtl">');
     // Its author's choice of left to right holds for the pages in Arabic; the Hebrew page still runs right to left.
     t = apply(t, { type: 'site.update', direction: 'ltr' });
     files = generateProject(t);
     expect(files.get('src/app.html')).toContain('<html lang="ar" dir="ltr">');
-    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
+    expect(files.get(HANDLE)).toMatch(/const DIRECTIONS = \{\n\t"\/he\/odot": "rtl"\n\};/);
     expect(pageLanguageWarning(t, byTitle(t, 'About'), '<html lang="ar" dir="ltr">')).toBeNull();
     expect(pageLanguageWarning(t, t.pages[he.id], '<html lang="he" dir="rtl">')).toBeNull();
     expect(pageLanguageWarning(t, t.pages[he.id], '<html lang="he">')).toMatch(/built without a direction, not right to left/);
@@ -510,7 +527,7 @@ describe('page languages in the website', () => {
     expect(rtl.site.direction).toBe('rtl');
     files = generateProject(rtl);
     expect(files.get('src/app.html')).toContain('<html lang="en" dir="rtl">');
-    expect(files.get(SERVER_HOOK_FILE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
+    expect(files.get(HANDLE)).toMatch(/const DIRECTIONS = \{\n\t"\/fr\/a-propos": "ltr"\n\};/);
     expect((await loadHook(files))('/fr/a-propos', ['<html lang="en" dir="rtl">'])[0]).toBe('<html lang="fr" dir="ltr">');
     // The export's check reads dir in any case.
     expect(pageLanguageWarning(rtl, byTitle(rtl, 'About'), '<html lang="en" DIR="RTL">')).toBeNull();
@@ -522,10 +539,14 @@ describe('page languages in the website', () => {
       const files = generateProject(s, { instrument });
       // One hook, at the one path SvelteKit runs, made by the one generator; no other file is a server hook.
       expect([...files.keys()].filter((p) => /hooks\.server/.test(p))).toEqual([SERVER_HOOK_FILE]);
-      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(s, instrument));
+      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(instrument));
       expect(files.get(SERVER_HOOK_FILE)!.includes('export function handleError(')).toBe(instrument);
-      expect(files.get(SERVER_HOOK_FILE)).toContain('const SECTIONS = {};');
-      expect(files.get(SERVER_HOOK_FILE)).toMatch(/const LANGUAGES = \{\n\t"\/de\/ueber-uns": "de",\n\t"\/fr\/a-propos": "fr"\n\};/);
+      // It runs the site's, which the library exports by name for a hook of the project's own to run as well.
+      expect(files.get(SERVER_HOOK_FILE)).toContain(`\nexport { ${SITE_HANDLE} as handle } from './lib/siteorigin/runtime/${SITE_HANDLE_FILE}';\n`);
+      expect(files.get(HANDLE)).toBe(generateSiteHandle(s));
+      expect(files.get(HANDLE)).toContain(`\nexport function ${SITE_HANDLE}({ event, resolve }) {\n`);
+      expect(files.get(HANDLE)).toContain('const SECTIONS = {};');
+      expect(files.get(HANDLE)).toMatch(/const LANGUAGES = \{\n\t"\/de\/ueber-uns": "de",\n\t"\/fr\/a-propos": "fr"\n\};/);
     }
     const page = '<!doctype html><html lang="en"><head><link href="./_app/a.css" rel="stylesheet"></head><body><a href="./">Home</a></body></html>';
     const rooted = page.replace('href="./_app/a.css"', 'href="/studio/_app/a.css"').replace('href="./"', 'href="/studio/"');
@@ -545,7 +566,51 @@ describe('page languages in the website', () => {
     expect(preview('/fr/a-propos', [page])).toEqual([page.replace('<html lang="en">', '<html lang="fr">')]);
   });
 
-  it('keeps a server hook of the project’s own at the generated path, and stops the export of a site that needs ours', async () => {
+  it('lets a server hook of the project’s own run the site’s with sequence(), for the not-found page and languages alike', async () => {
+    const { s } = trilingual();
+    const dir = writeHook(generateProject(s), true);
+    // SvelteKit's sequence() as @sveltejs/kit 3.4.0 has it: each handle's page transform runs before the one ahead of it.
+    writeFileSync(
+      join(dir, 'sequence.mjs'),
+      `export function sequence(...handlers) {
+  return ({ event, resolve: last }) => apply(0, event, {}, last);
+  function apply(i, event, parent, last) {
+    return handlers[i]({
+      event,
+      resolve: (event, options) => {
+        const transformPageChunk = async ({ html, done }) => {
+          if (options?.transformPageChunk) html = (await options.transformPageChunk({ html, done })) ?? '';
+          if (parent?.transformPageChunk) html = (await parent.transformPageChunk({ html, done })) ?? '';
+          return html;
+        };
+        return i < handlers.length - 1 ? apply(i + 1, event, { transformPageChunk }, last) : last(event, { transformPageChunk });
+      }
+    });
+  }
+}
+`
+    );
+    // The project's own hook is the README's, as written there, with a handle of its own that adds a link relative to
+    // the page and marks every page it renders.
+    const own =
+      SITE_HANDLE_USAGE.replace("'@sveltejs/kit/hooks'", JSON.stringify(join(dir, 'sequence.mjs'))).replace("'#lib/", "'./lib/") +
+      `\nfunction yourHandle({ event, resolve }) {\n\treturn resolve(event, { transformPageChunk: ({ html }) => html.replace('<body>', '<body data-mine><a href="./contact/">Contact</a>') });\n}\n`;
+    expect(projectReadme('Test Studio')).toContain('## Server hook');
+    expect(projectReadme('Test Studio')).toContain(`\`\`\`ts\n${SITE_HANDLE_USAGE}\n\`\`\``);
+    expect(own).toContain(`import { ${SITE_HANDLE} } from './lib/siteorigin/runtime/${SITE_HANDLE_FILE}';`);
+    writeFileSync(join(dir, 'src', 'hooks.server.mjs'), own);
+    const { handle } = (await import(/* @vite-ignore */ pathToFileURL(join(dir, 'src', 'hooks.server.mjs')).href)) as { handle: Handle };
+    const render = async (routeId: string, html: string, base = '') => (await Promise.all((await renderWith(handle)(routeId, [html], base)) as unknown as Promise<string>[]))[0];
+    const page = '<!doctype html><html lang="en"><head><link href="./_app/a.css" rel="stylesheet"></head><body><a href="./">Home</a></body></html>';
+    const mine = page.replace('<body>', '<body data-mine><a href="./contact/">Contact</a>');
+    // The not-found page's addresses start from the root under the sub-path, the project's own link among them.
+    expect(await render(NOT_FOUND_ROUTE, page, '/studio')).toBe(mine.replaceAll('href="./', 'href="/studio/'));
+    // A page in another language gets its own lang as well as the project's changes; others get the project's alone.
+    expect(await render('/fr/a-propos', page)).toBe(mine.replace('<html lang="en">', '<html lang="fr">'));
+    expect(await render('/about', page)).toBe(mine);
+  });
+
+  it('keeps a server hook of the project’s own at the generated path, and still writes the site’s for it to run', async () => {
     const dir = tempDir();
     mkdirSync(join(dir, 'src'), { recursive: true });
     const theirs = 'export const handle = ({ event, resolve }) => resolve(event);\n';
@@ -559,11 +624,13 @@ describe('page languages in the website', () => {
       expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(theirs);
       expect(existsSync(join(dir, '.siteorigin', 'cache', 'dev', SERVER_HOOK_FILE))).toBe(false);
       expect(session.conflicts).toEqual([]);
-      // The export says why it cannot go ahead, and a staged copy of the project keeps theirs too.
-      const live = publishedState(session.state);
-      expect(await rivalHookStop(dir, live)).toMatch(/server hook of its own \(src\/hooks\.server\.js\): SvelteKit runs only one/);
-      await settleServerHook(dir, live);
+      // The site's server hook is in the library, languages and all, for theirs to run; the export goes ahead, and a
+      // staged copy of the project keeps theirs too.
+      expect(readFileSync(join(dir, HANDLE), 'utf8')).toBe(generateSiteHandle(session.state));
+      expect(readFileSync(join(dir, HANDLE), 'utf8')).toContain('"/about": "fr"');
+      await settleServerHook(dir);
       expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(theirs);
+      expect(readFileSync(join(dir, HANDLE), 'utf8')).toContain('"/about": "fr"');
     } finally {
       await session.close();
     }
@@ -586,24 +653,24 @@ describe('page languages in the website', () => {
     made(s);
     // A page in another language: the hook appears, the layout follows, and that page says so; the others are kept.
     s = apply(s, { type: 'page.update', pageId: en, language: 'fr' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean', 'layout#clean', `page:${en}#clean`]));
+    expect(made(s)).toEqual(expect.arrayContaining(['site-handle', 'layout#clean', `page:${en}#clean`]));
     // Linking a translation remakes both versions, and a language change on one of them remakes the hook and layout.
     s = apply(s, { type: 'page.update', pageId: contact, language: 'de', linkTranslationTo: en });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js#clean', 'layout#clean']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'site-handle', 'layout#clean']));
     s = apply(s, { type: 'page.update', pageId: contact, route: '/kontakt/' });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js#clean']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'site-handle']));
     // Back in one language: the hook is the not-found page's alone again and every file is as a full run makes it.
     s = apply(s, { type: 'page.update', pageId: contact, linkTranslationTo: null }, { type: 'page.update', pageId: contact, language: '' }, { type: 'page.update', pageId: en, language: '' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean']));
-    expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).toBe(generateServerHook(s));
-    expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).not.toContain('LANGUAGES');
+    expect(made(s)).toEqual(expect.arrayContaining(['site-handle']));
+    expect(generateProject(s, {}, cache).get(HANDLE)).toBe(generateSiteHandle(s));
+    expect(generateProject(s, {}, cache).get(HANDLE)).not.toContain('LANGUAGES');
   });
 
   it('lists the same languages whatever order the pages are in', () => {
     const { s, fr, de } = trilingual();
     const reordered = apply(s, { type: 'page.reorder', pageIds: [...s.site.pageOrder].reverse() });
     expect(s.site.pageOrder.indexOf(fr)).toBeLessThan(s.site.pageOrder.indexOf(de));
-    expect(generateProject(reordered).get(SERVER_HOOK_FILE)).toBe(generateProject(s).get(SERVER_HOOK_FILE));
+    expect(generateProject(reordered).get(HANDLE)).toBe(generateProject(s).get(HANDLE));
     expect(layoutTable(generateProject(reordered).get('src/routes/+layout.svelte')!)).toEqual({ '/de/ueber-uns': 'de', '/fr/a-propos': 'fr' });
     expect(generateProject(reordered).get('src/routes/+layout.svelte')).toBe(generateProject(s).get('src/routes/+layout.svelte'));
   });
@@ -728,8 +795,8 @@ describe('page languages in the website', () => {
     const two = bilingual();
     const onlyDraft = apply(two.s, { type: 'page.update', pageId: two.fr, draft: true });
     const live = generateProject(publishedState(onlyDraft));
-    expect(live.get(SERVER_HOOK_FILE)).toBe(generateServerHook(publishedState(onlyDraft)));
-    expect(live.get(SERVER_HOOK_FILE)).not.toContain('LANGUAGES');
+    expect(live.get(HANDLE)).toBe(generateSiteHandle(publishedState(onlyDraft)));
+    expect(live.get(HANDLE)).not.toContain('LANGUAGES');
     expect(live.get('src/routes/+layout.svelte')).not.toContain('pageLanguages');
   });
 
@@ -761,40 +828,31 @@ describe('page languages in the website', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  it('stops the export when the website needs the generated server hook and the project has one of its own', async () => {
-    const { s, fr } = bilingual();
+  it('takes every server hook SvelteKit runs as the project’s own, and gives a staged copy without one the generated hook', async () => {
     const dir = tempDir();
     mkdirSync(join(dir, 'src', 'hooks.server'), { recursive: true });
     // A folder without an index is no hook: SvelteKit passes it by.
-    expect(await rivalHookStop(dir, s)).toBeNull();
+    expect(ownServerHook(dir, false)).toBeUndefined();
     writeFileSync(join(dir, 'src', 'hooks.server', 'index.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
-    expect(await rivalHookStop(dir, s)).toMatch(/server hook of its own \(src\/hooks\.server\/index\.ts\): SvelteKit runs only one/);
+    expect(ownServerHook(dir, false)).toBe('src/hooks.server/index.ts');
     rmSync(join(dir, 'src', 'hooks.server'), { recursive: true });
     writeFileSync(join(dir, 'src', 'hooks.server.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
-    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.ts\)/);
+    expect(ownServerHook(dir, false)).toBe('src/hooks.server.ts');
     rmSync(join(dir, 'src', 'hooks.server.ts'));
     // SvelteKit also takes a file of that name without an extension.
     writeFileSync(join(dir, 'src', 'hooks.server'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
-    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\)/);
+    expect(ownServerHook(dir, false)).toBe('src/hooks.server');
     rmSync(join(dir, 'src', 'hooks.server'));
-    // Without any hook at all nothing stops the export: the staged copy is given the generated hook, languages and all.
-    expect(await rivalHookStop(dir, s)).toBeNull();
+    // Without any hook at all, the staged copy is given the generated hook, which runs the site's.
+    expect(ownServerHook(dir, false)).toBeUndefined();
     mkdirSync(join(dir, 'siteorigin'));
-    await settleServerHook(dir, s);
-    expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(generateServerHook(s));
-    expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toContain('"/fr/a-propos": "fr"');
+    await settleServerHook(dir);
+    expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(generateServerHook());
     rmSync(join(dir, 'siteorigin'), { recursive: true });
     // A hook at the generated path is the project's own unless SiteOrigin Builder wrote it there.
     writeFileSync(join(dir, SERVER_HOOK_FILE), 'export const handle = ({ event, resolve }) => resolve(event);\n');
-    expect(await rivalHookStop(dir, s)).toMatch(/\(src\/hooks\.server\.js\)/);
-    mkdirSync(join(dir, 'siteorigin'));
-    writeFileSync(join(dir, 'siteorigin', 'generated-manifest.json'), JSON.stringify({ files: { [SERVER_HOOK_FILE]: 'x' } }));
-    expect(await rivalHookStop(dir, s)).toBeNull();
-    // A site in one language is never stopped (its not-found page keeps the addresses it was built with, and the export
-    // says so), and neither is one whose only other language is a draft's.
-    rmSync(join(dir, 'siteorigin'), { recursive: true });
-    expect(await rivalHookStop(dir, fresh())).toBeNull();
-    expect(await rivalHookStop(dir, publishedState(apply(s, { type: 'page.update', pageId: fr, draft: true })))).toBeNull();
+    expect(ownServerHook(dir, false)).toBe(SERVER_HOOK_FILE);
+    expect(ownServerHook(dir, true)).toBeUndefined();
   });
 
   it('never writes the generated server hook beside one of the project’s own', async () => {
@@ -814,7 +872,8 @@ describe('page languages in the website', () => {
       // Without theirs, ours is written at the next change; when theirs comes back, ours goes at the next change.
       rmSync(join(dir, 'src', 'hooks.server.ts'));
       await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'de' }] }, { label: 'German' });
-      expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toContain('"/about": "de"');
+      expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(generateServerHook());
+      expect(readFileSync(join(dir, HANDLE), 'utf8')).toContain('"/about": "de"');
       writeFileSync(join(dir, 'src', 'hooks.server.ts'), theirs);
       await session.apply({ operations: [{ type: 'page.update', pageId: about, language: 'nl' }] }, { label: 'Dutch' });
       expect(existsSync(join(dir, SERVER_HOOK_FILE))).toBe(false);

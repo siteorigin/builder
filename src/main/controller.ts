@@ -34,7 +34,7 @@ import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import type { PageCheck } from './page-check';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewCaptureStep, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -4498,7 +4498,7 @@ export class Controller {
       // Anyone who edits the handoff in SiteOrigin Builder needs the installed theme it uses (#1477).
       const theme = installedThemeRequirement(snap.state);
       if (theme) warn(installedThemeNote(theme));
-      await settleServerHook(folder, publishedState(snap.state));
+      await settleServerHook(folder);
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
       // The project handed over knows the addresses this export publishes, as this one does once it records them: added
@@ -5183,9 +5183,6 @@ export class Controller {
       const trusted = new Map([...before.hashes].filter(([rel]) => before.stamps.get(rel)?.trusted));
       const edited = await timed('export.generatedCheck', () => editedGeneratedFile(s.dir, trusted))();
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
-      // Both exports are the published site: its pages decide whether it needs the generated server hook.
-      const rival = await rivalHookStop(s.dir, publishedState(s.state));
-      if (rival) return stop(rival);
       // A source's settings go out as the project holds them, and only when the folder holds them so too.
       const sources = opts.forBuild ? null : await this.sourcesCopyProblem(s);
       if (sources) return stop(sources);
@@ -5266,7 +5263,7 @@ export class Controller {
     // A review delivers nothing to visitors, so it saves no version either.
     const snap = await this.snapshotSource(s, project, { forBuild: true, ...(opts.review || !opts.held ? {} : { milestone: EXPORTED_SITE, held: opts.held }) });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
-    await settleServerHook(project, publishedState(snap.state));
+    await settleServerHook(project);
     const { revision, state } = snap;
     // The library's size, beside the bytes the export reads (scripts/perf/README.md).
     if (perf.on) perf.mark('export.library', { files: Object.values(state.assets.assets).length, bytes: Object.values(state.assets.assets).reduce((n, a) => n + (a.bytes || 0), 0) });

@@ -13,7 +13,7 @@ import type { LinkNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateOperation } from '@shared/ops';
-import { ERROR_PAGE_FILE, NOT_FOUND_COMPONENT, NOT_FOUND_DIR, NOT_FOUND_PAGE_JS, RUNTIME_DIR, SERVER_HOOK_FILE, generateLayout, generateNotFound, generateProject, generateServerHook } from '@generator/index';
+import { ERROR_PAGE_FILE, NOT_FOUND_COMPONENT, NOT_FOUND_DIR, NOT_FOUND_PAGE_JS, RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, generateLayout, generateNotFound, generateProject, generateServerHook, generateSiteHandle } from '@generator/index';
 import { notFoundSectionRoutes, pageIds } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
@@ -48,14 +48,17 @@ const publishNotFound = async (html: string, base: unknown, sections?: unknown) 
   return (await runtime).publishNotFound(html, base, sections);
 };
 
-/** The generated server hook, run as SvelteKit runs it while building /404.html under `base`. */
+/** The library file that exports the site's server hook. */
+const HANDLE = `${RUNTIME_DIR}/${SITE_HANDLE_FILE}`;
+
+/** The site's server hook, run as SvelteKit runs it while building /404.html under `base`. */
 async function runHook(s: ProjectState, html: string, opts: { base?: string; route?: string; building?: boolean } = {}): Promise<string> {
   const dir = scratch('not-found-hook');
   writeFileSync(join(dir, 'env.mjs'), `export const building = ${opts.building ?? true};\n`);
-  writeFileSync(join(dir, 'not-found.mjs'), NOT_FOUND_JS);
-  const hook = join(dir, 'hooks.server.mjs');
-  writeFileSync(hook, generateServerHook(s).replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))).replace("'./lib/siteorigin/runtime/not-found.js'", JSON.stringify(join(dir, 'not-found.mjs'))));
-  const { handle } = await import(/* @vite-ignore */ hook);
+  writeFileSync(join(dir, 'not-found.js'), NOT_FOUND_JS);
+  const hook = join(dir, 'handle.server.mjs');
+  writeFileSync(hook, generateSiteHandle(s).replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))));
+  const { [SITE_HANDLE]: handle } = await import(/* @vite-ignore */ hook);
   const route = opts.route ?? NOT_FOUND_ROUTE;
   const event = { route: { id: route }, url: new URL(`http://sveltekit-prerender${opts.base ?? ''}${route}`) };
   return handle({ event, resolve: (_: unknown, o?: { transformPageChunk?: (c: { html: string; done: boolean }) => string }) => (o?.transformPageChunk ? o.transformPageChunk({ html, done: true }) : html) });
@@ -260,15 +263,16 @@ describe('generated not-found page', () => {
       expect(files.get(ERROR_PAGE_FILE)).toContain("import NotFound from '../lib/siteorigin/runtime/NotFound.svelte';");
       expect(files.get(`${NOT_FOUND_DIR}/+page.js`)).toBe(NOT_FOUND_PAGE_JS);
       expect(NOT_FOUND_PAGE_JS).toMatch(/^export const trailingSlash = 'never';$/m);
-      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(fresh(), instrument));
+      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(instrument));
+      expect(files.get(HANDLE)).toBe(generateSiteHandle(fresh()));
       // The editor's preview alone keeps the message of an error a page met while it rendered (#1526).
       expect(files.get(SERVER_HOOK_FILE)!.includes('export function handleError(')).toBe(instrument);
       expect(files.get(`${RUNTIME_DIR}/not-found.js`)).toBe(NOT_FOUND_JS);
       // No editor instrumentation, in the export or in the editor's preview.
-      for (const f of [NOT_FOUND_COMPONENT, `${NOT_FOUND_DIR}/+page.svelte`, ERROR_PAGE_FILE, 'src/hooks.server.js', `${RUNTIME_DIR}/not-found.js`]) expect(files.get(f)).not.toMatch(/data-so-|siteorigin-bridge|builderTest/);
+      for (const f of [NOT_FOUND_COMPONENT, `${NOT_FOUND_DIR}/+page.svelte`, ERROR_PAGE_FILE, 'src/hooks.server.js', HANDLE, `${RUNTIME_DIR}/not-found.js`]) expect(files.get(f)).not.toMatch(/data-so-|siteorigin-bridge|builderTest/);
     }
-    const hook = generateServerHook(fresh());
-    expect([...hook.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['$app/env', './lib/siteorigin/runtime/not-found.js']);
+    const hook = generateSiteHandle(fresh());
+    expect([...hook.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['$app/env', './not-found.js']);
     // Not a page: it is never listed, linked or put in the sitemap.
     const s = fresh();
     s.site.baseUrl = 'https://example.com/studio';
@@ -342,8 +346,8 @@ describe('generated not-found page', () => {
     expect(run(worded)).toEqual(['not-found']);
     const sectioned = structuredClone(worded);
     sectioned.pages[sectioned.site.homePageId].nodes[anchored.id].anchor = 'pricing';
-    expect(run(sectioned)).toEqual(expect.arrayContaining(['not-found', 'hooks.server.js#clean']));
-    expect(generateProject(sectioned, {}, cache).get(SERVER_HOOK_FILE)).toContain('const SECTIONS = {"pricing":"/"};');
+    expect(run(sectioned)).toEqual(expect.arrayContaining(['not-found', 'site-handle']));
+    expect(generateProject(sectioned, {}, cache).get(HANDLE)).toContain('const SECTIONS = {"pricing":"/"};');
   });
 
   it("reads a code component's IDs again when its source changes in place, as an edit batch changes it", () => {
@@ -505,7 +509,7 @@ describe('not-found page addresses', () => {
 
   it('warns when a build leaves the page relative to where it was built', async () => {
     const built = builtDocument(await renderNotFound(fresh()));
-    expect(notFoundAddressWarning(built)).toMatch(/^404\.html, the not-found page, still uses addresses relative to where it was built \(\.\/_app\/[^)]+\), so at deeper missing addresses it may show without the site's styles and links\. This happens when the project has a server hook of its own \(src\/hooks\.server\) in place of the generated one\.$/);
+    expect(notFoundAddressWarning(built)).toMatch(/^404\.html, the not-found page, still uses addresses relative to where it was built \(\.\/_app\/[^)]+\), so at deeper missing addresses it may show without the site's styles and links\. This happens when the project has a server hook of its own \(src\/hooks\.server\) that does not run siteoriginHandle from src\/lib\/siteorigin\/runtime\/handle\.server\.js \(see README\.md\)\.$/);
     // Each kind of address is caught on its own.
     const done = await publishNotFound(built, '', { pricing: '/' });
     expect(pageRelativeAddresses(done.replace('base: "",', 'base: new URL(".", location).pathname.slice(0, -1),'))).toEqual(['new URL(".", location)']);
@@ -646,9 +650,11 @@ describe('a project with a server hook of its own', () => {
       expect(readFileSync(join(dir, 'src/hooks.server.ts'), 'utf8')).toContain('resolve(event)');
       expect(s.conflicts).toEqual([]);
       expect(readFileSync(join(dir, NOT_FOUND_COMPONENT), 'utf8')).toContain('"Lost?"');
+      // The site's server hook stays in the library for theirs to run.
+      expect(readFileSync(join(dir, HANDLE), 'utf8')).toBe(generateSiteHandle(s.state));
       rmSync(join(dir, 'src/hooks.server.ts'));
       await s.apply({ operations: [{ type: 'site.update', notFoundHeading: 'Lost again?' }] }, { label: 'Not-found heading' });
-      expect(readFileSync(generated, 'utf8')).toBe(generateServerHook(s.state));
+      expect(readFileSync(generated, 'utf8')).toBe(generateServerHook());
     } finally {
       await s.close();
     }
@@ -685,27 +691,27 @@ describe('a server hook added or removed while the project is open', () => {
     writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify(manifest));
     writeFileSync(join(dir, SERVER_HOOK_FILE), '// generated');
     // Without a hook of the project's own, nothing changes: a folder of helpers with no index file is not one.
-    await settleServerHook(dir, fresh());
+    await settleServerHook(dir);
     mkdirSync(join(dir, 'src/hooks.server'));
     writeFileSync(join(dir, 'src/hooks.server/helpers.js'), '// helpers');
-    await settleServerHook(dir, fresh());
+    await settleServerHook(dir);
     expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe('// generated');
     writeFileSync(join(dir, 'src/hooks.server.ts'), '// mine');
-    await settleServerHook(dir, fresh());
+    await settleServerHook(dir);
     expect(existsSync(join(dir, SERVER_HOOK_FILE))).toBe(false);
     expect(readFileSync(join(dir, 'src/hooks.server.ts'), 'utf8')).toBe('// mine');
     expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).toEqual({ 'src/app.html': 'def' });
     // Its own hook gone again before the next regeneration, the copy gets the generated one back.
     rmSync(join(dir, 'src/hooks.server.ts'));
-    await settleServerHook(dir, fresh());
-    expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(generateServerHook(fresh()));
+    await settleServerHook(dir);
+    expect(readFileSync(join(dir, SERVER_HOOK_FILE), 'utf8')).toBe(generateServerHook());
     expect(Object.keys(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).sort()).toEqual(['src/app.html', SERVER_HOOK_FILE]);
     // A src/hooks.server.js the manifest does not list is the project's own, and stays.
     const mine = scratch('not-found-own-js');
     mkdirSync(join(mine, 'src'));
     writeFileSync(join(mine, SERVER_HOOK_FILE), '// also mine');
     writeFileSync(join(mine, 'src/hooks.server.ts'), '// mine');
-    await settleServerHook(mine, fresh());
+    await settleServerHook(mine);
     expect(readFileSync(join(mine, SERVER_HOOK_FILE), 'utf8')).toBe('// also mine');
   });
 });
