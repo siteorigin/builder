@@ -117,6 +117,7 @@ describe('a theme code component’s editor markers', () => {
 
     it(`are left out of the source export${webmcp ? ', the form’s WebMCP copy included' : ''}, which still reopens without conflicts`, async () => {
       const { c, dir, files, form } = await projectWithThemeForm(webmcp);
+      expect(readFileSync(join(dir, files[0]), 'utf8')).toContain('so_text');
       const out = join(temp('out'), 'handoff');
       const r = await c.exportSourceTo(out);
       expect(r.ok).toBe(true);
@@ -124,6 +125,8 @@ describe('a theme code component’s editor markers', () => {
         const copied = readFileSync(join(out, f), 'utf8');
         expect(copied).toContain(`class="so-form__${part}"`);
         expect(copied).not.toContain('data-so-part');
+        // Nor the hook the text markers were written through, which nothing reads without them (#1538).
+        expect(copied).not.toContain('so_text');
       }
       if (webmcp) expect(readFileSync(join(out, files[1]), 'utf8')).toContain('toolname=');
       // The manifest lists the cleaned files as they are, so the copy reads as SiteOrigin Builder left it.

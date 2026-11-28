@@ -6,6 +6,7 @@ import type { Presence } from '@shared/live/messages';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { entryRoute } from '@shared/collections';
+import { OFFERED_ROLES, ROLE_LABELS, ROLES_HINT } from '../../src/renderer/src/lib/live-session';
 
 /**
  * The editor's side of hosting a live session (#764): following the main process's session for the opening it belongs
@@ -314,6 +315,13 @@ describe('where the host is', () => {
     store.setState({ postView: 'write', mode: 'edit', postPreviewAt: null });
     await vi.advanceTimersByTimeAsync(live.PRESENCE_DELAY_MS + 10);
     expect(calls.presence.at(-1)?.presence).toEqual({ pageId: null, viewportWidth: 1280, selection: null, previewPath: null });
+  });
+});
+
+describe('the roles a guest is given', () => {
+  it('offers Copy editor between Viewer and Collaborator, saying what a copy editor can and cannot change (#1318)', () => {
+    expect(OFFERED_ROLES.map((r) => ROLE_LABELS[r])).toEqual(['Viewer', 'Copy editor', 'Collaborator']);
+    expect(ROLES_HINT).toMatch(/Copy editors change the words and pictures.*but not the layout, styles or where links go/);
   });
 });
 

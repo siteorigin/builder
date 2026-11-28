@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SAYS_DEVELOPER_MODE } from '@engine/developer-mode';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -436,7 +437,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -649,6 +650,131 @@ describe('read-only questions (#203)', () => {
       expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Checking site SEO', `Checking SEO for ${about.title}`]));
       expect(session.revision, mode).toBe(asked);
     }
+  });
+
+  it('validates the project and measures a page in the live preview in a question, changing nothing (#1409)', async () => {
+    const measured: Array<[string, number]> = [];
+    let compiles = 0;
+    let sessionRef: ProjectSession | null = null;
+    const broken = { severity: 'error' as const, code: 'COMPILE_ERROR', message: 'Hero.svelte does not build.' };
+    const { session, run, adapter } = await setup([() => [call('v1', 'validate_project', { profile: 'component' })], () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish('The home page is wider than a phone screen.')], {
+      compileAll: async () => {
+        compiles++;
+        return [broken];
+      },
+      inspectLayout: async (pageId, width) => {
+        measured.push([pageId, width]);
+        return { viewportWidth: 390, documentWidth: 520, issues: [{ kind: 'horizontal-overflow', message: 'The page is wider than the screen.' }], previewRevision: sessionRef!.revision };
+      }
+    });
+    sessionRef = session;
+    const lock = watchLock(session);
+    const asked = session.revision;
+    const { result } = await run('Check my site for problems and mobile overflow', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true, changes: [], canUndo: false });
+    expect(adapter.requests[0].system).toMatch(/validate_project lists problems in the site's pages and settings/);
+    // The build's errors reach the question, as an edit's validation reports them.
+    const validated = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(validated).toMatchObject({ ok: true, revision: asked, profile: 'component' });
+    expect(JSON.stringify(validated)).toContain('Hero.svelte does not build.');
+    expect(compiles).toBe(1);
+    const inspected = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+    expect(inspected).toMatchObject({ ok: true, revision: asked, viewport: 'phone', report: { issues: [{ kind: 'horizontal-overflow' }] } });
+    expect(measured).toEqual([[session.state.site.homePageId, 390]]);
+    // The card lists the layout check it ran, as an edit's does.
+    expect(result?.checks).toEqual(expect.arrayContaining([{ status: 'issue', text: 'Content is wider than the screen at phone width on Home.' }]));
+    expect(lock).toEqual([]);
+    expect(session.revision).toBe(asked);
+  });
+
+  it("offers every model's question both checks, a small model's for whole pages and the two document profiles (#1409)", () => {
+    const state = createStarterState('business', 'Test', false);
+    for (const [capabilities, focused] of [
+      [{ toolCalling: 'native' as const, contextWindowTokens: 400_000 }, false],
+      [{ toolCalling: 'native' as const, contextWindowTokens: 32_000 }, true],
+      [{ toolCalling: 'constrained-json' as const, contextWindowTokens: 32_768 }, true],
+      [{ toolCalling: 'constrained-json' as const, contextWindowTokens: 200_000 }, true]
+    ] as const) {
+      const label = `${capabilities.toolCalling} ${capabilities.contextWindowTokens}`;
+      const ask = toolsForRun({ state, selection: null, capabilities, codeEnabled: false, definitionOps: false, ask: true });
+      expect(ask.focused, label).toBe(focused);
+      const tool = (name: string) => ask.tools.find((t) => t.name === name)!;
+      const props = (name: string) => Object.keys((tool(name).parameters as { properties: Record<string, unknown> }).properties).sort();
+      const profiles = (tool('validate_project').parameters as { properties: { profile: { enum: string[] } } }).properties.profile.enum;
+      if (focused) {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'viewport']);
+        // Whichever a model reads, signature brief or native description, it never says to pass refs.
+        for (const text of [tool('inspect_layout').brief, tool('inspect_layout').description]) expect(text, label).not.toMatch(/refs/);
+        expect(props('validate_project'), label).toEqual(['profile']);
+        expect(profiles, label).toEqual(['schema', 'component']);
+      } else {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'refs', 'viewport']);
+        expect([...profiles].sort(), label).toEqual(['component', 'preview', 'project', 'schema']);
+      }
+    }
+  });
+
+  it('never passes off a check of a site the author changed since the question, or of a preview behind it, as one of the site asked about (#1409)', async () => {
+    let sessionRef: ProjectSession | null = null;
+    let asked = 0;
+    let edited = false;
+    const before = { severity: 'warning' as const, code: 'BEFORE_EDIT', message: 'There before the question.' };
+    const after = { severity: 'warning' as const, code: 'AFTER_EDIT', message: 'Only after the author edited.' };
+    const { session, run, adapter } = await setup(
+      [
+        () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        () => [call('l2', 'inspect_layout', { pageId: '/', viewport: 'tablet' })],
+        () => [calls(['v1', 'validate_project', { profile: 'component' }], ['v2', 'validate_project', {}])],
+        () => finish('Checked what I could.')
+      ],
+      {
+        inspectLayout: async (_pageId, width) => {
+          if (width === 390) return { viewportWidth: 390, documentWidth: 390, issues: [], previewRevision: asked + 7 };
+          // The author renames the site while the page is measured; the preview had served the site asked about.
+          expect((await sessionRef!.apply({ operations: [{ type: 'site.update', name: 'Renamed' }], expectedRevision: sessionRef!.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+          edited = true;
+          return { viewportWidth: width, documentWidth: width, issues: [], previewRevision: asked };
+        }
+      }
+    );
+    sessionRef = session;
+    asked = session.revision;
+    session.diagnostics = () => [edited ? after : before];
+    const { result } = await run('Does the home page fit a phone and a tablet?', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true });
+    const sent = (id: string) => JSON.parse((adapter.requests.at(-1)!.items.find((i) => i.kind === 'tool_result' && i.callId === id) as { content: string }).content);
+    // A preview serving another revision is no measurement of the site asked about.
+    expect(sent('l1')).toMatchObject({ ok: false, revision: asked, error: { code: 'VALIDATION_FAILED' } });
+    // Once the author has changed the site, even mid-measurement, a live check no longer speaks for the site asked about.
+    for (const id of ['l2', 'v1']) expect(sent(id), id).toMatchObject({ ok: false, revision: asked, error: { code: 'STALE_REVISION', recoverable: false } });
+    // Checking the documents alone still reads the site asked about, with the problems it had then.
+    const schema = sent('v2');
+    expect(schema).toMatchObject({ ok: true, revision: asked, profile: 'schema' });
+    expect(JSON.stringify(schema)).toContain('BEFORE_EDIT');
+    expect(JSON.stringify(schema)).not.toContain('AFTER_EDIT');
+    // Neither measurement is a pass on the card.
+    expect(result?.checks?.some((c) => c.status === 'pass')).toBe(false);
+    expect(result?.checks).toEqual([
+      { status: 'unverified', text: "Couldn't check the layout at phone width on Home, before later changes." },
+      { status: 'unverified', text: "Couldn't check the layout at tablet width on Home, before later changes." }
+    ]);
+  });
+
+  it('says a check passed before the author changed the site, never as one of the site now (#1409)', async () => {
+    let sessionRef: ProjectSession | null = null;
+    const { session, run } = await setup(
+      [
+        () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        async () => {
+          expect((await sessionRef!.apply({ operations: [{ type: 'site.update', name: 'Renamed' }], expectedRevision: sessionRef!.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+          return finish('It fits a phone.');
+        }
+      ],
+      { inspectLayout: async () => ({ viewportWidth: 390, documentWidth: 390, issues: [], previewRevision: sessionRef!.revision }) }
+    );
+    sessionRef = session;
+    const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
+    expect(result?.checks).toEqual([{ status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' }]);
   });
 });
 
@@ -2295,6 +2421,62 @@ describe('tool definitions', () => {
     expect(inspected).toEqual([about.id]);
     const results = env.adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ isError?: boolean }>;
     expect(results.map((r) => !!r.isError)).toEqual([false, true, true, true]);
+  });
+
+  it('offers Settings when the answer says the request needs Developer mode while it is off (#1329)', async () => {
+    const blocked = 'A working calculator needs Developer mode, which is off. You can turn it on in Settings > General.';
+    const off = await setup([() => finish(blocked)], { codeEnabled: false });
+    const before = JSON.stringify(off.session.state);
+    const { result } = await off.run('Add an interactive mortgage calculator');
+    expect(result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // The setting is only offered: the run changed nothing, Developer mode included.
+    expect(JSON.stringify(off.session.state)).toBe(before);
+    // A question answered the same way offers it too.
+    const asked = await setup([() => finish(blocked)], { codeEnabled: false });
+    expect((await asked.run('Can you build a calculator?', { mode: 'ask' })).result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // With Developer mode on there is nothing to turn on, and an answer that only mentions it asks for nothing.
+    const on = await setup([() => finish(blocked)], { codeEnabled: true });
+    expect((await on.run('Add an interactive mortgage calculator')).result?.needs).toBeUndefined();
+    const fine = await setup([() => finish('I built the tabs with Developer mode off, from managed parts.')], { codeEnabled: false });
+    expect((await fine.run('Add tabs')).result?.needs).toBeUndefined();
+    // The run is told where the user turns it on, and that it cannot.
+    expect(JSON.stringify(off.adapter.requests[0])).toContain('Settings > General (you cannot)');
+  });
+
+  it('reads whether an answer says the request needs Developer mode, not that it only mentions it (#1329)', () => {
+    for (const said of ['A calculator needs Developer mode.', 'Developer mode is required for this change.', 'This requires **Developer mode**.', 'Custom code requires Developer mode, which is off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(true);
+    for (const said of ['They do not require Developer mode.', 'It doesn’t need Developer mode.', "Developer mode isn't required.", 'No Developer mode is required.', 'No **Developer mode** is required.', 'I built the tabs with Developer mode off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(false);
+  });
+
+  it('offers Settings when a question on the way said the request needs Developer mode, however the run then ends (#1329)', async () => {
+    const env = await setup([() => [call('q1', 'request_clarification', { question: 'A working calculator needs Developer mode, which is off. Build a static version instead?', choices: ['Static version', 'Leave it'] })], () => finish('Left the page as it was.')], { codeEnabled: false });
+    const r = await env.orch.send('Add an interactive calculator', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'Leave it');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect([...env.events].reverse().find((e) => e.message?.result)?.message?.result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+  });
+
+  it('offers nothing once the user took the version without code that a question offered, and it was built (#1329)', async () => {
+    const env = await setup(
+      [
+        () => [call('q1', 'request_clarification', { question: 'A working calculator needs Developer mode, which is off. Build a static version instead?', choices: ['Static version', 'Leave it'] })],
+        () => {
+          const home = env.session.state.pages[env.session.state.site.homePageId];
+          const hero = Object.values(home.nodes).find((n): n is InstanceNode => n.kind === 'instance' && typeof n.props.heading === 'string')!;
+          return [call('w1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: hero.id, prop: 'heading', value: 'Mortgage costs at a glance' }] })];
+        },
+        () => finish('Added a static version of the calculator.')
+      ],
+      { codeEnabled: false }
+    );
+    const r = await env.orch.send('Add an interactive calculator', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'Static version');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    const result = [...env.events].reverse().find((e) => e.message?.result)?.message?.result;
+    expect(result?.status).toBe('completed');
+    expect(result?.needs).toBeUndefined();
   });
 
   it('offers contract operations to a run selected inside a definition, even without Developer mode', async () => {
@@ -6779,5 +6961,130 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     await env.run('Show a subtitle instead of the title');
     expect(resultOf(env.adapter.requests[5]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/does not fit its new properties.*no “title” field/) });
     expect(Object.keys((session.state.components[id].properties.items as { fields: object }).fields)).toEqual(['title']);
+  });
+});
+
+describe('a code component open in Component Studio, edited from Chat (#1410)', () => {
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  /** Two project code components: the one open in the studio, and another. */
+  const withCode = async (session: ProjectSession) => {
+    const made = await session.apply(
+      {
+        operations: [
+          { type: 'component.createCode', name: 'Note', source: '<script>\n  let { text = "Hi" } = $props();\n</script>\n<p>{text}</p>\n', properties: { text: { type: 'string', label: 'Text', default: 'Hi' } } },
+          { type: 'component.createCode', name: 'Other', source: '<p>Other</p>\n', properties: {} }
+        ]
+      },
+      { label: 'Add code', source: 'user' }
+    );
+    expect(made.ok).toBe(true);
+    const [note, other] = (made.results ?? []).map((r) => (r as { definitionId: string }).definitionId);
+    return { note, other };
+  };
+
+  for (const window of [200_000, 8_000])
+    it(`patches only that component's source, on a ${window > 8_000 ? 'large' : 'small'} model`, async () => {
+      let ids = { note: '', other: '' };
+      let offered: string[] = [];
+      let pinned: unknown[] = [];
+      let system = '';
+      let context = '';
+      let elsewhere: { error?: { code?: string; message?: string } } = {};
+      let onPage: { error?: { code?: string } } = {};
+      let read: { revision: number; hash: string } = { revision: 0, hash: '' };
+      let patched: { ok?: boolean; error?: unknown } = {};
+      const env = await setup(
+        [
+          (req) => {
+            offered = req.tools.map((t) => t.name);
+            pinned = req.tools.filter((t) => t.name.includes('source')).map((t) => (t.parameters as { properties: { definitionId: unknown } }).properties.definitionId);
+            system = req.system;
+            context = JSON.stringify(req.items.at(-1));
+            // Another code component, though the tools name only the one open: reading it changes nothing.
+            return [call('s0', 'read_source', { definitionId: ids.other })];
+          },
+          (req) => {
+            const other = resultOf(req) as { revision: number; hash: string };
+            return [call('s0b', 'apply_source_patch', { definitionId: ids.other, expectedRevision: other.revision, expectedHash: other.hash, scope: { kind: 'component', targetIds: [ids.note] }, source: '<p>Changed</p>\n' })];
+          },
+          (req) => {
+            elsewhere = resultOf(req);
+            return [call('s1', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.update', pageId: env.session.state.site.homePageId, patch: { title: 'Changed' } }] })];
+          },
+          (req) => {
+            onPage = resultOf(req);
+            return [call('s2', 'read_source', { definitionId: ids.note })];
+          },
+          (req) => {
+            read = resultOf(req);
+            return [call('s3', 'apply_source_patch', { definitionId: ids.note, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [ids.note] }, edits: [{ find: '<p>{text}</p>', replace: '<p class="note" data-was="$&">{text}</p>' }] })];
+          },
+          (req) => {
+            patched = resultOf(req);
+            return finish('Gave the note a class.');
+          }
+        ],
+        { codeEnabled: true, capabilities: { contextWindowTokens: window } }
+      );
+      ids = await withCode(env.session);
+      const page = structuredClone(env.session.state.pages[env.session.state.site.homePageId]);
+      const { result } = await env.run('Give the paragraph a class', { component: { id: ids.note, name: 'Note' } });
+      // Every model gets the same small set: the source to read and patch, pinned to this component.
+      expect(offered).toEqual(['read_source', 'apply_source_patch', 'search_assets', 'request_clarification']);
+      expect(pinned).toEqual([
+        { type: 'string', enum: [ids.note] },
+        { type: 'string', enum: [ids.note] }
+      ]);
+      expect(system).toMatch(/one code component/);
+      expect(context).toContain('editingComponent');
+      expect(context).toContain('this is a code component');
+      // Refused as it arrives: the tool names only this component.
+      expect(elsewhere.error?.code).toBe('SCOPE_MISMATCH');
+      expect(elsewhere.error?.message).toMatch(/outside Note/);
+      // A page change is no tool the run has.
+      expect(onPage.error?.code).toBe('INVALID_ARGUMENT');
+      expect(patched.error).toBeUndefined();
+      expect(result?.status).toBe('completed');
+      // The replacement goes in as written: `$&` is code, never the matched text.
+      expect(env.session.state.components[ids.note].source).toContain('<p class="note" data-was="$&">{text}</p>');
+      expect(env.session.state.components[ids.other].source).toBe('<p>Other</p>\n');
+      expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
+    });
+
+  it('sends no edit without Developer mode, Continue included, and still answers a question', async () => {
+    const env = await setup([() => finish('It shows its text.')], { codeEnabled: false });
+    const { note } = await withCode(env.session);
+    const before = env.session.state.components[note].source;
+    const home = env.session.state.site.homePageId;
+    const ctx: ChatContext = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: note, name: 'Note' }, viewport: 1280 };
+    expect(await env.orch.send('Give the paragraph a class', ctx)).toEqual({ ok: false, message: expect.stringMatching(/Note’s code only with Developer mode on/) });
+    expect(await env.orch.send('continue', { ...ctx, mode: 'edit' })).toMatchObject({ ok: false });
+    expect(env.adapter.requests).toHaveLength(0);
+    // Neither joined the conversation.
+    expect(env.events.filter((e) => e.kind === 'message')).toHaveLength(0);
+    // A question changes nothing, so it is asked.
+    await env.run('What does Note show?', { component: { id: note, name: 'Note' }, mode: 'ask' });
+    expect(env.adapter.requests).toHaveLength(1);
+    expect(env.session.state.components[note].source).toBe(before);
+    // A run that reaches it anyway (Developer mode turned off as it started) can only ask.
+    const tools = toolsForRun({ state: env.session.state, selection: null, capabilities: { toolCalling: 'native', contextWindowTokens: 200_000 }, codeEnabled: false, definitionOps: false, definition: true, definitionTarget: { definitionId: note } });
+    expect(tools.mode).toBe('source');
+    expect(tools.tools.map((t) => t.name)).toEqual(['request_clarification']);
+  });
+
+  it('refuses a selection sent with a code component, and a theme’s code', async () => {
+    const env = await setup([() => finish('Done.')], { codeEnabled: true });
+    const { note } = await withCode(env.session);
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    const selected = await env.orch.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: { owner: { kind: 'component', id: note }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'Text', component: { id: note, name: 'Note' }, viewport: 1280 });
+    expect(selected).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read/) });
+    const theme = await env.orch.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 'foundation.shell.header', name: 'Header' }, viewport: 1280 });
+    expect(theme).toMatchObject({ ok: false, message: expect.stringMatching(/Header is no longer in the site/) });
+    // Removed while Developer mode was read: no edit of it is sent.
+    const removing = new Orchestrator({ ...(env.orch as unknown as { deps: ConstructorParameters<typeof Orchestrator>[0] }).deps, codeEnabled: async () => {
+      await env.session.apply({ operations: [{ type: 'component.remove', definitionId: note }] }, { label: 'Remove', source: 'user' });
+      return true;
+    } });
+    expect(await removing.send('Change it', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: note, name: 'Note' }, viewport: 1280 })).toMatchObject({ ok: false, message: expect.stringMatching(/Note is no longer in the site/) });
   });
 });

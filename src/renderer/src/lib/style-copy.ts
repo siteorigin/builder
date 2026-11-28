@@ -150,7 +150,15 @@ export interface PasteRow {
   changes: PasteChange[];
   /** Onto the style every card shares: the cards with a value of their own for this style that beats the change. */
   kept?: KeptValue[];
+  /** Left out of this paste by the caller: shown, but no edit is made for it. */
+  left?: boolean;
 }
+
+/** A row's identity in a review: the part it lands on and the property. */
+export const pasteRowKey = (r: { part: string | null; property: string }) => `${r.part ?? ''}:${r.property}`;
+
+/** Where a style sits in its parent rather than how it looks: a paste starts with these left out. */
+export const PLACEMENT_PROPS: readonly string[] = ['columnStart', 'columnSpan', 'rowSpan', 'order'];
 
 export interface PastePlan {
   /** Null when the selection takes no style changes. */
@@ -429,7 +437,7 @@ const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k)
  * the copy holds for that size are written. A property the copy doesn't set, and every one the destination doesn't
  * offer, is left as it is.
  */
-export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope, reach: ReachChoice = noChoice): PastePlan {
+export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope, reach: ReachChoice = noChoice, leftOut?: ReadonlySet<string>): PastePlan {
   const destination = styleSelection(state, ref, reach);
   if (!destination) return { destination, rows: [], operations: [] };
   const now = effectiveTokens(state);
@@ -499,9 +507,11 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         }
         // Onto the style every card shares: the cards whose own values for it beat the change.
         const kept = changes.length ? keptOver(target.ownItems ?? [], property, changes, now, done) : [];
-        rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes, ...(kept.length ? { kept } : {}) });
-        for (const c of changes)
-          operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), ...(target.itemId ? { itemId: target.itemId } : {}), scope: c.scope, ...(c.state ? { state: c.state } : {}), property, value: c.to ?? null });
+        const left = !!changes.length && !!leftOut?.has(pasteRowKey({ part, property }));
+        rows.push({ part, target: at, property, label, status: changes.length ? 'change' : 'same', changes, ...(kept.length && !left ? { kept } : {}), ...(left ? { left } : {}) });
+        if (!left)
+          for (const c of changes)
+            operations.push({ type: 'node.setStyle', owner: target.owner, nodeId: target.nodeId, ...(target.partId ? { partId: target.partId } : {}), ...(target.itemId ? { itemId: target.itemId } : {}), scope: c.scope, ...(c.state ? { state: c.state } : {}), property, value: c.to ?? null });
       }
     }
   }

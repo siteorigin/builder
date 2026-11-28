@@ -93,6 +93,10 @@
   .code-dialog > .source-stale { flex: none; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 30%, transparent); font-size: 12px; }
   .code-dialog > .source-stale > svg { width: 15px; height: 15px; margin-top: 0; align-self: flex-start; margin-block: 1px; }
   .code-dialog > .source-stale .btn { flex: none; }
+  /* The properties and the props the code takes disagree: the same strip, neutral, with the actions that settle it. */
+  .code-dialog > .code-props-sync { flex: none; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--border); font-size: 12px; }
+  .code-dialog > .code-props-sync > svg { width: 15px; height: 15px; margin-top: 0; align-self: flex-start; margin-block: 1px; }
+  .code-dialog > .code-props-sync .btn { flex: none; }
   .code-problem { display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 4px 8px 4px 23px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); font-size: 12px; line-height: 1.5; text-align: left; }
   button.code-problem:hover { background: var(--active); }
   button.code-problem:focus-visible { outline-offset: -2px; }
@@ -129,7 +133,7 @@
     .code-problems { max-height: 28%; padding-top: 6px; padding-bottom: 6px; }
   }
   @media (forced-colors: active) {
-    .code-badge, .code-chip, .code-problems, .code-dialog > .source-stale, .code-status-hint.active, .code-status-toggle[aria-pressed='true'] { box-shadow: none; border: 1px solid CanvasText; }
+    .code-badge, .code-chip, .code-problems, .code-dialog > .source-stale, .code-dialog > .code-props-sync, .code-status-hint.active, .code-status-toggle[aria-pressed='true'] { box-shadow: none; border: 1px solid CanvasText; }
     /* Dots and gutter glyphs are painted fills: keep them, in the system text colour. */
     .code-dot, .cm-lint-marker { forced-color-adjust: none; background-color: CanvasText !important; }
   }

@@ -42,6 +42,7 @@ import {
   Repeat,
   SearchCheck
 } from 'lucide-react';
+import type { CopyOnlyGrant } from '@shared/api';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
 import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, isCollectionLoop, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
@@ -78,7 +79,8 @@ import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, claimRefusals, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { isRequiredRefusal } from '@shared/required';
-import { DraftInput, Field, FieldHome, InfoTip, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { DraftInput, Field, FieldHome, InfoTip, LockedFields, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { copyEditablePropsOf, copyEditableText, copyGrant } from '../lib/copy-only';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -578,6 +580,9 @@ function InspectorBody() {
   if (workspace === 'seo') return <SeoOverview state={st} />;
   // The post writer, or a post previewed: the post is what is in front, never the page under it (#578).
   if (workspace) return <PostOverview state={st} workspace={workspace} />;
+  // A live session's copy editor (#1318) is shown only what it can change: the words and pictures of what is selected.
+  const grant = copyGrant(snap);
+  if (grant) return <CopyInspector key={`${snap.workspaceKey}:${selection ? JSON.stringify(selection) : `page:${pageId}`}`} state={st} grant={grant} selection={selection} reason={snap.readOnly!.reason} />;
   const editingDef = definitionMode ? st.components[definitionMode.definitionId] : undefined;
   // While editing a component everywhere, every route (canvas, Layers, nothing selected) shows that component.
   const throughPlacement = !!selection && selection.instancePath.length > 0 && (() => {
@@ -651,6 +656,95 @@ function InspectorBody() {
         <PrimitiveInspector state={st} owner={selection.owner} node={r.node} tokens={tokens} selection={selection} />
       )}
     </div>
+  );
+}
+
+/**
+ * The Inspector of a live session's copy editor (#1318): the words of a page's own text element, or the copy and
+ * pictures of a component placed on a page that the host lets a copy editor change, and nothing else. A part picked
+ * inside a placement shows its placement's. While editing is paused the fields stay, locked, with why.
+ */
+function CopyInspector({ state, grant, selection, reason }: { state: ProjectState; grant: CopyOnlyGrant; selection: ElementRef | null; reason: string }) {
+  // Inside a component placed on a page, what a copy editor can change is its placement's own.
+  const ref = selection && selection.owner.kind === 'page' && selection.instancePath.length ? { owner: selection.owner, instancePath: [], nodeId: selection.instancePath[0] } : selection;
+  const node = ref && !ref.slot ? resolveRef(state, ref).node : undefined;
+  const props = ref && node?.kind === 'instance' ? copyEditablePropsOf(state, grant, ref) : [];
+  const text = !!ref && node?.kind === 'text' && copyEditableText(state, ref);
+  const note = grant.paused ? <p className="insp-note">{reason}</p> : null;
+  if (!ref || !node)
+    return (
+      <div className="panel-body insp">
+        <div className="empty-insp">
+          <MousePointerClick />
+          <span>Select text or a section on the page to change its words and pictures. Everything else is the host’s to change.</span>
+        </div>
+        {note}
+      </div>
+    );
+  const title = refLabel(state, ref);
+  const def = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+  return (
+    <div className="panel-body insp">
+      <Header title={title} kind={def ? `${def.name} · copy editing` : `${elementKind(node).name} · copy editing`} icon={def ? <Component /> : elementKind(node).icon} />
+      {note}
+      <LockedFields value={grant.paused}>
+        <Section title="Content" id="copy-content" level={LEVEL}>
+          {text && node.kind === 'text' ? <CopyTextField state={state} owner={ref.owner} node={node} /> : null}
+          {node.kind === 'instance' && def && props.length ? <CopyPropFields state={state} owner={ref.owner} node={node} def={def} props={props} /> : null}
+          {!text && !props.length && <p className="faint insp-note">Only the host can change this. As a copy editor, you change the words of the text on the site’s pages, and the copy and pictures of the sections the host lets you.</p>}
+        </Section>
+      </LockedFields>
+    </div>
+  );
+}
+
+/** A page's own text element's words, as a copy editor types them in the Inspector. */
+function CopyTextField({ state, owner, node }: { state: ProjectState; owner: OwnerRef; node: TextNode }) {
+  const content = (value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value }], contentLabel(state, 'text', refTo(owner, node.id)), `${node.id}:text`);
+  return (
+    <div data-field="text">
+      <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
+        {node.rich ? (
+          <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-copy-text`}>
+            <RichTextField id={`${node.id}-copy-text`} value={richTextToMarkdown(toRichText(node.text), state.pages)} onCommit={(v, edit) => content(v, edit)} pages={state.pages} copyOnly />
+          </Field>
+        ) : (
+          <Field label="Text" hint="Or double-click the text on the page to edit it there.">
+            <DraftInput multiline rows={2} value={String(node.text)} onCommit={(v) => content(v)} />
+          </Field>
+        )}
+      </FieldHome>
+    </div>
+  );
+}
+
+/** The copy and pictures of a placement that the host lets a copy editor change, each a whole property. */
+function CopyPropFields({ state, owner, node, def, props }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; def: ComponentDefinition; props: string[] }) {
+  const here = refTo(owner, node.id);
+  const { claim, refused } = useFieldRefusals(`${owner.kind}:${owner.id}:${node.id}`);
+  const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], fieldLabel(state, def.properties[prop]?.label ?? prop, here), `${node.id}:${prop}`);
+  return (
+    <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
+      {props.map((key) => {
+        const schema = def.properties[key];
+        return (
+          <PropField
+            key={key}
+            name={key}
+            schema={schema}
+            value={node.props[key] ?? schema.default}
+            onChange={(v, edit) => claim(key, {}, () => set(key, v, edit))}
+            onList={() => undefined}
+            onTable={async () => false}
+            read={() => readProp(owner, node.id, key)}
+            alive={propAlive(owner, node.id, key)}
+            refused={refused(key)}
+            state={state}
+            copyOnly
+          />
+        );
+      })}
+    </FieldHome>
   );
 }
 

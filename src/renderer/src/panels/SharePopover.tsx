@@ -29,6 +29,7 @@ import {
   relayNow,
   remainingMs,
   ROLE_LABELS,
+  ROLES_HINT,
   spanWords,
   tickMs,
   waitingGuests,
@@ -340,6 +341,7 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
   const left = remainingMs(live, at);
   const extend = extendChoices(live);
   const linkId = useId();
+  const rolesHintId = useId();
   // A start that just copied this link shows that proof here too, whether the room opened before or after the copy.
   const [copied, setCopied] = useState(() => copiedAtStart(live.inviteUrl, COPIED_MS));
   useEffect(() => onStartCopied((url, when) => url === live.inviteUrl && setCopied(when)), [live.inviteUrl]);
@@ -649,11 +651,18 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
           action={
             unseen.length > 0 && !rosterBelow && <ShowNew className="btn btn-sm btn-ghost live-show-new" ids={unseen} guests={admitted} onShow={showUnseen} focused={showHadFocus} />
           }
+          note={
+            admitted.length > 0 && (
+              <p className="share-hint live-roles-hint" id={rolesHintId}>
+                {ROLES_HINT}
+              </p>
+            )
+          }
         >
           {admitted.length === 0 ? (
             <li className="share-quiet share-empty">No one has joined yet. Send the invite link to someone.</li>
           ) : (
-            admitted.map((g) => <GuestRow key={g.guestId} run={run} live={live} guest={g} at={at} disabled={reconnecting} joined={justIn.includes(g.guestId)} />)
+            admitted.map((g) => <GuestRow key={g.guestId} run={run} live={live} guest={g} at={at} disabled={reconnecting} joined={justIn.includes(g.guestId)} rolesHint={rolesHintId} />)
           )}
         </Group>
       </div>
@@ -684,7 +693,7 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
 }
 
 /** A group of people; `zero` counts it even when none are left (a queue still showing what became of its last answers). */
-function Group({ title, count, zero, className, action, children }: { title: string; count: number; zero?: boolean; className: string; action?: ReactNode; children: ReactNode }) {
+function Group({ title, count, zero, className, action, note, children }: { title: string; count: number; zero?: boolean; className: string; action?: ReactNode; /** Said under the list. */ note?: ReactNode; children: ReactNode }) {
   const id = useId();
   return (
     <section className={`share-group ${className}`} aria-labelledby={id}>
@@ -693,6 +702,7 @@ function Group({ title, count, zero, className, action, children }: { title: str
         {action}
       </div>
       <ul>{children}</ul>
+      {note}
     </section>
   );
 }
@@ -718,7 +728,7 @@ function ShowNew({ className, ids, guests, onShow, focused }: { className: strin
   );
 }
 
-function GuestRow({ run, live, guest, at, disabled, joined }: { run: LiveRun; live: LiveRoomState; guest: AdmittedGuest; at: number; disabled: boolean; joined: boolean }) {
+function GuestRow({ run, live, guest, at, disabled, joined, rolesHint }: { run: LiveRun; live: LiveRoomState; guest: AdmittedGuest; at: number; disabled: boolean; joined: boolean; /** What each role may do, said under the roster. */ rolesHint: string }) {
   const { busy, run: go } = useBusy();
   const off = disabled || busy.size > 0;
   const choices = guestExpiryChoices(live, at);
@@ -777,6 +787,7 @@ function GuestRow({ run, live, guest, at, disabled, joined }: { run: LiveRun; li
         <select
           className="select sm"
           aria-label={`Role for ${guest.displayName}`}
+          aria-describedby={rolesHint}
           value={asked ?? guest.role}
           disabled={off}
           onChange={(e) => {
@@ -787,9 +798,8 @@ function GuestRow({ run, live, guest, at, disabled, joined }: { run: LiveRun; li
             });
           }}
         >
-          {/* A role the host cannot pick shows while the guest holds it, and is never offered back. */}
-          {(OFFERED_ROLES.includes(guest.role) ? OFFERED_ROLES : [...OFFERED_ROLES, guest.role]).map((role) => (
-            <option key={role} value={role} disabled={!OFFERED_ROLES.includes(role)}>
+          {OFFERED_ROLES.map((role) => (
+            <option key={role} value={role}>
               {ROLE_LABELS[role]}
             </option>
           ))}
@@ -840,6 +850,8 @@ function GuestWhere({ guest, joined }: { guest: AdmittedGuest; joined: boolean }
         <Check aria-hidden="true" /> Just admitted
       </span>
     );
+  // Only collaborators share where they are: a copy editor's edits say who made them in History.
+  if (guest.role === 'copy-editor') return <span className="live-where share-quiet">Editing copy</span>;
   if (guest.role !== 'collaborator') return <span className="live-where share-quiet">Watching</span>;
   const presence = peer?.presence ?? null;
   if (!state || !presence) return <span className="live-where share-quiet">Location not known yet</span>;

@@ -52,8 +52,8 @@ const ENTRY = [
   "  stream: (text, at) => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'text', text, ...(at === undefined ? {} : { at }) })),",
   "  done: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' })),",
   // The run asks the author a question and waits for the answer.
-  "  ask: () => flushSync(() => {",
-  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] } });",
+  "  ask: (text = 'Which page should it go on?', guest) => flushSync(() => {",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text, choices: [] }], ...(guest ? { guest: { name: guest, id: 'grant-1' } } : {}) } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
   // Another thread on screen while the running request, filed in this one, asks its question here.
@@ -64,6 +64,14 @@ const ENTRY = [
   "    useStore.setState({ conversation: { id: 'c_other', title: 'Other', createdAt: time, messages: [] } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
+  // The live turn ends with an answer that says the request needs Developer mode (#1329).
+  "  blocked: () => flushSync(() => {",
+  "    const text = 'A working calculator needs Developer mode, which is off. You can turn it on in Settings > General.';",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), text, result: { status: 'no-changes', summary: text, changes: [], validation: [], checks: [], canUndo: false, ask: true, needs: 'developer-mode' } } });",
+  "    applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' });",
+  '  }),',
+  "  modal: () => useStore.getState().modal,",
+  "  developerMode: () => flushSync(() => useStore.setState({ settings: { ...useStore.getState().settings, developerMode: true } })),",
   "  calls: (path) => window.calls.filter((c) => c[0] === path).map((c) => c[1]),",
   // The app's own question, as the dialog host shows it, and the answer given to it.
   "  confirming: () => getConfirm()?.title ?? null,",
@@ -78,17 +86,17 @@ const ENTRY = [
 ].join('\n');
 
 /**
- * The preload bridge: every call answers a promise of nothing, but for what Chat asks the local server, and the perf
- * bridge keeps what the editor sends it.
+ * The preload bridge: every call answers a promise of nothing, but for what Chat asks the local server (and a pasted
+ * picture's file path, which a screenshot has none of), and the perf bridge keeps what the editor sends it.
  */
 const BRIDGE = `
   window.perfRecords = [];
   window.calls = [];
   window.builderPerf = { send: (record) => window.perfRecords.push(record) };
-  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS}, 'ai.newConversation': { id: 'c_new', title: 'New conversation', createdAt: '2026-11-24T00:00:00.000Z', messages: [] } };
+  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS}, 'ai.newConversation': { id: 'c_new', title: 'New conversation', createdAt: '2026-11-24T00:00:00.000Z', messages: [] }, 'project.stagePastedImages': { ok: true, batch: 'b1', paths: ['/tmp/paste/Pasted image.png'] } };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
-    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
+    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : path === 'pathForFile' ? '' : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
   });
   window.builder = any('');
 `;
@@ -314,6 +322,44 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await box.inputValue()).toBe('/clear');
   });
 
+  it('offers Settings at the Developer mode switch under a turn that says the request needs it, keeping the conversation (#1329)', async () => {
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Unsent words');
+    await page.evaluate('so.blocked()');
+    const turn = page.locator('[data-message-id="m_live"]');
+    const offer = turn.locator('.developer-mode-offer');
+    await expect.poll(() => offer.innerText()).toContain('Turn it on in Settings › General, then ask again for what needs code.');
+    // Earlier turns offer nothing.
+    expect(await page.locator('.developer-mode-offer').count()).toBe(1);
+    await offer.getByRole('button', { name: 'Open Settings' }).click();
+    // Settings opens over the chat at the switch; turning it on stays the user's to do there.
+    expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
+    expect(await page.evaluate("so.calls('app.setSettings')")).toEqual([]);
+    expect(await page.locator('.chat-log [data-message-id]').count()).toBe(2 * TURNS + 2);
+    expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Unsent words');
+    // Once it is on, the turn says to ask again instead.
+    await page.evaluate('so.developerMode()');
+    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Ask again, as an edit, for what needs code.');
+    expect(await offer.getByRole('button').count()).toBe(0);
+  });
+
+  it('offers Settings under the user’s own waiting question that says the request needs Developer mode, never a guest’s (#1329)', async () => {
+    const question = 'A working calculator needs Developer mode, which is off. Build a static version instead?';
+    await page.evaluate(([q]) => (globalThis as unknown as { so: { ask(t: string, g?: string): void } }).so.ask(q), [question]);
+    const offer = page.locator('.question-card .developer-mode-offer');
+    await expect.poll(() => offer.innerText()).toContain('then ask again for what needs code once this request finishes');
+    await offer.getByRole('button', { name: 'Open Settings' }).click();
+    expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
+    // Once it is on, a request that started without it has nothing more to say.
+    await page.evaluate('so.developerMode()');
+    await expect.poll(() => offer.count()).toBe(0);
+  });
+
+  it('offers nothing under a collaborator’s waiting question, whose request never gets code (#1329)', async () => {
+    await page.evaluate(() => (globalThis as unknown as { so: { ask(t: string, g?: string): void } }).so.ask('A working calculator needs Developer mode. Build a static version instead?', 'Ann'));
+    await page.locator('.question-card').waitFor();
+    expect(await page.locator('.question-card .developer-mode-offer').count()).toBe(0);
+  });
+
   it('renders no message while an answer to the AI’s question is typed', async () => {
     await page.evaluate('so.ask()');
     const box = page.getByRole('textbox', { name: 'Your answer', exact: true });
@@ -322,5 +368,53 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await box.pressSequentially('The Services page');
     expect(await box.inputValue()).toBe('The Services page');
     expect((await renders()) - before).toBe(0);
+  });
+  it('brings back the last message sent with ArrowUp in an empty box, and nothing over text being written (#1410)', async () => {
+    await page.evaluate('so.done()');
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    await box.click();
+    await box.press('ArrowUp');
+    expect(await box.inputValue()).toBe('And the last one?');
+    expect(await page.evaluate<string>('so.draft()')).toBe('And the last one?');
+    // The caret is at the end, to go on writing.
+    await page.waitForFunction(`document.activeElement?.selectionStart === ${'And the last one?'.length}`);
+    // With text in the box, ArrowUp only moves the caret.
+    await box.fill('Draft');
+    await box.press('ArrowUp');
+    expect(await box.inputValue()).toBe('Draft');
+    // Nothing is sent by it.
+    expect(await page.evaluate<number>("so.calls('ai.send').length")).toBe(0);
+  });
+
+  it('imports an image pasted into the box, and leaves text to paste as text (#1410)', async () => {
+    await page.evaluate('so.done()');
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    await box.click();
+    // A paste as the clipboard gives it: a picture, words, or both. Says whether the box kept it from pasting natively.
+    const paste = (withImage: boolean, text = '') =>
+      page.evaluate<boolean>(`(() => {
+        const data = new DataTransfer();
+        if (${withImage}) data.items.add(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', { type: 'image/png' }));
+        if (${JSON.stringify(text)}) data.setData('text/plain', ${JSON.stringify(text)});
+        const e = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+        document.querySelector('.composer textarea').dispatchEvent(e);
+        return e.defaultPrevented;
+      })()`);
+    expect(await paste(false, 'Just words')).toBe(false);
+    expect(await paste(true, 'Words beside a picture of them')).toBe(false);
+    expect(await page.evaluate<number>("so.calls('project.stagePastedImages').length")).toBe(0);
+    expect(await paste(true)).toBe(true);
+    await page.waitForFunction("so.calls('project.releasePastedImages').length > 0");
+    // Each call's arguments: the pictures, by type and bytes.
+    const staged = await page.evaluate<Array<[Array<{ type: string; bytes: Record<string, number> }>]>>("so.calls('project.stagePastedImages')");
+    expect(staged).toHaveLength(1);
+    expect(staged[0][0].map((f) => f.type)).toEqual(['image/png']);
+    expect(Object.values(staged[0][0][0].bytes)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    // The written picture goes through the import review as a dropped one does, and is removed after.
+    expect(await page.evaluate("so.calls('project.reviewImport')")).toEqual([[['/tmp/paste/Pasted image.png'], 'image']]);
+    expect(await page.evaluate("so.calls('project.releasePastedImages')")).toEqual([['b1']]);
+    // Released only once the review has read it.
+    const order = await page.evaluate<string[]>("window.calls.map((c) => c[0]).filter((p) => p.startsWith('project.'))");
+    expect(order.indexOf('project.releasePastedImages')).toBeGreaterThan(order.indexOf('project.reviewImport'));
   });
 });

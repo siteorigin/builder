@@ -5,7 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatContext, ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, composerScope, editScope, requestTarget, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, codeDesign, composerScope, editScope, requestTarget, retryView, targetOf } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 import { makeInstance } from '@engine/install';
@@ -141,18 +141,39 @@ describe('the composer while a component is edited everywhere (#191)', () => {
   });
 });
 
-describe('a code component open in Component Studio (#367)', () => {
-  it('is named as one the AI does not edit, so no edit is sent to the page behind it', () => {
-    const { state, home, hero } = project();
+describe('a code component open in Component Studio (#367, #1410)', () => {
+  const withCode = () => {
+    const { state, home, about, hero } = project();
     const made = applyOperations(state, [{ type: 'component.createCode', name: 'Note', source: '<p>Hi</p>\n', properties: {} }]);
-    const code = made.results[0].definitionId as string;
-    expect(uneditableDesign(made.state, { definitionId: code, returnPageId: home, studio: NEW_STUDIO })).toBe('Note');
-    // The composer's scope never names the code component, so it would fall back to the page.
-    expect(composerScope(made.state, { pageId: home, selection: null, definitionMode: { definitionId: code, returnPageId: home, studio: NEW_STUDIO } }).component).toBeNull();
-    // A design the AI does edit, and no component at all, send as they always have.
-    expect(uneditableDesign(made.state, { definitionId: hero, returnPageId: home, studio: NEW_STUDIO })).toBeNull();
-    expect(uneditableDesign(made.state, null)).toBeNull();
-    expect(uneditableDesign(made.state, { definitionId: 'gone', returnPageId: home })).toBeNull();
+    return { state: made.state, home, about, hero, code: made.results[0].definitionId as string };
+  };
+
+  it('is what the next message is about, as a whole, never the page behind the studio', () => {
+    const { state, home, hero, code } = withCode();
+    const studio = { definitionId: code, returnPageId: home, studio: NEW_STUDIO };
+    expect(codeDesign(state, code)?.name).toBe('Note');
+    expect(codeDesign(state, hero)).toBeNull();
+    expect(codeDesign(state, 'gone')).toBeNull();
+    // Nothing inside it is selected: its design is its source.
+    const scope = composerScope(state, { pageId: home, selection: { owner: { kind: 'component', id: code }, instancePath: [], nodeId: 'x' }, definitionMode: studio });
+    expect(scope).toEqual({ page: { id: home, title: state.pages[home].title }, component: { id: code, name: 'Note' }, selection: null, selectionLabel: null });
+    const ctx = chatContextFor(state, scope, { enabled: { page: true, scope: 'page' }, viewport: 1280 });
+    expect(ctx).toMatchObject({ component: { id: code, name: 'Note' }, selection: null });
+    expect(ctx.scope).toBeUndefined();
+    // A theme's code is never one of the project's own.
+    const theme = Object.values(state.components).find((d) => d.kind === 'code' && d.owner !== 'project')!;
+    expect(codeDesign(state, theme.id)).toBeNull();
+  });
+
+  it('goes back to the studio to be tried again, and carries on with Continue while the project has it', () => {
+    const { state, home, about, code } = withCode();
+    const ctx: ChatContext = { pageId: about, pageTitle: 'About', selection: null, selectionLabel: null, component: { id: code, name: 'Note' }, viewport: 1280 };
+    expect(retryView(state, ctx, { pageId: home, definitionMode: null })).toEqual({ pageId: about, definitionMode: { definitionId: code, returnPageId: home, studio: NEW_STUDIO }, selection: null, scope: 'site', missing: null });
+    expect(continueContext(user('u', ctx), state, 1280)).toEqual({ ctx });
+    const gone = structuredClone(state) as ProjectState;
+    delete gone.components[code];
+    expect(continueContext(user('u', ctx), gone, 1280)).toEqual({ error: 'Note is no longer in the site. Choose what to change, then send "Continue".' });
+    expect(retryView(gone, ctx, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: null, missing: 'Note' });
   });
 });
 

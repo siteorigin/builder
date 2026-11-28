@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
-import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
+import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme, installedThemeNote, installedThemeRequirement } from '@catalogue/index';
@@ -26,6 +26,7 @@ import { placeholderImageCount } from '@generator/checks';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
+import { notAProject, NOT_A_PROJECT } from './near-project';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
@@ -88,7 +89,7 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
-import { copyEditorBatchProblem } from '@engine/copy-editor';
+import { copyEditableProps, copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
 import { LiveHostManager, type LiveGuestEdit, type LiveNotesAnswer } from './live/host';
@@ -269,7 +270,7 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
-type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest };
+type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
 
 /**
  * A preview server started while its project was still opening (prepareRuntime), until its start takes it over:
@@ -377,7 +378,7 @@ export async function readManifestSummary(dir: string): Promise<{ ok: true; name
   } catch (e) {
     return { ok: false, message: `Could not read ${where}: ${(e as Error).message}` };
   }
-  if (text === null) return { ok: false, message: `That folder is not a SiteOrigin Builder project. Choose a folder that contains ${MANIFEST_FILE}.` };
+  if (text === null) return { ok: false, message: NOT_A_PROJECT };
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -801,11 +802,13 @@ export class Controller {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
     const settled = this.settled.get(s) ?? { state: s.state, revision: s.revision };
-    const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const source = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
-    const snapshot = liveSnapshot(source, [s.dir, homedir()]);
-    this.shared = { ...source, snapshot };
+    // What a copy editor may change is worked out from the same documents the guests are sent, once for each.
+    const copyEditable = last && last.state === source.state ? last.copyEditable : copyEditableProps(source.state);
+    const snapshot = liveSnapshot({ ...source, copyEditable } satisfies LiveSnapshotSource, [s.dir, homedir()]);
+    this.shared = { ...source, copyEditable, snapshot };
     return snapshot;
   }
 
@@ -1306,7 +1309,11 @@ export class Controller {
       if (replaces !== undefined) return { ok: false, message: 'Choose the folder the project is in now. A ZIP file would make a new copy of it.' };
       return this.openZip(dir, abort);
     }
-    if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: dirArg === undefined ? 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' : projectNotFound(dir) };
+    if (!existsSync(join(dir, MANIFEST_FILE))) {
+      // A chosen folder that is not a project is most often one beside it: the project is named and offered (#1433).
+      if (dirArg === undefined) return { ok: false, ...(await notAProject(dir)) };
+      return { ok: false, message: projectNotFound(dir) };
+    }
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
@@ -3324,7 +3331,7 @@ export class Controller {
       if ((!only || only === 'image') && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
       else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font') || isAssetOfKind(f, 'document')) rows.push({ path: f, name, bytes: 0, action: 'import' });
       // What the import would skip or refuse, the review names, so it is never counted among the files added.
-      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
+      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2, WOFF, TTF or OTF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
     }
     return { paths: files, rows };
   }

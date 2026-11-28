@@ -451,7 +451,7 @@ describe('a staged copy without its drafts', () => {
     expect(existsSync(join(again, 'static/assets/winter-shelves-1a2b3c4d.jpg'))).toBe(true);
     // Imported by a code component of the site's own, it is part of the website too, wherever it is placed.
     const coded = structuredClone(s);
-    coded.components['code.wrap'] = { ...def, id: 'code.wrap', name: 'Wrap', kind: 'code', tree: undefined, source: `<script>\n\timport Shelves from '$lib/siteorigin/generated/${defKey(def.id)}.svelte';\n</script>\n\n<Shelves />\n` };
+    coded.components['code.wrap'] = { ...def, id: 'code.wrap', name: 'Wrap', kind: 'code', tree: undefined, source: `<script>\n\timport Shelves from '#lib/siteorigin/generated/${defKey(def.id)}.svelte';\n</script>\n\n<Shelves />\n` };
     const third = project(coded);
     mkdirSync(join(third, 'static/assets'), { recursive: true });
     writeFileSync(join(third, 'static/assets/winter-shelves-1a2b3c4d.jpg'), 'jpg');

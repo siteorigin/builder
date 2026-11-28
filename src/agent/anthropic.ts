@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { TokenUsage } from '@shared/api';
-import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
+import type { AdapterNote, AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
 import { classifyHttpError, withoutEnv } from './types';
 import { modelInfo } from './models';
 
@@ -58,7 +58,7 @@ export class AnthropicAdapter implements AgentModelAdapter {
     return messages;
   }
 
-  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal, note?: (n: AdapterNote) => void): AsyncIterable<ModelEvent> {
     for (let attempt = 0; ; attempt++) {
       let text = '';
       let yielded = false;
@@ -146,6 +146,7 @@ export class AnthropicAdapter implements AgentModelAdapter {
         const next = !yielded && attempt < 2 ? this.lowerBudget(e, maxTokens) : 0;
         if (next) {
           this.outputCap = next;
+          note?.({ kind: 'resend', reason: 'shorter reply', maxTokens: next, error: classifyHttpError(e) });
           continue;
         }
         yield { type: 'error', ...classifyHttpError(e) };

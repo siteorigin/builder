@@ -450,7 +450,7 @@ describe('generated rich text', () => {
       return r.state;
     };
 
-    const helper = `<script>import SoRichText from '$lib/siteorigin/runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />`;
+    const helper = `<script>import SoRichText from '#lib/siteorigin/runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />`;
 
     it('passes paragraph strings to a property that declares no form, as code components always had', () => {
       const out = generateProject(code(fresh(), `<script>let { body = [] } = $props();</script>{#each body as line}<p>{line}</p>{/each}`)).get('src/routes/+page.svelte')!;

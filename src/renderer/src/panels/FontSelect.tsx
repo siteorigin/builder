@@ -80,7 +80,7 @@ export function FontSelect({
     // Its family as the project has it now, with any files it joined, so its fallback is the family's kind.
     const now = getState().snapshot?.state;
     if (font?.font) onChoose(now ? projectFontStack(now, font.font.family) : importedFontStack(font.font.family, font.font.category));
-    else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2 or WOFF file.', 'error');
+    else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2, WOFF, TTF or OTF file.', 'error');
   };
   const select = (
     <select

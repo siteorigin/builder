@@ -47,6 +47,9 @@
   /* Scrolled part-way through a property's sizes, its name stays beside them under the pinned strip, and leaves with
      its last size. */
   .paste-list .paste-prop { position: sticky; top: calc(var(--paste-pin, 0px) + 2px); }
+  .paste-pick { display: grid; grid-template-columns: auto 1fr; column-gap: 6px; align-items: baseline; cursor: pointer; }
+  .paste-pick .paste-part { grid-column: 2; }
+  .paste-left .paste-changes, .paste-left .paste-kept { opacity: 0.5; }
   .paste-changes { grid-column: 2 / -1; display: grid; grid-template-columns: subgrid; row-gap: 5px; min-width: 0; }
   .paste-change { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: baseline; }
   .paste-size { font-size: 12px; color: var(--text-2); white-space: nowrap; }

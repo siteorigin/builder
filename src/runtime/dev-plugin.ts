@@ -276,8 +276,8 @@ export function devPlugin(dir: string) {
         const key = id.slice(PREVIEW_ENTRY.length).replace(/\.js$/, '');
         return PREVIEW_KEY.test(key) ? '\0' + PREVIEW_ENTRY + key + '.js' : null;
       }
-      // An import made by a preview's own files (relative, or through $lib, which Vite has made a project path by
-      // now): a file the preview has its own copy of comes from that copy, so its pieces fit each other. Anything
+      // An import made by a preview's own files (relative, or through #lib, which Vite resolves to a project path):
+      // a file the preview has its own copy of comes from that copy, so its pieces fit each other. Anything
       // else (a helper a code component imports) is resolved by Vite as the project's own copy of the importing file
       // would import it, as on a page.
       const from = importer ? isolatedPreviewPath(names, importer, ISOLATED_DIR, PREVIEW_KEY) : null;

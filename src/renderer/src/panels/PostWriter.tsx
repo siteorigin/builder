@@ -1,10 +1,10 @@
 import './PostsPanel.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
+import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Plus, Quote, Redo2, Search, Send, TriangleAlert, Undo2, Unlink, Upload } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
-import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
+import { collectionHasBody, collectionKind, entryPickerLabel, entryRoute, entryTitleCounts, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
 import { COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, entryTarget, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { linkIndexes } from '../lib/link-indexes';
@@ -321,6 +321,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
   const [dialog, setDialog] = useState<Dialog>(null);
+  /** The dialog session an import was started in (see importIntoDialog); the dialog now open, whatever it is, is the latest one. */
+  const [importing, setImporting] = useState<number | null>(null);
+  const dialogRef = useRef(dialog);
+  dialogRef.current = dialog;
+  const dialogSession = useRef(0);
+  const dialogOpen = dialog !== null;
+  useEffect(() => {
+    dialogSession.current++;
+  }, [dialogOpen]);
+  const readOnlyRef = useRef(false);
   /** The latest drop of image files, and whether this writer is still mounted: a late import is checked against both. */
   const dropRun = useRef(0);
   const mounted = useRef(true);
@@ -853,6 +863,56 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     setDialog({ kind: 'image', fig: null, at: still, index: blockIndex(el, still), before: !!still && before, caret: savedSelection(el), value: { assetId: asset.id, alt: asset.altSuggestion ?? '' }, caption: '' });
   };
   /**
+   * Import from inside the picture dialog (#1375): through the file chooser (no paths) or files dropped on it, the
+   * first picture that arrived chosen, ready for its description and caption. A description written for the picture
+   * it replaces is not the new one's: the new picture's suggestion, else none. If the dialog was closed meanwhile,
+   * the picture stays in Assets and a note says so.
+   */
+  const importIntoDialog = async (paths?: string[]) => {
+    const opening = getState().snapshot?.workspaceKey;
+    const session = dialogSession.current;
+    const began = dialogRef.current;
+    if (!opening || importing !== null || readOnlyRef.current || began?.kind !== 'image') return;
+    setImporting(session);
+    // The import still counts for the dialog it began in: closed, another one opened, or another picture chosen
+    // (or described) meanwhile, it is not applied, and the picture waits in Assets with a note.
+    const same = () => mounted.current && !getState().leaving && !readOnlyRef.current && session === dialogSession.current && dialogRef.current?.kind === 'image' && dialogRef.current.value === began.value;
+    try {
+      const plan = await reviewImport(paths, 'image', () => mounted.current && getState().snapshot?.workspaceKey === opening).catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
+      if (!plan || !mounted.current) return;
+      // A collection that turned read-only while the files were read takes nothing in.
+      if (readOnlyRef.current) return;
+      let landed!: (o: ApplyOutcome) => void;
+      trackApply(new Promise<ApplyOutcome>((done) => (landed = done)));
+      setState({ pendingSave: getState().pendingSave + 1 });
+      let r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = { ok: false, assetIds: [], message: 'The image couldn’t be added.' };
+      try {
+        r = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+      } finally {
+        setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
+        landed(!r.assetIds.length && r.message ? { ok: false, message: r.message } : { ok: true });
+      }
+      if (r.note) toast(r.note, 'info');
+      if (r.message) toast(r.message, 'error');
+      if (!r.assetIds.length) return;
+      const arrived = await assetArrived(r.assetIds[r.assetIds.length - 1], opening);
+      const snap = getState().snapshot;
+      if (!arrived || snap?.workspaceKey !== opening) return;
+      const assets = snap.state.assets.assets;
+      const asset = r.assetIds.map((id) => (Object.hasOwn(assets, id) ? assets[id] : undefined)).find((a) => a?.kind === 'image');
+      if (!asset) return;
+      // The same file again changes nothing: its choice and description stand.
+      if (asset.id === began.value.assetId && same()) return;
+      if (!same()) {
+        toast(`“${asset.name}” was added to Assets.`, 'info');
+        return;
+      }
+      setDialog((d) => (d?.kind === 'image' ? { ...d, value: { assetId: asset.id, alt: asset.altSuggestion ?? '', ...(d.value.decorative ? { decorative: true } : {}) }, altError: false } : d));
+    } finally {
+      if (mounted.current) setImporting(null);
+    }
+  };
+  /**
    * The line where a picture dragged in from the desktop would go, and the block it goes by. Over a picture already in
    * the text too, which the browser would not take a file on by itself.
    */
@@ -1041,6 +1101,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const structured = collectionKind(collection.settings) === 'structured';
   const paged = hasDetailPages(collection.settings);
   const readOnly = isReadOnlyCollection(collection);
+  readOnlyRef.current = readOnly;
   const noun = entryNoun(collection);
   const nounLower = entryNounLower(collection);
   // The collection's own name in a sentence ("lists of case studies"), an acronym ("FAQs") kept as it is.
@@ -1480,6 +1541,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               value={dialog.value}
               altError={dialog.altError}
               tried={dialog.tried ?? 0}
+              importing={importing !== null}
+              onImport={(paths) => void importIntoDialog(paths)}
               // A description written, decorative turned on or another picture chosen settles what was asked.
               onChange={(value) => setDialog({ ...dialog, value, altError: dialog.altError && !value.decorative && !value.alt.trim() && value.assetId === dialog.value.assetId })}
               onOpenAssets={() => {
@@ -1556,7 +1619,7 @@ function SavedTextDialog({ noun, body, state, devUrl, onClose, onKeepMine, onUse
  * `.insp-pick-*`): the name under each picture, the chosen one raised, a picture whose file is gone an empty frame
  * marked Missing, and logos shown whole.
  */
-function PicturePicker({ state, devUrl, missing, value, altError, tried, onChange, onOpenAssets }: { state: ProjectState; devUrl: string | null; missing: ProjectSnapshot['missingAssets']; value: ImageValue; altError?: boolean; tried: number; onChange: (v: ImageValue) => void; onOpenAssets: () => void }) {
+function PicturePicker({ state, devUrl, missing, value, altError, tried, importing, onChange, onOpenAssets, onImport }: { state: ProjectState; devUrl: string | null; missing: ProjectSnapshot['missingAssets']; value: ImageValue; altError?: boolean; tried: number; importing: boolean; onChange: (v: ImageValue) => void; onOpenAssets: () => void; onImport: (paths?: string[]) => void }) {
   const uid = useId();
   const [q, setQ] = useState('');
   const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
@@ -1593,12 +1656,42 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
     // A picture already in the text opens with its tile in view.
     grid.current?.querySelector<HTMLElement>('.insp-pick-tile.current')?.scrollIntoView({ block: 'nearest' });
   }, []);
+  const [over, setOver] = useState(false);
+  const isFileDrag = (e: React.DragEvent) => [...e.dataTransfer.types].includes('Files');
+  const dropProps = {
+    onDragOver: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // One import at a time: a file let go meanwhile is not taken, and the cursor says so.
+      e.dataTransfer.dropEffect = importing ? 'none' : 'copy';
+      if (!over) setOver(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOver(false);
+      if (importing) return;
+      const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+      if (paths.length) onImport(paths);
+    }
+  };
+  const importButton = (
+    <button type="button" className="btn btn-sm post-picker-import" aria-disabled={importing || undefined} onClick={() => !importing && onImport()}>
+      <Plus aria-hidden="true" /> {importing ? 'Adding…' : 'Import…'}
+    </button>
+  );
   if (!images.length)
     return (
-      <div className="post-picker-empty" ref={root}>
+      <div className={`post-picker-empty${over ? ' drop-over' : ''}`} ref={root} {...dropProps}>
         <ImageOff aria-hidden="true" />
-        <p>No pictures in the library yet. Add them in Assets, then choose one here.</p>
-        <button className="btn" data-autofocus onClick={onOpenAssets}>
+        <p>No pictures in the library yet. Import one, or drop an image file here.</p>
+        {importButton}
+        <button className="btn btn-sm" onClick={onOpenAssets}>
           Open Assets
         </button>
       </div>
@@ -1616,22 +1709,25 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
   const roving = shown.some((a) => a.id === active) ? active : shown.some((a) => a.id === value.assetId) ? value.assetId : (shown[0]?.id ?? null);
   const chosenLost = !!chosen && !!damage(chosen.id)?.original;
   return (
-    <div className="post-picker" ref={root}>
+    <div className={`post-picker${over ? ' drop-over' : ''}`} ref={root} {...dropProps}>
       <div className="post-picker-library">
-        {(images.length > 6 || q) && (
-          <div className="post-picker-find">
-            <Search aria-hidden="true" />
-            <input
-              ref={search}
-              type="search"
-              className="input with-icon"
-              placeholder={`Search ${images.length} pictures`}
-              aria-label="Search pictures"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
-        )}
+        <div className="post-picker-find">
+          {(images.length > 6 || q) && (
+            <>
+              <Search aria-hidden="true" />
+              <input
+                ref={search}
+                type="search"
+                className="input with-icon"
+                placeholder={`Search ${images.length} pictures`}
+                aria-label="Search pictures"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            </>
+          )}
+          {importButton}
+        </div>
         {shown.length > 0 ? (
           <div
             ref={grid}
@@ -1725,6 +1821,7 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
         )}
         {/* What is chosen, said under the pictures however far they are scrolled or searched, at one steady height. */}
         <p className={`post-picker-chosen${chosen ? '' : ' none'}`}>{chosen ? <>Chosen: <strong>{nameOf(chosen.id)}</strong></> : 'No picture chosen yet'}</p>
+        <p className="post-picker-drop-hint"><Upload aria-hidden="true" /> Or drop an image file here to use it.</p>
       </div>
       <p className="sr-only" role="status">
         {needle ? `${shown.length} of ${images.length} pictures` : ''}
@@ -1768,7 +1865,11 @@ function linkablePosts(state: ProjectState, self: string) {
   return Object.keys(state.collections ?? {})
     .filter((id) => hasDetailPages(state.collections[id].settings))
     .sort()
-    .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collectionId: id, collection: state.collections[id].settings.name })))
+    .flatMap((id) => {
+      const collection = state.collections[id];
+      const titles = entryTitleCounts(collection);
+      return orderedEntries(collection).map((e) => ({ id: e.id, title: entryPickerLabel(collection, e, titles), collectionId: id, collection: collection.settings.name }));
+    })
     .filter((p) => p.id !== self);
 }
 

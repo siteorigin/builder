@@ -207,6 +207,12 @@
   .question-card .choice > span { min-width: 0; }
   /* The answer that widens the request carries the site-wide globe of the note above it, in its amber. */
   .question-card .choice svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--amber); }
+  /* Where Developer mode is turned on, under a turn that said the request needs it (#1329). */
+  .developer-mode-offer { background: var(--panel-2); }
+  .developer-mode-offer > svg { color: var(--text-2); }
+  .developer-mode-offer > span { text-wrap: pretty; }
+  .result-card > .developer-mode-offer { border-radius: 0; border-top: 1px solid var(--border); }
+  .reply > .developer-mode-offer { margin-top: 8px; }
   .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
   /* On a short window the card scrolls before the conversation disappears. */
   .chat.asking .chat-body { min-height: 64px; }

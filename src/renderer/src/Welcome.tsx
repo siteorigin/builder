@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject, TrustRequest } from '@shared/api';
 import { api, errorText, getState, setState, toast, useStore, whenThemesReady } from './store';
+import { nearbyOffer } from './lib/nearby-project';
 import { Disclosure, openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { recentGroups, whereLabels } from './lib/recent-places';
@@ -261,7 +262,8 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
       const r = await api.projects.open(dir, opts);
       opened = r.ok && !r.needsTrust;
       if (r.needsTrust) setTrust({ ...r.needsTrust, replaces: opts?.replaces });
-      else if (!r.ok && r.message) toast(r.message, 'error');
+      // A folder beside a project offers that project (#1433), still for the missing entry it was chosen for, if any.
+      else if (!r.ok && r.message) toast(r.message, 'error', nearbyOffer(r.nearby, (d) => void open(d, opts?.replaces === undefined ? undefined : { replaces: opts.replaces })));
     } catch (e) {
       // Whatever went wrong, the author sees it and can choose another project straight away.
       toast(`Could not open the project: ${errorText(e)}`, 'error');

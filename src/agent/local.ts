@@ -2,7 +2,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
 import type { LocalCheck, TokenUsage } from '@shared/api';
 import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
-import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
+import type { AdapterNote, AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
 import type { JsonSchema } from './strict-schema';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
@@ -618,7 +618,7 @@ export class LocalAdapter implements AgentModelAdapter {
     return true;
   }
 
-  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal, note?: (n: AdapterNote) => void): AsyncIterable<ModelEvent> {
     /** The error a turn ends with. A failure of the setup rather than of this request is reported too. */
     const fail = (error: LocalError, retried = false) => {
       const event = this.errorEvent(error, retried);
@@ -658,12 +658,14 @@ export class LocalAdapter implements AgentModelAdapter {
         // A server may only find out it cannot build the compact grammar once the stream has opened.
         if (!result.streamed && constrained && fallbacks < MAX_FALLBACKS && !signal.aborted && result.errorBody && refusesSchema(serverMessage(result.errorBody), serverParam(result.errorBody)) && this.dropCompact(req.tools)) {
           fallbacks++;
+          note?.({ kind: 'resend', reason: 'schema refused', error: result.error });
           continue;
         }
         if (!result.streamed && replyCap === Infinity && !corrections.length && !signal.aborted) {
           const room = this.shorterReply(result.error, Number(body.max_tokens));
           if (room) {
             replyCap = room;
+            note?.({ kind: 'resend', reason: 'shorter reply', maxTokens: room, error: result.error });
             continue;
           }
         }
@@ -673,6 +675,7 @@ export class LocalAdapter implements AgentModelAdapter {
       if (result.kind === 'http') {
         if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, req.tools)) {
           fallbacks++;
+          note?.({ kind: 'resend', reason: 'server fallback', status: result.status, message: serverMessage(result.body, this.endpoint.apiKey) });
           continue;
         }
         const error = httpError(result.status, result.body, req.model, result.retryAfterMs, this.endpoint.apiKey);
@@ -681,6 +684,7 @@ export class LocalAdapter implements AgentModelAdapter {
           const room = this.shorterReply(error, Number(body.max_tokens));
           if (room) {
             replyCap = room;
+            note?.({ kind: 'resend', reason: 'shorter reply', maxTokens: room, error });
             continue;
           }
         }
@@ -693,6 +697,12 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       corrections.push({ role: 'assistant', content: result.raw.slice(0, 2000) || '(empty reply)' }, { role: 'user', content: `Your last reply could not be used: ${result.problem}. ${constrained ? 'Reply with exactly one JSON object in the required format, and nothing else.' : 'Send your whole reply again, in the same format.'}` });
+      if (note) {
+        // The key in use never goes into a note, even from a server that echoes it.
+        const key = this.endpoint.apiKey;
+        const clean = (text: string) => (key ? text.split(key).join('…') : text);
+        note({ kind: 'resend', reason: 'correction', problem: clean(result.problem), reply: clean(result.raw), corrections: corrections.slice(-2).map((c) => ({ ...c, content: clean(String(c.content)) })) });
+      }
     }
   }
 

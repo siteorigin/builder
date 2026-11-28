@@ -475,13 +475,13 @@ const COMMENT = /<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|^[ \t]*\/\/.*$/gm;
 
 /**
  * The paths a module's source imports, static or dynamic, each without the query or hash Vite reads (`./x.svelte?raw`
- * is `./x.svelte`). An import in a comment is none.
+ * is `./x.svelte`; the `#` that starts `#lib/x.svelte` is part of its name). An import in a comment is none.
  */
 export function importSpecifiers(text: string, opts: { runtime?: boolean } = {}): string[] {
   const code = text.replace(COMMENT, '');
   // With `runtime`, a type-only import (erased once compiled) loads nothing.
   const loaded = opts.runtime ? code.replace(/\b(?:import|export)\s+type\b[^;'"]*?\bfrom\s*(['"])[^'"\n]+\1/g, '') : code;
-  return [...loaded.matchAll(IMPORT_SPECIFIER)].map((m) => m[2].replace(/[?#].*$/, ''));
+  return [...loaded.matchAll(IMPORT_SPECIFIER)].map((m) => m[2].replace(/(?!^)[?#].*$/, ''));
 }
 
 /**
@@ -1162,7 +1162,8 @@ export async function leaveOutDrafts(dir: string, state: ProjectState, live: Pro
 }
 
 /**
- * Take the editor's markers (see shared/code-markers.ts) out of a staged copy's code components, for both exports:
+ * Take the editor's markers (see shared/code-markers.ts), and the text hook they were written through (see
+ * withoutCodeMarkers), out of a staged copy's code components, for both exports:
  * the preview finds what it edits in a code component by its markers, and the published site carries none, whoever
  * owns the component. That is every file a code component's code reaches the website through: a project component's
  * own source, the generated file a theme's code is written to, and the copy of a contact form's code that declares

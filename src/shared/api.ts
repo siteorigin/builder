@@ -375,6 +375,18 @@ export type FileText = { state: 'text'; text: string } | { state: 'missing' } | 
 /** How a file conflict is settled: the file on disk kept, Builder's version restored, or a design's file made code. */
 export type ConflictChoice = 'keep' | 'restore' | 'convert' | 'remove';
 
+/**
+ * A live session's copy editor's way into the host's project (#1318): the project stays read-only to it but for the
+ * words of the text on its pages and the copy and pictures of the components placed there that the host lets a copy
+ * editor change. The host checks every edit again (engine/copy-editor.ts).
+ */
+export interface CopyOnlyGrant {
+  /** By design, the properties of a placed component a copy editor may change (engine/copy-editor.ts copyEditableProps). */
+  props: Record<string, string[]>;
+  /** Editing is paused for now (the host reconnecting, its AI making changes): the read-only reason says why. */
+  paused: boolean;
+}
+
 export interface ProjectSnapshot {
   dir: string;
   state: ProjectState;
@@ -396,8 +408,11 @@ export interface ProjectSnapshot {
   conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean; convert?: { definitionId: string }; deletedCode?: { definitionId: string } }>;
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
-  /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
-  readOnly?: { reason: string; canUnlock: boolean } | null;
+  /**
+   * Set when the project is open for inspection only (a newer format, or another app is editing it), or open to a live
+   * session's copy editor, who changes only its words and pictures (`copyOnly`).
+   */
+  readOnly?: { reason: string; canUnlock: boolean; copyOnly?: CopyOnlyGrant } | null;
   /** Installed theme components with a newer version in the theme. */
   themeUpdates?: ThemeUpdates;
   localState: LocalWorkspaceState;
@@ -482,6 +497,9 @@ export type DuplicateProjectResult = { ok: true; dir: string; name: string } | {
  * new folder (`unpacked`).
  */
 export type TrustRequest = { dir: string; name: string; reason: 'new' | 'changed' | 'unpacked' };
+
+/** A project beside a chosen folder that is not one (the project it is inside, or the one it holds), which Open project offers to open instead (#1433). */
+export type NearbyProject = { dir: string; name: string };
 
 /**
  * A project ZIP file being unpacked: into a new folder in `dir`, named `folder` unless that name is taken (then a
@@ -630,6 +648,9 @@ export type ChatEditScope = 'selection' | 'page' | 'site';
 
 export const CHAT_EDIT_SCOPES: readonly ChatEditScope[] = ['selection', 'page', 'site'];
 
+/** Why an edit of a code component is not sent: its source changes only with Developer mode (#1410). */
+export const codeModeOff = (name: string): string => `The AI can change ${name}’s code only with Developer mode on. Turn it on in Settings, or edit its code yourself.`;
+
 export interface ChatContext {
   pageId: string;
   pageTitle: string;
@@ -775,6 +796,11 @@ export interface ChatMessage {
      * API key (`key`). Either way the same request can be sent again once it is.
      */
     repair?: 'settings' | 'key';
+    /**
+     * What the request still needs that only the user can turn on: `developer-mode`, when the AI answered that what was
+     * asked needs custom code while Developer mode was off. The turn offers Settings at that switch (#1329).
+     */
+    needs?: 'developer-mode';
     /**
      * Code the run wrote that the project does not keep, each version kept in the project's recovery folder (spec
      * 14.3): a source patch the checks refused (`rejected`), or one that landed in a run that was then undone because it
@@ -1327,6 +1353,19 @@ export type SourceSyncResult =
   | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number; droppedLinks?: SourceDroppedLinks }
   | { ok: false; message: string; code?: string };
 
+/**
+ * The props a code component's code takes from $props() that a property could set, in the order the code takes them,
+ * with the default it writes for each as a literal value (main/codecheck.ts codePropsTaken). `handed` says the code
+ * hands the props object on, where a property may be read without the check seeing it.
+ */
+export interface CodePropsTaken {
+  /** `computed` says the code writes a default that is not a literal value (`= format(price)`). */
+  props: Array<{ name: string; default?: { value: unknown }; computed?: boolean }>;
+  handed: boolean;
+  /** The props the component's variant axes arrive in: never properties, whether the code takes them or not. */
+  axes: string[];
+}
+
 /** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */
 export interface SourceManifest {
   /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
@@ -1380,9 +1419,10 @@ export interface BuilderApi {
     /**
      * Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and
      * Linux). `replaces` is a missing recent entry's folder: once the chosen project opens, the entry is dropped if it
-     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first.
+     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first. A chosen folder
+     * that is not a project comes back with `nearby` when a project beside it is the one most likely meant (#1433).
      */
-    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest }>;
+    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject }>;
     /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
     cancelOpen(): Promise<void>;
     trustAndOpen(dir: string, opts?: { replaces?: string }): Promise<{ ok: boolean; message?: string }>;
@@ -1453,6 +1493,13 @@ export interface BuilderApi {
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
     importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
+    /**
+     * Write images pasted with no file of their own (a screenshot on the clipboard) where importAssets can read them
+     * (#1410): PNG, JPEG, GIF, WebP or AVIF, at most four. Release the batch once the import is done with its paths.
+     */
+    stagePastedImages(files: Array<{ type: string; bytes: Uint8Array }>): Promise<{ ok: true; batch: string; paths: string[] } | { ok: false; message: string }>;
+    /** Remove what stagePastedImages wrote for one paste. */
+    releasePastedImages(batch: string): Promise<void>;
     /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.
@@ -1595,7 +1642,7 @@ export interface BuilderApi {
      * Checks a code component's source as saving it would. With `manifest`, the props the code takes are held to the
      * properties given (the editor's draft), or else those of the component `definitionId` names, and to its axes.
      */
-    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }>; props: CodePropsTaken | null }>;
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;
@@ -1643,7 +1690,8 @@ export interface BuilderApi {
      */
     answer(runId: string, questionId: string, answer: string | { assetId: string }): Promise<boolean>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
-    fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
+    /** `definitionId`: the component being edited, whose code the repair replaces (absent for a new one). */
+    fixCode(source: string, definitionId?: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
     /** Cancel an in-flight fixCode request. */
     cancelFix(): Promise<void>;
   };

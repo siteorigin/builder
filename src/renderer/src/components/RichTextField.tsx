@@ -7,7 +7,7 @@ import { addItem, applyTextEdit, linkAt, listState, moveItem, removeItem, remove
 import { linkTokens, type LinkToken, type RichSpan } from '@shared/richtext';
 import { isImeComposing } from '../lib/ime';
 import { appliesLanded, isSettling, reportRefused } from '../lib/pending';
-import { DraftInput, type DraftHandle } from './ui';
+import { DraftInput, useLockedFields, type DraftHandle } from './ui';
 import { LinkRelControls } from './LinkRelControls';
 import { api, getState, markDraft, type PendingEdit } from '../store';
 import { shortcutLabel } from '../lib/shortcut-keys';
@@ -234,7 +234,10 @@ interface LinkDraft {
  * A rich text field: its text form in a textarea, with buttons for bold, italic, links and lists, so none needs typed
  * syntax. Each button is one change: one step of the field's own Undo, and one project Undo step once applied.
  */
-export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy, invalid, ariaLabel, placeholder, rows = 4 }: { value: string; onCommit: (v: string, edit?: PendingEdit) => unknown; pages: RichPages; plainAs?: RichListType; id?: string; describedBy?: string; invalid?: boolean; ariaLabel?: string; placeholder?: string; rows?: number }) {
+export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy, invalid, ariaLabel, placeholder, rows = 4, copyOnly }: { value: string; onCommit: (v: string, edit?: PendingEdit) => unknown; pages: RichPages; plainAs?: RichListType; id?: string; describedBy?: string; invalid?: boolean; ariaLabel?: string; placeholder?: string; rows?: number; /** A live session's copy editor's field (#1318): bold and italic only, never a link or a list changed. */ copyOnly?: boolean }) {
+  // Locked (editing paused): the text is read-only, and no command changes it either.
+  const locked = useLockedFields();
+  const offered = (cmd: Command) => !locked && (!copyOnly || cmd === 'bold' || cmd === 'italic');
   const field = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const handle = useRef<DraftHandle | null>(null);
   const linkInput = useRef<HTMLInputElement>(null);
@@ -357,6 +360,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
    */
   const run = async (cmd: Command, owner: HTMLElement, back: HTMLElement | null) => {
     setNote('');
+    if (!offered(cmd)) return;
     const before = current();
     if (!before) return;
     if (cmd === 'link' && link) {
@@ -495,7 +499,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
   return (
     <div className="rich-field">
       <div className="rich-tools" role="toolbar" aria-label="Text formatting" aria-controls={id} onKeyDown={roam}>
-        {GROUPS.map((g, i) => (
+        {GROUPS.map((g) => g.filter((t) => !copyOnly || t.cmd === 'bold' || t.cmd === 'italic')).filter((g) => g.length).map((g, i) => (
           <span key={i} className="rich-tools-group">
             {g.map((t) => {
               const label = t.cmd === 'link' && found?.kind === 'link' ? 'Edit link' : t.label;

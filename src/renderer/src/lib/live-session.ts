@@ -1,6 +1,6 @@
 import type { LiveHostState, LiveRun } from '@shared/api';
 import { sessionDeadline, type SessionDuration } from '@shared/live/expiry';
-import { MAX_ID_LENGTH, MAX_SELECTION_DEPTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
+import { GUEST_ROLES, MAX_ID_LENGTH, MAX_SELECTION_DEPTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
 import type { ElementRef } from '@shared/types';
 import type { Participant, Presence } from '@shared/live/messages';
 import { isPreviewTarget } from '@shared/live/preview';
@@ -44,11 +44,11 @@ export const DURATION_CHOICES: ReadonlyArray<{ id: SessionDuration; label: strin
 
 export const ROLE_LABELS: Readonly<Record<GuestRole, string>> = { viewer: 'Viewer', 'copy-editor': 'Copy editor', collaborator: 'Collaborator' };
 
-/**
- * The roles the host picks from for a guest. The host enforces a copy editor's grant (#1149), but a guest's editor
- * still opens the project read-only for one, so it is not offered until the guest's side can edit as one.
- */
-export const OFFERED_ROLES: readonly GuestRole[] = ['viewer', 'collaborator'];
+/** The roles the host picks from for a guest, from the least it may do to the most. */
+export const OFFERED_ROLES: readonly GuestRole[] = GUEST_ROLES;
+
+/** What each role may do, as the Share popover says it under the guests in the session (#1318). */
+export const ROLES_HINT = 'Viewers watch. Copy editors change the words and pictures on your pages, but not the layout, styles or where links go. Collaborators can change those too.';
 
 /**
  * The relay's clock, read when a state arrived and carried forward on this computer's monotonic clock, so a change to
