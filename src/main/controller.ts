@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -4310,7 +4310,7 @@ export class Controller {
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
-      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
       // just before it is delivered, once everything said about the copy's files has looked at them where they are.
       const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
@@ -5168,7 +5168,7 @@ export class Controller {
     if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
     if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    warn(...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     warn(...missingUnusedWarnings(missingFiles));

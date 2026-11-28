@@ -1,6 +1,7 @@
 /**
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
+import { hasBackgroundImage } from '@shared/background-image';
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { repeatProp, CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isEntryBinding, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
@@ -1050,6 +1051,26 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
   // ...and only when no other rendered button reads that label.
   for (const b of out) if (b.hide && ((uses.get(key(b.hide, b.nodeId)) ?? 0) > 1 || through.get(b)?.some((x) => shownAgain.has(x)))) delete b.hide;
   return out;
+}
+
+/**
+ * The published pages with nothing on them, in site order: no content at all, or only empty containers and content
+ * hidden at every size. Visitors see such a page as its header and footer, or as nothing. A container with a
+ * background image shows its picture, and anything else shown on a page counts as content, whatever it renders: what
+ * a placed section has to show is emptySections' to say.
+ */
+export function blankPages(state: ProjectState): PageDoc[] {
+  // `seen` ends the walk of a damaged document whose container holds itself, which validation reports.
+  const blank = (page: PageDoc, id: string, seen: Set<string>): boolean => {
+    const n = Object.hasOwn(page.nodes, id) ? page.nodes[id] : undefined;
+    if (!n || seen.has(id) || hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined)) return true;
+    seen.add(id);
+    return n.kind === 'element' && !hasBackgroundImage(n.styles) && (n.children ?? []).every((c) => blank(page, c, seen));
+  };
+  return state.site.pageOrder.flatMap((id) => {
+    const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
+    return page && !isDraftPage(state, page) && page.rootIds.every((r) => blank(page, r, new Set())) ? [page] : [];
+  });
 }
 
 export interface EmptySection {
