@@ -342,28 +342,28 @@ describe('a web-sized copy of a large photo', () => {
  * for every test encodes the same nine WebP and AVIF sets each time, which under the whole suite's load on a small CI
  * runner left too little of a test's time for the work it is about.
  */
-let starterLibrary: Promise<{ dir: string; records: Record<string, Awaited<ReturnType<typeof importAsset>>['record']> }> | null = null;
+let starterDir: string | null = null;
+let starterLibrary: Promise<Record<string, Awaited<ReturnType<typeof importAsset>>['record']>> | null = null;
 const starterFiles = () =>
   (starterLibrary ??= (async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-photo-starter-')));
+    const dir = (starterDir = realpathSync(mkdtempSync(join(tmpdir(), 'so-photo-starter-'))));
     const records: Record<string, Awaited<ReturnType<typeof importAsset>>['record']> = {};
     for (const a of STARTER_ASSETS) {
       const { record } = await importAsset(dir, join('resources/starter-assets', a.source), []);
       records[a.id] = { ...record, id: a.id, name: a.name, altSuggestion: a.alt };
     }
-    return { dir, records };
+    return records;
   })());
-afterAll(async () => {
-  const lib = await starterLibrary?.catch(() => null);
-  if (lib) rmSync(lib.dir, { recursive: true, force: true });
+afterAll(() => {
+  if (starterDir) rmSync(starterDir, { recursive: true, force: true });
 });
 
 async function openProject(): Promise<{ c: InstanceType<typeof Controller>; dir: string }> {
   const dir = temp('project');
   const state = createStarterState('business', 'Field Notes', true);
   const starter = await starterFiles();
-  cpSync(starter.dir, dir, { recursive: true });
-  for (const a of STARTER_ASSETS) state.assets.assets[a.id] = structuredClone(starter.records[a.id]);
+  cpSync(starterDir!, dir, { recursive: true });
+  for (const a of STARTER_ASSETS) state.assets.assets[a.id] = structuredClone(starter[a.id]);
   const created = await ProjectSession.create(dir, state);
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
@@ -834,19 +834,30 @@ describe('photos usable before their copies are made (#979)', () => {
     const { c } = await openProject();
     const photos = await Promise.all(Array.from({ length: 6 }, async (_, i) => sourceFile(`photo-${i}.jpg`, await noisy(1000 + i * 10, 750, 'jpeg'))));
     const release = hold();
-    const asked = later.asked;
-    const r = await c.importAssets(photos);
-    const revision = c.session!.revision;
-    expect(r.assetIds.every((id) => c.session!.state.assets.assets[id].copiesPending)).toBe(true);
-    // Every photo waits its turn in the worker, a few at a time, with nothing else asked of it.
-    await vi.waitFor(() => expect(later.asked - asked).toBe(Math.min(MEDIA_PARALLEL, photos.length)));
-    release();
-    await c.copiesMade();
-    expect(later.asked - asked).toBe(photos.length);
-    for (const id of r.assetIds) expect(c.session!.state.assets.assets[id].variants?.length).toBeGreaterThan(0);
-    // Given together once the last is made (and every few seconds before, which these are quicker than).
-    expect(c.session!.revision - revision).toBeLessThanOrEqual(2);
-    expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import 6 images');
+    // Copies made so far are also given every few seconds while a batch is made: the clock stands still here, so how
+    // long the copies take on a busy machine can never bring one of those in, and only the last is given.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    const fills = vi.spyOn(c.session!, 'fillCopies');
+    try {
+      const asked = later.asked;
+      const r = await c.importAssets(photos);
+      const revision = c.session!.revision;
+      expect(r.assetIds.every((id) => c.session!.state.assets.assets[id].copiesPending)).toBe(true);
+      // Every photo waits its turn in the worker, a few at a time, with nothing else asked of it.
+      await vi.waitFor(() => expect(later.asked - asked).toBe(Math.min(MEDIA_PARALLEL, photos.length)));
+      release();
+      await c.copiesMade();
+      expect(later.asked - asked).toBe(photos.length);
+      for (const id of r.assetIds) expect(c.session!.state.assets.assets[id].variants?.length).toBeGreaterThan(0);
+      // Given together once the last is made: one fill carrying every photo, one change.
+      expect(fills.mock.calls.map(([batch]) => batch.map((f) => f.assetId).sort())).toEqual([[...r.assetIds].sort()]);
+      expect(c.session!.revision - revision).toBeLessThanOrEqual(2);
+      expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import 6 images');
+    } finally {
+      release();
+      clock.mockRestore();
+      fills.mockRestore();
+    }
   }, 60_000);
 
   it('makes the copies a close left unmade when the project opens again, in the same window while the old ones finish', async () => {
