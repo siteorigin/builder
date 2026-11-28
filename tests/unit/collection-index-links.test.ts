@@ -187,6 +187,19 @@ describe('links to a collection index', () => {
     expect(menuLinks(fits.state)).toHaveLength(max);
   });
 
+  it('starts the blog without the link when the menu’s rows can’t hold it', () => {
+    const s = structuredClone(site());
+    // A header whose link labels are too short for "Blog" (#1509): the blog, or an import that makes it, still lands.
+    const label = headerMenu(s)!.schema.fields.label as { maxLength?: number };
+    expect(s.components[headerMenu(s)!.node.definitionId].properties.links).toBe(headerMenu(s)!.schema);
+    label.maxLength = 3;
+    const before = menuLinks(s);
+    const r = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
+    expect(r.results[0]).toMatchObject({ addedToNavigation: false });
+    expect(menuLinks(r.state)).toEqual(before);
+    expect(r.state.collections).toHaveProperty('posts');
+  });
+
   it('lists the indexes a link can go to, and starts the blog without a menu link unless asked', () => {
     const s = blog();
     const ops = starterCollectionOps(site(), 'posts')!.ops;

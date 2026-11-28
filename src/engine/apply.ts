@@ -1103,7 +1103,15 @@ function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): 
   const label = collectionId === POSTS_COLLECTION_ID ? 'Blog' : c.settings.name;
   // A top-level link, whatever a new row of a menu that groups links starts as.
   const top = schema.fields.sub?.type === 'boolean' ? { sub: false } : {};
-  node.props.links = [...list, normalizeItem(schema, { label, link: { type: 'collection', target: collectionId }, ...top }, state, schema.label)];
+  let item: ReturnType<typeof normalizeItem>;
+  try {
+    item = normalizeItem(schema, { label, link: { type: 'collection', target: collectionId }, ...top }, state, schema.label);
+  } catch (e) {
+    // A menu whose rows can't hold this link (a short label limit, say) takes none; the collection is still made.
+    if (e instanceof EngineError) return false;
+    throw e;
+  }
+  node.props.links = [...list, item];
   return true;
 }
 
