@@ -255,6 +255,12 @@ describe.skipIf(!browserInstalled)('the code workspace (#1483)', { timeout: 60_0
     await page.evaluate(`window.__remove(${json(def.id)})`);
     await page.locator('.code-title-name', { hasText: 'Component removed' }).waitFor();
     expect(await page.locator('.cm-content').textContent()).toContain('<b>draft</b>');
+    // Nothing is left to save it to: the save key checks and writes nothing.
+    const checked = (await calls()).filter((c) => c[0] === 'validate').length;
+    await page.locator('.cm-content').click();
+    await save(page);
+    await page.waitForTimeout(800);
+    expect((await calls()).filter((c) => c[0] === 'validate').length).toBe(checked);
     await page.locator('.cw-file', { hasText: 'util.js' }).click();
     const ask = page.getByRole('alertdialog').or(page.getByRole('dialog', { name: 'Discard the changes you were making?' }));
     await ask.getByRole('button', { name: 'Keep it open' }).click();

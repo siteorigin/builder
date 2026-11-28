@@ -508,6 +508,8 @@ controller.compileSvelte = async (files) => {
     if (outcome !== undefined && controller.session === session) cache?.set(path, source, outcome);
     return outcome;
   });
+  // The check reads every Svelte file there is: what it did not read (a file renamed or deleted since) is forgotten.
+  if (controller.session === session) cache?.keepOnly(new Set(files.map(([path]) => path)));
   return { outcomes, runs: batch.runs };
 };
 

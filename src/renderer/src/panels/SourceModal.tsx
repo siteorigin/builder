@@ -415,6 +415,8 @@ export function ComponentSourceEditor({ definitionId, frame, leave, onSaved }: {
           }).then((ok) => ok === true && then());
     leave.current = drop;
     const closeGone = () => drop(() => setState({ modal: null }));
+    // Nothing is left to save: Cmd/Ctrl+S does nothing here, and closing still asks first.
+    latest.current = { leave: (then) => drop(then), save: () => {}, request: () => {} };
     return frame({
       title: <CodeTitle name="Component removed" state={src ? 'readonly' : null} />,
       icon: <CodeBadge kind="component" />,
