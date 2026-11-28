@@ -12,15 +12,16 @@ import { BASELINE_SEO_RULES, linkWords, SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE }
 import { diagnosticKey, validateState } from '@engine/validate';
 import { treeFor } from '../../src/renderer/src/lib/model';
 import { destinationLabel, noteState } from '../../src/renderer/src/lib/destinations';
-import { copy, POST_BODY, run, seoSite } from './fixtures/seo-site';
+import { auditSite, copy, POST_BODY, run } from './fixtures/seo-site';
 import { withPublished } from '@shared/published';
+import { createStarterState } from '@catalogue/starters';
 
 /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
 const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const codes = (s: ProjectState) => runSeoAudit(s).map((f) => f.code);
 /** The SEO fixture as a project made before #586 has it: nothing said of who publishes the site. */
-const unidentifiedSite = () => seoSite({ identity: false });
+const unidentifiedSite = () => auditSite({ identity: false });
 
 const only = (s: ProjectState, code: string) => runSeoAudit(s).filter((f) => f.code === code);
 const x = (n: number) => 'x'.repeat(n);
@@ -43,7 +44,7 @@ function expectValidDestination(s: ProjectState, f: SeoFinding) {
       expect(Object.hasOwn(treeFor(s, d.owner)?.nodes ?? {}, d.nodeId), f.code).toBe(true);
       break;
     case 'site':
-      expect(['baseUrl', 'favicon', 'socialImage', 'identity', 'logo', 'sameAs', 'llmsTxt', 'crawlerPolicy']).toContain(d.field);
+      expect(['baseUrl', 'favicon', 'socialImage', 'identity', 'publisherUrl', 'logo', 'sameAs', 'llmsTxt', 'crawlerPolicy']).toContain(d.field);
       break;
     default:
       throw new Error(`Unexpected destination ${d.kind}`);
@@ -63,7 +64,7 @@ function addMenuItem(s: ProjectState, label: string, link: unknown) {
 
 describe('runSeoAudit on a well set-up site', () => {
   it('finds nothing', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     expect(runSeoAudit(state)).toEqual([]);
     // Nor do drafts with every problem the rules know of: they are not on the website.
     const s = run(
@@ -81,7 +82,7 @@ describe('runSeoAudit on a well set-up site', () => {
 
 describe('baseline rules', () => {
   it('says when the public URL is missing or cannot be used, leading to the Public URL field', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const missing = only(run(state, { type: 'site.update', baseUrl: '' }), 'SEO_BASE_URL_MISSING');
     expect(missing).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'technical', site: 'baseUrl', aiFixable: false, destination: { kind: 'site', field: 'baseUrl' } })]);
     expect(missing[0].owner).toBeUndefined();
@@ -100,7 +101,7 @@ describe('baseline rules', () => {
   });
 
   it('says when the Home page asks search engines not to list it', () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = run(state, { type: 'page.update', pageId: home, noindex: true });
     expect(runSeoAudit(s)).toEqual([
       expect.objectContaining({ code: 'SEO_HOME_NOINDEX', severity: 'warning', pillar: 'technical', owner: { kind: 'page', id: home }, site: 'noindex', aiFixable: true, destination: { kind: 'pageSeo', pageId: home, field: 'noindex' } })
@@ -108,7 +109,7 @@ describe('baseline rules', () => {
   });
 
   it('says when a title is missing, repeated in the same language, or outside the range that reads well', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     // A Home page without a title of its own is named by the site, and a site saved without a name (by hand) has none.
     const missing = copy(run(state, { type: 'page.update', pageId: home, seoTitle: '' }));
     missing.site.name = ' ';
@@ -133,7 +134,7 @@ describe('baseline rules', () => {
   });
 
   it('says when a description is missing, shared, or outside the range search results show', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const none = run(state, { type: 'site.update', description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(none, 'SEO_DESCRIPTION_MISSING')).toEqual([expect.objectContaining({ owner: { kind: 'page', id: services }, severity: 'warning', destination: { kind: 'pageSeo', pageId: services, field: 'description' } })]);
     // Told apart from case and spacing.
@@ -159,7 +160,7 @@ describe('baseline rules', () => {
   });
 
   it('says once when pages are shared without a picture, and on its own for a page whose picture has gone', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     const none = run(state, { type: 'site.update', socialImage: null });
     expect(only(none, 'SEO_SOCIAL_IMAGE_MISSING')).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'social', message: 'The site has no sharing image.', destination: { kind: 'site', field: 'socialImage' } })]);
     // A page with its own picture needs none from the site.
@@ -182,7 +183,7 @@ describe('baseline rules', () => {
   });
 
   it('says when the site has no icon of its own', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     expect(runSeoAudit(run(state, { type: 'site.update', favicon: null }))).toEqual([
       expect.objectContaining({ code: 'SEO_FAVICON_MISSING', severity: 'info', pillar: 'social', site: 'favicon', destination: { kind: 'site', field: 'favicon' } })
     ]);
@@ -210,7 +211,7 @@ describe('baseline rules', () => {
     expect(runSeoAudit(nameless)).toEqual([expect.objectContaining({ code: 'SEO_ENTITY_IDENTITY_MISSING', message: 'The site’s publisher has no name.', site: 'identity' })]);
     expect(runSeoAudit(run(person, { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } }))).toEqual([]);
     // Values edited into the file by hand that Site details would refuse count as none.
-    const damaged = copy(seoSite().state);
+    const damaged = copy(auditSite().state);
     damaged.site.identity = { kind: 'Company' as never, sameAs: ['https://www.wikidata.org/wiki/Q123456'] };
     expect(codes(damaged)).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
     damaged.site.identity = { kind: 'Organization', sameAs: ['javascript:alert(1)', 'not an address'] };
@@ -218,11 +219,11 @@ describe('baseline rules', () => {
     (damaged.site as { identity: unknown }).identity = 'Organization';
     expect(codes(damaged)).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
     // Clearing it all is the same as never saying.
-    expect(codes(run(seoSite().state, { type: 'site.update', identity: null }))).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
+    expect(codes(run(auditSite().state, { type: 'site.update', identity: null }))).toEqual(['SEO_ENTITY_IDENTITY_MISSING']);
   });
 
   it('says when nothing on the rest of the site links to a page', () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = run(state, { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/' }, { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire by the hour · Riverside Studio', description: 'Hire our electric and gas kilns by the hour, with firing help from the studio team.' });
     expect(runSeoAudit(s)).toEqual([expect.objectContaining({ code: 'SEO_PAGE_UNLINKED', severity: 'warning', pillar: 'content', owner: { kind: 'page', id: 'pg_kilns' }, site: 'incoming-links', aiFixable: false })]);
     // A link in a published post's text counts; one in a draft's does not.
@@ -230,14 +231,14 @@ describe('baseline rules', () => {
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'page', target: 'pg_kilns' }) }))).toEqual([]);
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true, body: linkTo({ type: 'page', target: 'pg_kilns' }) }))).toContain('SEO_PAGE_UNLINKED');
     // So does a typed address of the page on the site's public URL, or of an old address kept for it.
-    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
-    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/index.html' }) }))).toEqual([]);
+    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://riverside-pottery.co.za/studio/kiln-hire/' }) }))).toEqual([]);
+    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://riverside-pottery.co.za/studio/kiln-hire/index.html' }) }))).toEqual([]);
     const moved = run(exported(s), { type: 'page.update', pageId: 'pg_kilns', route: '/kilns/' });
     expect(moved.site.redirects).toContainEqual({ from: '/kiln-hire/', pageId: 'pg_kilns' });
-    expect(codes(run(moved, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
+    expect(codes(run(moved, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://riverside-pottery.co.za/studio/kiln-hire/' }) }))).toEqual([]);
     // An address elsewhere, or outside the site's sub-path, is no link to it; nor is a link to it from a draft page.
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://other.example/studio/kiln-hire/' }) }))).toContain('SEO_PAGE_UNLINKED');
-    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/kiln-hire/' }) }))).toContain('SEO_PAGE_UNLINKED');
+    expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://riverside-pottery.co.za/kiln-hire/' }) }))).toContain('SEO_PAGE_UNLINKED');
     // The header shown on other pages counts; the Home page and pages search engines are not to list are not judged.
     expect(codes(run(s, { type: 'page.update', pageId: 'pg_kilns', noindex: true }))).toEqual([]);
     const menu = copy(s);
@@ -247,7 +248,7 @@ describe('baseline rules', () => {
   });
 
   it('does not count a link a page has to itself, or a header only that page shows', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     // A site of pages alone, where only Services shows the header with its link to Services.
     const s = copy(state);
     s.collections = {};
@@ -268,7 +269,7 @@ describe('baseline rules', () => {
   });
 
   it('says when a link’s words say nothing of where it goes, leading to where they are changed', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const menu = copy(state);
     const nodeId = addMenuItem(menu, 'Click here!', { type: 'page', target: 'pg_services' });
     expect(runSeoAudit(menu)).toEqual([
@@ -303,35 +304,35 @@ describe('baseline rules', () => {
   });
 
   it('issue 1518: says when a link on the site’s own address goes where the website has nothing, once per address', () => {
-    const { state } = seoSite();
-    // The fixture's public URL is https://example.com/studio: only addresses under it are the site's own.
+    const { state } = auditSite();
+    // The fixture's public URL is https://riverside-pottery.co.za/studio: only addresses under it are the site's own.
     const linking = (s: ProjectState, entryId: string, ...targets: string[]) =>
       run(s, { type: 'entry.update', collectionId: 'posts', entryId, body: [...POST_BODY, ...targets.map((target, i) => ({ type: 'p' as const, spans: [{ text: `See ${i}: ` }, { text: `the place numbered ${i}`, link: { type: 'url' as const, target } }] }))] });
     const fine = linking(
       state,
       'en_spring',
-      'https://example.com/studio/services/',
-      'https://example.com/studio/services/index.html#prices',
-      'https://example.com/studio/blog/',
-      'https://example.com/studio/files/price-list.pdf',
-      'https://example.com/studio/services/?m=spring&s=',
-      'https://example.com/about/team/',
+      'https://riverside-pottery.co.za/studio/services/',
+      'https://riverside-pottery.co.za/studio/services/index.html#prices',
+      'https://riverside-pottery.co.za/studio/blog/',
+      'https://riverside-pottery.co.za/studio/files/price-list.pdf',
+      'https://riverside-pottery.co.za/studio/services/?m=spring&s=',
+      'https://riverside-pottery.co.za/about/team/',
       'https://other.example/studio/about/team/'
     );
     expect(only(fine, 'SEO_LINK_OWN_MISSING')).toEqual([]);
-    const broken = linking(state, 'en_spring', 'https://example.com/studio/about/team/', 'https://example.com/studio/?p=88', 'https://example.com/studio/about/team/');
+    const broken = linking(state, 'en_spring', 'https://riverside-pottery.co.za/studio/about/team/', 'https://riverside-pottery.co.za/studio/?p=88', 'https://riverside-pottery.co.za/studio/about/team/');
     // The same address over plain http, an old site's page file, and one read by its query whatever its file, are too.
-    const older = linking(state, 'en_spring', 'http://example.com/studio/about/team/', 'https://example.com/studio/contact.html', 'https://example.com/studio/index.php?p=12', 'http://other.example/studio/about/team/');
-    expect(only(older, 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|http://example.com/studio/about/team/', 'own-link|https://example.com/studio/contact.html', 'own-link|https://example.com/studio/index.php?p=12']);
+    const older = linking(state, 'en_spring', 'http://riverside-pottery.co.za/studio/about/team/', 'https://riverside-pottery.co.za/studio/contact.html', 'https://riverside-pottery.co.za/studio/index.php?p=12', 'http://other.example/studio/about/team/');
+    expect(only(older, 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|http://riverside-pottery.co.za/studio/about/team/', 'own-link|https://riverside-pottery.co.za/studio/contact.html', 'own-link|https://riverside-pottery.co.za/studio/index.php?p=12']);
     expect(only(broken, 'SEO_LINK_OWN_MISSING')).toEqual([
       // WordPress read a post by its number; the website has no page for it, whatever is at the address before it.
-      expect.objectContaining({ message: '“Spring pottery classes” links to https://example.com/studio/?p=88, where the website has no page.' }),
+      expect.objectContaining({ message: '“Spring pottery classes” links to https://riverside-pottery.co.za/studio/?p=88, where the website has no page.' }),
       expect.objectContaining({
         severity: 'warning',
         pillar: 'content',
-        message: '“Spring pottery classes” links to https://example.com/studio/about/team/, where the website has no page.',
+        message: '“Spring pottery classes” links to https://riverside-pottery.co.za/studio/about/team/, where the website has no page.',
         owner: { kind: 'entry', id: 'en_spring' },
-        site: 'own-link|https://example.com/studio/about/team/',
+        site: 'own-link|https://riverside-pottery.co.za/studio/about/team/',
         aiFixable: false,
         destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' }
       })
@@ -340,23 +341,23 @@ describe('baseline rules', () => {
     // Two posts linking to it are one finding, naming the first and counting the rest, before an address one links to:
     // two posts of the same title are two places.
     const second = run(broken, { type: 'entry.create', collectionId: 'posts', entryId: 'en_autumn', title: 'Spring pottery classes', publishedAt: '2027-03-01', draft: false, excerpt: 'Glazes for autumn.', body: POST_BODY });
-    const both = linking(second, 'en_autumn', 'https://example.com/studio/about/team/');
+    const both = linking(second, 'en_autumn', 'https://riverside-pottery.co.za/studio/about/team/');
     expect(only(both, 'SEO_LINK_OWN_MISSING').map((f) => f.message)).toEqual([
-      '“Spring pottery classes” and 1 other place link to https://example.com/studio/about/team/, where the website has no page.',
-      '“Spring pottery classes” links to https://example.com/studio/?p=88, where the website has no page.'
+      '“Spring pottery classes” and 1 other place link to https://riverside-pottery.co.za/studio/about/team/, where the website has no page.',
+      '“Spring pottery classes” links to https://riverside-pottery.co.za/studio/?p=88, where the website has no page.'
     ]);
     // An old address that leads nowhere answers nothing; one kept working answers it, and so does a page made there.
     expect(only(run(broken, { type: 'redirect.add', from: '/about/team/', to: '/nowhere/' }), 'SEO_LINK_OWN_MISSING')).toHaveLength(2);
-    expect(only(run(broken, { type: 'redirect.add', from: '/about/team/', pageId: 'pg_services' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
-    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
+    expect(only(run(broken, { type: 'redirect.add', from: '/about/team/', pageId: 'pg_services' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://riverside-pottery.co.za/studio/?p=88']);
+    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://riverside-pottery.co.za/studio/?p=88']);
     // A draft there is left to the export, which already stops at links to a draft.
-    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/', draft: true }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
+    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/', draft: true }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://riverside-pottery.co.za/studio/?p=88']);
     // Without a public URL, no address is the site's own.
     expect(only(run(broken, { type: 'site.update', baseUrl: '' }), 'SEO_LINK_OWN_MISSING')).toEqual([]);
   });
 
   it('says when a picture in a published post has no description, as Project health does', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const body: RichText = POST_BODY.map((b) => (b.type === 'image' && b.assetId === 'img_bowls' ? { ...b, alt: '  ' } : b));
     const s = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body });
     const [f] = runSeoAudit(s);
@@ -373,7 +374,7 @@ describe('baseline rules', () => {
   });
 
   it('says when a post’s headings skip a level below its title', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const skipped = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Classes' }] }, { type: 'h4', spans: [{ text: 'Fees' }] }, { type: 'h2', spans: [{ text: 'Dates' }] }] });
     expect(runSeoAudit(skipped)).toEqual([
       expect.objectContaining({ code: 'SEO_ENTRY_HEADING_SKIP', severity: 'warning', pillar: 'agentic', message: expect.stringContaining('“Fees” is a Heading 4 after a Heading 2'), site: 'body|heading|1', aiFixable: false, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })
@@ -386,7 +387,7 @@ describe('baseline rules', () => {
   });
 
   it('leads every finding to something the project has, in a fixed order, the same on every run', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     let s = run(
       state,
       { type: 'site.update', socialImage: null, favicon: null, identity: { sameAs: null }, llmsTxt: false, crawlerPolicy: { preset: 'custom', overrides: { 'OAI-SearchBot': 'disallow' } } },
@@ -415,9 +416,159 @@ describe('baseline rules', () => {
   });
 });
 
+/** The codes of the rules #1635 added. */
+const ISSUE_1635 = ['SEO_BASE_URL_PLACEHOLDER', 'SEO_LINK_PLACEHOLDER', 'SEO_PUBLISHER_URL_PLACEHOLDER', 'SEO_PUBLISHER_PROFILE_PLACEHOLDER', 'SEO_CANONICAL_INVALID', 'SEO_CANONICAL_INSECURE', 'SEO_CANONICAL_TARGET_MISSING', 'SEO_CANONICAL_TARGET_DRAFT', 'SEO_CANONICAL_TARGET_NOINDEX', 'SEO_ARCHIVE_EMPTY', 'SEO_ARCHIVE_UNLINKED', 'SEO_LOCAL_BUSINESS_DETAILS_MISSING'];
+
+describe('issue 1635: placeholder addresses, canonical URLs, collection indexes and local businesses', () => {
+  const SITE = 'https://riverside-pottery.co.za/studio';
+  const withLink = (s: ProjectState, link: unknown, entryId = 'en_spring') => run(s, { type: 'entry.update', collectionId: 'posts', entryId, body: [...POST_BODY, { type: 'p', spans: [{ text: 'Book the kilns', link: link as never }] }] });
+
+  it('finds none of them on the starters or on a configured site', () => {
+    expect(runSeoAudit(auditSite().state)).toEqual([]);
+    for (const starter of ['blank', 'business', 'showcase'] as const) {
+      const s = run(createStarterState(starter, 'Riverside Studio', false), { type: 'site.update', baseUrl: SITE });
+      expect(codes(s).filter((c) => ISSUE_1635.includes(c)), starter).toEqual([]);
+    }
+  });
+
+  it('says when the public URL is a reserved example host or this computer', () => {
+    const { state } = auditSite();
+    for (const [url, host] of [
+      ['https://example.com/studio', 'example.com'],
+      ['https://shop.example.org', 'shop.example.org'],
+      ['https://riverside.example', 'riverside.example'],
+      ['https://studio.test', 'studio.test'],
+      ['https://studio.invalid', 'studio.invalid'],
+      ['https://localhost/studio', 'localhost'],
+      ['https://127.0.0.1', '127.0.0.1'],
+      ['https://[::1]', '[::1]']
+    ]) {
+      const found = only(run(state, { type: 'site.update', baseUrl: url }), 'SEO_BASE_URL_PLACEHOLDER');
+      expect(found, url).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'technical', site: 'baseUrl', aiFixable: false, destination: { kind: 'site', field: 'baseUrl' }, message: expect.stringContaining(`is on ${host}`) })]);
+    }
+    // A host that only has the words in it is a real one; one that can't be used is said as that alone.
+    expect(codes(run(state, { type: 'site.update', baseUrl: 'https://notexample.com' }))).toEqual([]);
+    expect(codes(run(state, { type: 'site.update', baseUrl: 'https://example.community' }))).toEqual([]);
+    const plain = copy(state);
+    plain.site.baseUrl = 'http://localhost';
+    expect(codes(plain).filter((c) => c.startsWith('SEO_BASE_URL'))).toEqual(['SEO_BASE_URL_INVALID']);
+  });
+
+  it('says when a link the website shows leads to a placeholder or local address, leading to the link', () => {
+    const { state } = auditSite();
+    const local = only(withLink(state, { type: 'url', target: 'http://127.0.0.1:5173/kilns/' }), 'SEO_LINK_PLACEHOLDER');
+    expect(local).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        pillar: 'content',
+        owner: { kind: 'entry', id: 'en_spring' },
+        message: '“Spring pottery classes” links to http://127.0.0.1:5173/kilns/, which is on 127.0.0.1, which each visitor’s own computer answers.',
+        destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' }
+      })
+    ]);
+    for (const target of ['https://example.com/', 'https://www.example.net/a', 'https://kilns.test/', 'https://x.invalid', 'http://localhost:3000/', 'https://dev.localhost/', 'https://[::1]:8080/']) expect(codes(withLink(state, { type: 'url', target })), target).toContain('SEO_LINK_PLACEHOLDER');
+    // A real host, one that only names an example in its query, an email address and a draft's link are not judged.
+    for (const link of [{ type: 'url', target: 'https://notexample.com/?next=https://example.org' }, { type: 'email', target: 'hello@example.com' }]) expect(codes(withLink(state, link)), link.target).toEqual([]);
+    expect(codes(run(withLink(state, { type: 'url', target: 'https://example.com/' }), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true }))).not.toContain('SEO_LINK_PLACEHOLDER');
+    // The shared header's link leads to its element.
+    const menu = copy(state);
+    const nodeId = addMenuItem(menu, 'Shop', { type: 'url', target: 'https://shop.example/' });
+    expect(only(menu, 'SEO_LINK_PLACEHOLDER')).toEqual([expect.objectContaining({ owner: { kind: 'shell', id: 'header' }, nodeId, message: 'The shared header links to https://shop.example/, which is on shop.example, a placeholder address that is nobody’s website.', destination: { kind: 'element', owner: { kind: 'shell', id: 'header' }, nodeId } })]);
+  });
+
+  it('says when the publisher’s web address or a profile is a placeholder, leading to its field', () => {
+    const { state } = auditSite();
+    const s = run(state, { type: 'site.update', identity: { url: 'https://riverside.example/', sameAs: ['https://www.wikidata.org/wiki/Q123456', 'https://localhost/me', 'https://profiles.example.com/riverside'] } });
+    expect(only(s, 'SEO_PUBLISHER_URL_PLACEHOLDER')).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'entity', site: 'identity.url', destination: { kind: 'site', field: 'publisherUrl' }, message: 'The publisher’s web address https://riverside.example/ is on riverside.example, a placeholder address that is nobody’s website.' })]);
+    expect(only(s, 'SEO_PUBLISHER_PROFILE_PLACEHOLDER').map((f) => [f.site, f.destination])).toEqual([
+      ['sameAs|https://localhost/me', { kind: 'site', field: 'sameAs' }],
+      ['sameAs|https://profiles.example.com/riverside', { kind: 'site', field: 'sameAs' }]
+    ]);
+    expect(destinationLabel({ kind: 'site', field: 'publisherUrl' })).toBe('Go to publisher’s web address');
+    // A real address of the publisher's own is fine.
+    expect(codes(run(state, { type: 'site.update', identity: { url: 'https://riverside-pottery.co.za/' } }))).toEqual([]);
+  });
+
+  it('says when a listed page’s or post’s canonical URL can’t be used, is insecure, or names a page search engines can’t list', () => {
+    const { state, services, home } = auditSite();
+    const canonical = (s: ProjectState, url: unknown) => {
+      const c = copy(s);
+      c.pages[services].seo = { ...c.pages[services].seo, canonical: url as string };
+      return c;
+    };
+    const on = (s: ProjectState) => runSeoAudit(s).filter((f) => f.code.startsWith('SEO_CANONICAL'));
+    const dest = { kind: 'pageSeo', pageId: services, field: 'canonical' };
+    // Its own address, another listed page, the collection's index, another site's page and a file of the site are fine.
+    for (const url of [`${SITE}/services/`, `${SITE}/`, `${SITE}/blog/`, `${SITE}/blog/spring-pottery-classes/`, 'https://magazine.co.za/classes/', `${SITE}/files/brochure.pdf`]) expect(on(canonical(state, url)), url).toEqual([]);
+    expect(on(canonical(state, 'not a url'))).toEqual([expect.objectContaining({ code: 'SEO_CANONICAL_INVALID', severity: 'warning', pillar: 'technical', owner: { kind: 'page', id: services }, site: 'canonical', destination: dest, message: expect.stringContaining('“Services” has a canonical URL that can’t be used: ') })]);
+    expect(on(canonical(state, 42)).map((f) => f.code)).toEqual(['SEO_CANONICAL_INVALID']);
+    expect(on(canonical(state, 'http://magazine.co.za/classes/'))).toEqual([expect.objectContaining({ code: 'SEO_CANONICAL_INSECURE', destination: dest })]);
+    expect(on(canonical(state, `${SITE}/nowhere/`))).toEqual([expect.objectContaining({ code: 'SEO_CANONICAL_TARGET_MISSING', message: `“Services” names ${SITE}/nowhere/ as its canonical URL: an address where the website has no page.`, destination: dest })]);
+    const drafted = run(state, { type: 'page.create', pageId: 'pg_winter', title: 'Winter', route: '/winter/' }, { type: 'page.update', pageId: 'pg_winter', draft: true });
+    expect(on(canonical(drafted, `${SITE}/winter/`)).map((f) => f.code)).toEqual(['SEO_CANONICAL_TARGET_DRAFT']);
+    expect(on(canonical(run(state, { type: 'page.update', pageId: home, noindex: true }), `${SITE}/`)).map((f) => f.code)).toEqual(['SEO_CANONICAL_TARGET_NOINDEX']);
+    // A page search engines are not to list, or a draft, is not judged.
+    expect(on(run(canonical(state, 'not a url'), { type: 'page.update', pageId: services, noindex: true }))).toEqual([]);
+    expect(on(run(canonical(state, `${SITE}/nowhere/`), { type: 'page.update', pageId: services, draft: true }))).toEqual([]);
+    // A post's leads to its own canonical URL field.
+    const post = copy(state);
+    post.collections.posts.entries.en_spring.seo = { canonical: `${SITE}/gone/` };
+    expect(on(post)).toEqual([expect.objectContaining({ code: 'SEO_CANONICAL_TARGET_MISSING', owner: { kind: 'entry', id: 'en_spring' }, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'canonical' } })]);
+    expect(destinationLabel({ kind: 'pageSeo', pageId: services, field: 'canonical' })).toBe('Go to canonical URL');
+    expect(destinationLabel({ kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'canonical' })).toBe('Go to canonical URL');
+  });
+
+  it('follows an old address kept working to the page it leads to', () => {
+    const { state, services } = auditSite();
+    const moved = run(exported(state), { type: 'page.update', pageId: services, route: '/classes/' });
+    expect(moved.site.redirects).toContainEqual({ from: '/services/', pageId: services });
+    const c = copy(moved);
+    c.pages[c.site.homePageId].seo = { ...c.pages[c.site.homePageId].seo, canonical: `${SITE}/services/` };
+    expect(codes(c).filter((x) => x.startsWith('SEO_CANONICAL'))).toEqual([]);
+    c.pages[services].seo = { ...c.pages[services].seo, noindex: true };
+    expect(codes(c).filter((x) => x.startsWith('SEO_CANONICAL'))).toEqual(['SEO_CANONICAL_TARGET_NOINDEX']);
+  });
+
+  it('says when a collection’s index lists nothing, or nothing outside the collection links to it', () => {
+    const { state } = auditSite();
+    // Its only entry a draft, the index lists nothing.
+    const empty = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true });
+    expect(only(empty, 'SEO_ARCHIVE_EMPTY')).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'content', owner: { kind: 'collection', id: 'posts' }, site: 'archive', aiFixable: false, message: expect.stringMatching(/publishes an index at \/blog\/ with no published entries to list\.$/) })]);
+    expect(codes(empty)).not.toContain('SEO_ARCHIVE_UNLINKED');
+    // With the header's Journal link gone, nothing leads to it: its own entry's text does not count.
+    const unlinked = copy(state);
+    const header = headerOf(unlinked);
+    header.props.links = (header.props.links as Array<{ id: string }>).filter((i) => i.id !== 'i_journal');
+    expect(only(unlinked, 'SEO_ARCHIVE_UNLINKED')).toEqual([expect.objectContaining({ severity: 'warning', owner: { kind: 'collection', id: 'posts' }, site: 'incoming-links', message: expect.stringMatching(/^No link on the rest of the site leads to “.+”: neither its index at \/blog\/ nor any of its entries\.$/) })]);
+    expect(codes(withLink(unlinked, { type: 'collection', target: 'posts' }))).toContain('SEO_ARCHIVE_UNLINKED');
+    // A link from a page to one of its entries, to its index, or to its index's address does.
+    for (const link of [{ type: 'entry', target: 'en_spring' }, { type: 'collection', target: 'posts' }, { type: 'url', target: `${SITE}/blog/` }, { type: 'url', target: `${SITE}/blog/spring-pottery-classes/` }]) {
+      const linked = copy(unlinked);
+      addMenuItem(linked, 'Journal', link);
+      expect(codes(linked), JSON.stringify(link)).not.toContain('SEO_ARCHIVE_UNLINKED');
+    }
+    // A collection without an index page is not judged.
+    const noIndex = copy(empty);
+    noIndex.collections.posts.settings.pages = { ...noIndex.collections.posts.settings.pages, archive: false };
+    expect(codes(noIndex).filter((c) => c.startsWith('SEO_ARCHIVE'))).toEqual([]);
+  });
+
+  it('says when a local business has no address, or no telephone number or opening hours, leading to Site details', () => {
+    const { state } = auditSite();
+    const local = (identity: Record<string, unknown>) => only(run(state, { type: 'site.update', identity: { kind: 'LocalBusiness', name: 'Riverside Studio', ...identity } as never }), 'SEO_LOCAL_BUSINESS_DETAILS_MISSING');
+    expect(local({})).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'entity', site: 'identity.local', aiFixable: false, destination: { kind: 'site', field: 'identity' }, message: 'The site is published by a local business with no address, and no telephone number or opening hours.' })]);
+    expect(local({ address: '12 River Road, Riverside' }).map((f) => f.message)).toEqual(['The site is published by a local business with no telephone number or opening hours.']);
+    expect(local({ telephone: '+27 21 555 0134', openingHours: ['Mo-Fr 09:00-17:00'] }).map((f) => f.message)).toEqual(['The site is published by a local business with no address.']);
+    expect(local({ address: '12 River Road, Riverside', telephone: '+27 21 555 0134' })).toEqual([]);
+    expect(local({ address: '12 River Road, Riverside', openingHours: ['Mo-Fr 09:00-17:00'] })).toEqual([]);
+    // An organization or a person needs neither.
+    expect(codes(run(state, { type: 'site.update', identity: { kind: 'Person', name: 'Ann Potter' } }))).not.toContain('SEO_LOCAL_BUSINESS_DETAILS_MISSING');
+  });
+});
+
 describe('the audit runner', () => {
   it('runs a feature’s own rules beside the baseline and refuses two rules of one name', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const entity: SeoAuditRule = {
       id: 'entity-identity',
       check: () => [{ severity: 'warning', code: 'SEO_ENTITY_MISSING', message: 'The site does not say who runs it.', pillar: 'entity', explanation: 'Answer engines check a site’s identity before citing it.', aiFixable: false }]
@@ -432,7 +583,7 @@ describe('the audit runner', () => {
   });
 
   it('reads damaged documents without failing', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const s = copy(state);
     (s.collections.posts.entries.en_spring as { body: unknown }).body = [{ type: 'nonsense' }];
     (s.pages[s.site.homePageId].seo as { title: unknown }).title = 7;
@@ -450,7 +601,7 @@ describe('the audit runner', () => {
 
 describe('editor destinations for SEO findings', () => {
   it('names each kind’s button, and is never an export note’s to track', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     expect(destinationLabel({ kind: 'pageSeo', pageId: services, field: 'title' })).toBe('Go to Search & sharing');
     expect(destinationLabel({ kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'excerpt' })).toBe('Open post');
     expect(destinationLabel({ kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body', picture: 2 })).toBe('Go to picture');

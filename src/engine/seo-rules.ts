@@ -10,12 +10,12 @@
  */
 import type { EditorDestination } from '@shared/api';
 import type { EffectiveSeo, SeoFinding, SeoPillar } from '@shared/seo';
-import { seoLength, seoText } from '@shared/seo';
+import { checkCanonicalUrl, seoLength, seoText } from '@shared/seo';
 import type { Collection, EntryDoc, OwnerRef, ProjectState } from '@shared/types';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
-import { siteEntries } from '@shared/collections';
-import { checkPublicUrl } from '@shared/public-url';
+import { isDraftEntry, siteEntries } from '@shared/collections';
+import { checkPublicUrl, placeholderHost, publicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
 import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
@@ -53,6 +53,9 @@ export function linkWords(label: string): string {
 type Owner = NonNullable<SeoFinding['owner']>;
 
 const finding = (pillar: SeoPillar, f: Omit<SeoFinding, 'pillar'>): SeoFinding => ({ pillar, ...f });
+
+/** What a stand-in host is, said after the address it is in: "is on the placeholder host example.com". */
+const standIn = (h: { host: string; kind: 'placeholder' | 'local' }) => (h.kind === 'local' ? `is on ${h.host}, which each visitor’s own computer answers` : `is on ${h.host}, a placeholder address that is nobody’s website`);
 
 /** The entry a document is, with its collection, when it is one. */
 function entryOf(state: ProjectState, meta: EffectiveSeo): { collection: Collection; entry: EntryDoc } | undefined {
@@ -94,6 +97,19 @@ const baseUrl: SeoAuditRule = {
     if (!check.ok)
       return [finding('technical', { severity: 'warning', code: 'SEO_BASE_URL_INVALID', message: `The public site URL “${saved}” can’t be used. ${check.message}`, site: 'baseUrl', explanation: why, aiFixable: false, destination })];
     if (!check.url) return [finding('technical', { severity: 'warning', code: 'SEO_BASE_URL_MISSING', message: 'No public site URL is set.', site: 'baseUrl', explanation: why, aiFixable: false, destination })];
+    const stand = placeholderHost(check.url);
+    if (stand)
+      return [
+        finding('technical', {
+          severity: 'warning',
+          code: 'SEO_BASE_URL_PLACEHOLDER',
+          message: `The public site URL “${check.url}” ${standIn(stand)}.`,
+          site: 'baseUrl',
+          explanation: 'Every canonical link, sitemap line, sharing image address and piece of structured data names the public URL, so search engines and link previews would be sent somewhere that is not the website. Enter the address the website is published at.',
+          aiFixable: false,
+          destination
+        })
+      ];
     return [];
   }
 };
@@ -644,5 +660,275 @@ const pageStructuredData: SeoAuditRule = {
   }
 };
 
+/**
+ * Links the website shows to a stand-in address: a reserved example or test domain (`example.com`, `shop.test`) left
+ * from a template or a draft, or this computer (`localhost`, `127.0.0.1`), which only ever worked on the author's own.
+ * Visitors who follow one reach nothing, or whatever their own computer answers. Email and telephone links are not
+ * web addresses, and are never judged.
+ */
+const placeholderLinks: SeoAuditRule = {
+  id: 'placeholder-links',
+  check({ state, links }) {
+    const out: SeoFinding[] = [];
+    for (const l of links()) {
+      if (l.link.type !== 'url' || !/^https?:\/\//i.test(l.link.target)) continue;
+      const stand = placeholderHost(l.link.target);
+      if (!stand) continue;
+      const place = linkPlace(state, l);
+      out.push(
+        finding('content', {
+          severity: 'warning',
+          code: 'SEO_LINK_PLACEHOLDER',
+          message: `${place.charAt(0).toUpperCase()}${place.slice(1)} links to ${l.link.target}, which ${standIn(stand)}.`,
+          explanation:
+            stand.kind === 'local'
+              ? 'An address on this computer works only while it is the one opening it: visitors who follow the link reach nothing, and search engines count it as broken. Point it at the published address.'
+              : 'Example and test addresses are reserved so that they never lead to a real website: visitors who follow the link reach nothing, and search engines count it as broken. Point it at the real address.',
+          aiFixable: false,
+          ...linkFix(state, l)
+        })
+      );
+    }
+    return out;
+  }
+};
+
+/**
+ * The publisher's own web address and its profiles elsewhere, when one is a stand-in (see placeholderLinks): the
+ * structured data of every page names them, so search engines and AI answer engines would match the site to nothing.
+ * Judged as the website writes them (sitePublisher), so a value it leaves out is not reported twice.
+ */
+const publisherAddresses: SeoAuditRule = {
+  id: 'publisher-addresses',
+  check({ state }) {
+    const who = sitePublisher(state.site, isLibraryImage(state));
+    const out: SeoFinding[] = [];
+    const explanation = 'The pages’ structured data names these addresses as the publisher’s, so search engines and AI answer engines would try to confirm who publishes the site at an address that is nobody’s. Enter the real address, or clear it.';
+    const own = who.url ? placeholderHost(who.url) : null;
+    if (who.url && own)
+      out.push(finding('entity', { severity: 'warning', code: 'SEO_PUBLISHER_URL_PLACEHOLDER', message: `The publisher’s web address ${who.url} ${standIn(own)}.`, site: 'identity.url', explanation, aiFixable: false, destination: { kind: 'site', field: 'publisherUrl' } }));
+    for (const profile of who.sameAs) {
+      const stand = placeholderHost(profile);
+      if (stand) out.push(finding('entity', { severity: 'warning', code: 'SEO_PUBLISHER_PROFILE_PLACEHOLDER', message: `The publisher’s profile ${profile} ${standIn(stand)}.`, site: `sameAs|${profile}`, explanation, aiFixable: false, destination: { kind: 'site', field: 'sameAs' } }));
+    }
+    return out;
+  }
+};
+
+/**
+ * A local business that says neither where it is nor how to reach it: its structured data needs an address, and a
+ * telephone number or opening hours, for search engines and maps to show it to people nearby. Only the author knows them.
+ */
+const localBusinessDetails: SeoAuditRule = {
+  id: 'local-business-details',
+  check({ state }) {
+    const who = sitePublisher(state.site, isLibraryImage(state));
+    if (!who.chosen || who.kind !== 'LocalBusiness') return [];
+    const address = !!seoText(who.address);
+    const contact = !!seoText(who.telephone) || who.openingHours.length > 0;
+    if (address && contact) return [];
+    const missing = !address && !contact ? 'no address, and no telephone number or opening hours' : !address ? 'no address' : 'no telephone number or opening hours';
+    return [
+      finding('entity', {
+        severity: 'warning',
+        code: 'SEO_LOCAL_BUSINESS_DETAILS_MISSING',
+        message: `The site is published by a local business with ${missing}.`,
+        site: 'identity.local',
+        explanation: 'Search engines and maps show a local business to people nearby by its address, and say how to reach it by its telephone number or opening hours. Without them the site’s structured data names a business no one can find.',
+        aiFixable: false,
+        destination: { kind: 'site', field: 'identity' }
+      })
+    ];
+  }
+};
+
+/** A document's canonical URL as the author saved it, before the website drops one that can't be used. */
+function savedCanonical(state: ProjectState, d: EffectiveSeo): unknown {
+  const seo: unknown = d.subject.kind === 'page' ? state.pages[d.subject.pageId]?.seo : entryOf(state, d)?.entry.seo;
+  return seo && typeof seo === 'object' ? (seo as { canonical?: unknown }).canonical : undefined;
+}
+
+/**
+ * Canonical URLs a page or an entry search engines may list was given that send search engines wrong: one the website
+ * can't use (and so leaves out for the document's own address), one over plain http while the website is on https, or
+ * one on the site's own public URL where the website has no page, has only a draft, or has a page that asks search
+ * engines not to list it. Another website's address is the author's to name, and is never judged; so is a file of the
+ * site's own (a PDF), since its files are not all in the project.
+ */
+const canonicalOverrides: SeoAuditRule = {
+  id: 'canonical-overrides',
+  check({ state, documents }) {
+    const out: SeoFinding[] = [];
+    const base = publicUrl(state.site) ?? null;
+    let answer: ((route: string) => 'listed' | 'noindex' | 'draft' | 'missing') | undefined;
+    const lookup = () => {
+      // What the website has at each address: its documents (as listed or not), its archive pages, and the old
+      // addresses it keeps working, which answer as what they lead to.
+      const live = publishedState(state);
+      const at = new Map<string, boolean>();
+      for (const d of documents) at.set(d.route.toLowerCase(), d.noindex);
+      for (const p of archivePages(live)) if (!at.has(p.route.toLowerCase())) at.set(p.route.toLowerCase(), false);
+      const kept = new Map(liveRedirects(live).map((r) => [r.from.toLowerCase(), r.to.toLowerCase()]));
+      const drafts = new Set<string>();
+      for (const p of Object.values(state.pages)) if (typeof p.route === 'string' && p.draft === true && p.id !== state.site.homePageId) drafts.add(p.route.toLowerCase());
+      for (const e of siteEntries(state)) if (isDraftEntry(e.entry)) drafts.add(e.route.toLowerCase());
+      return (route: string) => {
+        const key = route.toLowerCase();
+        const to = at.has(key) ? key : (kept.get(key) ?? key);
+        if (at.has(to)) return at.get(to) ? 'noindex' : 'listed';
+        return drafts.has(key) || drafts.has(to) ? 'draft' : 'missing';
+      };
+    };
+    for (const d of documents) {
+      if (!d.visibility.indexable) continue;
+      const saved = savedCanonical(state, d);
+      if (saved === undefined || saved === null || (typeof saved === 'string' && !saved.trim())) continue;
+      const where = {
+        owner: ownerOf(d),
+        site: 'canonical',
+        aiFixable: false,
+        destination: (d.subject.kind === 'page' ? { kind: 'pageSeo', pageId: d.subject.pageId, field: 'canonical' } : { kind: 'entry', collectionId: d.subject.collectionId, entryId: d.subject.entryId, field: 'canonical' }) as EditorDestination
+      };
+      const check = typeof saved === 'string' ? checkCanonicalUrl(saved) : null;
+      if (!check?.ok || !check.url) {
+        out.push(
+          finding('technical', {
+            severity: 'warning',
+            code: 'SEO_CANONICAL_INVALID',
+            message: `${named(state, d)} has a canonical URL that can’t be used${check && !check.ok ? `: ${check.message}` : '.'}`,
+            explanation: 'The website leaves a canonical URL it can’t use out, and names the page’s own address instead, so search engines are not told the original the author meant. Correct it, or clear it.',
+            ...where
+          })
+        );
+        continue;
+      }
+      const url = check.url;
+      if (base?.startsWith('https:') && /^http:/i.test(url)) {
+        out.push(
+          finding('technical', {
+            severity: 'warning',
+            code: 'SEO_CANONICAL_INSECURE',
+            message: `${named(state, d)} names ${url} as its canonical URL, over plain http while the website is on https.`,
+            explanation: 'Search engines prefer the secure address, and a canonical URL over http asks them to list the insecure one instead, or to ignore the canonical URL as a mistake. Write it with https://.',
+            ...where
+          })
+        );
+        continue;
+      }
+      const at = ownSiteAddress(state, url);
+      if (!at) continue;
+      const last = at.route.slice(0, -1).split('/').pop() ?? '';
+      if (last.includes('.') && !PAGE_FILE.test(last)) continue;
+      answer ??= lookup();
+      const found = answer(at.route);
+      if (found === 'listed') continue;
+      const what = found === 'noindex' ? 'a page that asks search engines not to list it' : found === 'draft' ? 'a draft, which is not on the website' : 'an address where the website has no page';
+      out.push(
+        finding('technical', {
+          severity: 'warning',
+          code: found === 'noindex' ? 'SEO_CANONICAL_TARGET_NOINDEX' : found === 'draft' ? 'SEO_CANONICAL_TARGET_DRAFT' : 'SEO_CANONICAL_TARGET_MISSING',
+          message: `${named(state, d)} names ${url} as its canonical URL: ${what}.`,
+          explanation: 'A canonical URL tells search engines to list that address in this page’s place. When they can’t list it either, neither may be shown in search results. Point it at a page search engines may list, or clear it so the page is its own.',
+          ...where
+        })
+      );
+    }
+    return out;
+  }
+};
+
+/**
+ * Collections whose index the website publishes (shared/archives.ts) with nothing on it, or with entries no link
+ * from the rest of the site leads to. An empty index is a page in the sitemap that lists nothing. A collection is
+ * reached by a link to its index, to one of its archive pages or to one of its published entries, from anywhere but
+ * the collection itself: its own layout and entries' text bring no one in.
+ */
+const collectionArchives: SeoAuditRule = {
+  id: 'collection-archives',
+  check({ state, links }) {
+    const live = publishedState(state);
+    const pages = archivePages(live);
+    const indexes = pages.filter((p) => p.page === 1 && p.category === undefined);
+    if (!indexes.length) return [];
+    const name = (id: string) => `“${seoText(state.collections[id]?.settings.name) || id}”`;
+    const out: SeoFinding[] = [];
+    let reached: Set<string> | undefined;
+    const reach = () => {
+      const entries = siteEntries(live);
+      const entryCollection = new Map(entries.map((e) => [e.entry.id, e.collection.settings.id]));
+      const routeCollection = new Map<string, string>([...entries.map((e) => [e.route.toLowerCase(), e.collection.settings.id] as const), ...pages.map((p) => [p.route.toLowerCase(), p.collectionId] as const)]);
+      const kept = new Map(liveRedirects(live).map((r) => [r.from.toLowerCase(), r.to.toLowerCase()]));
+      const found = new Set<string>();
+      for (const l of links()) {
+        let to: string | undefined;
+        if (l.link.type === 'collection') to = l.link.target;
+        else if (l.link.type === 'entry') to = entryCollection.get(l.link.target);
+        else if (l.link.type === 'url') {
+          const at = ownSiteAddress(state, l.link.target) ?? (/^http:/i.test(l.link.target) ? ownSiteAddress(state, l.link.target.replace(/^http:/i, 'https:')) : null);
+          const route = at?.route.toLowerCase();
+          if (route) to = routeCollection.get(route) ?? routeCollection.get(kept.get(route) ?? '');
+        }
+        if (!to) continue;
+        const from = l.owner.kind === 'template' ? l.owner.id : l.owner.kind === 'entry' ? entryCollection.get(l.owner.id) : undefined;
+        if (from !== to) found.add(to);
+      }
+      return found;
+    };
+    for (const index of indexes) {
+      const owner = { kind: 'collection', id: index.collectionId };
+      if (!index.entryIds.length) {
+        out.push(
+          finding('content', {
+            severity: 'warning',
+            code: 'SEO_ARCHIVE_EMPTY',
+            message: `${name(index.collectionId)} publishes an index at ${index.route} with no published entries to list.`,
+            owner,
+            site: 'archive',
+            explanation: 'The index is a page of the website and is listed in the sitemap, so search engines and visitors find a page with nothing on it. Publish an entry, or turn the collection’s index page off until it has one.',
+            aiFixable: false
+          })
+        );
+        continue;
+      }
+      reached ??= reach();
+      if (reached.has(index.collectionId)) continue;
+      out.push(
+        finding('content', {
+          severity: 'warning',
+          code: 'SEO_ARCHIVE_UNLINKED',
+          message: `No link on the rest of the site leads to ${name(index.collectionId)}: neither its index at ${index.route} nor any of its entries.`,
+          owner,
+          site: 'incoming-links',
+          explanation: 'Search engines and visitors find pages by following links; a collection nothing links to may never be found, beyond its line in the sitemap. Link to its index from a menu, or to its entries from a page.',
+          aiFixable: false
+        })
+      );
+    }
+    return out;
+  }
+};
+
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, brokenOwnLinks, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [
+  baseUrl,
+  canonicalOverrides,
+  homeNoindex,
+  textRule('titles', 'title'),
+  textRule('descriptions', 'description'),
+  unlinkedPages,
+  collectionArchives,
+  genericLinkText,
+  brokenOwnLinks,
+  placeholderLinks,
+  socialImage,
+  favicon,
+  entryImages,
+  entryHeadings,
+  entityReadiness,
+  publisherAddresses,
+  localBusinessDetails,
+  pageStructuredData,
+  agenticDiscovery,
+  webMcpReadiness,
+  crawlerPolicy
+];
