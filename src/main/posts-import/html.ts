@@ -35,6 +35,12 @@ export interface HtmlReport {
   galleryOverflow: number;
   /** Links whose address could not be kept (a script, or an address on the old site that is not a post): their words stay. */
   droppedLinks: number;
+  /** A WordPress post's footnotes brought in from its meta, as a list under a heading. */
+  footnotes: number;
+  /** Footnotes the text numbers whose text the export does not have. */
+  lostFootnotes: number;
+  /** Links to places the post itself names (a hand-written note, its number): an entry's text has no such places, so their words stay. */
+  inPostLinks: number;
   /** Blocks of code or preformatted text kept as ordinary text, line by line. */
   code: number;
   /** Superscripts and subscripts written on the line (see scriptForm). */
@@ -45,7 +51,13 @@ export interface HtmlReport {
   ticked: number;
 }
 
-export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], galleryOverflow: 0, droppedLinks: 0, code: 0, raised: 0, struck: 0, ticked: 0 });
+export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], galleryOverflow: 0, droppedLinks: 0, code: 0, raised: 0, struck: 0, ticked: 0, footnotes: 0, lostFootnotes: 0, inPostLinks: 0 });
+
+/** A block-editor footnote: its ID, as the text's number names it, and its text as HTML. */
+export interface Footnote {
+  id: string;
+  content: string;
+}
 
 /** A picture the HTML shows, as written. */
 export interface HtmlImage {
@@ -62,6 +74,11 @@ export interface ReadHtmlOptions {
   autop?: boolean;
   /** WordPress shortcodes: [caption] becomes a captioned picture, [embed] a link, and the rest are removed. */
   shortcodes?: boolean;
+  /**
+   * A WordPress post: its footnotes (from its meta) are shown at its end when it has a footnotes block or numbers them,
+   * and links to places the post itself names lose their address, since an entry's text has none.
+   */
+  wordpress?: { footnotes: Footnote[] };
   /** The export's pictures, for a [gallery] shortcode: without it a gallery is removed like any other shortcode. */
   gallery?: GalleryPictures;
 }
@@ -306,11 +323,23 @@ const SIBLING_ENDS: Record<string, { ends: string[]; within: string[] }> = {
   th: { ends: ['td', 'th'], within: ['tr', 'table'] }
 };
 
-/** Read markup into a tree, closing what is left open. Counts what is dropped on the way. */
-function parseHtml(html: string, report: HtmlReport): HNode[] {
+/**
+ * What reading a WordPress post's markup finds of its own places: the IDs its elements have (dropped ones too, and
+ * old `<a name>` anchors), the footnotes its text numbers, and whether it has a footnotes block. Its text and its
+ * notes share one, and so one budget of nodes.
+ */
+interface PostScan {
+  nodes: number;
+  ids: Set<string>;
+  numbered: Set<string>;
+  block: boolean;
+}
+
+/** Read markup into a tree, closing what is left open. Counts what is dropped on the way. `post`: the post's own text. */
+function parseHtml(html: string, report: HtmlReport, scan?: PostScan, post = false): HNode[] {
   const root: HElement = { tag: '#root', attrs: {}, children: [] };
   const stack: HElement[] = [root];
-  let nodes = 0;
+  const budget = scan ?? { nodes: 0 };
   /** Inside a dropped element: its name and how deeply the same name is nested in it. */
   let dropping: { tag: string; depth: number } | null = null;
   const top = () => stack[stack.length - 1];
@@ -318,7 +347,7 @@ function parseHtml(html: string, report: HtmlReport): HNode[] {
     const kids = top().children;
     // Text beside text is one run: only a node added counts.
     if (typeof n === 'string' && typeof kids[kids.length - 1] === 'string') return void (kids[kids.length - 1] += n);
-    if (++nodes > MAX_NODES) throw new Error('it is too long to read.');
+    if (++budget.nodes > MAX_NODES) throw new Error('it is too long to read.');
     kids.push(n);
   };
   const popTo = (i: number) => {
@@ -347,6 +376,9 @@ function parseHtml(html: string, report: HtmlReport): HNode[] {
     i = lt;
     if (html.startsWith('<!--', i)) {
       const end = html.indexOf('-->', i + 4);
+      // Where WordPress shows the post's footnotes: never in code the post shows as text.
+      // The post shows its footnotes: a footnotes block, never one in code the post shows as text.
+      if (post && scan && !dropping && end >= 0 && /^\s*wp:footnotes\b/.test(html.slice(i + 4, Math.min(end, i + 64))) && !stack.some((e) => e.tag === 'pre' || e.tag === 'code')) scan.block = true;
       i = end < 0 ? n : end + 3;
       continue;
     }
@@ -406,6 +438,11 @@ function parseHtml(html: string, report: HtmlReport): HNode[] {
       if (!closing && !Object.hasOwn(attrs, name) && Object.keys(attrs).length < 64) attrs[name] = decodeEntities(value);
     }
     i = j < n ? j + 1 : n;
+    if (scan && !closing) {
+      if (attrs.id) scan.ids.add(attrs.id);
+      if (tag === 'a' && attrs.name) scan.ids.add(attrs.name);
+      if (post && attrs['data-fn']) scan.numbered.add(attrs['data-fn']);
+    }
 
     if (closing) {
       if (dropping) {
@@ -459,6 +496,9 @@ function parseHtml(html: string, report: HtmlReport): HNode[] {
   return root.children;
 }
 
+/** Where a WordPress post's footnotes go in its tree: at its end. */
+const FOOTNOTES = '#footnotes';
+
 function noteEmbed(report: HtmlReport, src: string) {
   if (report.embeds.length < 20) report.embeds.push(/^https?:\/\//i.test(src) ? src.slice(0, 300) : '');
 }
@@ -491,6 +531,65 @@ function embedAddress(el: HElement): string | null {
   const frame = descendants(el, 'iframe')[0];
   const url = /\bwp-block-embed\b/.test(cls) ? oneLine(textOf(el)) : (frame?.attrs.src ?? '');
   return /^https?:\/\/[^\s<>"]+$/i.test(url) ? url : null;
+}
+
+/** What a WordPress post's own text names: its footnotes and the places its HTML gives an ID. */
+interface PostPlaces {
+  /** Each footnote's text, read, in order; null when they are not shown. */
+  notes: HNode[][] | null;
+  /** The footnotes' IDs and those the text's numbers name. */
+  noteIds: Set<string>;
+  /** The IDs the post's elements have (and its old `<a name>` anchors). */
+  ids: Set<string>;
+}
+
+/** A link's place within a page, as its ID: `#note%201` is the place `note 1`. */
+function fragmentId(hash: string): string {
+  try {
+    return decodeURIComponent(hash);
+  } catch {
+    return hash;
+  }
+}
+
+/** Whether `href` goes to a footnote of the post or its number ('note'), or to another place the post names ('place'). */
+function withinPost(places: PostPlaces, href: string | undefined): 'note' | 'place' | null {
+  const t = href?.trim() ?? '';
+  if (!/^#./.test(t)) return null;
+  const id = fragmentId(t.slice(1));
+  return places.noteIds.has(id) ? 'note' : places.ids.has(id) ? 'place' : null;
+}
+
+/** Blocks a footnote's text has no room for: one note is one item of the list, its paragraphs kept apart by line breaks. */
+const NOTE_BLOCKS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'ul', 'ol', 'li', 'section', 'article', 'header', 'footer', 'figure']);
+
+function inlineOnly(nodes: RichDomNode[]): RichDomNode[] {
+  const out: RichDomNode[] = [];
+  /** Words came before: a block ended since then starts a new line. */
+  let shown = false;
+  let ended = false;
+  const words = (n: RichDomNode) => {
+    if (ended && shown) out.push({ tag: 'br', children: [] });
+    ended = false;
+    shown = true;
+    out.push(n);
+  };
+  const walk = (list: RichDomNode[]) => {
+    for (const n of list) {
+      if (typeof n === 'string') {
+        if (n.trim()) words(n);
+        else out.push(n);
+      } else if (!NOTE_BLOCKS.has(n.tag)) words({ ...n, children: inlineOnly(n.children) });
+      // A picture in a note has no place in a line of text.
+      else if (!n.image) {
+        ended = true;
+        walk(n.children);
+        ended = true;
+      }
+    }
+  };
+  walk(nodes);
+  return out;
 }
 
 /** The characters of their own that superscripts and subscripts have, for what they commonly hold. */
@@ -546,7 +645,7 @@ function lineText(n: HNode, report: HtmlReport): string {
   return !form ? inner : 'map' in form ? [...inner].map((c) => form.map[c] ?? c).join('') : `${form.mark}(${inner})`;
 }
 
-function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre = false): RichDomNode[] {
+function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre = false, places?: PostPlaces): RichDomNode[] {
   const out: RichDomNode[] = [];
   let cells = 0;
   for (const node of nodes) {
@@ -555,10 +654,21 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       else node.split('\n').forEach((line, k) => (k && out.push({ tag: 'br', children: [] }), line && out.push(line)));
       continue;
     }
-    const convertKids = (children: HNode[]) => convert(children, opts, report, pre || node.tag === 'pre');
+    const convertKids = (children: HNode[]) => convert(children, opts, report, pre || node.tag === 'pre', places);
     const kids = () => convertKids(node.children);
     const tag = node.tag;
-    if (tag === 'img') {
+    if (tag === FOOTNOTES) {
+      if (!places?.notes) continue;
+      // Under a heading of their own: a list just before them would otherwise take them in, and renumber them.
+      out.push({ tag: 'h2', children: ['Footnotes'] });
+      // One item per note, so the text's numbers stay theirs; one with no words still holds its place.
+      const items = places.notes.map((note) => {
+        const words = inlineOnly(convert(note, opts, report, false, places));
+        return { tag: 'li', children: richTextToPlain(blocksFromDom(words, {}).blocks).trim() ? words : ['—'] };
+      });
+      out.push({ tag: 'ol', children: items });
+      places.notes = null;
+    } else if (tag === 'img') {
       const key = opts.image({ src: node.attrs.src ?? '', alt: oneLine(node.attrs.alt ?? '') });
       if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(node.attrs.alt ?? '') }, children: [] });
     } else if (tag === 'figure') {
@@ -579,7 +689,12 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
         else out.push({ tag: 'div', children: kids() });
       }
     } else if (tag === 'iframe') noteEmbed(report, node.attrs.src ?? '');
-    else if (tag === 'a') {
+    else if (tag === 'a' && places && withinPost(places, node.attrs.href)) {
+      // A link to a place the post itself names (a note, its number): an entry's text has no such places. A footnote's
+      // number is said with the footnotes.
+      if (withinPost(places, node.attrs.href) === 'place') report.inPostLinks++;
+      out.push({ tag: 'span', children: kids() });
+    } else if (tag === 'a') {
       const href = node.attrs.href;
       const rel = relsFromAttribute(node.attrs.rel);
       out.push({ tag: 'a', ...(href !== undefined ? { href } : {}), ...(node.attrs.target === '_blank' ? { newTab: true } : {}), ...(rel.length ? { rel } : {}), children: kids() });
@@ -594,6 +709,9 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
     } else if (tag === 'pre') {
       if (textOf(node).trim()) report.code++;
       out.push({ tag: 'div', children: kids() });
+    } else if (tag === 'sup' && places && Object.hasOwn(node.attrs, 'data-fn')) {
+      // A block-editor footnote's number: it reads "[1]" rather than as a superscript, its note listed under Footnotes.
+      out.push({ tag: 'span', children: ['[', ...kids(), ']'] });
     } else if (tag === 'sup' || tag === 'sub') out.push(...raised(node, convertKids, report));
     else if (tag === 's' || tag === 'strike' || tag === 'del') {
       if (textOf(node).trim()) report.struck++;
@@ -619,10 +737,31 @@ export function htmlToRichText(html: string, opts: ReadHtmlOptions, report: Html
   let text = html;
   if (opts.shortcodes) text = readShortcodes(text, report, opts.gallery);
   if (opts.autop) text = autop(text);
-  const tree = convert(parseHtml(text, report), opts, report);
+  const scan: PostScan | undefined = opts.wordpress ? { nodes: 0, ids: new Set(), numbered: new Set(), block: false } : undefined;
+  const parsed = parseHtml(text, report, scan, true);
+  const places = opts.wordpress && scan ? postPlaces(parsed, opts.wordpress.footnotes, report, scan, opts) : undefined;
+  const tree = convert(parsed, opts, report, false, places);
   const { blocks, droppedLinks } = blocksFromDom(tree, {}, { link: opts.link });
   report.droppedLinks += droppedLinks;
   return blocks;
+}
+
+/**
+ * What a WordPress post's text names: the footnotes it shows (at its end, when it has a footnotes block or numbers
+ * some), the IDs its numbers and elements carry, and what its report says of them.
+ */
+function postPlaces(tree: HNode[], footnotes: Footnote[], report: HtmlReport, scan: PostScan, opts: ReadHtmlOptions): PostPlaces {
+  const known = new Set(footnotes.map((f) => f.id));
+  const shown = footnotes.length > 0 && (scan.block || footnotes.some((f) => scan.numbered.has(f.id)));
+  // Notes the post doesn't show are never read: nothing of theirs reaches it. Each is an item of the post's text.
+  if (shown && (scan.nodes += footnotes.length) > MAX_NODES) throw new Error('it is too long to read.');
+  const notes = shown ? footnotes.map((f) => parseHtml(opts.shortcodes ? readShortcodes(f.content, report) : f.content, report, scan)) : null;
+  // At the post's end, where WordPress puts its footnotes block: nothing after them, so no list there can join theirs
+  // (entries keep lists side by side as one) and no block moves past them.
+  if (shown) tree.push({ tag: FOOTNOTES, attrs: {}, children: [] });
+  report.footnotes = shown ? footnotes.length : 0;
+  report.lostFootnotes = [...scan.numbered].filter((id) => !known.has(id)).length;
+  return { notes, noteIds: new Set([...known, ...scan.numbered]), ids: scan.ids };
 }
 
 /** HTML as one line of plain text (a title, an excerpt): tags gone, references read, spaces collapsed. */

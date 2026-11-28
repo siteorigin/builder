@@ -469,6 +469,14 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await command('paste');
       expect(await selected()).toEqual({ text: 'word', collapsed: false });
     });
+
+    it('hands the editor a heading pasted over with more than 20,000 characters, for its field’s own limit to judge (#1447)', async () => {
+      const long = 'Long words '.repeat(2500).trim();
+      await editAt('h', 'Lane', 1);
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw('', long);
+      expect(await commit()).toBe(long);
+    });
   });
 
   describe('line breaks', () => {
