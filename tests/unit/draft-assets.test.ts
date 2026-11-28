@@ -124,7 +124,7 @@ describe('files kept aside for drafts', () => {
     expect(heldDraftAssetsStop([`${DRAFT_ASSETS_DIR}/other-12345678.pdf`])).toBe('siteorigin/draft-assets/other-12345678.pdf is still kept aside from an earlier export of this project. Move it into static/assets/ or delete it, then export again.');
   });
 
-  it('copies where the disk has no hard links, never over a file there, and makes again a copy cut short', async () => {
+  it('copies where the disk has no hard links, never over a file there, and removes nothing a copy left in the place', async () => {
     const dir = temp();
     write(dir, `${DRAFT_ASSETS_DIR}/sketch-12345678.jpg`, 'sketch');
     write(dir, `${DRAFT_ASSETS_DIR}/taken-12345678.jpg`, 'held');
@@ -148,15 +148,14 @@ describe('files kept aside for drafts', () => {
       throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
     });
     expect(await restoreDraftAssets(dir, records)).toContain(`${DRAFT_ASSETS_DIR}/cut-12345678.jpg`);
-    expect(there(dir, 'static/assets/cut-12345678.jpg')).toBe(false);
     expect(read(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`)).toBe('whole picture');
-    // One cut short by the app stopping is the start of the held file: the next opening makes it again. The file
-    // that only shares a first letter with its held copy is another file, and stays.
+    // What it left in the place is then another file: never removed, even when it is the start of the held one (a
+    // file of the author's could be), but left beside the held copy and said.
     cut.mockImplementation(copy);
-    write(dir, 'static/assets/cut-12345678.jpg', 'whole pic');
-    expect(await restoreDraftAssets(dir, records)).toEqual([`${DRAFT_ASSETS_DIR}/taken-12345678.jpg`]);
-    expect(read(dir, 'static/assets/cut-12345678.jpg')).toBe('whole picture');
-    expect(there(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`)).toBe(false);
+    expect(read(dir, 'static/assets/cut-12345678.jpg')).toBe('wh');
+    expect((await restoreDraftAssets(dir, records)).sort()).toEqual([`${DRAFT_ASSETS_DIR}/cut-12345678.jpg`, `${DRAFT_ASSETS_DIR}/taken-12345678.jpg`]);
+    expect(read(dir, 'static/assets/cut-12345678.jpg')).toBe('wh');
+    expect(read(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`)).toBe('whole picture');
     expect(read(dir, 'static/assets/taken-12345678.jpg')).toBe('mine');
   });
 

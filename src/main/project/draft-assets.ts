@@ -64,9 +64,9 @@ export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
 
 /**
  * Put `from` at `to` without replacing anything there: linked and then let go of where the disk can, so the file is at
- * one path or both but never half written, and copied where it can't, into a file the copy alone makes. A copy that
- * fails is taken away again; one cut short by the app stopping is the start of the held file, which the next opening
- * knows (heldAt). False when something is already at `to`.
+ * one path or both but never half written, and copied where it can't, into a file only the copy makes. A copy cut
+ * short leaves its start at `to`, which is then another file: the next opening leaves it beside the held copy and says
+ * so, as it does any file it finds in the held one's place. False when something is already at `to`.
  */
 async function moveNew(from: string, to: string): Promise<boolean> {
   try {
@@ -79,7 +79,6 @@ async function moveNew(from: string, to: string): Promise<boolean> {
       await fs.copyFile(from, to, fsConstants.COPYFILE_EXCL);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      await fs.rm(to, { force: true });
       throw err;
     }
   }
@@ -87,17 +86,11 @@ async function moveNew(from: string, to: string): Promise<boolean> {
   return true;
 }
 
-/**
- * What the file at `to` (the project path `target`) is of the held file `from`, reached through no link and at exactly
- * that name: the held file put back already (`same`: the same bytes, a move cut short), the start of it (`start`: a
- * copy cut short), or another file.
- */
-async function heldAt(dir: string, from: string, to: string, target: string): Promise<'same' | 'start' | 'other'> {
-  if ((await fs.realpath(from)) === (await fs.realpath(to))) return 'other';
-  if (!(await fs.lstat(to)).isFile() || !(await spelledAs(dir, target))) return 'other';
-  const [whole, there] = [await fs.readFile(from), await fs.readFile(to)];
-  if (whole.equals(there)) return 'same';
-  return there.length < whole.length && whole.subarray(0, there.length).equals(there) ? 'start' : 'other';
+/** Whether the file at `to` (the project path `target`) is the held file `from` put back already: the same bytes, at exactly that name, through no link. */
+async function putBack(dir: string, from: string, to: string, target: string): Promise<boolean> {
+  if ((await fs.realpath(from)) === (await fs.realpath(to))) return false;
+  if (!(await fs.lstat(to)).isFile() || !(await spelledAs(dir, target))) return false;
+  return (await fs.readFile(from)).equals(await fs.readFile(to));
 }
 
 /**
@@ -145,9 +138,8 @@ export async function holdDraftAssets(dir: string, files: readonly string[]): Pr
  * Put the library files an export held back (holdDraftAssets) where the project uses them, in `static/assets/`, and
  * remove the folder once it is empty. Only one of `assets`' own files (an original or a copy, its path matched
  * without case) is ever put back: anything else there is no file an export held. A file is never put over one already
- * there: one with the same bytes at exactly that name is the same file (a move cut short), so the held copy goes; one
- * that is the start of it is a copy cut short, made again; anything else stays as it is, beside the held copy.
- * Nothing is moved, compared or removed through a link.
+ * there: one with the same bytes at exactly that name is the same file (a move cut short), so the held copy goes;
+ * anything else stays as it is, beside the held copy. Nothing is moved, compared or removed through a link.
  * Returns the held files left where they are (as `siteorigin/draft-assets/…`), for the opening to say so.
  */
 export async function restoreDraftAssets(dir: string, assets: Readonly<Record<string, AssetRecord>>): Promise<string[]> {
@@ -180,9 +172,8 @@ export async function restoreDraftAssets(dir: string, assets: Readonly<Record<st
         await openFolder(dirname(to), opened);
         await openFolder(dirname(from), opened);
         if (await moveNew(from, to)) continue;
-        const there = await heldAt(dir, from, to, target);
-        if (there === 'same') await fs.rm(from);
-        else if (there !== 'start' || !(await fs.rm(to).then(() => moveNew(from, to)))) kept.push(path);
+        if (await putBack(dir, from, to, target)) await fs.rm(from);
+        else kept.push(path);
       } catch {
         kept.push(path);
       }
