@@ -40,8 +40,9 @@ describe("the save indicator after a save fails (#753)", () => {
       "A save did not finish, so nothing more is saved for now.",
     );
     // Reopening finishes the save (#1435): never said to lose it.
+    // One it cannot name may have left nothing for reopening to finish: nothing is promised of it.
     expect(n.next).toBe(
-      "Check that the project folder can be written to, then close and reopen the project to finish saving it. Changes you make until then are not saved.",
+      "Check that the project folder can be written to, then close and reopen the project. Changes you make until then are not saved.",
     );
     const named = saveFailureNotice({
       kind: "unfinished",
@@ -49,7 +50,9 @@ describe("the save indicator after a save fails (#753)", () => {
       message: "",
     });
     expect(named.what).toMatch(/^Saving “Two pages” did not finish/);
-    expect(named.next).toMatch(/to finish saving “Two pages”\./);
+    expect(named.next).toBe(
+      "Check that the project folder can be written to, then close and reopen the project to finish saving “Two pages”. Changes you make until then are not saved.",
+    );
   });
 
   it("is announced as it appears, and as a later save clears it", () => {
@@ -89,6 +92,21 @@ describe("what the editor says about a change the project folder could not take 
     expect(
       failedFolder(fsError("EACCES", join(project, "site.json")), project),
     ).toBe("");
+    // A folder in the way of a rename is the place it could not write, in the folder that holds it.
+    const dir = mkdtempSync(join(tmpdir(), "so-save-error-"));
+    try {
+      mkdirSync(join(dir, ".siteorigin", "journal.json"), { recursive: true });
+      expect(
+        failedFolder(
+          fsError("EISDIR", join(dir, ".siteorigin", ".a.tmp"), {
+            dest: join(dir, ".siteorigin", "journal.json"),
+          }),
+          dir,
+        ),
+      ).toBe(".siteorigin");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
     // Outside the project, or no path at all: no folder is named.
     expect(
       failedFolder(
@@ -139,9 +157,10 @@ describe("what the editor says about a change the project folder could not take 
     expect(saveFailureMessage(fsError("EACCES", tmp), project, "blocked")).toBe(
       "That change could not be saved: the folder “siteorigin/pages” cannot be written to. Check that you can save files there, then close and reopen the project, and make the change again.",
     );
-    expect(saveFailureMessage(fsError("ENOSPC", tmp), project, "failed")).toBe(
-      "That change could not be saved: there is not enough space on the disk. Free up some space, then try again.",
-    );
+    for (const code of ["ENOSPC", "EDQUOT"])
+      expect(saveFailureMessage(fsError(code, tmp), project, "failed")).toBe(
+        "That change could not be saved: there is not enough space on the disk. Free up some space, then try again.",
+      );
     expect(
       saveFailureMessage(
         fsError("EACCES", join(project, "site.json")),
@@ -180,6 +199,9 @@ describe("what the editor says about a change the project folder could not take 
     expect(saveFailureMessage(pin, project, "unfinished")).toBe(
       "That change is not saved yet: The theme “Harbour” is not installed. Close and reopen the project to finish saving it.",
     );
+    expect(saveFailureMessage(pin, project, "blocked")).toBe(
+      "That change could not be saved: The theme “Harbour” is not installed. Close and reopen the project, and make the change again.",
+    );
   });
 });
 
@@ -215,6 +237,11 @@ describe("the editor's change as main answers it (#1435)", () => {
     expect(
       (await written(session("failed"), Promise.reject(eacces()))).error,
     ).toMatchObject({ recoverable: true, details: { save: "failed" } });
+    // Only a save nothing was written of can be tried again here.
+    for (const kind of ["landed", "blocked"] as const)
+      expect(
+        (await written(session(kind), Promise.reject(eacces()))).error,
+      ).toMatchObject({ recoverable: false, details: { save: kind } });
   });
 
   it("answers a file system failure that never reached the save as one that wrote nothing", async () => {

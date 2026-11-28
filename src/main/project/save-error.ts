@@ -19,13 +19,14 @@ export type WriteFailure = SaveFailure['kind'] | 'landed' | 'blocked';
  */
 export function failedFolder(e: unknown, projectDir: string): string | null {
   const err = e as { path?: unknown; dest?: unknown } | null;
-  // A rename names the file it was moving onto last.
-  const target = typeof err?.dest === 'string' ? err.dest : typeof err?.path === 'string' ? err.path : null;
+  // A rename names the file it was moving onto last, which is written in the folder that holds it.
+  const dest = typeof err?.dest === 'string' ? err.dest : null;
+  const target = dest ?? (typeof err?.path === 'string' ? err.path : null);
   if (!target) return null;
   // A folder opened to flush it is the folder itself; anything else is written in the folder that holds it.
   let folder = dirname(target);
   try {
-    if (statSync(target).isDirectory()) folder = target;
+    if (!dest && statSync(target).isDirectory()) folder = target;
   } catch {
     /* Not there: a file that was being made. */
   }

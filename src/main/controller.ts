@@ -2892,7 +2892,9 @@ export class Controller {
       const label = typeof opts.label === 'string' && opts.label ? opts.label : (batch.label ?? 'Edit');
       const before = session.state;
       const r = await written(session, session.apply({ operations: batch.operations }, { label, source: 'user', codeAllowed, asking: { runId, base } }));
-      if (r.ok) saved = { summary: heldSummary(before, batch.operations, label), operations: batch.operations, before, after: session.state };
+      // Saved, or its documents in place with only the rest of the save left: the request hears of the edit either way.
+      const landed = r.ok || (r.error?.code === 'SAVE_FAILED' && (r.error.details as { save?: unknown } | undefined)?.save === 'landed');
+      if (landed) saved = { summary: heldSummary(before, batch.operations, label), operations: batch.operations, before, after: session.state };
       return r;
     } finally {
       admitted.done(saved);

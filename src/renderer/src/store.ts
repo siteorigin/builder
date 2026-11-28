@@ -1192,9 +1192,10 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // Not written to the project's folder: what was typed is kept, to copy (or try again), never only put back. One
       // whose documents landed is on the page already.
       const save = saveKind(r.error);
-      const kept = save && save !== 'landed' && typed?.base ? keepUnwritten(typed, operations, label, save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : message, save) : null;
+      const kept = save && save !== 'landed' && typed?.base ? keepUnwritten(typed, operations, label, heldNote(r.error, save), save) : null;
       if (r.error?.code !== 'BUSY') typed?.refused?.();
-      landed(kept ?? { ok: false, message });
+      // Leaving loses nothing of one reopening finishes, so a leave waiting on it never says it would.
+      landed(keptOnLeave(r) ? { ok: true } : (kept ?? { ok: false, message }));
       return null;
     }
     landed({ ok: true });
@@ -1228,8 +1229,15 @@ function saveKind(error: { code: string; details?: unknown } | undefined): HeldS
   if (error?.code !== 'SAVE_FAILED') return null;
   return save === 'unfinished' || save === 'landed' || save === 'blocked' ? save : 'failed';
 }
-/** Said beside an edit typed after a save that did not finish: reopening finishes that save, never this edit. */
-const BLOCKED_NOTE = 'Not saved: an earlier save did not finish, so nothing more is saved until the project is closed and reopened. Copy your text before you close it, then make this change again.';
+/** Said beside an edit main refused until the project is reopened (`why`), which never saves it. */
+const blockedNote = (why: string | undefined) => `Not saved: ${why ?? 'nothing more is saved until the project is closed and reopened.'} Copy your text before you close it, then make this change again.`;
+/** A refusal's note for a held row: a refusal until reopening says what to do with the text. */
+const heldNote = (error: { code: string; message?: string } | undefined, save: HeldSave) => (save === 'blocked' && error?.code === 'CONFLICT' ? blockedNote(error.message) : (error?.message ?? 'That change could not be saved.'));
+/** Whether nothing of an edit is lost by leaving the project: saved, or left for reopening to finish (#1435). */
+const keptOnLeave = (r: { ok: boolean; error?: { code: string; details?: unknown } }) => {
+  const save = r.ok ? null : saveKind(r.error);
+  return r.ok || save === 'unfinished' || save === 'landed';
+};
 
 /**
  * Keep a typed edit whose save did not reach the project's folder as a held edit, with `note` saying why, so the text
@@ -1328,7 +1336,7 @@ async function writeTyped(
       continue;
     }
     // Refused because an earlier save did not finish: kept to copy and make again once the project is reopened.
-    if (saveKind(r.error) === 'blocked') return hold({ phase: 'failed', note: BLOCKED_NOTE, save: 'blocked' });
+    if (saveKind(r.error) === 'blocked') return hold({ phase: 'failed', note: blockedNote(r.error?.message), save: 'blocked' });
     // Still refused (a file in conflict, one that cannot be read): kept, with why, so nothing typed is lost.
     return hold({ phase: 'failed', note: r.error?.message });
   }
@@ -1480,7 +1488,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     setState({ pendingSave: getState().pendingSave + 1 });
     const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }, h.text).catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: errorText(e), details: undefined } }));
     // Followed like any change on its way, so saving or leaving the project waits for it.
-    trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
+    trackApply(writing.then((x) => ({ ok: keptOnLeave(x), message: x.error?.message })));
     const r = await writing;
     const pendingSave = Math.max(0, getState().pendingSave - 1);
     // The project closed while the save was on its way.
@@ -1498,9 +1506,12 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
         ? settle({ phase: 'waiting', note: 'The AI is working on another request.' })
         : settle({ phase: 'failed', note: 'The project is still locked by an AI request that did not end cleanly. Reopen the project, then try again.' }, outcome('held'));
     const save = saveKind(r.error);
-    // Its documents are in place: nothing is left to hold, though saving did not finish (the save indicator says so).
-    if (save === 'landed') return setState({ heldEdits: removeHeld(id) });
-    if (save) return settle({ phase: 'failed', note: save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : r.error!.message, save }, outcome('held'));
+    // Its documents are in place: nothing is left to hold, though saving did not finish, which is said.
+    if (save === 'landed') {
+      setState({ heldEdits: removeHeld(id) });
+      return toast(r.error!.message, 'error');
+    }
+    if (save) return settle({ phase: 'failed', note: heldNote(r.error, save), save }, outcome('held'));
     return settle({ phase: 'failed', note: r.error?.message ?? 'That change could not be applied.' }, outcome('held'));
   }
 }
@@ -1526,7 +1537,7 @@ export async function saveHeldNow(id: number): Promise<void> {
   sendPicksAhead();
   const writing = api.project.saveWhileAsking({ operations: held.operations }, { runId, base: held.base, label: held.label, opening: held.workspace }).catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: errorText(e), details: undefined } }));
   // Followed like any change on its way, so saving or leaving the project waits for it.
-  trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
+  trackApply(writing.then((x) => ({ ok: keptOnLeave(x), message: x.error?.message })));
   const r = await writing;
   const pendingSave = Math.max(0, getState().pendingSave - 1);
   // The project closed while the save was on its way.
@@ -1541,8 +1552,11 @@ export async function saveHeldNow(id: number): Promise<void> {
   // Not written to the project's folder, or refused until the project is reopened: kept, saying why, to try again (or
   // to copy) like any edit whose save failed. One whose documents landed is saved.
   const save = saveKind(r.error);
-  if (save === 'landed') return setState({ heldEdits: removeHeld(id) });
-  if (save) return patchHeld(id, { phase: 'failed', attempt: undefined, writing: false, note: save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : r.error!.message, save });
+  if (save === 'landed') {
+    setState({ heldEdits: removeHeld(id) });
+    return toast(r.error!.message, 'error');
+  }
+  if (save) return patchHeld(id, { phase: 'failed', attempt: undefined, writing: false, note: heldNote(r.error, save), save });
   // The request changed what the edit writes, or made what it is for: saved now, stopping the request would lose its
   // changes to it, so the edit waits for the request to end. Answered or stopped meanwhile, it just waits again.
   const why = ((r.error as { details?: unknown } | undefined)?.details as { held?: unknown } | undefined)?.held;

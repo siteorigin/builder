@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
@@ -353,6 +353,8 @@ async function searchFile(abs: string, tokens: string[]): Promise<Set<string>> {
 const UNSETTLED = 'An earlier save did not finish, so nothing more is saved until the project is closed and reopened.';
 /** A change stopped part way by a file saved outside the app: this change, not an earlier one, waits on reopening. */
 const STOPPED_PART_WAY = 'A file was changed outside SiteOrigin Builder while this change was being saved, so the save did not finish. Close and reopen the project to finish it: Project health then shows the file in conflict.';
+/** The same, stopped before anything of it was written, with its journal gone but its folder not confirmed: reopening finishes nothing of it. */
+const STOPPED_UNSAVED = 'A file was changed outside SiteOrigin Builder while this change was being saved, so it was not saved, and nothing more is saved until the project is closed and reopened.';
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 /** Why a project whose folder went while it was open is read-only. */
 const FOLDER_GONE: ReadOnlyInfo = {
@@ -2013,6 +2015,8 @@ export class ProjectSession extends EventEmitter {
    * read, unless part of the change was already on disk, which only reopening the project can finish.
    */
   private diskConflict(e: DiskConflictError): NonNullable<ApplyResult['error']> {
+    // Its journal could not be confirmed gone, so nothing more is saved; yet there is none for reopening to finish.
+    if (this.unsettled && this.writeFailure(e) === 'blocked') return { code: 'CONFLICT', message: STOPPED_UNSAVED, recoverable: false, details: { save: 'blocked' } };
     return this.unsettled ? { code: 'CONFLICT', message: STOPPED_PART_WAY, recoverable: false } : { code: 'CONFLICT', message: e.message, recoverable: true };
   }
 
@@ -2374,7 +2378,7 @@ export class ProjectSession extends EventEmitter {
         // What became of it (#1435): nothing of it written; its documents in place, with only the rest of the save left
         // for reopening to finish; its journal on disk, which reopening finishes; or its journal never put in place (its
         // rename failed), so reopening finishes nothing of it, although nothing more is saved until then.
-        const kind: WriteFailure = !this.unsettled ? 'failed' : this.state === next ? 'landed' : existsSync(this.local('journal.json')) ? 'unfinished' : 'blocked';
+        const kind: WriteFailure = !this.unsettled ? 'failed' : this.state === next ? 'landed' : this.journalOf(this.revision + 1) ? 'unfinished' : 'blocked';
         // The save indicator names the change reopening finishes, and so none that it does not.
         this.failedSave = kind === 'blocked' ? null : { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
         if (e && typeof e === 'object') this.writeFailures.set(e, kind);
@@ -3291,6 +3295,15 @@ export class ProjectSession extends EventEmitter {
    */
   writeFailure(e: unknown): WriteFailure | null {
     return e && typeof e === 'object' ? (this.writeFailures.get(e) ?? null) : null;
+  }
+
+  /** Whether the journal on disk is the one a save making `revision` put there, which reopening the project finishes. */
+  private journalOf(revision: number): boolean {
+    try {
+      return (JSON.parse(readFileSync(this.local('journal.json'), 'utf8')) as { revision?: unknown } | null)?.revision === revision;
+    } catch {
+      return false;
+    }
   }
 
   /** A save that failed, for the editor's save indicator: an unfinished one until reopening, a failed one until a later save succeeds. */
