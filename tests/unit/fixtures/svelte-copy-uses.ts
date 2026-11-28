@@ -5,7 +5,8 @@
  * starts using a property some other way fails the check until someone looks.
  *
  * A property is copy when every reference to it is one of:
- * - `has(prop)`, the site's runtime test of whether it shows, which a Copy Editor's edit never changes;
+ * - `has(prop)`, the site's runtime test of whether it shows, which a Copy Editor's edit never changes (outside an
+ *   effect, which a reworded property would run again; and only while nothing else takes the name `has`);
  * - `{prop}`, the words of a text element (or of a `<svelte:element>` whose tag is a heading-only choice), outside
  *   any link, button, list (`{#each}`), snippet or component;
  * - the picture of the runtime's `<SoImage image={prop}>`, or the rich text of its `<SoRichText value={prop}>`, under
@@ -102,10 +103,22 @@ export function copyUses(source: string, prop: string, properties: Record<string
     return schema?.type === 'enum' && schema.options.length > 0 && schema.options.every((o) => /^(h[1-6]|p|span|div)$/.test(o.value));
   };
 
+  /** Whether `chain` runs inside an effect, which a reworded property it reads would run again. */
+  const inEffect = (chain: AstNode[]) =>
+    chain.some((a) => {
+      if (a.type !== 'CallExpression') return false;
+      const callee = a.callee as AstNode;
+      const name = callee.type === 'Identifier' ? callee.name : callee.type === 'MemberExpression' ? (callee.object as { name?: string }).name : undefined;
+      return name === '$effect';
+    });
+
   const reference = (n: AstNode, chain: AstNode[]) => {
     const parent = chain.at(-1)!;
     if (parent.type === 'CallExpression' && local.has && (parent.callee as AstNode).type === 'Identifier' && (parent.callee as { name: string }).name === local.has) {
-      if ((parent.arguments as AstNode[]).length === 1 && (parent.arguments as AstNode[])[0] === n) return void uses.push('presence');
+      if ((parent.arguments as AstNode[]).length === 1 && (parent.arguments as AstNode[])[0] === n) {
+        if (inEffect(chain)) return void problems.push(`“${prop}” at line ${lineOf(n)} is read inside an effect.`);
+        return void uses.push('presence');
+      }
     }
     if (parent.type === 'ExpressionTag' && parent.expression === n) {
       const holder = chain.at(-2);
@@ -127,11 +140,20 @@ export function copyUses(source: string, prop: string, properties: Record<string
     problems.push(`“${prop}” at line ${lineOf(n)} is used in a ${parent.type}${chain.at(-2) ? ` inside a ${chain.at(-2)!.type}` : ''}.`);
   };
 
+  // The runtime's `has` only ever called: a name bound again (a parameter, a variable) is not the runtime's test.
+  const hasImport = new Set<unknown>();
+  for (const s of body) if (s.type === 'ImportDeclaration') for (const spec of s.specifiers as AstNode[]) if ((spec.local as { name: string }).name === local.has) hasImport.add(spec.local).add(spec.imported);
   const walk = (value: unknown, chain: AstNode[]) => {
     if (!value || typeof value !== 'object') return;
     if (Array.isArray(value)) return value.forEach((v) => walk(v, chain));
     const n = value as AstNode;
     if (typeof n.type !== 'string') return;
+    if (n.type === 'Identifier' && local.has && n.name === local.has && !hasImport.has(n)) {
+      const parent = chain.at(-1);
+      const called = parent?.type === 'CallExpression' && parent.callee === n;
+      const member = parent?.type === 'MemberExpression' && parent.property === n && !parent.computed;
+      if (!called && !member) problems.push(`The runtime’s “${local.has}” is used other than called, at line ${lineOf(n)}.`);
+    }
     if (n.type === 'Identifier' && n.name === prop && !declared.has(n)) {
       const parent = chain.at(-1);
       // A property of something else (`so_o?.heading`), or an object's key, is not the property.

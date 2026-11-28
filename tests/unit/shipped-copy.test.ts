@@ -86,6 +86,9 @@ describe('reading how a section uses a property', () => {
     expect(swap(`{#each [1, 2] as n}<p>{eyebrow}</p>{/each}`)).toEqual([expect.stringMatching(/inside EachBlock/)]);
     expect(swap(`<p>{eyebrow.trim()}</p>`)).toEqual([expect.stringMatching(/MemberExpression/)]);
     expect(swap(`<button>{eyebrow}</button>`)).toEqual([expect.stringMatching(/words of <button>/)]);
+    // Tested for being set inside an effect, which rewording it would run again; or by a `has` that is not the runtime's.
+    expect(uses(source.replace('</script>', '$effect(() => { if (has(eyebrow)) console.log(1); });\n</script>')).problems).toEqual([expect.stringMatching(/inside an effect/)]);
+    expect(uses(source.replace('</script>', 'const check = (has) => has(eyebrow);\n</script>')).problems).toContainEqual(expect.stringMatching(/other than called/));
     // A heading's tag a property chooses from anything but headings and paragraphs.
     const level = { ...properties, headingLevel: { ...(properties.headingLevel as Extract<PropSchema, { type: 'enum' }>), options: [{ value: 'h1', label: 'H1' }, { value: 'a', label: 'Link' }] } };
     expect(copyUses(source, 'heading', level).problems).toEqual([expect.stringMatching(/words of SvelteElement/)]);
