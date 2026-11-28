@@ -21,9 +21,13 @@ function definition(state: ProjectState, id: string): ComponentDefinition | unde
   return getTheme(state.site.themeId).components.find((d) => d.id === id);
 }
 
+/** Whether an operation changes the site's own head markup or stylesheet (shared/site-code.ts). */
+const editsSiteCode = (op: EditOperation): boolean => op.type === 'site.update' && (op.headCode !== undefined || op.globalCss !== undefined);
+
 /** Why one operation needs Developer mode in the project as it is, or null when it does not. */
 export function developerModeReason(state: ProjectState, op: EditOperation): string | null {
   if (CODE_OPERATIONS.has(op.type)) return 'Custom code needs Developer mode.';
+  if (editsSiteCode(op)) return 'The site’s head code and custom CSS need Developer mode.';
   let def: ComponentDefinition | undefined;
   let what = '';
   if (op.type === 'component.duplicate') {
@@ -64,6 +68,7 @@ export function developerModeRefusal(state: ProjectState, ops: EditOperation[], 
  */
 export function developerModeCheck(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): string | null | ((draft: ProjectState, op: EditOperation) => string | null) {
   if (ops.some((o) => CODE_OPERATIONS.has(o.type))) return developerModeReason(state, ops.find((o) => CODE_OPERATIONS.has(o.type))!);
+  if (ops.some(editsSiteCode)) return developerModeReason(state, ops.find(editsSiteCode)!);
   // A package brings its code components with it: new code in the project, however it arrives.
   const code = ops.some((o) => o.type === 'component.import') && ctx.componentImport ? importedCode(state, ctx.componentImport) : [];
   if (code.length) return `The package includes ${code.length === 1 ? `the code component “${code[0].name}”` : `${code.length} code components`}, which ${code.length === 1 ? 'needs' : 'need'} Developer mode.`;
