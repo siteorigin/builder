@@ -15,6 +15,7 @@ import { SITE_ICON_FILES } from '@shared/site-icons';
 import { isPrivateFileName } from './private-files';
 import { GitError, OID_RE, VERSIONS_BRANCH } from '../git/protocol';
 import { advanceVersions, gitSaveProblem, keptOutOfGit, repositoryBytes, versionsGit } from './versions-git';
+import { GENERATED_MANIFEST } from './snapshot-inventory';
 
 /** The format of versions.json. A newer one is left alone: nothing is saved, deleted or collected. */
 export const VERSIONS_FORMAT = 1;
@@ -35,6 +36,17 @@ export function isVersionMedia(path: string): boolean {
 const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml', 'static/llms.txt', 'static/llms-full.txt', 'static/rss.xml', 'static/_redirects', ...SITE_ICON_FILES.map((f) => `static/${f}`)]);
 export function heldAsMedia(path: string): boolean {
   return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !isPrivateFileName(path.slice(path.lastIndexOf('/') + 1));
+}
+/** The files a generator's record (siteorigin/generated-manifest.json) claims as its output, written or being written. */
+export function claimedFiles(text: string | null | undefined): string[] {
+  if (!text) return [];
+  try {
+    const record = JSON.parse(text) as { files?: unknown; pending?: unknown } | null;
+    const paths = (r: unknown) => (r && typeof r === 'object' && !Array.isArray(r) ? Object.keys(r) : []);
+    return [...paths(record?.files), ...paths(record?.pending)];
+  } catch {
+    return [];
+  }
 }
 const OBJECT_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^v[a-z0-9]{6,40}$/;
@@ -309,6 +321,38 @@ export class VersionStore {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * What `v`, a version in Git, holds outside siteorigin/ (the documents' folder): each file of its tree by its project
+   * path, with Git's name for its bytes and its mode, and the files its generator's record (siteorigin/
+   * generated-manifest.json, the one file read) claims as generated output. Nothing else is read (#1396). A tree that
+   * can't be read whole, or a repository that is not there, is a damaged version.
+   */
+  async gitFiles(v: SavedVersion): Promise<{ files: Map<string, { oid: string; mode: string }>; generated: string[] }> {
+    if (!v.git) throw new Error(VERSION_DAMAGED);
+    const files = new Map<string, { oid: string; mode: string }>();
+    let manifest: Uint8Array | null = null;
+    try {
+      const repo = this.repository();
+      if (!(await repo.exists())) throw new Error(VERSION_DAMAGED);
+      const walk = async (tree: string, prefix: string): Promise<void> => {
+        for (const e of await repo.readTree(tree)) {
+          const path = `${prefix}${e.path}`;
+          if (e.type === 'blob') files.set(path, { oid: e.oid, mode: e.mode });
+          else if (e.type !== 'tree') continue;
+          else if (path !== 'siteorigin') await walk(e.oid, `${path}/`);
+          else {
+            const record = (await repo.readTree(e.oid)).find((x) => `siteorigin/${x.path}` === GENERATED_MANIFEST && x.type === 'blob');
+            if (record) manifest = await repo.readBlob(record.oid);
+          }
+        }
+      };
+      await walk(v.git.tree, '');
+    } catch {
+      throw new Error(VERSION_DAMAGED);
+    }
+    return { files, generated: claimedFiles(manifest && Buffer.from(manifest).toString('utf8')) };
   }
 
   /**
