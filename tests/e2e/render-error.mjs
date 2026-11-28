@@ -1,6 +1,6 @@
 // A code component that throws while the page renders (#1526), through the real preview: inserted, it shows a note in
-// its place and every other section stays; the page problem bar names it and its error, with Open source and Revert,
-// and the status bar says the preview has a problem. Loaded afresh (the throw now on the server), the same. Fixed in
+// its place and every other section stays; the page problem bar names it and its error, with Open source (Create and
+// insert is two changes, so no Revert), and the status bar says the preview has a problem. Loaded afresh (the throw now on the server), the same. Fixed in
 // its source, it comes back. A `$effect` that writes what it reads is reported the same way.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -75,7 +75,8 @@ assert.match(await detail.innerText(), /^Nested value: Cannot read properties of
 await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Open source', 'Try again']), 10000);
 assert.ok(await sectionsShown(), 'the sections before and after it are still on the page');
 assert.match(await inFrame(() => document.querySelector('[data-so-render-error]')?.textContent ?? ''), /Nested value couldn’t be shown/);
-await win.getByText('Preview problem', { exact: false }).first().waitFor({ timeout: 10000 });
+await win.locator('.status-bar .preview-status.error', { hasText: 'Preview problem' }).waitFor({ timeout: 10000 });
+assert.equal(await detail.getAttribute('title'), await detail.innerText(), 'the whole of the error on hover');
 
 step('Open source opens the component that threw');
 await issue.getByRole('button', { name: 'Open source' }).click();

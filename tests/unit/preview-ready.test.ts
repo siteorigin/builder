@@ -34,6 +34,13 @@ describe('a page whose code component threw while it rendered (#1526)', () => {
   it('is not the site’s error page, nor any other server error', async () => {
     const errorPage = vi.fn().mockResolvedValue(new Response('<title>Error 500</title><div data-so-render-error="x">x</div>', { status: 500 }));
     await expect(waitForPreviewPage('http://127.0.0.1:12345', '/', errorPage, 0)).rejects.toThrow('Preview error page');
+    // The not-found page, its shared header's component having thrown: an address the preview does not have yet.
+    const notFound = vi.fn().mockResolvedValue(new Response('<title>Page not found</title><div data-so-render-error="x">x</div><section class="so-not-found">', { status: 500 }));
+    await expect(waitForPreviewPage('http://127.0.0.1:12345', '/', notFound, 0)).rejects.toThrow('HTTP 500');
+    for (const status of [404, 503]) {
+      const other = vi.fn().mockResolvedValue(new Response('<title>Home</title><div data-so-render-error="x">x</div>', { status }));
+      await expect(waitForPreviewPage('http://127.0.0.1:12345', '/', other, 0)).rejects.toThrow(`HTTP ${status}`);
+    }
     const mentioned = vi.fn().mockResolvedValue(new Response('<title>Home</title><p>data-so-render-error=</p>', { status: 500 }));
     await expect(waitForPreviewPage('http://127.0.0.1:12345', '/', mentioned, 0)).rejects.toThrow('HTTP 500');
   });

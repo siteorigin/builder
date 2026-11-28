@@ -84,7 +84,12 @@ try {
 	const { default: Preview } = await import(${JSON.stringify(url(PREVIEW_MODULE))});
 	mount(Preview, { target: document.body });
 	flushSync();
-	preview.mounted = true;
+	// A code component that throws shows its note in its place (renderErrorBoundary), a moment after the throw: the
+	// preview did not get on the page then, as when the throw reached here.
+	await new Promise((resolve) => setTimeout(resolve));
+	const failed = document.querySelector('[data-so-render-error]');
+	if (failed) preview.error = (failed.getAttribute('data-so-render-error') || 'Something went wrong.').slice(0, 2000);
+	else preview.mounted = true;
 } catch (e) {
 	preview.error = String((e && e.message) || e).slice(0, 2000);
 }
@@ -93,8 +98,8 @@ await import('virtual:siteorigin-bridge');
 `;
 }
 
-/** SvelteKit's generated client app (its hooks among the rest), as Vite names the module. */
-const KIT_CLIENT_APP = /[\\/]generated[\\/](?:[^\\/]+[\\/])?client(?:-optimized)?[\\/]app\.js$/;
+/** SvelteKit's generated client app (its hooks among the rest), from the project's folder, as Vite names it. */
+const KIT_CLIENT_APP = /^\.svelte-kit\/generated\/(?:(?:dev|build)\/)?client(?:-optimized)?\/app\.js$/;
 
 /**
  * The preview's client hook for errors, added to SvelteKit's generated client app: whatever the site's own hook
@@ -309,7 +314,13 @@ export function devPlugin(dir: string) {
     },
     transform(code: string, id: string) {
       const file = id.split('?')[0];
-      if (!KIT_CLIENT_APP.test(file) || !/\bexport const hooks\b/.test(code) || !names.some((name) => file.startsWith(viteId(name)))) return null;
+      // Only the project's own: a file of the same name anywhere else (in src/, or another folder) is left as it is.
+      const own = names.some((name) => {
+        const root = viteId(name).replace(/\/+$/, '') + '/';
+        const inside = process.platform === 'win32' ? file.toLowerCase().startsWith(root.toLowerCase()) : file.startsWith(root);
+        return inside && KIT_CLIENT_APP.test(file.slice(root.length));
+      });
+      if (!own || !/\bexport const hooks\b/.test(code)) return null;
       return { code: withRenderErrors(code), map: null };
     },
     load(id: string) {

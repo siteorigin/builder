@@ -3674,7 +3674,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
     // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
     const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${renderErrorBoundary(def, indentBlock(markup), `${p}\t`)}\n${p}</div>`;
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${renderErrorBoundary(ctx, def, indentBlock(markup), `${p}\t`)}\n${p}</div>`;
   }
   return markup;
 }
@@ -3812,13 +3812,24 @@ export const RENDER_ERROR_ATTR = 'data-so-render-error';
  * fixed component comes back. The message is the one the preview's error hooks keep (`soRenderError`: see
  * generateServerHook and the dev plugin); the website has neither the note nor the hooks.
  */
-function renderErrorBoundary(def: ComponentDefinition, markup: string, p: string): string {
+function renderErrorBoundary(ctx: EmitCtx, def: ComponentDefinition, markup: string, p: string): string {
+  ctx.snippets = (ctx.snippets ?? 0) + 1;
+  const snippet = `${RENDER_ERROR_SNIPPET}_${ctx.snippets}`;
   const message = `so_failure?.soRenderError || so_failure?.message || 'Something went wrong.'`;
   const note =
-    `${p}\t\t<div ${RENDER_ERROR_ATTR}={${message}} data-so-error-file=${attrJs(defFile(def))} data-so-editor-only {@attach (el) => { el.__soRetry = so_retry; }}>` +
+    `${p}\t<div ${RENDER_ERROR_ATTR}={${message}} data-so-error-file=${attrJs(defFile(def))} data-so-editor-only {@attach (el) => { el.__soRetry = so_retry; }}>` +
     `<strong>{${js(`${def.name || 'This component'} couldn’t be shown`)}}</strong> <span>{${message}}</span></div>`;
-  return `${p}<svelte:boundary>\n${indentBlock(markup)}\n${p}\t{#snippet failed(so_failure, so_retry)}\n${note}\n${p}\t{/snippet}\n${p}</svelte:boundary>`;
+  // Declared beside the boundary under a name of the editor's own, one per placement in the file (Svelte lifts a
+  // snippet that uses nothing of the component's to the file), never as `failed` inside it, where it would stand in
+  // for a design's own property of that name in the placement's values.
+  return `${p}{#snippet ${snippet}(so_failure, so_retry)}\n${note}\n${p}{/snippet}\n${p}<svelte:boundary failed={${snippet}}>\n${indentBlock(markup)}\n${p}</svelte:boundary>`;
 }
+
+/** The header a live session guest's preview requests carry: LIVE_GUEST_HEADER in src/runtime/policy.ts (Node only). */
+const GUEST_HEADER = 'x-siteorigin-live-guest';
+
+/** The snippet a code placement's boundary shows when it throws (see renderErrorBoundary). */
+const RENDER_ERROR_SNIPPET = 'so_render_failed';
 
 function hotBoundary(markup: string, roots: number): string {
   if (roots === 1 && /^<[a-z][a-z0-9-]*[\s/>]/.test(markup.trimStart())) return markup;
@@ -5182,12 +5193,14 @@ export const SERVER_HOOK_FILE = 'src/hooks.server.js';
  */
 export function generateServerHook(state: ProjectState, instrument = false): string {
   // The editor's preview only: an error a page meets while it renders keeps its own message beside SvelteKit's
-  // "Internal Error", for the note a code placement shows in its place and the editor's page problem (#1526).
+  // "Internal Error", for the note a code placement shows in its place and the editor's page problem (#1526). A live
+  // session's guest is given SvelteKit's own words.
   const handleError = instrument
     ? `
 /** The editor's preview only: what went wrong while a page rendered, for the editor to say. */
-export function handleError({ error, kind }) {
-	if (kind !== 'unknown') return;
+export function handleError({ error, event, kind }) {
+	// A guest of a live session is shown the site, not what went wrong on the host's machine.
+	if (kind !== 'unknown' || event?.request?.headers?.get(${js(GUEST_HEADER)})) return;
 	return { soRenderError: String((error && error.message) || error).slice(0, 2000) };
 }
 `

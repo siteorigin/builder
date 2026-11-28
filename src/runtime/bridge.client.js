@@ -8,8 +8,14 @@ let mode = 'edit';
 let revision = 0;
 /** The attribute of a code placement's note that it threw while the page rendered (RENDER_ERROR_ATTR in the generator). */
 const RENDER_ERROR_ATTR = 'data-so-render-error';
-/** Notes already reported (see reportRenderErrors), by navigation, file and message: the revision last reported for each. */
+/**
+ * Notes already reported on the page (see reportRenderErrors), by file and message: the revision last reported for
+ * each. Kept for one navigation at a time.
+ */
 const renderErrorsSent = new Map();
+let renderErrorsAt = '';
+/** The most notes reported for one page: a list whose every item throws its own message says enough by then. */
+const RENDER_ERRORS_MAX = 50;
 let renderErrorsQueued = false;
 /**
  * The editor measures this page in a frame of its own (a page check, a component preview), named so from its first
@@ -114,7 +120,7 @@ function reloadMissingPage() {
   const status = performance.getEntriesByType('navigation')[0]?.responseStatus;
   if (!asked || asked.path !== location.pathname || (status !== 404 && status !== 500) || !(asked.tries < MISSING_RELOADS)) return false;
   // The page is there, with a code component that threw while it rendered (#1526): loading it again shows the same.
-  if (document.querySelector(`[${RENDER_ERROR_ATTR}]`)) return false;
+  if (document.querySelector(`[${RENDER_ERROR_ATTR}]`) && !document.querySelector('.so-not-found')) return false;
   try {
     sessionStorage.setItem(ASKED_KEY, JSON.stringify({ path: asked.path, tries: asked.tries + 1 }));
   } catch {
@@ -5853,14 +5859,19 @@ window.addEventListener('unhandledrejection', (e) => {
  */
 function reportRenderErrors() {
   renderErrorsQueued = false;
+  // An isolated component preview says whether its component got on the page when it is ready (see previewEntry).
+  if (window.__siteoriginPreview) return;
+  if (renderErrorsAt !== navigationId) {
+    renderErrorsAt = navigationId;
+    renderErrorsSent.clear();
+  }
   for (const el of document.querySelectorAll(`[${RENDER_ERROR_ATTR}]`)) {
     const message = (el.getAttribute(RENDER_ERROR_ATTR) || 'Something went wrong.').slice(0, 2000);
     const file = el.getAttribute('data-so-error-file') || '';
-    const key = `${navigationId}\n${file}\n${message}`;
-    if (renderErrorsSent.get(key) === revision) continue;
-    if (!renderErrorsSent.has(key)) errors.push(message);
-    // Only the latest are kept: a page that throws on every change it is shown does not fill this up.
-    if (renderErrorsSent.size >= 50) renderErrorsSent.delete(renderErrorsSent.keys().next().value);
+    const key = `${file}\n${message}`;
+    const known = renderErrorsSent.has(key);
+    if ((known && renderErrorsSent.get(key) === revision) || (!known && renderErrorsSent.size >= RENDER_ERRORS_MAX)) continue;
+    if (!known) errors.push(message);
     renderErrorsSent.set(key, revision);
     reportError(message, undefined, file);
   }
