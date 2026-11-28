@@ -414,6 +414,10 @@ export const OPERATION_SCHEMAS = {
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
+    preferStaticHtml: z
+      .boolean()
+      .optional()
+      .describe('true prefers this page as plain HTML on the website, without SvelteKit\'s scripts, while nothing it shows needs them (forms, search, tabs, carousels, entrances, the shared header\'s menu). While something does, the page keeps the preference and loads its scripts. false loads them always, the default. The site\'s own head code loads either way.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
     canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
     updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When its content was last revised, YYYY-MM-DD, for the sitemap. null removes it.'),
