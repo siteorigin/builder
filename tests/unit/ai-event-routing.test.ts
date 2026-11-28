@@ -576,6 +576,8 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     expect(view({ dockOpen: true, rightTab: 'inspect' })).toBe(false);
     expect(view({ dockOpen: true, rightTab: 'chat', runConversationId: 'c_other' })).toBe(false);
     expect(view({ dockOpen: true, rightTab: 'chat', runStatus: 'running' })).toBe(false);
+    // The status can land before the question's message: the notice stays until the card exists.
+    expect(view({ dockOpen: true, rightTab: 'chat', conversation: { ...asking, messages: [] } as Conversation })).toBe(false);
     // The composer answers it again.
     const s = store.getState();
     expect(waitingQuestion(s.conversation, s.activeRunId, s.runStatus)).toMatchObject({ runId: 'r_ask', messageId: 'm_reply', question: { id: 'q_1' } });
