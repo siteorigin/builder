@@ -68,11 +68,11 @@ step('a code component that throws as it is inserted shows a note in its place, 
 await settle();
 const made = await apply([{ type: 'component.createCode', name: 'Nested value', source: BROKEN }], 'Create code component');
 const defId = made.results[0].definitionId;
-await settle();
 await apply([{ type: 'node.insert', owner, parentId: null, index: 1, definitionId: defId }], 'Insert Nested value');
 await detail.waitFor({ timeout: 30000 });
 assert.match(await detail.innerText(), /^Nested value: Cannot read properties of undefined \(reading 'nested'\)/);
-await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Open source', 'Revert “Insert Nested value”', 'Try again']), 10000);
+// Created and inserted, as Create and insert does: two changes since the page last worked, so no Revert (#738).
+await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Open source', 'Try again']), 10000);
 assert.ok(await sectionsShown(), 'the sections before and after it are still on the page');
 assert.match(await inFrame(() => document.querySelector('[data-so-render-error]')?.textContent ?? ''), /Nested value couldn’t be shown/);
 await win.getByText('Preview problem', { exact: false }).first().waitFor({ timeout: 10000 });
@@ -96,15 +96,14 @@ await issue.waitFor({ state: 'detached', timeout: 30000 });
 await eventually(async () => assert.match(await inFrame(() => document.body.innerText), /Value: none yet/), 30000);
 assert.equal(await inFrame(() => document.querySelectorAll('[data-so-render-error]').length), 0, 'no note is left');
 
-step('a $effect that writes what it reads is reported the same way, and Revert takes it away');
+step('a $effect that writes what it reads is reported the same way, and Undo takes it away');
 await settle();
 const loop = await apply([{ type: 'component.createCode', name: 'Looping counter', source: LOOP }], 'Create looping counter');
-await settle();
 await apply([{ type: 'node.insert', owner, parentId: null, index: 1, definitionId: loop.results[0].definitionId }], 'Insert Looping counter');
 await detail.waitFor({ timeout: 30000 });
 assert.match(await detail.innerText(), /^Looping counter: .*(update depth|effect_update_depth_exceeded)/is);
 assert.ok(await sectionsShown(), 'the other sections are still on the page');
-await issue.getByRole('button', { name: 'Revert “Insert Looping counter”' }).click();
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
 await issue.waitFor({ state: 'detached', timeout: 60000 });
 await eventually(async () => assert.equal(await inFrame(() => document.querySelectorAll('[data-so-render-error]').length), 0), 30000);
 
