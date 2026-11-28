@@ -666,12 +666,16 @@ describe('the loaded context window', () => {
     expect(names(1)).not.toContain('apply_operations');
   });
 
-  it('never sends a question again unchanged, since it has no smaller tools', async () => {
+  it('sends a refused question again only with its smaller tools, never unchanged', async () => {
     const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
-    server.script({ status: 400, body: JSON.stringify({ error: { message: 'prompt is too long' } }) });
+    const tooLong = { status: 400, body: JSON.stringify({ error: { message: 'prompt is too long' } }) };
+    server.script(tooLong, tooLong);
     const { result } = await run('What is on this page?', null, null, 'ask');
     expect(result?.status).toBe('failed');
-    expect(chatPosts()).toHaveLength(1);
+    // A small model's question measures whole pages and validates with the two document profiles (#1409): smaller.
+    const [first, second] = chatPosts().map((p) => JSON.stringify(p.body.tools));
+    expect(chatPosts()).toHaveLength(2);
+    expect(second.length).toBeLessThan(first.length);
   });
 
   it('keeps the tools a run started with when the server reports a smaller window part way through', async () => {
@@ -768,6 +772,8 @@ describe('what a constrained local run sends first (#364)', () => {
    */
   /** What audit_seo adds to a run that offers it, with a little room. */
   const AUDIT_BYTES = 850;
+  /** What validate_project and a whole-page inspect_layout add to a question (#1409), its prompt's line on them included, with a little room. */
+  const ASK_CHECKS_BYTES = 1_200;
   /**
    * See-through colors and backdrop blur (#353) are another: a run that styles its selection takes a color token's
    * strength in its grammar, and its brief says how to use it with backdrop blur, about 160 bytes. Their budgets make
@@ -867,8 +873,8 @@ describe('what a constrained local run sends first (#364)', () => {
     page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES + PAGE_COPY_BYTES + PAGE_SEO_BYTES + KEEP_BYTES + REFS_BYTES + WIDEN_BYTES, audit: PAGE_AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: PAGE_SEO_BYTES, background: 0, theme: 0, keep: KEEP_BYTES, palette: 0, container: 0, refs: REFS_BYTES, source: 0, grid: 0, easing: 0, widen: WIDEN_BYTES, start: 0, themeCode: 0 },
     section: { code: false, baseline: 12_723, budget: 9_700 + FROSTED_BYTES + COPY_BYTES + BACKGROUND_BYTES + CONTAINER_BYTES + GRID_BYTES + EASING_BYTES + START_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0, background: BACKGROUND_BYTES, theme: 0, keep: 0, palette: 0, container: CONTAINER_BYTES, refs: 0, source: 0, grid: GRID_BYTES, easing: EASING_BYTES, widen: 0, start: START_BYTES, themeCode: 0 },
     part: { code: false, baseline: 10_001, budget: 7_550 + FROSTED_BYTES + COPY_BYTES + BACKGROUND_BYTES + CONTAINER_BYTES + GRID_BYTES + EASING_BYTES + START_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0, background: BACKGROUND_BYTES, theme: 0, keep: 0, palette: 0, container: CONTAINER_BYTES, refs: 0, source: 0, grid: GRID_BYTES, easing: EASING_BYTES, widen: 0, start: START_BYTES, themeCode: 0 },
-    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0, theme: 0, keep: 0, palette: 0, container: 0, refs: 0, source: 0, grid: 0, easing: 0, widen: 0, start: 0, themeCode: 0 },
-    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0, theme: 0, keep: 0, palette: 0, container: 0, refs: 0, source: 0, grid: 0, easing: 0, widen: 0, start: 0, themeCode: 0 }
+    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES + ASK_CHECKS_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0, theme: 0, keep: 0, palette: 0, container: 0, refs: 0, source: 0, grid: 0, easing: 0, widen: 0, start: 0, themeCode: 0 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES + ASK_CHECKS_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0, theme: 0, keep: 0, palette: 0, container: 0, refs: 0, source: 0, grid: 0, easing: 0, widen: 0, start: 0, themeCode: 0 }
   } as const;
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
@@ -932,7 +938,7 @@ describe('what a constrained local run sends first (#364)', () => {
   // the image tools a style tool listed first brought along: its run is back within budget.
   const withinBudget = new Set(['section', 'part']);
   it.each(Object.entries(BUDGETS).filter(([label]) => withinBudget.has(label)))('keeps the %s run within its budget', keepsWithinBudget);
-  // Release gap: the release's sections and their properties make these runs' constrained first request (counted in bytes) larger than the budgets set on the 39-section copy: the site and page runs by about 6.5 KB, the ask runs by about 120.
+  // Release gap: the release's sections and their properties make these runs' constrained first request (counted in bytes) larger than the budgets set on the 39-section copy: the site and page runs by about 6.5 KB, the ask runs by about 450.
   it.fails.each(Object.entries(BUDGETS).filter(([label]) => !withinBudget.has(label)))('keeps the %s run within its budget', keepsWithinBudget);
 
   it('makes the same change from a constrained reply as from a native call', async () => {
