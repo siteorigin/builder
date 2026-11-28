@@ -99,7 +99,8 @@ const MORE: Record<string, string> = {
   list_collection_entries: 'List the rest from a later offset.',
   read_collection_entry: 'Read the rest from a later offset.',
   read_layout: 'Read one section at a time with read_layout and its nodeId.',
-  audit_seo: 'Audit one page or one pillar, or page through the findings with offset.'
+  audit_seo: 'Audit one page or one pillar, or page through the findings with offset.',
+  audit_performance: 'Audit one page with route, or page through the rows with offset.'
 };
 
 /** The longest start of `s` whose JSON form fits in `room` characters, never splitting a character in two. */

@@ -104,6 +104,8 @@ import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
 import { perf, perfNow, serializedSize, timed } from './perf';
+import { pagePerformance, unmeasuredPage, cacheFinding, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
+import { exportCachePolicies, immutableFiles } from './cache-policy';
 
 /** Said with every editable project export: a statement, never a note to review, since nothing needs doing about it. */
 const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials were left out.';
@@ -119,6 +121,12 @@ const EXPORTED_SOURCE = 'Exported source project';
 /** How long a website export spends opening its built pages in a browser (openBuiltPages), at most, and how many at once. */
 const PAGE_CHECKS_MS = 30_000;
 const PAGE_CHECKS_AT_ONCE = 3;
+/**
+ * The share of the page checks' time in which pages are also measured (#1488), given on top of it: pages checked after
+ * it are checked unmeasured, and the checks keep all their own time, so measuring never takes the time a check of a
+ * later page needs to find that it fails.
+ */
+const MEASURE_SHARE = 0.4;
 
 interface SnapshotOptions {
   forBuild?: boolean;
@@ -129,7 +137,7 @@ interface SnapshotOptions {
   held?: Array<() => void>;
 }
 /** A snapshot for the editable project carries `drafts`: the text the drafts add to its generated files (leaveOutDrafts). */
-type SourceSnapshot = { ok: true; revision: number; state: ProjectState; milestone?: ExportedVersion; unsaved?: string; drafts?: Map<string, string> } | { ok: false; message: string };
+type SourceSnapshot = { ok: true; revision: number; epoch: number; state: ProjectState; milestone?: ExportedVersion; unsaved?: string; drafts?: Map<string, string> } | { ok: false; message: string };
 
 /** Fingerprinted by projectInventory before and after an export's copy: any change there stops the export already. */
 const FINGERPRINTED = new Set(['src', 'static', 'siteorigin']);
@@ -472,6 +480,13 @@ export class Controller {
   private previews = new StaticPreviews();
   /** What the open project exported since it was opened, newest first. */
   private recentExports: RecentExport[] = [];
+  /**
+   * Each open project's count of changes that can change its website: every change but an export's own record of the
+   * addresses it delivered. A performance report measured from a snapshot taken at one count is out of date at another.
+   */
+  private changeEpochs = new WeakMap<ProjectSession, number>();
+  /** Each project's last performance report (#1488), with the change count of the snapshot it was built from. */
+  private performanceReports = new WeakMap<ProjectSession, { report: PerformanceReport; epoch: number }>();
   private localState: LocalWorkspaceState = {};
   /** Names this opening of the project in workspace saves; null while none is open or the open one is closing. */
   private workspaceKey: string | null = null;
@@ -727,6 +742,7 @@ export class Controller {
       localState: this.localState,
       workspaceKey: this.workspaceKey ?? '',
       recentExports: this.recentExports,
+      performance: this.performanceStatus(),
       saveFailure: s.saveFailure
     };
     timing();
@@ -1683,6 +1699,8 @@ export class Controller {
     this.settled.set(session, { state: session.state, revision: session.revision });
     session.on('changed', (ev) => {
       this.settled.set(session, { state: session.state, revision: session.revision });
+      // An export's record of the addresses it delivered changes nothing the website downloads.
+      if (!(ev.changedDocs.length === 1 && ev.changedDocs[0] === PUBLISHED_FILE && !ev.changedFiles.length)) this.changeEpochs.set(session, (this.changeEpochs.get(session) ?? 0) + 1);
       if (!session.readOnly && projectDisplayName(session.state) !== listedName) {
         listedName = projectDisplayName(session.state);
         void renameRecent(session.dir, listedName).catch(() => undefined);
@@ -4593,7 +4611,7 @@ export class Controller {
    * Opens one page of a served website build as a visitor's browser does, to see that it still shows its content once
    * started; set by the app (main/page-check-window). Without it, exports open no page.
    */
-  pageCheck: ((url: string, signal: AbortSignal) => Promise<PageCheck>) | null = null;
+  pageCheck: ((url: string, signal: AbortSignal, measureUntil?: number) => Promise<PageCheck>) | null = null;
   /** The website exports opening their pages, called off when their project closes. */
   private pageChecks = new Set<AbortController>();
   /** How long a website export spends opening its pages, at most (tests shorten it). */
@@ -5234,7 +5252,7 @@ export class Controller {
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       // The session's state is frozen through and through, and a change makes a new one, so the state the files were
       // copied from is kept as it is: no copy of the whole project for the length of the export (#1044).
-      return { ok: true as const, revision: s.revision, state: s.state, ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}), ...(drafts ? { drafts } : {}) };
+      return { ok: true as const, revision: s.revision, epoch: this.changeEpochs.get(s) ?? 0, state: s.state, ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}), ...(drafts ? { drafts } : {}) };
     }));
   }
 
@@ -5436,15 +5454,20 @@ export class Controller {
     // A page can fail only in a browser (a code component's $effect that writes what it reads never runs while the site
     // is built), when SvelteKit puts the site's error page in place of all of it: each page is opened as a visitor's
     // browser opens it, before anything is delivered (#1534). A review build is pictured, and shows it there.
+    // What a first visit to each page downloads is measured as it is opened (#1488), and read before the website moves.
+    let measured: PerformanceReport | null = null;
     if (!opts.review) {
       const opened = await timed('export.verify.browser', () => this.openBuiltPages(s, out, live))();
       if (opened.stop) return { ok: false, ...opened.stop };
       if (opened.unchecked) warn(opened.unchecked);
+      if (opened.checks) measured = await this.measuredPerformance(out, live, revision, opened.checks);
     }
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
     if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state), pages: reviewPages(live) };
+    // Kept for Project health and the assistant once the website is delivered: a failed export leaves the last report.
+    if (measured && this.session === s) this.performanceReports.set(s, { report: measured, epoch: snap.epoch });
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
@@ -5467,7 +5490,7 @@ export class Controller {
    * the checks under way are called off and no more are begun. Nothing when there is no browser to open them in, or
    * the project closes meanwhile (the export then stops as it is put in place).
    */
-  private async openBuiltPages(s: ProjectSession, out: string, live: ProjectState): Promise<{ stop?: { message: string; warnings: string[]; details: string }; unchecked?: string }> {
+  private async openBuiltPages(s: ProjectSession, out: string, live: ProjectState): Promise<{ stop?: { message: string; warnings: string[]; details: string }; unchecked?: string; checks?: Array<{ page: ReviewPage; check: PageCheck }> }> {
     const check = this.pageCheck;
     const pages = reviewPages(live);
     if (!check || !pages.length || this.session !== s) return {};
@@ -5489,10 +5512,12 @@ export class Controller {
       }
       if (gone()) return {};
       const at = server;
+      const measuring = this.pageChecksMs * MEASURE_SHARE;
       timer = setTimeout(() => {
         timeUp = true;
         rest.abort();
-      }, this.pageChecksMs);
+      }, this.pageChecksMs + measuring);
+      const measureUntil = Date.now() + measuring;
       let failed = false;
       const outOfTime = (page: ReviewPage) => ({ page, check: { status: 'unchecked' as const, detail: 'the export ran out of time to open it' } });
       const checks = await inBatches(
@@ -5507,7 +5532,7 @@ export class Controller {
             rest.signal.addEventListener('abort', onEnd, { once: true });
           });
           const r = await Promise.race([
-            check(new URL(routeUrl(page.route).slice(1), at).href, rest.signal).catch((e: unknown): PageCheck => ({ status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` })),
+            check(new URL(routeUrl(page.route).slice(1), at).href, rest.signal, measureUntil).catch((e: unknown): PageCheck => ({ status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` })),
             ended
           ]).finally(() => rest.signal.removeEventListener('abort', onEnd!));
           if (r.status === 'error-page') {
@@ -5525,7 +5550,7 @@ export class Controller {
       const broken = checks.flatMap((c) => (c?.check.status === 'error-page' ? [{ page: c.page, check: c.check }] : []));
       if (broken.length) return { stop: brokenPagesStop(live, broken) };
       const unchecked = checks.flatMap((c) => (c?.check.status === 'unchecked' ? [{ page: c.page, detail: c.check.detail }] : []));
-      return { unchecked: uncheckedPagesWarning(unchecked) ?? undefined };
+      return { unchecked: uncheckedPagesWarning(unchecked) ?? undefined, checks: checks.filter((c) => c !== null) };
     } finally {
       clearTimeout(timer);
       job.signal.removeEventListener('abort', endRest);
@@ -5533,6 +5558,46 @@ export class Controller {
       this.pageChecks.delete(job);
       if (server) this.previews.stop(server);
     }
+  }
+
+  /**
+   * The performance report of the website built in `out` from `live` (revision `revision`), from what each page's
+   * check measured (`checks`): every page of the site, those not measured saying why, and how its host caches its
+   * hashed files. Files are matched to the library pictures they are, or are copies of, by their addresses.
+   */
+  private async measuredPerformance(out: string, live: ProjectState, revision: number, checks: Array<{ page: ReviewPage; check: PageCheck }>): Promise<PerformanceReport> {
+    const base = basePath(live);
+    const pictures = new Map<string, string>();
+    for (const a of Object.values(live.assets.assets)) {
+      if (a?.kind !== 'image' || typeof a.file !== 'string') continue;
+      const files = [a.file, ...(Array.isArray(a.variants) ? a.variants.flatMap((v) => (typeof v?.file === 'string' ? [v.file] : [])) : [])];
+      for (const file of files) {
+        const at = `/${file.replace(/^static\//, '')}`;
+        pictures.set(at, a.id);
+        pictures.set(base + at, a.id);
+      }
+    }
+    const assetFor = (url: string) => pictures.get(url.split('?')[0]);
+    const byRoute = new Map(checks.map((c) => [c.page.route, c.check] as const));
+    // A page of the site's own is also known by its ID, which a later move of the page leaves as it is.
+    const ids = new Map(live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => [live.pages[id].route, id] as const));
+    const pages = reviewPages(live).map((page) => {
+      const check = byRoute.get(page.route);
+      const measured = check?.status === 'working' && check.sample ? pagePerformance(page.route, page.title, check.sample, assetFor) : unmeasuredPage(page.route, page.title, check?.status === 'unchecked' ? check.detail : 'the export did not measure it (it ran out of time, or the page could not be set up to be measured)');
+      const pageId = ids.get(page.route);
+      return pageId ? { ...measured, pageId } : measured;
+    });
+    const cache = await exportCachePolicies(out, redirectHost(live.site), base, await immutableFiles(out));
+    const finding = cacheFinding(cache);
+    return { measuredAt: new Date().toISOString(), revision, viewport: PERFORMANCE_VIEWPORT, budgets: { ...PERFORMANCE_BUDGETS }, pages, cache, findings: finding ? [finding] : [] };
+  }
+
+  /** The open project's last performance report, and whether it has changed since the website it measured was built. */
+  performanceStatus(): PerformanceStatus | null {
+    const s = this.session;
+    const kept = s ? this.performanceReports.get(s) : undefined;
+    if (!s || !kept) return null;
+    return { report: kept.report, stale: kept.epoch !== (this.changeEpochs.get(s) ?? 0) };
   }
 
   /**

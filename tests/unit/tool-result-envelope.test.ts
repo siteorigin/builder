@@ -168,6 +168,7 @@ const CASES = {
   inspect_component: { where: 'site', ok: () => ({ componentId: 'features.grid' }), fail: () => ({ componentId: 'features.grid', offset: 999 }), code: 'INVALID_ARGUMENT' },
   validate_project: { where: 'site', ok: () => ({}), fail: () => ({ profile: 'everything' }), code: 'INVALID_ARGUMENT' },
   audit_seo: { where: 'site', ok: () => ({}), fail: () => ({ pageId: 'pg_missing' }), code: 'INVALID_ARGUMENT' },
+  audit_performance: { where: 'site', ok: () => ({}), fail: () => ({ offset: -1 }), code: 'INVALID_ARGUMENT' },
   request_clarification: { where: 'site', ok: () => ({ question: 'Which one?', choices: ['This', 'That'] }), fail: () => ({ question: 'Which picture, and may I change more?', widenScope: true, assetIds: [PHOTO.id] }), code: 'INVALID_ARGUMENT' },
   locate_field: { where: 'ask', ok: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'heading' }), fail: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'nothing' }), code: 'INVALID_ARGUMENT' },
   upsert_page_with_sections: {

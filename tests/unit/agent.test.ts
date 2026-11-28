@@ -36,6 +36,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { runSeoAudit } from '@engine/seo-audit';
 import { findingHandoff } from '../../src/renderer/src/lib/seoHandoff';
 import { managedStarter } from './fixtures/agent-designs';
+import { pagePerformance, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PageSample, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -87,6 +88,8 @@ interface SetupOptions {
   managed?: string[];
   /** A change to the project before the session opens it. */
   prepare?: (s: ProjectState) => void;
+  /** What the last website export measured, as the main process keeps it (#1488). */
+  performance?: () => PerformanceStatus | null;
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
@@ -105,7 +108,8 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
     compileAll: opts.compileAll ? () => opts.compileAll!(session) : async () => [],
     inspectLayout: opts.inspectLayout ?? (async () => ({ issues: [] })),
     onBusyChange: (b) => (busy = b),
-    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {})
+    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {}),
+    ...(opts.performance ? { performance: opts.performance } : {})
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   const run = async (text: string, extra: Partial<ChatContext> = {}) => {
@@ -437,7 +441,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'audit_performance', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -775,6 +779,34 @@ describe('read-only questions (#203)', () => {
     sessionRef = session;
     const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
     expect(result?.checks).toEqual([{ status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' }]);
+  });
+
+  it('reads what the last export measured of the site and of one page, in a question and an edit, and says when nothing is measured (#1488)', async () => {
+    for (const mode of ['ask', 'edit'] as const) {
+      let status: PerformanceStatus | null = null;
+      let measure = () => {};
+      // Measured once the first call has said there is nothing yet, as an export the author ran meanwhile would be.
+      const turns: Turn[] = [() => [call('p0', 'audit_performance', {})], () => (measure(), [call('p1', 'audit_performance', {})]), () => [call('p2', 'audit_performance', { route: '/about/' })], () => finish('Here is what was measured.')];
+      const { session, run, adapter, events } = await setup(turns, { performance: () => status });
+      const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!;
+      const sample: PageSample = { complete: true, resources: [{ url: '/about/', kind: 'html', bytes: 2048, preloaded: false, own: true }, { url: '/assets/hero.jpg', kind: 'images', bytes: 300_000, preloaded: false, own: true }], images: [], lcp: { kind: 'image', url: '/assets/hero.jpg', from: 'browser' } };
+      const asked = session.revision;
+      const report: PerformanceReport = { measuredAt: '2026-11-28T10:00:00.000Z', revision: asked, viewport: PERFORMANCE_VIEWPORT, budgets: { ...PERFORMANCE_BUDGETS }, pages: [pagePerformance('/about/', about.title, sample)], cache: { host: 'cloudflare', file: null, path: '/_app/immutable/x.js', value: null, status: 'none' }, findings: [] };
+      measure = () => void (status = { report, stale: true });
+      const { result } = await run('Why is my site slow?', mode === 'ask' ? { mode: 'ask' } : {});
+      expect(result?.status, mode).toBe('no-changes');
+      expect(adapter.requests[0].tools.map((t) => t.name), mode).toContain('audit_performance');
+      const none = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+      expect(none, mode).toMatchObject({ status: 'not_measured' });
+      const site = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+      expect(site, mode).toMatchObject({ revision: asked, measuredRevision: asked, stale: true, scope: 'site', pages: 1, rows: [{ route: '/about/', hero: { url: '/assets/hero.jpg', preloaded: false } }] });
+      const page = JSON.parse((adapter.requests[3].items.at(-1) as { content: string }).content);
+      expect(page.scope, mode).toEqual({ route: '/about/' });
+      expect(page.findings.map((f: { code: string }) => f.code), mode).toContain('PERF_HERO_NOT_PRELOADED');
+      const activities = [...events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities ?? [];
+      expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Reading site performance', 'Reading the performance of /about/']));
+      expect(session.revision, mode).toBe(asked);
+    }
   });
 });
 

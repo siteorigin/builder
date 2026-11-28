@@ -233,6 +233,67 @@ describe('a website export whose pages could not all be opened', () => {
   });
 });
 
+describe('what a website export measures of its pages (#1488)', () => {
+  const sample: NonNullable<Extract<PageCheck, { status: 'working' }>['sample']> = {
+    complete: true,
+    resources: [
+      { url: '/', kind: 'html', bytes: 4000, preloaded: false, own: true },
+      { url: '/_app/immutable/entry/start.js', kind: 'js', bytes: 400 * 1024, preloaded: false, own: true }
+    ],
+    images: [],
+    lcp: { kind: 'text' }
+  };
+  /** Home measured; every other page works but says nothing of its visit, as a check that ran out of time to measure. */
+  const measured = async (url: string): Promise<PageCheck> => (new URL(url).pathname === '/' ? { status: 'working', sample } : { status: 'working' });
+
+  it('keeps a report of every page once the website is delivered, which the export’s own record of its addresses leaves current', async () => {
+    const { c } = await siteWithLoop(measured, { source: FIXED_SOURCE });
+    expect(c.snapshot()!.performance).toBeNull();
+    const built = c.snapshot()!.revision;
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(true);
+    // The export recorded the addresses it delivered, which moved the revision on.
+    expect(c.snapshot()!.revision).toBeGreaterThan(built);
+    const status = c.snapshot()!.performance!;
+    expect(status.stale).toBe(false);
+    expect(status.report).toMatchObject({ revision: built, viewport: { width: 1280, deviceScaleFactor: 1 }, cache: { host: 'cloudflare', status: 'none' }, findings: [{ code: 'PERF_CACHE_NO_RULE' }] });
+    const routes = reviewPages(publishedState(c.snapshot()!.state)).map((p) => p.route);
+    expect(status.report.pages.map((p) => p.route)).toEqual(routes);
+    expect(status.report.pages[0]).toMatchObject({ route: '/', status: 'measured', totals: { js: 400 * 1024 }, findings: [{ code: 'PERF_OVER_BUDGET', kind: 'js' }] });
+    expect(status.report.pages[1]).toMatchObject({ status: 'unmeasured', detail: expect.stringMatching(/^the export did not measure it/) });
+    // Any change since makes it out of date, and says so.
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' })).ok).toBe(true);
+    expect(c.snapshot()!.performance).toMatchObject({ stale: true, report: { revision: built } });
+  });
+
+  it('is out of date at once when the project changed while the website was being built', async () => {
+    let c!: InstanceType<typeof Controller>;
+    let edited = false;
+    ({ c } = await siteWithLoop(async (url) => {
+      // An edit lands while the pages are being opened: after the snapshot the website was built from.
+      if (!edited) {
+        edited = true;
+        expect((await c.apply({ operations: [{ type: 'site.update', name: 'Changed meanwhile' }] }, { label: 'Rename site' })).ok).toBe(true);
+      }
+      return measured(url);
+    }, { source: FIXED_SOURCE }));
+    expect((await c.buildStaticTo(join(temp('out'), 'site'))).ok).toBe(true);
+    expect(c.snapshot()!.performance?.stale).toBe(true);
+  });
+
+  it('keeps the last report when an export fails, and makes none for a review', async () => {
+    let fail = false;
+    const { c } = await siteWithLoop(async (url) => (fail && new URL(url).pathname === '/' ? { status: 'error-page', heading: 'Error 500', cause: null, logged: [] } : measured(url)), { source: FIXED_SOURCE });
+    expect((await c.stageReviewBuild(join(temp('out'), 'review'))).ok).toBe(true);
+    expect(c.snapshot()!.performance).toBeNull();
+    expect((await c.buildStaticTo(join(temp('out'), 'site'))).ok).toBe(true);
+    const kept = c.snapshot()!.performance!.report;
+    fail = true;
+    expect((await c.buildStaticTo(join(temp('out'), 'again'))).ok).toBe(false);
+    expect(c.snapshot()!.performance!.report).toBe(kept);
+  });
+});
+
 describe('what the export says of a page that fails in a browser', () => {
   const state = () => {
     let s = createStarterState('business', 'Harbour Lane', false);

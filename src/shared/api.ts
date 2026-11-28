@@ -1,3 +1,4 @@
+import type { PerformanceStatus } from './performance';
 import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
@@ -421,6 +422,8 @@ export interface ProjectSnapshot {
   workspaceKey: string;
   /** What this opening of the project exported, newest first. */
   recentExports: RecentExport[];
+  /** What the last website export measured of each page's first visit (#1488), and whether the project changed since. */
+  performance?: PerformanceStatus | null;
   /** Named versions of the site saved in this project. */
   versions?: VersionsInfo;
   /** A save that failed, until a later one succeeds (or, when unfinished, until the project is reopened). */
