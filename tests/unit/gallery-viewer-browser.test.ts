@@ -1,7 +1,8 @@
 /**
  * The exported site's full-image viewer (Action.svelte) in a real browser, moving through one gallery's photos: each
  * photo it shows starts with its own caption at the top, however far the visitor read the one before (#1437), by the
- * arrow keys and by the Previous and Next buttons, and a caption holding focus keeps it.
+ * arrow keys and by the Previous and Next buttons, and a caption holding focus keeps it. At a visitor's enlarged
+ * default text size the photo, its caption and every control stay on screen in portrait and in short landscape (#1431).
  */
 import { existsSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -18,6 +19,9 @@ const GEN = '\0gen:';
 
 const FIRST = `First photo. ${'The morning light falls across the oak bench and the tiled splashback, picking out the grain. '.repeat(7)}`;
 const SECOND = `Second photo. ${'A long hallway runs past the reading nook towards the garden door, lined with framed prints. '.repeat(7)}`;
+
+/** Every photo: 800 × 600, as the gallery's images are. */
+const PHOTO = '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="#8a9"/></svg>';
 
 /** Two photos of one gallery, each opening full size, with the captions above. */
 const HARNESS = [
@@ -98,8 +102,10 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
   });
 
   /** The two photos on a phone, with console warnings and errors, and uncaught errors, collected. */
-  async function open(): Promise<{ page: Page; problems: string[] }> {
+  async function open(fontSize = 16, viewport = { width: 320, height: 568 }): Promise<{ page: Page; problems: string[] }> {
     const page = await browser.newPage();
+    // The browser's own default text size, as a visitor sets it in Chromium's settings.
+    if (fontSize !== 16) await (await page.context().newCDPSession(page)).send('Page.setFontSizes', { fontSizes: { standard: fontSize } });
     const problems: string[] = [];
     page.on('console', (m) => {
       if ((m.type() === 'warning' || m.type() === 'error') && !m.text().startsWith('Failed to load resource')) problems.push(m.text());
@@ -111,9 +117,10 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       if (url.origin !== ORIGIN) return route.abort();
       if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: script });
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
+      if (url.pathname.startsWith('/images/')) return route.fulfill({ contentType: 'image/svg+xml', body: PHOTO });
       return route.fulfill({ status: 404, body: '' });
     });
-    await page.setViewportSize({ width: 320, height: 568 });
+    await page.setViewportSize(viewport);
     await page.goto(`${ORIGIN}/`);
     await page.addScriptTag({ url: '/app.js', type: 'module' });
     await page.waitForFunction('typeof window.startHarness === "function"');
@@ -199,4 +206,72 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       await page.close();
     }
   });
+  /** Where the open viewer's parts sit, and how far it can pan sideways. */
+  const layoutOf = (page: Page) =>
+    page.evaluate(`(() => {
+      const d = document.querySelector('dialog.so-viewer[open]');
+      const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
+      const parts = { close: '.so-viewer__close', previous: '.so-viewer__step', next: '.so-viewer__step:last-of-type', count: '.so-viewer__count', caption: '.so-viewer__caption', photo: '.so-viewer__img' };
+      return {
+        root: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        pan: d.scrollWidth - d.clientWidth,
+        scrollLeft: d.scrollLeft,
+        focused: document.activeElement?.className ?? '',
+        view: { width: innerWidth, height: innerHeight },
+        parts: Object.fromEntries(Object.entries(parts).map(([k, s]) => [k, box(d.querySelector(s))]))
+      };
+    })()`) as Promise<{
+      root: number;
+      pan: number;
+      scrollLeft: number;
+      focused: string;
+      view: { width: number; height: number };
+      parts: Record<string, { left: number; right: number; top: number; bottom: number; width: number; height: number }>;
+    }>;
+
+  /** The viewer fits its screen: no sideways pan, every part inside it, and the photo a real share of it. */
+  const expectFits = async (page: Page, label: string) => {
+    const layout = await layoutOf(page);
+    expect(layout.pan, label).toBeLessThanOrEqual(0);
+    expect(layout.scrollLeft, label).toBe(0);
+    for (const [name, r] of Object.entries(layout.parts)) {
+      expect(r.left, `${label}: ${name} left`).toBeGreaterThanOrEqual(0);
+      expect(r.right, `${label}: ${name} right`).toBeLessThanOrEqual(layout.view.width + 0.5);
+      expect(r.top, `${label}: ${name} top`).toBeGreaterThanOrEqual(0);
+      expect(r.bottom, `${label}: ${name} bottom`).toBeLessThanOrEqual(layout.view.height + 0.5);
+    }
+    const { photo, close, previous } = layout.parts;
+    expect(photo.height, `${label}: photo height`).toBeGreaterThanOrEqual(layout.view.height * 0.25);
+    expect(photo.width, `${label}: photo width`).toBeGreaterThan(0);
+    // Close and the arrows stay at least a 44 px target.
+    for (const r of [close, previous]) expect(Math.min(r.width, r.height), label).toBeGreaterThanOrEqual(44);
+    return layout;
+  };
+
+  for (const fontSize of [16, 24, 32]) {
+    it(`keeps the photo, caption and controls on screen at a ${fontSize} px default text size, in portrait and short landscape`, async () => {
+      const { page, problems } = await open(fontSize, { width: 320, height: 720 });
+      try {
+        await page.locator('a.so-action--image').first().focus();
+        await page.keyboard.press('Enter');
+        await page.waitForSelector('dialog.so-viewer[open]');
+        await page.waitForFunction(`document.querySelector('.so-viewer__img')?.complete`);
+        const portrait = await expectFits(page, `320 × 720 at ${fontSize} px`);
+        expect(portrait.root).toBe(fontSize);
+        expect(portrait.focused).toContain('so-viewer__close');
+        for (const viewport of [
+          { width: 390, height: 844 },
+          { width: 844, height: 390 },
+          { width: 667, height: 375 },
+          { width: 568, height: 320 }
+        ]) {
+          await page.setViewportSize(viewport);
+          await expectFits(page, `${viewport.width} × ${viewport.height} at ${fontSize} px`);
+        }
+        expect(problems).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    });
+  }
 });
