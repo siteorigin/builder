@@ -451,9 +451,12 @@ describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds
           const out = [];
           for (const [i, pl] of placements.entries()) {
             if (pl.tone !== 'inverse' || pl.nestIn) continue;
+            // Opened, so an answer is measured as a visitor reads it.
+            roots[i].querySelectorAll('details').forEach((d) => (d.open = true));
             roots[i].querySelectorAll(${JSON.stringify(words)}).forEach((el, j) => {
-              if (!el.textContent.trim()) return;
-              const name = pl.name + ' ' + [...el.classList].find((c) => /__(lead|eyebrow|heading|question|answer)$/.test(c));
+              const part = [...el.classList].find((c) => /__(lead|eyebrow|heading|question|answer)$/.test(c));
+              if (!part || !el.textContent.trim()) return;
+              const name = pl.name + ' ' + part;
               label(el, name + ' ' + j, 'text');
               out.push(name);
             });
