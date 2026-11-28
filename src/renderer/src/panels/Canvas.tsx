@@ -80,6 +80,7 @@ import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
 import { perfCount, perfMark, perfOn, perfWork } from '../lib/perf';
 import { aiRunning } from '../lib/blocked';
 import { copyEditing, copyGrant } from '../lib/copy-only';
+import { traceEditor } from '../lib/trace';
 
 /** Whether two reports measured the same element (or both nothing). */
 const sameMeasured = (a: BridgeDesc | null, b: BridgeDesc | null) => a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot);
@@ -3209,6 +3210,12 @@ export function Canvas() {
   useLayoutEffect(() => {
     if (getState().openingPage !== outlined) setState({ openingPage: outlined });
   }, [outlined]);
+  // What the first page waits on, for the app's trace (lib/trace.ts).
+  useEffect(
+    () => traceEditor('canvas', `outlined=${outlined} pending=${!!workspaceKey && firstPageOf !== workspaceKey} runtime=${runtime.state} slow=${slowWait} frame=${frameShown ? 'given' : 'none'} ready=${frameReady} problem=${frameError ? JSON.stringify(frameError.slice(0, 120)) : 'none'} retrying=${retrying} mode=${mode}`),
+    [outlined, workspaceKey, firstPageOf, runtime.state, slowWait, frameShown, frameReady, frameError, retrying, mode] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  useEffect(() => traceEditor('canvas', `frame address ${initialSrc ?? 'none'} (session ${session})`), [initialSrc, session]);
   useEffect(() => () => setState({ openingPage: false }), []);
   // The page arriving takes the outline's place by a short fade, the outline lifting off the page underneath; with
   // reduced motion, or when the wait ended any other way (a card, a problem), at once.

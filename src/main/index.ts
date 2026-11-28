@@ -24,6 +24,7 @@ import { createMenuPopups } from './app-menu-popup';
 import { opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
 import { captureMainErrors, createMainLog } from './main-log';
+import { clearTrace, startTrace, stopTrace, trace, traced, tracing } from './trace';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator, type RunDelegation } from '@agent/orchestrator';
@@ -628,8 +629,67 @@ function handle(channel: string, fn: (...args: never[]) => unknown, { anytime = 
     };
     authorize();
     const run = () => (fn as (...a: unknown[]) => unknown)(...args);
-    return anytime ? run() : packs.after(authorize, run);
+    // Each request and its answer are traced (trace.ts), so one that never answers shows as asked and nothing more.
+    const id = ++ipcAsked;
+    const asked = Date.now();
+    const quiet = QUIET_IPC.has(channel);
+    if (!quiet) trace('ipc', `#${id} ${channel} asked`);
+    let answer: unknown;
+    try {
+      answer = anytime ? run() : packs.after(authorize, run);
+    } catch (e) {
+      if (!quiet) trace('ipc', `#${id} ${channel} threw after ${Date.now() - asked}ms: ${traced(e)}`);
+      throw e;
+    }
+    if (!quiet)
+      void Promise.resolve(answer).then(
+        () => trace('ipc', `#${id} ${channel} answered in ${Date.now() - asked}ms`),
+        (e: unknown) => trace('ipc', `#${id} ${channel} failed after ${Date.now() - asked}ms: ${traced(e)}`)
+      );
+    return answer;
   });
+}
+
+/** The requests made so often that tracing each would crowd out the steps around them. */
+const QUIET_IPC = new Set(['live:presence', 'remote:presence', 'menu:popup']);
+let ipcAsked = 0;
+
+/** The window's pages and frames in the trace: their loads, failures, console output and crashes. */
+function traceWindow(self: BrowserWindow) {
+  const contents = self.webContents;
+  // An address without its query or fragment, which can carry what a page was given.
+  const where = (url: string) => {
+    const bare = url.replace(/[?#].*$/s, '');
+    return bare.length > 200 ? `${bare.slice(0, 200)}…` : bare;
+  };
+  // Warnings and errors only: what a page logs as it works (a component's own console.log) is its business, not the trace's.
+  contents.on('console-message', (e) => {
+    if (e.level !== 'warning' && e.level !== 'error') return;
+    const frame = (() => {
+      try {
+        return e.frame && e.frame !== contents.mainFrame ? ` (frame ${where(e.frame.url)})` : '';
+      } catch {
+        return ' (frame gone)';
+      }
+    })();
+    trace('console', `${e.level}${frame}: ${e.message.slice(0, 400)} at ${where(e.sourceId)}:${e.lineNumber}`);
+  });
+  contents.on('did-start-navigation', (d) => {
+    if (!d.isSameDocument) trace('window', `${d.isMainFrame ? 'page' : 'frame'} navigating to ${where(d.url)}`);
+  });
+  contents.on('did-frame-navigate', (_e, url, code, status, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'frame'} at ${where(url)}: ${code} ${status}`));
+  contents.on('did-frame-finish-load', (_e, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'a frame'} finished loading`));
+  contents.on('did-fail-load', (_e, code, description, url, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'frame'} failed to load ${where(url)}: ${code} ${description}`));
+  contents.on('preload-error', (_e, path, error) => trace('window', `preload ${path} failed: ${traced(error)}`));
+  contents.on('render-process-gone', (_e, d) => trace('window', `the editor's page ended: ${d.reason} (exit code ${d.exitCode})`));
+  self.on('unresponsive', () => trace('window', 'the editor stopped responding'));
+  self.on('responsive', () => trace('window', 'the editor responds again'));
+  self.on('show', () => trace('window', 'shown'));
+  self.on('hide', () => trace('window', 'hidden'));
+  self.on('focus', () => trace('window', 'focused'));
+  self.on('blur', () => trace('window', 'lost focus'));
+  self.on('minimize', () => trace('window', 'minimized'));
+  self.on('restore', () => trace('window', 'restored'));
 }
 
 function registerIpc() {
@@ -667,6 +727,9 @@ function registerIpc() {
     // Reload and the developer tools come and go with Developer mode.
     if (s.developerMode !== developerModeOn) {
       developerModeOn = s.developerMode;
+      // A packaged build traces while Developer mode is on (a build run from the source always does).
+      if (logging && app.isPackaged && developerModeOn && !tracing()) beginTrace();
+      else if (logging && app.isPackaged && !developerModeOn) stopTrace();
       buildMenu();
     }
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
@@ -1123,6 +1186,11 @@ function registerIpc() {
     leaveGate.reply(requestId, answer);
   });
   // The editor shows its screen and listens for File menu commands: one waiting for it is sent now.
+  // The editor's own steps, for the trace (src/renderer/src/lib/trace.ts): from its page only, as short text.
+  ipcMain.on('app:trace', (event, area: unknown, message: unknown) => {
+    if (!tracing() || !win || event.sender !== win.webContents || !event.senderFrame || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
+    if (typeof area === 'string' && typeof message === 'string') trace(`editor ${area.slice(0, 40)}`, message.slice(0, 1500));
+  });
   ipcMain.on('menu:ready', (event) => {
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
     menuCommands.ready(win);
@@ -1314,6 +1382,9 @@ async function createWindow() {
   self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
     if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
   });
+  // What the window and the frames in it do, for the trace (trace.ts): the editor's and the preview's console output,
+  // every page and frame load, and a page that stops answering.
+  traceWindow(self);
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     recordingShortcut = false;
@@ -1580,9 +1651,25 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 const launchLine = () => `${app.name} ${buildVersion(app.getVersion(), BUILD)} on ${process.platform} ${process.arch}`;
 const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'main.log'), header: launchLine });
 const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
+/** The developer's trace of this launch (trace.ts), beside the log. */
+const TRACE_FILE = join(app.getPath('userData'), 'logs', 'trace.log');
+/**
+ * Trace this launch from now: in a build run from the source, or with Developer mode on (offersDeveloperItems). Turned
+ * on again later in the launch, it carries on after what it wrote before.
+ */
+let traceBegun = false;
+function beginTrace() {
+  startTrace(TRACE_FILE, { resumed: traceBegun });
+  if (!traceBegun) trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
+  traceBegun = true;
+}
 if (logging) {
   captureMainErrors(mainLog, { console, process });
   mainLog.write('start', launchLine());
+  // A developer's trace holds this launch alone (trace.ts): the last launch's goes now, whether or not this one traces.
+  // A build run from the source traces from here; a packaged one once its settings say Developer mode is on.
+  if (app.isPackaged) clearTrace(TRACE_FILE);
+  else beginTrace();
 }
 // Learning mode (#1566, learning.ts): on only when SITEORIGIN_LEARNING turns it on at launch, and never in an automated
 // run, so a test never writes a person's recordings.
@@ -1646,6 +1733,7 @@ app.whenReady().then(async () => {
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
+  if (logging && app.isPackaged && developerModeOn) beginTrace();
   // The About panel names this app and its version, not the Electron bundle a development build runs in, with the
   // build beside it (macOS shows `version` in brackets after the version).
   app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion(), version: buildLabel(BUILD) });

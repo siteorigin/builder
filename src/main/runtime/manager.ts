@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { WebsiteTools } from '@shared/api';
 import { safeJoin, sha } from '../project/fsutil';
+import { trace } from '../trace';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
 import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, npmLibc, type LockedPackage, type ToolsAvailability } from './availability';
@@ -758,12 +759,16 @@ export class DevServer {
 
   private set(s: RuntimeStatus) {
     this.status = s;
+    trace('preview', `server in ${this.dir}: ${s.state}${'message' in s && s.message ? `: ${s.message}` : ''}${'url' in s && s.url ? ` at ${s.url}` : ''}`);
     for (const l of this.listeners) l(s);
   }
 
   private log(level: string, message: string) {
-    this.logs.push({ level, message: message.replace(/\x1b\[[0-9;]*m/g, ''), time: Date.now() });
+    const text = message.replace(/\x1b\[[0-9;]*m/g, '');
+    this.logs.push({ level, message: text, time: Date.now() });
     if (this.logs.length > 200) this.logs.shift();
+    // Its warnings and errors: the lines it logs for each request it answers would crowd out everything else.
+    if (level !== 'info') trace('vite', `${level}: ${text.trim().slice(0, 600)}`);
   }
 
   async start(): Promise<void> {
@@ -778,6 +783,7 @@ export class DevServer {
     });
     const worker = ++forks;
     perf.mark('runtime.forked', { worker });
+    trace('preview', `forked worker ${worker} for ${this.dir}`);
     this.proc = proc;
     proc.stdout?.on('data', (d) => this.log('info', String(d)));
     proc.stderr?.on('data', (d) => this.log('error', String(d)));
@@ -809,6 +815,7 @@ export class DevServer {
           this.set({ state: 'ready', url: m.url! });
           resolve();
         } else if (m.type === 'log') this.log(m.level ?? 'info', m.message ?? '');
+        else if (m.type === 'trace' && typeof m.message === 'string') trace('preview worker', m.message.slice(0, 600));
         else if (m.type === 'error') {
           this.log('error', m.message ?? '');
           if (this.status.state !== 'ready') {
@@ -820,6 +827,7 @@ export class DevServer {
       });
       proc.on('exit', (code) => {
         perf.mark('runtime.exited', { worker });
+        trace('preview', `worker ${worker} exited (${code})${this.stopped ? ', stopped' : ''}`);
         clearTimeout(timer);
         if (this.proc !== proc) return resolve();
         this.proc = null;

@@ -70,8 +70,10 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
   guardProjectFolder(dir);
   const site = JSON.parse(await readFile(join(dir, 'siteorigin/site.json'), 'utf8')) as { homePageId: string };
   const home = JSON.parse(await readFile(join(dir, 'siteorigin/pages', `${site.homePageId}.json`), 'utf8')) as { route: string };
+  post({ type: 'trace', message: `loading Vite for ${dir}` });
   const vite = await loadVite(dir);
   mark('runtime.viteLoaded');
+  post({ type: 'trace', message: `Vite ${vite.version ?? ''} loaded; creating the server` });
   const ignored = unwatched(dir);
   const held = createPublicationGate({ root: dir, ignored });
   // Never while a request is being answered or a save is on its way to the pages, and only once the heap has grown.
@@ -120,6 +122,7 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
       }
     } as never);
     mark('runtime.serverCreated');
+    post({ type: 'trace', message: 'server created; listening' });
     held.attach(s as unknown as GateServer);
     gate = held;
     const ws = (s as unknown as { ws: Ws }).ws;
@@ -133,7 +136,9 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
     const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
     const bound = addr && typeof addr === 'object' ? addr.port : wantedPort;
     const url = `http://127.0.0.1:${bound}`;
+    post({ type: 'trace', message: `listening at ${url}; waiting for ${home.route} to answer` });
     await waitForPreviewPage(url, home.route);
+    post({ type: 'trace', message: `${home.route} answered` });
     post({ type: 'ready', url });
   } catch (e) {
     if (server) await server.close().catch(() => undefined);
