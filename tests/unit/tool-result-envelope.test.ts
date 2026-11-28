@@ -681,7 +681,7 @@ describe('failures every tool shares (#744)', () => {
 
   it('says a call can be corrected or sent later only where one can', () => {
     const recoverable = Object.fromEntries(TOOL_ERROR_CODES.map((code) => [code, (toolError(code, 'x').content as { error: { recoverable: boolean } }).error.recoverable]));
-    expect(recoverable).toEqual({ INVALID_ARGUMENT: true, STALE_REVISION: true, SCOPE_MISMATCH: true, PATH_DENIED: false, VALIDATION_FAILED: true, CONFLICT: false, CANCELLED: false, BUSY: true, ONE_CHANGE_PER_TURN: true, UPDATE_HELD: false });
+    expect(recoverable).toEqual({ INVALID_ARGUMENT: true, STALE_REVISION: true, SCOPE_MISMATCH: true, PATH_DENIED: false, VALIDATION_FAILED: true, CONFLICT: false, CANCELLED: false, BUSY: true, ONE_CHANGE_PER_TURN: true, UPDATE_HELD: false, SAVE_FAILED: false });
     // The place that refuses can say otherwise.
     expect((toolError('SCOPE_MISMATCH', 'x', { recoverable: false }).content as { error: { recoverable: boolean } }).error.recoverable).toBe(false);
   });

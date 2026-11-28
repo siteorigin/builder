@@ -1558,7 +1558,8 @@ const HELD_LABELS: Record<HeldAction, string> = {
   replace: 'Replace with my edit',
   copy: 'Copy text',
   retry: 'Try again',
-  discard: 'Discard'
+  discard: 'Discard',
+  dismiss: 'Dismiss'
 };
 /** Where focus was before it came into the notices (Toasts records it), for a notice that goes with focus in it. */
 let noticesCameFrom: HTMLElement | null = null;
@@ -1737,7 +1738,8 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
   useHandOffWhenGone(row);
   const [copied, copy] = useCopyText();
   const run = (a: HeldAction) => {
-    if (a === 'discard') discardHeld(h.id);
+    // Dismissing a save that did not finish only takes the row away: reopening the project still finishes it.
+    if (a === 'discard' || a === 'dismiss') discardHeld(h.id);
     // Saved beside the question the AI waits on: nothing is stopped.
     else if (a === 'save-now') void saveHeldNow(h.id);
     else if (a === 'copy') copy(h.text ?? '');

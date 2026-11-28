@@ -146,8 +146,9 @@ export interface LiveEditBatch {
 const _liveBatchIsEditBatch: Parameters<BuilderApi['project']['apply']>[0] = {} as LiveEditBatch;
 void _liveBatchIsEditBatch;
 // Every refusal the engine gives can be passed on to a guest as it is. ONE_CHANGE_PER_TURN and UPDATE_HELD are an AI
-// run's own refusals of a tool call, never a change's, so no guest edit is refused with them.
-const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode | 'ONE_CHANGE_PER_TURN' | 'UPDATE_HELD'> extends never ? true : never = true;
+// run's own refusals of a tool call, never a change's, so no guest edit is refused with them. SAVE_FAILED is the
+// editor's own account of its change that could not be written (Controller.apply), never a guest's.
+const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode | 'ONE_CHANGE_PER_TURN' | 'UPDATE_HELD' | 'SAVE_FAILED'> extends never ? true : never = true;
 void _everyEngineCode;
 // Presence selections are the editor's own element references. messages.ts keeps its own copy so the relay never
 // reads the app's types; this keeps the two the same.

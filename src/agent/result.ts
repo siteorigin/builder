@@ -54,7 +54,8 @@ const RECOVERABLE: Record<ToolErrorCode, boolean> = {
   CANCELLED: false,
   BUSY: true,
   ONE_CHANGE_PER_TURN: true,
-  UPDATE_HELD: false
+  UPDATE_HELD: false,
+  SAVE_FAILED: false
 };
 
 /** A failed call. `details`: what else the model needs to correct it, such as each field's problem. */

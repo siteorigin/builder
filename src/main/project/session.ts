@@ -349,7 +349,7 @@ async function searchFile(abs: string, tokens: string[]): Promise<Set<string>> {
   }
   return found;
 }
-const UNSETTLED = 'A save did not finish. Close and reopen the project to recover it.';
+const UNSETTLED = 'An earlier save did not finish, so nothing more is saved until the project is closed and reopened.';
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 /** Why a project whose folder went while it was open is read-only. */
 const FOLDER_GONE: ReadOnlyInfo = {
@@ -894,6 +894,9 @@ export class ProjectSession extends EventEmitter {
   }
   /** The last save that failed with nothing of it written, until a later save succeeds. */
   private failedSave: { label: string; message: string } | null = null;
+  /** What became of each save that failed, by the error it threw: told apart as it failed, so a later one never says
+   *  another's fate (see writeFailure). */
+  private writeFailures = new WeakMap<object, SaveFailure['kind']>();
   /** Named versions of the site, kept apart from history until the author deletes them (issue 260). */
   private versions: VersionStore;
 
@@ -2366,6 +2369,7 @@ export class ProjectSession extends EventEmitter {
       if (e instanceof GuardRefusal) throw e;
       if (!(e instanceof DiskConflictError) || this.unsettled) {
         this.failedSave = { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
+        if (e && typeof e === 'object') this.writeFailures.set(e, this.unsettled ? 'unfinished' : 'failed');
         this.emit('save-failed');
       }
       throw e;
@@ -3269,6 +3273,15 @@ export class ProjectSession extends EventEmitter {
   /** A save did not finish (see persist): nothing more is written until the project is reopened. */
   get saveUnfinished(): boolean {
     return this.unsettled;
+  }
+
+  /**
+   * Whether `e` is what a save this session tried to write threw, and if so what became of that save: `failed` (nothing
+   * of it was written; it can be made again) or `unfinished` (its journal is on disk, and reopening the project finishes
+   * it). Null for any other error.
+   */
+  writeFailure(e: unknown): SaveFailure['kind'] | null {
+    return e && typeof e === 'object' ? (this.writeFailures.get(e) ?? null) : null;
   }
 
   /** A save that failed, for the editor's save indicator: an unfinished one until reopening, a failed one until a later save succeeds. */

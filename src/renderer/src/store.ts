@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState, SaveFailure } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -61,7 +61,8 @@ export interface Rect {
  * waiting: the AI is (or was) working; the author can stop it and apply the edit.
  * applying: the AI is being stopped and the edit is applied once its changes are undone.
  * changed: a field it writes holds something else now (shown in `current`); the author decides.
- * gone: what it was for no longer exists. failed: the project refused it (`note` says why).
+ * gone: what it was for no longer exists. failed: the project refused it (`note` says why), or could not write it to
+ * its folder (`save` says what became of it).
  */
 export interface HeldEdit {
   id: number;
@@ -98,6 +99,12 @@ export interface HeldEdit {
   cause?: 'elsewhere';
   /** For a page rename: the labels to offer once it is saved (see renamePage). Discarding the edit drops them. */
   rename?: PendingRename;
+  /**
+   * For "failed": its save could not be written to the project's folder (#1435). `failed`: nothing of it was written,
+   * so it can be tried again. `unfinished`: its journal is on disk and reopening the project finishes it, so it is never
+   * sent again from here (main refuses every save until then); the text is kept to copy.
+   */
+  save?: SaveFailure['kind'];
   /**
    * Save now was refused (#1281): the AI request changed a field it writes, or made what it is for, so it waits for the
    * request to end, as an edit made while the AI works does. `note` says why.
@@ -1181,6 +1188,8 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // The field the edit was made in may say why itself (see claimRefusals).
       const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
       if (r.error?.code !== 'BUSY' && !claimed && !saidElsewhere(r.error)) toast(message, 'error');
+      // Not written to the project's folder: what was typed is kept, to copy (or try again), never only put back.
+      if (r.error?.code === 'SAVE_FAILED') keepUnwritten(typed, operations, label, message, saveKind(r.error.details));
       if (r.error?.code !== 'BUSY') typed?.refused?.();
       landed({ ok: false, message });
       return null;
@@ -1188,8 +1197,11 @@ export async function commitOps(operations: EditOperation[], label: string, coal
     landed({ ok: true });
     return { ...r, workspaceKey };
   } catch (e) {
-    const message = `That change could not be saved${e instanceof Error && e.message ? `: ${e.message}` : '.'}`;
+    // Main did not answer with the save's fate: what was typed is kept all the same, in case it never landed.
+    const why = errorText(e);
+    const message = `That change could not be saved${why ? `: ${why}` : '.'}`;
     toast(message, 'error');
+    keepUnwritten(typed, operations, label, message);
     typed?.refused?.();
     landed({ ok: false, message });
     return null;
@@ -1199,6 +1211,17 @@ export async function commitOps(operations: EditOperation[], label: string, coal
 }
 
 const HELD_MESSAGE = 'An edit you made has not been saved yet.';
+
+/** What became of a save main could not write (see Controller.apply), from its refusal's details. */
+const saveKind = (details: unknown): SaveFailure['kind'] => ((details as { save?: unknown } | null)?.save === 'unfinished' ? 'unfinished' : 'failed');
+
+/**
+ * Keep a typed edit whose save did not reach the project's folder as a held edit, with `note` saying why, so the text
+ * can be copied (and tried again, unless the save is `unfinished`). Anything that is not a typed field edit is not kept.
+ */
+function keepUnwritten(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string, note: string, save?: SaveFailure['kind']) {
+  if (typed?.base) holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, cause: 'elsewhere', phase: 'failed', note, rename: typed.rename, ...(save ? { save } : {}) });
+}
 
 /** The revision each field's latest typed save made, and the control it was typed in, by opening and field (see writeTyped). */
 const ownSaves = new Map<string, { revision: number; text: string | null; control?: object }>();
@@ -1317,7 +1340,7 @@ export function holdEdit(
   base: ProjectSnapshot,
   operations: EditOperation[],
   label: string,
-  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string; rename?: PendingRename | null } = {}
+  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string; rename?: PendingRename | null; save?: SaveFailure['kind'] } = {}
 ): { id: number | null } | null {
   // A reply that arrives after its project closed has nothing to be held in.
   if (getState().snapshot?.workspaceKey !== base.workspaceKey) return { id: null };
@@ -1341,6 +1364,7 @@ export function holdEdit(
     ...(opts.cause ? { cause: opts.cause } : {}),
     ...(opts.current ? { current: opts.current, currentText: shownField(operations[0], opts.current[0]) } : {}),
     ...(opts.note !== undefined ? { note: opts.note } : {}),
+    ...(opts.save ? { save: opts.save } : {}),
     ...(isRenameOf(operations, opts.rename) ? { rename: opts.rename } : {})
   };
   // A newer edit of the same fields replaces the older one (and any handoff still running for it).
@@ -1378,10 +1402,11 @@ export function discardHeld(id: number) {
  */
 export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId?: string } = {}): Promise<void> {
   const held = heldById(id);
-  if (!held || held.phase === 'applying' || (opts.replace && held.phase !== 'changed')) return;
+  // A save that did not finish is finished by reopening the project, which refuses every save until then.
+  if (!held || held.phase === 'applying' || held.save === 'unfinished' || (opts.replace && held.phase !== 'changed')) return;
   const attempt = ++attemptSeq;
   const expected = opts.replace ? held.current! : held.base;
-  patchHeld(id, { phase: 'applying', attempt, stopping: !!opts.stopRunId, writing: false, note: undefined });
+  patchHeld(id, { phase: 'applying', attempt, stopping: !!opts.stopRunId, writing: false, note: undefined, save: undefined });
   const live = () => {
     const h = heldById(id);
     return h && h.attempt === attempt ? h : null;
@@ -1433,7 +1458,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     if (check.kind === 'changed') return settle({ phase: 'changed', current: check.current, currentText: shownField(h.operations[0], check.current[0]) }, outcome('held'));
     patchHeld(id, { stopping: false, writing: true });
     setState({ pendingSave: getState().pendingSave + 1 });
-    const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }, h.text).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+    const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }, h.text).catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: errorText(e), details: undefined } }));
     // Followed like any change on its way, so saving or leaving the project waits for it.
     trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
     const r = await writing;
@@ -1452,6 +1477,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
       return getState().snapshot?.aiBusy
         ? settle({ phase: 'waiting', note: 'The AI is working on another request.' })
         : settle({ phase: 'failed', note: 'The project is still locked by an AI request that did not end cleanly. Reopen the project, then try again.' }, outcome('held'));
+    if (r.error?.code === 'SAVE_FAILED') return settle({ phase: 'failed', note: r.error.message, save: saveKind(r.error.details) }, outcome('held'));
     return settle({ phase: 'failed', note: r.error?.message ?? 'That change could not be applied.' }, outcome('held'));
   }
 }
@@ -1475,7 +1501,7 @@ export async function saveHeldNow(id: number): Promise<void> {
   setState({ pendingSave: getState().pendingSave + 1 });
   // Sent as the author made it, with what its fields held then: main checks it against both versions of the project.
   sendPicksAhead();
-  const writing = api.project.saveWhileAsking({ operations: held.operations }, { runId, base: held.base, label: held.label, opening: held.workspace }).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+  const writing = api.project.saveWhileAsking({ operations: held.operations }, { runId, base: held.base, label: held.label, opening: held.workspace }).catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: errorText(e), details: undefined } }));
   // Followed like any change on its way, so saving or leaving the project waits for it.
   trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
   const r = await writing;
@@ -1489,6 +1515,9 @@ export async function saveHeldNow(id: number): Promise<void> {
     return;
   }
   setState({ pendingSave });
+  // Not written to the project's folder: kept, saying why, to try again (or, unfinished, to copy) like any edit whose
+  // save failed.
+  if (r.error?.code === 'SAVE_FAILED') return patchHeld(id, { phase: 'failed', attempt: undefined, writing: false, note: r.error.message, save: saveKind(r.error.details) });
   // The request changed what the edit writes, or made what it is for: saved now, stopping the request would lose its
   // changes to it, so the edit waits for the request to end. Answered or stopped meanwhile, it just waits again.
   const why = ((r.error as { details?: unknown } | undefined)?.details as { held?: unknown } | undefined)?.held;

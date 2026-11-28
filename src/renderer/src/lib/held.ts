@@ -661,14 +661,14 @@ export function heldSummary(state: ProjectState, operations: EditOperation[], la
   return `${label} in ${where} (${writes.join('; ')})`;
 }
 
-export type HeldAction = 'save-now' | 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
+export type HeldAction = 'save-now' | 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard' | 'dismiss';
 
 /** The most of a field's text a held edit's status quotes. */
 const QUOTE_MAX = 120;
 
 /** What a held edit's row says, and the actions it offers, in each phase. */
 export function heldPrompt(
-  h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere'; waitsForEnd?: boolean },
+  h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere'; waitsForEnd?: boolean; save?: 'failed' | 'unfinished' },
   aiBusy: boolean,
   phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null,
   /** The AI waits for an answer its held edits can be saved beside, without stopping it (#1281). */
@@ -676,6 +676,14 @@ export function heldPrompt(
 ): { message: string; actions: HeldAction[] } {
   // Said in the row's status, which is read out: long text (working notes) is cut short there, and shown in full above it.
   const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t.length > QUOTE_MAX ? `${t.slice(0, QUOTE_MAX).trimEnd()}…` : t}”` : null);
+  // Its save could not be written to the project's folder (#1435): the note says which folder and what to do. One that
+  // did not finish is finished by reopening the project, so it is not tried again here; dismissing the row leaves that
+  // to happen, where discarding would say the edit goes.
+  if (h.phase === 'failed' && h.save) {
+    const copy: HeldAction[] = h.text ? ['copy'] : [];
+    const message = h.note ?? (h.save === 'unfinished' ? 'This edit is not saved yet. Close and reopen the project to finish saving it.' : 'This edit could not be saved.');
+    return h.save === 'unfinished' ? { message, actions: [...copy, 'dismiss'] } : { message, actions: ['retry', ...copy, 'discard'] };
+  }
   // Typed into a field that changed somewhere else meanwhile (a file saved outside the app): both are kept, the
   // newer value in the project and the typed text here, until the author chooses.
   if (h.cause === 'elsewhere' && (h.phase === 'changed' || h.phase === 'failed')) {

@@ -350,7 +350,8 @@ describe('exporting a project with a draft', () => {
       session.placeJournal = placeJournal;
       throw new Error('ENOSPC: no space left on device');
     };
-    await expect(c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).rejects.toThrow(/ENOSPC/);
+    // The editor hears that its change was not saved, as a refusal (#1435).
+    expect(await c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).toMatchObject({ ok: false, error: { code: 'SAVE_FAILED', message: expect.stringMatching(/^That change could not be saved: /), recoverable: true, details: { save: 'failed' } } });
     const refused = await c.exportSourceTo(join(temp('out'), 'handoff'));
     expect(refused).toMatchObject({ ok: false, message: expect.stringMatching(/could not be saved, so the export would leave it out/) });
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'Saved name' }] })).ok).toBe(true);
