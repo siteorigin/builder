@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, promises as fs } from 'node:fs';
 import { basename, dirname, join, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { WebsiteTools } from '@shared/api';
 import { safeJoin, sha } from '../project/fsutil';
@@ -164,8 +165,13 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   // pass for set up, so the marker that says they are goes first, and comes back only once they are (#1395).
   await stillMine();
   await fs.rm(join(dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+  // `npm ci` never writes the package files: changed while it ran (#1480), they may not be the ones it installed, so
+  // the tools are marked set up only when they are as they were when it began (otherwise the next start sets them up
+  // again, once the changed files are trusted). Without a lock, npm writes one.
+  const began = existsSync(join(dir, 'package-lock.json')) ? await lockHash(dir) : null;
   await installTools(dir, onLine, signal, stillMine);
-  await markTools(dir, stillMine);
+  if (began !== null && (await lockHash(dir)) !== began) return;
+  await markTools(dir, stillMine, began);
 }
 
 /** Throws `Canceled` when `signal` has been aborted or `mayWrite` says no. */
@@ -173,23 +179,15 @@ const ownership = (signal: AbortSignal | undefined, mayWrite: () => Promise<bool
   if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
 };
 
-/** The cache seeded, what the tools need checked and npm run in `dir`; `stillMine` is asked before each npm run. */
-async function installTools(dir: string, onLine: (line: string) => void, signal: AbortSignal | undefined, stillMine: () => Promise<void>): Promise<void> {
-  const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
-  const seeding = perf.span('tools.seedCache');
-  let cache = await seedCache();
-  seeding();
-  let tools = await checkTools(dir, [cache], signal);
-  // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
-  const bundled = bundledCache();
-  if (tools && !tools.offline && bundled && existsSync(bundled)) {
-    cache = await seedCache(true);
-    tools = await checkTools(dir, [cache], signal);
-  }
+/**
+ * The bundled npm run as `command` with the settings every run in a project uses, whatever the author's own npm
+ * settings say; options of its own go after these, and the packages it is given last (after `--`).
+ */
+function npmArgs(command: 'ci' | 'install' | 'uninstall', cache: string): string[] {
   const libc = npmLibc(npmDir());
-  const base = [
-    npmCli,
-    existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install',
+  return [
+    join(npmDir(), 'bin', 'npm-cli.js'),
+    command,
     '--ignore-scripts',
     '--no-audit',
     '--no-fund',
@@ -205,8 +203,25 @@ async function installTools(dir: string, onLine: (line: string) => void, signal:
     '--include=optional',
     '--include=peer',
     '--install-strategy=hoisted',
+    // A run that only pretends (`dry-run` in the author's settings) would leave the tools as they were, marked set up.
+    '--dry-run=false',
     `--cache=${cache}`
   ];
+}
+
+/** The cache seeded, what the tools need checked and npm run in `dir`; `stillMine` is asked before each npm run. */
+async function installTools(dir: string, onLine: (line: string) => void, signal: AbortSignal | undefined, stillMine: () => Promise<void>): Promise<void> {
+  const seeding = perf.span('tools.seedCache');
+  let cache = await seedCache();
+  seeding();
+  let tools = await checkTools(dir, [cache], signal);
+  // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
+  const bundled = bundledCache();
+  if (tools && !tools.offline && bundled && existsSync(bundled)) {
+    cache = await seedCache(true);
+    tools = await checkTools(dir, [cache], signal);
+  }
+  const base = npmArgs(existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install', cache);
   // npm skips an optional native tool it could not fetch without failing: the ones the check counted must be in place.
   const left = () => (tools ? nativeNotInstalled(dir, tools.packages) : []);
   const download = async () => {
@@ -243,10 +258,13 @@ async function installTools(dir: string, onLine: (line: string) => void, signal:
   }
 }
 
-/** The marker that `dir`'s tools are set up for its lock (dependenciesReady), written once `stillMine` agrees. */
-async function markTools(dir: string, stillMine: () => Promise<void>): Promise<void> {
+/**
+ * The marker that `dir`'s tools are set up for its lock (dependenciesReady), written once `stillMine` agrees: for the
+ * package files that hashed to `hash` when given, else for them as they are now.
+ */
+async function markTools(dir: string, stillMine: () => Promise<void>, hash: string | null = null): Promise<void> {
   const marking = perf.span('tools.marker');
-  const hash = await lockHash(dir);
+  hash ??= await lockHash(dir);
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
   await stillMine();
   await writeMarker(dir, hash);
@@ -256,6 +274,39 @@ async function markTools(dir: string, stillMine: () => Promise<void>): Promise<v
 async function writeMarker(dir: string, hash: string): Promise<void> {
   await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
   await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), JSON.stringify({ lockHash: hash, preparedAt: new Date().toISOString() }));
+}
+
+/** One of the bundled npm's own modules (`npm-package-arg`), as the npm that runs the installs has it. */
+export function npmModule<T>(name: string): T {
+  return createRequire(join(npmDir(), 'package.json'))(name) as T;
+}
+
+/** A project's package files, with its own npm settings (`.npmrc`) when it has them. */
+export type ProjectPackageFiles = PackageFiles & { '.npmrc'?: string | null };
+
+/**
+ * What npm makes of a project's package files for one change to its packages (#1480): `npm <command> <options> --
+ * <spec>` with `--package-lock-only`, run in a private folder that holds a copy of them. Nothing of the project is
+ * touched (its files, its tools, its preview), so a change npm refuses, a package or version the registry does not
+ * have or no network, leaves everything as it was. The project's own npm settings (a registry of its own) come along.
+ */
+export async function resolvePackageFiles(files: ProjectPackageFiles, command: 'install' | 'uninstall', options: string[], spec: string, signal?: AbortSignal): Promise<PackageFiles> {
+  const dir = await fs.mkdtemp(join(tmpdir(), 'siteorigin-packages-'));
+  try {
+    for (const name of ['package.json', 'package-lock.json', '.npmrc'] as const) {
+      const text = files[name];
+      if (typeof text === 'string') await fs.writeFile(join(dir, name), text);
+    }
+    const cache = await seedCache();
+    // An install asks the registry what is there now (`zod@latest` is the latest), where a removal needs nothing new.
+    // Whatever the author's own npm settings say, the change is saved and made for real.
+    const fresh = command === 'install' ? ['--prefer-online', '--prefer-offline=false'] : ['--prefer-offline'];
+    await runNpm([...npmArgs(command, cache), '--package-lock-only', ...fresh, '--save=true', ...options, '--', spec], dir, () => undefined, signal);
+    const [pkg, lock] = await Promise.all(['package.json', 'package-lock.json'].map((f) => fs.readFile(join(dir, f), 'utf8')));
+    return { 'package.json': pkg, 'package-lock.json': lock };
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /** Where a new project's website tools are installed before they are moved into it (stageDependencies). */

@@ -104,6 +104,8 @@ const api: BuilderApi = {
     releaseComponentPreview: invoke('project:releaseComponentPreview'),
     componentThumb: invoke('project:componentThumb'),
     repairDependencies: invoke('project:repairDependencies'),
+    packages: invoke('project:packages'),
+    changePackage: invoke('project:changePackage'),
     readSource: invoke('project:readSource'),
     generatedSource: invoke('project:generatedSource'),
     restoreGenerated: invoke('project:restoreGenerated'),
