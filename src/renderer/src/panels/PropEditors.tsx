@@ -1025,20 +1025,22 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
           )}
           <span className="insp-image-acts">
             {/* A copy editor replaces a picture but never adds one where there is none: that changes the layout. */}
-            {(!copyOnly || asset) && <button
-              ref={chooseBtn}
-              type="button"
-              className="btn btn-sm"
-              aria-describedby={`${titleId}-now${status ? ` ${titleId}-state` : ''}`}
-              aria-haspopup="dialog"
-              aria-expanded={browsing}
-              aria-controls={browsing ? browseId : undefined}
-              onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))}
-              disabled={importing}
-            >
-              <ImagePlus />
-              {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
-            </button>}
+            {(!copyOnly || asset) && (
+              <button
+                ref={chooseBtn}
+                type="button"
+                className="btn btn-sm"
+                aria-describedby={`${titleId}-now${status ? ` ${titleId}-state` : ''}`}
+                aria-haspopup="dialog"
+                aria-expanded={browsing}
+                aria-controls={browsing ? browseId : undefined}
+                onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))}
+                disabled={importing}
+              >
+                <ImagePlus />
+                {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
+              </button>
+            )}
             {(asset || gone) && !copyOnly && (
               <button
                 type="button"

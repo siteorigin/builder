@@ -876,26 +876,28 @@ export function Editor() {
             </button>
           ))}
           {stylesRail && <div className="rail-sep" role="separator" aria-orientation="horizontal" />}
-          {stylesRail && <button
-            data-rail="styles"
-            className="icon-btn shortcut"
-            tabIndex={railTab === 'styles' ? 0 : -1}
-            aria-pressed={dockOpen && rightTab === 'styles'}
-            aria-controls={dockOpen && rightTab === 'styles' ? 'editor-dock' : undefined}
-            title="Site styles"
-            aria-label="Site styles"
-            onFocus={() => setRailStop('styles')}
-            onClick={() => {
-              const lent = stylesBorrowed.current;
-              if (stylesShortcutCloses(getState())) return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
-              // Already showing, beside a workspace: nothing more is borrowed.
-              const before = dockOpen && rightTab === 'styles' ? lent : { opened: !dockOpen, tab: rightTab };
-              openSiteStyles();
-              stylesBorrowed.current = before;
-            }}
-          >
-            <Palette />
-          </button>}
+          {stylesRail && (
+            <button
+              data-rail="styles"
+              className="icon-btn shortcut"
+              tabIndex={railTab === 'styles' ? 0 : -1}
+              aria-pressed={dockOpen && rightTab === 'styles'}
+              aria-controls={dockOpen && rightTab === 'styles' ? 'editor-dock' : undefined}
+              title="Site styles"
+              aria-label="Site styles"
+              onFocus={() => setRailStop('styles')}
+              onClick={() => {
+                const lent = stylesBorrowed.current;
+                if (stylesShortcutCloses(getState())) return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
+                // Already showing, beside a workspace: nothing more is borrowed.
+                const before = dockOpen && rightTab === 'styles' ? lent : { opened: !dockOpen, tab: rightTab };
+                openSiteStyles();
+                stylesBorrowed.current = before;
+              }}
+            >
+              <Palette />
+            </button>
+          )}
         </div>
         {/* Each view is built the first time it shows, and stays mounted while hidden from then on, so a search,
             expanded layers or scroll position survive switching; it is held while hidden, so it does no work for what
