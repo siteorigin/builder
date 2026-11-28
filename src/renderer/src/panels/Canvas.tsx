@@ -14,7 +14,7 @@ import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, openRunThread, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, openRunThread, questionShownInChat, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { bindDescOf, chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
@@ -167,6 +167,8 @@ export function Canvas() {
   // The question waits in the thread that asked it: Answer in chat goes back to that thread, whichever the chat shows
   // (#1125). A request whose project closed mid-run belongs to no thread here.
   const asked = useStore((s) => s.runStatus === 'awaiting-input' && !!s.runConversationId);
+  // The chat already shows that question, so the notice would only repeat it over the page.
+  const askedInView = useStore(questionShownInChat);
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -550,7 +552,7 @@ export function Canvas() {
   focusInRun.current = !!runRef.current?.contains(document.activeElement);
   useLayoutEffect(() => {
     if (focusInRun.current && !runRef.current?.contains(document.activeElement)) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
-  }, [runStatus]);
+  }, [runStatus, askedInView]);
   // When the bar closes with focus in it, focus moves to a control that stays. Read while rendering, because the
   // bar has already left the page by the time an effect runs.
   const focusInIssue = useRef(false);
@@ -3572,7 +3574,7 @@ export function Canvas() {
             maxHeight={practiceMax}
           />
         )}
-        {runStatus && (
+        {runStatus && !askedInView && (
           // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
           // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
           // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
