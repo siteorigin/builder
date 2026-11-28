@@ -20,6 +20,7 @@ import { archivePages } from '@shared/archives';
 import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isDataOnly, siteEntries } from '@shared/collections';
 import { entryFieldSchemas, entryFieldValue } from '@shared/entry-fields';
 import { syncedEntryChange } from '@engine/collections';
+import { isDefaultLayout, themeArticleTemplate } from '@engine/collection-layouts';
 import { collectionsFromDocs, stateToDocs } from '../../src/main/project/documents';
 import { planPostImport } from '../../src/main/posts-import/plan';
 import type { ParsedSource } from '../../src/main/posts-import/source';
@@ -106,8 +107,9 @@ describe('a data-only structured collection', () => {
     const { template, ...settings } = s.collections.team.settings;
     expect(settings).toMatchObject({ id: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } });
     expect(settings).not.toHaveProperty('route');
-    // Records without text start with an empty layout: the theme's article layout would show the text they lack.
-    expect(template).toEqual({ rootIds: [], nodes: {} });
+    // Records start with a page of their own (#1319): the theme's article page without its byline, or the text they lack.
+    expect(isDefaultLayout(s, s.collections.team.settings)).toBe(true);
+    expect(JSON.stringify(template)).not.toMatch(/"\$entry":"(publishedAt|author|readingTime|body)"/);
     expect(pageAt(s, '/about/')).toBeDefined();
     expect([s.collections.team.entries.en_about.slug, s.collections.team.entries.en_about2.slug]).toEqual(['about', 'about-2']);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'team', entryId: 'en_about2', slug: 'about' }])).toThrow(/“About” of Team already has the slug "about"/);
@@ -227,7 +229,9 @@ describe('rich custom fields', () => {
     expect(entryFieldValue(read(), 'field.summary')).toEqual(s.collections.projects.entries.en_hall.values.summary);
     const fields = entryFieldSchemas(s.collections.projects);
     expect([fields['field.completed'].type, fields['field.lead'].type, fields['field.crew'].type, fields['field.website'].type, fields['field.summary'].type]).toEqual(['string', 'string', 'string', 'link', 'richtext']);
-    // The theme's article layout, rebound to the fields.
+    // An author who starts the records from the theme's article layout instead, rebinding it to the fields.
+    s = structuredClone(s);
+    s.collections.projects.settings.template = themeArticleTemplate(s);
     const nodes = () => Object.values(s.collections.projects.settings.template.nodes);
     const bound = (field: string) => nodes().find((n) => (n.kind === 'text' && JSON.stringify(n.text) === JSON.stringify({ $entry: field })) || JSON.stringify(n).includes(`{"$entry":"${field}"}`)) as TextNode;
     const owner = { kind: 'template' as const, id: 'projects' };

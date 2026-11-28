@@ -109,9 +109,9 @@ export function fieldFitProblem(source: PropSchema, target: PropSchema): string 
 
 const kindWord = (t: string) => (t === 'string' ? 'text' : t === 'richtext' ? 'rich text' : t === 'enum' ? 'a choice' : t === 'boolean' ? 'yes/no' : t);
 
-/** One entry field's value as an item field of `target`'s type shows it: a number or yes/no as it is, the rest as shown. */
+/** One entry field's value as an item field of `target`'s type shows it: a number, yes/no or choice as it is, the rest as shown. */
 export function projectField(state: Pick<ProjectState, 'site' | 'assets' | 'collections'>, collection: Collection, entry: EntryDoc, field: string, target: PropSchema): unknown {
-  const raw = target.type === 'number' || target.type === 'boolean';
+  const raw = target.type === 'number' || target.type === 'boolean' || target.type === 'enum';
   return asType(target.type, rowFieldValue(state, collection, entry, field, raw ? 'raw' : 'shown'));
 }
 

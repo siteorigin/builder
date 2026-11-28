@@ -48,7 +48,8 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
+import { defaultLayout, isDefaultLayout } from './collection-layouts';
 import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { wasPublishedFor } from '@shared/published';
@@ -4267,8 +4268,11 @@ function themeApply(state: ProjectState, themeId: string, ctx: ApplyContext): Op
       dropped = true;
     }
   }
+  // A records layout nobody has edited is the new theme's record layout, as a collection made now would start with.
+  const untouched = Object.values(state.collections).filter((c) => collectionKind(c.settings) === 'structured' && isDefaultLayout(state, c.settings));
   state.site.themeId = theme.id;
   state.themeLock.theme = themeLockEntry(theme);
+  for (const c of untouched) c.settings.template = defaultLayout(state, c.settings);
   return { rebound: mapping.size };
 }
 
