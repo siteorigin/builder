@@ -35,6 +35,8 @@ const filesIn = (dir: string): string[] =>
 // host serves at its address.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The project's website tools are set up, so the website is built (#1395).
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     env.builds++;
     await env.duringBuild?.();

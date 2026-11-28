@@ -9,10 +9,10 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText, type Footnote } from './html';
+import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
@@ -71,6 +71,9 @@ function footnotesOf(item: XmlElement): Footnote[] {
     return typeof id === 'string' && id && typeof content === 'string' ? [{ id, content }] : [];
   });
 }
+
+/** Query keys WordPress reads a post, page, category or tag by, whatever the path, when they have a value. */
+const WORDPRESS_SELECTORS = ['p', 'page_id', 'cat', 'tag'];
 
 /** A path as a static site writes its addresses: decoded, with a slash at each end. */
 function sitePath(pathname: string): string {
@@ -131,7 +134,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   }
   const media = new MediaTable(root, realRoot, siteOrigin);
   const authors = new Map(childElements(channel, 'wp:author').map((a) => [childText(a, 'wp:author_login').trim(), childText(a, 'wp:author_display_name').trim()]));
-  const attachments = new Map<string, string>();
+  /** Each attachment the export lists, by its ID, and the IDs attached to each post, in WordPress's gallery order. */
+  const attachments = new Map<string, HtmlImage>();
+  const attachedTo = new Map<string, Array<{ id: string; order: number }>>();
   // What is left out, by kind, with each item's title so the author can tell which page it was. Revisions and menu
   // items are counted only: an export can hold thousands, and none is content the author would look for.
   const skipped = new Map<string, string[]>();
@@ -139,7 +144,18 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   const items: XmlElement[] = [];
   for (const item of childElements(channel, 'item')) {
     const type = childText(item, 'wp:post_type').trim();
-    if (type === 'attachment') attachments.set(childText(item, 'wp:post_id').trim(), childText(item, 'wp:attachment_url').trim());
+    if (type === 'attachment') {
+      const id = childText(item, 'wp:post_id').trim();
+      const altMeta = metaValue(item, '_wp_attachment_image_alt');
+      attachments.set(id, { src: childText(item, 'wp:attachment_url').trim(), alt: altMeta ? childText(altMeta, 'wp:meta_value').trim().slice(0, FIELD_CHARS) : '' });
+      const parent = childText(item, 'wp:post_parent').trim();
+      // A gallery that names no pictures shows the post's attached images, never its documents or sound.
+      if (parent && parent !== '0' && isImageAttachment(item)) {
+        const list = attachedTo.get(parent) ?? [];
+        list.push({ id, order: Number(childText(item, 'wp:menu_order').trim()) || 0 });
+        attachedTo.set(parent, list);
+      }
+    }
     else if (type === 'post') items.push(item);
     else {
       const kind = type || 'other';
@@ -148,6 +164,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       skipped.set(kind, titles);
     }
   }
+
+  // WordPress shows a post's attached pictures by menu order, then by ID.
+  const attachedIds = new Map([...attachedTo].map(([parent, list]) => [parent, list.sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)).map((a) => a.id)]));
 
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
@@ -190,7 +209,6 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   while (accepted.length) {
     const { item, key, status } = accepted.shift()!;
     const report = emptyReport();
-    let oldSite = 0;
     // A relative address is read from the post's own address, as a browser on the old site read it.
     const ownLink = childText(item, 'link').trim();
     let base = siteOrigin ? `${siteOrigin}/` : 'relative://site/';
@@ -215,15 +233,16 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
       const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
-      const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
+      // An address WordPress read by its query (`/?p=88`, `/?cat=8`) named something other than what is at its path.
+      const selected = WORDPRESS_SELECTORS.some((k) => !!url.searchParams.get(k)?.trim());
+      const post = p !== null ? byId.get(p) : selected ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
-      // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
-      // which named something other than the page at its path.
-      const page = p !== null ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
+      // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
+      const page = selected ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
       if (page) return page;
-      // Somewhere else on the old site: kept going there while it is still up.
+      // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
+      // (see planPostImport), since the new site may replace the old one there.
       if (url.protocol === 'relative:') return null;
-      oldSite++;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
@@ -233,7 +252,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const prose = blocks ? content : content.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
     let body;
     try {
-      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, wordpress: { footnotes: footnotesOf(item) } }, report);
+      const postId = childText(item, 'wp:post_id').trim();
+      const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
+      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery, wordpress: { footnotes: footnotesOf(item) } }, report);
     } catch (e) {
       add(failedPost(item, key, (e as Error).message));
       continue;
@@ -241,12 +262,11 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
     const thumb = metaValue(item, '_thumbnail_id');
     const thumbId = thumb ? childText(thumb, 'wp:meta_value').trim() : '';
-    const thumbUrl = thumbId ? attachments.get(thumbId) : undefined;
+    const thumbUrl = thumbId ? attachments.get(thumbId)?.src : undefined;
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     const linkUrl = childText(item, 'link').trim();
     const notes = reportNotes(report);
-    if (oldSite) notes.push(`${oldSite === 1 ? 'A link still goes' : `${oldSite} links still go`} to the old site.`);
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;
     try {
@@ -288,6 +308,16 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   if (unpublished.length) out.push(`${unpublished.length} ${unpublished.length === 1 ? 'post' : 'posts'}${namesOf(unpublished)} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
   return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
+}
+
+/** An attachment WordPress counts as an image: by its type when the export says, else by its file's extension. */
+function isImageAttachment(item: XmlElement): boolean {
+  const mime = childText(item, 'wp:post_mime_type').trim().toLowerCase();
+  if (mime) return mime.startsWith('image/');
+  // The file's own name, without the address's query or section, as the uploads folder holds it.
+  const name = childText(item, 'wp:attachment_url').trim().split(/[?#]/)[0].split('/').pop() ?? '';
+  const ext = /\.([a-z0-9]{1,5})$/i.exec(decodeSlug(name))?.[1].toLowerCase();
+  return !ext || [...PICTURE_EXTENSIONS, 'svg', 'bmp', 'tif', 'tiff', 'heic', 'ico'].includes(ext);
 }
 
 /** A post whose text could not be read: imported with its details and no text, the reason in its notes. */

@@ -9,6 +9,7 @@
 import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { keptPublishedAddresses } from '@shared/collections';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { allTrees, displayName, enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
@@ -620,7 +621,7 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
       if (wider.length) return `page.update ${wider.join(' and ')} changes more than ${label}: it reaches other pages.`;
       // A draft published takes over an old address the site keeps working at its route, which is the site's (#1363).
       const page = state.pages[authority.pageId];
-      const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+      const kept: unknown[] = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...keptPublishedAddresses(state)];
       const at = (r: unknown) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === page.route.toLowerCase();
       if (op.draft === false && page.draft === true && kept.some(at)) return `page.update draft publishes ${label} at ${page.route}, an old address the site keeps sending visitors on from, which changes more than ${label}.`;
       return null;
@@ -771,7 +772,7 @@ function sourceWithin(state: ProjectState, definitionId: string, authority: Extr
 
 /**
  * Whether a copy of a component stays inside a selection: as component.makeUnique makes one for the selected
- * placement, a fork may move placements inside the selected element to a copy they share (§8.4), and never one outside
+ * placement, a fork may move placements inside the selected element to a copy they share, and never one outside
  * it. A selected part reaches neither, and a selection inside a component's design adds no component to the site.
  */
 function forkWithin(op: Extract<EditOperation, { type: 'component.fork' }>, authority: Extract<Authority, { kind: 'selection' }>, allowed: Set<string>, sameOwner: (o: OwnerRef) => boolean): string | null {

@@ -399,6 +399,23 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(v5.seen[0].url.pathname).toBe('/api/articles');
   });
 
+  it('Strapi: asks for the count of pages, which a server with counts off by default gives only when asked', async () => {
+    // Strapi 5 with rest.withCount off: page and pageSize always, pageCount only for pagination[withCount]=true.
+    const counting = await server((req, res) => {
+      const page = Number(req.url.searchParams.get('pagination[page]'));
+      const counted = req.url.searchParams.get('pagination[withCount]') === 'true';
+      send(res, { data: page <= 2 ? [{ id: page, documentId: `doc-${page}`, title: `Post ${page}` }] : [], meta: { pagination: { page, pageSize: 100, ...(counted ? { pageCount: 2, total: 150 } : {}) } } });
+    });
+    // A Site address that turns the count off is overruled: without it no read can be known whole.
+    const read = await run({ adapter: 'strapi', config: { url: `${counting.origin}/?pagination[withCount]=false&locale=en`, resource: 'articles' } });
+    expect(read.ok && read.records.map((r) => r.externalId)).toEqual(['doc-1', 'doc-2']);
+    expect(counting.seen.map((r) => r.url.searchParams.getAll('pagination[withCount]'))).toEqual([['true'], ['true']]);
+    expect(counting.seen[0].url.searchParams.get('locale')).toBe('en');
+    // A server that still gives no count is refused rather than read in part.
+    const silent = await server((req, res) => send(res, { data: [{ id: 1, title: 'One' }], meta: { pagination: { page: Number(req.url.searchParams.get('pagination[page]')), pageSize: 100 } } }));
+    expect(await run({ adapter: 'strapi', config: { url: silent.origin, resource: 'articles' } })).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
   it('WordPress: reads every page its headers count, with each post’s featured image, author and words as text', async () => {
     const api = await server((req, res) => {
       const page = Number(req.url.searchParams.get('page'));
@@ -565,6 +582,154 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { featuredImageUrl: 'img' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 1’s featured image at img is not a picture’s web address' });
     const words = await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { values: { bio: 'bio' } }, fields: { bio: 'richtext' }, mode: 'sample' });
     expect(words.ok && words.records[0].values).toEqual({ bio: [{ type: 'p', spans: [{ text: 'Hi' }] }] });
+  });
+
+  // A date there that cannot be read is said, by record and the format it takes, never published as the sync's day (#1498).
+  it('refuses a source date it cannot read, where a missing one is left to the fallback', async () => {
+    const dates: Record<string, unknown> = { slashed: '18/11/2026', http: 'Wed, 18 Nov 2026 13:30:00 GMT', rolled: '2026-02-30', listed: ['2026-11-18'], trailing: '2026-11-18garbage', iso: '2026-11-18T13:30:00Z', local: '2026-11-18 13:30:00', lower: '2026-11-18t13:30:00z', day: '2026-11-18', blank: '  ', none: null };
+    const api = await server((req, res) => send(res, [{ id: 1, title: 'A' }, { id: 2, title: 'B', timestamp: dates[req.url.pathname.slice(1)] }]));
+    const at = (name: string, mapping: Partial<SyncRequest['mapping']> = { publishedAt: 'timestamp' }) => run({ adapter: 'rest', config: { url: `${api.origin}/${name}` }, mapping });
+    for (const name of ['slashed', 'http', 'rolled', 'listed', 'trailing'])
+      expect(await at(name), name).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s published date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    expect(await at('slashed', { updatedAt: 'timestamp' })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s updated date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    // The value itself is never repeated: what a source sends may hold what it was sent.
+    const shown = await at('slashed');
+    expect(!shown.ok && shown.detail).not.toContain('18/11');
+    const iso = await at('iso');
+    expect(iso.ok && iso.records.map((r) => r.publishedAt)).toEqual([undefined, '2026-11-18']);
+    for (const name of ['local', 'lower', 'day']) {
+      const read = await at(name);
+      expect(read.ok && read.records.map((r) => r.publishedAt), name).toEqual([undefined, '2026-11-18']);
+    }
+    for (const name of ['blank', 'none']) {
+      const empty = await at(name);
+      expect(empty.ok && empty.records.map((r) => r.publishedAt), name).toEqual([undefined, undefined]);
+    }
+    // A date field names the format it takes too.
+    expect(await run({ adapter: 'rest', config: { url: `${api.origin}/slashed` }, mapping: { values: { when: 'timestamp' } }, fields: { when: 'date' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s when at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+  });
+
+  // A literal backslash is two on the wire (a quoted pair), so the quote after them closes the title (#1530).
+  it.each([
+    ['an ordinary quoted title', String.raw`title="Winter and spring, programme"`],
+    ['a title ending in a backslash', String.raw`title="Archive folder \\"`],
+    ['a title with several backslashes, the last at its end', String.raw`title="Port route folder R:\\winter\\"`],
+    ['a title ending in two backslashes', String.raw`title="Share \\\\"`]
+  ])('reads every page a Link header leads to, past %s', async (_name, title) => {
+    const api = await server((req, res) => {
+      const at = Number({ second: 1, third: 2 }[req.url.searchParams.get('page') ?? ''] ?? 0);
+      const next = ['second', 'third'][at];
+      send(res, { reply: { entries: people(2, at * 2 + 1) } }, next ? { link: `</api/timetable>; rel="first"; ${title}, <?page=${next}>; rel="next"; title="More, winter programmes"` } : {});
+    });
+    const linked = await run({ adapter: 'rest', config: { url: `${api.origin}/api/timetable`, itemsPath: 'reply.entries', pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    expect(linked.ok && linked.records.map((r) => r.externalId)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(api.seen.map((r) => r.url.pathname + r.url.search)).toEqual(['/api/timetable', '/api/timetable?page=second', '/api/timetable?page=third']);
+  });
+
+  /** Two pages: the first sends `link` as its Link header (one field each, if several), and `?page=second` ends the list. */
+  const readLinked = async (link: string | string[]) => {
+    const api = await server((req, res) => {
+      if (req.url.searchParams.get('page') === 'second') return send(res, people(1, 2));
+      res.setHeader('link', link);
+      send(res, people(1));
+    });
+    const reply = await run({ adapter: 'rest', config: { url: `${api.origin}/list`, pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    return { reply, asked: api.seen.map((r) => r.url.pathname + r.url.search) };
+  };
+
+  it.each([
+    ['a parameter whose name begins with rel', '<?page=second>; rel_1=ignored; rel=next'],
+    ['a quoted value that mentions a next link, under any parameter name', '</wrong>; x_meta="see; rel=next"; rel=prev, <?page=second>; rel=next'],
+    ['a quoted pair in the relation itself', String.raw`<?page=second>; rel="ne\xt"`],
+    ['an escaped quote inside a title', String.raw`</wrong>; rel=prev; title="a \", </wrong>; rel=next", <?page=second>; rel=next`],
+    ['a title ending in a backslash in an earlier field', [String.raw`</wrong>; rel=first; title="Archive \\"`, '<?page=second>; rel=next']],
+    ['a relation given twice, the first counting', '</wrong>; rel=prev; rel=next, <?page=second>; rel=next; rel=prev; rel=next/'],
+    ['a link with no relation, before the next', '</wrong>, <?page=second>; rel=next'],
+    ['a relation that only starts like next', '</wrong>; rel=next-archive, <?page=second>; rel=next'],
+    ['an unquoted value outside the token grammar', '</wrong>; rel=alternate; type=text/html, <?page=second>; rel=next'],
+    ['empty list elements, empty parameters and one with no value', ' , </wrong>; crossorigin; rel=preload;, , <?page=second> ; ; REL = "last NEXT" ;']
+  ])('follows a Link header past %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1', '2']);
+    expect(asked).toEqual(['/list', '/list?page=second']);
+  });
+
+  it.each([
+    ['an unterminated quoted value', '</wrong>; rel=prev; title="cut, <?page=second>; rel=next'],
+    ['an address that never closes', '<?page=second; rel=next'],
+    ['text between two links', '</wrong>; rel=prev "see <?page=second>; rel=next'],
+    ['a link with no address', '; rel=next'],
+    ['text after a comma', '</wrong>; rel=prev, junk, <?page=second>; rel=next'],
+    ['an empty relation', '<?page=second>; rel='],
+    ['a blank quoted relation', '<?page=second>; rel=" "'],
+    ['a relation with no value', '<?page=second>; rel'],
+    ['no relation', '<?page=second>'],
+    ['an unquoted anchor that is no token', String.raw`</wrong>; rel=next; anchor=\list, <?page=second>; rel=next`],
+    ['two links with no comma between them', '</wrong>; rel=prev <?page=second>; rel=next'],
+    ['an unquoted relation that is no token', '<?page=second>; rel=next/']
+  ])('fails the read, never taking its first page for all of it, on a Link header with %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: 'the server sent a Link header that cannot be read, so its next page cannot be told' });
+    expect(asked).toEqual(['/list']);
+  });
+
+  it.each([
+    ['skips a next link anchored to another address', '</wrong>; rel=next; anchor="/news?page=1", <?page=second>; rel=next'],
+    ['skips a next link anchored to its path with another query', '</wrong>; rel=next; anchor="/list?page=9", <?page=second>; rel=next'],
+    ['skips a next link whose anchor is no address', '</wrong>; rel=next; anchor="http://[", <?page=second>; rel=next'],
+    ['follows a next link anchored to its own page', '<?page=second>; rel=next; anchor="/list"']
+  ])('%s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1', '2']);
+    expect(asked).toEqual(['/list', '/list?page=second']);
+  });
+
+  it('knows its own page in an anchor however the address is escaped', async () => {
+    const api = await server((req, res) => {
+      if (req.url.searchParams.get('page') === 'second') return send(res, people(1, 2));
+      send(res, people(1), { link: '<?page=second>; rel=next; anchor="/list?tag=~news"' });
+    });
+    const reply = await run({ adapter: 'rest', config: { url: `${api.origin}/list`, query: { tag: '~news' }, pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1', '2']);
+    expect(api.seen[0].url.search).toBe('?tag=%7Enews');
+  });
+
+  it('fails the whole read when a later page’s Link header cannot be read', async () => {
+    const cut = await server((req, res) => {
+      const second = req.url.searchParams.get('page') === 'second';
+      send(res, people(1, second ? 2 : 1), { link: second ? '</old>; rel=prev; title="cut, <?page=third>; rel=next' : '<?page=second>; rel=next' });
+    });
+    const reply = await run({ adapter: 'rest', config: { url: `${cut.origin}/list`, pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    expect(reply).toMatchObject({ ok: false, code: 'invalid' });
+    expect(cut.seen).toHaveLength(2);
+  });
+
+  it('ends the list at an empty next address in the body', async () => {
+    const api = await server((_req, res) => send(res, { items: people(1), next: '' }));
+    const reply = await run({ adapter: 'rest', config: { url: api.origin, itemsPath: 'items', pagination: { type: 'nextLink', path: 'next' } }, mapping: { title: 'fields.fullName' } });
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1']);
+    expect(api.seen).toHaveLength(1);
+  });
+
+  it('fails the read when the only next link is anchored to another address', async () => {
+    const { reply, asked } = await readLinked('</wrong>; rel=next; anchor="/news?page=1"');
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: expect.stringContaining('anchored to another address') });
+    expect(asked).toEqual(['/list']);
+  });
+
+  it.each([
+    ['no Link header', []],
+    ['links to other pages only', '<?page=first>; rel="first", <?page=last>; rel=last']
+  ])('ends the list at %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1']);
+    expect(asked).toEqual(['/list']);
+  });
+
+  it('takes a next link that leads back to its own page for a circle, not the end', async () => {
+    const { reply, asked } = await readLinked('<>; rel=next');
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: 'its pages go round in a circle' });
+    expect(asked).toEqual(['/list']);
   });
 
   it('remembers the count a read began with, follows only the link a Link header calls next, and never sends a post on', async () => {

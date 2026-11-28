@@ -1,6 +1,6 @@
 /**
  * Holds the preview's hot updates while the editor publishes a batch of files, so the page takes the whole batch as
- * one update (spec §18.2, issue #735). Files land one rename at a time, and Vite would otherwise send each its own
+ * one update (issue #735). Files land one rename at a time, and Vite would otherwise send each its own
  * update: a page could render a new component with the old page around it, or import a file not written yet.
  *
  * While a batch is held, the file watcher's events wait here instead of reaching Vite. Once the batch is released

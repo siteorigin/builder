@@ -12,11 +12,9 @@ import type { Variant, VariantTarget, WebCopy } from './image-variants';
 import type { CopyMime } from '@shared/picture-formats';
 import type { PhotoCredits, PhotoMetadata } from './photo-metadata';
 
-/**
- * Decoding allocates by pixel count, which a small file can inflate: larger pictures keep only the original.
- * Kept here, not beside the resizing, so the main process never loads the image library.
- */
-export const MAX_VARIANT_PIXELS = 100_000_000;
+// The decode cap lives with the picture formats, where Project health reads it too; the main process never loads the
+// image library to know it.
+export { MAX_VARIANT_PIXELS } from '@shared/picture-formats';
 
 /** The longest side of a web-sized copy: sharp on a large, high-density screen, and far lighter than a camera original. */
 export const WEB_EDGE = 2560;

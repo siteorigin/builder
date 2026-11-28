@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-blue" alt="Licence: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/status-v0.1%20prototype-orange" alt="Status: v0.1 prototype">
+  <img src="https://img.shields.io/badge/status-working%20towards%201.0-orange" alt="Status: working towards 1.0">
   <img src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey" alt="Runs on macOS, Windows and Linux">
 </p>
 
@@ -35,7 +35,7 @@ You edit the site directly on the canvas, and you can ask an AI assistant when t
 What you build is yours: a folder you can put in git, host anywhere or hand to a developer. There's no account to create, and your published site runs without Builder. It isn't meant for web apps, online stores or sites with user accounts.
 
 > [!NOTE]
-> This is a prototype (version 0.1). It already builds real multi-page sites, but the project format will still change before 1.0. The screenshots here are of the real app.
+> Builder is working towards a full, highly polished 1.0 release. It already builds real multi-page sites, but the project format may still change before 1.0. The screenshots here are of the real app.
 
 ## Run it from source
 
@@ -77,7 +77,7 @@ The **SEO view** takes over the canvas. It opens on an overview of every page an
 - **Search results and link previews.** Computer or phone, light or dark, plus each platform's share card, so you can see where a title gets cut short or an image is missing.
 - **Structured data in plain words.** What search engines are told about the page, with the raw JSON-LD tucked away.
 - **Optimize with AI.** Ask the assistant to improve the chosen page's title and description.
-- **Built into the export.** Every site gets `sitemap.xml`, `robots.txt` with a crawler policy and canonical links. Translated pages get `hreflang` alternates, and moved pages get redirect rules for Cloudflare, Netlify or Vercel.
+- **Built into the export.** Every site gets `sitemap.xml`, `robots.txt` with a crawler policy and canonical links. Translated pages get `hreflang` alternates once the site has its Public URL, and moved pages get redirect rules for Cloudflare, Netlify or Vercel.
 - **Ready for AI agents.** Every site gets `llms.txt`, and you can turn on Markdown copies of each page and WebMCP declarations for your forms and search.
 
 <p align="center">
@@ -214,7 +214,7 @@ Other providers will keep working through the same adapter, as optional extras r
 
 ## Development
 
-The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules, and the [v0.1 specification](docs/specification-v0.1.md) records the original design decisions; where they differ (it plans one theme, for example), this README describes what ships. Development uses the same Node as above; the packaged app bundles its own. Some unit tests and the packaging commands also need Playwright's Chromium: `npx playwright install chromium` (on Linux add `--with-deps`; see [CONTRIBUTING.md](CONTRIBUTING.md#setup)).
+The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules. Development uses the same Node as above; the packaged app bundles its own. Some unit tests and the packaging commands also need Playwright's Chromium: `npx playwright install chromium` (on Linux add `--with-deps`; see [CONTRIBUTING.md](CONTRIBUTING.md#setup)).
 
 ```sh
 npm run dev                  # the app with hot reload

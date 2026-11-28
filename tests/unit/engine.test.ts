@@ -1322,7 +1322,7 @@ describe('definition editing operations (§2.5)', () => {
   });
 });
 
-describe('custom site styles (§2.5, spec §7.2)', () => {
+describe('custom site styles (§2.5)', () => {
   it('creates, uses, renames, replaces and removes custom tokens', async () => {
     const { tokenUsageCounts } = await import('@engine/tokens');
     let s = fresh();

@@ -4,8 +4,9 @@
  * route prefix plus its slug, and those addresses share one namespace with the pages and the old page addresses kept
  * working, so nothing here lets two of them claim the same address.
  */
-import type { Collection, CollectionKind, EntryDoc, ProjectState } from './types';
+import type { Collection, CollectionKind, EntryDoc, ProjectState, SiteRedirect } from './types';
 import { numberedSlug, slugify, validateRoute, validateSegment } from './routes';
+import { addressesLeft } from './published';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
 export const COLLECTION_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -249,11 +250,24 @@ export function collectionRoutes(state: ProjectState): RouteOwner[] {
   return out;
 }
 
+/**
+ * The addresses an export delivered for a page that has left them since, which the site keeps working for it as old
+ * addresses are (#1382, see shared/published): those no collection, entry or archive page of a collection holds.
+ */
+export function keptPublishedAddresses(state: ProjectState): SiteRedirect[] {
+  const left = addressesLeft(state);
+  if (!left.length) return left;
+  // The collections' own addresses once, however many addresses there are (as collectionRouteOwner finds each).
+  const held = new Set(collectionRoutes(state).map((o) => o.route.toLowerCase()));
+  return left.filter((r) => !held.has(r.from) && !archiveRouteOwner(state, r.from));
+}
+
 /** Every address of the site: pages, old addresses kept working (of pages and of entries), collections and entries. */
 export function routeOwners(state: ProjectState): RouteOwner[] {
   const out: RouteOwner[] = Object.values(state.pages).map((p) => ({ kind: 'page' as const, route: p.route, pageId: p.id, label: `the page “${p.title}”` }));
   const kept: unknown = state.site.redirects;
-  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []) {
+  // With the addresses exports delivered for pages that have left them, which the site keeps working too (#1382).
+  for (const r of [...(Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []), ...keptPublishedAddresses(state)]) {
     if (typeof r?.from !== 'string') continue;
     if (typeof r.pageId === 'string') out.push({ kind: 'redirect', route: r.from, pageId: r.pageId, label: `the old address of “${state.pages[r.pageId]?.title ?? r.pageId}”` });
     else if (typeof r.entryId === 'string') out.push({ kind: 'redirect', route: r.from, entryId: r.entryId, label: `the old address of “${findEntry(state, r.entryId)?.entry.title ?? r.entryId}”` });

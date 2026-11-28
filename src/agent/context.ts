@@ -14,7 +14,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { hasCollections } from '@shared/entry-feed';
-import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, inSiteFeed, isSyncedCollection, pagesPrefix } from '@shared/collections';
+import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, inSiteFeed, isSyncedCollection, keptPublishedAddresses, pagesPrefix } from '@shared/collections';
 import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
@@ -145,7 +145,7 @@ const libraryHasImage = (state: ProjectState, id: unknown) => typeof id === 'str
  * makes of them, and of everything else, is audit_seo's to say.
  */
 function siteSeoSummary(state: ProjectState) {
-  const redirects = Array.isArray(state.site.redirects) ? state.site.redirects.length : 0;
+  const redirects = (Array.isArray(state.site.redirects) ? state.site.redirects.length : 0) + keptPublishedAddresses(state).length;
   return { socialImageSet: libraryHasImage(state, state.site.socialImage), faviconSet: libraryHasImage(state, state.site.favicon), ...(redirects ? { redirectCount: redirects } : {}) };
 }
 

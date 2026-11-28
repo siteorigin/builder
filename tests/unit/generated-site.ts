@@ -17,8 +17,11 @@ export function removeRendered() {
   roots.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 }
 
-/** The exported Home page (or another route's page) rendered on the server, hydration markers and all, as the static site ships it. */
-export async function serverHtml(files: Map<string, string>, prefix = 'generated-site-', route = 'src/routes/+page.svelte'): Promise<string> {
+/**
+ * The exported Home page (or another route's page) rendered on the server, hydration markers and all, as the static site
+ * ships it. With `styles`, the components' own (scoped) styles come with it, in `<style>` elements before the markup.
+ */
+export async function serverHtml(files: Map<string, string>, prefix = 'generated-site-', route = 'src/routes/+page.svelte', styles = false): Promise<string> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), prefix));
   roots.push(dir);
@@ -30,7 +33,7 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
     mkdirSync(dirname(out), { recursive: true });
-    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true, css: styles ? 'injected' : 'external' }).js.code : source;
     writeFileSync(
       out,
       code
@@ -40,7 +43,8 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
     );
   }
   const Page = (await import(/* @vite-ignore */ join(dir, `${route}.js`))).default as Component<Record<string, unknown>>;
-  return render(Page, { props: {} }).body;
+  const out = render(Page, { props: {} });
+  return styles ? out.head + out.body : out.body;
 }
 
 /** SvelteKit's navigation hooks in a page that never navigates: they are never called. */

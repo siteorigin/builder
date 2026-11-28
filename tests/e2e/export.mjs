@@ -1133,7 +1133,12 @@ step('#817, #884: a site exports with nothing to fix only once the dialog lists 
   await win.evaluate(() => window.builder.projects.close());
   await win.waitForSelector('.welcome');
   await createProject(win, { name: 'Quiet Shelf', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
-  const publicUrl = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://quiet.example' }] }, { label: 'Set the public URL' }));
+  // The blank Home page is given a section too: an empty published page is a note of its own (#1550).
+  const empty = (await win.evaluate(() => window.builder.project.snapshot())).state.site.homePageId;
+  const publicUrl = await win.evaluate(
+    (id) => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://quiet.example' }, { type: 'node.insert', owner: { kind: 'page', id }, componentId: 'intro.page', index: 0 }] }, { label: 'Set the public URL' }),
+    empty
+  );
   assert.equal(publicUrl.ok, true, `the public URL is set: ${publicUrl.error?.message}`);
   await win.getByRole('button', { name: 'Export', exact: true }).click();
   const dialog = win.locator('.modal');

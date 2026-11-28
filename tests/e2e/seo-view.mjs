@@ -268,8 +268,10 @@ const bare = view.locator('.serp');
 await eventually(async () => assert.equal(await bare.locator('.serp-title').innerText(), 'No title: results show the address instead.'));
 assert.equal(await bare.locator('.serp-desc').innerText(), 'No description: search engines pick words from the page.');
 assert.equal(await bare.locator('.serp-url').innerText(), ['No public URL', ...about.route.split('/').filter(Boolean)].join(' › '));
-assert.match(await noteShown.innerText(), /no public URL yet/);
-assert.equal(await noteShown.getByRole('button', { name: 'Open Site details' }).count(), 1);
+// Said once, over the previews, with the way to fix it: not again under the results page.
+assert.doesNotMatch(await noteShown.innerText(), /public URL/);
+assert.match(await view.locator('.seo-findings').innerText(), /no public URL yet/);
+assert.equal(await view.locator('.seo-findings').getByRole('button', { name: 'Set the public URL' }).count(), 1);
 assert.equal(await bare.locator('.serp-icon svg').count(), 1, 'a site without a favicon shows a globe');
 await apply([{ type: 'site.update', description: before.site.description ?? '' }], 'The site’s description back');
 
@@ -399,7 +401,7 @@ const drawn = () =>
       column: result.offsetWidth,
       scale: Number(el.querySelector('.serp-scaled').dataset.scale),
       /* The scale the room there is now asks for. */
-      roomScale: Math.min(1, (fit.width - 28) / page.offsetWidth),
+      roomScale: Math.min(1, (fit.width - 76) / page.offsetWidth),
       fits: box.left >= fit.left - 0.5 && box.right <= fit.right + 0.5 && box.top >= fit.top - 0.5 && box.bottom <= fit.bottom + 0.5,
       bezel: getComputedStyle(page).borderTopWidth,
       search: page.querySelector('.serp-search')?.innerText.trim(),
@@ -457,7 +459,8 @@ const bothScreensBothThemes = async (d) => {
       assert.deepEqual(shown.order, ['filler', 'document', 'filler', 'filler'], `${where}: the result sits among others`);
       assert.ok(shown.fillers.every((u) => /^example\.(com|org|net)( › |$)/.test(u)) && shown.hiddenExtras, `${where}: placeholders only (${shown.fillers})`);
       assert.ok((await result(device).locator('.serp-desc').innerText()).includes(d.description), `${where}: the description`);
-      assert.equal(await result(device).locator('.serp-url').innerText(), d.trail, `${where}: the address`);
+      // A phone's results show the site's host alone; a computer's its path too.
+      assert.equal(await result(device).locator('.serp-url').innerText(), device === 'mobile' ? d.trail.split(' › ')[0] : d.trail, `${where}: the address`);
       assert.equal(await result(device).locator('.serp-site-name').innerText(), 'Riverside Studio', `${where}: the site’s name`);
       await eventually(async () => assert.match((await result(device).locator('.serp-icon img').getAttribute('src')) ?? '', /siteicon/, `${where}: the site’s favicon`));
       assert.equal(await result(device).locator('.serp-date').count(), d.dated ? 1 : 0, `${where}: the date`);
@@ -469,8 +472,8 @@ const bothScreensBothThemes = async (d) => {
   await screen('Computer').click();
 };
 const documents = [
-  { image: ownImport.assetIds[0], whose: /this page’s own\./, title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
-  { image: siteImage, whose: /the site’s\./, title: 'Spring open studio', dated: true, seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
+  { image: ownImport.assetIds[0], whose: /this page’s own sharing image\./, title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
+  { image: siteImage, whose: /the site’s sharing image\./, title: 'Spring open studio', dated: true, seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
 ];
 // The editor is dark from here on; the results page stays light until its own dark toggle is used.
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark' }));
@@ -1307,7 +1310,7 @@ await eventually(async () => assert.equal(await card('Facebook').locator('.share
 await postTitle.press('Enter');
 await eventually(async () => assert.equal((await rakuSeo()).title, 'Raku firing notes from the weekend', 'Enter saves it'), 20000);
 await surface('Structured data').click();
-await eventually(async () => assert.match(await view.locator('.seo-graph-none').innerText(), /Public URL/, 'without a public URL the post carries no structured data, and says why'));
+await eventually(async () => assert.match(await view.locator('.seo-graph-none').innerText(), /public URL/, 'without a public URL the post carries no structured data, and says why'));
 assert.equal(await status('search').innerText(), 'May list it');
 assert.equal(await status('siteSearch').innerText(), 'May find it', 'Site search finds a published post');
 await apply([{ type: 'site.update', baseUrl: 'https://riverside.example' }], 'Set public URL');

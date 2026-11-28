@@ -1,12 +1,12 @@
 import './PostsPanel.css';
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { ArrowLeft, ChevronDown, Copy, FileDown, FilePen, FileText, LayoutTemplate, Library, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
-import { Marked, fold, found, shortDate } from '../components/ListText';
+import { ListPeek, Marked, fold, found, shortDate } from '../components/ListText';
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
@@ -16,7 +16,7 @@ import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
 import { detachOps, sourceOfCollection, syncSummary } from '../lib/sources';
 import { sourceFingerprint } from '@shared/sources';
-import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection } from '../lib/content';
+import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection, deleteDestinations, isDeleteDestination } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
@@ -36,6 +36,33 @@ async function openSaved(): Promise<boolean> {
   return false;
 }
 
+/**
+ * Whether the status filter's row is too narrow for each count beside its label: the tray's width laid out that way
+ * (each option's label, gap, count and padding, the gaps between options, the tray's padding and edge), from widths
+ * that are the same in either layout, so the answer never flips back and forth.
+ */
+function countsNeedStacking(row: HTMLElement): boolean {
+  const tray = row.querySelector<HTMLElement>('.segmented');
+  if (!tray) return false;
+  const px = (v: string) => parseFloat(v) || 0;
+  const options = [...tray.querySelectorAll<HTMLElement>('.posts-filter-option')];
+  const need = options.reduce((w, o) => {
+    const button = getComputedStyle(o.parentElement!);
+    const [label, count] = [...o.children] as HTMLElement[];
+    return w + label.getBoundingClientRect().width + px(getComputedStyle(o).columnGap) + count.getBoundingClientRect().width + px(button.paddingLeft) + px(button.paddingRight);
+  }, 0);
+  const t = getComputedStyle(tray);
+  const r = getComputedStyle(row);
+  const width = need + px(t.columnGap) * Math.max(0, options.length - 1) + px(t.paddingLeft) + px(t.paddingRight) + px(t.borderLeftWidth) + px(t.borderRightWidth);
+  return width > row.clientWidth - px(r.paddingLeft) - px(r.paddingRight) + 0.5;
+}
+
+/** Whether a row cuts its title short: past its two lines (none is cut while titles show in full or a find is on). */
+const titleCut = (row: HTMLElement) => {
+  const t = row.querySelector<HTMLElement>('.post-title');
+  return !!t && t.scrollHeight > t.clientHeight + 1;
+};
+
 /** Said when another entry is asked to open while one is still opening (#1394). */
 const OPENING_NOW = 'An entry is still opening. Try again once it has.';
 
@@ -45,19 +72,24 @@ function keptAddresses(state: ProjectState, entryId: string): number {
   return Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === entryId).length : 0;
 }
 
+const DESTINATION_GONE = 'That destination is no longer on the website. Choose another.';
+
 /** Remove a post, letting go of it in the writer only once it is gone. */
 async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number): Promise<boolean> {
+  const chosen = replacement.replacementEntryId !== undefined ? `entry:${replacement.replacementEntryId}` : replacement.replacementPageId !== undefined ? `page:${replacement.replacementPageId}` : null;
   // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
   // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
   const ops = [{ type: 'entry.remove' as const, collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }];
+  // Read before sending: the newer project may arrive ahead of the answer that says it moved on.
+  const was = getState().snapshot;
   let r = await commitOps(ops, 'Delete post', undefined, revision, { replanStale: true });
   // Only moved on (a save landing): sent again if what was checked still holds — the same links and old addresses.
   if (r && !r.ok) {
-    const was = getState().snapshot;
     const now = await api.project.snapshot().catch(() => null);
     const same = (s: typeof now) => (s ? `${entryLinkUses(s.state, ref.entryId).length}/${keptAddresses(s.state, ref.entryId)}` : '');
-    r = now && was && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
-    if (!r && now) toast('Something now links to this post. Delete it again to choose where those links go.', 'error');
+    const gone = !!now && chosen !== null && !isDeleteDestination(now.state, ref, chosen);
+    r = now && was && !gone && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
+    if (!r && now) toast(gone ? DESTINATION_GONE : 'Something now links to this post. Delete it again to choose where those links go.', 'error');
   }
   if (!r?.ok) return false;
   toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
@@ -80,24 +112,25 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   const uses = entryLinkUses(state, target.entryId);
   const kept = keptAddresses(state, target.entryId);
   const where = [...new Set(uses.map((u) => u.where))];
-  // Only somewhere visitors can go: a draft is left out of the website, and so would be the links sent to it.
-  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && (state.pages[id].draft !== true || id === state.site.homePageId));
-  // Grouped by collection, each under its own name (a renamed blog is not "Posts").
-  const groups = Object.keys(state.collections)
-    .sort()
-    .map((id) => ({ id, name: state.collections[id].settings.name, entries: orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false) }))
-    .filter((g) => g.entries.length > 0);
+  // Only somewhere visitors can go.
+  const { pages, groups } = deleteDestinations(state, target);
   const confirm = async () => {
     const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
-    // Checked again now: a destination that has become a draft (or gone) since it was chosen is chosen again.
+    // Checked again now: a destination that has become a draft, lost its page or gone since it was chosen is chosen again.
     const now = getState().snapshot;
     if (!now) return;
-    const live = kind === 'entry' ? findEntry(now.state, id)?.entry.draft === false : Object.hasOwn(now.state.pages, id) && (now.state.pages[id].draft !== true || id === now.state.site.homePageId);
-    if (!live) return toast('That destination is no longer on the website. Choose another.', 'error');
+    if (!isDeleteDestination(now.state, target, to)) {
+      // The list no longer shows it: what is chosen is what the list shows.
+      setTo(`page:${now.state.site.homePageId}`);
+      return toast(DESTINATION_GONE, 'error');
+    }
     setBusy(true);
     const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision);
     setBusy(false);
-    if (done) onClose();
+    if (done) return onClose();
+    // Lost while it was being sent: what is chosen is what the list shows.
+    const latest = getState().snapshot;
+    if (latest && !isDeleteDestination(latest.state, target, to)) setTo(`page:${latest.state.site.homePageId}`);
   };
   return (
     <Modal
@@ -132,17 +165,17 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
       <Field label="Send its links to" controlId={`${uid}-to`}>
         <select id={`${uid}-to`} className="select" value={to} onChange={(ev) => setTo(ev.target.value)}>
           <optgroup label="Pages">
-            {pages.map((id) => (
-                <option key={id} value={`page:${id}`}>
-                  {state.pages[id].title} ({state.pages[id].route})
-                </option>
-              ))}
+            {pages.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
           </optgroup>
           {groups.map((g) => (
             <optgroup key={g.id} label={g.name}>
               {g.entries.map((p) => (
-                <option key={p.id} value={`entry:${p.id}`}>
-                  {p.title}
+                <option key={p.value} value={p.value}>
+                  {p.label}
                 </option>
               ))}
             </optgroup>
@@ -156,6 +189,8 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
 
 /** The order the list was last shown in, for this window. */
 let lastSort: PostSort = 'newest';
+/** Whether the list shows each title in full rather than in two lines, as chosen last (in the collection's options). */
+let lastFullTitles = false;
 
 /** Starters and a collection of the author's own, offered with no collection yet and from Add a collection. */
 function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMade: (collectionId: string) => void; onCancel?: () => void }) {
@@ -276,6 +311,7 @@ export function PostsPanel() {
   const listed = useStore((s) => s.contentCollection);
   const [query, setQuery] = useState('');
   const [sort, setSortState] = useState<PostSort>(lastSort);
+  const [fullTitles, setFullTitlesState] = useState(lastFullTitles);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -298,14 +334,14 @@ export function PostsPanel() {
   /** The row keyboard focus last sat on, which keeps the list's one tab stop. */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLDivElement>(null);
   const collectionFormRef = useRef<HTMLDivElement>(null);
   const headOptions = useRef<HTMLButtonElement>(null);
-  /** The card that shows a keyboard-focused row's whole title and address when the row cuts them short (as in Pages). */
-  const [peek, setPeek] = useState<{ id: string; top: number; left: number; width: number } | null>(null);
-  const peekRef = useRef<HTMLDivElement>(null);
+  /**
+   * The row keyboard focus is on, whose whole title and address show beside the list while it cuts them short (as in
+   * Pages). Escape puts the card away until focus moves to another row.
+   */
+  const [peek, setPeek] = useState<{ id: string } | null>(null);
   const headAdd = useRef<HTMLButtonElement>(null);
   const typeahead = useRef({ text: '', at: 0 });
   /** The collection the new-entry form was opened for: what it creates in, whatever the list shows by then. */
@@ -388,25 +424,23 @@ export function PostsPanel() {
   const total = collection ? Object.keys(collection.entries).length : 0;
   const shownKey = collection?.settings.id;
   useEffect(() => setRestored(false), [shownKey, total]);
-  // The peek card goes under its row when the visible part of the list has room for it, else over the row.
-  useLayoutEffect(() => {
-    const card = peekRef.current;
-    const row = peek && listRef.current?.querySelector<HTMLElement>(`[data-post="${peek.id}"]`);
-    const wrap = wrapRef.current?.getBoundingClientRect();
-    const body = bodyRef.current?.getBoundingClientRect();
-    if (!peek || !card || !row || !wrap || !body) return;
-    const r = row.getBoundingClientRect();
-    const h = card.offsetHeight;
-    const below = body.bottom - r.bottom - 3;
-    const over = r.top - body.top - 3;
-    const top = below < h && over > below ? r.top - wrap.top - 3 - h : r.bottom - wrap.top + 3;
-    if (top !== peek.top || r.width !== peek.width) setPeek({ ...peek, top, width: r.width, left: r.left - wrap.left });
-  });
-  useEffect(() => {
-    const hide = () => setPeek(null);
-    window.addEventListener('resize', hide);
-    return () => window.removeEventListener('resize', hide);
+  // The status filter puts each count under its label when its row has no room for them side by side, whatever the
+  // sidebar's width and however long the counts: measured when the row resizes and after every render (counts change).
+  const [stackCounts, setStackCounts] = useState(false);
+  const filters = useRef<HTMLDivElement | null>(null);
+  const filtersSeen = useRef<ResizeObserver | null>(null);
+  const fitFilters = () => filters.current && setStackCounts(countsNeedStacking(filters.current));
+  const fitFiltersNow = useRef(fitFilters);
+  fitFiltersNow.current = fitFilters;
+  const filtersRef = useCallback((el: HTMLDivElement | null) => {
+    filtersSeen.current?.disconnect();
+    filters.current = el;
+    filtersSeen.current = el ? new ResizeObserver(() => fitFiltersNow.current()) : null;
+    if (el) filtersSeen.current!.observe(el);
   }, []);
+  useLayoutEffect(() => {
+    fitFiltersNow.current();
+  });
   if (!snap || !state) return null;
   const all = collection ? Object.keys(collection.entries).length : 0;
   // The status filter counts what the other filters leave (the words found, the category chosen), so a pill never
@@ -436,6 +470,10 @@ export function PostsPanel() {
   const setSort = (s: PostSort) => {
     lastSort = s;
     setSortState(s);
+  };
+  const setFullTitles = (on: boolean) => {
+    lastFullTitles = on;
+    setFullTitlesState(on);
   };
 
   /** Show another collection's entries, once the entry being written is saved; the writer lets go of it. */
@@ -694,14 +732,8 @@ export function PostsPanel() {
   const finding = words.length > 0;
   const tabStop = focusedRow && rows.some((r) => r.id === focusedRow) ? focusedRow : post && rows.some((r) => r.id === post.entryId) ? post.entryId : rows[0]?.id;
   const rowEl = (id: string) => listRef.current?.querySelector<HTMLElement>(`[data-post="${id}"]`);
-  /** Keyboard focus on a row whose title is cut short shows it whole, with its address, in a card under it. */
-  const showPeek = (row: HTMLElement | null) => {
-    const wrap = wrapRef.current?.getBoundingClientRect();
-    const t = row?.querySelector<HTMLElement>('.post-title');
-    if (!row || !wrap || !t || t.scrollWidth <= t.clientWidth + 1 || !row.matches(':focus-visible')) return setPeek(null);
-    const r = row.getBoundingClientRect();
-    setPeek({ id: row.dataset.post!, top: r.bottom - wrap.top + 3, left: r.left - wrap.left, width: r.width });
-  };
+  /** Keyboard focus on a row: its card beside the list shows while its title is cut short (past its two lines). */
+  const showPeek = (row: HTMLElement | null) => setPeek(row?.matches(':focus-visible') ? { id: row.dataset.post! } : null);
   const syncingHere = !!collection && syncing === collection.settings.id;
   /** The head's New button resumes a titled form typed for another collection, and says so. */
   const resumes = adding && !!title.trim() && !!formTarget && formTarget !== collection;
@@ -754,6 +786,8 @@ export function PostsPanel() {
     const items: MenuItem[] = [
       { heading: 'Sort' },
       ...POST_SORTS.map((s) => ({ label: s.label, checked: sort === s.id, onSelect: () => setSort(s.id) })),
+      { separator: true },
+      { label: 'Show full titles', checked: fullTitles, toggle: true, description: 'Every title whole, rather than in two lines.', onSelect: () => setFullTitles(!fullTitles) },
       { separator: true },
       ...(groupings.length > 0 && !readOnly ? [{ label: `${termsManagerTitle(collection)}…`, icon: <Tags />, description: `Add, rename or delete ${termsManagerTitle(collection).toLowerCase()}.`, onSelect: () => setManaging(true) }] : []),
       ...(canImport && !readOnly
@@ -956,15 +990,20 @@ export function PostsPanel() {
               </button>
             )}
           </div>
-          <div className="posts-filters">
+          <div ref={filtersRef} className={`posts-filters${stackCounts ? ' stacked' : ''}`}>
             <Segmented radio label={`Show ${plural(2)}`} value={status} onChange={setStatus} options={POST_STATUSES.map((s) => ({
                 value: s.id,
                 label: (
-                  // A narrow sidebar keeps the Drafts count (the one that answers "what is not on the website yet") and lets
-                  // the others go: All's is the find field's too.
-                  <>
-                    {s.label} <span className={s.id === 'drafts' ? undefined : 'posts-count-quiet'}>{counts[s.id]}</span>
-                  </>
+                  // Each count beside its label, or under it when the row has no room for that (countsNeedStacking); both
+                  // reserve their chosen (bold) width, so choosing a filter never moves its neighbours.
+                  <span className="posts-filter-option">
+                    <span className="seg-label" data-label={s.label}>
+                      {s.label}
+                    </span>{' '}
+                    <span className="seg-label posts-filter-count" data-label={String(counts[s.id])}>
+                      {counts[s.id]}
+                    </span>
+                  </span>
                 )
               }))}
             />
@@ -992,7 +1031,7 @@ export function PostsPanel() {
       {connecting && <SourceDialog collectionId={connecting} onClose={() => setConnecting(null)} />}
       {managing && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
       {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
-      <div className="panel-body" ref={bodyRef}>
+      <div className="panel-body">
         {adding && !isReadOnlyCollection(formTarget) && (
           <div ref={formRef}>
           <form
@@ -1074,10 +1113,10 @@ export function PostsPanel() {
             {[(finding || categoryId) && `${rows.length} of ${all} ${plural(all)}`, sort !== 'newest' && `Sorted by ${POST_SORTS.find((s) => s.id === sort)!.label.toLowerCase()}`].filter(Boolean).join(' · ')}
           </p>
         )}
-        <div className="posts-list-wrap" ref={wrapRef}>
+        <div className="posts-list-wrap">
         <div
           id={`${uid}-list`}
-          className={`list posts-list${finding ? ' finding' : ''}`}
+          className={`list posts-list${finding ? ' finding' : ''}${fullTitles ? ' full-titles' : ''}`}
           role="listbox"
           aria-label={finding ? `${heading} matching “${query.trim()}”` : heading}
           aria-description="Type a title to jump to it. Enter opens it; Shift+F10 opens its options."
@@ -1098,9 +1137,31 @@ export function PostsPanel() {
           {rows.map((r) => {
             const current = post?.entryId === r.id && post.collectionId === collection.settings.id;
             const date = dated && r.date ? shortDate(r.date, language) : null;
-            const status = [r.draft && 'draft, left out of the website', date].filter(Boolean).join(', ');
+            // The row's name says the date with its year, which the row itself leaves out for this year's.
+            const status = [r.draft && 'draft, left out of the website', dated && r.date && shortDate(r.date, language, { withYear: true })].filter(Boolean).join(', ');
             const cls = ['list-item', 'post-row', r.draft && 'draft', current && 'selected', rowMenu.isOpen && rowMenuFor === r.id && 'menu-open'].filter(Boolean).join(' ');
             const why = reason(r);
+            const meta = r.draft || !!date;
+            // On a dated row the … sits at the end of the Draft and date line, so the title keeps the row's whole width;
+            // a row with no such line keeps it in a slot of its own.
+            const actions = (
+              <span className="actions">
+                <button
+                  className="icon-btn sm hover-only"
+                  tabIndex={-1}
+                  aria-haspopup="menu"
+                  aria-expanded={rowMenu.isOpen && rowMenuFor === r.id}
+                  aria-label={`${r.title} options`}
+                  title={`${entryNoun(collection)} options (Shift+F10)`}
+                  // The button is for the pointer; anything that hands it focus (a menu or dialog closing) hands it
+                  // on to the row, where the row's keys work.
+                  onFocus={(e) => e.currentTarget.closest<HTMLElement>('[role="option"]')?.focus()}
+                  onClick={(e) => (e.stopPropagation(), postMenu(e.currentTarget, r))}
+                >
+                  <MoreHorizontal />
+                </button>
+              </span>
+            );
             return (
               <div
                 key={r.id}
@@ -1117,7 +1178,8 @@ export function PostsPanel() {
                 onKeyDown={(e) => {
                   if (e.target !== e.currentTarget) return;
                   if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), void open(r.id));
-                  else if (e.key === 'Escape' && peek) (e.stopPropagation(), setPeek(null));
+                  // Escape puts away a card that shows (the row cut short); a find's whole titles show none, so it leaves the find.
+                  else if (e.key === 'Escape' && peek && titleCut(e.currentTarget)) (e.stopPropagation(), setPeek(null));
                   else if (e.key === 'Escape' && finding) {
                     // Escape leaves the find and keeps this row, now in its place in the whole list.
                     e.stopPropagation();
@@ -1139,44 +1201,27 @@ export function PostsPanel() {
                   {RowGlyph(r)}
                 </span>
                 <span className="post-text">
-                  <span className="post-title ellipsis">
+                  <span className="post-title">
                     <Marked text={r.title} words={words} />
                   </span>
-                  {(r.draft || date) && (
+                  {meta && (
                     <span className="post-meta">
                       {r.draft && <span className="badge amber post-status">Draft</span>}
                       {date && <time dateTime={r.date}>{date}</time>}
+                      {actions}
                     </span>
                   )}
                   {why && <span className="post-found">{why.node}</span>}
                 </span>
-                <span className="actions">
-                  <button
-                    className="icon-btn sm hover-only"
-                    tabIndex={-1}
-                    aria-haspopup="menu"
-                    aria-expanded={rowMenu.isOpen && rowMenuFor === r.id}
-                    aria-label={`${r.title} options`}
-                    title={`${entryNoun(collection)} options (Shift+F10)`}
-                    // The button is for the pointer; anything that hands it focus (a menu or dialog closing) hands it
-                    // on to the row, where the row's keys work.
-                    onFocus={(e) => e.currentTarget.closest<HTMLElement>('[role="option"]')?.focus()}
-                    onClick={(e) => (e.stopPropagation(), postMenu(e.currentTarget, r))}
-                  >
-                    <MoreHorizontal />
-                  </button>
-                </span>
+                {!meta && actions}
               </div>
             );
           })}
         </div>
-        {peek && !rowMenu.isOpen && rows.some((r) => r.id === peek.id) && (
-          // The row's accessible name and description already carry all of this; the card is for the eye.
-          <div ref={peekRef} className="posts-peek" aria-hidden="true" style={{ top: peek.top, left: peek.left, width: peek.width }}>
-            <span className="posts-peek-title">{rows.find((r) => r.id === peek.id)!.title}</span>
-            {rows.find((r) => r.id === peek.id)!.route && <span className="posts-peek-route">{rows.find((r) => r.id === peek.id)!.route}</span>}
-          </div>
-        )}
+        {(() => {
+          const r = peek && !rowMenu.isOpen ? rows.find((x) => x.id === peek.id) : undefined;
+          return r ? <ListPeek key={r.id} row={() => rowEl(r.id)} cut={titleCut} title={r.title} route={r.route} /> : null;
+        })()}
         </div>
       </div>
       {rowMenu.node}

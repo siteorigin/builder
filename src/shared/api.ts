@@ -73,7 +73,7 @@ export interface AppSettings {
    * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
    */
   liveRelayUrl: string | null;
-  /** Shortcuts the author has reassigned (spec §4.5), as `shared/shortcuts.ts` writes them. */
+  /** Shortcuts the author has reassigned, as `shared/shortcuts.ts` writes them. */
   shortcuts: ShortcutSettings;
   ai: {
     provider: ProviderId | null;
@@ -130,6 +130,13 @@ export interface Diagnostic {
   /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
   site?: string;
 }
+
+/**
+ * The code of a Diagnostic for a code component's file edited outside the app and not loaded (#1533): the project keeps
+ * the version that last loaded, and `site` is the file. An error is code with errors (its message names the first, and
+ * its line when the compiler gives one); a warning is edited code that is fine but held back with the rest of the read.
+ */
+export const EXTERNAL_SOURCE_REFUSED = 'EXTERNAL_SOURCE_REFUSED';
 
 /**
  * What a web-sized copy of a large library image would be, measured by making it: its format and size, `lighter:
@@ -269,6 +276,10 @@ export interface VersionReview {
   problem?: string;
   /** Page titles: pages that come back, pages that go, and pages that change. */
   pages: { back: string[]; gone: string[]; changed: string[] };
+  /** Collection entries, named by title: entries that come back, go, and change. */
+  entries: { back: string[]; gone: string[]; changed: string[] };
+  /** Collection names: collections that come back, go, and whose own settings change. */
+  collections: { back: string[]; gone: string[]; changed: string[] };
   /** Site settings (name, header, footer, addresses) change. */
   site: boolean;
   /** Site styles (colors, fonts, spacing) change. */
@@ -285,7 +296,12 @@ export interface VersionReview {
   left: string[];
   /** Files its documents name that were missing when it was saved: restoring can't bring them back. */
   missing: string[];
-  /** The project already matches it. */
+  /**
+   * With Git snapshots on, the other files of the site that differ from its snapshot (hand-written code, setup and
+   * public files, as project paths): restoring doesn't copy them from it (#1396).
+   */
+  others: string[];
+  /** Restoring would change nothing: its documents and the media they name already match (`others` may still differ). */
   unchanged: boolean;
 }
 
@@ -305,6 +321,8 @@ export interface RestoreVersionResult {
   replaced?: number;
   /** Files an earlier restore put back that this one leaves in the project folder. */
   left?: string[];
+  /** The other files of the site that differ from the version, which the restore didn't copy from it (VersionReview.others). */
+  others?: string[];
   /**
    * With Git snapshots on: why the site as restored is not, or not yet, a saved version of its own, though the restore
    * itself is done (#1155).
@@ -534,7 +552,7 @@ export type ExportFormat = 'folder' | 'zip';
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
+  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
@@ -546,6 +564,9 @@ export interface ExportNote {
   message: string;
   destination?: EditorDestination;
 }
+
+/** A production build's failure when nothing in its output names where it was: no page, address or component (#1395). */
+export const BUILD_FAILED_UNPLACED = 'The production build failed.';
 
 export interface ExportResult {
   ok: boolean;
@@ -1028,6 +1049,12 @@ export interface PostImportPreview {
   redirectsLost?: number;
   /** What is not imported at all. */
   skipped: string[];
+  /**
+   * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
+   * the new address an old category archive's sends visitors to, when the import keeps it working; `pending` while no
+   * published post is filed under that category, so the archive is not there yet.
+   */
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
 }
@@ -1044,6 +1071,8 @@ export interface PostImportResult {
   revision?: number;
   /** The first imported post's entry, to open it. */
   firstEntryId?: string;
+  /** Whether the new blog's link joined the header menu; absent when none was asked for. */
+  addedToNavigation?: boolean;
   /** The pictures that did not come through (the library refused them): the file, the posts that show it, and why. */
   notes?: Array<{ file: string; posts: string[]; reason: string }>;
   message?: string;
@@ -1399,7 +1428,7 @@ export interface BuilderApi {
      * review: which photos become web-sized copies, and the opening the review was made in. `note` says what was
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
-    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
     /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.
@@ -1427,7 +1456,7 @@ export interface BuilderApi {
      */
     reviewPostImport(kind: PostImportKind, opening: string): Promise<PostImportReviewResult>;
     /** Import the posts of review `id`, as one change, while the project is still as it was reviewed. */
-    commitPostImport(id: string, opening: string): Promise<PostImportResult>;
+    commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult>;
     /** Forget review `id`: nothing of it is imported. */
     cancelPostImport(id: string): Promise<void>;
     /**
@@ -1474,7 +1503,7 @@ export interface BuilderApi {
      * Restore saved version `id` as reviewed at `revision`, putting back the files the review listed: one Undo step for
      * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
      */
-    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
+    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
     /** Give saved version `id` a new name; what it holds and when it was saved stay. */
     renameVersion(id: string, name: string, workspaceKey: string): Promise<{ ok: boolean; message?: string }>;
     /** Delete saved version `id`, freeing what only it held. */

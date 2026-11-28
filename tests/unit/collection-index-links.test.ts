@@ -168,6 +168,21 @@ describe('links to a collection index', () => {
     expect(menuLinks(plain.state)).toHaveLength(before);
   });
 
+  it('names the link after a renamed blog instead of "Blog" (#1311)', () => {
+    const start = site();
+    const r = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: 'Journal', route: '/journal/', addToNavigation: true }]);
+    expect(r.results[0]).toMatchObject({ addedToNavigation: true });
+    const last = menuLinks(r.state).at(-1)!;
+    expect(last).toMatchObject({ label: 'Journal', link: INDEX });
+    expect(resolveLink(last.link, { state: r.state })).toEqual({ href: '/journal/' });
+    // A blog left with no name of its own (only spaces) still shows "Blog" rather than a blank link.
+    const blank = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: '   ', addToNavigation: true }]);
+    expect(menuLinks(blank.state).at(-1)).toMatchObject({ label: 'Blog', link: INDEX });
+    // Only the blog becomes "Blog": another collection called Posts keeps its name.
+    const other = applyOperations(start, [{ type: 'collection.create', collectionId: 'case-studies', name: 'Posts', addToNavigation: true }]);
+    expect(menuLinks(other.state).at(-1)).toMatchObject({ label: 'Posts', link: { type: 'collection', target: 'case-studies' } });
+  });
+
   it('leaves a full menu as it is, and still starts the blog', () => {
     const start = site();
     let s = start;
@@ -185,6 +200,22 @@ describe('links to a collection index', () => {
     const fits = applyOperations(room, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
     expect(fits.results[0]).toMatchObject({ addedToNavigation: true });
     expect(menuLinks(fits.state)).toHaveLength(max);
+  });
+
+  it('starts the blog without the link when the menu’s rows can’t hold it', () => {
+    const s = structuredClone(site());
+    // A header whose link labels are too short for "Blog" (#1509): the blog, or an import that makes it, still lands.
+    const label = headerMenu(s)!.schema.fields.label as { maxLength?: number };
+    expect(s.components[headerMenu(s)!.node.definitionId].properties.links).toBe(headerMenu(s)!.schema);
+    label.maxLength = 3;
+    // The menu's own rows fit the limit, with room to spare: only the new link is refused.
+    for (const link of menuLinks(s)) link.label = link.label.slice(0, 3);
+    expect(menuLinks(s).length).toBeLessThan(headerMenu(s)!.schema.max!);
+    const before = menuLinks(s);
+    const r = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
+    expect(r.results[0]).toMatchObject({ addedToNavigation: false });
+    expect(menuLinks(r.state)).toEqual(before);
+    expect(r.state.collections).toHaveProperty('posts');
   });
 
   it('lists the indexes a link can go to, and starts the blog without a menu link unless asked', () => {

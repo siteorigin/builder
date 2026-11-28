@@ -442,14 +442,30 @@ export function ownVisitorTextFor(site: Pick<SiteDoc, 'visitorText'>, language: 
  * for its primary language ("ar" for "ar-EG"), then the built-in wording.
  */
 export function visitorTextFor(site: Pick<SiteDoc, 'visitorText'>, language: string): VisitorText {
+  return resolveVisitorText(site, language).words;
+}
+
+/**
+ * Everything a page in `language` says on its own (visitorTextFor), with the pieces that fell back to the built-in
+ * English wording on a page in another language: the site marks those as English, so software that reads the page
+ * aloud can say them as English (WCAG's Language of Parts). The author's own wording, and the built-in wording of a
+ * language that has some ("ar" for "ar-MA"), are in the page's language and are not listed.
+ */
+export function resolveVisitorText(site: Pick<SiteDoc, 'visitorText'>, language: string): { words: VisitorText; english: VisitorTextKey[] } {
   const code = visitorTextLanguage(language);
   const primary = code.split('-')[0];
   const exact = ownFor(site, code);
   const general = primary === code ? {} : ownFor(site, primary);
   const builtIn = builtInVisitorText(code);
-  const out = {} as VisitorText;
-  for (const key of VISITOR_TEXT_KEYS) out[key] = ownVisitorText(exact[key]) || ownVisitorText(general[key]) || builtIn[key];
-  return out;
+  const fallsBackToEnglish = !Object.hasOwn(BUILT_IN, primary);
+  const words = {} as VisitorText;
+  const english: VisitorTextKey[] = [];
+  for (const key of VISITOR_TEXT_KEYS) {
+    const own = ownVisitorText(exact[key]) || ownVisitorText(general[key]);
+    words[key] = own || builtIn[key];
+    if (!own && fallsBackToEnglish) english.push(key);
+  }
+  return { words, english };
 }
 
 /** The wording a page in the site's language uses. */

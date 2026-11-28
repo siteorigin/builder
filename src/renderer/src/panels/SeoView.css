@@ -13,6 +13,8 @@
   .seo-address { font-size: 12px; color: var(--text-3); min-width: 6ch; flex-shrink: 4; margin-right: 6px; }
   .seo-title { flex-shrink: 1; }
   .seo-bar-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border); flex: none; }
+  /* What the document is (a page, the home page, a draft, a post in its collection): last, quietest, first to go. */
+  .seo-kind { flex: none; padding: 1px 6px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 11px; color: var(--text-2); margin-right: 6px; }
   /* A project open read-only says so where its settings are, with the reason, before anything is typed. */
   .seo-locked { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel-2); color: var(--text-2); font-size: 12px; line-height: 1.45; flex: none; }
   .seo-locked svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
@@ -22,7 +24,6 @@
   .seo-none svg { width: 28px; height: 28px; }
   .seo-doc-settings { min-width: 0; }
   .seo-doc { max-width: 720px; margin: 24px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 10px; }
-  .seo-doc-kind { margin: 0; font-size: 12px; color: var(--text-3); }
   .seo-doc .seo-note { margin: 0; }
   /* The chosen document's previews (#701), at the view's width: a results page shows at its real size where there is
      room, and is scaled to fit a narrower view. */
@@ -36,10 +37,13 @@
   .seo-scroll { container-type: inline-size; }
   .seo-doc-head { display: flex; flex-direction: column; gap: 10px; }
   .seo-doc-previews { min-width: 0; }
-  .seo-settings { display: flex; flex-direction: column; gap: 24px; min-width: 0; padding-top: 8px; }
+  .seo-settings { display: flex; flex-direction: column; gap: 24px; min-width: 0; padding-top: 16px; }
   /* A document's findings, carried from the overview so each sits in sight of the fields that fix it. */
-  .seo-findings { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; border-radius: var(--r-md); background: var(--panel-2); }
-  .seo-findings .seo-ov-status { font-size: 12px; }
+  .seo-findings { list-style: none; margin: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; border-radius: var(--r-md); background: var(--panel); box-shadow: inset 0 0 0 1px var(--border); }
+  .seo-findings .seo-ov-status, .seo-clear .seo-ov-status { font-size: 12px; }
+  .seo-findings .seo-ov-status > svg, .seo-clear .seo-ov-status > svg { width: 13px; height: 13px; }
+  .seo-clear { margin: 0; }
+  .seo-clear .seo-ov-status { color: var(--text-2); }
   .seo-finding-go { font-size: 12px; font-weight: 500; white-space: nowrap; }
   .seo-doc-jump { align-self: flex-start; font-size: 12px; }
   .seo-doc-lock { display: flex; align-items: flex-start; gap: 6px; }
@@ -47,17 +51,25 @@
   .seo-doc-settings :is(.switch-row, [data-seo-field]):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
   .seo-field-group { min-width: 0; margin: 0; padding: 0; border: 0; }
   .seo-settings-group { display: flex; flex-direction: column; gap: 12px; }
-  .seo-settings-group > h3 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
-  .seo-settings-group > .field-hint { margin: -6px 0 0; }
+  /* A group's heading takes the tab row's height and rule, so beside the previews both rules run on one line. */
+  .seo-settings-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 35px; border-bottom: 1px solid var(--border); }
+  .seo-settings-head > h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .seo-settings-actions { display: flex; align-items: center; gap: 12px; flex: none; }
+  .seo-to-previews { font-size: 12px; }
   /* A long address (a canonical URL the field refused, the one saved) wraps rather than widening the view. */
   .seo-settings :is(.field-hint, .field-error) { overflow-wrap: anywhere; }
   @container (min-width: 1100px) {
     .seo-doc { max-width: 1200px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); column-gap: 32px; row-gap: 10px; align-items: start; }
     .seo-doc > .seo-doc-head { grid-column: 1 / -1; }
-    .seo-doc > .seo-doc-previews { grid-column: 1; grid-row: 2; position: sticky; top: 16px; }
+    .seo-doc > .seo-doc-previews { grid-column: 1; grid-row: 2; position: sticky; top: 16px; display: flex; flex-direction: column; max-height: calc(var(--seo-room, 100vh) - 32px); }
+    /* The tabs stay put and a tab taller than the view scrolls under them, so every card and fact stays in reach of
+       the field being typed in. Room around the panel's edge keeps its controls' focus rings whole. */
+    .seo-doc-previews > .seo-preview-wide { min-height: 0; }
+    .seo-preview-wide .share-jumps { top: -4px; }
+    .seo-preview-wide > [role='tabpanel'] { min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: -4px -4px 0; padding: 4px; }
     .seo-doc > .seo-doc-settings { grid-column: 2; grid-row: 2; }
     .seo-doc .seo-settings { padding-top: 0; }
-    .seo-doc-jump { display: none; }
+    .seo-doc-jump, .seo-to-previews { display: none; }
   }
 
   .seo-leave { margin-left: auto; flex: none; }

@@ -119,7 +119,7 @@ for (const [name, platform, ratio] of [['X', 'x', 2], ['WhatsApp', 'messages', 1
 }
 const siteDescription = (await snapshot()).state.site.description;
 assert.ok(siteDescription, 'the starter site has a description');
-assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }, 'the preview shows the page’s title and the site’s description');
+assert.deepEqual(await cardText(), { host: 'No public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }, 'the preview shows the page’s title and the site’s description');
 assert.match(await section().innerText(), /This page’s own choice/, 'it says the image is this page’s own');
 assert.equal(await picker().getByLabel('Image description').count(), 0, 'a sharing image has no description to write');
 assert.equal(await picker().getByRole('switch', { name: 'Decorative image' }).count(), 0, 'and is never decorative');
@@ -133,7 +133,7 @@ await field('Search title').getByRole('textbox').fill('Our kitchens');
 await field('Search title').getByRole('textbox').press('Tab');
 await field('Description').getByRole('textbox').fill('Oak, steel and stone.');
 await field('Description').getByRole('textbox').press('Tab');
-await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Our kitchens', description: 'Oak, steel and stone.' }));
+await eventually(async () => assert.deepEqual(await cardText(), { host: 'No public URL', title: 'Our kitchens', description: 'Oak, steel and stone.' }));
 // The card follows typed text before it is saved (#597), so the files say what was saved.
 await eventually(() => assert.deepEqual([pageFile(kitchens).seo.title, pageFile(kitchens).seo.description], ['Our kitchens', 'Oak, steel and stone.'], 'the title and description are saved'));
 await allSaved();
@@ -141,11 +141,11 @@ await field('Search title').getByRole('textbox').fill('');
 await field('Search title').getByRole('textbox').press('Tab');
 await field('Description').getByRole('textbox').fill('');
 await field('Description').getByRole('textbox').press('Tab');
-await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }));
+await eventually(async () => assert.deepEqual(await cardText(), { host: 'No public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }));
 await eventually(() => assert.deepEqual([pageFile(kitchens).seo.title, pageFile(kitchens).seo.description], [undefined, undefined], 'and cleared'));
 
-step('Open Site details under the address note goes to the Public URL');
-await sharePreview().getByRole('button', { name: 'Open Site details' }).click();
+step('Set the public URL, over the previews, goes to the Public URL');
+await view.locator('.seo-findings').getByRole('button', { name: 'Set the public URL' }).click();
 await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.id), 'site-public-url', 'the Public URL field has the cursor'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 

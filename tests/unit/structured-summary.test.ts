@@ -87,7 +87,7 @@ describe('the sections of a graph', () => {
     const { state } = seoSite();
     const s = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', author: 'Ana Ruiz', updatedAt: '2027-04-01', seoTitle: 'Book spring classes' });
     const list = sections(s, POST);
-    expect(headings(list).slice(0, 2)).toEqual(['This page', 'Blog post']);
+    expect(headings(list).slice(0, 2)).toEqual(['Blog post', 'This page']);
     const post = at(list, 'Blog post');
     expect(post.statement).toBe('The page is about a blog post, “Spring pottery classes”.');
     expect(rows(post)).toMatchObject({ Headline: 'Spring pottery classes', Author: 'Ana Ruiz', Published: '2 March 2027', 'Last modified': '1 April 2027', Image: `${ROOT}assets/img_share-1a2b3c4d.png`, Publisher: 'Riverside Studio' });
@@ -115,7 +115,7 @@ describe('the sections of a graph', () => {
     const { state } = seoSite();
     const list = sections(typed(state, { type: 'Service', serviceType: 'Pottery classes', areaServed: 'Millbrook' }));
     const service = at(list, 'Service');
-    expect(headings(list).slice(0, 2)).toEqual(['This page', 'Service']);
+    expect(headings(list).slice(0, 2)).toEqual(['Service', 'This page']);
     expect(service.statement).toBe('The page is about the service “Services”.');
     expect(rows(service)).toEqual({ Name: 'Services', Description: 'Weekly wheel classes, private lessons and commissioned tableware made to order in the studio.', 'Service type': 'Pottery classes', 'Area served': 'Millbrook', 'Provided by': 'Riverside Studio' });
   });
@@ -149,7 +149,7 @@ describe('the sections of a graph', () => {
 
   it('says an FAQ page’s questions with their answers, and where the website is searched', () => {
     // The FAQ built in the editor (fixtures/nested-output-designs.ts), whose questions the generator reads from its
-    // tree: the release's is code (the Release gap test below).
+    // tree. The release's is code, read through its outline (the test below).
     const s = withEditorStructure(copy(faqPage()));
     const graph = documentGraph(publishedState(s), { kind: 'page', pageId: 'pg_faq' })!;
     const asked = graph['@graph'].find((n) => n['@id'] === `${ROOT}faq/#webpage`)!.mainEntity as Array<{ name: string; acceptedAnswer: { text: string } }>;
@@ -165,8 +165,7 @@ describe('the sections of a graph', () => {
     expect(rows(at(summarizeGraph(searched), 'Website'))).toMatchObject({ 'Search address': `${ROOT}search/?q={search_term_string}`, 'Search words': expect.stringMatching(/^Required/) });
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('says the questions of the shipped theme’s FAQ on its page', () => {
+  it('says the questions of the shipped theme’s FAQ on its page', () => {
     const graph = documentGraph(publishedState(faqPage()), { kind: 'page', pageId: 'pg_faq' })!;
     expect(at(summarizeGraph(graph), 'This page').statement).toBe('This is an FAQ page.');
   });
