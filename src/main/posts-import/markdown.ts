@@ -306,14 +306,14 @@ export function inlineHtml(input: string, refs: Refs, depth = 0, budget = { left
  */
 function emphasis(s: string): string {
   // Each mark is looked for within 1,000 characters of where it opens, so a paragraph of unclosed marks is read once.
-  return s
+  s = s
     .replace(/\*\*\*(?=\S)([^*]{0,1000}?\S)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(?=\S)((?:[^*]|\*(?!\*)){0,1000}?\S)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<![\w])__(?=\S)([^_]{0,1000}?\S)__(?![\w])/g, '<strong>$1</strong>')
     .replace(/\*(?=[^\s*])([^*]{0,1000}?[^\s*])\*/g, '<em>$1</em>')
     .replace(/\*(?=[^\s*])([^\s*])\*/g, '<em>$1</em>')
-    .replace(/(?<![\w])_(?=\S)([^_]{0,1000}?\S)_(?![\w])/g, '<em>$1</em>')
-    .replace(STRIKE, (whole, inner: string) => (balanced(inner) ? `<del>${inner}</del>` : whole));
+    .replace(/(?<![\w])_(?=\S)([^_]{0,1000}?\S)_(?![\w])/g, '<em>$1</em>');
+  return strike(s);
 }
 
 /**
@@ -321,6 +321,22 @@ function emphasis(s: string): string {
  * Bounded like the marks above, so a line of unclosed marks is read once.
  */
 const STRIKE = /(?<!~)~~(?!~)([^\s~](?:(?:[^~]|~(?!~)){0,1000}?[^\s~])?)(?<!~)~~(?!~)/g;
+
+/** Each strike in `s` (see STRIKE): one across bold or italic stays as written, and its `~~` may open the next one. */
+function strike(s: string): string {
+  const re = new RegExp(STRIKE.source, 'g');
+  let out = '';
+  let i = 0;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    if (!balanced(m[1])) {
+      re.lastIndex = m.index + 2;
+      continue;
+    }
+    out += `${s.slice(i, m.index)}<del>${m[1]}</del>`;
+    i = re.lastIndex;
+  }
+  return out + s.slice(i);
+}
 
 /** Whether the bold and italic marks read in `html` each close inside it: a strike across one (`**a ~~b** c~~`) is no strike. */
 function balanced(html: string): boolean {

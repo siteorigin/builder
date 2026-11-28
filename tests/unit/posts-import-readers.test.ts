@@ -182,6 +182,7 @@ describe('formatting post text has no form for (#1506)', () => {
     expect(nested.text).toEqual(['10^(2³), e^(x₂) and m² and a b']);
     expect(nested.blocks[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'm²', strong: true }]) });
     expect(nested.report.raised).toBe(5);
+    expect(read('<p>10<sup>2<b><sup>3</sup></b></sup></p>').text).toEqual(['10^(2³)']);
   });
 
   it('writes superscripts and subscripts on the line in a picture’s caption', () => {
@@ -233,6 +234,9 @@ describe('formatting post text has no form for (#1506)', () => {
     expect(md('**a ~~b** c~~ and ~~d *e~~ f*').blocks).toEqual([
       { type: 'p', spans: [{ text: 'a ~~b', strong: true }, { text: ' c~~ and ~~d ' }, { text: 'e~~ f', em: true }] }
     ]);
+    // The `~~` of a strike left as written can still close the next one.
+    expect(md('**a ~~b ~ c** then:~~remove A~~; keep B:~~remove C~~.').report.struck).toBe(2);
+    expect(md('**a ~~b ~ c** then:~~remove A~~; keep B:~~remove C~~.').text).toEqual(['a ~~b ~ c then:remove A; keep B:remove C.']);
     expect(md('~~**bold** gone~~').notes).toEqual(['Kept a struck-through passage as ordinary text, no longer struck through.']);
     const tasks = md('- [ ] task\n- [x] done\n- [X] **also**\n- [ ] ---');
     expect(tasks.blocks).toEqual([{ type: 'check', items: [[{ text: 'task' }], [{ text: 'done' }], [{ text: 'also', strong: true }], [{ text: '---' }]] }]);
