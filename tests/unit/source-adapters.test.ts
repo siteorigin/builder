@@ -404,11 +404,13 @@ describe('Sanity, Strapi and WordPress sources', () => {
     const counting = await server((req, res) => {
       const page = Number(req.url.searchParams.get('pagination[page]'));
       const counted = req.url.searchParams.get('pagination[withCount]') === 'true';
-      send(res, { data: page <= 2 ? [{ id: page, documentId: `doc-${page}`, title: `Post ${page}` }] : [], meta: { pagination: { page, pageSize: 100, ...(counted ? { pageCount: 2, total: 2 } : {}) } } });
+      send(res, { data: page <= 2 ? [{ id: page, documentId: `doc-${page}`, title: `Post ${page}` }] : [], meta: { pagination: { page, pageSize: 100, ...(counted ? { pageCount: 2, total: 150 } : {}) } } });
     });
-    const read = await run({ adapter: 'strapi', config: { url: counting.origin, resource: 'articles' } });
+    // A Site address that turns the count off is overruled: without it no read can be known whole.
+    const read = await run({ adapter: 'strapi', config: { url: `${counting.origin}/?pagination[withCount]=false&locale=en`, resource: 'articles' } });
     expect(read.ok && read.records.map((r) => r.externalId)).toEqual(['doc-1', 'doc-2']);
-    expect(counting.seen.map((r) => r.url.searchParams.get('pagination[withCount]'))).toEqual(['true', 'true']);
+    expect(counting.seen.map((r) => r.url.searchParams.getAll('pagination[withCount]'))).toEqual([['true'], ['true']]);
+    expect(counting.seen[0].url.searchParams.get('locale')).toBe('en');
     // A server that still gives no count is refused rather than read in part.
     const silent = await server((req, res) => send(res, { data: [{ id: 1, title: 'One' }], meta: { pagination: { page: Number(req.url.searchParams.get('pagination[page]')), pageSize: 100 } } }));
     expect(await run({ adapter: 'strapi', config: { url: silent.origin, resource: 'articles' } })).toMatchObject({ ok: false, code: 'invalid' });
