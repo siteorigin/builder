@@ -56,7 +56,7 @@ export const STATIC_CODE: Readonly<Record<string, readonly [shipped: string, unm
   'foundation.hero.centered': ['70272e075d0147ecabc0a98b70ba27079332c7768342be295124aab0cc627351', 'f3e5d220cde3840661e54825b6358e356fb2b902286902aa60b0faf9eef34ecd'],
   'foundation.hero.split': ['4efd5607fd30230793ef0f5381bb9fb90cbbee38d55cae51d5fec2077088b9cb', '0f3f4fb1f8a0d9500fa5d1bf0b1c7581cbf4510d58aa87f67880ae120ad50917'],
   'foundation.hero.screenshot': ['5d3e2409d690279db5721bad192a8e0cddf14f1891f0718d7deafcc03557890b', '0a4b1afed71b0dea7cf84bab445fc96a5534ab38cf1c6a6d7403d99aefbdb491'],
-  'foundation.shell.footer': ['44b736b0abdc0a3cff04c3a0f9f952807bbc43e372ba8d95b48ed53ee5252c95', '347861db7aac6cbea7482ed867d87f3cf6d6f6dd84f7d35dfab7979724ac9bcb']
+  'foundation.shell.footer': ['d70661c2a533ffc71d162dab1bb75707aead2ad1b78d26236e3b7bfac345a19e', 'dd60fd0df240fc2a81c4835043bed2282fcef336556ef06397b63bcc05d10d3c']
 };
 const STATIC_DIGESTS: ReadonlySet<string> = new Set(Object.values(STATIC_CODE).flat());
 
