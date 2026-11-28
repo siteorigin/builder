@@ -45,7 +45,7 @@ import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRe
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
 import { createRemoteCredentialStore, REMOTE_CREDENTIALS_FILE, RemoteCredentialError, type CredentialOwner, type RemoteCredentialStore } from './remote/credentials';
 import { httpsGitTransport, type RemotePushTransport } from './remote/transport';
-import { SNAPSHOT_ROOT_FILES, snapshotPlace } from './project/snapshot-inventory';
+import { listSnapshotFiles, SNAPSHOT_ROOT_FILES } from './project/snapshot-inventory';
 import { commitPublication, credentialProblem, projectPublication, publishedTree, treeOid, type PreparedPublication, type Projection, type PublicationStatus } from './publication';
 import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
@@ -148,8 +148,17 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
     const bytes = await read(join(dest, rel));
     if (bytes ? sha(bytes) !== hash : !existsSync(join(dir, rel))) return false;
   }
-  for (const e of await fs.readdir(dest, { withFileTypes: true })) if (e.isFile() && !covered(e.name) && !files.has(e.name) && !docs.has(e.name) && snapshotPlace(e.name).kind === 'tree') return false;
-  return true;
+  // Chosen from the copy as a snapshot chooses (never into a nested repository, nor through a link): its setup files
+  // and tests (#1484), which the fingerprint doesn't cover.
+  const copied = (await listSnapshotFiles(dest)).filter(({ path: rel }) => !covered(rel) && !files.has(rel) && !docs.has(rel));
+  if (!copied.length) return true;
+  // One the project's own walk leaves out is none a snapshot takes (in a repository whose marker, a link, the copy
+  // dropped), unless it is gone from the project since.
+  const held = await listSnapshotFiles(dir).then(
+    (l) => new Set(l.map((f) => f.path)),
+    () => null
+  );
+  return !!held && copied.every(({ path: rel }) => !held.has(rel) && existsSync(join(dir, rel)));
 }
 
 /** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */

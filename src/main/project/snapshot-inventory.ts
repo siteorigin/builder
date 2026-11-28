@@ -2,7 +2,8 @@
  * What a snapshot of a project holds (#1151): the files a Git-backed saved version (#1153) and the publication history
  * (#1154) are made from. An allowlist, never "everything but": the canonical documents (drafts included), the authored
  * code components, the project's source under src/ (generated and the author's own), the generated manifest, the
- * starter's configuration and lockfiles, and the public files under static/ (library media, used or not). Nothing
+ * starter's configuration and lockfiles, the developer's own setup files beside them and tests under tests/ (#1484),
+ * and the public files under static/ (library media, used or not). Nothing
  * private ever reaches a tree: not the brief or the copies an editor leaves beside it, not a credential or key at any
  * depth, not another repository or the editor's own state (`.git`, `.siteorigin/`), not installed tools or build
  * caches, not a link or a special file, not a path that would lead out of the project.
@@ -37,9 +38,9 @@ import { isMissing, stampOf, statTrusted } from './stable-read';
 export type SnapshotExclusion =
   /** Not a plain relative path inside the project. */
   | 'unsafe-path'
-  /** A repository (`.git`, a folder or a worktree's file) or the editor's own state (`.siteorigin/`), at any depth. */
+  /** A repository (`.git`, a folder or a worktree's file, `.gitmodules`) or the editor's own state (`.siteorigin/`), at any depth. */
   | 'local-state'
-  /** Installed tools and build output: `node_modules/`, `.svelte-kit/`, Vite's caches, `build/`. */
+  /** Installed tools, build and test output: `node_modules/`, `.svelte-kit/`, Vite's and Wrangler's caches, `build/`, a test run's reports. */
   | 'cache'
   /** What a computer leaves beside files (`.DS_Store`, `Thumbs.db`, `._` files) and half-written temporary files. */
   | 'clutter'
@@ -62,14 +63,30 @@ export type SnapshotPlace =
 /** The files at the project's top a snapshot holds: its manifest, the starter's configuration and lockfile, and the files the app writes there. */
 export const SNAPSHOT_ROOT_FILES: readonly string[] = [MANIFEST_FILE, 'package.json', 'package-lock.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'NOTICE.md'];
 const ROOT_FILES = new Set(SNAPSHOT_ROOT_FILES);
+/**
+ * The developer's own setup files at the project's top a snapshot holds too (#1484), as an editable export does:
+ * TypeScript's (`tsconfig.json`, `tsconfig.node.json`), a host's (`wrangler.toml`, `netlify.toml`), and any tool's
+ * `<name>.config.<js|ts|…|json>`, named for a setup or not (`eslint.config.js`, `vitest.config.ts`,
+ * `playwright.config.e2e.ts`), but the copy Vite writes of its own beside it while it runs (`vite.config.ts.timestamp-…`).
+ * Spelled exactly.
+ */
+const DEVELOPER_ROOT_FILES = new Set(['wrangler.toml', 'wrangler.json', 'wrangler.jsonc', 'netlify.toml']);
+const DEVELOPER_ROOT_FILE = /^(tsconfig(\.[\w-]+)*\.json|[\w.-]+\.config(\.(?!timestamp-)[\w-]+)*\.(js|ts|mjs|cjs|mts|cts|json))$/;
+/** The folder of the project's own tests, held at any depth (#1484). */
+const TESTS = 'tests';
+/** What a test run writes into the tests' folder, held as a cache is: its reports at any depth, its coverage at the top. Folded. */
+const TEST_OUTPUT = new Set(['playwright-report', 'test-results', 'blob-report']);
+const TEST_COVERAGE = 'coverage';
 /** The folders at the project's top a snapshot looks in. */
-const ROOT_FOLDERS = new Set(['src', 'static', 'siteorigin', 'scripts']);
+const ROOT_FOLDERS = new Set(['src', 'static', 'siteorigin', 'scripts', TESTS]);
 /** The generator's record of what it wrote, beside the canonical documents. */
 export const GENERATED_MANIFEST = 'siteorigin/generated-manifest.json';
 /** The sync script an exported project with external sources carries (SYNC_SCRIPT in export.ts). */
 export const SNAPSHOT_SYNC_SCRIPT = 'scripts/sync-sources.mjs';
-const LOCAL_STATE = new Set(['.git', '.siteorigin']);
-const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp']);
+/** `.gitmodules` among them: Git reads one as its own settings, so no version can hold one (checkTreePath). */
+const LOCAL_STATE = new Set(['.git', '.gitmodules', '.siteorigin']);
+/** Wrangler's local state (#1126) among them: its local databases and bundles hold what `.dev.vars` gave them. */
+const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp', '.wrangler']);
 const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
 /** Names Windows gives another meaning: devices (COM¹ too), whatever their extension. */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
@@ -143,6 +160,7 @@ export function snapshotPlace(rel: string): SnapshotPlace {
     const why = partExcluded(parts[i], i);
     if (why) return excluded(why);
   }
+  if (testOutput(parts.slice(0, -1))) return excluded('cache');
   const name = fold(parts[parts.length - 1]);
   if (CLUTTER.test(name)) return excluded('clutter');
   if (copyOfPrivate(name) && !isCanonicalPath(rel)) return excluded('private');
@@ -157,21 +175,37 @@ export function snapshotPlace(rel: string): SnapshotPlace {
       return converter ? { kind: 'attachment', sourceId: converter, part: 'converter' } : excluded('source');
     }
   }
-  if (parts.length === 1) return ROOT_FILES.has(rel) ? TREE : excluded('outside');
-  if (parts[0] === 'src' || parts[0] === 'static') return TREE;
+  if (parts.length === 1) return ROOT_FILES.has(rel) || DEVELOPER_ROOT_FILES.has(rel) || DEVELOPER_ROOT_FILE.test(rel) ? TREE : excluded('outside');
+  if (parts[0] === 'src' || parts[0] === 'static' || parts[0] === TESTS) return TREE;
   if (parts[0] === 'siteorigin') return rel === GENERATED_MANIFEST || isCanonicalPath(rel) ? TREE : excluded('outside');
   return rel === SNAPSHOT_SYNC_SCRIPT ? TREE : excluded('outside');
 }
 
 /**
- * Whether a folder at `rel` can hold a file a snapshot takes, so the walk looks inside it: anywhere in src/ and
- * static/, only the canonical documents' folders in siteorigin/ (and the sources' own, for their attachments), and
+ * Whether a project file at `rel` is a developer's own, which a snapshot holds and a publication never carries
+ * (#1484): a setup file at the project's top beyond the starter's (DEVELOPER_ROOT_FILE), or anything under tests/.
+ * By its name alone: whether a snapshot holds it at all is snapshotPlace's to say.
+ */
+export function developerOnly(rel: string): boolean {
+  const parts = rel.split('/');
+  if (parts.length === 1) return !ROOT_FILES.has(rel) && (DEVELOPER_ROOT_FILES.has(rel) || DEVELOPER_ROOT_FILE.test(rel));
+  return parts[0] === TESTS;
+}
+
+/** Whether the folder at `parts` is, or is in, one a test run writes its reports or coverage into under tests/ (TEST_OUTPUT). */
+function testOutput(parts: readonly string[]): boolean {
+  return parts[0] === TESTS && parts.some((p, i) => i > 0 && (TEST_OUTPUT.has(fold(p)) || (i === 1 && fold(p) === TEST_COVERAGE)));
+}
+
+/**
+ * Whether a folder at `rel` can hold a file a snapshot takes, so the walk looks inside it: anywhere in src/, static/
+ * and tests/ (but a test run's reports), only the canonical documents' folders in siteorigin/ (and the sources' own, for their attachments), and
  * nothing deeper in scripts/.
  */
 function folderKept(rel: string): boolean {
   if (unsafePath(rel)) return false;
   const parts = rel.split('/');
-  if (!ROOT_FOLDERS.has(parts[0]) || !parts.every((p, i) => !partExcluded(p, i))) return false;
+  if (!ROOT_FOLDERS.has(parts[0]) || !parts.every((p, i) => !partExcluded(p, i)) || testOutput(parts)) return false;
   if (parts[0] === 'scripts') return parts.length === 1;
   if (parts[0] !== 'siteorigin') return true;
   const [, kind, , sub] = parts;

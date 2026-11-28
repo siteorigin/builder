@@ -848,6 +848,19 @@ describe('source export helpers', () => {
     for (const name of ['.dev.varsbackup', 'dev.vars', 'my.dev.vars.txt']) expect(isPrivateFileName(name), name).toBe(false);
   });
 
+  it('leaves direnv’s files and a test tool’s signed-in browser state out of the source, and keeps the tests (#1484)', async () => {
+    const src = temp();
+    for (const f of ['tests/api.test.js', 'tests/e2e/home.spec.ts', 'playwright.config.ts', 'static/authors.json']) write(src, f, f);
+    const secret = ['.envrc', '.envrc.local', 'tests/.envrc', 'tests/.auth/user.json', 'playwright/.auth/admin.json', 'tests/.Auth/state.json'];
+    for (const f of secret) write(src, f, 'SENTINEL_1484');
+    const dest = join(temp(), 'out');
+    await copyProjectSource(src, dest);
+    for (const f of secret) expect(existsSync(join(dest, f)), f).toBe(false);
+    for (const f of ['tests/api.test.js', 'tests/e2e/home.spec.ts', 'playwright.config.ts', 'static/authors.json']) expect(readFileSync(join(dest, f), 'utf8'), f).toBe(f);
+    for (const name of ['.envrc', '.envrc.local', '.auth', '.AUTH']) expect(isPrivateFileName(name), name).toBe(true);
+    for (const name of ['envrc', '.envrcs', 'auth.js', '.authors', 'oauth']) expect(isPrivateFileName(name), name).toBe(false);
+  });
+
   it('checks generated files against the hashes the fingerprint took, and reads only those it did not take', async () => {
     const dir = temp();
     write(dir, 'src/routes/+page.svelte', 'page');

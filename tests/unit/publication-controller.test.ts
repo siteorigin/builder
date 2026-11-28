@@ -7,7 +7,7 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssetRecord, ProjectState } from '@shared/types';
 
@@ -388,5 +388,43 @@ describe('preparing a publication', { timeout: 30_000 }, () => {
     const home = join(stale, 'siteorigin/pages', `${state.site.homePageId}.json`);
     writeFileSync(home, JSON.stringify({ ...JSON.parse(readFileSync(home, 'utf8')), title: 'Changed outside' }, null, 2));
     expect(await projectPublication(stale, state)).toEqual({ ok: false, message: 'The project changed on disk while the publication was being prepared. Prepare the publication again in a moment.', warnings: [] });
+  });
+
+  it('carries none of the developer’s own setup files or tests, which a snapshot holds (#1484)', async () => {
+    const { projectPublication, publicationFiles } = await import('../../src/main/publication');
+    const { readState } = await import('../../src/main/project/documents');
+    const { leaveOutDrafts: published } = await import('../../src/main/export');
+    const dir = await project();
+    const state = await readState(dir);
+    const developers = ['tsconfig.json', 'wrangler.toml', 'netlify.toml', 'searchsocket.config.ts', 'eslint.config.js', 'tests/api.test.js', 'tests/fixtures/page.json'];
+    const staged = async (more?: (copy: string) => void) => {
+      const copy = temp('staged');
+      cpSync(dir, copy, { recursive: true });
+      for (const rel of developers) {
+        mkdirSync(dirname(join(copy, rel)), { recursive: true });
+        writeFileSync(join(copy, rel), `// ${rel}\n`);
+      }
+      more?.(copy);
+      await published(copy, state);
+      return copy;
+    };
+    // Listed from a copy nothing has pruned yet, they are still none of the publication's files.
+    const listed = await publicationFiles(await staged());
+    const unpruned = listed.ok ? listed.files.map((f) => f.path) : [];
+    expect(unpruned).toContain('package.json');
+    for (const rel of developers) expect(unpruned, rel).not.toContain(rel);
+    const copy = await staged();
+    const projected = await projectPublication(copy, state);
+    expect(projected.ok).toBe(true);
+    const paths = projected.ok ? projected.files.map((f) => f.path) : [];
+    expect(paths).toContain('package.json');
+    expect(paths).toContain('vite.config.js');
+    for (const rel of developers) {
+      expect(paths, rel).not.toContain(rel);
+      expect(existsSync(join(copy, rel)), rel).toBe(false);
+    }
+    // A build setting that loads one of them loads a file the publication does not carry.
+    const helped = await staged((d) => writeFileSync(join(d, 'vite.config.js'), `import search from './searchsocket.config.ts';\n${readFileSync(join(d, 'vite.config.js'), 'utf8')}`));
+    expect(await projectPublication(helped, state)).toEqual({ ok: false, message: 'vite.config.js loads searchsocket.config.ts, which a publication does not carry. Move it into src/, then prepare the publication again.', warnings: [] });
   });
 });
