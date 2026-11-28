@@ -1,15 +1,16 @@
 import { useId } from 'react';
-import { appMarkMarkup, MARK_VIEWBOX } from '@shared/app-icon';
+import { addoMarkup, appMarkMarkup, MARK_VIEWBOX } from '@shared/app-icon';
 
 /**
  * The app's mark: the app icon's tile (src/shared/app-icon.ts), SiteOrigin's Addo in charcoal on white. It always
  * carries its own tile, with a faint edge, so it reads the same on light and dark backgrounds, and at small sizes it
- * draws the icon's heavier small-size version, as the packaged icons do.
+ * draws the icon's heavier small-size version, as the packaged icons do. `tile={false}` draws Addo alone, in the same
+ * place, for a control whose own face is the tile (the toolbar's home button, Toolbar.css .toolbar-mark).
  */
-export function AppMark({ size = 36, className, title }: { size?: number; className?: string; title?: string }) {
+export function AppMark({ size = 36, className, title, tile = true }: { size?: number; className?: string; title?: string; tile?: boolean }) {
   // Gradient, clip and filter ids must be unique per instance and safe inside url(#...).
   const id = 'mark-' + useId().replace(/[^\w-]/g, '');
-  const markup = (title ? `<title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>` : '') + appMarkMarkup(size, id);
+  const markup = (title ? `<title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>` : '') + (tile ? appMarkMarkup(size, id) : addoMarkup(size));
   return (
     <svg
       className={className}
