@@ -14,11 +14,12 @@ import { seoLength, seoText } from '@shared/seo';
 import type { Collection, EntryDoc, OwnerRef, ProjectState } from '@shared/types';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
+import { siteEntries } from '@shared/collections';
 import { checkPublicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
 import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
-import { showsEntryText, type SiteLink } from '@generator/checks';
+import { ownSiteAddress, showsEntryText, type SiteLink } from '@generator/checks';
 import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
 import { isLibraryImage } from '@generator/seo-graph';
@@ -322,6 +323,69 @@ const genericLinkText: SeoAuditRule = {
   }
 };
 
+/** Query keys a WordPress site read a post, page or category by (`/?p=88`): a static site answers none of them. */
+const WORDPRESS_QUERIES = ['p', 'page_id', 'cat'];
+
+/** Where a link is, as the author knows the place: a page or an entry by its title, the header or footer, or a layout. */
+function linkPlace(state: ProjectState, l: SiteLink): string {
+  if (l.owner.kind === 'shell') return `the shared ${l.owner.id}`;
+  if (l.owner.kind === 'page') return `“${seoText(state.pages[l.owner.id]?.title) || state.pages[l.owner.id]?.route}”`;
+  if (l.owner.kind === 'template') return `the ${seoText(state.collections[l.owner.id]?.settings.name) || l.owner.id} layout`;
+  const at = Object.values(state.collections).find((c) => Object.hasOwn(c.entries, l.owner.id));
+  return `“${seoText(at?.entries[l.owner.id]?.title) || l.owner.id}”`;
+}
+
+/**
+ * Links typed as a full web address on the site's own public URL (one kept from an imported site that this website
+ * replaces, say) that lead to an address the website has nothing at: no page, collection entry, collection index or
+ * archive page, and no old address kept working. Once the website is published there, each leads to Page not found.
+ * A draft's address is left to the export, which already stops at links to a draft; a file's address (one whose last
+ * part has a dot: a PDF, the sitemap) is not judged, since the site's own files are not all in the project. One finding
+ * per address, naming where it is linked from, the address linked from the most places first.
+ */
+const brokenOwnLinks: SeoAuditRule = {
+  id: 'broken-own-links',
+  check({ state, links }) {
+    const own = links().flatMap((l) => {
+      if (l.link.type !== 'url') return [];
+      const at = ownSiteAddress(state, l.link.target);
+      return at ? [{ l, at }] : [];
+    });
+    if (!own.length) return [];
+    const answered = new Set<string>(['/']);
+    for (const p of Object.values(state.pages)) if (typeof p.route === 'string') answered.add(p.route.toLowerCase());
+    for (const e of siteEntries(state)) answered.add(e.route.toLowerCase());
+    for (const p of archivePages(publishedState(state))) answered.add(p.route.toLowerCase());
+    for (const r of Array.isArray(state.site.redirects) ? state.site.redirects : []) if (typeof r?.from === 'string') answered.add(r.from.toLowerCase());
+    const broken = new Map<string, SiteLink[]>();
+    for (const { l, at } of own) {
+      const last = at.route.slice(0, -1).split('/').pop() ?? '';
+      if (last.includes('.')) continue;
+      const byQuery = WORDPRESS_QUERIES.some((k) => at.url.searchParams.has(k));
+      if (!byQuery && answered.has(at.route.toLowerCase())) continue;
+      const list = broken.get(l.link.target) ?? [];
+      list.push(l);
+      broken.set(l.link.target, list);
+    }
+    // The address linked from the most places first, as the import's review lists them.
+    const grouped = [...broken].map(([url, list]) => ({ url, list, places: [...new Set(list.map((l) => linkPlace(state, l)))] }));
+    grouped.sort((a, b) => b.places.length - a.places.length || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+    return grouped.map(({ url, list, places }) => {
+      const from = places.length === 1 ? places[0] : `${places[0]} and ${places.length - 1} other ${places.length === 2 ? 'place' : 'places'}`;
+      return finding('content', {
+        severity: 'warning',
+        code: 'SEO_LINK_OWN_MISSING',
+        message: `${from.charAt(0).toUpperCase()}${from.slice(1)} ${places.length === 1 ? 'links' : 'link'} to ${url}, an address of this site the website has no page at.`,
+        explanation:
+          'The link is on the site’s own web address, so once the website is published there, visitors who follow it find Page not found. Point it at a page or post of the site, or keep the address working with a redirect in Site settings.',
+        aiFixable: false,
+        ...linkFix(state, list[0]),
+        site: `own-link|${url}`
+      });
+    });
+  }
+};
+
 /** The published entries whose page shows their text, as the website shows it, each with its collection and a name for messages. */
 function shownEntries(state: ProjectState, documents: readonly EffectiveSeo[]) {
   const live = publishedState(state);
@@ -573,4 +637,4 @@ const pageStructuredData: SeoAuditRule = {
 };
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, brokenOwnLinks, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];

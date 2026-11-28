@@ -186,7 +186,6 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   while (accepted.length) {
     const { item, key, status } = accepted.shift()!;
     const report = emptyReport();
-    let oldSite = 0;
     // A relative address is read from the post's own address, as a browser on the old site read it.
     const ownLink = childText(item, 'link').trim();
     let base = siteOrigin ? `${siteOrigin}/` : 'relative://site/';
@@ -217,9 +216,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       // which named something other than the page at its path.
       const page = p !== null ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
       if (page) return page;
-      // Somewhere else on the old site: kept going there while it is still up.
+      // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
+      // (see planPostImport), since the new site may replace the old one there.
       if (url.protocol === 'relative:') return null;
-      oldSite++;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
@@ -244,7 +243,6 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     const linkUrl = childText(item, 'link').trim();
     const notes = reportNotes(report);
-    if (oldSite) notes.push(`${oldSite === 1 ? 'A link still goes' : `${oldSite} links still go`} to the old site.`);
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;
     try {

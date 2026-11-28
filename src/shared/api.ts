@@ -1032,6 +1032,11 @@ export interface PostImportPreview {
   redirectsLost?: number;
   /** What is not imported at all. */
   skipped: string[];
+  /**
+   * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
+   * the new address an old category archive's sends visitors to, when the import keeps it working.
+   */
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
 }
