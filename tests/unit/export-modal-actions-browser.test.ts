@@ -294,18 +294,28 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await site.getAttribute('aria-disabled')).toBe('true');
     expect(await site.getAttribute('aria-describedby')).toBe('export-blocked-tools');
     expect(await source.getAttribute('aria-disabled')).toBeNull();
+    // The dialog says why as it opens on it.
+    expect(await page.getByRole('dialog').getAttribute('aria-describedby')).toBe('export-blocked-tools');
+    // Capturing review pages builds the website too, so it waits as well.
+    await page.getByRole('button', { name: 'Client review pages' }).click();
+    const capture = page.getByRole('button', { name: /^Capture/ });
+    expect(await capture.getAttribute('aria-disabled')).toBe('true');
+    expect(await page.locator('.client-review').innerText()).toContain('Capturing waits until the website can be exported.');
     // Clicked all the same, it starts nothing.
     await site.dispatchEvent('click');
-    expect(await page.evaluate<number>('window.__exports')).toBe(0);
+    await capture.dispatchEvent('click');
+    expect(await site.locator('.export-card-end').innerText()).not.toMatch(/Building/);
     // Tools ready, preview still starting: the website exports.
     await page.evaluate(`window.__setRuntime({ state: 'starting' })`);
     expect(await note.count()).toBe(0);
     expect(await site.getAttribute('aria-disabled')).toBeNull();
+    expect(await capture.getAttribute('aria-disabled')).toBeNull();
     await site.click();
-    await expect.poll(() => page.evaluate<number>('window.__exports')).toBe(1);
     // A failure that names no page or component is never told to check one.
     const result = page.locator('.export-result');
     await expect.poll(() => result.count()).toBe(1);
+    // Only the click made once the tools were ready started an export.
+    expect(await page.evaluate<number>('window.__exports')).toBe(1);
     expect(await result.innerText()).toMatch(/Try exporting again\./);
     expect(await result.innerText()).not.toMatch(/named above/);
   });

@@ -270,6 +270,16 @@ describe('a development build, with no tools shipped', () => {
     expect(existsSync(marker())).toBe(true);
   });
 
+  it('leaves tools an install stopped part way through never marked as set up, even ones that were set up before (#1395)', async () => {
+    await install();
+    expect(await dependenciesReady(project)).toBe(true);
+    // Installed again (the tools changed since, say), npm fails part way, leaving what it had installed.
+    npm.results.push({ code: 1, stderr: 'npm error code ENOSPC\nnpm error nospc no space left on device\n' });
+    await expect(install()).rejects.toThrow(/ENOSPC/);
+    expect(existsSync(marker())).toBe(false);
+    expect(await dependenciesReady(project)).toBe(false);
+  });
+
   it('keeps a download that failed for another reason a plain failure', async () => {
     npm.results.push({ code: 1, stderr: 'npm error code ENOSPC\nnpm error nospc no space left on device\n' });
     const error = await install().catch((e) => e);

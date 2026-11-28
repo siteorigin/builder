@@ -616,6 +616,8 @@ export class Controller {
    * changing them.
    */
   private toolsWork = { running: 0, begun: 0 };
+  /** The openings whose preview has looked at their website tools: until it has, tools not set up are about to be. */
+  private toolsLooked = new WeakSet<ProjectSession>();
   private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
@@ -1850,6 +1852,7 @@ export class Controller {
     const ready = await dependenciesReady(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
+    this.toolsLooked.add(session);
     if (!ready) {
       if (session.readOnly) {
         this.status({ state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
@@ -2485,21 +2488,22 @@ export class Controller {
       const owned = async () => this.session === s && (await s.stillOwner());
       if (!(await owned())) return;
       this.status({ state: 'preparing', message: 'Reinstalling website tools…' });
-      // From the first file removed until the install it leads to is over, a website build copies none of the tools.
+      // While the files go, a website build copies none of the tools. The marker goes first, so tools left part removed
+      // are never taken for set up; the install that follows is tracked as every install is (startRuntimeChecked).
       const done = this.changingTools();
       try {
-        try {
-          await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
-          if (!(await owned())) return;
-          await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
-        } catch (e) {
-          this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
-          return;
-        }
-        await this.startRuntimeNow();
+        await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+        if (!(await owned())) return;
+        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
+      } catch (e) {
+        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        return;
       } finally {
+        // The tools are about to be set up again, not missing, until the preview has looked at them once more.
+        this.toolsLooked.delete(s);
         done();
       }
+      await this.startRuntimeNow();
     });
   }
 
@@ -2520,10 +2524,15 @@ export class Controller {
    * so one started meanwhile would build from a half-installed copy and fail in ways that name nothing of the project.
    */
   private async toolsUnready(s: ProjectSession): Promise<string | null> {
-    if (this.toolsWork.running === 0 && (await dependenciesReady(s.dir))) return null;
-    // Not set up, and nothing setting them up: the preview said why (Project health shows it), and reinstalling is the way back.
-    if (this.toolsWork.running === 0 && this.session === s && this.runtimeStatus().state === 'error') return TOOLS_FAILED;
-    return TOOLS_SETTING_UP;
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    if (await dependenciesReady(s.dir)) return null;
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    // Not set up, and nothing setting them up. The preview stopped before setting them up (it says why, and Project
+    // health shows it), or has not looked at them yet for this opening, which it is about to; or it found them set up
+    // and they have changed since, which only a reinstall puts right.
+    const runtime = this.session === s ? this.runtimeStatus() : null;
+    if (runtime?.state === 'error') return runtime.message === TRUST_CHANGED ? TRUST_CHANGED : TOOLS_FAILED;
+    return this.toolsLooked.has(s) ? TOOLS_MISSING : TOOLS_SETTING_UP;
   }
 
   /**
@@ -5111,10 +5120,13 @@ export class Controller {
       tools = await timed('export.copyTools', () => (this.keptTools ??= new KeptTools(join(this.stagingRoot(), 'tools'))).take(s.dir, project, s.settleMs))();
     } catch (e) {
       if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
-      return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
+      return { ok: false, message: TOOLS_MISSING, warnings: [(e as Error).message] };
     }
-    // The copy is thrown away with the staging folder, and never kept for the next export.
+    // The copy is thrown away with the staging folder, and never kept for the next export. Another app that took the
+    // project over meanwhile may be changing its tools where this app's count cannot see.
     if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the website was built.', warnings: [] };
+    if (!(await s.stillOwner())) return { ok: false, message: s.readOnly?.reason ?? READ_ONLY, warnings: [] };
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
     // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
     if (build.exited) await timed('export.keepTools', () => tools.keep())();
@@ -5354,6 +5366,8 @@ class FolderTakenError extends Error {}
 const TOOLS_SETTING_UP = 'SiteOrigin Builder is still setting up the website tools. Wait until it finishes, then try again.';
 /** A website build asked for once setting the tools up has failed (#1395): Project health has the details and the way back. */
 const TOOLS_FAILED = 'The website tools could not be set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
+/** A website build asked for when the website tools are not set up and nothing is setting them up (#1395). */
+const TOOLS_MISSING = 'The website tools are not set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
 
 export function friendlyError(msg: string): string {
   if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))

@@ -524,7 +524,7 @@ export function ExportModal() {
   // Said once when it changes: a note that simply appears or disappears is not reliably announced.
   // With something else also in the way, the AI's note can't promise an export once it finishes: it says the export
   // waits, and the other note says what else to do.
-  const otherBlocker = conflicts > 0 || draftLinks.length > 0;
+  const otherBlocker = conflicts > 0 || draftLinks.length > 0 || toolsSettingUp;
   const aiNote = otherBlocker
     ? awaiting
       ? 'The AI is waiting for your answer in the AI panel. Exporting waits until you answer and it finishes.'
@@ -596,7 +596,7 @@ export function ExportModal() {
     setResult(null);
   };
   const blockedBy = [readOnly && 'export-blocked-read-only', aiBusy && !readOnly && 'export-blocked-ai', conflicts > 0 && 'export-blocked-conflict'].filter(Boolean) as string[];
-  const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : []), ...(toolsSettingUp && !blocked ? ['export-blocked-tools'] : [])];
+  const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : []), ...(toolsSettingUp ? ['export-blocked-tools'] : [])];
   const websiteUnavailable = blocked || draftLinks.length > 0 || toolsSettingUp;
   const cardState = (kind: ExportKind) => (busy === kind ? ' is-running' : '');
   const formatWords = format === 'zip' ? 'in one ZIP file' : 'as a folder';
@@ -746,7 +746,7 @@ export function ExportModal() {
     <Modal
       title="Export your website"
       icon={<Upload />}
-      describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : undefined}
+      describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : toolsSettingUp ? 'export-blocked-tools' : undefined}
       onClose={close}
       busy={!!busy || !!reviewBusy}
       footer={
@@ -859,7 +859,7 @@ export function ExportModal() {
                 )}
               </div>
             )}
-            {toolsSettingUp && !blocked && (
+            {toolsSettingUp && (
               <div className="scope-note info export-blocker" data-testid="export-blocked-tools">
                 <Info aria-hidden />
                 <span className="export-note-body export-blocker-text" id="export-blocked-tools">
@@ -908,7 +908,7 @@ export function ExportModal() {
             {health && <HealthSummary notes={health} disabled={locked} />}
             {plan && pagesText?.long && <PageLists published={plan.published} drafts={plan.drafts} />}
             {history}
-            {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={blocked || draftLinks.length > 0} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
+            {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={websiteUnavailable} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
           </>
         )}
       </div>

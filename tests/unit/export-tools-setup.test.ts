@@ -8,11 +8,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// The folder picker, counted: the author is asked where to export only when the website can be built.
+const picker = vi.hoisted(() => ({ asked: 0 }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => tmpdir(), getVersion: () => '0.0.0' },
   BrowserWindow: class {},
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
-  dialog: {},
+  dialog: { showOpenDialog: async () => (picker.asked++, { canceled: true, filePaths: [] }), showSaveDialog: async () => (picker.asked++, { canceled: true }) },
   shell: {}
 }));
 vi.mock('../../src/main/settings', () => ({
@@ -129,6 +131,7 @@ afterEach(async () => {
   env.install?.resolve();
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+  picker.asked = 0;
   Object.assign(env, { ready: true, installs: 0, install: null, builds: 0, takes: 0, take: null, starting: null, release: () => {} });
 });
 
@@ -159,6 +162,11 @@ describe('exporting the website while its tools are set up', () => {
   it('builds nothing while the tools are still being set up, says so, and exports once they are ready', async () => {
     const c = await opened(false);
     await until(() => env.installs === 1 && c.snapshot()?.runtime.state === 'preparing');
+    // Said before the author is asked where to put it.
+    const asked = await c.exportStatic('folder');
+    expect(asked.ok).toBe(false);
+    expect(asked.message).toMatch(STILL_SETTING_UP);
+    expect(picker.asked).toBe(0);
     const first = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(first.ok).toBe(false);
     expect(first.message).toMatch(STILL_SETTING_UP);
@@ -166,7 +174,9 @@ describe('exporting the website while its tools are set up', () => {
     expect(env.takes).toBe(0);
     expect(env.builds).toBe(0);
     // The editable project needs no tools, so it still exports.
-    expect((await c.exportSourceTo(join(temp('out'), 'source'))).ok).toBe(true);
+    const source = join(temp('out'), 'source');
+    expect((await c.exportSourceTo(source)).ok).toBe(true);
+    expect(existsSync(join(source, 'siteorigin'))).toBe(true);
     env.install!.resolve();
     await until(() => c.snapshot()?.runtime.state === 'ready');
     const dest = join(temp('out'), 'site');
@@ -187,6 +197,38 @@ describe('exporting the website while its tools are set up', () => {
     expect(r.message).toMatch(/Reinstall website tools/);
     expect(env.takes).toBe(0);
     expect(env.builds).toBe(0);
+    expect((await c.exportStatic('folder')).message).toMatch(/website tools could not be set up/i);
+    expect(picker.asked).toBe(0);
+  });
+
+  it('says how to set the tools up again, never to wait, when they stop being set up with nothing setting them up', async () => {
+    const c = await opened(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready');
+    // The tools' marker damaged (or a package removed) while the preview runs: nothing sets them up again by itself.
+    env.ready = false;
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(false);
+    expect(r.message).not.toMatch(STILL_SETTING_UP);
+    expect(r.message).toMatch(/website tools are not set up.*Reinstall website tools/);
+    expect(env.builds).toBe(0);
+  });
+
+  it('exports once a reinstall has set the tools up, while the preview it restarts is still starting', async () => {
+    const c = await opened(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready');
+    env.starting = new Promise<void>((r) => (env.release = r));
+    env.ready = false;
+    const repairing = c.repairDependencies();
+    await until(() => env.installs === 1);
+    expect((await c.buildStaticTo(join(temp('out'), 'site'))).message).toMatch(STILL_SETTING_UP);
+    env.install!.resolve();
+    await until(() => c.snapshot()?.runtime.state === 'starting');
+    const dest = join(temp('out'), 'site');
+    const r = await c.buildStaticTo(dest);
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(dest, 'index.html'))).toBe(true);
+    env.release();
+    await repairing;
   });
 
   it('builds nothing from tools copied while a reinstall began', async () => {
