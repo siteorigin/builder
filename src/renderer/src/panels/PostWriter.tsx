@@ -29,7 +29,7 @@ import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { setTypedAheadField } from '../lib/typed-ahead';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
-import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
+import { MAX_POST_TITLE, futureDateWarning, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
@@ -1020,9 +1020,24 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   // canvas's page, so only the link is kept.
   const setValue = (name: string, value: unknown, label: string, edit?: PendingEdit) =>
     edit && (value as { type?: unknown } | null)?.type !== 'anchor' ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
+  // A published entry dated ahead is still on the website: said under its date, and in the bar, which shows with the
+  // details closed. Read from the saved entry, so it follows a change made anywhere (#1317).
+  const futureDate = futureDateWarning(entry, nounLower, state.site.language, todayArticleDate());
   const details = (
     <div className="post-fields">
-      <Field label="Publication date" hint={`A date in the past backdates the ${nounLower}.`}>
+      <Field
+        label="Publication date"
+        hint={
+          futureDate ? (
+            <>
+              <span className="field-warning">{futureDate}</span>
+              Static exports don’t schedule publishing.
+            </>
+          ) : (
+            `A date in the past backdates the ${nounLower}.`
+          )
+        }
+      >
         <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, `Change ${nounLower} date`) : undefined) : refuse())} />
       </Field>
       <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
@@ -1135,6 +1150,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             {published ? 'Published' : 'Draft'}
           </span>
         )}
+        {!gone && futureDate && (
+          <span className="badge amber" title={`${futureDate} Static exports don’t schedule publishing.`}>
+            <Clock aria-hidden="true" />
+            Future date
+          </span>
+        )}
+        {/* Always there, so a date moved ahead is announced, however it was changed. */}
+        <span className="sr-only" role="status">
+          {!gone && futureDate ? `${futureDate} Static exports don’t schedule publishing.` : ''}
+        </span>
         {readOnly && (
           <span className="badge" data-testid="entry-read-only" title="Synced from an external source: change it there, or detach the collection to edit it here.">
             Read-only
