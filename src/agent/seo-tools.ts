@@ -88,7 +88,7 @@ export const SITE_SEO_ARGS = z
     llmsFull: z.boolean().optional(),
     markdownMirrors: z.boolean().optional(),
     llmsSummary: text(TEXT_LIMITS.siteDescription),
-    webmcp: z.boolean().optional().describe('WebMCP: contact forms and site search as tools AI agents in visitors\' browsers can use.'),
+    webmcp: z.boolean().optional().describe('WebMCP: contact and signup forms and site search as tools AI agents in visitors\' browsers can use.'),
     identity: IDENTITY_ARG.nullable().optional().describe('The publisher, for search and AI answer engines.'),
     crawlerPolicy: CRAWLER_POLICY_ARG.nullable().optional().describe('robots.txt.')
   })

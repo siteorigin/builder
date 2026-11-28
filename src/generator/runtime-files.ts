@@ -198,6 +198,7 @@ export const ACTION_SVELTE = `<script>
 
 	let anchor = $state();
 	let dialog = $state();
+	let caption = $state();
 	let slides = $state([]);
 	let index = $state(0);
 	// The link that opened the viewer, which gets focus back however far the visitor moves through the group.
@@ -230,6 +231,12 @@ export const ACTION_SVELTE = `<script>
 		if (!dialog || dialog.open) return;
 		dialog.showModal();
 		dialog.querySelector('.so-viewer__close')?.focus();
+	});
+
+	// Each photo starts with its own caption at the top, however far the visitor read the last one: the caption stays
+	// the same element as the photo changes (and keeps focus), so its scroll would otherwise carry over.
+	$effect(() => {
+		if (current && caption) caption.scrollTop = 0;
 	});
 
 	// A viewer whose photo stops showing (a gallery hidden at the new screen width) would be an invisible modal: it closes.
@@ -301,7 +308,7 @@ export const ACTION_SVELTE = `<script>
 			</button>
 			<figure class="so-viewer__figure">
 				<img class="so-viewer__img" src={current.src} alt={current.alt} width={current.width} height={current.height} decoding="async" />
-				{#if current.caption}<figcaption class="so-viewer__caption">{current.caption}</figcaption>{/if}
+				{#if current.caption}<figcaption bind:this={caption} class="so-viewer__caption">{current.caption}</figcaption>{/if}
 			</figure>
 			{#if slides.length > 1}
 				<div class="so-viewer__nav">

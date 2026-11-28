@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -468,6 +468,8 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
+  /** Look at what the watches were told while an AI request held the project, now that it has ended (#1533). */
+  private lookAfterAi: () => void = () => undefined;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -683,7 +685,7 @@ export class Controller {
       history: s.historyInfo(),
       versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s), ...s.refusedSourceDiagnostics()],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -706,6 +708,11 @@ export class Controller {
   broadcast() {
     this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /** An AI request that held the project ended: what the file watches were told meanwhile is looked at. */
+  aiEnded() {
+    this.lookAfterAi();
   }
 
   /**
@@ -1654,6 +1661,10 @@ export class Controller {
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
     });
+    // An outside edit of a code component refused for its errors, or one no longer refused, is told at once (#1533).
+    session.on('refused-sources', () => {
+      if (this.session === session) this.broadcast();
+    });
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
@@ -2417,6 +2428,13 @@ export class Controller {
     const onChange = (path: string | null) => {
       if (path === null) owed = true;
       else named.add(path);
+      lookSoon();
+    };
+    // A change told while an AI request held the project waited for it, with no later one to bring it to a look.
+    this.lookAfterAi = () => {
+      if (current() && (named.size || owed)) lookSoon();
+    };
+    const lookSoon = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         // The watch has seen the documents change and gone quiet: what follows is the look at them.
@@ -2548,6 +2566,8 @@ export class Controller {
     this.watchers = [];
     this.unwatched.clear();
     this.watchGeneration++;
+    // Its watches' look holds the closed session: let it go with them.
+    this.lookAfterAi = () => undefined;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);
@@ -3215,7 +3235,7 @@ export class Controller {
    * Import files. `only` limits a picker that can only use one kind, before anything is written to the project.
    * `choices` is what the author confirmed in a review (see reviewImport): it holds for the opening it was made in.
    */
-  async importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }> {
+  async importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; restoredAssetIds?: string[]; message?: string; note?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
     if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
@@ -3233,8 +3253,10 @@ export class Controller {
       const span = perf.span('controller.importAssets');
       let added = 0;
       try {
-        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
+        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; restoredAssetIds?: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
           const ids: string[] = [];
+          // Fonts already in the library whose missing file this import put back (#1425).
+          const restored: string[] = [];
           const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
           const notes: string[] = [];
           const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
@@ -3255,7 +3277,8 @@ export class Controller {
             known,
             this.writeFence(s),
             // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
-            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
+            // A font's missing file is put back only while its record still names that file.
+            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing, repair: (record) => this.restoreFence(s, record) }
           );
           const started = outcomes.findIndex((o) => !o);
           // The files that came to each record, by name: those that matched are one record, and the author is told which.
@@ -3266,8 +3289,9 @@ export class Controller {
               errors.push(o.error.message);
               continue;
             }
-            const { record, existing, font, note } = o;
+            const { record, existing, restored: back, font, note } = o;
             const name = originalNameOf(picked[i]);
+            if (back && !restored.includes(record.id)) restored.push(record.id);
             const same = matched.get(record.id);
             if (same) same.names.push(name);
             else {
@@ -3283,6 +3307,8 @@ export class Controller {
             if (names.length > 1) notes.push(`${listNames(names)} match, so Assets keeps only one file for them: ${record.originalName ?? record.name}.`);
           }
           if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
+          // Project health and Assets stop saying a restored font is missing as soon as the answer arrives.
+          if (restored.length) await this.checkAssetFiles(s);
           if (backfills.length) {
             const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
             if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
@@ -3298,10 +3324,11 @@ export class Controller {
             const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
             if (!r.ok) {
               for (const a of waiting) claimed.delete(a.id);
-              return { answer: { ok: false, assetIds: [], message: r.error?.message } };
+              // A font's file already put back stays back, and is said so.
+              return { answer: { ok: false, assetIds: [...restored], ...(restored.length ? { restoredAssetIds: restored } : {}), message: r.error?.message } };
             }
           }
-          const answer = { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
+          const answer = { ok: errors.length === 0, assetIds: ids, ...(restored.length ? { restoredAssetIds: restored } : {}), message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
           // Started inside this import's hold on the asset sweep, so there is no moment between them for a sweep.
           return { answer, rest: waiting.length ? this.makeCopies(s, waiting) : undefined };
         });
@@ -4044,7 +4071,8 @@ export class Controller {
   /**
    * Find the file of a library image whose original is missing. The same picture is put back where the library
    * expects it, with its smaller copies, and the project itself does not change. A different picture becomes the
-   * image's file (one step that can be undone), so every use, with its alt text, shows it. `path` skips the dialog.
+   * image's file (one step that can be undone), so every use, with its alt text, shows it. A font takes only its very
+   * file, put back the same way (#1425). `path` skips the dialog.
    */
   async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
@@ -4053,16 +4081,17 @@ export class Controller {
     const before = s.state.assets.assets[assetId];
     // A document's file can be swapped for a new version whenever the author likes: its links follow.
     const document = before?.kind === 'document';
-    const what = document ? 'document' : 'image';
+    const font = before?.kind === 'font';
+    const what = document ? 'document' : font ? 'font' : 'image';
     const gone = { ok: false, message: `That ${what} is no longer in the library.` };
-    if (before?.kind !== 'image' && !document) return gone;
+    if (before?.kind !== 'image' && !document && !font) return gone;
     let file = path;
     if (!file) {
       const r = await dialog.showOpenDialog(this.getWindow()!, {
-        title: document ? `Choose a file for ${before.name || 'the document'}` : `Locate ${before.name || 'the image'}`,
+        title: document ? `Choose a file for ${before.name || 'the document'}` : `Locate ${before.name || `the ${what}`}`,
         buttonLabel: 'Use this file',
         properties: ['openFile'],
-        filters: [document ? { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } : { name: 'Images', extensions: IMAGE_EXTENSIONS }]
+        filters: [document ? { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } : font ? { name: 'Fonts', extensions: FONT_EXTENSIONS } : { name: 'Images', extensions: IMAGE_EXTENSIONS }]
       });
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       file = r.filePaths[0];
@@ -4075,7 +4104,7 @@ export class Controller {
       // The dialog gave the library time to change: a file chosen for what the image was then is not used for what it is now.
       const record = s.state.assets.assets[assetId];
       if (record?.kind !== before.kind) return gone;
-      const name = record.name.trim() || (document ? 'The document' : 'The image');
+      const name = record.name.trim() || `The ${what}`;
       if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
       try {
         const at = { revision: -1 };
@@ -4084,7 +4113,7 @@ export class Controller {
           await this.checkAssetFiles(s);
           // An image waiting for copies its missing file kept from being made has them made now.
           if (this.copiesFailed.delete(`${record.id}:${record.hash}`)) this.copyPending(s);
-          if (document) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
+          if (document || font) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
         }
@@ -4102,6 +4131,17 @@ export class Controller {
         return { ok: false, message: (e as Error).message };
       }
     }));
+  }
+
+  /**
+   * A font's missing file is put back (restoreFontFile) only while the project is still this one, open and owned by
+   * this app, and the font's record still names that file: one removed or relinked meanwhile is not written for.
+   */
+  private restoreFence(s: ProjectSession, record: AssetRecord) {
+    return this.writeFence(s, () => {
+      const now = s.state.assets.assets[record.id];
+      if (now?.file !== record.file || now.hash !== record.hash) throw new Error(`${record.name.trim() || 'The font'} changed while its file was being put back. Look at it again in Assets.`);
+    });
   }
 
   /**
@@ -4310,7 +4350,7 @@ export class Controller {
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
-      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
       // just before it is delivered, once everything said about the copy's files has looked at them where they are.
       const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
@@ -5168,7 +5208,7 @@ export class Controller {
     if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
     if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    warn(...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     warn(...missingUnusedWarnings(missingFiles));

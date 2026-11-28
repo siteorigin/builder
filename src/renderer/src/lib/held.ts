@@ -2,6 +2,7 @@ import type { EditOperation } from '@shared/ops';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import type { GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, TableValue } from '@shared/types';
 import { conditionRef, isBinding, isComparison, styleScopeKey } from '@shared/types';
+import { keptPublishedAddresses } from '@shared/collections';
 import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -172,7 +173,7 @@ function withRoutes(state: ProjectState, value: unknown, read: Record<string, un
 /** Whose the old address kept at `route` is (a page's ID, an entry or an address it sends visitors to), or null. */
 function keptFor(state: ProjectState, route: string): unknown {
   const key = route.toLowerCase();
-  const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+  const kept: unknown[] = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...keptPublishedAddresses(state)];
   const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === key) as { pageId?: unknown; entryId?: unknown; to?: unknown } | undefined;
   return holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : holder?.to !== undefined ? { to: holder.to } : null);
 }

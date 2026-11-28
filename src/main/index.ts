@@ -453,6 +453,7 @@ const orchestrator = new Orchestrator({
   onBusyChange: (busy) => {
     perf.mark(busy ? 'ai.runStart' : 'ai.runEnd');
     controller.broadcast();
+    if (!busy) controller.aiEnded();
   },
   codeEnabled: async () => (await loadSettings()).settings.developerMode,
   perf

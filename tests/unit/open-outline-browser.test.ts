@@ -24,6 +24,8 @@ type Dom = {
   region: Node | null;
 };
 const SITE = 'http://open-outline.test';
+/** The fake clock's frame: a frame is always due within one. */
+const FRAME_MS = 16;
 const renderer = (path: string) => JSON.stringify(resolve('src/renderer/src', path));
 
 const ENTRY = [
@@ -167,36 +169,44 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
   const send = (channel: string, payload: unknown) => page.evaluate(([c, p]) => (globalThis as unknown as Dom).main.send(c as string, p), [channel, payload] as const);
   const answerOpen = (r: unknown) => page.evaluate((a) => (globalThis as unknown as Dom).main.answerOpen(a), r);
   const so = <T>(fn: string, ...args: unknown[]) => page.evaluate(([f, a]) => (globalThis as unknown as Dom).so[f as string](...(a as unknown[])) as T, [fn, args] as const);
-  /** Click a card, and say what the next frame to be painted shows. */
-  const clickAndLook = (name: string) =>
-    page.evaluate(
-      (n) =>
-        new Promise<{ outline: boolean; welcome: boolean; canvas: boolean }>((done) => {
-          const g = globalThis as unknown as Dom;
-          const card = [...g.document.querySelectorAll('.recent-card')].find((c) => c.textContent?.includes(n));
-          card!.focus();
-          card!.click();
-          const shown = (el: Node | null) => !!el && el.offsetParent !== null;
-          g.requestAnimationFrame(() => done({ outline: shown(g.document.querySelector('.editor-skeleton')), welcome: shown(g.document.querySelector('.welcome')), canvas: shown(g.document.querySelector('.canvas-skeleton')) }));
-        }),
-      name
-    );
+  /** Click a card, and say what the next frame to be painted shows: the clock is run to it, so it comes when paused too. */
+  const clickAndLook = async (name: string) => {
+    const look = await page.evaluateHandle((n) => {
+      const g = globalThis as unknown as Dom;
+      const card = [...g.document.querySelectorAll('.recent-card')].find((c) => c.textContent?.includes(n));
+      card!.focus();
+      card!.click();
+      const shown = (el: Node | null) => !!el && el.offsetParent !== null;
+      return { frame: new Promise<{ outline: boolean; welcome: boolean; canvas: boolean }>((done) => g.requestAnimationFrame(() => done({ outline: shown(g.document.querySelector('.editor-skeleton')), welcome: shown(g.document.querySelector('.welcome')), canvas: shown(g.document.querySelector('.canvas-skeleton')) }))) };
+    }, name);
+    await page.clock.runFor(FRAME_MS);
+    return look.evaluate(({ frame }) => frame);
+  };
   const visible = (sel: string) => page.locator(sel).first().isVisible();
   const count = (sel: string) => page.locator(sel).count();
   const text = (sel: string) => page.locator(sel).first().textContent();
   const statusText = () => page.evaluate(() => [...(globalThis as unknown as Dom).document.querySelectorAll('[role="status"]')].map((s) => s.textContent?.trim()).filter(Boolean));
 
   it('shows the outline in the frame the card is clicked, before the project is asked for, and announces it once', async () => {
+    // From the click the clock moves only as the test moves it, so the second below is the opening's alone, however
+    // long each step takes in real time. Held at one instant while it pauses, so pausing moves it neither way.
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.setFixedTime(now);
+    await page.clock.pauseAt(now);
+    await page.clock.setSystemTime(now);
     // The themes are still being verified, so the main process has not been asked yet: the outline is the click's.
     expect(await clickAndLook('Acme Bakery')).toEqual({ outline: true, welcome: false, canvas: true });
     expect(await opens()).toEqual([]);
     await expect.poll(statusText).toContain('Opening Acme Bakery…');
     // The outline alone answers the click: its one loading sign shows only once the wait is noticeable (a second).
     expect(await count('.sk-loading')).toBe(0);
-    await page.clock.runFor(900);
+    await page.clock.runFor(900 - FRAME_MS);
+    // Real time passing, as it does on a loaded machine, is not the opening's.
+    await new Promise((r) => setTimeout(r, 300));
     expect(await count('.sk-loading')).toBe(0);
     await page.clock.runFor(200);
     await expect.poll(() => text('.sk-loading')).toBe('Opening Acme Bakery…');
+    await page.clock.resume();
     // Nothing in the outline is reachable or read out, and Welcome is kept, not drawn.
     expect(await page.locator('.editor-skeleton').getAttribute('aria-hidden')).toBe('true');
     expect(await page.locator('.editor-skeleton').evaluate((e) => (e as unknown as Node).inert)).toBe(true);
