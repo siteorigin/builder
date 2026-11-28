@@ -157,17 +157,13 @@ describe('deleting several posts', () => {
     kept.site.redirects = [{ from: '/old-winter/', entryId: 'en_b' }] as never;
     expect(bulkDeletePlan(kept, 'posts', ['en_a', 'en_b']).held).toEqual([{ id: 'en_b', title: 'Winter hours' }]);
   });
-  it('holds a post linked from outside the pick, or sent visitors by an old address naming its address', () => {
+  it('holds a post linked from outside the pick', () => {
     const s = run(
       blog(),
       { type: 'collection.create', collectionId: 'venues', kind: 'structured', name: 'Venues', singularName: 'Venue', fields: { more: { type: 'link', label: 'More' } } },
       { type: 'entry.create', collectionId: 'venues', entryId: 'en_hall', title: 'Hall', draft: false, values: { more: { type: 'entry', target: 'en_a' } } }
     );
     expect(bulkDeletePlan(s, 'posts', ['en_a', 'en_c']).held.map((h) => h.id)).toEqual(['en_a']);
-    const route = s.collections.posts.settings.route;
-    const kept = structuredClone(blog());
-    kept.site.redirects = [{ from: '/old-spring/', to: `${route}${kept.collections.posts.entries.en_a.slug}/` }] as never;
-    expect(bulkDeletePlan(kept, 'posts', ['en_a', 'en_c']).held.map((h) => h.id)).toEqual(['en_a']);
   });
   it('plans nothing for a synced collection, whose entries change in their source', () => {
     const s = structuredClone(blog());

@@ -437,7 +437,7 @@ export function PostsPanel() {
    */
   const [picked, setPicked] = useState<Set<string> | null>(null);
   const anchor = useRef<string | null>(null);
-  const pickedNow = useRef<{ collectionId: string | null; ids: string[] }>({ collectionId: null, ids: [] });
+  const pickedNow = useRef<{ collectionId: string | null; ids: string[]; shown: string[]; query: string; sort: PostSort; filter: { status: PostStatus; category: string } }>({ collectionId: null, ids: [], shown: [], query: '', sort: 'newest', filter: { status: 'all', category: '' } });
   /** The picked posts' categories and tags being changed, in a dialog. */
   const [filing, setFiling] = useState<string[] | null>(null);
   /** A change to the picked posts on its way: one at a time. */
@@ -493,6 +493,16 @@ export function PostsPanel() {
     setFiling(null);
     anchor.current = null;
   }, [pickScope]);
+  // The categories and tags of posts no longer all picked (one deleted, or hidden by a change elsewhere) are not asked
+  // about: the dialog closes and says why.
+  useEffect(() => {
+    if (!filing) return;
+    const shown = new Set(rows.map((r) => r.id));
+    if (filing.some((id) => !picked?.has(id) || !shown.has(id))) {
+      setFiling(null);
+      toast(`The ${pluralNoun(entryNounLower(collection))} picked changed, so nothing was filed. Choose again.`, 'error');
+    }
+  }, [filing, picked, rows, collection]);
   useEffect(() => {
     if (!picked?.size) return;
     const shown = new Set(rows.map((r) => r.id));
@@ -855,7 +865,7 @@ export function PostsPanel() {
   const chosen = picked ? rows.filter((r) => picked.has(r.id)).map((r) => r.id) : [];
   // What the panel shows and has picked as of its last render, for an action that waited (a save, a question) to see
   // whether it still acts on what is picked.
-  pickedNow.current = { collectionId: collection?.settings.id ?? null, ids: chosen };
+  pickedNow.current = { collectionId: collection?.settings.id ?? null, ids: chosen, shown: rows.map((r) => r.id), query, sort, filter: { status, category: categoryId } };
   const openHere = post && collection && post.collectionId === collection.settings.id ? post.entryId : null;
   /**
    * Pick with Shift (the range from the anchor) or Cmd/Ctrl (one more, or one less), as in a file manager. The first
@@ -865,12 +875,15 @@ export function PostsPanel() {
   const pick = (id: string, how: 'range' | 'toggle') => {
     if (readOnly) return;
     ++navigation.current;
-    const shown = rows.map((r) => r.id);
+    // From the pick and the list as they are when it lands (a menu opened earlier asks after both have moved on).
+    const shown = pickedNow.current.shown;
     const start = openHere && shown.includes(openHere) ? openHere : null;
     const from = anchor.current && shown.includes(anchor.current) ? anchor.current : start;
-    const next = pickRows(shown, picked ?? new Set(start ? [start] : []), from, id, how);
     if (how === 'toggle' || !from) anchor.current = id;
-    setPicked(next.size ? next : null);
+    setPicked((was) => {
+      const next = pickRows(shown, was ?? new Set(start ? [start] : []), from, id, how);
+      return next.size ? next : null;
+    });
   };
   /** Every post the list shows now, as found and filtered. */
   const pickAll = () => {
@@ -904,7 +917,11 @@ export function PostsPanel() {
    */
   const stillPicked = (ids: string[], collectionId: string) => {
     const now = pickedNow.current;
-    const same = now.collectionId === collectionId && now.ids.length === ids.length && ids.every((id) => now.ids.includes(id));
+    // As the project is now, too, with the list's find and filters: a panel put away draws nothing meanwhile.
+    const live = getState().snapshot?.state;
+    const c = live && Object.hasOwn(live.collections, collectionId) ? live.collections[collectionId] : undefined;
+    const shown = new Set(c ? postRows(c, now.query, now.sort, now.filter).map((r) => r.id) : []);
+    const same = now.collectionId === collectionId && now.ids.length === ids.length && ids.every((id) => now.ids.includes(id) && shown.has(id));
     if (!same) toast(`The ${pluralNoun(noun)} picked changed meanwhile, so nothing was changed. Choose again.`, 'error');
     return same;
   };

@@ -322,4 +322,17 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     await menu.getByRole('menuitem', { name: /Deselect post/ }).click();
     await expect.poll(selected).toEqual(['en_four']);
   });
+
+  it('closes the categories and tags dialog once a post it was for is gone, filing nothing', async () => {
+    await mount(blog());
+    await row('One').click({ modifiers: ['Meta'] });
+    await row('Two').click({ modifiers: ['Meta'] });
+    await action(/Categories and tags/);
+    const dialog = page.getByRole('dialog', { name: /Categories and tags of 2 posts/ });
+    await dialog.getByRole('checkbox', { name: 'News' }).click();
+    await so('apply', [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_two' }]);
+    await expect.poll(() => dialog.count()).toBe(0);
+    expect((await so<string[]>('toasts')).join(' ')).toContain('picked changed, so nothing was filed');
+    expect((await project()).collections.posts.entries.en_one.terms?.categories ?? []).toEqual([]);
+  });
 });

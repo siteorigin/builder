@@ -12,7 +12,6 @@ import { fold } from './fold';
 import { entryLinkUses } from '@engine/page-links';
 import { canReplaceEntry, entryReferenceUses } from '@engine/collections';
 import { deleteDestinations } from './content';
-import { resolveRedirects } from '@shared/redirects';
 
 /** A collection entry the Posts workspace has open. */
 export interface PostRef {
@@ -472,8 +471,6 @@ export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: r
   for (const u of entryLinkUses(state, set)) holds.add(u.link.target);
   const kept: unknown = state.site.redirects;
   if (Array.isArray(kept)) for (const r of kept) if (typeof (r as { entryId?: unknown })?.entryId === 'string') holds.add((r as { entryId: string }).entryId);
-  // An old address kept by the address it goes to rather than by the entry, through other old addresses or not.
-  for (const view of ['website', 'preview'] as const) for (const r of resolveRedirects(state, view).live) if (r.entry) holds.add(r.entry.entry.id);
   for (const r of entryReferenceUses(state, set)) {
     const v: unknown = r.entry.values?.[r.field];
     for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string') holds.add(id);
