@@ -938,6 +938,7 @@ There is exactly one authority for each kind of content. Generated Svelte and it
 | `src/lib/siteorigin/custom/` | Authored project code components and scoped styles. | Include. |
 | `src/lib/siteorigin/styles/` | Generated tokens and style rules. | Include. |
 | `static/assets/` | Public images, font files and derivatives. | Include. |
+| `siteorigin/draft-assets/` | Library files only drafts use, held out of an exported editable project's own build; opening it for editing moves them back to `static/assets/`. | Written by the export, never kept in a project. |
 | `package.json`, dependency lock, configuration | Tested normal SvelteKit project tooling. | Include. |
 | `.siteorigin/history/` | Undo checkpoints and content-addressed blobs. | Exclude by default. |
 | `.siteorigin/sessions/` | Local conversations, run events and draft recovery. | Exclude. |

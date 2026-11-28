@@ -13,6 +13,7 @@ import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
@@ -88,6 +89,7 @@ import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
+import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
 import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -446,8 +448,9 @@ const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
  * own, as it comes, so only one file's text is held at a time beside those of the draft-only components (#1044). A
  * name is found within one file: one with a line break in it is no longer found from the end of one file and the
  * start of the next, as a search of them all joined by line breaks would; any other is found exactly as that would.
+ * With `unreached`, the texts of the draft-only components' files nothing the website reads names are put there.
  */
-async function websiteNames(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }, names: Iterable<string>): Promise<NameMatcher> {
+async function websiteNames(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
   const matcher = new NameMatcher([...names, ...[...draftOnly].map((rel) => basename(rel))]);
   const held = new Map<string, string>();
   for (const rel of files) {
@@ -465,6 +468,7 @@ async function websiteNames(project: string, { files, candidate, draftOnly }: { 
         found = true;
       }
   }
+  unreached?.push(...held.values());
   return matcher;
 }
 
@@ -529,6 +533,9 @@ export async function unusedComponents(project: string, state: ProjectState): Pr
     .sort();
 }
 
+/** Whether `named` found the project file `rel`: a document by its whole name, so `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`. */
+const namesAsset = (named: NameMatcher, rel: string) => (documentFormat(rel) ? named.whole : named.file)(basename(rel));
+
 export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
   const site = await websiteFiles(project, state);
   const candidates = site.files.filter(site.candidate);
@@ -537,8 +544,7 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
-    // A document by its whole name: `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`.
-    if ((documentFormat(rel) ? named.whole : named.file)(basename(rel))) shipped.add(rel);
+    if (namesAsset(named, rel)) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -548,6 +554,57 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
     const own = [a.file, ...(a.variants ?? []).map((v) => v.file)];
     return own.some((f) => removed.has(f)) && !own.some((f) => shipped.has(f));
   });
+}
+
+/**
+ * The files in static/assets/ of a staged editable project that only its drafts use (#1450), for holdDraftAssets to
+ * keep out of the handoff's own build, which serves static/ as it is. The copy's generated files are the published
+ * site's (leaveOutDrafts), and `drafts` is the text the drafts add to them, as leaveOutDrafts gave it. A file the
+ * website names (as pruneWebsiteAssets finds one) is never held. Of the rest, an asset record any of whose files the
+ * drafts name, in that text or in a file of a component only drafts place that the website never reaches, is held
+ * whole: its original and every copy, so a draft's photo goes with whichever copies its page shows; so is one the
+ * drafts use by its ID where the published pages and entries do not, whether or not they show it. Only records' own
+ * files are held, as only those does an opening put back (restoreDraftAssets). Files nothing names stay, as the
+ * editable project keeps its whole library.
+ */
+export async function draftOnlyAssetFiles(project: string, state: ProjectState, drafts: ReadonlyMap<string, string>): Promise<string[]> {
+  const live = publishedState(state);
+  if (live === state) return [];
+  const site = await websiteFiles(project, state);
+  const candidates = site.files.filter(site.candidate);
+  if (!candidates.length) return [];
+  const unreached: string[] = [];
+  const shipped = await websiteNames(project, site, candidates.map((rel) => basename(rel)), unreached);
+  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel)));
+  if (!unshipped.size) return [];
+  const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
+  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
+  for (const text of unreached) used.scan(text);
+  const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
+  // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document
+  // in an entry's field its layout leaves out).
+  const published = assetUsages(live);
+  const drafted = new Set(Object.entries(assetUsages(state)).flatMap(([id, n]) => (n > 0 && !(published[id] > 0) ? [id] : [])));
+  // A record's files as the copy has them: by their very paths, or else as a disk that ignores case reads them
+  // (`Photo-…` for the record's `photo-…`). Only these are held, since only these does an opening put back.
+  const spelled = new Map<string, string[]>();
+  for (const rel of unshipped) spelled.set(rel.toLowerCase(), [...(spelled.get(rel.toLowerCase()) ?? []), rel]);
+  const exact = new Set(candidates);
+  const library = new Set<string>();
+  for (const a of Object.values(state.assets.assets)) {
+    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f !== 'string' ? [] : exact.has(f) ? (unshipped.has(f) ? [f] : []) : (spelled.get(f.toLowerCase()) ?? [])));
+    for (const f of own) library.add(f);
+    if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) held.add(f);
+  }
+  return candidates.filter((rel) => held.has(rel) && library.has(rel));
+}
+
+/** The export's note for an editable project whose drafts' own files it kept out of its build (draftOnlyAssetFiles), or null. */
+export function heldDraftAssetsNote(state: ProjectState, files: readonly string[]): string | null {
+  if (!files.length) return null;
+  const byFile = assetsByFile(state);
+  const names = [...new Set(files.map((f) => byFile.get(f)?.name ?? basename(f)))].sort((a, b) => a.localeCompare(b));
+  return `Files only drafts use are kept in ${DRAFT_ASSETS_DIR}/ rather than static/assets/, so a build of the exported project leaves them out: ${listNames(names)}. Opening the project in SiteOrigin Builder puts them back.`;
 }
 
 export interface MissingInExport {
@@ -1051,9 +1108,11 @@ export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<strin
  * carry no trace of them. generated-manifest.json then lists what the copy has, so it reopens without conflicts and
  * SiteOrigin Builder writes the drafts' files back. The canonical documents keep every page, so the drafts are still
  * there to edit. Only files the manifest says SiteOrigin Builder generated are touched. With `live`, the generated files
- * of `state` become those of `live` instead (a publication's state, which leaves out more, #1154).
+ * of `state` become those of `live` instead (a publication's state, which leaves out more, #1154). With `drafts`, each
+ * generated file the drafts make or add to is put there with the text it has with them (by path), for
+ * draftOnlyAssetFiles.
  */
-export async function leaveOutDrafts(dir: string, state: ProjectState, live: ProjectState = publishedState(state)): Promise<void> {
+export async function leaveOutDrafts(dir: string, state: ProjectState, live: ProjectState = publishedState(state), drafts?: Map<string, string>): Promise<void> {
   if (live === state) return;
   const full = generateProject(state, { instrument: false });
   const published = generateProject(live, { instrument: false });
@@ -1069,6 +1128,7 @@ export async function leaveOutDrafts(dir: string, state: ProjectState, live: Pro
     if (manifest.pending) delete manifest.pending[path];
   }
   for (const [path, content] of full) {
+    if (drafts && published.get(path) !== content) drafts.set(path, content);
     if (!Object.hasOwn(files, path) && !Object.hasOwn(manifest.pending ?? {}, path)) continue;
     const next = published.get(path);
     if (next === content) continue;
@@ -1469,14 +1529,14 @@ export function isGeneratedReadme(text: string): boolean {
 /** Why a README's build leaves pages out, and what opening the project in SiteOrigin Builder changes about that. */
 const DRAFTS_SECTION = `## Draft pages
 
-This project has draft pages. Their documents are in \`siteorigin/pages/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
+This project has draft pages. Their documents are in \`siteorigin/pages/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Pictures and documents from the asset library that only drafts use are kept in \`siteorigin/draft-assets/\` rather than \`static/assets/\`, so the build leaves those out too. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, with those pictures and documents back in \`static/assets/\`, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
 
 `;
 
 /** The same for draft collection entries, whose documents live with their collections. */
 const DRAFT_ENTRIES_SECTION = `## Draft entries
 
-This project has draft collection entries. Their documents are in \`siteorigin/collections/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
+This project has draft collection entries. Their documents are in \`siteorigin/collections/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Pictures and documents from the asset library that only drafts use are kept in \`siteorigin/draft-assets/\` rather than \`static/assets/\`, so the build leaves those out too. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, with those pictures and documents back in \`static/assets/\`, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
 
 `;
 

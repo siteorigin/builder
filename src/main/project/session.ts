@@ -33,6 +33,7 @@ import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } from './asset-files';
+import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
 import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
@@ -1113,6 +1114,10 @@ export class ProjectSession extends EventEmitter {
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
     const pin = themePinProblem(s.state);
     if (pin) throw new ThemeUnavailableError(pin);
+    // The library files an editable export kept aside for drafts (#1450) go back where the project uses them, before
+    // anything looks for them: the preview, the publication, Project health's look at the library, the saved versions.
+    const kept = keptDraftAssetsNote(await restoreDraftAssets(dir, s.state.assets.assets));
+    if (kept) s.recoveryNotes.push(kept);
     startPreview?.(s);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
