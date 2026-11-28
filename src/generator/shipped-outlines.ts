@@ -291,6 +291,16 @@ const READ_AS_HEADINGS: Readonly<Record<string, readonly string[]>> = { 'content
 /** Whether a node of the design read for a section is a heading only in the Markdown copies, not in its markup. */
 export const headingInMarkdownOnly = (componentId: string, nodeId: string) => Object.hasOwn(READ_AS_HEADINGS, componentId) && READ_AS_HEADINGS[componentId].includes(nodeId);
 
+/**
+ * Parts repeated per item that the markup keeps in the page but hidden until a visitor chooses another item, by
+ * component ID: each tab's panel, of which only the first shows at first. The Markdown copies read them all; the
+ * heading outline reads the first, as a screen reader finds the page.
+ */
+const SHOWN_WHEN_CHOSEN: Readonly<Record<string, { nodeId: string; list: string }>> = { 'tabs.showcase': { nodeId: 'md-panel', list: 'tabs' } };
+
+/** The list whose first item alone shows a node of the design read for a section at first, if it is one of those. */
+export const shownWhenChosen = (componentId: string, nodeId: string) => (Object.hasOwn(SHOWN_WHEN_CHOSEN, componentId) && SHOWN_WHEN_CHOSEN[componentId].nodeId === nodeId ? SHOWN_WHEN_CHOSEN[componentId].list : undefined);
+
 /** The component IDs read through a design of their own. */
 export const OUTLINED: readonly string[] = Object.keys(OUTLINES);
 

@@ -118,6 +118,8 @@ describe('heading outline', () => {
       [1, 'Let’s talk'],
       [1, HERO_HEADING]
     ]);
+    // Both are read through the designs standing for their markup, each level its placement's choice.
+    for (const h of own(s, pageId).slice(0, 2)) expect(h).toMatchObject({ defNodeId: 'heading', direct: true, levelSource: { kind: 'prop', prop: 'headingLevel' } });
   });
 
   it('flags the release’s centered hero as a second page title (#1404)', () => {
@@ -133,8 +135,11 @@ describe('heading outline', () => {
     expect(headingTarget(s, hero)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [], nodeId: heroId });
     expect(headingLevelOps(hero, 2)).toEqual([{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'headingLevel', value: 'h2' }]);
     expect(headingWarnings(s)).toEqual([expect.objectContaining({ code: 'HEADING_MULTIPLE_H1', owner: { kind: 'page', id: pageId }, nodeId: heroId })]);
+    // The outline's row offers the fix in one step.
+    const row = outline.rows[outline.review.titles[1]];
+    expect(row).toMatchObject({ extraTitle: true, fix: 2 });
     // At Heading 2, the page has one title again.
-    const fixed = applyOperations(s, headingLevelOps(hero, 2)!).state;
+    const fixed = applyOperations(s, headingLevelOps(row.heading, row.fix!)!).state;
     expect(rows(fixed, pageId).slice(0, 2)).toEqual([
       [1, 'Let’s talk'],
       [2, HERO_HEADING]
@@ -169,20 +174,70 @@ describe('heading outline', () => {
     const owner = { kind: 'page' as const, id: about.id };
     withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
     const r = applyOperations(s, [
-      { type: 'node.insert', owner, componentId: 'content.steps-media', props: { heading: '', steps: [{ id: 'a', title: 'Plan', description: 'First.' }] } },
-      { type: 'node.insert', owner, componentId: 'layout.section', props: {} }
+      { type: 'node.insert', owner, componentId: 'content.steps-media', props: { heading: 'Our process', steps: [{ id: 'a', title: 'Plan', description: 'First.' }] } },
+      { type: 'node.insert', owner, componentId: 'content.steps', props: { heading: 'Steps', steps: [{ id: 'b', title: 'Visit', description: 'Then.' }, { id: 'c', title: 'Build', description: 'Last.' }] } },
+      { type: 'node.insert', owner, componentId: 'layout.section', props: {} },
+      { type: 'node.insert', owner, componentId: 'layout.split', props: {} }
     ]).state;
-    // The steps' titles are buttons, so nothing follows the page's title as a skipped level.
-    expect(rows(r, about.id)).toEqual([[1, 'About']]);
+    // The tour's step titles are buttons; the steps section's are headings.
+    expect(rows(r, about.id)).toEqual([
+      [1, 'About'],
+      [2, 'Our process'],
+      [2, 'Steps'],
+      [3, 'Visit'],
+      [3, 'Build']
+    ]);
     expect(headingWarnings(r)).toEqual([]);
     expect(pageOutline(r, about.id).uninspected).toBe(false);
+    // A layout whose code was changed from the release's decides in that code what it shows.
+    const split = r.pages[about.id].nodes[r.pages[about.id].rootIds.at(-1)!] as InstanceNode;
+    r.components[split.definitionId] = { ...r.components[split.definitionId], source: `${r.components[split.definitionId].source}\n<h1>Changed</h1>` };
+    expect(pageOutline(r, about.id).uninspected).toBe(true);
+  });
+
+  it('reads the release’s tabs as they open, with only the first tab’s panel shown', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const tabs = [
+      { id: 'a', label: 'One', heading: '', copy: '' },
+      { id: 'b', label: 'Two', heading: 'Second tab', copy: '' }
+    ];
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'tabs.showcase', props: { heading: '', tabs } }]).state;
+    // The second tab's heading is hidden until it is chosen, so it leaves no skipped level after the page's title.
+    expect(rows(r, about.id)).toEqual([[1, 'About']]);
+    expect(headingWarnings(r)).toEqual([]);
+    const [, placed] = r.pages[about.id].rootIds;
+    const first = applyOperations(r, [{ type: 'instance.setProp', owner: { kind: 'page', id: about.id }, nodeId: placed, prop: 'tabs', value: [{ ...tabs[0], heading: 'First tab' }, tabs[1]] }]).state;
+    expect(rows(first, about.id)).toEqual([
+      [1, 'About'],
+      [3, 'First tab']
+    ]);
+  });
+
+  it('selects a shipped section placed inside a design through that design’s placement', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroDef = s.components[(s.pages[pageId].nodes[s.pages[pageId].rootIds[1]] as InstanceNode).definitionId];
+    const wrapper = projectDef(s, 'wrap_hero', {}, [makeInstance(heroDef, { heading: 'Inner title', headingLevel: 'h2' })]);
+    const placed = makeInstance(wrapper, {});
+    s.pages[pageId].nodes[placed.id] = placed;
+    s.pages[pageId].rootIds.push(placed.id);
+    const inner = own(s, pageId).find((h) => h.text === 'Inner title')!;
+    expect(inner).toMatchObject({ level: 2, nodeId: placed.id, direct: false });
+    expect(inner.instancePath).toBeUndefined();
+    expect(headingTarget(s, inner)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [], nodeId: placed.id });
   });
 
   it('lists the release footer’s column headings only over columns with something in them', () => {
     const s = fresh();
     const [placed] = s.site.shell.footer.rootIds;
-    const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: placed, prop: 'contact', value: [] }]).state;
-    expect(headingOutline(r, pageAt(r, '/about/').id).filter((h) => h.owner.kind === 'shell').map((h) => h.text)).toEqual(['Explore']);
+    const owner = { kind: 'shell' as const, id: 'footer' };
+    const footerWords = (st: ProjectState) => headingOutline(st, pageAt(st, '/about/').id).filter((h) => h.owner.kind === 'shell').map((h) => h.text);
+    expect(footerWords(applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: placed, prop: 'contact', value: [] }]).state)).toEqual(['Explore']);
+    expect(footerWords(applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: placed, prop: 'links', value: [] }, { type: 'instance.setProp', owner, nodeId: placed, prop: 'contactHeading', value: 'Find us' }]).state)).toEqual(['Find us']);
+    // Its one-row layout hides both headings at every size.
+    (s.site.shell.footer.nodes[placed] as InstanceNode).variants = { layout: 'minimal' };
+    expect(footerWords(s)).toEqual([]);
   });
 
   it('lists the headings of the release’s feature grid, FAQ and plan comparison', () => {
@@ -206,6 +261,11 @@ describe('heading outline', () => {
     expect(headingWarnings(r).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
     // The comparison's level is its placement's choice, set from the outline.
     const compare = own(r, about.id).at(-1)!;
+    expect(compare.levels).toEqual([1, 2, 3, 4, 5, 6]);
+    // Its heading part hidden at every size leaves it out.
+    const hidden = structuredClone(r);
+    (hidden.pages[about.id].nodes[compare.nodeId] as InstanceNode).overrides = { heading: { base: { hidden: true } } };
+    expect(rows(hidden, about.id).at(-1)).toEqual([2, 'Questions']);
     const fixed = applyOperations(r, headingLevelOps(compare, 2)!).state;
     expect(rows(fixed, about.id).at(-1)).toEqual([2, 'Compare plans']);
     expect(headingWarnings(fixed)).toEqual([]);
@@ -267,10 +327,10 @@ describe('heading outline', () => {
   it('lists subheadings written in the release’s text section', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
-    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
-    expect(rows(r.state, about.id).slice(-2)).toEqual([
-      [2, 'How we work'],
-      [3, 'Listening first']
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How the studio works', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
+    expect(own(r.state, about.id).slice(-2).map((h) => [h.level, h.text, !!h.rich])).toEqual([
+      [2, 'How the studio works', false],
+      [3, 'Listening first', true]
     ]);
   });
 

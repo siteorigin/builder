@@ -29,7 +29,7 @@ import { itemStylesOf } from '@shared/item-styles';
 import { CODE_TEXT_ATTR, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { findTheme } from '@catalogue/index';
 import { shippedAsIs } from '@engine/shipped-copy';
-import { headingInMarkdownOnly, shippedOutline } from './shipped-outlines';
+import { headingInMarkdownOnly, shippedOutline, shownWhenChosen } from './shipped-outlines';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -2798,8 +2798,15 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
     walkRendered(state, tree, {
       // Foundation's sections, through the designs that stand for their markup (as the Markdown copies read them).
       outline: (def) => shippedOutline(state, def),
-      // A design's node hidden at every size, by itself, a part around it or its placement's styles for those parts.
-      prune: (n, scope, _reportId, def) => !!def?.tree && def.tree.nodes[n.id] === n && hiddenInDesignEverywhere(def, n.id, scope),
+      // In the design read for a shipped section (not a stored definition): a part hidden at every size, by itself, a
+      // part around it or its placement's styles for those parts, and a tab's panel other than the one open at first.
+      prune: (n, scope, _reportId, def) => {
+        if (!def?.tree || def.tree.nodes[n.id] !== n || state.components[def.id] === def) return false;
+        const list = shownWhenChosen(def.componentId, n.id);
+        const items = list ? scope.props?.[list] : undefined;
+        if (list && (!Array.isArray(items) || !scope.item || items[0]?.id !== scope.item.id)) return true;
+        return hiddenInDesignEverywhere(def, n.id, scope);
+      },
       enter: (n) => {
         const hides = hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined);
         hiding.push(hides);
@@ -2874,8 +2881,11 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
           if (!level || typeof text !== 'string' || !text.trim()) return;
           add({ level, text: text.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}), ...extra }, scope);
         };
-        // The footer's two column headings, each shown with its words over a column that has something in it.
+        // The footer's two column headings, each shown with its words over a column that has something in it. Its
+        // one-row layout hides both at every size.
         if (which === 'shell.footer') {
+          const layout = n.variants?.layout;
+          if ((isBinding(layout) ? evaluate(layout, scope) : layout) === 'minimal') return;
           if (shown(props.links, state)) heading(props.linksHeading, 2);
           if (shown(props.contact, state)) heading(props.contactHeading, 2);
           return;
