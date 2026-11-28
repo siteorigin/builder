@@ -911,10 +911,7 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>, sync?: 
   if (route !== undefined) claimOwnAddresses(state, new Map([[route.toLowerCase(), id]]));
   applyEntryFields(state, c, entry, { ...op, slug: undefined });
   if (op.redirectFrom !== undefined) keepOldAddress(state, c, entry, op.redirectFrom);
-  if (op.imported !== undefined) {
-    if (entryImportProblem(op.imported)) fail(`“${title}”: where it was imported from is not a WordPress site and post ID.`);
-    entry.imported = { site: op.imported.site, postId: op.imported.postId };
-  }
+  if (op.imported !== undefined) setImported(entry, op.imported);
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder.push(id);
   return entryResult(c, entry);
 }
@@ -924,7 +921,14 @@ export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart
   const entry = getEntry(c, op.entryId);
   refuseSynced(c, 'changed', sync);
   applyEntryFields(state, c, entry, op, atStart);
+  if (op.imported !== undefined) setImported(entry, op.imported);
   return entryResult(c, entry);
+}
+
+/** Record the WordPress post an entry was imported from. */
+function setImported(entry: EntryDoc, imported: { site: string; postId: string }) {
+  if (entryImportProblem(imported)) fail(`“${entry.title}”: where it was imported from is not a WordPress site and post ID.`);
+  entry.imported = { site: imported.site, postId: imported.postId };
 }
 
 export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpResult {

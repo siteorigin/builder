@@ -12,7 +12,7 @@ import { XmlError, childElement, childElements, childText, parseXml, textOf, typ
 import { emptyReport, htmlToPlain, htmlToRichText, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type KnownPosts, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
@@ -88,7 +88,7 @@ async function exportText(realRoot: string, file: string, label: string): Promis
  * The posts of WordPress export `file`. With `emit`, posts are handed to it in batches as they are read
  * (POSTS_PER_BATCH at a time, in order), and the source returned holds only those read after the last batch.
  */
-export async function readWordPress(file: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
+export async function readWordPress(file: string, pages: RichPages, emit?: (posts: SourcePost[]) => void, known?: KnownPosts): Promise<ParsedSource> {
   const root = dirname(file);
   const realRoot = await fs.realpath(root);
   const label = basename(file);
@@ -149,6 +149,12 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   // WordPress shows a post's attached pictures by menu order, then by ID.
   const attachedIds = new Map([...attachedTo].map(([parent, list]) => [parent, list.sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)).map((a) => a.id)]));
 
+  // The posts imported before from this site, for links to those the export leaves out.
+  const earlierIds = siteKey && known && Object.hasOwn(known.ids, siteKey) ? known.ids[siteKey] : undefined;
+  const earlierPath = (path: string) => {
+    const at = known && Object.hasOwn(known.paths, path) ? known.paths[path] : undefined;
+    return at && (at.site === undefined || at.site === siteKey) ? at.entryId : undefined;
+  };
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
   const byId = new Map<string, string>();
@@ -217,6 +223,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
       const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
+      // A post this export leaves out that the project already has: its entry.
+      const earlier = p !== null ? (earlierIds && Object.hasOwn(earlierIds, p) ? earlierIds[p] : undefined) : earlierPath(sitePath(url.pathname).toLowerCase());
+      if (earlier) return { type: 'entry', target: earlier, ...tab };
       // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
       // which named something other than the page at its path.
       const page = p !== null ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
@@ -275,7 +284,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       categories: terms(item, 'category'),
       tags: terms(item, 'post_tag'),
       body,
-      ...(thumbUrl ? { featured: media.key(thumbUrl) } : {}),
+      ...(thumbUrl ? { featured: media.key(thumbUrl) } : thumbId ? { featuredLost: true } : {}),
       ...(oldPath ? { oldPath } : {}),
       notes
     });

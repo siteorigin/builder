@@ -41,10 +41,22 @@ export interface SourcePost {
   body: RichText;
   /** The featured picture's media key. */
   featured?: string;
+  /** It names a featured picture the export does not include, so none can be read for it. */
+  featuredLost?: boolean;
   /** The address it had on the old site, when that was a path a static site can have. */
   oldPath?: string;
   /** What reading it left out or changed, in plain words. */
   notes: string[];
+}
+
+/**
+ * The posts of the project imported before (#1519), so a link in a post to one an export leaves out still goes to its
+ * entry: entry IDs by site (ParsedSource.siteKey), then by the post's ID there; and by an old address kept for one,
+ * with the site it came from when it says.
+ */
+export interface KnownPosts {
+  ids: Record<string, Record<string, string>>;
+  paths: Record<string, { entryId: string; site?: string }>;
 }
 
 /** A picture a post shows: the file found for it inside the chosen folder, or why there is none. */

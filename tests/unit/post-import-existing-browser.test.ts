@@ -124,6 +124,15 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     expect(await page.getByTestId('post-import-confirm').count()).toBe(0);
     await page.getByRole('button', { name: 'Close' }).last().click();
     expect(await page.evaluate('window.__calls')).toEqual([['cancel', 'r1']]);
+    expect(await page.evaluate('window.__modal')).toBeNull();
+  });
+
+  it('imports only the new posts when the choice is left as it is', async () => {
+    await open(preview([post('Autumn'), post('Winter', { existing: true })]));
+    expect(await page.getByLabel('Skip them').isChecked()).toBe(true);
+    await page.getByTestId('post-import-confirm').click();
+    await page.waitForFunction('window.__modal === null');
+    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', 'skip']]);
   });
 
   it('imports only the new posts by default, or updates the others with them when chosen', async () => {
@@ -136,6 +145,19 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     await page.waitForFunction('window.__modal === null');
     expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', 'update']]);
     expect(await page.evaluate('window.__toasts')).toEqual(['Imported 1 post and updated 2.']);
+  });
+
+  it('shows what updating changes on the posts already here, and counts those it leaves as they are', async () => {
+    const p = preview([post('Autumn'), post('Winter', { existing: true, notes: ['Its text was longer than a post holds, so it ends after 3 of its 9 paragraphs.'] }), post('Spring', { existing: true, unread: true })]);
+    p.update!.posts = 1;
+    await open(p);
+    // Skipping, nothing about them is changed, so nothing about them is listed to check.
+    await page.getByTestId('post-import-existing').locator('summary').click();
+    expect(await page.getByText('Its text was longer than a post holds', { exact: false }).count()).toBe(0);
+    await page.getByTestId('post-import-update').check();
+    expect(await page.getByTestId('post-import-existing-count').textContent()).toBe('2 posts are already in the project: 1 will be updated from the export, and 1 whose text could not be read will be left as it is.');
+    expect(await page.getByText('Its text was longer than a post holds', { exact: false }).count()).toBe(1);
+    expect(await page.getByTestId('post-import-confirm').textContent()).toBe('Import 1 post and update 1');
   });
 
   it('stops only updating when only updating has a problem', async () => {

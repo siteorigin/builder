@@ -52,7 +52,7 @@ import { createAgentSources } from './sources/agent';
 import { sourceFingerprint } from '@shared/sources';
 import type { SourceToolHost } from '@agent/source-tools';
 import type { AuthorSave } from '@agent/orchestrator';
-import { checkPlan, planOperations, planPostImport, selectPlan, type PostImportPlan } from './posts-import/plan';
+import { checkPlan, knownPosts, planOperations, planPostImport, selectPlan, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { dropPlan, loadPlan, storePlan, sweepPlans, type StoredPlan } from './posts-import/review-store';
 import { readContained } from './posts-import/files';
@@ -3617,7 +3617,8 @@ export class Controller {
       let source: ParsedSource;
       const read = perf.span('posts.read', { kind });
       try {
-        source = await postReader.read(kind, file, pages);
+        // The posts imported before, so a link to one this export leaves out still goes to its entry (#1519).
+        source = await postReader.read(kind, file, pages, kind === 'wordpress' ? knownPosts(s.state) : undefined);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       } finally {
@@ -3722,8 +3723,8 @@ export class Controller {
     } catch {
       return { ok: false, message: 'The review could not be read back, so nothing was imported. Choose Import posts again.' };
     }
-    // Every post was already in the project, and they are skipped: there is nothing to do.
-    if (!plan.posts.length) return { ok: true, imported: 0, updated: 0 };
+    // Every post was already in the project, and they are skipped: there is nothing to do, still for the review it was.
+    if (!plan.posts.length) return !open() ? closed : s.revision !== pending.revision ? stale : { ok: true, imported: 0, updated: 0 };
     // The pictures are written before their records exist, so the session holds off sweeping meanwhile.
     return this.serialImport(() =>
       s.withImport(async (): Promise<PostImportResult> => {
@@ -3779,8 +3780,8 @@ export class Controller {
         const updated = plan.posts.filter((p) => p.existing).length;
         const n = plan.posts.length - updated;
         const imports = n === 1 ? 'Import a post' : `Import ${n} posts`;
-        const updates = updated === 1 ? 'update a post' : `update ${updated} posts`;
-        const label = !updated ? imports : !n ? updates.charAt(0).toUpperCase() + updates.slice(1) : `${imports} and ${updates}`;
+        // As the review's button says it: "Import 3 posts and update 2", "Update a post".
+        const label = !updated ? imports : !n ? (updated === 1 ? 'Update a post' : `Update ${updated} posts`) : `${imports} and update ${updated}`;
         const operations = planOperations(plan, assetIds, added, { addToNavigation });
         const r = await s.apply({ operations, expectedRevision: pending.revision }, { label, source: 'user' });
         if (!r.ok) {

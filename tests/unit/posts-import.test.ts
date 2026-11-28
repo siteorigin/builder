@@ -17,7 +17,7 @@ import { validateState } from '@engine/validate';
 import { MAX_ENTRY_CHARS } from '@engine/values';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
 import { readMarkdownFolder } from '../../src/main/posts-import/folder';
-import { checkPlan, planOperations, planPostImport, selectPlan } from '../../src/main/posts-import/plan';
+import { checkPlan, knownPosts, planOperations, planPostImport, selectPlan } from '../../src/main/posts-import/plan';
 import { postImportPreview } from '../../src/main/posts-import/preview';
 import { createSourceReader, type ReadReply, type ReadRequest, type ReaderHandle } from '../../src/main/posts-import/client';
 import { readFrontmatter, markdownToHtml } from '../../src/main/posts-import/markdown';
@@ -357,6 +357,87 @@ describe('planning an import', () => {
     expect(plan.posts[0].existing).toEqual({ draft: false, unread: true });
     expect(plan.posts[0].notes).toContain('Its text could not be read this time, so updating leaves the post already here as it is.');
     expect(selectPlan(plan, 'update').posts.map((p) => p.title)).toEqual(['Spring menu', 'Summer plans']);
+  });
+
+  it('updates from an export that leaves posts out: links to them go to their entries, a featured picture it lacks stays', async () => {
+    const dir = wordpressFolder();
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
+    const [winter, spring] = Object.values(first.collections.posts.entries);
+    expect(winter.featuredImage).toBeDefined();
+    // A later export with neither Spring menu nor the Snow day picture Winter's featured picture is.
+    const xml = readFileSync(join(dir, 'export.xml'), 'utf8').replace(/<item>(?:(?!<\/item>)[\s\S])*<title><!\[CDATA\[(?:Spring menu|Snow day)\]\]><\/title>[\s\S]*?<\/item>/g, '');
+    writeFileSync(join(dir, 'later.xml'), xml);
+    const source = await readWordPress(join(dir, 'later.xml'), {}, undefined, knownPosts(first));
+    expect(source.posts.map((p) => p.title)).toEqual(['Winter workshop & tasting', 'Summer plans']);
+    expect(source.posts[0].featuredLost).toBe(true);
+    // Its link to Spring menu, which this export leaves out, goes to the entry it was imported as.
+    expect(JSON.stringify(source.posts[0].body)).toContain(`{"type":"entry","target":"${spring.id}"}`);
+    expect(source.posts[0].notes).not.toContain('A link still goes to the old site.');
+    const { after } = commit(structuredClone(first), source, 'update');
+    const w = after.collections.posts.entries[winter.id];
+    expect(w.featuredImage).toBe(winter.featuredImage);
+    expect(JSON.stringify(w.body)).toContain(`{"type":"entry","target":"${spring.id}"}`);
+    expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('gives a post known by its ID its own entry, whatever an earlier row at its old address says', async () => {
+    const dir = wordpressFolder();
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
+    const winter = Object.values(first.collections.posts.entries)[0];
+    const source = await readWordPress(join(dir, 'export.xml'), {});
+    // A row with no ID at Winter's old address, read before Winter itself, which has moved.
+    source.posts[0].oldPath = '/2019/03/winter-moved/';
+    source.posts.unshift({ key: 'wp:x', from: 'Stray', title: 'Stray', slug: 'stray', date: '2019-01-01', draft: false, categories: [], tags: [], body: [], oldPath: '/2019/03/winter-workshop/', notes: [] });
+    const plan = planPostImport(first, source, '2026-11-24');
+    expect(plan.posts.map((p) => [p.title, p.existing ? p.entryId : null])).toEqual([
+      ['Stray', null],
+      ['Winter workshop & tasting', winter.id],
+      ['Spring menu', expect.any(String)],
+      ['Summer plans', expect.any(String)]
+    ]);
+  });
+
+  it('never takes a post written in the project, at the address a WordPress post had, for that post', async () => {
+    const s = site();
+    const made = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', title: 'Our news', slug: 'news', draft: false }]).state;
+    const source = await readWordPress(join(wordpressFolder(), 'export.xml'), {});
+    source.posts[0].oldPath = '/blog/news/';
+    const plan = planPostImport(made, source, '2026-11-24');
+    expect(plan.posts.some((p) => p.existing)).toBe(false);
+  });
+
+  it('learns the ID of a post it knew only by its old address, keeps its date, and leaves it published when skipped', async () => {
+    const dir = wordpressFolder();
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
+    for (const e of Object.values(first.collections.posts.entries)) delete e.imported;
+    const [winter, spring] = Object.values(first.collections.posts.entries);
+    const source = await readWordPress(join(dir, 'export.xml'), {});
+    // Spring menu is a draft at the source now, and Winter's date can't be read.
+    Object.assign(source.posts[1], { draft: true, draftReason: 'it is a draft' });
+    source.posts[0].date = null;
+    const plan = planPostImport(first, source, '2026-11-24');
+    expect(plan.posts[0]).toMatchObject({ date: winter.publishedAt, postId: '12' });
+    expect(plan.posts[0].dateAssigned).toBeUndefined();
+    // Winter links to Spring menu, which stays published when it is skipped.
+    expect(plan.posts[0].notes.filter((n) => n.includes('arrives as a draft'))).toEqual([]);
+    const { after } = commit(structuredClone(first), source, 'update');
+    expect(after.collections.posts.entries[winter.id]).toMatchObject({ publishedAt: winter.publishedAt, imported: { site: 'https://riverside.example', postId: '12' } });
+    expect(after.collections.posts.entries[spring.id].draft).toBe(true);
+  });
+
+  it('gives a new post’s grouping the room a post already here would have taken', async () => {
+    const dir = wordpressFolder();
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
+    const s = structuredClone(first);
+    const posts = s.collections.posts;
+    // Nine groupings of its own, and neither categories nor tags: room for one more.
+    posts.settings.taxonomies = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`g${i}`, { label: `Group ${i}`, terms: {} }]));
+    for (const e of Object.values(posts.entries)) e.terms = {};
+    const source = await readWordPress(join(dir, 'export.xml'), {});
+    source.posts.push({ key: 'wp:20', postId: '20', from: 'Autumn', title: 'Autumn', slug: 'autumn', date: '2019-09-01', draft: false, categories: [], tags: [{ label: 'Fresh' }], body: [], notes: [] });
+    const plan = selectPlan(planPostImport(s, source, '2026-11-24'), 'skip');
+    expect(plan.posts.map((p) => [p.title, p.terms])).toEqual([['Autumn', { tags: ['fresh'] }]]);
+    expect(Object.keys(plan.taxonomies ?? {})).toContain('tags');
   });
 
   it('recognises a post by its kept old address when the entry does not say where it came from', async () => {

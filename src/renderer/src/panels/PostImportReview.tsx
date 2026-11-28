@@ -316,7 +316,15 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
   const skippedLong = preview.skipped.join(' ').length > 240;
   const missingLabel = `${plural(missing.length, 'picture', 'pictures')} ${blocked ? 'would be' : 'will be'} left out`;
   const unread = already.filter((p) => p.unread).length;
-  const alreadyLabel = `${plural(already.length, 'post is', 'posts are')} already in the project, so ${already.length === 1 ? 'it' : 'they'} ${updating ? 'will be updated from the export' : `will be left as ${already.length === 1 ? 'it is' : 'they are'}`}`;
+  const here = `${plural(already.length, 'post is', 'posts are')} already in the project`;
+  const leftAs = (k: number) => `left as ${k === 1 ? 'it is' : 'they are'}`;
+  const alreadyLabel = !updating
+    ? `${here}, so ${already.length === 1 ? 'it' : 'they'} will be ${leftAs(already.length)}`
+    : !unread
+      ? `${here}, so ${already.length === 1 ? 'it' : 'they'} will be updated from the export`
+      : `${here}: ${updates.toLocaleString()} will be updated from the export, and ${unread.toLocaleString()} whose text could not be read will be ${leftAs(unread)}`;
+  // Updating a post puts what reading it changed over the one already here: those are shown in full.
+  const updatedToCheck = updating ? already.filter((p) => !p.unread && needsCheck(p)) : [];
   const posts = (
     <>
       {toCheck.length > 0 && (
@@ -345,9 +353,15 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           );
         })()}
       {already.length > 0 && (
-        <ReviewDisclosure className="import-review-group" summary={alreadyLabel.replace(/, so .*$/, '')} testId="post-import-existing">
-          {updating && unread > 0 && <p className="import-summary-note">{plural(unread, 'post’s', 'posts’')} text could not be read this time, so {unread === 1 ? 'it is' : 'they are'} left as {unread === 1 ? 'it is' : 'they are'}.</p>}
-          <PlainPosts posts={already} language={language} />
+        <ReviewDisclosure className="import-review-group" summary={here} testId="post-import-existing">
+          {updatedToCheck.length > 0 && (
+            <ul className="import-review">
+              {updatedToCheck.map((p, i) => (
+                <PostRow key={i} p={p} language={language} />
+              ))}
+            </ul>
+          )}
+          <PlainPosts posts={already.filter((p) => !updatedToCheck.includes(p))} language={language} />
         </ReviewDisclosure>
       )}
     </>
@@ -377,7 +391,8 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       }
     >
       {blocked && (
-        <div className="post-import-problems" data-testid="post-import-problems" tabIndex={-1} data-autofocus>
+        // Announced when choosing to update the posts already here is what stops the import.
+        <div className="post-import-problems" data-testid="post-import-problems" tabIndex={-1} data-autofocus role="alert">
           {problems.map((p, i) => (
             <p key={i} className="scope-note danger">
               <TriangleAlert aria-hidden="true" />
