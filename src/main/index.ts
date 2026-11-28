@@ -783,9 +783,9 @@ function registerIpc() {
   );
   const paths = (v: unknown): v is string[] => Array.isArray(v) && v.every((f) => typeof f === 'string');
   handle('project:restoreVersion', (id: unknown, revision: unknown, reviewed: unknown, key: unknown) => {
-    const r = reviewed as { files?: unknown; replaced?: unknown } | null;
-    return typeof id === 'string' && Number.isInteger(revision) && r && paths(r.files) && paths(r.replaced) && typeof key === 'string'
-      ? controller.restoreVersion(id, revision as number, { files: r.files, replaced: r.replaced }, key)
+    const r = reviewed as { files?: unknown; replaced?: unknown; others?: unknown } | null;
+    return typeof id === 'string' && Number.isInteger(revision) && r && paths(r.files) && paths(r.replaced) && (r.others === undefined || paths(r.others)) && typeof key === 'string'
+      ? controller.restoreVersion(id, revision as number, { files: r.files, replaced: r.replaced, ...(r.others ? { others: r.others } : {}) }, key)
       : { ok: false, message: 'That saved version is no longer there.' };
   });
   handle('project:renameVersion', (id: unknown, name: unknown, key: unknown) =>

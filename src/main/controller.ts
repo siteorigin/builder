@@ -3007,7 +3007,7 @@ export class Controller {
   }
 
   /** Restore saved version `id` as reviewed at `revision` with the `reviewed` files to put back, in the opening `key` only. */
-  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, key: string): Promise<RestoreVersionResult> {
+  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, key: string): Promise<RestoreVersionResult> {
     const s = this.openedAs(key);
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
