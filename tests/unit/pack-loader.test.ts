@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import type { ComponentDefinition } from '@shared/types';
 import { BUNDLED_PACK_IDS, type AuthoredPack, type PackManifest } from '@catalogue/pack';
-import { createPack } from '@catalogue/dsl';
+import { P, createPack } from '@catalogue/dsl';
 import { builtinFont } from '@catalogue/builtin-fonts';
 import { buildPack, fileSource, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
@@ -115,6 +115,35 @@ function replaceListed(dir: string, file: string, bytes: Buffer) {
 }
 const firstFont = (dir: string) => manifestOf(dir).fonts[0].faces[0].file;
 
+/**
+ * Properties marking sample content at every place a mark can stand (shared/sample-defaults.ts): a text, a rich text,
+ * a list's starting items and its fields' new-item values, an object's text field (beside a link that is not), and a
+ * table, with a label ready to publish left unmarked.
+ */
+const sampleProperties = () => ({
+  sampleHeadline: P.sample(P.str('Headline', 'Gardens planted to last')),
+  sampleIntro: P.sample(P.rich('Intro', ['Tell visitors what you grow and where.'])),
+  searchLabel: P.str('Search label', 'Search'),
+  samplePlans: P.sample(P.list('Plans', 'Plan', { name: P.sample(P.str('Name', 'New plan')), period: P.str('Period', 'Monthly') }, [{ name: 'Starter', period: 'Monthly' }])),
+  sampleAction: P.object('Action', { label: P.sample(P.str('Label', 'Book a visit')), link: P.link('Link') }),
+  sampleSpecs: P.sample({ type: 'table' as const, label: 'Specs', default: { columns: [{ id: 'col_a', label: 'Size' }], rows: [{ id: 'row_a', cells: { col_a: 'Large' } }] } })
+});
+/** Add the sample-marked properties to a release's centered hero, then change them (and nothing else). */
+function editSampled(dir: string, change: (props: Record<string, Record<string, unknown>>) => void) {
+  edit(dir, (m) => {
+    const hero = m.components.find((c) => c.componentId === 'hero.centered')!;
+    hero.properties = { ...hero.properties, ...structuredClone(sampleProperties()) };
+    change(hero.properties as unknown as Record<string, Record<string, unknown>>);
+  });
+}
+/** Studio, with the sample-marked properties on its centered hero. */
+function sampled(): AuthoredPack {
+  const pack = studio();
+  const hero = pack.components.find((c) => c.componentId === 'hero.centered')!;
+  hero.properties = { ...hero.properties, ...sampleProperties() };
+  return pack;
+}
+
 describe('loading a theme pack release', () => {
   it('loads a pack whose design and article layout draw decorative dividers (issue #356)', async () => {
     const root = tmp();
@@ -146,6 +175,22 @@ describe('loading a theme pack release', () => {
     expect(pack.articleTemplate).toEqual(studio().articleTemplate);
     expect([...files.keys()].sort()).toEqual(Object.keys(manifestOf(dir).files).sort());
     expect(files.get(firstFont(dir))!.sha256).toBe(fileSource(join(dir, firstFont(dir))).sha256);
+  });
+
+  it('loads sample-content marks exactly as the author wrote them (issue #1639)', async () => {
+    const root = tmp();
+    const dir = await release(root, sampled());
+    const { pack } = await loadPackDir(dir, user(root));
+    const hero = pack.components.find((c) => c.componentId === 'hero.centered')!;
+    expect(JSON.stringify(pack.components)).toBe(JSON.stringify(sampled().components));
+    const props = hero.properties as Record<string, { sampleDefault?: true; fields?: Record<string, { sampleDefault?: true }> }>;
+    for (const name of ['sampleHeadline', 'sampleIntro', 'samplePlans', 'sampleSpecs']) expect(props[name].sampleDefault, name).toBe(true);
+    expect(props.searchLabel.sampleDefault).toBeUndefined();
+    expect(props.samplePlans.fields!.name.sampleDefault).toBe(true);
+    expect(props.samplePlans.fields!.period.sampleDefault).toBeUndefined();
+    expect(props.sampleAction.sampleDefault).toBeUndefined();
+    expect(props.sampleAction.fields!.label.sampleDefault).toBe(true);
+    expect(props.sampleAction.fields!.link.sampleDefault).toBeUndefined();
   });
 
   const refusals: Array<[string, (dir: string) => void | Promise<void>, RegExp]> = [
@@ -344,6 +389,27 @@ describe('loading a theme pack release', () => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { overlay?: string }).overlay = 'dialog';
     }), /node "caption" shows over the page as a dialog or drawer, which only a container can/],
+    ['a sample-content mark that is not true (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleHeadline.sampleDefault = 'yes';
+    }), /the property "sampleHeadline" is marked wrongly: sampleDefault must be true, or left out/],
+    ['a sample-content mark written as false (issue #1639)', (d) => editSampled(d, (props) => {
+      props.searchLabel.sampleDefault = false;
+    }), /the property "searchLabel" is marked wrongly: sampleDefault must be true/],
+    ['a sample-content mark on a whole object (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleAction.sampleDefault = true;
+    }), /the property "sampleAction" is marked wrongly: an object cannot have a sample default; mark its text fields instead/],
+    ['a sample-content mark on a property that holds no copy (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleNumber = { type: 'number', label: 'Count', default: 3, sampleDefault: true };
+    }), /the property "sampleNumber" is marked wrongly: only a text, rich text, list or table property/],
+    ['a sample-content mark on a computed list (issue #1639)', (d) => editSampled(d, (props) => {
+      Object.assign(props.samplePlans, { feed: 'articles', default: [] });
+    }), /the property "samplePlans" is marked wrongly: a computed list has no items of its own/],
+    ['a sample-content mark on a link field of an object (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.sampleAction.fields as Record<string, Record<string, unknown>>).link.sampleDefault = true;
+    }), /the field "link" of "sampleAction" is marked wrongly: only a text or rich text field/],
+    ['a malformed sample-content mark on a list field (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.samplePlans.fields as Record<string, Record<string, unknown>>).name.sampleDefault = 1;
+    }), /the field "name" of "samplePlans" is marked wrongly: sampleDefault must be true/],
     ['a WOFF2 file cut short', (d) => {
       const f = firstFont(d);
       replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));
