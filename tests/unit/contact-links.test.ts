@@ -456,11 +456,20 @@ describe('contact links in the shipped theme', () => {
     for (const attrs of [`link={way.link}`, `data-so-text={so_text?.('ways.note', way.id)} link={way.link}`, `data-so-text={so_text?.('ways.text', row.id)} link={way.link}`, `data-so-text={so_text?.('ways.text', way.id)} link={row.link}`])
       expect(pairs(marked(attrs)), attrs).toEqual([[], []]);
     expect(pairs(marked(`data-so-text={so_text?.('ways.text', way.id)} link={way.link}`, '{row.text}'))).toEqual([[], []]);
-    // What a quoted attribute says is not where the link goes.
-    expect(pairs(marked(`data-note="opens link={way.link}" data-so-text={so_text?.('ways.text', way.id)} link={way.alt}`))).toEqual([[{ text: 'text', link: 'alt' }], []]);
+    // What a quoted attribute says is not where the link goes; one with expressions in it is not read at all.
+    expect(pairs(marked(`data-note="opens link=way.link" data-so-text={so_text?.('ways.text', way.id)} link={way.alt}`))).toEqual([[{ text: 'text', link: 'alt' }], []]);
+    expect(pairs(marked(`data-note="opens {way.note}" data-so-text={so_text?.('ways.text', way.id)} link={way.alt}`))).toEqual([[], []]);
     // Spread attributes can replace the link, so what it opens is not known, wherever they sit and whatever comes before.
     for (const attrs of [`data-so-text={so_text?.('ways.text', way.id)} link={way.link} {...to}`, `{...to} data-so-text={so_text?.('ways.text', way.id)} link={way.link}`, `data-debug="{"x"}" data-so-text={so_text?.('ways.text', way.id)} link={way.link} {...to}`])
       expect(pairs(marked(attrs)), attrs).toEqual([[], []]);
+    // A quoted value with expressions in it can hide where the tag ends; an href or click handler decides the destination.
+    for (const attrs of [`data-so-text={so_text?.('ways.text', way.id)} link={way.link} title="{" >{way.text}</SoLink>"}" {...{ link: way.alt }}`, `data-so-text={so_text?.('ways.text', way.id)} link={way.link} href={way.alt?.href}`, `data-so-text={so_text?.('ways.text', way.id)} link={way.link} onclick={go}`])
+      expect(pairs(marked(attrs)), attrs).toEqual([[], []]);
+    // Comments and scripts draw no links, and an item made in the markup is not the stored one.
+    const good = `<SoLink data-so-text={so_text?.('ways.text', way.id)} link={way.link}>{way.text}</SoLink>`;
+    expect(pairs([`<!-- {#each ways as way}<SoLink data-so-text={so_text?.('ways.text', way.id)} link={way.alt}>{way.text}</SoLink>{/each} -->`, `{#each ways as way}${good}{/each}`])).toEqual([[{ text: 'text', link: 'link' }], []]);
+    expect(pairs([`<script>const s = '<SoLink title="';</script>`, `{#each ways as way}${good}{/each}`])).toEqual([[{ text: 'text', link: 'link' }], []]);
+    expect(pairs([`{#each ways as row}{@const way = { ...row, link: row.alt }}${good}{/each}`])).toEqual([[], []]);
     // One destination shown by two texts belongs to neither.
     expect(itemLinkPairs(code([`{#each ways as way}<SoLink data-so-text={so_text?.('ways.text', way.id)} link={way.link}>{way.text}</SoLink><SoLink data-so-text={so_text?.('ways.note', way.id)} link={way.link}>{way.note}</SoLink>{/each}`]), 'ways')).toEqual([]);
     // Markup made to be slow reads in one pass.

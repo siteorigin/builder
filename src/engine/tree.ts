@@ -184,12 +184,23 @@ function codeItemLinks(source: string, listProp: string): Array<{ text: string; 
   return links.filter((l) => l.list === listProp).map(({ text, link }) => ({ text, link }));
 }
 
-/** Every marked `<SoLink …>{item.field}</SoLink>` of a source, in one forward pass. */
+/**
+ * Every marked `<SoLink …>{item.field}</SoLink>` of a source, in one forward pass that steps over comments, scripts and
+ * styles, which draw no links.
+ */
 function readCodeItemLinks(source: string): CodeItemLink[] {
   const out: CodeItemLink[] = [];
-  for (let at = source.indexOf('<SoLink'); at >= 0; at = source.indexOf('<SoLink', at)) {
+  const next = /<SoLink|<!--|<(script|style)\b/g;
+  for (let m = next.exec(source); m; m = next.exec(source)) {
+    const at = m.index;
+    if (m[0] === '<!--' || m[1]) {
+      const close = m[1] ? source.indexOf(`</${m[1]}>`, at) : source.indexOf('-->', at + 4);
+      if (close < 0) break;
+      next.lastIndex = close + 1;
+      continue;
+    }
     const tag = readTag(source, at + '<SoLink'.length);
-    at = Math.max(tag.end, at + 1);
+    next.lastIndex = Math.max(tag.end, at + 1);
     if (!tag.attrs) continue;
     const close = source.indexOf('</SoLink>', tag.end);
     // No link closes after this one, so none of the rest has content to read.
@@ -201,8 +212,11 @@ function readCodeItemLinks(source: string): CodeItemLink[] {
     const hook = marker && ITEM_TEXT_HOOK.exec(marker);
     const to = tag.attrs.get('link');
     const link = to && ITEM_FIELD.exec(to);
-    if (!shown || !hook || !link) continue;
+    // An href or a click handler of its own decides where the link goes instead.
+    if (!shown || !hook || !link || [...tag.attrs.keys()].some((k) => k === 'href' || /^on(:|[a-z])/i.test(k))) continue;
     const [, item, text] = shown;
+    // An item made in the markup (`{@const item = …}`) is not the stored one, whatever its ID.
+    if (new RegExp(`\\{@const\\s+${item.replace(/\$/g, '\\$')}\\b`).test(source)) continue;
     if (hook[4] === item && link[1] === item && hook[3] === text) out.push({ list: hook[2], text, link: link[2] });
   }
   return out;
@@ -252,7 +266,8 @@ function readTag(src: string, from: number): { attrs: Map<string, string> | null
       } else if (src[i] === '"' || src[i] === "'") {
         const q = src.indexOf(src[i], i + 1);
         if (q < 0) return { attrs: null, end: src.length };
-        // Text, or text around expressions: never an item's field on its own.
+        // Text around expressions, whose quotes can sit inside them, is not read: the tag pairs nothing.
+        if (src.slice(i, q).includes('{')) return { attrs: null, end: q + 1 };
         value = '';
         i = q + 1;
       } else return { attrs: null, end: i };
