@@ -19,6 +19,8 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
+import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool, withoutBriefAsks } from './brief-tools';
+import type { BriefWriteGrant } from '@shared/brief';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
@@ -138,7 +140,7 @@ export interface RunSession {
    */
   apply(
     batch: { operations: EditOperation[]; expectedRevision?: number },
-    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
+    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; briefWrite?: BriefWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
   ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   /** The main process's single-use grant for a form routing review the user allowed when the app asked; null when it no longer holds. */
   grantFormRouting(reviewId: string): FormRoutingGrant | null;
@@ -1824,6 +1826,9 @@ export class Orchestrator {
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
     /** The author asks to go to a page (#1357): only then is the run offered open_page. A collaborator's request never moves the host's editor. */
     const pageAsked = !run.delegation && asksToOpenPage(userMsg.text, session.state);
+    // The brief is the author's own (#518): only their own message, asking in so many words, lets a run change it
+    // (#1407). Never a guest's, a question, a layout's run (which never widens), or the request a "Continue" carries on.
+    const briefAllowance = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : null;
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1864,8 +1869,11 @@ export class Orchestrator {
      * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
      * the run is decided: one taken away while it finished leaves nothing of it.
      */
-    const completeRun = (label: string) =>
-      delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    const completeRun = (named: string) => {
+      // A run that changed only the brief is named for that, never with the request's (or the reply's) private words.
+      const label = briefOnly(executedOps) ? BRIEF_RUN_LABEL : named;
+      return delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    };
     const selected = selectionTarget(userMsg.context?.selection);
     if (selected && partTexts) selected.texts = partTexts;
     /** The component design the run starts limited to, if any: its definition tools address it for the whole turn. */
@@ -1894,8 +1902,11 @@ export class Orchestrator {
       const cut = (l: string) => cutAtWord(l, 120);
       return { undoTakesBack: h.undoLabel ? cut(h.undoLabel) : null, redoPutsBack: h.redoLabel ? cut(h.redoLabel) : null };
     };
+    /** The run's tools, with update_project_brief when the author's message asked to change the brief. A narrower scope
+     *  keeps it: the project's scope check asks the author to widen before it changes anything. */
+    const withBriefTool = (t: RunTools): RunTools => (briefAllowance && t.mode !== 'ask' && t.mode !== 'layout' ? { ...t, tools: [...t.tools, updateBriefTool(briefAllowance.actions)] } : t);
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
-    const runTools = (): RunTools =>
+    const runTools = (): RunTools => withBriefTool(
       toolsForRun({
         editor,
         state: session.state,
@@ -1925,7 +1936,7 @@ export class Orchestrator {
         page: authority.kind === 'page' && Object.hasOwn(session.state.pages, authority.pageId) ? { route: session.state.pages[authority.pageId].route } : null,
         entry: authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId } : null,
         layout: authority.kind === 'template' ? { owner: authority.owner } : null
-      });
+      }));
     let current = runTools();
     const macros = newMacroMemory();
     /** Pages this request tried to create in a change that never landed. */
@@ -2278,6 +2289,7 @@ export class Orchestrator {
             }
           }
         : {}),
+      briefWrite: () => briefAllowance,
       apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
@@ -2373,7 +2385,7 @@ export class Orchestrator {
           const send = (formRouting?: FormRoutingGrant) =>
             session.apply(
               { operations, expectedRevision },
-              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
+              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(grants?.briefWrite ? { briefWrite: grants.briefWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
             );
           res = await send();
           // Asked once: a batch refused again, with the user's say, changes something they were not shown. Never asked of
@@ -3002,7 +3014,9 @@ export class Orchestrator {
             // A run may not call itself finished with requested pages left as stubs. It is told once.
             // A run limited to one page is held to that page.
             const limitedTo = authority.kind === 'page' ? authority.pageId : null;
-            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
+            // What the request asks of the brief is no page work: a note about pages to build later never asks for them now.
+            const pageRequest = briefAllowance ? withoutBriefAsks(requestText) : requestText;
+            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, pageRequest).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
             const rejected = [...macros.drafts.keys()];
             const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
