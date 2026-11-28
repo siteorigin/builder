@@ -5709,7 +5709,8 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   const hostRedirects = file('_redirects', (s) => generateHostRedirects(s) ?? '');
   if (hostRedirects) files.set(HOST_REDIRECTS_FILE, hostRedirects);
   // How long browsers and the host's CDN keep the built files named by their contents (see ./host-redirects).
-  files.set(HOST_HEADERS_FILE, file('_headers', generateHostHeaders));
+  // A Node.js server reads no host's rules, and caches its hashed files itself (shared/deploy-target.ts).
+  if (!runsOnNode(state.site)) files.set(HOST_HEADERS_FILE, file('_headers', generateHostHeaders));
   const vercelConfig = file('vercel.json', (s) => generateVercelConfig(s) ?? '');
   if (vercelConfig) files.set(VERCEL_CONFIG_FILE, vercelConfig);
   // The RSS feed of the published posts, once the site has a public URL to give their full addresses (see ./rss).

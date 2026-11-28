@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generatePathsJson, generateProject } from '@generator/index';
-import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { generateHostRedirects, generateVercelConfig, HOST_HEADERS_FILE, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { deployTarget, runsOnNode } from '@shared/deploy-target';
 import { validateOperation } from '@shared/ops';
 import type { EditOperation } from '@shared/ops';
@@ -63,6 +63,9 @@ describe('the deployment target', () => {
     const files = generateProject(node);
     expect(files.has(HOST_REDIRECTS_FILE)).toBe(false);
     expect(files.has(VERCEL_CONFIG_FILE)).toBe(false);
+    // Nor the hosts' caching rules: adapter-node caches its hashed files itself.
+    expect(generateProject(moved).has(HOST_HEADERS_FILE)).toBe(true);
+    expect(files.has(HOST_HEADERS_FILE)).toBe(false);
     expect([...files.keys()].some((f) => f.startsWith('src/routes/old'))).toBe(true);
   });
 
