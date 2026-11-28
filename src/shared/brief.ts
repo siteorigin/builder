@@ -34,3 +34,24 @@ export function storedBriefDescription(text: string | null): string {
     return '';
   }
 }
+
+/**
+ * What one batch of an AI run may change of the brief (#1407): the one field the assistant's update_project_brief call
+ * composed, set to exactly the text it composed, while the field still holds `base`, the text it was composed from.
+ * Given by that tool's own call, never by the model; the project refuses every other brief change from a run.
+ */
+export interface BriefWriteGrant {
+  field: BriefField;
+  text: string;
+  base: string;
+}
+
+/** Why a batch asks for more than its brief grant allows, or null. `saved`: the brief as the project has it now. */
+export function briefWriteRefusal(ops: readonly { type: string; description?: unknown; notes?: unknown }[], grant: BriefWriteGrant, saved: Partial<ProjectBriefDoc> | null | undefined): string | null {
+  const op = ops[0];
+  if (ops.length !== 1 || op?.type !== 'brief.update') return 'The brief tool changes the project brief alone, one field at a time.';
+  const other: BriefField = grant.field === 'notes' ? 'description' : 'notes';
+  if (op[other] !== undefined || op[grant.field] !== grant.text) return 'The brief tool writes only the change it composed.';
+  if (briefText(saved, grant.field) !== grant.base) return 'The project brief changed since this change was composed. Read it again.';
+  return null;
+}

@@ -12,7 +12,7 @@ import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
-import { getTheme, listThemes } from '@catalogue/index';
+import { getTheme, installedThemeRequirement, listThemes } from '@catalogue/index';
 import { definitionsRenderedBy, formNameClashMessage, runtimeFontDiagnostics, validateState, pixelLimitMessage } from '@engine/validate';
 import { overPixelLimit } from '@shared/picture-formats';
 import { assetUsages } from '@engine/apply';
@@ -24,6 +24,7 @@ import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
+import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -469,14 +470,44 @@ export function namesFile(text: string, file: string): boolean {
  * the files of components only drafts place: the published pages never import those, so a picture only they name
  * stays out of the website with the drafts.
  */
-async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }> {
+async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
-  return { files, draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
+  return { files, browse: browseIndexes(state), draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
 }
 
 /** The generated index of the pages Site search finds: the words pages show, which never load a file. */
 const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
+
+/** The browse index of each collection whose index the website browses (generator/collection-browse.ts). */
+const browseIndexes = (state: ProjectState): ReadonlySet<string> => new Set(browsingCollections(state).map((id) => `${RUNTIME_DIR}/${browseIndexFile(id)}`));
+
+/**
+ * What of a generated file names the files it loads, for finding the library files the website uses: all of it,
+ * nothing of the search index, and of a collection's browse index only the pictures its cards show, never the words
+ * and values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
+ * generator writes it (edited by hand) counts whole, so nothing it may name is left out.
+ */
+function namingText(rel: string, text: string, browse: ReadonlySet<string>): string {
+  if (rel === SEARCH_INDEX) return '';
+  if (!browse.has(rel)) return text;
+  try {
+    const rows: unknown = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
+    if (!Array.isArray(rows)) return text;
+    const out: string[] = [];
+    const take = (v: unknown) => typeof v === 'string' && out.push(v);
+    for (const row of rows) {
+      const image = (row as { image?: { src?: unknown; srcset?: unknown; sources?: unknown } } | null)?.image;
+      if (!image || typeof image !== 'object') continue;
+      take(image.src);
+      take(image.srcset);
+      if (Array.isArray(image.sources)) for (const s of image.sources) take((s as { srcset?: unknown } | null)?.srcset);
+    }
+    return out.join('\n');
+  } catch {
+    return text;
+  }
+}
 
 /**
  * Which of `names` everything the website build reads as text names, apart from library files: `file` as namesFile
@@ -488,12 +519,12 @@ const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
  * start of the next, as a search of them all joined by line breaks would; any other is found exactly as that would.
  * With `unreached`, the texts of the draft-only components' files nothing the website reads names are put there.
  */
-async function websiteNames(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
+async function websiteNames(project: string, { files, candidate, draftOnly, browse }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
   const matcher = new NameMatcher([...names, ...[...draftOnly].map((rel) => basename(rel))]);
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = await readExportFile(join(project, rel), 'utf8');
+    const text = namingText(rel, await readExportFile(join(project, rel), 'utf8'), browse);
     if (draftOnly.has(rel)) held.set(rel, text);
     else matcher.scan(text);
   }
@@ -555,8 +586,10 @@ export async function unusedComponents(project: string, state: ProjectState): Pr
     for (const dep of def.kind === 'code' ? [...(def.dependencies ?? []), ...(def.generatedFrom ? [def.generatedFrom] : [])] : []) take(dep);
   };
   const seeds: string[] = [];
+  // The search and browse indexes import nothing: their entries' words may read like an import, and are none.
+  const browse = browseIndexes(state);
   for (const rel of (await listFiles(join(project, 'src'))).map((f) => `src/${f.split(sep).join('/')}`)) {
-    if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
+    if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX || browse.has(rel)) continue;
     const text = await readExportFile(join(project, rel), 'utf8');
     if (owner.has(rel)) texts.set(rel, text);
     else seeds.push(text);
@@ -619,7 +652,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
-  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
+  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text, site.browse));
   for (const text of unreached) used.scan(text);
   const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
   // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document
@@ -1558,7 +1591,7 @@ export async function finishExportedSource(dest: string, state: ProjectState, no
   const syncs = await writeSyncScript(dest, state, syncCli);
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs, installedThemeRequirement(state)));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
 }
@@ -1584,9 +1617,22 @@ export function isGeneratedReadme(text: string): boolean {
   // The notices name the site's theme: one written for any installed theme, word for word, is still the app's. An
   // owner's change to them (another licence, say) makes the README theirs.
   const notices = [...new Set([NOTICE, ...listThemes().map(themeNotice)])];
+  // The installed theme it names is whatever the project used when it was written, installed here or not: read back
+  // from the section, which is the app's only when it says exactly what the app would for that theme.
+  const named = normalized.match(/\n## Editing in SiteOrigin Builder\n\nThis project uses the installed theme (.+) \(`([^`\n]+)`\) ([^\s,]+), /);
+  const theme = named ? { name: named[1], id: named[2], version: named[3] } : null;
   return notices
-    .flatMap((n) => (Object.keys(README_HOSTS) as RedirectHost[]).flatMap((h) => [false, true].flatMap((drafts) => [false, true].flatMap((entries) => [false, true].map((sources) => projectReadme(title, drafts, n, entries, h, sources))))))
+    .flatMap((n) => (Object.keys(README_HOSTS) as RedirectHost[]).flatMap((h) => [false, true].flatMap((drafts) => [false, true].flatMap((entries) => [false, true].map((sources) => projectReadme(title, drafts, n, entries, h, sources, theme))))))
     .includes(normalized);
+}
+
+/** What a README says about the installed theme its project needs to be edited in SiteOrigin Builder (#1477). */
+function installedThemeSection(theme: { id: string; name: string; version: string }): string {
+  return `## Editing in SiteOrigin Builder
+
+This project uses the installed theme ${theme.name} (\`${theme.id}\`) ${theme.version}, which does not come with SiteOrigin Builder. To edit the project in SiteOrigin Builder, install that theme first: the same copy of ${theme.version} the project was made with, or a newer release, and restart SiteOrigin Builder. Ask whoever sent you the project for the theme pack. Without it, SiteOrigin Builder opens the project read-only. Running and building the project with the commands above does not need the theme.
+
+`;
 }
 
 /** Why a README's build leaves pages out, and what opening the project in SiteOrigin Builder changes about that. */
@@ -1641,7 +1687,7 @@ const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }
  * The README an exported project gets, for the host its redirect rules are written for. One exported with drafts
  * says how its build treats them.
  */
-export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false, host: RedirectHost = 'cloudflare', sources = false): string {
+export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false, host: RedirectHost = 'cloudflare', sources = false, theme: { id: string; name: string; version: string } | null = null): string {
   return `# ${name}
 
 ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
@@ -1682,7 +1728,7 @@ ${README_HOSTS[host].redirects}
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
 
-${drafts ? DRAFTS_SECTION : ''}${draftEntries ? DRAFT_ENTRIES_SECTION : ''}${sources ? SOURCES_SECTION : ''}## Notices
+${drafts ? DRAFTS_SECTION : ''}${draftEntries ? DRAFT_ENTRIES_SECTION : ''}${sources ? SOURCES_SECTION : ''}${theme ? installedThemeSection(theme) : ''}## Notices
 
 ${notice}
 `;

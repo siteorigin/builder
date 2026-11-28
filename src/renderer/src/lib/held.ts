@@ -68,7 +68,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
   article: ['article']
 };
-const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp', 'redirectHost', 'headerMenuOrder'];
+const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp', 'redirectHost', 'headerMenuOrder', 'headCode', 'globalCss'];
 
 /** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
 function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {
@@ -251,6 +251,11 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       }
       // The crawler policy part by part: paths typed during an AI turn never wait on, or replace, crawlers named meanwhile.
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
+      // Each integration on its own: a site ID typed for one never waits on, or replaces, a change to another.
+      if (op.integrations) {
+        const own: unknown = state.site.integrations;
+        fields.integrations = Object.fromEntries(Object.keys(op.integrations).map((k) => [k, own && typeof own === 'object' ? has(own as Record<string, unknown>, k) : undefined]));
+      }
       return found(fields);
     }
     case 'collection.update': {
@@ -546,6 +551,11 @@ export function typedText(op: EditOperation): string | null {
       return given.length === 1 ? shownValue(listText(given[0])) : null;
     }
     if (key === 'crawlerPolicy') return crawlerPolicyText(o.crawlerPolicy, (k) => (o.crawlerPolicy as Record<string, unknown>)[k]);
+    // An integration's site ID as typed; a removal types nothing.
+    if (key === 'integrations') {
+      const fathom = (o.integrations as { fathom?: { siteId?: unknown } | null } | undefined)?.fathom;
+      return fathom ? shownValue(fathom.siteId) : fathom === null ? '' : null;
+    }
     // One custom field's value.
     if (key === 'values') {
       const given = Object.values((o.values ?? {}) as Record<string, unknown>);
@@ -572,7 +582,12 @@ export function shownField(op: EditOperation, read: unknown): string | null {
       v = reads.length === 1 ? (reads[0]?.value !== undefined ? reads[0].value : reads[0]?.schema?.default) : undefined;
     }
   }
-  else if (op.type === 'site.update' && op.crawlerPolicy) {
+  else if (op.type === 'site.update' && op.integrations) {
+    // An integration is shown by what was typed for it: Fathom's site ID, or nothing once it was removed.
+    const own = (o.integrations && typeof o.integrations === 'object' ? o.integrations : {}) as Record<string, unknown>;
+    const fathom = own.fathom;
+    v = fathom && typeof fathom === 'object' ? (fathom as { siteId?: unknown }).siteId : undefined;
+  } else if (op.type === 'site.update' && op.crawlerPolicy) {
     const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
     return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);
   } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename' || op.type === 'brief.update') v = listText(Object.values(o)[0]);

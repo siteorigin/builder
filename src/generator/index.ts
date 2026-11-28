@@ -107,12 +107,13 @@ import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteE
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
-import { archivePages, collectionIndexRoutes } from '@shared/archives';
+import { archivePages, collectionIndexRoutes, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseIndexFile, browseJs, browsingCollections, generateBrowseIndex, usesBrowse } from './collection-browse';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -128,8 +129,10 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
+import { headCodeWithoutComments, siteGlobalCss, siteHeadCode } from '@shared/site-code';
+import { integrationHead } from '@shared/integrations';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
-import { graphScript, inGenerationRun } from './structured-data';
+import { graphScript, inGenerationRun, perRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
@@ -324,6 +327,12 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
+/** Every category's and tag's archive address, worked out once per run outside a cached one too: every post's terms read it. */
+function termArchiveRoutesOf(state: ProjectState): Record<string, string> {
+  if (isTracked(state)) return termArchiveRoutes(derived(state, 'archivePages', archivePages));
+  return perRun(state, 'termArchiveRoutes', (s) => termArchiveRoutes(archivePages(s)));
+}
+
 /**
  * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
  * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
@@ -370,6 +379,15 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     }
     case 'collection': {
+      // A category's or tag's archive, at its current address, while it has one (an entry's linked terms); otherwise
+      // its words alone.
+      if (link.term) {
+        const terms = derived(ctx.state, 'termArchiveRoutes', termArchiveRoutesOf);
+        const key = termArchiveKey(link.target, link.term);
+        if (!Object.hasOwn(terms, key)) return null;
+        href = terms[key];
+        break;
+      }
       // The first page of the collection's list, at its current address: one the website has no index for shows its
       // words alone, as a link to an entry it does not publish does.
       const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);
@@ -4478,6 +4496,12 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     ? `${follow ? `\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());` : ''}\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
+  // The site's own head code and its integrations' tags (shared/site-code.ts, shared/integrations.ts), on the published
+  // website alone: never in the editor's preview, and never under `vite dev`, which the editor's canvas runs, so the
+  // author's scripts never run while they edit and their analytics never count their own visits.
+  const published = opts.instrument ? '' : publishedHead(state);
+  const publishedImport = published ? `\n\timport { dev } from '$app/env';` : '';
+  const publishedTags = published ? `\n\t{#if !dev}{@html ${js(published)}}{/if}` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginLiveViewer && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\tif (!window.__siteoriginLiveViewer) import('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => { if (!window.__siteoriginLiveViewer) window.dispatchEvent(new CustomEvent('siteorigin:navigated')); });`
     : '';
@@ -4488,12 +4512,13 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/theme.css';
 	import '../lib/siteorigin/styles/components.css';
 	import '../lib/siteorigin/styles/site.css';
+	import '../lib/siteorigin/styles/${GLOBAL_CSS_FILE}';
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
 	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';
 	import { snapshot } from '$app/navigation';
-	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
+	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}${publishedImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4518,7 +4543,7 @@ ${editing}</script>
 	<link rel="icon" href={${HEAD_ASSET}(${js(iconHref)})} type=${js(iconType)} />
 	${siteIconLinks()}
 	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
-	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
+	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}${publishedTags}
 </svelte:head>
 
 <a class="so-skip-link" href="#main" lang={textLang('skipLink')}>{text().skipLink}</a>
@@ -4533,6 +4558,23 @@ ${footer}
 {/if}
 `
   );
+}
+
+/** The author's own stylesheet, beside the generated ones, imported after them all (see SiteDoc.globalCss). */
+export const GLOBAL_CSS_FILE = 'global.css';
+
+/** The site's own stylesheet as a file: a line that says where it comes from, then the author's CSS as typed. */
+export function generateGlobalCss(state: ProjectState): string {
+  const css = siteGlobalCss(state.site);
+  return `/* The site's own CSS, from Site settings > Custom code (siteorigin/site.json). Loaded after every other stylesheet. */\n${css}${css && !css.endsWith('\n') ? '\n' : ''}`;
+}
+
+/**
+ * What the published website adds to every page's <head>: its integrations' tags, then the author's head code without
+ * its comments (see headCodeWithoutComments).
+ */
+export function publishedHead(state: ProjectState): string {
+  return [integrationHead(state.site), headCodeWithoutComments(siteHeadCode(state.site))].filter(Boolean).join('\n');
 }
 
 export const LAYOUT_TS = `// Generated by SiteOrigin Builder. Every page is prerendered to static HTML.
@@ -5402,6 +5444,13 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
     put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
     put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
   }
+  // Search, filters and sorting on a collection's index, with each browsing collection's index of entries, while one
+  // browses (see generator/collection-browse.ts). Written ahead of the archive pages that import them.
+  if (usesBrowse(state)) {
+    put(`${RUNTIME_DIR}/${BROWSE_HELPER_FILE}`, () => browseJs());
+    put(`${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`, () => BROWSE_SVELTE);
+    for (const id of browsingCollections(state)) put(`${RUNTIME_DIR}/${browseIndexFile(id)}`, () => file(`browse:${id}`, (s) => generateBrowseIndex(s, id)));
+  }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
   // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
   if (usesVideo(state)) {
@@ -5419,6 +5468,8 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   put(`${STYLES_DIR}/theme.css`, () => theme.baseCss);
   put(`${STYLES_DIR}/components.css`, () => file('components.css', generateComponentsCss));
   put(`${STYLES_DIR}/site.css`, () => file('site.css', generateSiteCss));
+  // The author's own stylesheet, after every other (empty while there is none, so adding one changes no imports).
+  put(`${STYLES_DIR}/${GLOBAL_CSS_FILE}`, () => file(GLOBAL_CSS_FILE, generateGlobalCss));
   for (const def of sortedDefs(state)) {
     if (def.kind === 'managed' && def.tree) put(defFile(def), () => file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     // A theme component installed before links had relationships renders them too (see withAuthoredRel).

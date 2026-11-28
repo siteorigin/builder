@@ -12,7 +12,7 @@ import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
-import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutGlance, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName, instancesOf, subtreeIds } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
@@ -22,6 +22,7 @@ import { CONNECT_LIST_ARGS, CONNECT_LIST_BRIEF, CONNECT_LIST_DESCRIPTION, connec
 import { hasSources, INSPECT_SOURCE_ARGS, INSPECT_SOURCE_BRIEF, INSPECT_SOURCE_DESCRIPTION, runInspectSource, runWriteSource, WRITE_SOURCE_ARGS, WRITE_SOURCE_BRIEF, WRITE_SOURCE_DESCRIPTION, type SourceToolHost } from './source-tools';
 import { collectionToolSchemas, DEFINE_COLLECTION_ARGS, DEFINE_COLLECTION_BRIEF, DEFINE_COLLECTION_DESCRIPTION, defineCollectionSchema, runDefineCollection, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
 import { PROJECT_SECTIONS } from './budget';
+import { hasCode } from '@shared/site-code';
 import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTakesBackground, selectionTools, type SelectionTarget } from './selection';
@@ -31,7 +32,9 @@ import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION, VALIDATE_FOCUSED_BRIEF } from './validation';
-import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
+import { runUpdateBrief, UPDATE_BRIEF_ARGS, UPDATE_BRIEF_BRIEF, UPDATE_BRIEF_DESCRIPTION, type BriefWriteAllowance } from './brief-tools';
+import { layoutLabel, OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
+import { collectionRouteOwner, hasArchivePages, hasDetailPages } from '@shared/collections';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import type { PreviewControlResult, PreviewControlSettings } from '@shared/preview-control';
@@ -56,6 +59,12 @@ const MAX_HISTORY_STEPS = 10;
 
 /** The most operations one apply_operations call takes. */
 export const MAX_BATCH_OPERATIONS = 30;
+
+/** A collection's own layout, as a whole-site run names it (#1408): its entry pages' layout or its index layout. */
+const LAYOUT_OWNER = z.object({
+  kind: z.enum(['template', 'archive']).describe('"template": the page every entry has. "archive": the collection\'s index at its address, with its later pages and category pages.'),
+  id: z.string().describe('The collection\'s ID.')
+});
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(PROJECT_SECTIONS)).optional() }),
@@ -133,6 +142,7 @@ export const TOOL_ARGS = {
     itemId: z.string().optional().describe('For a list property: the id of one item.'),
     field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
   }),
+  open_page: z.object({ page: z.string().min(1).max(600).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   update_page_seo: PAGE_SEO_ARGS,
@@ -145,7 +155,19 @@ export const TOOL_ARGS = {
   connect_collection_list: CONNECT_LIST_ARGS,
   inspect_source_sample: INSPECT_SOURCE_ARGS,
   write_source_converter: WRITE_SOURCE_ARGS,
-  read_layout: z.object({ nodeId: z.string().optional().describe('Optional subtree to read.') }),
+  update_project_brief: UPDATE_BRIEF_ARGS,
+  read_layout: z.object({ owner: LAYOUT_OWNER.optional().describe('The collection layout to read, in a request that may change the whole site.'), nodeId: z.string().optional().describe('Optional subtree to read.') }),
+  edit_collection_layout: z.object({
+    owner: LAYOUT_OWNER,
+    expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
+    action: z.enum(['start', 'edit']).describe('"start" begins the index\'s own layout in place of the ready-made cards and returns it; "edit" applies operations to the layout.'),
+    operations: z
+      .array(z.record(z.string(), z.unknown()))
+      .min(1)
+      .max(MAX_BATCH_OPERATIONS)
+      .optional()
+      .describe('edit only: the changes, applied atomically. Each names no owner: the call\'s owner is theirs.')
+  }),
   update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
   set_preview: z.object({
     viewport: z.enum(['desktop', 'tablet', 'phone']).optional().describe('A width preset: desktop 1280px, tablet 834px, phone 390px.'),
@@ -166,7 +188,7 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names) or the installed components.',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names), the installed components, or the site\'s own head code and custom CSS in full (siteCode, read alone: read it before replacing either with site.update).',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
@@ -188,6 +210,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four concrete answers in choices, never “Other”; the user can type their own. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   locate_field:
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
+  open_page:
+    'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. When no page is found, nothing opens: tell the author. When more than one page has the title, nothing opens: ask the author which one they meant. Say it was opened only after this succeeds.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   update_page_seo: PAGE_SEO_DESCRIPTION,
@@ -200,7 +224,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   connect_collection_list: CONNECT_LIST_DESCRIPTION,
   inspect_source_sample: INSPECT_SOURCE_DESCRIPTION,
   write_source_converter: WRITE_SOURCE_DESCRIPTION,
+  update_project_brief: UPDATE_BRIEF_DESCRIPTION,
   read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
+  edit_collection_layout:
+    'Change a collection\'s own layout, which every one of its pages shows: its entry pages (owner kind "template") or its index at the collection\'s address, with the index\'s later pages and category pages (kind "archive"). Read it first with read_layout. action "start" begins the index\'s own layout in place of the ready-made cards (a collection loop of linked titles and excerpts) and returns its sections with their IDs; "edit" applies operations to the layout atomically, each naming no owner, and node.insert without parentId adds a section. In the entry layout an element shows the entry its page is for with node.setBinding { "$entry": field }; inside a collection loop, { "$item": field } shows each row\'s entry. connect_collection_list connects a list or a loop in it. Call it at most once per step.',
   update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
   set_preview:
     "Change the editor's own preview controls, as the toolbar does: the canvas width (viewport preset or width), the preview colors (scheme; dark needs a site with a dark palette) and Edit or Preview mode (mode). Name only the settings the user asks for. It changes nothing on the site and records nothing in History. Returns what the controls now show (now) and any setting the editor could not change, with why (refused). It is not a measurement: inspect_layout checks a page at a width.",
@@ -215,7 +242,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names) or installed components.',
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names), installed components, or siteCode alone (the site\'s head code and custom CSS in full).',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
   search_components: 'Theme and project components by keywords, with their IDs.',
@@ -230,6 +257,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
+  open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found: say so. Several match: ask which.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
   update_page_seo: PAGE_SEO_BRIEF,
@@ -242,7 +270,9 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   connect_collection_list: CONNECT_LIST_BRIEF,
   inspect_source_sample: INSPECT_SOURCE_BRIEF,
   write_source_converter: WRITE_SOURCE_BRIEF,
+  update_project_brief: UPDATE_BRIEF_BRIEF,
   read_layout: 'The layout this request may change, as it is now, or one node of it.',
+  edit_collection_layout: 'Change a collection\'s entry layout (template) or index layout (archive), read first with read_layout. "start" begins the index\'s own layout in place of the ready-made cards; "edit" applies operations, each with no owner. { "$entry": field } binds the entry layout to its entry; { "$item": field } a loop\'s row. Once per step.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
   set_preview: "The editor's preview controls: canvas width (viewport or width), preview colors (scheme) and Edit or Preview (mode). Changes nothing on the site.",
   step_history: "The toolbar's Undo or Redo, when the user asks to undo or redo: the request's only change.",
@@ -281,7 +311,8 @@ const NEVER_OFFERED = new Set<OperationType>([
   // A list or loop is connected to a collection with connect_collection_list, whose query a small model can send.
   'instance.setListSource',
   'node.setRepeatSource',
-  // The project brief is the author's own (#518), and session.apply refuses it from a run.
+  // The project brief is the author's own (#518): a run changes it only with update_project_brief, offered when the
+  // author asks (#1407), and session.apply refuses any other brief change from a run.
   'brief.update',
   // So are external sources' settings (#676).
   'source.upsert',
@@ -289,6 +320,43 @@ const NEVER_OFFERED = new Set<OperationType>([
 ]);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
+
+/**
+ * The most of each piece of the site's own code a run reads whole, and so may replace, measured as the result writes it
+ * (JSON, where a line break or quote takes two characters): both pieces then fit in one result (MAX_RESULT_CHARS).
+ */
+export const SITE_CODE_READ_MAX = 10000;
+/** Whether a piece of the site's code is short enough for a run to read whole. */
+const readsWhole = (code: string) => JSON.stringify(code).length <= SITE_CODE_READ_MAX;
+const SITE_CODE_FIELDS = [
+  ['headCode', 'head code'],
+  ['globalCss', 'custom CSS']
+] as const;
+
+/**
+ * The site's own code as read_project's siteCode section gives it: each piece whole, as stored (site.update replaces
+ * it whole, so an edit starts from this), or, past what a run may replace, its length and start alone.
+ */
+function siteCodeRead(state: ProjectState): Record<string, unknown> {
+  return Object.fromEntries(
+    SITE_CODE_FIELDS.map(([key]) => {
+      const v = hasCode(state.site[key]) ? state.site[key] : '';
+      return [key, readsWhole(v) ? v : { characters: v.length, start: v.slice(0, 2000), note: 'Too long to replace here: the author changes it in Site settings > Custom code.' }];
+    })
+  );
+}
+
+/** Why a batch may not replace the site's code: code too long for a run to have read whole. Null when it may. */
+function siteCodeUnread(state: ProjectState, ops: EditOperation[]): string | null {
+  for (const op of ops) {
+    if (op.type !== 'site.update') continue;
+    for (const [key, what] of SITE_CODE_FIELDS) {
+      const saved = state.site[key];
+      if (op[key] !== undefined && hasCode(saved) && !readsWhole(saved)) return `The site's ${what} is ${saved.length} characters, more than a run reads whole, so it is not replaced here. Ask the author to change it in Site settings > Custom code.`;
+    }
+  }
+  return null;
+}
 
 /** Whether an operation creates or copies code: a code operation, or a copy of a code component (as the editor checks). */
 export const copiesCode = (state: ProjectState, op: EditOperation): boolean => developerModeReason(state, op) !== null;
@@ -386,7 +454,7 @@ const MODEL_PAGE_STARTER = z
  * `layout`: a run limited to a collection's layout binds its elements there: to the entry its page is for (`entry`, the
  * entry layout) or to a loop's row alone (`row`, the index layout).
  */
-function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>, layout?: 'entry' | 'row') {
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>, layout?: 'entry' | 'row', ownerless = false) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t) || (layout && t === 'node.setBinding')) && (!only || only.has(t)))
     .map((t) =>
@@ -412,7 +480,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
               : t === 'node.setBinding'
                 ? OPERATION_SCHEMAS[t].extend({ binding: layout === 'entry' ? LAYOUT_BINDING : MODEL_BINDING })
                 : OPERATION_SCHEMAS[t]
-    );
+    )
+    // The layout tool names its layout once, for every operation it sends.
+    .map((o) => (ownerless && 'owner' in (o as z.ZodObject).shape ? (o as z.ZodObject).omit({ owner: true }) : o));
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
 
@@ -434,7 +504,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 }
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
-export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
+export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch', 'edit_collection_layout']);
 const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component', 'upsert_collection_entry', 'define_collection', 'connect_collection_list'];
 /** Reads of a collection's entries, offered with the tools of a run that has collections to read. */
 const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_entry'];
@@ -445,7 +515,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout', 'update_project_brief']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -455,7 +525,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
 /** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
 const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_project_brief', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
@@ -497,7 +567,7 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
   const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
   // A question asked with a collection's layout open reads that layout as it is. One about the site may read what an
   // external source the author connected has, and change nothing.
-  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
+  return [...tools.map(contractRead), ...posts, ...(layout ? [pinnedReadLayout()] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -523,8 +593,8 @@ export function asksForSource(text: string, state?: ProjectState): boolean {
 /**
  * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
  * offered the tools for: in so many words, by asking for a blog or to write its posts (the ready-made "posts" collection,
- * #1423; a post office or fence posts are no blog), or by naming one of the project's collections (its ID, its name or
- * what one entry is called, "Add a Role field to Team").
+ * #1423; a post office or fence posts are no blog), by naming one of the project's collections (its ID, its name or
+ * what one entry is called, "Add a Role field to Team"), or by an address one of them holds ("/properties/", #1408).
  */
 export function asksForCollection(text: string, state?: ProjectState): boolean {
   if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging)\b/i.test(text)) return true;
@@ -538,7 +608,15 @@ export function asksForCollection(text: string, state?: ProjectState): boolean {
     if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(w)) return words.includes(w);
     return w.length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(s)?($|[^\\p{L}\\p{N}])`, 'u').test(words);
   };
-  return Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName));
+  if (Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName))) return true;
+  // An address one of them holds: its index, an entry's page or an archive page ("/properties/", #1408).
+  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘`*[<])(\/[^\s"'()”’,;!?`*<>\]]+)/gu)].some((m) => {
+    // An address as written, without its #fragment or ?query; //host/... names another site.
+    const path = m[1].replace(/[#?].*$/, '').replace(/[.:]+$/, '');
+    if (path.startsWith('//')) return false;
+    const route = normalizeRoute(path);
+    return route !== '/' && !!collectionRouteOwner(state, route);
+  });
 }
 
 /**
@@ -558,7 +636,45 @@ function layoutTools(state: ProjectState, owner: LayoutOwner, focused: boolean):
   const general = toolDefinitions({ codeEnabled: false, definitionOps: false, operations: focused ? FOCUSED_LAYOUT_OPERATIONS : LAYOUT_OPERATIONS, layout: owner.kind === 'archive' ? 'row' : 'entry' }).filter((t) => LAYOUT_READS.has(t.name as ToolName) && (!focused || t.name !== 'validate_project'));
   const ask = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete ask.$schema;
-  return [plainTool('read_layout'), ...general, ...connectListTools(state, owner), { name: 'request_clarification', ...describe('request_clarification'), parameters: ask }];
+  return [pinnedReadLayout(), ...general, ...connectListTools(state, owner), { name: 'request_clarification', ...describe('request_clarification'), parameters: ask }];
+}
+
+/** read_layout in a run limited to one layout: it reads that layout, which it never names. */
+function pinnedReadLayout(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.read_layout.omit({ owner: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'read_layout', ...describe('read_layout'), parameters: schema };
+}
+
+/** The operations the layout tool sends to a collection's layout (#1408): a layout run's own, as the model is offered them. */
+const SITE_LAYOUT_TYPES = new Set<OperationType>([...LAYOUT_OPERATIONS].filter((t) => !NEVER_OFFERED.has(t)));
+
+/**
+ * A whole-site run's tools for its collections' own layouts (#1408): each layout read as it is now, the index's own
+ * layout started in place of the ready-made cards, and either changed with a layout run's operations. Offered while a
+ * collection has pages of its own to lay out; a small model gets the few operations a layout run's small set has.
+ */
+function siteLayoutTools(state: ProjectState, focused: boolean): ToolDefinition[] {
+  const ids = Object.keys(state.collections ?? {})
+    .filter((id) => hasDetailPages(state.collections[id]?.settings))
+    .sort();
+  if (!ids.length) return [];
+  const owner = LAYOUT_OWNER.extend({ id: z.enum(ids as [string, ...string[]]).describe("The collection's ID.") });
+  const operations = z.array(offeredOperations(false, false, focused ? FOCUSED_LAYOUT_OPERATIONS : LAYOUT_OPERATIONS, 'entry', true)).min(1).max(MAX_BATCH_OPERATIONS).optional().describe(TOOL_ARGS.edit_collection_layout.shape.operations.description ?? '');
+  const json = (args: z.ZodType) => {
+    const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+    delete schema.$schema;
+    return schema;
+  };
+  return [
+    {
+      name: 'read_layout',
+      description: "Read a collection's own layout as it is now, which every one of its pages shows: its entry pages' (owner kind \"template\") or its index's (\"archive\"), with its sections' props, styles, bindings and nested content, or one node's subtree. An index still showing the ready-made cards says so.",
+      brief: "A collection's entry layout (template) or index layout (archive) as it is now, or one node of it.",
+      parameters: json(TOOL_ARGS.read_layout.extend({ owner }))
+    },
+    { name: 'edit_collection_layout', ...describe('edit_collection_layout'), parameters: json(TOOL_ARGS.edit_collection_layout.extend({ owner, operations })) }
+  ];
 }
 
 /** The tool that writes a post, while the project has a collection to write one in. */
@@ -577,8 +693,8 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
  * has no room left for them).
  */
-export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools }): RunTools {
-  const run = withEditorTools(runTools(opts), opts.editor, !!opts.ask);
+export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean }): RunTools {
+  const run = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
   if (!run.focused || !run.tools.some((t) => t.name === 'validate_project')) return run;
   const schema = z.toJSONSchema(z.object({ profile: VALIDATE_ARGS.shape.profile.unwrap().extract(['schema', 'component']).optional() }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete schema.$schema;
@@ -716,7 +832,7 @@ function runTools(opts: {
   // So is a collection loop in a component's design, or a list of a component placed in it.
   if (opts.definition) {
     const lists = connectListTools(state, opts.definitionTarget ? { kind: 'component', id: opts.definitionTarget.definitionId } : undefined);
-    return { tools: opts.definitionTarget ? [...general, ...lists] : [...update({ kind: 'site' }), ...general, ...lists], mode: 'general', focused: false };
+    return { tools: opts.definitionTarget ? [...general, ...lists] : [...update({ kind: 'site' }), ...general, ...lists, ...siteLayoutTools(state, false)], mode: 'general', focused: false };
   }
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
@@ -741,6 +857,8 @@ function runTools(opts: {
     // A new kind of content (a Team, Projects) is a collection, made and shown with these: a small model gets them when
     // the request asks for one or names one the project has, so its window stays for pages otherwise.
     ...(!focused || opts.collectionRequest ? [defineCollectionTool(), ...connectListTools(state)] : []),
+    // A collection's index and entry pages are its layouts', changed with their own tools (#1408).
+    ...(!focused || opts.collectionRequest ? siteLayoutTools(state, focused) : []),
     ...entryWrite(state),
     ...entryReads(state),
     // How a connected source's records become entries: a small model gets these when the request asks about a source.
@@ -756,6 +874,81 @@ function runTools(opts: {
   // in code: that one operation, and the page tool places what it made.
   const code = focused && codeEnabled && opts.widenedFromPage && (opts.componentRequest || opts.svelteRequest) ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
   return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+}
+
+/**
+ * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357), in every mode a
+ * request can be typed in, as Pages can be clicked from any of them. It changes nothing in the site, so it widens no
+ * run; a request that never asks to go anywhere is never offered it, so no edit moves the editor. Create component
+ * keeps its own set. Ambiguity is asked about in the same run, which a set without the question tool could not do.
+ */
+function withPageOpener(run: RunTools, asked: boolean): RunTools {
+  if (!asked || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
+  const ask = run.tools.some((t) => t.name === 'request_clarification') ? [] : [narrowQuestion()];
+  return { ...run, tools: [...run.tools, plainTool('open_page'), ...ask] };
+}
+
+/** request_clarification without widenScope: asking which page widens nothing. */
+function narrowQuestion(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
+}
+
+// "Open" is going somewhere, but not a link that opens in a new tab or on a click; "show" and "display" are going
+// there when they are "show me", or say a page within a few words ("show the About page", never "show the phone
+// number on the Contact page").
+const GO_TO =
+  /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
+const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
+
+/**
+ * Whether a request typed into the chat asks to go to a page (#1357): a word for going there ("take me to", "open",
+ * "show me") with a page named, as a page, by its route (with or without its slashes), or by a title one of the
+ * project's pages has.
+ */
+export function asksToOpenPage(text: string, state?: ProjectState): boolean {
+  if (!GO_TO.test(text)) return false;
+  if (NAMES_A_PAGE.test(text)) return true;
+  const fold = (v: string) => v.normalize('NFKC').toLowerCase();
+  const words = fold(text);
+  const named = (n: string) => {
+    if (!n) return false;
+    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
+    // One Latin letter is a word of the request ("a"), never a page's name in it.
+    if (n.length < 2) return false;
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
+  };
+  return Object.values(state?.pages ?? {}).some((p) => {
+    const title = typeof p?.title === 'string' ? fold(p.title.trim()) : '';
+    const route = typeof p?.route === 'string' ? fold(p.route.replace(/^\/+|\/+$/g, '')) : '';
+    return named(title) || named(route);
+  });
+}
+
+/**
+ * The page the author named to open: by its ID, by its route when it is written as one, by its title (ignoring case),
+ * and last by a word that spells its route ("about" for /about/). A title more than one page has names none of them,
+ * even when one of those pages has it as its route.
+ */
+export function findPageToOpen(state: ProjectState, ref: string): { ok: true; pageId: string } | { ok: false; message: string } {
+  if (Object.hasOwn(state.pages, ref)) return { ok: true, pageId: ref };
+  const route = ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (route) return { ok: true, pageId: route };
+  const fold = (v: string) => v.normalize('NFKC').trim().toLowerCase();
+  const wanted = fold(ref);
+  const pages = Object.values(state.pages).filter((p) => !!p);
+  const titled = pages.filter((p) => typeof p.title === 'string' && fold(p.title) === wanted);
+  if (titled.length === 1) return { ok: true, pageId: titled[0].id };
+  const slug = !titled.length && !ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (slug) return { ok: true, pageId: slug };
+  const list = (ps: typeof pages) =>
+    ps
+      .slice(0, 20)
+      .map((p) => `"${p.title}" (${p.route})`)
+      .join(', ') + (ps.length > 20 ? `, and ${ps.length - 20} more` : '');
+  if (titled.length > 1) return { ok: false, message: `More than one page is titled "${ref.trim()}": ${list(titled)}. Nothing was opened. Ask the author which one they meant, then open it by its route.` };
+  return { ok: false, message: `No page has the ID, route or title "${ref.trim()}". Nothing was opened. Tell the author so${pages.length ? `; the site's pages are ${list(pages)}` : ''}.` };
 }
 
 /**
@@ -872,6 +1065,8 @@ export interface ToolHost {
    */
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   compileAll(): Promise<Diagnostic[]>;
+  /** What update_project_brief may do in this run: what the author's own message asked of the brief (#1407), or null. */
+  briefWrite?(): BriefWriteAllowance | null;
   /**
    * `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page.
    * `focus`: list only the findings on these elements (validate_project narrowed to them).
@@ -906,6 +1101,8 @@ export interface ToolHost {
   /** The collection layout the run is limited to (sent while it was open), and how it is named: it reads and writes
    *  only that layout. */
   layoutLimit?(): { owner: LayoutOwner; label: string } | null;
+  /** Whether the run may change the whole site (#1408): its collections' layouts are then its to read and change. */
+  siteWide?(): boolean;
   /** The pages that show this run's changes, as the preview check before it finishes would measure them (validate_project's preview). */
   changedPageIds?(): string[];
   /** Problems with the project's files on disk, such as image files missing from the project folder, looked for again. */
@@ -1129,6 +1326,11 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   switch (name as ToolName) {
     case 'read_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
+      // The site's own code is read alone, so no summary beside it can push it past what one result holds.
+      if (a.sections?.includes('siteCode')) {
+        if (a.sections.length > 1) return toolError('INVALID_ARGUMENT', 'Read siteCode on its own: sections ["siteCode"]. Read the other sections in another call.');
+        return { ok: true, content: { revision: host.revision(), siteCode: siteCodeRead(state) } };
+      }
       const out: Record<string, unknown> = projectSummary(state, host.revision());
       if (a.sections?.includes('tokens')) {
         out.tokens = tokensSummary(state);
@@ -1271,6 +1473,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       // A swap keeps every piece of content or is refused, naming what has no place: content goes only by an edit that says so.
       if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
         return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.');
+      // site.update replaces the site's code whole: a run replaces only code it can read whole (read_project siteCode).
+      const unread = siteCodeUnread(state, ops);
+      if (unread) return toolError('INVALID_ARGUMENT', unread);
       const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, undefined, a.scope);
       if (!res.ok) {
@@ -1438,6 +1643,17 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
         }
       };
     }
+    case 'open_page': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['open_page']>;
+      const found = findPageToOpen(state, a.page);
+      if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
+      const page = state.pages[found.pageId];
+      return {
+        ok: true,
+        openPage: found.pageId,
+        content: { revision: host.revision(), opened: { pageId: page.id, title: page.title, route: page.route }, note: 'The editor now shows this page. Nothing in the site changed.' }
+      };
+    }
     case 'request_clarification': {
       const a = args as z.infer<(typeof TOOL_ARGS)['request_clarification']>;
       // The whole offer is checked before the user is asked: a question never shows a picture that is not there.
@@ -1471,14 +1687,22 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const a = args as z.infer<typeof CONNECT_LIST_ARGS>;
       const layout = host.layoutLimit?.() ?? null;
       if (layout && (a.owner.kind !== layout.owner.kind || a.owner.id !== layout.owner.id)) return toolError('SCOPE_MISMATCH', `This request may change only ${layout.label}. Nothing was applied.`);
-      return runConnectList(a, host, callId);
+      // A whole-site run connects a list in a collection's layout as its layout tool changes it: that one layout (#1408).
+      // A layout whose pages are turned off is kept for when they come back, and is not the run's to change meanwhile.
+      const inLayout = !layout && (a.owner.kind === 'template' || a.owner.kind === 'archive') && !!host.siteWide?.() ? siteLayout(state, { kind: a.owner.kind as LayoutOwner['kind'], id: a.owner.id }) : null;
+      if (inLayout && 'error' in inLayout) return toolError('INVALID_ARGUMENT', `${inLayout.error} Nothing was applied.`);
+      return runConnectList(a, host, callId, inLayout ? { collectionWrite: { kind: 'layout', owner: inLayout.owner } } : undefined);
     }
     case 'read_layout':
       return readLayout(args as z.infer<(typeof TOOL_ARGS)['read_layout']>, host);
+    case 'edit_collection_layout':
+      return runEditLayout(args as z.infer<(typeof TOOL_ARGS)['edit_collection_layout']>, host, callId);
     case 'inspect_source_sample':
       return runInspectSource(args as z.infer<typeof INSPECT_SOURCE_ARGS>, host);
     case 'write_source_converter':
       return runWriteSource(args as z.infer<typeof WRITE_SOURCE_ARGS>, host, callId);
+    case 'update_project_brief':
+      return runUpdateBrief(args as z.infer<typeof UPDATE_BRIEF_ARGS>, host, callId);
     case 'update_theme_component':
       return runUpdateThemeComponent(args as z.infer<typeof UPDATE_THEME_COMPONENT_ARGS>, host, callId);
     case 'update_selected_props':
@@ -1499,13 +1723,96 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   }
 }
 
-/** read_layout: the collection layout a run limited to one reads, as it is now (#679). */
-function readLayout(args: { nodeId?: string }, host: ToolHost): ToolOutcome {
-  const layout = host.layoutLimit?.() ?? null;
-  if (!layout) return toolError('INVALID_ARGUMENT', 'read_layout reads the collection layout a request was sent from while it was open; this request was not.');
+/** Room a whole layout leaves in a result for what goes beside it (the revision, a note). */
+const LAYOUT_RESULT_ROOM = MAX_RESULT_CHARS - 1000;
+
+/**
+ * A collection layout read whole by a whole-site run (#1408): every section as read_page shows a page's while it fits a
+ * result, else each section by its ID, kind and name (a layout run's first look), each then read whole with nodeId.
+ */
+function wholeLayout(state: ProjectState, owner: LayoutOwner, label: string): Record<string, unknown> {
+  const detail = layoutDetail(state, owner);
+  if (detail && JSON.stringify(detail).length <= LAYOUT_RESULT_ROOM) return detail;
+  return layoutGlance(state, owner, label, LAYOUT_RESULT_ROOM);
+}
+
+/** Capitalised, as a sentence starts with it: "The Team index layout". */
+const sentence = (label: string) => `${label[0].toUpperCase()}${label.slice(1)}`;
+
+/**
+ * A collection layout a whole-site run names (#1408), and how it is named, or why it has none: the collection must be
+ * there, with the pages that layout makes (an index needs entry pages too).
+ */
+function siteLayout(state: ProjectState, owner: LayoutOwner): { owner: LayoutOwner; label: string } | { error: string } {
+  const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  if (!c) return { error: `There is no collection "${owner.id}": read_project lists the collections by ID.` };
+  const at: LayoutOwner = { kind: owner.kind, id: owner.id };
+  if (owner.kind === 'archive' ? !hasArchivePages(c.settings) : !hasDetailPages(c.settings))
+    return { error: `The ${c.settings.name} collection has no ${owner.kind === 'archive' ? 'index page' : 'entry pages'} of its own (read_project collections pages), so there is no such layout to change.` };
+  return { owner: at, label: layoutLabel(state, at) };
+}
+
+/** read_layout: the collection layout a run limited to one reads, as it is now (#679), or one a whole-site run names (#1408). */
+function readLayout(args: { owner?: LayoutOwner; nodeId?: string }, host: ToolHost): ToolOutcome {
+  const pinned = host.layoutLimit?.() ?? null;
+  if (pinned && args.owner && (args.owner.kind !== pinned.owner.kind || args.owner.id !== pinned.owner.id)) return toolError('SCOPE_MISMATCH', `This request may read and change only ${pinned.label}.`);
+  let layout = pinned;
+  if (!layout) {
+    if (!args.owner || !host.siteWide?.()) return toolError('INVALID_ARGUMENT', 'read_layout reads the collection layout a request was sent from while it was open, or one named by its owner in a request that may change the whole site; this request is neither.');
+    const found = siteLayout(host.state(), args.owner);
+    if ('error' in found) return toolError('INVALID_ARGUMENT', found.error);
+    layout = found;
+    // An index still shows the ready-made cards until it has a layout of its own, which the run may start.
+    if (!layoutTree(host.state(), found.owner)) {
+      if (args.nodeId !== undefined) return toolError('INVALID_ARGUMENT', `${sentence(found.label)} shows the ready-made cards, which have no node "${args.nodeId}": read it without nodeId.`);
+      return { ok: true, content: { revision: host.revision(), owner: found.owner, collectionId: found.owner.id, custom: false, note: `${sentence(found.label)} shows the ready-made cards, which have no sections to change. edit_collection_layout with action "start" begins its own layout in their place, which you can then change.` } };
+    }
+    if (args.nodeId === undefined) return { ok: true, content: { revision: host.revision(), ...wholeLayout(host.state(), found.owner, found.label) } };
+  }
   const detail = layoutDetail(host.state(), layout.owner, args.nodeId);
-  if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${layout.label[0].toUpperCase()}${layout.label.slice(1)} is no longer in the site.`);
+  if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${sentence(layout.label)} is no longer in the site.`);
   return { ok: true, content: { revision: host.revision(), ...detail } };
+}
+
+/**
+ * edit_collection_layout (#1408): a whole-site run starts a collection's index layout, or changes one of its layouts
+ * with a layout run's operations. The grant each batch carries is this call's, for the one layout it names, never the
+ * model's: the project holds the batch to it (see shared/collection-grant).
+ */
+async function runEditLayout(a: z.infer<(typeof TOOL_ARGS)['edit_collection_layout']>, host: ToolHost, callId: string): Promise<ToolOutcome> {
+  if (host.layoutLimit?.() || !host.siteWide?.()) return toolError('SCOPE_MISMATCH', 'edit_collection_layout changes a collection layout in a request that may change the whole site; this request may not.');
+  const state = host.state();
+  const found = siteLayout(state, a.owner);
+  if ('error' in found) return toolError('INVALID_ARGUMENT', found.error);
+  const { owner, label } = found;
+  if (a.action === 'start') {
+    if (a.operations !== undefined) return toolError('INVALID_ARGUMENT', 'start takes no operations: change the layout it begins in your next step, with the IDs it returns.');
+    if (owner.kind === 'template') return toolError('INVALID_ARGUMENT', `${sentence(label)} is always there: change it with action "edit".`);
+    // Started already (by the author, or by a call before this one): never replaced with a new one.
+    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...wholeLayout(state, owner, label) } };
+    const op = { type: 'collection.update', collectionId: owner.id, archiveTemplate: 'start' } as EditOperation;
+    const res = await host.apply([op], a.expectedRevision, `Start ${label}`.slice(0, 120), callId, { collectionWrite: { kind: 'indexLayout', collectionId: owner.id } });
+    if (!res.ok) return applyFailure(res);
+    return { ok: true, mutated: true, ops: [op], results: res.results, content: { ok: true, revision: res.revision, started: true, ...layoutDetail(host.state(), owner) } };
+  }
+  if (!a.operations?.length) return toolError('INVALID_ARGUMENT', 'edit needs operations: the changes to make to the layout.');
+  if (!layoutTree(state, owner)) return toolError('INVALID_ARGUMENT', `${sentence(label)} shows the ready-made cards: begin its own layout with action "start" first, then change it.`);
+  for (const [i, o] of a.operations.entries()) {
+    const named = o.owner as { kind?: unknown; id?: unknown } | undefined;
+    if (named !== undefined && (named?.kind !== owner.kind || named?.id !== owner.id)) return toolError('INVALID_ARGUMENT', `operations[${i}] names another owner: every operation changes ${label}, which the call names once.`);
+  }
+  const parsed = z.array(EditOperationSchema).safeParse(a.operations.map((o) => ({ ...o, owner })));
+  if (!parsed.success) return toolError('INVALID_ARGUMENT', parsed.error.issues.slice(0, 8).map((i) => `operations.${i.path.join('.')}: ${i.message}`).join('; '));
+  const ops = parsed.data as EditOperation[];
+  const outside = ops.find((o) => !SITE_LAYOUT_TYPES.has(o.type));
+  if (outside) return toolError('INVALID_ARGUMENT', `${outside.type} is not a change to a layout's sections and elements.${outside.type === 'instance.setListSource' || outside.type === 'node.setRepeatSource' ? ' Connect a list, or change a collection loop\'s entries, with connect_collection_list.' : ''}`);
+  // As apply_operations holds them: the app allocates node IDs, a copy goes right after its original, and a swap keeps every piece of content.
+  if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return toolError('INVALID_ARGUMENT', 'node.insert does not take a newNodeId.');
+  if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return toolError('INVALID_ARGUMENT', 'node.duplicate does not take an index.');
+  if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined)) return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops.');
+  const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, { collectionWrite: { kind: 'layout', owner } });
+  if (!res.ok) return applyFailure(res);
+  return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, owner, results: res.results } };
 }
 
 /** Whether a rejected batch failed on a page it was creating itself, named by its route or title. */

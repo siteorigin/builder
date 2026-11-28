@@ -103,6 +103,11 @@ export interface LinkValue {
    * spells it (see linkQuery), and left out when there is none.
    */
   query?: string;
+  /**
+   * On a `collection` link: the archive of one of the collection's categories or tags, in place of its index. Only an
+   * entry's linked terms (`categories.links`, `tags.links`) are given one, as the site is generated; it is never stored.
+   */
+  term?: { taxonomy: 'categories' | 'tags'; id: string };
   newTab?: boolean;
   /**
    * What a web address link says about where it goes (a paid placement, an untrusted citation): kept on `url` links
@@ -1145,6 +1150,21 @@ export interface SiteDoc {
    * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.
    */
   identity?: SiteIdentity;
+  /**
+   * The author's own markup for the <head> of every page of the published website (src/shared/site-code.ts): <meta>,
+   * <link>, <script> and <style> elements, kept as typed. Never in the editor's preview. Absent: none.
+   */
+  headCode?: string;
+  /** The author's own stylesheet, loaded after every other on every page, in the preview too. Absent: none. */
+  globalCss?: string;
+  /** Services added in Site settings, each set up from what the author chose (src/shared/integrations.ts). */
+  integrations?: SiteIntegrations;
+}
+
+/** The integrations added to a site, each under its own key while it is added. */
+export interface SiteIntegrations {
+  /** Fathom Analytics, by the site ID from Fathom's own settings. */
+  fathom?: { siteId: string };
 }
 
 /** The kinds of entity a site can be published by. */
@@ -1541,8 +1561,8 @@ export interface CollectionDoc {
    * category's archive lists, newest first. Absent: 10.
    */
   pageSize?: number;
-  /** Whether each category with a published entry gets an archive at `category/<term ID>/`. Absent: it does. */
-  categoryArchives?: boolean;
+  /** Whether each category and tag with a published entry gets an archive at `category/<term ID>/` or `tag/<term ID>/`. Absent: it does. */
+  termArchives?: boolean;
   /**
    * Whether its published entries with pages of their own are listed in the website's RSS feed. Absent: as its kind
    * says, so a blog's posts are and a structured collection's records (staff, listings) are not.
@@ -1560,6 +1580,21 @@ export interface CollectionDoc {
    * (its share of the index or of one category, page by page). Absent: the ready-made cards. Archives only.
    */
   archiveTemplate?: NodeTree;
+  /**
+   * The controls the first page of the collection's index gives visitors (see shared/collection-browse.ts), which work
+   * in their own browser over every published entry. Absent: none. Only with the ready-made cards.
+   */
+  browse?: CollectionBrowse;
+}
+
+/**
+ * What visitors can do on a collection's index: search its entries' titles and excerpts, filter them (`filters`) and
+ * sort them (`sort`), by fields named as queries name them (`terms.<grouping>`, `field.<name>`, `title`, `publishedAt`).
+ */
+export interface CollectionBrowse {
+  search?: boolean;
+  filters?: string[];
+  sort?: string[];
 }
 
 /** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */

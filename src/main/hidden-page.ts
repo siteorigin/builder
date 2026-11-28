@@ -7,13 +7,18 @@
  */
 import { BrowserWindow, session as electronSession, type Session } from 'electron';
 import type { CdpPage } from './review-shot';
+import { quietRequest } from '@shared/integrations';
 
 /** How long a new window gets to open its blank page. */
 export const OPEN_MS = 10000;
 
 const guarded = new Set<string>();
 
-/** The in-memory session of `partition`, shared with nothing else, that grants no permission and downloads nothing. */
+/**
+ * The in-memory session of `partition`, shared with nothing else, that grants no permission, downloads nothing, and
+ * sends no visit to the site's analytics (quietRequest). A job that filters requests itself keeps quietRequest in its
+ * own filter: a session has one.
+ */
 export function guardedSession(partition: string): Session {
   const ses = electronSession.fromPartition(partition);
   if (guarded.has(partition)) return ses;
@@ -21,6 +26,7 @@ export function guardedSession(partition: string): Session {
   ses.setPermissionRequestHandler((_wc, _permission, done) => done(false));
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', (e) => e.preventDefault());
+  ses.webRequest.onBeforeRequest((details, done) => done({ cancel: quietRequest(details.url, details.resourceType) }));
   return ses;
 }
 

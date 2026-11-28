@@ -7,6 +7,7 @@
 import type { BrowserWindow } from 'electron';
 import { guardedSession, inHiddenPage, within } from './hidden-page';
 import { checkBuiltPage, type PageCheck } from './page-check';
+import { quietRequest } from '@shared/integrations';
 
 /** The windows' own sessions, one for each check under way at once: in memory, shared with nothing else. */
 const PARTITION = 'siteorigin-export-check';
@@ -42,7 +43,8 @@ export function createPageChecker(): PageChecker {
     // that asks to be printed would open a print dialog the page's guard (main/page-check) never reaches. The site's
     // own frames run in the page's process, where the guard does.
     const origin = new URL(url).origin;
-    ses.webRequest.onBeforeRequest((details, done) => done({ cancel: details.resourceType === 'subFrame' && !details.url.startsWith(`${origin}/`) }));
+    // Nor does the check count as a visit to the site's analytics (quietRequest, as every hidden window has it).
+    ses.webRequest.onBeforeRequest((details, done) => done({ cancel: quietRequest(details.url, details.resourceType) || (details.resourceType === 'subFrame' && !details.url.startsWith(`${origin}/`)) }));
     const cleared = await within(ses.clearStorageData().then(() => true, () => false), false);
     if (!cleared) return { status: 'unchecked', detail: 'What an earlier page stored could not be cleared, so the page would not be opened as a first visit.' };
     try {

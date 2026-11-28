@@ -19,7 +19,9 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
-import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
+import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool, withoutBriefAsks } from './brief-tools';
+import type { BriefWriteGrant } from '@shared/brief';
+import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
 import { inTurns, MEASURE_AT_ONCE, PreviewCheck, slots } from './preview-check';
@@ -138,7 +140,7 @@ export interface RunSession {
    */
   apply(
     batch: { operations: EditOperation[]; expectedRevision?: number },
-    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
+    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; briefWrite?: BriefWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
   ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   /** The main process's single-use grant for a form routing review the user allowed when the app asked; null when it no longer holds. */
   grantFormRouting(reviewId: string): FormRoutingGrant | null;
@@ -686,7 +688,7 @@ function layoutGuidance(run: RunTools): string {
   // The entry layout's elements may read the entry; the index layout's only their loop's rows.
   const entry = run.tools.some((t) => JSON.stringify(t.parameters).includes('"$entry"'));
   return `\n- This request changes only the collection layout in currentLayout: every operation names its owner (currentLayout.owner), and read_layout reads it again after a change.${
-    entry ? ' An element shows the entry its page is for with node.setBinding { "$entry": field }: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", or "field.<name>" for a custom field (currentLayout.collection.fields); a rich text shows a reference field\'s entries as links to their pages with "field.<name>.links".' : ''
+    entry ? ' An element shows the entry its page is for with node.setBinding { "$entry": field }: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", or "field.<name>" for a custom field (currentLayout.collection.fields); a rich text shows a reference field\'s entries as links to their pages with "field.<name>.links", and the entry\'s categories or tags as links to their archive pages with "categories.links" or "tags.links".' : ''
   } Inside a collection loop, an element shows its row's entry with { "$item": field }. ${run.tools.some((t) => t.name === 'connect_collection_list') ? 'connect_collection_list fills a placed section\'s list from a collection ("$current" is this one), or changes which entries a loop repeats. ' : ''}Nothing here reaches a page, the shared header or footer, a component's design or the collection's entries: when the request needs those, change what you can and say what else the author would change, and where.`;
 }
 
@@ -711,7 +713,16 @@ function blogGuidance(state: ProjectState, run: RunTools): string {
 
 /** What a site or page run is told about posts: the blog, and with collections how to read and write their entries. */
 function postsGuidance(state: ProjectState, run: RunTools): string {
-  return blogGuidance(state, run) + entryGuidance(run);
+  return blogGuidance(state, run) + entryGuidance(run) + collectionLayoutGuidance(run);
+}
+
+/**
+ * What a whole-site run offered the layout tool is told about a collection's own pages (#1408): its index and its
+ * entries' pages are no pages of the site, but its two layouts, read and changed with their own tools.
+ */
+function collectionLayoutGuidance(run: RunTools): string {
+  if (!run.tools.some((t) => t.name === 'edit_collection_layout')) return '';
+  return `\n- A collection's own pages are not in pages: its index at its address (read_project collections route; "/blog/" is the posts collection's), with the index's later pages and category pages, shows its index layout (owner { "kind": "archive", "id": collectionId }), and each entry's page its entry layout ("template"). To change one, read it with read_layout and change it with edit_collection_layout; an index still showing the ready-made cards gets its own layout with action "start" first. A change shows on every page that layout makes: say so when you finish.`;
 }
 
 /** What a site or page run with collections is told about entries: how to read and write them, and where a feed goes. */
@@ -766,6 +777,14 @@ function editorGuidance(run: RunTools): string {
 
 /** The instructions for a run, by what it may do and the model it goes to. */
 function instructions(state: ProjectState, run: RunTools, constrained: boolean): string {
+  return modeInstructions(state, run, constrained) + (run.tools.some((t) => t.name === 'open_page') ? OPEN_PAGE_GUIDANCE : '');
+}
+
+/** Going to a page the author asked for (#1357): it moves the editor, never the site, and only when asked. */
+const OPEN_PAGE_GUIDANCE =
+  '\n\nWhen the author asks to go to, open, show or switch to a page, call open_page with its ID, route or title, and confirm in one short sentence that it is open. That is not a change to the site. If no page matches, say so; if more than one could, ask which one. Never call open_page for a request that only asks to change a page: an edit leaves the editor where it is. Never say a page was opened unless open_page succeeded.';
+
+function modeInstructions(state: ProjectState, run: RunTools, constrained: boolean): string {
   if (run.mode === 'ask') return askPrompt(state, constrained);
   if (run.mode === 'source') return sourcePrompt(!!run.code, constrained);
   if (run.mode === 'entry') return entryPrompt(constrained);
@@ -1805,6 +1824,11 @@ export class Orchestrator {
     // So does a request for a collection: a small site run is then offered the tools that make and show one.
     const collectionAsked = !ask && (asksForCollection(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForCollection(request, session.state)));
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
+    /** The author asks to go to a page (#1357): only then is the run offered open_page. A collaborator's request never moves the host's editor. */
+    const pageAsked = !run.delegation && asksToOpenPage(userMsg.text, session.state);
+    // The brief is the author's own (#518): only their own message, asking in so many words, lets a run change it
+    // (#1407). Never a guest's, a question, a layout's run (which never widens), or the request a "Continue" carries on.
+    const briefAllowance = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : null;
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1845,8 +1869,11 @@ export class Orchestrator {
      * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
      * the run is decided: one taken away while it finished leaves nothing of it.
      */
-    const completeRun = (label: string) =>
-      delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    const completeRun = (named: string) => {
+      // A run that changed only the brief is named for that, never with the request's (or the reply's) private words.
+      const label = briefOnly(executedOps) ? BRIEF_RUN_LABEL : named;
+      return delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
+    };
     const selected = selectionTarget(userMsg.context?.selection);
     if (selected && partTexts) selected.texts = partTexts;
     /** The component design the run starts limited to, if any: its definition tools address it for the whole turn. */
@@ -1875,8 +1902,11 @@ export class Orchestrator {
       const cut = (l: string) => cutAtWord(l, 120);
       return { undoTakesBack: h.undoLabel ? cut(h.undoLabel) : null, redoPutsBack: h.redoLabel ? cut(h.redoLabel) : null };
     };
+    /** The run's tools, with update_project_brief when the author's message asked to change the brief. A narrower scope
+     *  keeps it: the project's scope check asks the author to widen before it changes anything. */
+    const withBriefTool = (t: RunTools): RunTools => (briefAllowance && t.mode !== 'ask' && t.mode !== 'layout' ? { ...t, tools: [...t.tools, updateBriefTool(briefAllowance.actions)] } : t);
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
-    const runTools = (): RunTools =>
+    const runTools = (): RunTools => withBriefTool(
       toolsForRun({
         editor,
         state: session.state,
@@ -1899,13 +1929,14 @@ export class Orchestrator {
         ...(svelteAsked ? { svelteRequest: true } : {}),
         ...(collectionAsked ? { collectionRequest: true } : {}),
         ...(sourceAsked ? { sourceRequest: true } : {}),
+        ...(pageAsked ? { pageRequest: true } : {}),
         attachedImages: !!userMsg.images?.length,
         ask,
         focused: onlyFocused,
         page: authority.kind === 'page' && Object.hasOwn(session.state.pages, authority.pageId) ? { route: session.state.pages[authority.pageId].route } : null,
         entry: authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId } : null,
         layout: authority.kind === 'template' ? { owner: authority.owner } : null
-      });
+      }));
     let current = runTools();
     const macros = newMacroMemory();
     /** Pages this request tried to create in a change that never landed. */
@@ -2240,6 +2271,8 @@ export class Orchestrator {
       pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null),
       entryLimit: () => (authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId, label: authority.label } : null),
       layoutLimit: () => (authority.kind === 'template' ? { owner: authority.owner, label: authority.label } : null),
+      // A question changes nothing, whatever it was sent with.
+      siteWide: () => !ask && authority.kind === 'site',
       state: readState,
       revision: readRevision,
       // A question reads the problems the project had as it was asked about.
@@ -2256,6 +2289,7 @@ export class Orchestrator {
             }
           }
         : {}),
+      briefWrite: () => briefAllowance,
       apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
@@ -2351,7 +2385,7 @@ export class Orchestrator {
           const send = (formRouting?: FormRoutingGrant) =>
             session.apply(
               { operations, expectedRevision },
-              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
+              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(grants?.briefWrite ? { briefWrite: grants.briefWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
             );
           res = await send();
           // Asked once: a batch refused again, with the user's say, changes something they were not shown. Never asked of
@@ -2980,7 +3014,9 @@ export class Orchestrator {
             // A run may not call itself finished with requested pages left as stubs. It is told once.
             // A run limited to one page is held to that page.
             const limitedTo = authority.kind === 'page' ? authority.pageId : null;
-            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
+            // What the request asks of the brief is no page work: a note about pages to build later never asks for them now.
+            const pageRequest = briefAllowance ? withoutBriefAsks(requestText) : requestText;
+            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, pageRequest).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
             const rejected = [...macros.drafts.keys()];
             const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
@@ -3164,12 +3200,18 @@ export class Orchestrator {
           const offered = tools.some((t) => t.name === call.name);
           // A component the update tool does not offer this run is refused, even from a model that ignored its choices.
           const outside = offered && call.name === 'update_theme_component' ? outsideOffer(tools.find((t) => t.name === call.name), call.arguments) : null;
-          const outcome: ResultOutcome = !offered
+          const reached: ResultOutcome = !offered
             ? // A question is never offered a change, so none can be made in it; elsewhere one may be offered once the scope widens.
               stamp(toolError('INVALID_ARGUMENT', `Unknown tool "${call.name}".`, { recoverable: !(ask && mutating) }), readRevision())
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
               : await (startReads(index), started.get(call) ?? runCall(call));
+          // A question reads the site as it was asked about: a page deleted since then cannot be opened, and the model
+          // is told so rather than told it is open (#1357).
+          const outcome: ResultOutcome =
+            reached.ok && reached.openPage && !Object.hasOwn(session.state.pages, reached.openPage)
+              ? stamp(toolError('INVALID_ARGUMENT', 'That page was deleted while you answered. Nothing was opened: tell the author so.'), readRevision())
+              : reached;
           // Kept before a repeated failure can end the run with this result never sent. A call Stop cut short is not,
           // unless its change landed first: the outcome says whether it was rolled back.
           if (!signal.aborted || outcome.mutated) learnResult(call, outcome);
@@ -3183,6 +3225,10 @@ export class Orchestrator {
           }
           if (signal.aborted) throw new Error('Canceled');
           activity.status = outcome.ok ? 'done' : 'error';
+          // A page the author asked to go to opens now. The editor moves, the site does not: nothing is recorded as a change.
+          if (outcome.ok && outcome.openPage) {
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'open-page', pageId: outcome.openPage });
+          }
           if (outcome.ok && outcome.location) {
             const l = outcome.location;
             const key = [l.owner.kind, l.owner.id, l.nodeId, l.prop, l.itemId ?? '', l.field ?? ''].join('\u0000');
@@ -3340,6 +3386,8 @@ function labelFrom(call: ToolCall, args: Record<string, unknown>, state: Project
     }
     case 'locate_field':
       return 'Finding the field in the Inspector';
+    case 'open_page':
+      return `Opening ${typeof args.page === 'string' && args.page.trim() ? args.page.trim().slice(0, 80) : 'a page'}`;
     case 'request_clarification':
     case 'request_wider_scope':
       return 'Waiting for your answer';
@@ -3384,6 +3432,13 @@ function labelFrom(call: ToolCall, args: Record<string, unknown>, state: Project
       const n = Number.isInteger(args.steps) && (args.steps as number) > 1 ? (args.steps as number) : 1;
       const what = n === 1 ? 'the latest change' : `the latest ${n} changes`;
       return args.direction === 'redo' ? `Redoing ${what.replace('latest', 'latest undone')}` : `Undoing ${what}`;
+    }
+    case 'edit_collection_layout': {
+      const o = args.owner as { kind?: unknown; id?: unknown } | undefined;
+      const id = typeof o?.id === 'string' ? o.id : '';
+      const name = Object.hasOwn(state.collections ?? {}, id) ? state.collections[id].settings.name : 'collection';
+      const which = o?.kind === 'archive' ? 'index layout' : 'layout';
+      return `${args.action === 'start' ? 'Starting' : 'Changing'} the ${String(name).slice(0, 60)} ${which}`;
     }
   }
   return call.name;

@@ -10,6 +10,9 @@
  * - `body`: the entry's text, as rich text.
  * - `categories`: the labels of the entry's categories, in the order they were assigned; `terms.<taxonomy>` reads
  *   any other grouping the same way.
+ * - `categories.links`, `tags.links`: the entry's categories or tags as rich text, each a link to its archive page
+ *   while it has one, the others as text: what the ready-made layout shows under a post. Empty for a collection
+ *   without that grouping.
  * - `readingTime`: how many minutes the text takes to read, shown as the site words it ("4 min read"); 0, and nothing
  *   shown, for an entry with no text. A condition compares the minutes, whatever the wording.
  * - `prevEntry`, `nextEntry`: links to the published entries listed just before and just after it, in the
@@ -46,6 +49,8 @@ export const ENTRY_FIELD_NAMES = [
   'excerpt',
   'featuredImage',
   'categories',
+  'categories.links',
+  'tags.links',
   'body',
   'readingTime',
   'prevEntry',
@@ -86,6 +91,8 @@ const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
   excerpt: text('Excerpt'),
   featuredImage: { type: 'image', label: 'Featured image', default: { assetId: null, alt: '' } },
   categories: text('Categories'),
+  'categories.links': { type: 'richtext', label: 'Categories (links)', default: [] },
+  'tags.links': { type: 'richtext', label: 'Tags (links)', default: [] },
   body: { type: 'richtext', label: 'Text', default: [] },
   readingTime: { type: 'number', label: 'Reading time', default: 0, min: 0, description: 'Minutes the text takes to read, shown as "4 min read".' },
   prevEntry: { type: 'link', label: 'Previous entry', default: { type: 'none', target: '' } },
@@ -125,8 +132,11 @@ export function customFieldName(field: string): string | undefined {
   return name.endsWith(LINKS) ? name.slice(0, -LINKS.length) : name;
 }
 
-/** Whether a binding reads a reference field's linked form: rich text to show, never a value to filter or sort by. */
-export const isLinkedForm = (field: string): boolean => typeof field === 'string' && field.startsWith('field.') && field.endsWith(LINKS);
+/** The built-in linked forms of an entry's terms, each with the grouping it reads. */
+const TERM_LINKS = { 'categories.links': 'categories', 'tags.links': 'tags' } as const;
+
+/** Whether a binding reads a linked form (a reference field's, or an entry's terms'): rich text to show, never a value to filter or sort by. */
+export const isLinkedForm = (field: string): boolean => typeof field === 'string' && ((field.startsWith('field.') && field.endsWith(LINKS)) || Object.hasOwn(TERM_LINKS, field));
 
 /** The reference field whose linked form a `field.<name>.links` binding reads, as the collection declares it. */
 function linkedReference(collection: Pick<Collection, 'settings'>, field: string): ReferenceFieldSchema | undefined {
@@ -338,6 +348,9 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
       return featuredPicture(state, entry);
     case 'categories':
       return termLabels(collection, entry, CATEGORIES);
+    case 'categories.links':
+    case 'tags.links':
+      return linkedTermsValue(collection, entry, TERM_LINKS[field]);
     case 'body':
       if (!collectionHasBody(collection.settings)) return undefined;
       return Array.isArray(entry.body) ? entry.body : [];
@@ -412,6 +425,22 @@ function shownNumber(n: number, language: string): string {
   } catch {
     return String(n);
   }
+}
+
+/**
+ * An entry's terms in one grouping as one paragraph of rich text, separated by commas, in the order they were
+ * assigned: each one's link names its archive, which the site links to while it has one and shows as text otherwise.
+ */
+function linkedTermsValue(collection: Collection, entry: EntryDoc, taxonomy: 'categories' | 'tags'): RichText {
+  const t = own(collection.settings?.taxonomies, taxonomy);
+  const ids = own(entry.terms, taxonomy);
+  if (!t || !Array.isArray(ids)) return [];
+  const spans = [...new Set(ids)].flatMap((id) => {
+    const label = typeof id === 'string' ? own(t.terms, id)?.label : undefined;
+    return typeof label === 'string' && label.trim() ? [{ text: label, link: { type: 'collection', target: collection.settings.id, term: { taxonomy, id } } as LinkValue }] : [];
+  });
+  const out = spans.flatMap((s, i) => (i ? [{ text: ', ' }, s] : [s]));
+  return out.length ? [{ type: 'p', spans: out }] : [];
 }
 
 /** The labels of an entry's terms in one grouping, in the order they were assigned, separated by commas. */

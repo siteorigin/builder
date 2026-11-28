@@ -2,9 +2,10 @@ import './PagesPanel.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronRight, Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
-import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives, hasDetailPages } from '@shared/collections';
+import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasTermArchives, hasDetailPages } from '@shared/collections';
 import { defaultArchiveDescription } from '@shared/archives';
-import type { ElementRef, ProjectState } from '@shared/types';
+import type { CollectionBrowse, CollectionDoc, ElementRef, ProjectState } from '@shared/types';
+import { MAX_BROWSE_KEYS, browseChoices, storedBrowse, type BrowseFilterKind } from '@shared/collection-browse';
 import { redirectRecords } from '@shared/redirects';
 import { aiActivity, api, applyOps, commitDraft, commitOps, confirmDialog, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
@@ -1227,19 +1228,104 @@ function saveIndexOpen(dir: string, collectionId: string, open: boolean) {
   }
 }
 
+/** What each kind of filter lets visitors do, as the editor says it. */
+const FILTER_KIND_HINT: Record<BrowseFilterKind, string> = { choice: 'Pick any', yesno: 'Yes or no', range: 'From and to' };
+
+/**
+ * What visitors can do on the first page of a collection's index, in their own browser over every published entry:
+ * search its titles and excerpts, filter by its groupings and its choice, yes/no and number fields, and sort by its
+ * title, date and text, number and date fields. Only with the ready-made cards: with a design of its own, it says so.
+ */
+function CollectionBrowsing(props: { collectionId: string; name: string; settings: CollectionDoc; designed: boolean }) {
+  const { collectionId, name, settings, designed } = props;
+  const now = storedBrowse(settings) ?? {};
+  const { filters, sorts } = browseChoices(settings);
+  // Each change replaces the whole setting, so it is made from the setting the project shows, one at a time: while a
+  // change is on its way, until the project shows the revision it made (or it is refused), a click changes nothing.
+  const revision = useStore((st) => st.snapshot?.revision ?? 0);
+  const [sending, setSending] = useState<{ revision?: number } | null>(null);
+  const busy = !!sending && (sending.revision === undefined || revision < sending.revision);
+  const commit = (change: (was: CollectionBrowse) => CollectionBrowse, label: string) => {
+    if (busy) return;
+    const stored = storedBrowse({ ...settings, browse: change(now) });
+    if (JSON.stringify(stored ?? {}) === JSON.stringify(now)) return;
+    setSending({});
+    void commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label).then((r) => setSending(r?.ok ? { revision: r.revision } : null));
+  };
+  // Each list keeps the order the fields are offered in.
+  const toggle = (list: 'filters' | 'sort', offered: Array<{ key: string }>, key: string, on: boolean, label: string) =>
+    commit((was) => ({ ...was, [list]: offered.map((c) => c.key).filter((k) => (k === key ? on : (was[list] ?? []).includes(k))) }), label);
+  // At the most a list takes, the fields not chosen wait until one is unticked.
+  const full = (list: 'filters' | 'sort', key: string) => (now[list] ?? []).length >= MAX_BROWSE_KEYS && !(now[list] ?? []).includes(key);
+  return (
+    <fieldset className="pages-collection-browse" disabled={designed} aria-busy={busy || undefined}>
+      <legend>Visitor browsing</legend>
+      <p className="pages-collection-note">{designed ? 'Works with the ready-made cards, so it is off while the index has its own design.' : 'On the first page of the index, working on every published entry.'}</p>
+      <SwitchRow
+        checked={!!now.search}
+        disabled={designed}
+        label="Search"
+        hint="Visitors search the entries’ titles, excerpts and categories, and the options they can filter by."
+        onChange={(on) => commit((was) => ({ ...was, search: on }), on ? `Let visitors search the ${name} index` : `Stop letting visitors search the ${name} index`)}
+      />
+      <fieldset className="pages-collection-checks">
+        <legend>Filters</legend>
+        {filters.length ? (
+          <ul>
+            {filters.map((f) => (
+              <li key={f.key}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={(now.filters ?? []).includes(f.key)}
+                    disabled={full('filters', f.key)}
+                    onChange={(e) => toggle('filters', filters, f.key, e.target.checked, e.target.checked ? `Let visitors filter ${name} by ${f.label}` : `Stop letting visitors filter ${name} by ${f.label}`)}
+                  />
+                  <span className="grow">{f.label}</span>
+                  <span className="pages-collection-kind">{FILTER_KIND_HINT[f.kind]}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="pages-collection-note">Add a grouping, or a choice, yes/no or number field, to filter by.</p>
+        )}
+      </fieldset>
+      <fieldset className="pages-collection-checks">
+        <legend>Sorting</legend>
+        <ul>
+          {sorts.map((f) => (
+            <li key={f.key}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={(now.sort ?? []).includes(f.key)}
+                  disabled={full('sort', f.key)}
+                  onChange={(e) => toggle('sort', sorts, f.key, e.target.checked, e.target.checked ? `Let visitors sort ${name} by ${f.label}` : `Stop letting visitors sort ${name} by ${f.label}`)}
+                />
+                <span className="grow">{f.label}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      </fieldset>
+    </fieldset>
+  );
+}
+
 /**
  * How a collection's index and category archives list its published entries: whether the index shows the ready-made
  * cards or a design of its own (with a way to see it in the preview, as visitors get it, and to design it), how many
  * to a page, whether each category has an archive of its own, and what the index tells search engines and link
  * previews (`fallback` while the collection says nothing of its own). Going back to the ready-made cards asks first.
  */
-function CollectionArchive(props: { id: string; collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean; description: string; fallback: string }) {
-  const { id, collectionId, name, route, pageSize, categories, designed, description, fallback } = props;
+function CollectionArchive(props: { id: string; collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean; description: string; fallback: string; settings: CollectionDoc }) {
+  const { id, collectionId, name, route, pageSize, categories, designed, description, fallback, settings } = props;
   const designRef = useRef<HTMLButtonElement>(null);
   // The text the field shows, so the fallback is named as soon as the description is cleared, before it is saved.
   const [shown, setShown] = useState(description);
   useEffect(() => setShown(description), [description]);
-  const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
+  const update = (patch: { pageSize?: number; termArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
     // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
     if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
@@ -1316,7 +1402,8 @@ function CollectionArchive(props: { id: string; collectionId: string; name: stri
           </select>
         </Field>
       </div>
-      <SwitchRow checked={categories} label="Category pages" hint="Each category gets a page listing its entries." onChange={(on) => void update({ categoryArchives: on }, on ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />
+      <SwitchRow checked={categories} label="Category and tag pages" hint="Each category and tag gets a page listing its entries." onChange={(on) => void update({ termArchives: on }, on ? 'Give categories and tags their own pages' : 'Stop giving categories and tags their own pages')} />
+      <CollectionBrowsing collectionId={collectionId} name={name} settings={settings} designed={designed} />
       <Field label="Index description" hint={shown.trim() ? 'For search results and link previews.' : <>For search results and link previews. While it is empty, this index uses: <q>{fallback}</q></>}>
         <DraftInput
           multiline
@@ -1417,10 +1504,11 @@ function CollectionRow({ state, id, open }: { state: ProjectState; id: string; o
             name={name}
             route={c.settings.route ?? ''}
             pageSize={archivePageSize(c.settings)}
-            categories={hasCategoryArchives(c.settings)}
+            categories={hasTermArchives(c.settings)}
             designed={!!c.settings.archiveTemplate}
             description={c.settings.description ?? ''}
             fallback={defaultArchiveDescription(state, id)}
+            settings={c.settings}
           />
         )}
       </div>
