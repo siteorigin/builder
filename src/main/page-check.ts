@@ -112,7 +112,8 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     switch (method) {
       case 'Network.requestWillBeSent': {
         const at = String((p.request as { url?: string } | undefined)?.url ?? '');
-        if (p.type !== 'Script' || !own(at)) return;
+        // A frame's scripts are its own: the page has started whatever an embed of the site's keeps asking for.
+        if (p.type !== 'Script' || p.frameId !== mainFrame || !own(at)) return;
         pending.add(id);
         lastScript = Date.now();
         break;
@@ -224,7 +225,8 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
       // none is failing still, until the error page comes or the check runs out of time.
       if (built.content && now.empty) return false;
       const quiet = pending.size === 0 && Date.now() - Math.max(startedAt, lastScript) >= SETTLE_MS;
-      return quiet || Date.now() - startedAt >= STARTED_MS;
+      // However often it asks, a script of its own still on its way is waited for: it may be the one that fails.
+      return quiet || (pending.size === 0 && Date.now() - startedAt >= STARTED_MS);
     });
     if (!seen) return { status: 'working' };
     const { heading, at } = seen as { heading: string; at: number };

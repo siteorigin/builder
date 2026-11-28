@@ -45,8 +45,10 @@ const script = (then: string) => `await import('/client/app.js');\n${then}\n`;
 beforeAll(async () => {
   // It answers for SvelteKit's app files only, a moment late, as a slow CDN serving them would.
   hold = createServer((req, res) => {
-    if (req.url !== '/_app/late.js') return;
-    setTimeout(() => res.writeHead(200, { 'content-type': 'text/javascript' }).end(`console.error(new Error('Failed in a late chunk')); ${ERROR_PAGE}`), 300);
+    const late = (ms: number, cause: string) => setTimeout(() => res.writeHead(200, { 'content-type': 'text/javascript' }).end(`console.error(new Error('${cause}')); ${ERROR_PAGE}`), ms);
+    if (req.url === '/_app/late.js') late(300, 'Failed in a late chunk');
+    // Past the time a page that keeps asking for scripts is given to start.
+    else if (req.url === '/_app/slow.js') late(2500, 'Failed in a slow chunk');
   });
   await new Promise<void>((r) => hold.listen(0, '127.0.0.1', r));
   const held = `http://127.0.0.1:${(hold.address() as AddressInfo).port}/hero.png`;
@@ -81,6 +83,11 @@ beforeAll(async () => {
   route('cdn-chunk', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', '_app/late.js')}'; document.head.append(s);`);
   // A healthy page that keeps asking for a script of its own: it is taken as working once it has had time to start.
   route('polling', `${STARTED} setInterval(() => { const s = document.createElement('script'); s.src = '/client/app.js?' + Math.random(); document.head.append(s); }, 40);`);
+  // A page whose app file arrives only after the time a polling page is given, and fails.
+  route('slow-chunk', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', '_app/slow.js')}'; document.head.append(s);`);
+  // A healthy page with a frame of the site's own whose script never arrives.
+  put('frame/index.html', `<!doctype html><html><body><script src="${held.replace('hero.png', '_app/never.js')}"></script></body></html>`);
+  route('framed', STARTED, '<section class="hero"><h1>Welcome</h1><iframe src="/client/frame/"></iframe></section>');
   // A page that logs more errors than a check keeps before the one that broke it.
   route('chatty', `for (let i = 0; i < 30; i++) console.error('Could not load widget ' + i); console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
   // A page that logs an error of its own (a fetch it could not make) and goes on showing its content.
@@ -178,6 +185,14 @@ describe.skipIf(!browserInstalled)('opening a built page in a browser', () => {
 
   it('takes a page that keeps asking for scripts of its own as working once it has had time to start', async () => {
     expect(await check('polling', { timeoutMs: 4000 })).toEqual({ status: 'working' });
+  });
+
+  it('waits for an app file still on its way, past the time a page that keeps asking for scripts is given', async () => {
+    expect(await check('slow-chunk', { timeoutMs: 5000 })).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Failed in a slow chunk') });
+  });
+
+  it('is not held up by a script one of the page’s frames is waiting for', async () => {
+    expect(await check('framed', { timeoutMs: 3000 })).toEqual({ status: 'working' });
   });
 
   it('opens no print dialog for a page that asks to be printed', async () => {
