@@ -194,11 +194,12 @@ describe('connecting a collection to an external source', () => {
     expect(team.settings.sourceId).toBe('team-cms');
     const entries = Object.values(team.entries);
     const ana = entries.find((e) => e.title === 'Ana Ruiz')!;
-    expect(ana).toMatchObject({ slug: 'ana-ruiz', publishedAt: '2026-03-04', values: { role: 'Architect' }, source: { sourceId: 'team-cms', externalId: 'ana' } });
+    // The description the sample shows for its picture is the entry's own (#1419), saved with it.
+    expect(ana).toMatchObject({ slug: 'ana-ruiz', publishedAt: '2026-03-04', featuredImageAlt: 'The studio', values: { role: 'Architect' }, source: { sourceId: 'team-cms', externalId: 'ana' } });
     const asset = s.state.assets.assets[ana.featuredImage!];
     expect(asset).toMatchObject({ kind: 'image', mime: 'image/png' });
     expect(existsSync(join(dir, asset.file))).toBe(true);
-    expect(JSON.parse(readFileSync(join(dir, `siteorigin/collections/team/entries/${ana.id}.json`), 'utf8')).source.externalId).toBe('ana');
+    expect(JSON.parse(readFileSync(join(dir, `siteorigin/collections/team/entries/${ana.id}.json`), 'utf8'))).toMatchObject({ featuredImageAlt: 'The studio', source: { externalId: 'ana' } });
     // Read-only here: changed in the source.
     const edit = await s.apply({ operations: [{ type: 'entry.update', collectionId: 'team', entryId: ana.id, title: 'Ana R.' }] }, { label: 'Edit' });
     expect(edit.ok).toBe(false);

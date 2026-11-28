@@ -488,9 +488,11 @@ describe('collections', () => {
     // Cleared, it goes back to the library's suggestion; removing the picture removes its words with it.
     expect(at(update(s, { featuredImageAlt: '' }))).not.toHaveProperty('featuredImageAlt');
     expect(at(update(s, { featuredImageAlt: null }))).not.toHaveProperty('featuredImageAlt');
-    const removed = at(update(s, { featuredImage: null }));
-    expect(removed).not.toHaveProperty('featuredImage');
-    expect(removed).not.toHaveProperty('featuredImageAlt');
+    for (const featuredImage of [null, '']) {
+      const removed = at(update(s, { featuredImage }));
+      expect(removed).not.toHaveProperty('featuredImage');
+      expect(removed).not.toHaveProperty('featuredImageAlt');
+    }
     // Words with no picture to describe are refused, whether the picture goes with them or was never there.
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', featuredImage: null, featuredImageAlt: 'The hall' }])).toThrow(/needs a featured image/);
     expect(() => apply(update(s, { featuredImage: null }), [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', featuredImageAlt: 'The hall' }])).toThrow(/no featured image to describe/);
@@ -506,21 +508,22 @@ describe('collections', () => {
     base.assets.assets.img_b.altSuggestion = 'New view';
     const s = run(
       base,
-      { type: 'collection.create', collectionId: 'projects' },
-      { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall', title: 'Hall', featuredImage: 'img_a', featuredImageAlt: 'The hall at dusk' },
-      // Words that were the old picture's suggestion, as a detached sync can leave them.
-      { type: 'entry.create', collectionId: 'projects', entryId: 'en_park', title: 'Park', featuredImage: 'img_a', featuredImageAlt: 'Old  view' },
-      { type: 'entry.create', collectionId: 'projects', entryId: 'en_yard', title: 'Yard', featuredImage: 'img_a' }
+      { type: 'collection.create', collectionId: 'projects', fields: { hero: { type: 'image', label: 'Hero', default: { assetId: null, alt: '' } } } },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall', title: 'Hall', featuredImage: 'img_a', featuredImageAlt: 'The hall at dusk', values: { hero: { assetId: 'img_a', alt: 'The hall at dusk' } } },
+      // The entry's own words, even the same as the old picture's suggestion: they are still its own.
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_park', title: 'Park', featuredImage: 'img_a', featuredImageAlt: 'Old view' },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_yard', title: 'Yard', featuredImage: 'img_a' },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_shed', title: 'Shed', featuredImage: 'img_b', featuredImageAlt: 'The hall at dusk' }
     );
-    const replaced = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b' });
-    const e = replaced.collections.projects.entries;
-    expect(e.en_hall).toMatchObject({ featuredImage: 'img_b', featuredImageAlt: 'The hall at dusk' });
-    expect(e.en_park.featuredImage).toBe('img_b');
-    expect(e.en_park).not.toHaveProperty('featuredImageAlt');
-    expect(e.en_yard).not.toHaveProperty('featuredImageAlt');
-    // A copy of the same picture keeps every description as it is.
-    const copy = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', keepAlt: true }).collections.projects.entries;
-    expect(copy.en_park).toMatchObject({ featuredImage: 'img_b', featuredImageAlt: 'Old view' });
+    for (const replace of [{}, { keepAlt: true }]) {
+      const e = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', ...replace }).collections.projects.entries;
+      // Kept with the picture, as the picture field's own description on the same entry is.
+      expect(e.en_hall).toMatchObject({ featuredImage: 'img_b', featuredImageAlt: 'The hall at dusk', values: { hero: { assetId: 'img_b', alt: 'The hall at dusk' } } });
+      expect(e.en_park).toMatchObject({ featuredImage: 'img_b', featuredImageAlt: 'Old view' });
+      expect(e.en_yard.featuredImage).toBe('img_b');
+      expect(e.en_yard).not.toHaveProperty('featuredImageAlt');
+      expect(e.en_shed).toEqual(s.collections.projects.entries.en_shed);
+    }
   });
 
   it('leaves collections showing the old image when only chosen places are replaced', () => {

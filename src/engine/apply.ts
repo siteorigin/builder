@@ -577,22 +577,18 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       // A description that was the old image's suggestion follows the new one, as above; entries have no place in the
       // review list yet.
       if (!op.uses) {
-        // A picture in an article, and an entry's description of its featured image, keep their words on one line, as
-        // they store them: compared and written that way.
-        const line = (t: string) => t.replace(/\s+/g, ' ').trim();
         for (const e of collectionEntries(state)) {
-          if (e.featuredImage === op.assetId) {
-            e.featuredImage = op.withAssetId;
-            // Its own words are kept, as a picture field's are; ones that were the old image's suggestion go, so the
-            // new image's suggestion shows, and follows the library from then on.
-            if (!op.keepAlt && typeof e.featuredImageAlt === 'string' && line(e.featuredImageAlt) === line(was)) delete e.featuredImageAlt;
-          }
+          // An entry's description of its featured image is always its own words, never a copy of a suggestion, so it
+          // is kept for the author to check, as a picture field's own is; without one, the new image's suggestion shows.
+          if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
           if (entrySharingImage(e) === op.assetId) e.seo!.socialImage = op.withAssetId;
         }
         for (const v of collectionImageValues(state, op.assetId)) {
           v.assetId = op.withAssetId;
           if (!op.keepAlt && !v.decorative && (typeof v.alt === 'string' ? v.alt.trim() : '') === was) v.alt = now;
         }
+        // A picture in an article keeps its description on one line, as it stores it: compared and written that way.
+        const line = (t: string) => t.replace(/\s+/g, ' ').trim();
         for (const v of entryBodyImages(state, op.assetId)) {
           v.assetId = op.withAssetId;
           if (!op.keepAlt && !v.decorative && line(typeof v.alt === 'string' ? v.alt : '') === line(was)) v.alt = line(now);

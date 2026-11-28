@@ -51,9 +51,13 @@ function synced(s: ProjectState, records: NormalizedRecord[], at = AT) {
   const source = s.sources!.feed;
   const plan = planSourceSync(s, source, records, at);
   const ops = syncOperations(plan, s, new Map([[`url:${HARBOUR}`, 'img_harbour']]));
-  // Through the operations' own checks, as the session takes them.
-  for (const op of ops) expect(validateOperation(op)).toMatchObject({ ok: true });
-  return { plan, next: applyOperations(s, ops, { sourceSync: { sourceId: source.id, collectionId: plan.collectionId, provenance: plan.provenance } }).state };
+  // Through the operations' own checks, and as they parse them, as the session takes them.
+  const parsed = ops.map((op) => {
+    const v = validateOperation(op);
+    if (!v.ok) throw new Error(v.message);
+    return v.op;
+  });
+  return { plan, next: applyOperations(s, parsed, { sourceSync: { sourceId: source.id, collectionId: plan.collectionId, provenance: plan.provenance } }).state };
 }
 
 const entryId = (externalId: string) => syncedEntryId('feed', externalId, () => false);
@@ -84,6 +88,8 @@ describe('a synced featured image description', () => {
     expect(exported(s, '1')).toMatchObject({ picture: boats, og: boats, twitter: boats });
     expect(exported(s, '2')).toMatchObject({ picture: arabic, og: arabic, twitter: arabic });
     expect(exported(s, '2').svelte).not.toContain('Fishing boats');
+    // The story's words are its own: the library's record of the file is not written.
+    expect(s.assets.assets.img_harbour).not.toHaveProperty('altSuggestion');
   });
 
   it('follows a source edit of the description alone, and gives way to the library suggestion once the record drops it', () => {
@@ -116,6 +122,9 @@ describe('a synced featured image description', () => {
     const alt = s.collections.posts.entries[entryId('1')].featuredImageAlt!;
     expect(alt.length).toBeLessThanOrEqual(TEXT_LIMITS.imageAlt);
     expect(alt).toMatch(/^A harbour at dawn, with boats .*…$/);
+    // Words exactly at the limit are kept whole.
+    const full = 'x'.repeat(TEXT_LIMITS.imageAlt);
+    expect(sync(project(), [story('1', full)]).collections.posts.entries[entryId('1')].featuredImageAlt).toBe(full);
   });
 
   it('follows the library’s suggestion only where a story has no words of its own, and never writes the library', () => {
@@ -140,11 +149,15 @@ describe("an entry's own featured image description", () => {
     ] as EditOperation[]).state;
     const note = (state: ProjectState) => {
       const svelte = generateEntry(state, 'notes', 'en_note1');
-      return { picture: read(svelte, `<SoImage image=\\{\\{"src":"/assets/img_harbour-[^"]*","alt":${STRING}`), og: read(svelte, `<meta property="og:image:alt" content=\\{${STRING}\\} />`) };
+      return {
+        picture: read(svelte, `<SoImage image=\\{\\{"src":"/assets/img_harbour-[^"]*","alt":${STRING}`),
+        og: read(svelte, `<meta property="og:image:alt" content=\\{${STRING}\\} />`),
+        twitter: read(svelte, `<meta name="twitter:image:alt" content=\\{${STRING}\\} />`)
+      };
     };
-    expect(note(s)).toEqual({ picture: 'Our boat at the harbour wall', og: 'Our boat at the harbour wall' });
+    expect(note(s)).toEqual({ picture: 'Our boat at the harbour wall', og: 'Our boat at the harbour wall', twitter: 'Our boat at the harbour wall' });
     const chosen = applyOperations(s, [{ type: 'entry.update', collectionId: 'notes', entryId: 'en_note1', socialImage: 'img_harbour' }]).state;
-    expect(note(chosen)).toEqual({ picture: 'Our boat at the harbour wall', og: 'The harbour' });
+    expect(note(chosen)).toEqual({ picture: 'Our boat at the harbour wall', og: 'The harbour', twitter: 'The harbour' });
   });
 
   it('goes with a copy of the post, never as a copy of the library’s suggestion', () => {
