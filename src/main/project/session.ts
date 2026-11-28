@@ -4892,6 +4892,8 @@ export class ProjectSession extends EventEmitter {
       const review: VersionReview = {
         revision: this.revision,
         pages: { back: [], gone: [], changed: [] },
+        entries: { back: [], gone: [], changed: [] },
+        collections: [],
         site: false,
         styles: false,
         components: 0,
@@ -4914,6 +4916,14 @@ export class ProjectSession extends EventEmitter {
           if (!this.docs.has(p)) review.pages.back.push(title(plan.state, pageId));
           else if (!plan.docs.has(p)) review.pages.gone.push(title(this.state, pageId));
           else review.pages.changed.push(title(plan.state, pageId));
+        } else if (collectionPathOf(p)) {
+          const at = collectionPathOf(p)!;
+          const name = (s: ProjectState) => s.collections[at.collectionId]?.settings.name?.trim() || at.collectionId;
+          const entry = (s: ProjectState) => s.collections[at.collectionId]?.entries[at.entryId!]?.title?.trim() || 'Untitled entry';
+          if (at.entryId === undefined) review.collections.push(plan.docs.has(p) ? name(plan.state) : name(this.state));
+          else if (!this.docs.has(p)) review.entries.back.push(entry(plan.state));
+          else if (!plan.docs.has(p)) review.entries.gone.push(entry(this.state));
+          else review.entries.changed.push(entry(plan.state));
         } else if (p === `${DOC_DIR}/site.json`) review.site = true;
         else if (p === `${DOC_DIR}/tokens.json`) review.styles = true;
         else if (p === ASSETS_DOC) review.library = true;

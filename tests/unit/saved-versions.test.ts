@@ -222,6 +222,16 @@ describe('saved versions', () => {
     expect(again.state.assets.assets.a_photo.file).toBe(b.files[0]);
   });
 
+  both('reviews the collection entries a restore removes, brings back and changes', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_kept', title: 'Kept post', publishedAt: '2026-11-01', body: ['One.'] }] }, { label: 'Kept' }));
+    const saved = await ok(s.saveVersion('V1'));
+    await ok(s.apply({ operations: [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_after', title: 'After V1', publishedAt: '2026-11-02', body: ['Two.'] }] }, { label: 'After' }));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review).toMatchObject({ unchanged: false, entries: { back: [], gone: ['After V1'], changed: [] }, collections: [] });
+    expect(describeReview(review!)).toEqual(['Removes 1 entry it doesn’t have: “After V1”']);
+  });
+
   both('puts back a file changed in place outside the app, and the version saved before restoring holds the changed one', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, ASSETS), { recursive: true });
@@ -1657,7 +1667,7 @@ describe('restoring with Git snapshots on (#1155)', () => {
 });
 
 describe('the saved version wording', () => {
-  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
+  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, entries: { back: [], gone: [], changed: [] }, collections: [], site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
 
   it('names pages first, at most four a line, then what else changes', () => {
     const lines = describeReview({
@@ -1684,6 +1694,15 @@ describe('the saved version wording', () => {
       '1 file the earlier restore put back stays in the project folder, since its Undo needs it: proof.pdf'
     ]);
     expect(describeReview(base)).toEqual([]);
+  });
+
+  it('names collection entries a restore removes, brings back or changes', () => {
+    expect(describeReview({ ...base, entries: { back: ['Old'], gone: ['After V1'], changed: ['A', 'B'] }, collections: ['Posts'] })).toEqual([
+      'Brings back 1 entry: “Old”',
+      'Removes 1 entry it doesn’t have: “After V1”',
+      'Changes 2 entries: “A” and “B”',
+      'Changes the settings of 1 collection: “Posts”'
+    ]);
   });
 
   it('says where the replaced work went after a restore', () => {

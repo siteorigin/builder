@@ -26,6 +26,11 @@ export function describeReview(r: VersionReview): string[] {
   if (back.length) lines.push(`Brings back ${plural(back.length, 'page', 'pages')}: ${titles(back)}`);
   if (gone.length) lines.push(`Removes ${plural(gone.length, 'page', 'pages')} it doesn’t have: ${titles(gone)}`);
   if (changed.length) lines.push(`Changes ${plural(changed.length, 'page', 'pages')}: ${titles(changed)}`);
+  const e = r.entries;
+  if (e.back.length) lines.push(`Brings back ${plural(e.back.length, 'entry', 'entries')}: ${titles(e.back)}`);
+  if (e.gone.length) lines.push(`Removes ${plural(e.gone.length, 'entry', 'entries')} it doesn’t have: ${titles(e.gone)}`);
+  if (e.changed.length) lines.push(`Changes ${plural(e.changed.length, 'entry', 'entries')}: ${titles(e.changed)}`);
+  if (r.collections.length) lines.push(`Changes the settings of ${plural(r.collections.length, 'collection', 'collections')}: ${titles(r.collections)}`);
   if (r.site) lines.push('Changes site settings: the name, header, footer or page order');
   if (r.styles) lines.push('Changes site styles: colors, fonts and spacing');
   if (r.components) lines.push(`Changes ${plural(r.components, 'component', 'components')}`);
