@@ -3,7 +3,7 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
+import type { Collection, CollectionBrowse, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, COLLECTION_KINDS, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import {
@@ -29,7 +29,8 @@ import {
 } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { archivePages, archiveRoute, type ArchivePage } from '@shared/archives';
-import { customFieldName } from '@shared/entry-fields';
+import { customFieldName, entryFieldLabel, entryFieldSchema } from '@shared/entry-fields';
+import { browseFilterKind, browseProblem, browseSortKind, storedBrowse } from '@shared/collection-browse';
 import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
@@ -529,6 +530,27 @@ function applyIdentity(settings: CollectionDoc, op: Pick<Op<'collection.update'>
   }
 }
 
+/**
+ * The browsing a collection's index gives visitors, as given, checked against the fields and groupings the collection
+ * has once the rest of the change is made: undefined when it offers nothing.
+ */
+function browseOf(settings: CollectionDoc, input: CollectionBrowse): CollectionBrowse | undefined {
+  const name = settings.name;
+  // A field it has by its label; any other name as given.
+  const label = (k: string) => (entryFieldSchema({ settings }, k) ? `“${entryFieldLabel({ settings }, k)}”` : `"${k.slice(0, 80)}"`);
+  for (const k of input.filters ?? [])
+    if (!browseFilterKind(settings, k)) fail(`Visitors can filter ${name} by one of its groupings (terms.<ID>) or by a choice, yes/no or number field (field.<name>), and ${label(k)} is none of those.`);
+  for (const k of input.sort ?? [])
+    if (!browseSortKind(settings, k)) fail(`Visitors can sort ${name} by title, publishedAt, or a text, number or date field (field.<name>), and ${label(k)} is none of those.`);
+  return storedBrowse({ ...settings, browse: input });
+}
+
+/** Sets or removes a collection's browsing (see browseOf). */
+function setBrowse(settings: CollectionDoc, browse: CollectionBrowse | undefined) {
+  if (browse) settings.browse = browse;
+  else delete settings.browse;
+}
+
 export function collectionCreate(state: ProjectState, op: Op<'collection.create'>): OpResult {
   if (!isCollectionId(op.collectionId)) fail(`"${op.collectionId.slice(0, 60)}" is not a collection ID: use lowercase letters, numbers and single hyphens, such as "posts" or "case-studies".`);
   if (Object.hasOwn(state.collections, op.collectionId)) fail(`The collection "${op.collectionId}" already exists.`);
@@ -560,6 +582,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.termArchives !== undefined) settings.termArchives = op.termArchives;
   if (typeof op.rss === 'boolean') settings.rss = op.rss;
+  if (op.browse) setBrowse(settings, browseOf(settings, op.browse));
   state.collections[op.collectionId] = { settings, entries: {} };
   if (op.archiveTemplate) setArchiveLayout(state, state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
@@ -686,7 +709,12 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     settleEntries(state, c, taxonomies, fields);
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
+    // A filter or sort whose field has gone, or no longer gives that control, goes with it.
+    if (op.browse === undefined && c.settings.browse !== undefined) setBrowse(c.settings, storedBrowse(c.settings));
   }
+  // Once its fields and groupings are what the change makes them.
+  if (op.browse === null) delete c.settings.browse;
+  else if (op.browse !== undefined) setBrowse(c.settings, browseOf(c.settings, op.browse));
   if (follows && !isDefaultLayout(state, c.settings)) c.settings.template = defaultLayout(state, c.settings);
   if (op.categoryDescription !== undefined) {
     const { termId } = op.categoryDescription;
@@ -1401,7 +1429,7 @@ function collectionSettingProblem(s: CollectionDoc): string | null {
   const terms = s.taxonomies?.categories?.terms;
   const term = terms && typeof terms === 'object' ? Object.entries(terms).find(([, t]) => t && typeof t === 'object' && longDescription(t.description)) : undefined;
   if (term) return `what the category “${typeof term[1].label === 'string' ? term[1].label : term[0]}” tells search engines is not text of at most ${TEXT_LIMITS.pageDescription} characters.`;
-  return null;
+  return browseProblem(s, (k) => `"${k.slice(0, 80)}"`);
 }
 
 /** Whether a custom field's schema is one no entry's value can be judged by: an unknown kind, a choice without choices, a reference to nothing. */
