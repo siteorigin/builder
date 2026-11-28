@@ -208,7 +208,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   locate_field:
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   open_page:
-    'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. A page that is not found, or a title more than one page has, is said so and nothing opens: ask the author which page they meant. Say it was opened only after this succeeds.',
+    'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. When no page is found, nothing opens: tell the author. When more than one page has the title, nothing opens: ask the author which one they meant. Say it was opened only after this succeeds.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   update_page_seo: PAGE_SEO_DESCRIPTION,
@@ -852,8 +852,11 @@ function narrowQuestion(): ToolDefinition {
   return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
 }
 
-// "Open" is going somewhere, but not a link that opens in a new tab; "show" is going there when it is "show me".
-const GO_TO = /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in|on)\b)|\bshow\s+me\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/i;
+// "Open" is going somewhere, but not a link that opens in a new tab or on a click; "show" and "display" are going
+// there when they are "show me", or say a page within a few words ("show the About page", never "show the phone
+// number on the Contact page").
+const GO_TO =
+  /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
 const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
 
 /**
@@ -869,6 +872,8 @@ export function asksToOpenPage(text: string, state?: ProjectState): boolean {
   const named = (n: string) => {
     if (!n) return false;
     if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
+    // One Latin letter is a word of the request ("a"), never a page's name in it.
+    if (n.length < 2) return false;
     return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
   };
   return Object.values(state?.pages ?? {}).some((p) => {

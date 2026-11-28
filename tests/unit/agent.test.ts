@@ -511,7 +511,7 @@ describe('going to a page from Chat (#1357)', () => {
 
 describe('asksToOpenPage', () => {
   const state = createStarterState('business', 'Test', false);
-  it.each(['Take me to the About page', 'open /contact', 'show me Contact', 'Go to the home page', 'go home', 'switch to Contact', 'navigate to /about/', 'open contact/', 'open "/"'])('hears "%s" as going to a page', (text) => {
+  it.each(['Take me to the About page', 'open /contact', 'show me Contact', 'Go to the home page', 'go home', 'switch to Contact', 'navigate to /about/', 'open contact/', 'open "/"', 'Show the About page', 'Display the /about/ page', 'Open in the editor: /about/'])('hears "%s" as going to a page', (text) => {
     expect(asksToOpenPage(text, state)).toBe(true);
   });
   it.each([
@@ -520,11 +520,23 @@ describe('asksToOpenPage', () => {
     'Add a Services section',
     'What does the Contact page say?',
     'Make the About page link open in a new tab',
+    'Make the contact link open a new tab',
+    'Make the menu open on click on every page',
     'Show the phone number on the Contact page',
     // A title is a whole word: "Contact" is not in "contacts".
     'Open our contacts list'
   ])('hears "%s" as no request to go anywhere', (text) => {
     expect(asksToOpenPage(text, state)).toBe(false);
+  });
+  it('hears a page by its route without slashes, and never by a one-letter title', () => {
+    const named = structuredClone(state);
+    const about = Object.values(named.pages).find((p) => p.title === 'About')!;
+    about.title = 'Our Team';
+    about.route = '/company/';
+    named.pages.pg_a = { ...structuredClone(about), id: 'pg_a', title: 'A', route: '/a-page/' };
+    expect(asksToOpenPage('open company', named)).toBe(true);
+    expect(asksToOpenPage('open our team', named)).toBe(true);
+    expect(asksToOpenPage('View a list of fonts', named)).toBe(false);
   });
 });
 
