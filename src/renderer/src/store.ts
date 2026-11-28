@@ -1004,14 +1004,22 @@ export function errorText(e: unknown): string {
   return m.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
 }
 
+/** What a check's warnings say, every one of them: the notice stays until it is dismissed, since a warning cut to the
+ *  first, or gone in four seconds, cannot be read or fixed. */
+export function warningsToast(done: 'Saved' | 'Created', warnings: string[]): void {
+  const n = warnings.length;
+  const head = `${done} with ${n} warning${n === 1 ? '' : 's'}.`;
+  toast(n === 1 ? `${head} ${warnings[0]}` : `${head}\n${warnings.map((w) => `• ${w}`).join('\n')}`, 'info', undefined, true);
+}
+
 let toastId = 0;
-export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action']) {
+export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action'], stays = false) {
   const id = ++toastId;
   // An error stays until it is dismissed, so one said again takes the earlier one's place instead of stacking. One
   // with an action of its own stays beside it: that action can hold something else (the text for Copy text).
-  const repeats = (t: Toast) => kind === 'error' && t.kind === 'error' && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
+  const repeats = (t: Toast) => (kind === 'error' || stays) && t.kind === kind && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
   setState({ toasts: [...getState().toasts.filter((t) => !repeats(t)), { id, text, kind, action }] });
-  if (kind !== 'error') setTimeout(() => dismissToast(id), 4000);
+  if (kind !== 'error' && !stays) setTimeout(() => dismissToast(id), 4000);
 }
 
 export function dismissToast(id: number) {

@@ -1,7 +1,7 @@
 import './SourceModal.css';
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { CircleAlert, CircleCheck, Code, FileCode2, Lock, Sparkles } from 'lucide-react';
-import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog } from '../store';
+import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog, warningsToast } from '../store';
 import { CODE_DRAFT } from '../lib/pending';
 import { Field, Modal, Spinner, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
@@ -484,7 +484,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       // Save disables itself once the refreshed code shows nothing left to save; the focus keeper hands focus on.
       setSaved(true);
       if (r.fixed) toast(`Fixed and saved: ${r.fixed}`);
-      else if (r.warnings?.length) toast(`Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}`);
+      else if (r.warnings?.length) warningsToast('Saved', r.warnings);
     } catch {
       setErrors([wrote ? WRITE_FAILED : CHECK_FAILED]);
     } finally {
@@ -842,7 +842,7 @@ export function NewCodeComponentModal() {
       const id = r?.[0]?.definitionId as string | undefined;
       if (!id) return setErrors([CREATE_FAILED]);
       if (checked.fixed) toast(`Fixed and created: ${checked.fixed}`);
-      else if (checked.warnings?.length) toast(`Created with ${checked.warnings.length} warning${checked.warnings.length === 1 ? '' : 's'}. ${checked.warnings[0]}`);
+      else if (checked.warnings?.length) warningsToast('Created', checked.warnings);
       setState({ modal: null });
       await insert({ definitionId: id }, title);
     } catch {

@@ -491,7 +491,7 @@
   .toast svg { width: 16px; height: 16px; flex: none; }
   .toast > svg { margin-top: 5px; }
   .toast .toast-body { display: flex; flex-direction: column; min-width: 0; padding-block: 3px; }
-  .toast .toast-text { overflow-wrap: anywhere; user-select: text; }
+  .toast .toast-text { overflow-wrap: anywhere; user-select: text; white-space: pre-line; }
   .toast-dismiss { display: grid; place-items: center; width: 24px; height: 24px; margin: 1px -4px 0 0; padding: 0; flex: none; border: 0; border-radius: var(--r-xs); background: transparent; }
   .toast-dismiss:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   /* Long text wraps, then scrolls in whole lines, so a message that waits to be dismissed never fills the window. Its
