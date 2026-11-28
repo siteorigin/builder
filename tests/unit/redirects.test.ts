@@ -299,6 +299,37 @@ describe('host redirect rules', () => {
   });
 });
 
+describe('a draft at an old address the website keeps (#1363)', () => {
+  /** Each operation as its own batch, as the Inspector sends each edit of Page settings. */
+  const oneByOne = (s: ProjectState, ...ops: EditOperation[]) => ops.reduce((st, op) => run(st, op), s);
+  /** Ferry times, exported at /ferry-times/ and then moved, keeping its old address working. */
+  const moved = () => {
+    const s = exported(run(site(), { type: 'page.create', pageId: 'pg_ferry', title: 'Ferry times' }, { type: 'page.create', pageId: 'pg_water', title: 'Waterfront' }));
+    return oneByOne(s, { type: 'page.update', pageId: 'pg_ferry', route: '/waterfront/ferry-times/' });
+  };
+  const kept = { from: '/ferry-times/', pageId: 'pg_ferry' };
+  /** What the website export publishes at the old address: its redirect page and its host rule. */
+  const published = (s: ProjectState) => {
+    const live = publishedState(s);
+    const files = generateProject(live);
+    return { redirects: live.site.redirects, page: files.has('src/routes/ferry-times/+page.svelte'), rule: files.get(HOST_REDIRECTS_FILE)?.includes('/ferry-times/ /waterfront/ferry-times/ 301') ?? false, draft: Object.hasOwn(live.pages, 'pg_draft') };
+  };
+
+  it('keeps the redirect working on the website while the draft holds the address, and after it moves on', () => {
+    let s = moved();
+    expect(s.site.redirects).toEqual([kept]);
+    expect(published(s)).toEqual({ redirects: [kept], page: true, rule: true, draft: false });
+    s = oneByOne(s, { type: 'page.create', pageId: 'pg_draft', title: 'Draft timetable rewrite' }, { type: 'page.update', pageId: 'pg_draft', draft: true }, { type: 'page.update', pageId: 'pg_draft', route: '/ferry-times/' });
+    expect(s.pages.pg_draft.route).toBe('/ferry-times/');
+    expect(s.site.redirects).toEqual([kept]);
+    expect(published(s)).toEqual({ redirects: [kept], page: true, rule: true, draft: false });
+    // Moving the draft away again leaves the redirect as it was.
+    s = oneByOne(s, { type: 'page.update', pageId: 'pg_draft', route: '/draft-timetable-rewrite/' });
+    expect(s.site.redirects).toEqual([kept]);
+    expect(published(s)).toEqual({ redirects: [kept], page: true, rule: true, draft: false });
+  });
+});
+
 describe('managing redirects', () => {
   it('adds, changes and removes the author’s own redirects, keeping a move’s as it was recorded', () => {
     let s = exported(site());
