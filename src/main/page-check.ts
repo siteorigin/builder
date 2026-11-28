@@ -37,6 +37,8 @@ const QUIET_MS = 100;
  * awaited error hook, which may come a moment after it says it has started.
  */
 const SETTLE_MS = 150;
+/** What SvelteKit's start script in a built page names its globals by: a page without it runs no script of SvelteKit's. */
+const SVELTEKIT_START = '__sveltekit_';
 /** How many errors a check keeps, and how much of each. */
 const LOGGED = 20;
 const LOGGED_CHARS = 2000;
@@ -193,9 +195,11 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     const doc = document as { requestId: string; status: number; url: string } | null;
     if (!doc || doc.status < 200 || doc.status >= 300) throw new Unchecked(`The website’s preview answered ${doc ? doc.status : 'nothing'} for this page.`);
     if (doc.url !== url) throw new Unchecked('The page led to another address.');
-    // A page whose own content is the error page's section, as it was built, cannot be told from one that failed.
     const body = (await race(page.send('Network.getResponseBody', { requestId: doc.requestId }))) as { body: string; base64Encoded: boolean };
     const html = body.base64Encoded ? Buffer.from(body.body, 'base64').toString('utf8') : body.body;
+    // A page built without SvelteKit's script (a project's own `csr = false`) never starts: nothing of it runs to fail.
+    if (!html.includes(SVELTEKIT_START)) return { status: 'working' };
+    // A page whose own content is the error page's section, as it was built, cannot be told from one that failed.
     if (await evaluate<boolean>(BUILT(html))) return { status: 'working' };
     // Started: SvelteKit has hydrated the page and run its first navigation callbacks, and no script is on its way.
     let seen = null as { heading: string; at: number } | null;

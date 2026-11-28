@@ -23,9 +23,12 @@ let server = '';
 let browser: Browser;
 const previews = new StaticPreviews();
 
-/** A built page: its sections in the layout's main element, and the script that starts it from /client/<name>.js. */
-const page = (name: string, sections = '<section class="hero"><h1>Welcome</h1></section><section class="loop"><p>Loop count 0</p></section>') =>
-  `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title></head><body><div style="display: contents"><a href="#main">Skip</a><header>Site</header><main id="main">${sections}</main><footer>Footer</footer></div><script>import('/client/${name}.js');</script></body></html>`;
+/**
+ * A built page: its sections in the layout's main element, and SvelteKit's start script, which names its global and
+ * starts the page from /client/<name>.js; or, built without it, no script at all.
+ */
+const page = (name: string, sections = '<section class="hero"><h1>Welcome</h1></section><section class="loop"><p>Loop count 0</p></section>', start = true) =>
+  `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title></head><body><div style="display: contents"><a href="#main">Skip</a><header>Site</header><main id="main">${sections}</main><footer>Footer</footer></div>${start ? `<script>{ __sveltekit_1x2y3z = { base: '/client' }; import('/client/${name}.js'); }</script>` : ''}</body></html>`;
 
 /** What SvelteKit adds once it has hydrated the page and run its first navigation callbacks. */
 const STARTED = `const a = document.createElement('div'); a.id = 'svelte-announcer'; a.setAttribute('aria-live', 'assertive'); document.body.append(a);`;
@@ -62,6 +65,8 @@ beforeAll(async () => {
   route('built-so', STARTED, `<section class="${ERROR_SECTION_CLASS}"><div><h1>Error 500</h1></div></section>`);
   // A page whose script never says it has started.
   route('stuck', 'void 0;');
+  // A page built without SvelteKit's script (csr off): it never says it has started, and nothing of it runs.
+  put('static/index.html', page('static', undefined, false));
   server = await previews.serve(root, '/client');
   if (browserInstalled) browser = await chromium.launch();
 });
@@ -141,6 +146,12 @@ describe.skipIf(!browserInstalled)('opening a built page in a browser', () => {
 
   it('says a page that never starts could not be checked, rather than working or failed', async () => {
     expect(await check('stuck', { timeoutMs: 1500 })).toEqual({ status: 'unchecked', detail: 'The page did not finish starting in time.' });
+  });
+
+  it('takes a page built without SvelteKit’s script as working at once: nothing of it runs to fail', async () => {
+    const started = Date.now();
+    expect(await check('static', { timeoutMs: 1500 })).toEqual({ status: 'working' });
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 
   it('says a page the server does not have could not be checked', async () => {

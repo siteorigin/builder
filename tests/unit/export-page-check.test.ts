@@ -46,7 +46,7 @@ vi.mock('../../src/main/runtime/manager', async (original) => ({
       const code = [...source.matchAll(/from "(\.[^"]*\/lib\/siteorigin\/custom\/[^"]+\.svelte)"/g)].map((m) => readFileSync(resolve(at, m[1]), 'utf8'));
       const loops = code.some((c) => c.includes('$effect('));
       const text = [source, ...shown].join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-      writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"></head><body><pre hidden>${text}</pre><main id="main"><section><p>Built</p></section></main><script type="module">await new Promise((r) => setTimeout(r, 10)); ${loops ? LOOPS : ''} ${STARTED}</script></body></html>`);
+      writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"></head><body><pre hidden>${text}</pre><main id="main"><section><p>Built</p></section></main><script>__sveltekit_1x2y3z = {};</script><script type="module">await new Promise((r) => setTimeout(r, 10)); ${loops ? LOOPS : ''} ${STARTED}</script></body></html>`);
     }
     return { ok: true, logs: [] };
   }
