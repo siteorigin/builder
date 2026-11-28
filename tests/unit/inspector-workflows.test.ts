@@ -453,9 +453,10 @@ describe('paste what was copied (#62)', () => {
     expect(id).not.toBe(stats.id);
     expect((tree(r.state).nodes[id] as InstanceNode).definitionId).toBe(stats.definitionId);
     expect(r.state.pages[s.site.homePageId].nodes[stats.id]).toBeDefined();
-    // The paste adds no problem: the only one is the fixture's own, the starter's hero and the placed one both Heading 1s.
-    // The starter's own sample text (#1640) is named too, and the paste changes none of it (below).
-    expect(validateState(s).filter((d) => !isSampleFinding(d)).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // The paste adds no problem: the only one is the fixture's own, the starter's hero and the placed one both Heading 1s,
+    // beside the starter's sections still waiting for their pictures. The starter's own sample text (#1640) is named too,
+    // and the paste changes none of it (below).
+    expect(validateState(s).filter((d) => d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d)).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
     expect(validateState(r.state)).toEqual(validateState(s));
     // Beside the root, where the component's one designated root would be joined by another, it is refused.
     rejects(() => paste(s, clip, inComponent), /inside the component, not beside its root/);

@@ -58,12 +58,16 @@ vi.mock('electron', () => {
             case 'Page.getFrameTree':
               return { frameTree: { frame: { id: 'main' } } };
             case 'Page.navigate':
-              emit('Network.responseReceived', { requestId: 'doc', type: 'Document', frameId: 'main', response: { status: 200, url: params.url } });
+              emit('Network.requestWillBeSent', { requestId: 'doc', type: 'Document', frameId: 'main', request: { url: params.url } });
+              emit('Network.responseReceived', { requestId: 'doc', type: 'Document', frameId: 'main', response: { status: 200, url: params.url, mimeType: 'text/html', headers: { 'Content-Length': '96' } } });
               emit('Network.loadingFinished', { requestId: 'doc' });
+              emit('Page.loadEventFired', {});
               return { frameId: 'main' };
             case 'Network.getResponseBody':
               return { body: '<script>__sveltekit_x = {}</script><main id="main"><section>Built</section></main>', base64Encoded: false };
             case 'Runtime.evaluate':
+              // The measurement's read of the page's pictures: it shows none.
+              if (String(params.expression).includes('probe')) return { result: { value: { images: [], lcp: null, used: [] } } };
               return { result: { value: String(params.expression).includes('DOMParser') ? { error: '', content: true } : { error: '', empty: false, started: true } } };
             default:
               return {};
@@ -109,9 +113,15 @@ beforeEach(() => {
 describe('the export’s page check windows', () => {
   it('opens each page in a hidden, unfocusable window of its own that prints nothing, and destroys it after', async () => {
     const checker = createPageChecker();
-    expect(await checker.check('http://127.0.0.1:1/')).toEqual({ status: 'working' });
+    // Measured as a first visit (#1488): the page alone, as the stand-in serves nothing else.
+    expect(await checker.check('http://127.0.0.1:1/', undefined, Date.now() + 10_000)).toEqual({ status: 'working', sample: { complete: true, resources: [{ url: '/', kind: 'html', bytes: 96, preloaded: false, own: true }], images: [], lcp: null, used: [] } });
     expect(env.windows).toHaveLength(1);
     const [w] = env.windows;
+    // At the report's window, nothing cached, before the page is opened.
+    for (const step of ['Emulation.setDeviceMetricsOverride', 'Network.setCacheDisabled']) {
+      expect(w.steps.indexOf(step), step).toBeGreaterThanOrEqual(0);
+      expect(w.steps.indexOf(step), step).toBeLessThan(w.steps.indexOf('Page.navigate'));
+    }
     expect(w.options).toMatchObject({ show: false, focusable: false, skipTaskbar: true, paintWhenInitiallyHidden: true });
     expect(w.options.webPreferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false, disableDialogs: true, backgroundThrottling: false });
     expect(w.openHandler?.()).toEqual({ action: 'deny' });
@@ -124,6 +134,9 @@ describe('the export’s page check windows', () => {
     expect(await answer('subFrame', 'http://127.0.0.1:1/menu/')).toBe(false);
     expect(await answer('script', 'https://cdn.example/widget.js')).toBe(false);
     expect(await answer('mainFrame', 'http://127.0.0.1:1/')).toBe(false);
+    // Checking a page is never a visit to the site's analytics: Fathom's script and beacons are left out (#1485).
+    expect(await answer('script', 'https://cdn.usefathom.com/script.js')).toBe(true);
+    expect(await answer('ping', 'https://www.google-analytics.com/g/collect')).toBe(true);
   });
 
   it('opens no window for a check whose windows were disposed of while its session was emptied', async () => {

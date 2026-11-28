@@ -10,7 +10,7 @@ import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agen
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
-import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
+import { asksToOpenPage, copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
 import { findingsOf, inTurns, introducedProblems, MEASURE_AT_ONCE, requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, requestedAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
@@ -23,7 +23,7 @@ import { drafts } from '@engine/draft';
 import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@shared/icons';
-import { diagnosticKey, validateState } from '@engine/validate';
+import { diagnosticKey, validateState, type Diagnostic } from '@engine/validate';
 import { isSampleFinding } from '@engine/sample-content';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
@@ -37,6 +37,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { runSeoAudit } from '@engine/seo-audit';
 import { findingHandoff } from '../../src/renderer/src/lib/seoHandoff';
 import { managedStarter } from './fixtures/agent-designs';
+import { pagePerformance, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PageSample, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -88,6 +89,8 @@ interface SetupOptions {
   managed?: string[];
   /** A change to the project before the session opens it. */
   prepare?: (s: ProjectState) => void;
+  /** What the last website export measured, as the main process keeps it (#1488). */
+  performance?: () => PerformanceStatus | null;
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
@@ -106,7 +109,8 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
     compileAll: opts.compileAll ? () => opts.compileAll!(session) : async () => [],
     inspectLayout: opts.inspectLayout ?? (async () => ({ issues: [] })),
     onBusyChange: (b) => (busy = b),
-    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {})
+    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {}),
+    ...(opts.performance ? { performance: opts.performance } : {})
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   const run = async (text: string, extra: Partial<ChatContext> = {}) => {
@@ -387,6 +391,160 @@ describe('agent orchestrator', () => {
   });
 });
 
+describe('going to a page from Chat (#1357)', () => {
+  const pageTitled = (session: ProjectSession, title: string) => Object.values(session.state.pages).find((p) => p.title === title)!;
+  const opens = (events: AiEvent[]) => events.filter((e) => e.kind === 'open-page').map((e) => e.pageId);
+  const lastResult = (adapter: FakeAdapter, i: number) => JSON.parse((adapter.requests[i].items.at(-1) as { content: string }).content);
+
+  it('opens a page named by its title, in a question, as no change to the site', async () => {
+    // Its route says nothing of its title, so only the title can find it.
+    const { session, run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'about' })], () => finish('The About page is open.')], {
+      prepare: (s) => {
+        Object.values(s.pages).find((p) => p.title === 'About')!.route = '/our-story/';
+      }
+    });
+    const revision = session.revision;
+    const about = pageTitled(session, 'About');
+    const { result, runId } = await run('Take me to the About page', { mode: 'ask' });
+    expect(adapter.requests[0].tools.map((t) => t.name)).toContain('open_page');
+    expect(adapter.requests[0].system).toContain('call open_page');
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: true, opened: { pageId: about.id, title: 'About', route: '/our-story/' } });
+    const tagged = events.find((e) => e.kind === 'message')!.conversationId;
+    expect(tagged).not.toBe('');
+    expect(events.filter((e) => e.kind === 'open-page')).toEqual([{ runId, conversationId: tagged, kind: 'open-page', pageId: about.id }]);
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'The About page is open.', changes: [], canUndo: false });
+    expect(session.revision).toBe(revision);
+    expect(session.historyInfo().entries).toHaveLength(0);
+  });
+
+  it('opens a page named by its route from an edit request, changing nothing', async () => {
+    const { session, run, events } = await setup([() => [call('nav', 'open_page', { page: '/contact' })], () => finish('Contact is open.')]);
+    const contact = pageTitled(session, 'Contact');
+    const { result } = await run('open /contact', { scope: 'page' });
+    expect(opens(events)).toEqual([contact.id]);
+    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
+    expect(session.historyInfo().entries).toHaveLength(0);
+  });
+
+  it('says a page that does not exist was not found, and opens nothing', async () => {
+    const { run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'Careers' })], () => finish('There is no Careers page.')]);
+    const { result } = await run('Take me to the Careers page', { scope: 'page' });
+    const answer = lastResult(adapter, 1);
+    expect(answer).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(answer.error.message).toMatch(/No page has the ID, route or title "Careers"/);
+    expect(answer.error.message).toContain('"About"');
+    expect(opens(events)).toEqual([]);
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'There is no Careers page.', changes: [] });
+  });
+
+  it('tells the model a page deleted while a question was answered was not opened', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([
+      async () => {
+        const about = pageTitled(session, 'About');
+        expect((await session.apply({ operations: [{ type: 'page.remove', pageId: about.id, replacementPageId: session.state.site.homePageId }] }, { label: 'Delete page', source: 'user' })).ok).toBe(true);
+        return [call('nav', 'open_page', { page: about.id })];
+      },
+      () => finish('The About page has gone.')
+    ]);
+    session = s;
+    await run('Take me to the About page', { mode: 'ask' });
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/deleted while you answered/) } });
+    expect(opens(events)).toEqual([]);
+  });
+
+  it('opens nothing for a title two pages share, so the model can ask which one', async () => {
+    const { run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'About' })], () => finish('Which About page?')], {
+      prepare: (s) => {
+        const about = Object.values(s.pages).find((p) => p.title === 'About')!;
+        s.pages.pg_about_team = { ...structuredClone(about), id: 'pg_about_team', route: '/about-team/' };
+        s.site.pageOrder = [...(s.site.pageOrder ?? []), 'pg_about_team'];
+      }
+    });
+    await run('Show me the About page', { mode: 'ask' });
+    const message = lastResult(adapter, 1).error.message;
+    expect(message).toMatch(/More than one page is titled "About"/);
+    expect(message).toContain('/about/');
+    expect(message).toContain('/about-team/');
+    expect(opens(events)).toEqual([]);
+  });
+
+  it('is not offered to an edit that never asks to go anywhere, and never moves the editor for one', async () => {
+    const { run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'About' })], () => finish('Done.')]);
+    await run('Change the heading on the About page to Our story');
+    expect(adapter.requests[0].tools.map((t) => t.name)).not.toContain('open_page');
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: false });
+    expect(opens(events)).toEqual([]);
+  });
+
+  it('moves nothing when an edit to another page lands', async () => {
+    let about = '';
+    const { session, run, events } = await setup([
+      () => {
+        return [call('e1', 'apply_operations', { expectedRevision: session.revision, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: about, title: 'Our story' }] })];
+      },
+      () => finish('Renamed About to Our story.')
+    ]);
+    about = pageTitled(session, 'About').id;
+    const { result } = await run('Rename the About page to Our story');
+    expect(result?.status).toBe('completed');
+    expect(session.state.pages[about].title).toBe('Our story');
+    expect(opens(events)).toEqual([]);
+  });
+
+  it('lets a small model with only its selection tools ask which page, in the same run', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.pages[state.site.homePageId];
+    const base = { state, capabilities: { toolCalling: 'native' as const, contextWindowTokens: 12_000 }, codeEnabled: false, definitionOps: false };
+    const at = (nodeId: string) => ({ ...base, selection: { owner: { kind: 'page' as const, id: home.id }, nodeId } as never });
+    // A selection whose small set has no question of its own.
+    const nodeId = Object.keys(home.nodes).find((id) => {
+      const run = toolsForRun(at(id));
+      return run.mode === 'selection' && !run.tools.some((t) => t.name === 'request_clarification');
+    })!;
+    expect(nodeId).toBeDefined();
+    const plain = toolsForRun(at(nodeId));
+    const asked = toolsForRun({ ...at(nodeId), pageRequest: true });
+    expect(plain.tools.map((t) => t.name)).not.toContain('open_page');
+    const names = asked.tools.map((t) => t.name);
+    expect(names).toContain('open_page');
+    expect(names.filter((n) => n === 'request_clarification')).toHaveLength(1);
+    const question = asked.tools.find((t) => t.name === 'request_clarification')!;
+    expect(Object.keys((question.parameters as { properties: object }).properties)).not.toContain('widenScope');
+  });
+});
+
+describe('asksToOpenPage', () => {
+  const state = createStarterState('business', 'Test', false);
+  it.each(['Take me to the About page', 'open /contact', 'show me Contact', 'Go to the home page', 'go home', 'switch to Contact', 'navigate to /about/', 'open contact/', 'open "/"', 'Show the About page', 'Display the /about/ page', 'Open in the editor: /about/'])('hears "%s" as going to a page', (text) => {
+    expect(asksToOpenPage(text, state)).toBe(true);
+  });
+  it.each([
+    'Change the heading on the About page to Our story',
+    'Make the hero bigger',
+    'Add a Services section',
+    'What does the Contact page say?',
+    'Make the About page link open in a new tab',
+    'Make the contact link open a new tab',
+    'Make the menu open on click on every page',
+    'Show the phone number on the Contact page',
+    // A title is a whole word: "Contact" is not in "contacts".
+    'Open our contacts list'
+  ])('hears "%s" as no request to go anywhere', (text) => {
+    expect(asksToOpenPage(text, state)).toBe(false);
+  });
+  it('hears a page by its route without slashes, and never by a one-letter title', () => {
+    const named = structuredClone(state);
+    const about = Object.values(named.pages).find((p) => p.title === 'About')!;
+    about.title = 'Our Team';
+    about.route = '/company/';
+    named.pages.pg_a = { ...structuredClone(about), id: 'pg_a', title: 'A', route: '/a-page/' };
+    expect(asksToOpenPage('open company', named)).toBe(true);
+    expect(asksToOpenPage('open our team', named)).toBe(true);
+    expect(asksToOpenPage('View a list of fonts', named)).toBe(false);
+  });
+});
+
 describe('read-only questions (#203)', () => {
   const contactOf = (session: ProjectSession) => {
     const page = Object.values(session.state.pages).find((p) => p.title === 'Contact')!;
@@ -438,7 +596,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'audit_performance', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -776,6 +934,34 @@ describe('read-only questions (#203)', () => {
     sessionRef = session;
     const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
     expect(result?.checks).toEqual([{ status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' }]);
+  });
+
+  it('reads what the last export measured of the site and of one page, in a question and an edit, and says when nothing is measured (#1488)', async () => {
+    for (const mode of ['ask', 'edit'] as const) {
+      let status: PerformanceStatus | null = null;
+      let measure = () => {};
+      // Measured once the first call has said there is nothing yet, as an export the author ran meanwhile would be.
+      const turns: Turn[] = [() => [call('p0', 'audit_performance', {})], () => (measure(), [call('p1', 'audit_performance', {})]), () => [call('p2', 'audit_performance', { route: '/about/' })], () => finish('Here is what was measured.')];
+      const { session, run, adapter, events } = await setup(turns, { performance: () => status });
+      const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!;
+      const sample: PageSample = { complete: true, resources: [{ url: '/about/', kind: 'html', bytes: 2048, preloaded: false, own: true }, { url: '/assets/hero.jpg', kind: 'images', bytes: 300_000, preloaded: false, own: true }], images: [], lcp: { kind: 'image', url: '/assets/hero.jpg', from: 'browser' } };
+      const asked = session.revision;
+      const report: PerformanceReport = { measuredAt: '2026-11-28T10:00:00.000Z', revision: asked, viewport: PERFORMANCE_VIEWPORT, budgets: { ...PERFORMANCE_BUDGETS }, pages: [pagePerformance('/about/', about.title, sample)], cache: { host: 'cloudflare', file: null, path: '/_app/immutable/x.js', value: null, status: 'none' }, findings: [] };
+      measure = () => void (status = { report, stale: true });
+      const { result } = await run('Why is my site slow?', mode === 'ask' ? { mode: 'ask' } : {});
+      expect(result?.status, mode).toBe('no-changes');
+      expect(adapter.requests[0].tools.map((t) => t.name), mode).toContain('audit_performance');
+      const none = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+      expect(none, mode).toMatchObject({ status: 'not_measured' });
+      const site = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+      expect(site, mode).toMatchObject({ revision: asked, measuredRevision: asked, stale: true, scope: 'site', pages: 1, rows: [{ route: '/about/', hero: { url: '/assets/hero.jpg', preloaded: false } }] });
+      const page = JSON.parse((adapter.requests[3].items.at(-1) as { content: string }).content);
+      expect(page.scope, mode).toEqual({ route: '/about/' });
+      expect(page.findings.map((f: { code: string }) => f.code), mode).toContain('PERF_HERO_NOT_PRELOADED');
+      const activities = [...events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities ?? [];
+      expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Reading site performance', 'Reading the performance of /about/']));
+      expect(session.revision, mode).toBe(asked);
+    }
   });
 });
 
@@ -2096,6 +2282,21 @@ describe('run budget, parallel calls and validation', () => {
     expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
     expect(result?.validation.join(' ')).toMatch(/build without errors/);
     expect(result?.canUndo).toBe(true);
+  });
+
+  it('makes a linked page a draft as asked, with no repair of the links to it: only the website export stops on them (#1633)', async () => {
+    let session: ProjectSession;
+    const about = () => Object.values(session.state.pages).find((p) => p.title === 'About')!;
+    const env = await setup([() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about().id, draft: true }] })], () => finish('About is a draft now.')]);
+    session = env.session;
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT')).toEqual([]);
+    const { result } = await env.run('Keep the About page as a draft for now');
+    expect(result?.status).toBe('completed');
+    // The site's links to it are listed in Project health, and the run left them and the draft as asked.
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT').length).toBeGreaterThan(0);
+    expect(about().draft).toBe(true);
+    expect(env.adapter.requests).toHaveLength(2);
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(false);
   });
 
   it('treats an error with the same message as one already there, but somewhere else, as new (#132)', async () => {
@@ -4782,6 +4983,8 @@ describe('the project brief as standing context (#519)', () => {
 });
 
 describe('the project diagnostics in the editor context (#757)', () => {
+  /** What the editor context lists: problems and warnings, but images waiting for the author's pictures (#1633). */
+  const inContext = (d: Diagnostic) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d);
   const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.find((i) => (i as { kind?: string }).kind === 'user') as { text: string }).text)![1]);
   const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
   /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
@@ -4809,7 +5012,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
       seed(env.session, [other, home]);
       // Sample content still to replace (#1640) is Project health's and validate_project's, not every request's.
       expect(env.session.diagnostics().some(isSampleFinding)).toBe(true);
-      const expected = env.session.diagnostics().filter((d) => d.severity !== 'info' && !isSampleFinding(d));
+      const expected = env.session.diagnostics().filter(inContext);
       expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
       expect(expected.filter((d) => d.severity === 'warning').length).toBeGreaterThanOrEqual(2);
       const { result } = await env.run('Tidy up the footer', pageCtx(home, 'Home', mode === 'ask' ? { mode: 'ask' } : { scope: 'page' }));
@@ -4861,7 +5064,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
   it('leaves the section out of a project without problems', async () => {
     const env = await setup([() => finish('Done.')]);
     // Its sample content (#1640) is no problem a request carries.
-    expect(env.session.diagnostics().filter((d) => d.severity !== 'info' && !isSampleFinding(d))).toEqual([]);
+    expect(env.session.diagnostics().filter(inContext)).toEqual([]);
     await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'page' }));
     expect(editorContext(env.adapter.requests[0])).not.toHaveProperty('diagnostics');
   });
@@ -4871,7 +5074,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const env = await setup([() => finish('Done.')], { capabilities: { contextWindowTokens: 40_000 } });
     const pages = pagesOf(env.session);
     seed(env.session, pages, 10);
-    const all = env.session.diagnostics().filter((d) => d.severity !== 'info' && !isSampleFinding(d));
+    const all = env.session.diagnostics().filter(inContext);
     const totals = { errors: all.filter((d) => d.severity === 'error').length, warnings: all.filter((d) => d.severity === 'warning').length };
     await env.run('Tidy up the footer', pageCtx(pages[0], 'Home', { scope: 'site' }));
     const listed = editorContext(env.adapter.requests[0]).diagnostics;

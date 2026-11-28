@@ -5,13 +5,16 @@
  *   the entry, then that one entry written.
  * - schema: its collection tool (define_collection, #679): one collection created, or one changed without losing a
  *   field, an option or a term it has.
- * - layout: a request sent while a collection's layout is open (#679): every operation changes that one layout.
+ * - layout: a request sent while a collection's layout is open (#679), or a whole-site run's layout tool
+ *   (edit_collection_layout, #1408): every operation changes that one layout.
+ * - indexLayout: that layout tool starting a collection's own index layout (#1408), in place of the ready-made cards:
+ *   the one `collection.update` that says so, and nothing else, while the collection has an index and no layout yet.
  * The model never sets a grant: only the tool's own call, or the run's own authority, does, so a raw batch of
  * operations reaches no collection.
  */
 import type { EditOperation } from './ops';
 import type { Collection } from './types';
-import { isSyncedCollection } from './collections';
+import { hasArchivePages, isSyncedCollection } from './collections';
 
 /** A collection's layout as an owner of nodes: its entry pages' layout (template) or its index layout (archive). */
 export interface LayoutOwner {
@@ -28,7 +31,8 @@ export type CollectionWriteGrant =
       entryId?: string;
     }
   | { kind: 'schema'; collectionId: string; action: 'create' | 'update' }
-  | { kind: 'layout'; owner: LayoutOwner };
+  | { kind: 'layout'; owner: LayoutOwner }
+  | { kind: 'indexLayout'; collectionId: string };
 
 /** Fields the entry tool never sends: a new address and an old one kept working reach the site's addresses. */
 const NEVER_SENT = ['slug', 'redirectFrom', 'entryId'] as const;
@@ -156,6 +160,23 @@ function layoutRefusal(ops: readonly EditOperation[], grant: Extract<CollectionW
 }
 
 /**
+ * The one change that starts a collection's index layout: `collection.update` naming the collection and
+ * `archiveTemplate: "start"`, nothing more, while the collection has an index and still shows the ready-made cards.
+ * A second start would replace the layout the run (or the author) has built since with a new one.
+ */
+function indexLayoutRefusal(ops: readonly EditOperation[], grant: Extract<CollectionWriteGrant, { kind: 'indexLayout' }>, collections: Collections): string | null {
+  const [op, ...rest] = ops;
+  if (!op || rest.length || op.type !== 'collection.update' || op.collectionId !== grant.collectionId) return 'Starting an index layout changes only that collection’s index layout.';
+  const extra = Object.keys(op).filter((k) => k !== 'type' && k !== 'collectionId' && k !== 'archiveTemplate' && (op as Record<string, unknown>)[k] !== undefined);
+  if (op.archiveTemplate !== 'start' || extra.length) return 'Starting an index layout changes nothing else of the collection.';
+  const c = collectionIn(collections, grant.collectionId);
+  if (!c) return `There is no collection "${grant.collectionId}".`;
+  if (!hasArchivePages(c.settings)) return `The ${c.settings.name} collection has no index page to lay out.`;
+  if (c.settings.archiveTemplate) return `The ${c.settings.name} collection already has its own index layout: edit it instead.`;
+  return null;
+}
+
+/**
  * Why a batch is not what the grant allows, or null when it is. `collections`: the project's collections as the batch
  * finds them, which an entry or schema grant is checked against (a synced collection's are read-only, and an update
  * keeps every field, option and term).
@@ -168,5 +189,7 @@ export function collectionGrantRefusal(ops: readonly EditOperation[], grant: Col
       return schemaRefusal(ops, grant, collections);
     case 'layout':
       return layoutRefusal(ops, grant);
+    case 'indexLayout':
+      return indexLayoutRefusal(ops, grant, collections);
   }
 }

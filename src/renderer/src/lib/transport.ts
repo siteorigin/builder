@@ -28,6 +28,7 @@ type Namespace = (typeof NAMESPACES)[number];
 export const DEVICE_CHANNELS: ReadonlySet<string> = new Set([
   'menu:command',
   'menu:history',
+  'menu:open',
   'input:key',
   'lifecycle:request',
   'appearance',
@@ -229,6 +230,7 @@ export function createTransport(local: () => BuilderApi): Transport {
     previewControlResult: (...args: Parameters<BuilderApi['previewControlResult']>) => local().previewControlResult(...args),
     menuReady: () => local().menuReady(),
     menuReceived: (id: number) => local().menuReceived(id),
+    popupMenu: (at: { x: number; y: number }) => local().popupMenu(at),
     leaveResult: (...args: Parameters<BuilderApi['leaveResult']>) => local().leaveResult(...args),
     pathForFile: (file: File) => local().pathForFile(file)
   } as unknown as BuilderApi;

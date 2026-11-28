@@ -26,7 +26,7 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { blankPages, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { blankPages, describeDraftLink, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, publicationPlan, shownArchiveLayouts, unfilledImages, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type DraftLink, type FormNameClash } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -39,6 +39,8 @@ import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { elementContrastDiagnostics } from './element-contrast';
 import { sampleContentDiagnostics } from './sample-content';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
+import { codeProblemText, globalCssProblem, headCodeProblem, type CodeProblem } from '@shared/site-code';
+import { fathomSiteId } from '@shared/integrations';
 import { formConnectionProblem, formNoun, isFormDefinition, readsFormServices, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
@@ -54,6 +56,11 @@ export interface Diagnostic {
    * message names a line that moves), or which of several links in one placement it is.
    */
   site?: string;
+  /**
+   * For a finding in a collection's layout (a link to a draft): the published entry whose page shows it, so Project
+   * health opens the layout on that entry. Where to look, not what the problem is: no part of telling it apart.
+   */
+  entryId?: string;
 }
 
 /**
@@ -70,7 +77,14 @@ export const diagnosticKey = (d: Diagnostic): string => {
  * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section
  * that was just deleted, say), so they never stop a change from being saved or a file from being loaded.
  */
-const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING']);
+const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING', 'LINK_TO_DRAFT']);
+
+/**
+ * Whether a diagnostic is about the website export alone, with nothing wrong in the editable project: a link to a
+ * draft (made on purpose, ahead of publishing it) stops the website export, which says so, and is never a reason to
+ * refuse a change or for the AI to undo what it was asked to make.
+ */
+export const stopsExportOnly = (d: Diagnostic) => d.code === 'LINK_TO_DRAFT';
 
 /** Whether a diagnostic leaves the project inconsistent enough that a change introducing it is refused. */
 export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTENT_ERRORS.has(d.code);
@@ -272,6 +286,29 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
     if ((p.route === '/') !== (p.id === state.site.homePageId))
       out.push({ severity: 'error', code: 'HOME_ROUTE', message: p.route === '/' ? `${p.title} uses "/" but is not the Home page.` : `The Home page (${p.title}) must use "/".`, owner: { kind: 'page', id: p.id } });
   }
+  out.push(...siteCodeDiagnostics(state.site));
+  return out;
+}
+
+/**
+ * The site's own code and integrations as a hand edit can leave them: what the website cannot use, it leaves out
+ * (shared/site-code.ts, shared/integrations.ts), and says so here until the author corrects or removes it.
+ */
+function siteCodeDiagnostics(site: ProjectState['site']): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const code = (key: 'headCode' | 'globalCss', what: string, problem: (v: string) => CodeProblem | null) => {
+    const v: unknown = site[key];
+    if (v === undefined) return;
+    const found = typeof v === 'string' ? problem(v) : { message: 'It is not text.', line: 1, column: 1 };
+    if (found) out.push({ severity: 'warning', code: 'SITE_CODE_INVALID', message: `${codeProblemText(what, found)} The website is built without it until it is corrected in Site settings.`, site: key });
+  };
+  code('headCode', 'Head code', headCodeProblem);
+  code('globalCss', 'Custom CSS', globalCssProblem);
+  const integrations: unknown = site.integrations;
+  if (integrations !== undefined && (!integrations || typeof integrations !== 'object' || Array.isArray(integrations)))
+    out.push({ severity: 'warning', code: 'INTEGRATION_INVALID', message: 'The site’s integrations are not a set of settings, so the website is built without them.', site: 'integrations' });
+  else if (integrations && Object.hasOwn(integrations, 'fathom') && !fathomSiteId(site))
+    out.push({ severity: 'warning', code: 'INTEGRATION_INVALID', message: 'Fathom Analytics has no site ID it can use, so the website is built without it. Enter its site ID in Site settings.', site: 'integrations.fathom' });
   return out;
 }
 
@@ -672,7 +709,8 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  append(links, draftLinkDiagnostics(state, keep));
+  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...unfilledImageDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   for (const d of elementContrastDiagnostics(state, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
@@ -680,6 +718,47 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
   const live = publishedState(state);
   append(rest, sampleContentDiagnostics(state, live, websiteTrees(live), keep));
   return [links, rest];
+}
+
+/**
+ * Where a link to a draft is, told apart from the others as long as it stays where it is: the node holding it, which of
+ * its links it is (one in text by its words, since a link added before it renumbers it) and where it goes.
+ */
+export const draftLinkSite = (l: DraftLink) => JSON.stringify([l.nodeId || null, ...(l.inText ? [l.key.replace(/:\d+$/, ''), l.label] : [l.key]), l.pageId ?? null, l.entryId ?? null, l.anchor ?? null]);
+
+/**
+ * Links the published website shows that go to a draft page or entry (publicationPlan), which the website leaves out:
+ * the website export stops on them, so Project health says so first. They never stop a save (CONTENT_ERRORS), nor
+ * the AI or an undo (stopsExportOnly). With `parts`, what each page renders is kept as missingSectionLinks keeps it.
+ */
+export function draftLinkDiagnostics(state: ProjectState, parts?: CheckParts): Diagnostic[] {
+  return publicationPlan(state, parts).draftLinks.map((l) => ({
+    severity: 'error',
+    code: 'LINK_TO_DRAFT',
+    message: `${describeDraftLink(state, l)}, a draft the website leaves out. The website export stops until the link is changed or the ${l.entryId !== undefined ? 'entry' : 'page'} is published.`,
+    owner: l.owner,
+    ...(l.nodeId ? { nodeId: l.nodeId } : {}),
+    site: draftLinkSite(l),
+    ...(l.owner.kind === 'template' && l.shownOn ? { entryId: l.shownOn } : {})
+  }));
+}
+
+/**
+ * Images the published website shows as an empty placeholder box (unfilledImages): on its pages, the shared header
+ * and footer while anything published shows them, and the collection layouts it uses. Drafts are left out, as the
+ * website leaves them out. Each page's and shared part's are kept while its tree is the same (ValidationCache).
+ */
+function unfilledImageDiagnostics(state: ProjectState, keep: Keeper): Diagnostic[] {
+  const live = publishedState(state);
+  return websiteTrees(live).flatMap((t) =>
+    keep.tree(t, 'unfilledImages', () =>
+      unfilledImages(live, t.tree).map((img): Diagnostic => {
+        const node = t.tree.nodes[img.nodeId];
+        const what = node?.kind === 'instance' ? `${displayName(live, node)} shows ${img.name === 'Image' ? 'an image' : `“${img.name}”`}${img.item ? ` for “${img.item}”` : ''}` : img.name === 'Image' ? 'an image' : `the image “${img.name}”`;
+        return { severity: 'warning', code: 'IMAGE_UNFILLED', message: `${t.label}: ${what} with no picture chosen, so visitors see an empty placeholder box. Choose a picture for it, or remove it.`, owner: t.owner, nodeId: img.nodeId, site: img.site };
+      })
+    )
+  );
 }
 
 /** Published pages with nothing on them (see blankPages). */

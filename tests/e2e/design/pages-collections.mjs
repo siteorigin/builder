@@ -118,7 +118,7 @@ await apply(
       taxonomies: { categories: { label: 'Categories', terms: { projects: { label: 'Projects' }, materials: { label: 'Materials' }, ideas: { label: 'Ideas' } } } }
     },
     ...posts.map(([title, publishedAt, cat], i) => ({ type: 'entry.create', collectionId: 'posts', entryId: `en_post0${i}`, title, publishedAt, draft: false, body: ['A short note.'], terms: { categories: [cat] } })),
-    { type: 'collection.create', collectionId: 'events', name: 'Workshops & open studio evenings', route: '/workshops-and-open-evenings/', pageSize: 9, categoryArchives: false, archiveTemplate: 'start' },
+    { type: 'collection.create', collectionId: 'events', name: 'Workshops & open studio evenings', route: '/workshops-and-open-evenings/', pageSize: 9, termArchives: false, archiveTemplate: 'start' },
     ...events.map(([title, publishedAt], i) => ({ type: 'entry.create', collectionId: 'events', entryId: `en_event0${i}`, title, publishedAt, draft: false, body: ['Come along.'] })),
     { type: 'collection.create', collectionId: 'projects', name: 'Case studies', route: '/case-studies/', pages: { detail: true, archive: false } },
     { type: 'entry.create', collectionId: 'projects', entryId: 'en_proj01', title: 'Kōwhai Street apartment', publishedAt: '2026-06-01', draft: false, body: ['A calm flat.'] },

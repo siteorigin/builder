@@ -94,6 +94,8 @@ await apply(
         { type: 'image', assetId: photoId, alt: '', caption: '' }
       ]
     },
+    // The posts are linked from the header, so their index is reached from the rest of the site (#1635).
+    { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', value: [...s0.site.shell.header.nodes[header].props.links, { id: 'i_journal', label: 'Journal', link: { type: 'collection', target: 'posts' } }] },
     { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', itemId: aboutItem, field: 'label', value: 'Click here!' }
   ],
   'Set up the site'
@@ -162,9 +164,12 @@ assert.equal(await row('The site has no sharing image.').getByRole('button', { n
 const unlinked = row('No link on the rest of the site leads to “Kiln hire”.');
 assert.equal(await unlinked.getByRole('button').count(), 0, 'an unlinked page has no single place to fix it');
 assert.match(await unlinked.innerText(), /Link to it from a menu or a related page\./, 'the row says why it matters and what to do');
-// The status bar's count stays the project's own: the readiness findings are not in it.
+// The status bar's count stays the project's own: the readiness findings are not in it. It has the starter's sample
+// contact details beside the project's own warnings, as the Export dialog reviews them (#1633).
+const samples = await health.locator('[data-group="warnings"] .health-row', { hasText: 'came with the starter' }).count();
+assert.equal(samples, 3, 'the sample email, phone and street address are each a warning');
 const ownWarnings = (await snapshot()).diagnostics.filter((d) => d.severity === 'warning').length;
-assert.equal(Number(await health.locator('[data-group="warnings"] h3 .health-count').innerText()), ownWarnings, 'Warnings counts the project’s own warnings, and no readiness finding');
+assert.equal(Number(await health.locator('[data-group="warnings"] h3 .health-count').innerText()), ownWarnings + samples, 'Warnings counts the project’s own warnings and the sample details, and no readiness finding');
 // The entry's picture is also one of the project's own warnings, and leads to the same place there.
 const generalAlt = health.locator('[data-group="warnings"] .health-row', { hasText: 'picture 2 in its text has no description' });
 assert.equal(await generalAlt.getByRole('button', { name: 'Go to picture' }).count(), 1, 'the project’s own warning leads to the picture too');
@@ -305,9 +310,10 @@ await preflight.getByRole('button', { name: 'Review in Project health' }).click(
 await row('No public site URL is set.').getByRole('button', { name: 'Go to Public URL' }).click();
 await modal.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await isFocused(urlField), true, 'the Public URL field has focus'));
-await urlField.fill('https://riverside.example');
+// A host of its own: a reserved example one is itself a warning (#1635).
+await urlField.fill('https://riverside-pottery.co.za');
 await urlField.press('Tab');
-await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside.example'));
+await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside-pottery.co.za'));
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 await eventually(async () => assert.match(await preflight.innerText(), /^5 search and sharing suggestions( and \d+ more notes?)?\./));
 await closeDialog();

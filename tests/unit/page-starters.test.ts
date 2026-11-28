@@ -255,9 +255,10 @@ describe('a starter in a saved project', () => {
 
 describe('page starters and project health (#873)', () => {
   const STARTERS: PageStarter[] = ['intro', 'services', 'about', 'contact', 'pricing', 'faq', 'article'];
-  // The Contact starter's form is left unconnected on purpose until the author adds a form service (see its section).
+  // The Contact starter's form is left unconnected on purpose until the author adds a form service (see its section),
+  // and a starter's image slots are left empty on purpose for the author's own pictures (Project health lists them).
   // Its sample text, which a page starter fills in to be replaced, is named until it is (#1640), and checked below.
-  const counted = (s: ProjectState) => validateState(s).filter((d) => d.severity !== 'info' && d.code !== 'FORM_UNCONNECTED' && !isSampleFinding(d));
+  const counted = (s: ProjectState) => validateState(s).filter((d) => d.severity !== 'info' && d.code !== 'FORM_UNCONNECTED' && d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d));
   const codes = (s: ProjectState) => counted(s).map((d) => d.code).sort();
 
   for (const project of ['business', 'blank'] as const) {

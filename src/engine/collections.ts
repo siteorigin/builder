@@ -3,7 +3,7 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
+import type { Collection, CollectionBrowse, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, COLLECTION_KINDS, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import {
@@ -29,7 +29,8 @@ import {
 } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { archivePages, archiveRoute, type ArchivePage } from '@shared/archives';
-import { customFieldName } from '@shared/entry-fields';
+import { customFieldName, entryFieldLabel, entryFieldSchema } from '@shared/entry-fields';
+import { browseFilterKind, browseProblem, browseSortKind, storedBrowse } from '@shared/collection-browse';
 import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
@@ -147,7 +148,7 @@ function refuseSlugTaken(state: ProjectState, c: Collection, slug: string, entry
 /**
  * Refuses an address for collection `collectionId`'s pages where an archive's could not have theirs: one inside
  * another collection's archive folders, or, when it has an archive (`archive`), one whose own archive folders (`page/`,
- * `category/`) already hold a page, an old address or another collection's pages (see ARCHIVE_FOLDERS).
+ * `category/`, `tag/`) already hold a page, an old address or another collection's pages (see ARCHIVE_FOLDERS).
  */
 function refuseArchiveClash(state: ProjectState, route: string, collectionId: string, archive = true) {
   const key = route.toLowerCase();
@@ -164,11 +165,11 @@ function refuseArchiveClash(state: ProjectState, route: string, collectionId: st
   const inFolder = (o: RouteOwner) => underArchiveFolder(route, o.route) || (o.kind === 'collection' && ARCHIVE_FOLDERS.some((f) => o.route.toLowerCase() === `${key}${f}/`));
   const clash = routeOwners(state).find((o) => !mine(o) && inFolder(o));
   if (clash)
-    fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
+    fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/, ${route}category/ and ${route}tag/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
   // Nor one whose entries have pages there, with or without an archive of its own, or entries yet.
   const nested = Object.values(state.collections).find((c) => c.settings.id !== collectionId && ARCHIVE_FOLDERS.some((f) => pagesPrefix(c)?.toLowerCase().startsWith(`${key}${f}/`)));
   if (nested)
-    fail(`${nested.settings.route} is the address of the ${nested.settings.name} collection's pages, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
+    fail(`${nested.settings.route} is the address of the ${nested.settings.name} collection's pages, and the addresses under ${route}page/, ${route}category/ and ${route}tag/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
 }
 
 /** A page size as given: a whole number of entries from 1 to MAX_PAGE_SIZE. */
@@ -279,12 +280,20 @@ export function archivesAtStartOf(state: ProjectState): ArchivesAtStart {
   };
 }
 
-/** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, or none for the index). */
-const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
+/** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, `tag/nitrogen/`, or none for the index). */
+const ARCHIVE_REST = /^(?:page\/\d+\/|(?:category|tag)\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
+
+/** Whether `route` is where one of collection `c`'s archive pages is, or would be once it has entries to list there. */
+export function isArchiveAddressOf(c: Collection, route: string): boolean {
+  const prefix = c.settings.route;
+  if (typeof prefix !== 'string' || prefix === '/' || !hasArchivePages(c.settings)) return false;
+  const key = route.toLowerCase();
+  return key.startsWith(prefix.toLowerCase()) && ARCHIVE_REST.test(key.slice(prefix.length));
+}
 
 /**
  * Keeps the archive pages collection `collectionId` had at `from` (`before`) working at their old addresses now it
- * is at `prefix` (#1548): each old address of its index, of a later page or of a category's archive sends visitors on
+ * is at `prefix` (#1548): each old address of its index, of a later page or of a category's or tag's archive sends visitors on
  * to the same page at the new address, where the website has one. Only an address visitors had as the batch began
  * (`atStart`) is kept, not one the collection only passed through in it, and never one anything else holds now. The
  * old addresses an earlier move kept are sent straight to the new one too, so they never lead through each other;
@@ -316,7 +325,7 @@ function keepArchiveAddresses(state: ProjectState, collectionId: string, from: s
   const holder = routeIndex({ ...state, site: { ...state.site, redirects: list } });
   const visited = before.length ? atStart?.get() : undefined;
   for (const p of before) {
-    const to = archiveRoute(prefix, p.category, p.page);
+    const to = archiveRoute(prefix, p.term, p.page);
     if (!after.has(to.toLowerCase()) || (visited && !visited.has(archiveAddressKey(collectionId, p.route)))) continue;
     if (after.has(p.route.toLowerCase()) || underArchiveFolder(prefix, p.route) || holder(p.route) || archiveRouteOwner(state, p.route, collectionId)) continue;
     list.push({ from: p.route, to, archiveOf: collectionId });
@@ -521,6 +530,27 @@ function applyIdentity(settings: CollectionDoc, op: Pick<Op<'collection.update'>
   }
 }
 
+/**
+ * The browsing a collection's index gives visitors, as given, checked against the fields and groupings the collection
+ * has once the rest of the change is made: undefined when it offers nothing.
+ */
+function browseOf(settings: CollectionDoc, input: CollectionBrowse): CollectionBrowse | undefined {
+  const name = settings.name;
+  // A field it has by its label; any other name as given.
+  const label = (k: string) => (entryFieldSchema({ settings }, k) ? `“${entryFieldLabel({ settings }, k)}”` : `"${k.slice(0, 80)}"`);
+  for (const k of input.filters ?? [])
+    if (!browseFilterKind(settings, k)) fail(`Visitors can filter ${name} by one of its groupings (terms.<ID>) or by a choice, yes/no or number field (field.<name>), and ${label(k)} is none of those.`);
+  for (const k of input.sort ?? [])
+    if (!browseSortKind(settings, k)) fail(`Visitors can sort ${name} by title, publishedAt, or a text, number or date field (field.<name>), and ${label(k)} is none of those.`);
+  return storedBrowse({ ...settings, browse: input });
+}
+
+/** Sets or removes a collection's browsing (see browseOf). */
+function setBrowse(settings: CollectionDoc, browse: CollectionBrowse | undefined) {
+  if (browse) settings.browse = browse;
+  else delete settings.browse;
+}
+
 export function collectionCreate(state: ProjectState, op: Op<'collection.create'>): OpResult {
   if (!isCollectionId(op.collectionId)) fail(`"${op.collectionId.slice(0, 60)}" is not a collection ID: use lowercase letters, numbers and single hyphens, such as "posts" or "case-studies".`);
   if (Object.hasOwn(state.collections, op.collectionId)) fail(`The collection "${op.collectionId}" already exists.`);
@@ -550,8 +580,9 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   settings.template = defaultLayout(state, settings);
   if (pages) settings.pages = pages;
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
-  if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
+  if (op.termArchives !== undefined) settings.termArchives = op.termArchives;
   if (typeof op.rss === 'boolean') settings.rss = op.rss;
+  if (op.browse) setBrowse(settings, browseOf(settings, op.browse));
   state.collections[op.collectionId] = { settings, entries: {} };
   if (op.archiveTemplate) setArchiveLayout(state, state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
@@ -647,7 +678,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     else setArchiveLayout(state, c, op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
-  if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
+  if (op.termArchives !== undefined) c.settings.termArchives = op.termArchives;
   // In or out of the site's RSS feed, or back to what its kind says.
   if (op.rss === null) delete c.settings.rss;
   else if (op.rss !== undefined) c.settings.rss = op.rss;
@@ -678,7 +709,12 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     settleEntries(state, c, taxonomies, fields);
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
+    // A filter or sort whose field has gone, or no longer gives that control, goes with it.
+    if (op.browse === undefined && c.settings.browse !== undefined) setBrowse(c.settings, storedBrowse(c.settings));
   }
+  // Once its fields and groupings are what the change makes them.
+  if (op.browse === null) delete c.settings.browse;
+  else if (op.browse !== undefined) setBrowse(c.settings, browseOf(c.settings, op.browse));
   if (follows && !isDefaultLayout(state, c.settings)) c.settings.template = defaultLayout(state, c.settings);
   if (op.categoryDescription !== undefined) {
     const { termId } = op.categoryDescription;
@@ -1393,7 +1429,7 @@ function collectionSettingProblem(s: CollectionDoc): string | null {
   const terms = s.taxonomies?.categories?.terms;
   const term = terms && typeof terms === 'object' ? Object.entries(terms).find(([, t]) => t && typeof t === 'object' && longDescription(t.description)) : undefined;
   if (term) return `what the category “${typeof term[1].label === 'string' ? term[1].label : term[0]}” tells search engines is not text of at most ${TEXT_LIMITS.pageDescription} characters.`;
-  return null;
+  return browseProblem(s, (k) => `"${k.slice(0, 80)}"`);
 }
 
 /** Whether a custom field's schema is one no entry's value can be judged by: an unknown kind, a choice without choices, a reference to nothing. */

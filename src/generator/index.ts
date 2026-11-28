@@ -107,12 +107,13 @@ import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteE
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
-import { archivePages, collectionIndexRoutes } from '@shared/archives';
+import { archivePages, collectionIndexRoutes, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseIndexFile, browseJs, browsingCollections, generateBrowseIndex, usesBrowse } from './collection-browse';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -128,8 +129,10 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
+import { headCodeWithoutComments, siteGlobalCss, siteHeadCode } from '@shared/site-code';
+import { integrationHead } from '@shared/integrations';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
-import { graphScript, inGenerationRun } from './structured-data';
+import { graphScript, inGenerationRun, perRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
@@ -324,6 +327,12 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
+/** Every category's and tag's archive address, worked out once per run outside a cached one too: every post's terms read it. */
+function termArchiveRoutesOf(state: ProjectState): Record<string, string> {
+  if (isTracked(state)) return termArchiveRoutes(derived(state, 'archivePages', archivePages));
+  return perRun(state, 'termArchiveRoutes', (s) => termArchiveRoutes(archivePages(s)));
+}
+
 /**
  * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
  * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
@@ -370,6 +379,15 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     }
     case 'collection': {
+      // A category's or tag's archive, at its current address, while it has one (an entry's linked terms); otherwise
+      // its words alone.
+      if (link.term) {
+        const terms = derived(ctx.state, 'termArchiveRoutes', termArchiveRoutesOf);
+        const key = termArchiveKey(link.target, link.term);
+        if (!Object.hasOwn(terms, key)) return null;
+        href = terms[key];
+        break;
+      }
       // The first page of the collection's list, at its current address: one the website has no index for shows its
       // words alone, as a link to an entry it does not publish does.
       const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);
@@ -4478,6 +4496,12 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     ? `${follow ? `\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());` : ''}\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
+  // The site's own head code and its integrations' tags (shared/site-code.ts, shared/integrations.ts), on the published
+  // website alone: never in the editor's preview, and never under `vite dev`, which the editor's canvas runs, so the
+  // author's scripts never run while they edit and their analytics never count their own visits.
+  const published = opts.instrument ? '' : publishedHead(state);
+  const publishedImport = published ? `\n\timport { dev } from '$app/env';` : '';
+  const publishedTags = published ? `\n\t{#if !dev}{@html ${js(published)}}{/if}` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginLiveViewer && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\tif (!window.__siteoriginLiveViewer) import('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => { if (!window.__siteoriginLiveViewer) window.dispatchEvent(new CustomEvent('siteorigin:navigated')); });`
     : '';
@@ -4488,12 +4512,13 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/theme.css';
 	import '../lib/siteorigin/styles/components.css';
 	import '../lib/siteorigin/styles/site.css';
+	import '../lib/siteorigin/styles/${GLOBAL_CSS_FILE}';
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
 	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';
 	import { snapshot } from '$app/navigation';
-	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
+	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}${publishedImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4518,7 +4543,7 @@ ${editing}</script>
 	<link rel="icon" href={${HEAD_ASSET}(${js(iconHref)})} type=${js(iconType)} />
 	${siteIconLinks()}
 	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
-	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
+	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}${publishedTags}
 </svelte:head>
 
 <a class="so-skip-link" href="#main" lang={textLang('skipLink')}>{text().skipLink}</a>
@@ -4533,6 +4558,23 @@ ${footer}
 {/if}
 `
   );
+}
+
+/** The author's own stylesheet, beside the generated ones, imported after them all (see SiteDoc.globalCss). */
+export const GLOBAL_CSS_FILE = 'global.css';
+
+/** The site's own stylesheet as a file: a line that says where it comes from, then the author's CSS as typed. */
+export function generateGlobalCss(state: ProjectState): string {
+  const css = siteGlobalCss(state.site);
+  return `/* The site's own CSS, from Site settings > Custom code (siteorigin/site.json). Loaded after every other stylesheet. */\n${css}${css && !css.endsWith('\n') ? '\n' : ''}`;
+}
+
+/**
+ * What the published website adds to every page's <head>: its integrations' tags, then the author's head code without
+ * its comments (see headCodeWithoutComments).
+ */
+export function publishedHead(state: ProjectState): string {
+  return [integrationHead(state.site), headCodeWithoutComments(siteHeadCode(state.site))].filter(Boolean).join('\n');
 }
 
 export const LAYOUT_TS = `// Generated by SiteOrigin Builder. Every page is prerendered to static HTML.
@@ -5112,7 +5154,7 @@ export function generateNotFound(state: ProjectState): string {
   const english = notFoundEnglish(state.site);
   const phrase = (text: string, isEnglish: boolean) => (isEnglish ? `<span lang="${NOT_FOUND_ENGLISH.lang}" dir="${NOT_FOUND_ENGLISH.dir}">{${js(text)}}</span>` : `{${js(text)}}`);
   // The sections the header and footer link to "on this page": the build sends those links to the page that has
-  // each (see generateServerHook), and these targets keep the page buildable for a project with a hook of its own.
+  // each (see generateSiteHandle), and these targets keep the page buildable for a project with a hook of its own.
   const targets = Object.keys(notFoundSections(state))
     .map((id) => `\n\t\t<span id=${attrJs(id)}></span>`)
     .join('');
@@ -5230,19 +5272,26 @@ export const trailingSlash = 'never';
 /** The project file of the generated server hook. SvelteKit runs one: a project's own takes its place. */
 export const SERVER_HOOK_FILE = 'src/hooks.server.js';
 
+/** The library file, under RUNTIME_DIR, that exports the site's server hook as SITE_HANDLE for any hook to run. */
+export const SITE_HANDLE_FILE = 'handle.server.js';
+
+/** The name the site's server hook goes by in SITE_HANDLE_FILE. */
+export const SITE_HANDLE = 'siteoriginHandle';
+
+/** The site's server hook as a project's own src/hooks.server.ts runs it, beside its own `handle`. */
+export const SITE_HANDLE_USAGE = `import { sequence } from '@sveltejs/kit/hooks';
+import { ${SITE_HANDLE} } from '#lib/siteorigin/runtime/${SITE_HANDLE_FILE}';
+
+export const handle = sequence(${SITE_HANDLE}, yourHandle);`;
+
+/** SITE_HANDLE_USAGE as a comment in a generated file. */
+const commentedUsage = () => SITE_HANDLE_USAGE.replace(/^(?=.)/gm, '// ').replace(/^$/gm, '//');
+
 /**
- * The site's server hook. Hosts serve 404.html at whatever address was missing, however deep, where addresses
- * relative to the page lead nowhere. While the site is built, this makes every address in the not-found page start
- * from the site's root, under the sub-path SvelteKit builds it for: the page is built at that sub-path's /404.html.
- * The shared header and footer's links to sections the page does not have go to a page that has them. That part
- * only runs during a build: the dev server serves the page where it was built.
- *
- * On a site in more than one language it also gives each page, prerendered or previewed, the language it is written
- * in: app.html names the site's, and the opening <html> tag of a page in another language gets that page's lang
- * instead, and its dir when that language runs the other way from the site's. The hook carries its own list of languages, so it never depends on another generated file for them. A
- * site in one language has the not-found part alone.
+ * src/hooks.server.js, while the project has no server hook of its own: it runs the site's (generateSiteHandle) as
+ * SvelteKit's `handle`. In the editor's preview it also keeps a page's render error for the editor to say.
  */
-export function generateServerHook(state: ProjectState, instrument = false): string {
+export function generateServerHook(instrument = false): string {
   // The editor's preview only: an error a page meets while it renders keeps its own message beside SvelteKit's
   // "Internal Error", for the note a code placement shows in its place and the editor's page problem (#1526). A live
   // session's guest is given SvelteKit's own words.
@@ -5257,27 +5306,56 @@ export function handleError({ error, event, kind }) {
 }
 `
     : '';
+  return `// Generated by SiteOrigin Builder. Runs the site's server hook (${RUNTIME_DIR.slice('src/'.length)}/${SITE_HANDLE_FILE}).
+// A project that needs a server hook of its own replaces this file with src/hooks.server.ts and runs the site's
+// beside its own:
+//
+${commentedUsage()}
+export { ${SITE_HANDLE} as handle } from './lib/siteorigin/runtime/${SITE_HANDLE_FILE}';
+${handleError}`;
+}
+
+/**
+ * The site's server hook, exported as SITE_HANDLE from RUNTIME_DIR/SITE_HANDLE_FILE: the generated src/hooks.server.js
+ * runs it, and a project's own hook runs it beside its own with SvelteKit's sequence(). Hosts serve 404.html at
+ * whatever address was missing, however deep, where addresses relative to the page lead nowhere. While the site is built, this makes every address in the not-found page start
+ * from the site's root, under the sub-path SvelteKit builds it for: the page is built at that sub-path's /404.html.
+ * The shared header and footer's links to sections the page does not have go to a page that has them. That part
+ * only runs during a build: the dev server serves the page where it was built.
+ *
+ * On a site in more than one language it also gives each page, prerendered or previewed, the language it is written
+ * in: app.html names the site's, and the opening <html> tag of a page in another language gets that page's lang
+ * instead, and its dir when that language runs the other way from the site's. The hook carries its own list of
+ * languages, so it never depends on another generated file for them. A site in one language has the not-found part
+ * alone.
+ */
+export function generateSiteHandle(state: ProjectState): string {
+  const usage = `// src/hooks.server.js runs it; a server hook of the project's own (src/hooks.server.ts) runs it beside its own:
+//
+${commentedUsage()}`;
   const sections = `/** Sections the shared header and footer link to "on this page", with the page that has each. */
 const SECTIONS = ${js(notFoundSections(state))};
 `;
   const imports = `import { building } from '$app/env';
-import { publishNotFound } from './lib/siteorigin/runtime/not-found.js';
+import { publishNotFound } from './not-found.js';
 `;
   if (!languagesByRoute(state).length)
     return `// Generated by SiteOrigin Builder. Makes 404.html, the not-found page, work at any missing address.
+${usage}
 ${imports}
 ${sections}
-export function handle({ event, resolve }) {
+export function ${SITE_HANDLE}({ event, resolve }) {
 	if (!building || event.route.id !== ${js(NOT_FOUND_ROUTE)}) return resolve(event);
 	const path = event.url.pathname;
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
 	return resolve(event, { transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
 }
-${handleError}`;
+`;
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. Makes 404.html, the
 // not-found page, work at any missing address, and gives each page's <html lang> the language the page is written
 // in, and its dir the way that language runs: pages not listed in LANGUAGES are in the site's language, and pages not
 // listed in DIRECTIONS run the site's way, both of which src/app.html names.
+${usage}
 ${imports}
 ${sections}
 /** Pages written in another language than the site's, by route, with that language. */
@@ -5310,7 +5388,7 @@ function withLanguage(html, values) {
 	return start + html.slice(65536);
 }
 
-export function handle({ event, resolve }) {
+export function ${SITE_HANDLE}({ event, resolve }) {
 	const id = event.route.id;
 	const notFound = building && id === ${js(NOT_FOUND_ROUTE)};
 	const lang = id && Object.hasOwn(LANGUAGES, id) ? LANGUAGES[id] : null;
@@ -5328,7 +5406,7 @@ export function handle({ event, resolve }) {
 		}
 	});
 }
-${handleError}`;
+`;
 }
 
 /** Served path of the generated favicon used until a favicon image is chosen. */
@@ -5402,6 +5480,13 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
     put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
     put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
   }
+  // Search, filters and sorting on a collection's index, with each browsing collection's index of entries, while one
+  // browses (see generator/collection-browse.ts). Written ahead of the archive pages that import them.
+  if (usesBrowse(state)) {
+    put(`${RUNTIME_DIR}/${BROWSE_HELPER_FILE}`, () => browseJs());
+    put(`${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`, () => BROWSE_SVELTE);
+    for (const id of browsingCollections(state)) put(`${RUNTIME_DIR}/${browseIndexFile(id)}`, () => file(`browse:${id}`, (s) => generateBrowseIndex(s, id)));
+  }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
   // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
   if (usesVideo(state)) {
@@ -5419,6 +5504,8 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   put(`${STYLES_DIR}/theme.css`, () => theme.baseCss);
   put(`${STYLES_DIR}/components.css`, () => file('components.css', generateComponentsCss));
   put(`${STYLES_DIR}/site.css`, () => file('site.css', generateSiteCss));
+  // The author's own stylesheet, after every other (empty while there is none, so adding one changes no imports).
+  put(`${STYLES_DIR}/${GLOBAL_CSS_FILE}`, () => file(GLOBAL_CSS_FILE, generateGlobalCss));
   for (const def of sortedDefs(state)) {
     if (def.kind === 'managed' && def.tree) put(defFile(def), () => file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     // A theme component installed before links had relationships renders them too (see withAuthoredRel).
@@ -5531,13 +5618,16 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   // again only the pages it moves across. Written after everything else: where a draft made before archive pages sits
   // at one's address, the archive page is what the website has there, in the preview too.
   for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${hasArchiveLayout(state.collections[collectionId].settings) ? mode : ''}`, (s) => generateArchive(s, collectionId, route, opts)));
-  // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
-  // also gives each page in another language than the site's its own <html lang>.
+  // The not-found page and the site's server hook (in the library) that makes it work at any address both read the
+  // whole site's sections; the hook also gives each page in another language than the site's its own <html lang>.
   files.set(NOT_FOUND_COMPONENT, file('not-found', generateNotFound));
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, NOT_FOUND_ROUTE_SVELTE);
   files.set(ERROR_PAGE_FILE, ERROR_PAGE_SVELTE);
   files.set(`${NOT_FOUND_DIR}/+page.js`, NOT_FOUND_PAGE_JS);
-  files.set(SERVER_HOOK_FILE, file(`hooks.server.js${mode}`, (s) => generateServerHook(s, !!opts.instrument)));
+  // The site's server hook is a library file of its own, for a project's own server hook to run beside its own; the
+  // generated src/hooks.server.js runs it alone, and is left out when the project has its own.
+  files.set(`${RUNTIME_DIR}/${SITE_HANDLE_FILE}`, file('site-handle', generateSiteHandle));
+  files.set(SERVER_HOOK_FILE, generateServerHook(!!opts.instrument));
   files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
   if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', (s) => generateFaviconSvg(s)));
   // The web app manifest; the PNG icons it names are pictures the editor renders (siteIconSet).

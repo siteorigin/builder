@@ -60,7 +60,8 @@ export class StaticPreviews {
           real = await contained(p);
         }
         const data = await fs.readFile(real);
-        res.writeHead(200, { 'content-type': types[extname(real).toLowerCase()] ?? 'application/octet-stream' });
+        // Its length said, as a static host says it: what a page check measures of each file is what was sent (#1488).
+        res.writeHead(200, { 'content-type': types[extname(real).toLowerCase()] ?? 'application/octet-stream', 'content-length': data.length });
         res.end(data);
       } catch {
         const nfPath = join(root, '404.html');

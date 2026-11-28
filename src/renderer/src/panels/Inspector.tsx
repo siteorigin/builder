@@ -119,6 +119,7 @@ import { defaultReach, designContent, designContentOp, forwardedBinding, propDef
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { footerCopyPlan } from '../lib/page-navigation';
 import { followsPageOrder } from '@engine/header-order';
+import { detailPlaces, placeNote } from '@engine/business-details';
 import { FOLLOWING_MOVE_NOTE } from '../lib/header-menu-order';
 import { HeaderMenuOrderSelect } from '../components/HeaderMenuOrder';
 import { appliesLanded } from '../lib/pending';
@@ -1011,7 +1012,7 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
   if (owner.kind === 'archive')
     return (
       <Scope tone="shared" icon={<Users />} aside={aside}>
-        <strong>{state.collections[owner.id]?.settings.name ?? 'Collection'} index layout.</strong> Changes show on its index and category pages.
+        <strong>{state.collections[owner.id]?.settings.name ?? 'Collection'} index layout.</strong> Changes show on its index and its category and tag pages.
       </Scope>
     );
   return (
@@ -1291,13 +1292,25 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const unlinked = unlinkedAt(state, owner, node.id);
   const hideAction = (b: UnlinkedButton | undefined) => (b?.hide ? { label: 'Hide button', run: () => void applyOps([hideButtonOp(owner, node.id, b.hide!)], `Hide ${b.label ? `“${b.label}” ` : ''}button in ${subjectWords(state, here)}`) } : undefined);
   const formNotes = (key: string) => (key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined);
+  // Where this placement shows the site's business details, or their samples, which Site details changes (#1368).
+  const detailShown = detailPlaces(state, { owner, node });
+  const detailHint = (key: string) => {
+    const place = detailShown.find((d) => d.prop === key && d.itemId === undefined && d.field === undefined);
+    return place ? placeNote(place) : undefined;
+  };
   const notes = (key: string) => {
     const form = formNotes(key);
-    if (!unlinked.some((b) => b.link?.prop === key && b.link.itemId)) return form;
+    const details = detailShown.filter((d) => d.prop === key && d.itemId !== undefined && d.field !== undefined);
+    const linked = unlinked.some((b) => b.link?.prop === key && b.link.itemId);
+    if (!linked && !details.length) return form;
     return (item: ListItem, i: number): ListItemNote | undefined => {
-      const b = unlinked.find((x) => x.link?.prop === key && x.link.itemId === item.id);
+      const b = linked ? unlinked.find((x) => x.link?.prop === key && x.link.itemId === item.id) : undefined;
       const own = hideAt(b, item.id);
-      return form?.(item, i) ?? (b?.link?.field ? { field: b.link.field, error: unlinkedNote({ hide: own?.hide }), action: hideAction(own) } : undefined);
+      const note = form?.(item, i) ?? (b?.link?.field ? { field: b.link.field, error: unlinkedNote({ hide: own?.hide }), action: hideAction(own) } : undefined);
+      if (note) return note;
+      // A row's text that shows a detail says so; a row whose words are a label of its own, its link.
+      const place = details.find((d) => d.itemId === item.id && d.kind === 'text') ?? details.find((d) => d.itemId === item.id);
+      return place?.field ? { field: place.field, hint: placeNote(place) } : undefined;
     };
   };
   // Buttons whose link this placement cannot set (it comes from the design or a component inside it).
@@ -1396,7 +1409,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   name={key}
                   schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
                   label={label}
-                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], `Use the site name in ${subjectWords(state, here)}`)))}
+                  hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], `Use the site name in ${subjectWords(state, here)}`)) ?? detailHint(key))}
                   value={node.props[key] ?? schema.default}
                   onChange={(v, edit) => claim(key, {}, () => set(key, v, edit))}
                   onField={(field, v, edit) => claim(key, { field }, () => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`))}
@@ -3741,7 +3754,7 @@ function LayoutOverview({ state, collectionId, entryId, archive }: { state: Proj
         </Header>
         <div className="insp-empty">
           <MousePointerClick aria-hidden="true" />
-          <p>The {c.settings.name} index and its category pages are shown with this layout, below their heading and above their page links. Its list repeats once for each entry a page lists. Click part of it on the page, or in Layers, to change it.</p>
+          <p>The {c.settings.name} index and its category and tag pages are shown with this layout, below their heading and above their page links. Its list repeats once for each entry a page lists. Click part of it on the page, or in Layers, to change it.</p>
         </div>
       </>
     );

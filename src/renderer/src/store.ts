@@ -807,6 +807,17 @@ export function saveLocal(state: LocalWorkspaceState) {
   if (key) void api.project.saveLocalState(state, key);
 }
 
+/**
+ * Remember the starter's sample contact details the author keeps on purpose (or, with `keep` false, review again), for
+ * this project: Project health and the Export dialog both leave them out (lib/sample-review).
+ */
+export function keepSamples(values: string[], keep: boolean) {
+  const was = getState().keptSamples;
+  const next = keep ? [...new Set([...was, ...values])] : was.filter((v) => !values.includes(v));
+  setState({ keptSamples: next });
+  saveLocal({ keptSamples: next });
+}
+
 /** Show the preview at `width` and remember it for this project, wherever the width was chosen. */
 export function setViewport(width: number) {
   setState({ viewport: width });
@@ -1921,6 +1932,13 @@ export function applyAiEvent(e: AiEvent) {
   // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
   // closed mid-run, tagged with none) would look sent there while being saved elsewhere.
   if (!conv || e.conversationId !== conv.id) return;
+  if (e.kind === 'open-page') {
+    // The page the author asked to go to (#1357), opened as Pages opens it: only while that request is the one running,
+    // and only if the page is still in the site this window shows.
+    const pageId = e.pageId;
+    if (pageId && s.activeRunId === e.runId && s.snapshot && Object.hasOwn(s.snapshot.state.pages, pageId)) pageOpener?.(pageId);
+    return;
+  }
   if (e.kind === 'message' && e.message) {
     const msgs = [...conv.messages];
     const i = msgs.findIndex((m) => m.id === e.message!.id);

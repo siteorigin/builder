@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({ windows: [] as FakeWindow[], steps: [] as string[], cleared: 0, clearing: 0, overlapped: false, clearMs: 5 }));
+const env = vi.hoisted(() => ({ windows: [] as FakeWindow[], steps: [] as string[], cleared: 0, clearing: 0, overlapped: false, clearMs: 5, requests: [] as Array<(details: { resourceType: string; url: string }, done: (r: { cancel: boolean }) => void) => void> }));
 
 interface FakeWindow {
   options: Record<string, unknown>;
@@ -99,7 +99,7 @@ vi.mock('electron', () => {
       this.destroyed = true;
     };
   }
-  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, clearStorageData: () => {
+  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, webRequest: { onBeforeRequest: (l: (typeof env.requests)[number]) => void env.requests.push(l) }, clearStorageData: () => {
       if (env.clearing) env.overlapped = true;
       env.clearing++;
       return new Promise<void>((r) => setTimeout(() => (env.clearing--, env.cleared++, r()), env.clearMs));
@@ -133,6 +133,12 @@ describe('the review capture window', () => {
     expect(env.steps).toContain('Page.captureScreenshot');
     expect(env.steps.slice(-2)).toEqual(['detach', 'destroy']);
     expect(env.cleared).toBe(1);
+    // Picturing the published website is never a visit to its analytics: Fathom's script and beacons are left out (#1485).
+    const answer = (resourceType: string, url: string) => new Promise<boolean>((r) => env.requests.at(-1)!({ resourceType, url }, ({ cancel }) => r(cancel)));
+    expect(await answer('script', 'https://cdn.usefathom.com/script.js')).toBe(true);
+    expect(await answer('ping', 'https://www.google-analytics.com/g/collect')).toBe(true);
+    expect(await answer('script', 'https://cdn.example/widget.js')).toBe(false);
+    expect(await answer('stylesheet', 'http://127.0.0.1:1/_app/immutable/assets/0.css')).toBe(false);
     // The next picture starts in a window of its own, as a first visit.
     expect(await shooter.shoot('http://127.0.0.1:1/fail/', 1440)).toMatchObject({ ok: false, reason: 'navigation' });
     expect(env.windows).toHaveLength(2);

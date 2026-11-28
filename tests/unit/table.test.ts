@@ -149,8 +149,9 @@ describe('table edits by ID', () => {
     expect(grown.rows.every((r) => r.cells[columnId] === '' && r.cells.col_day && r.cells.col_time)).toBe(true);
     const removed = applyOperations(withColumn.state, [edit(nodeId, owner, { action: 'removeRow', rowId: 'row_2' })]).state;
     expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
-    // The Business starter's own sample text is named (#1640); nothing about the table is.
-    expect(validateState(removed).filter((d) => d.severity !== 'info' && !isSampleFinding(d))).toEqual([]);
+    // The starter's sections still waiting for their pictures aside, and the Business starter's own sample text (#1640),
+    // the edits leave no problem; nothing about the table is named.
+    expect(validateState(removed).filter((d) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d))).toEqual([]);
     expect(validateState(removed).filter((d) => isSampleFinding(d) && d.nodeId === nodeId)).toEqual([]);
   });
 

@@ -20,6 +20,8 @@ export type ToolResult = ToolSuccessResult | ToolFailureResult;
 interface Landed {
   /** A field locate_field found, for the answer's "Open in inspector". */
   location?: FieldLocation;
+  /** The page open_page resolved, for the editor to show (#1357). Nothing in the site changes. */
+  openPage?: string;
   mutated?: boolean;
   ops?: EditOperation[];
   results?: unknown[];
@@ -99,7 +101,8 @@ const MORE: Record<string, string> = {
   list_collection_entries: 'List the rest from a later offset.',
   read_collection_entry: 'Read the rest from a later offset.',
   read_layout: 'Read one section at a time with read_layout and its nodeId.',
-  audit_seo: 'Audit one page or one pillar, or page through the findings with offset.'
+  audit_seo: 'Audit one page or one pillar, or page through the findings with offset.',
+  audit_performance: 'Audit one page with route, or page through the rows with offset.'
 };
 
 /** The longest start of `s` whose JSON form fits in `room` characters, never splitting a character in two. */

@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc, SiteIntegrations, SiteRedirect } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
@@ -48,6 +48,8 @@ import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
+import { codeProblemText, globalCssProblem, hasCode, headCodeProblem } from '@shared/site-code';
+import { fathomIdText, fathomSiteIdProblem } from '@shared/integrations';
 import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
@@ -56,7 +58,7 @@ import { loopText, redirectSourceProblem, redirectTargetProblem, resolveRedirect
 import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
-import { POSTS_PRESET_NAME, archivesAtStartOf, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type ArchivesAtStart, type EntryAddress } from './collections';
+import { POSTS_PRESET_NAME, archivesAtStartOf, collectionCreate, isArchiveAddressOf, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type ArchivesAtStart, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -80,6 +82,7 @@ import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
+import { BUSINESS_DETAILS, carryBusinessDetails, detailTexts, fillBusinessDetails, remapDetailKeeps, watchDetailKeeps } from './business-details';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
@@ -1036,8 +1039,17 @@ function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
   if (owner) fail(`${from} is the address of ${owner.label}. Choose another address.`);
   if (redirectIndex(state, from) >= 0 || keptPublishedAt(state, from)) fail(`${from} already sends visitors on. Change where it goes instead.`);
   const target = redirectTarget(state, op, from);
-  state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target } as SiteRedirect];
-  refuseRedirectLoop(state, from);
+  // One leading to a collection's archive page can be the collection's (an import's old category and tag addresses),
+  // which follows it when it moves (see SiteRedirect.archiveOf). An archive page's address is never an old address, so
+  // it ends a chain there and is no loop.
+  let archiveOf: { archiveOf: string } | undefined;
+  if (op.archiveOf !== undefined) {
+    const c = own(state.collections, op.archiveOf) ?? fail('The collection whose archive the old address leads to does not exist.');
+    if (target.to === undefined || !isArchiveAddressOf(c, target.to)) fail(`${target.to ?? 'That'} is not an address of the ${c.settings.name} collection's archive pages.`);
+    archiveOf = { archiveOf: c.settings.id };
+  }
+  state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target, ...archiveOf } as SiteRedirect];
+  if (!archiveOf) refuseRedirectLoop(state, from);
   return { from, ...target };
 }
 
@@ -1352,6 +1364,7 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
         const before = n.props;
         n.props = freshListIds(def.properties, n.props);
         remapItemStyles(n, before);
+        remapDetailKeeps(n, before);
       }
     }
     to.nodes[nid] = n;
@@ -1793,6 +1806,9 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
       // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
       if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[], new Set(), formDefaults(def));
     }
+    // A section placed once Site details has the business's details shows them where its design shows the samples;
+    // the values the insert gives are the placement's own.
+    if (op.owner.kind !== 'component') fillBusinessDetails(state, op.owner, inst, op.props);
     nodes = [inst];
   }
   // The editor names the node it inserts when the same batch goes on to fill it (an image and its picture).
@@ -1840,7 +1856,7 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if (!plan.keepAppear) delete node.appear;
   // A form's tool name and description stay with it when it becomes another form, and go when it becomes something else.
   if (!isWebMcpForm(target)) delete node.webmcp;
-  // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
+  // Text kept through a site rename or a change of its details names the old design's fields: the new one follows.
   delete node.keepsText;
   return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
 }
@@ -2935,6 +2951,8 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
+  // What the edit changes of a value kept through changes of the site's details is the author's again (#1368).
+  const settleKeeps = watchDetailKeeps(node, op.prop, Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : schema.default, schema);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
@@ -2959,6 +2977,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     const followed = followItemLinks(state, def, op, before, next, sent, ctx);
     list[idx] = next;
     node.props[op.prop] = [...list];
+    settleKeeps(node.props[op.prop]);
     return followed.length ? { followed } : {};
   }
   if (op.field !== undefined) {
@@ -2969,10 +2988,12 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     if (isBinding(own)) fail(`${schema.label} comes from the enclosing component's own property; edit it there.`);
     const current = own && typeof own === 'object' && !Array.isArray(own) ? own : schema.default;
     node.props[op.prop] = normalizeProp(schema, { [op.field]: op.value }, state, `${def.name} → ${schema.label}`, current);
+    settleKeeps(node.props[op.prop]);
     return {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   releaseKept(node, op.prop);
+  settleKeeps(node.props[op.prop]);
   return {};
 }
 
@@ -3328,6 +3349,8 @@ function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
+  // The site's business details as its sections show them before the change (the hours are written in its language).
+  const details = detailTexts(s);
   if (op.name !== undefined) {
     // One line, as the header, the footer and the browser title show it.
     const name = siteNameText(op.name);
@@ -3389,6 +3412,24 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
   }
+  // The site's own code (shared/site-code.ts), kept exactly as typed once it passes its check; nothing but space is none.
+  if (op.headCode !== undefined) {
+    if (!hasCode(op.headCode)) delete s.headCode;
+    else {
+      const problem = headCodeProblem(op.headCode);
+      if (problem) fail(codeProblemText('Head code', problem));
+      s.headCode = op.headCode;
+    }
+  }
+  if (op.globalCss !== undefined) {
+    if (!hasCode(op.globalCss)) delete s.globalCss;
+    else {
+      const problem = globalCssProblem(op.globalCss);
+      if (problem) fail(codeProblemText('Custom CSS', problem));
+      s.globalCss = op.globalCss;
+    }
+  }
+  if (op.integrations !== undefined) setIntegrations(s, op.integrations);
   // The header menu keeps its own order unless it follows the pages (engine/header-order.ts): stored only then.
   if (op.headerMenuOrder !== undefined) {
     if (op.headerMenuOrder === 'follow') s.headerMenuOrder = 'follow';
@@ -3413,7 +3454,28 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (next.value) s.identity = next.value;
     else delete s.identity;
   }
+  // The sections, links and footer that showed a detail (or its sample) show its new value (#1368); their own stay.
+  // An edit of a detail also replaces a sample still shown of it when it leaves its value as it was (a section pasted in).
+  const named = op.identity ? BUSINESS_DETAILS.filter((d) => Object.hasOwn(op.identity!, d) && op.identity![d] !== undefined) : [];
+  const problem = carryBusinessDetails(state, details, named);
+  if (problem) fail(problem);
   return {};
+}
+
+/**
+ * Adds, changes or removes the integrations given (shared/integrations.ts), leaving the others as they are. The
+ * integrations are stored only while one is added.
+ */
+function setIntegrations(site: ProjectState['site'], patch: NonNullable<Op<'site.update'>['integrations']>): void {
+  const next: SiteIntegrations = site.integrations && typeof site.integrations === 'object' ? { ...site.integrations } : {};
+  if (patch.fathom === null) delete next.fathom;
+  else if (patch.fathom !== undefined) {
+    const problem = fathomSiteIdProblem(patch.fathom.siteId);
+    if (problem) fail(`Fathom Analytics: ${problem}`);
+    next.fathom = { siteId: fathomIdText(patch.fathom.siteId) };
+  }
+  if (Object.keys(next).length) site.integrations = next;
+  else delete site.integrations;
 }
 
 /**

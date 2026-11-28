@@ -75,7 +75,7 @@ interface ReadInfo {
 }
 
 /** What read_project adds to the summary on request; pages and the shared header and footer come with every read. */
-export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components'] as const;
+export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components', 'siteCode'] as const;
 const PROJECT_EXTRAS: readonly string[] = PROJECT_SECTIONS;
 
 function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, index: number, args: Record<string, any>): ReadInfo | null {
@@ -104,6 +104,8 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     return id ? { ...base, target: `component:${id}${design}` } : null;
   }
   if (item.name === 'read_project') {
+    // A read of the site's own code holds that alone (tools.ts): it stands in only for another such read, never a summary.
+    if (Array.isArray(args.sections) && args.sections.includes('siteCode')) return { ...base, target: 'project:siteCode', extras: [] };
     const extras = PROJECT_EXTRAS.filter((s) => Array.isArray(args.sections) && args.sections.includes(s));
     return { ...base, target: 'project', extras };
   }
@@ -158,6 +160,11 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     const pageId = body?.scope?.pageId ?? args.pageId ?? null;
     const pillar = body?.scope?.pillar ?? args.pillar ?? null;
     return { ...base, target: `seo-audit:${JSON.stringify([pageId, pillar, Number(args.offset ?? 0), Number(args.linkOffset ?? 0)])}` };
+  }
+  if (item.name === 'audit_performance') {
+    // The page it was narrowed to, the part it showed, and the measurement it read: a newer export is a new read.
+    const route = body?.scope?.route ?? args.route ?? null;
+    return { ...base, target: `performance:${JSON.stringify([route, Number(args.offset ?? 0), body?.measuredAt ?? null])}` };
   }
   return null;
 }
@@ -239,6 +246,14 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.total, 'finding')} (${n(body.counts.error, 'error')}, ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'info', 'info')})` : '';
     const orphans = Number(body?.links?.orphans ?? (body?.links?.orphan ? 1 : 0));
     return `audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${linkOffset ? ` from linkOffset ${linkOffset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.`;
+  }
+  if (read.name === 'audit_performance') {
+    const scope = String(body?.scope?.route ?? args.route ?? 'site').slice(0, 80);
+    const offset = Number(args.offset ?? 0);
+    const n = (v: unknown, one: string, many = `${one}s`) => `${Number(v ?? 0)} ${Number(v ?? 0) === 1 ? one : many}`;
+    if (body?.status === 'not_measured') return `audit_performance ${scope}${rev}: nothing measured yet; the user has to export the website first.`;
+    const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'note')}.` : typeof body?.total === 'number' ? ` ${n(body.total, 'finding')}.` : '';
+    return `audit_performance ${scope}${offset ? ` from offset ${offset}` : ''}${rev}, measured at revision ${String(body?.measuredRevision ?? '?')}${body?.stale ? ' (changed since)' : ''}.${counts} Audit again for details.`;
   }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');
@@ -329,7 +344,7 @@ export function applyContextBudget(
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
       // A measurement, an element's props, an audit and the project summary all describe the revision they were read at:
       // only a change that moved it (whether or not a tool made it) makes them stale.
-      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project' && r.name !== 'audit_seo' && r.name !== 'read_layout') return false;
+      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project' && r.name !== 'audit_seo' && r.name !== 'audit_performance' && r.name !== 'read_layout') return false;
       return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
     };
     if (estimate > available * HARD_LIMIT) {

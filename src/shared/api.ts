@@ -1,3 +1,4 @@
+import type { PerformanceStatus } from './performance';
 import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
@@ -130,6 +131,8 @@ export interface Diagnostic {
   nodeId?: string;
   /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
   site?: string;
+  /** For a finding in a collection's layout: the published entry whose page shows it (see the engine's Diagnostic). */
+  entryId?: string;
 }
 
 /**
@@ -421,6 +424,8 @@ export interface ProjectSnapshot {
   workspaceKey: string;
   /** What this opening of the project exported, newest first. */
   recentExports: RecentExport[];
+  /** What the last website export measured of each page's first visit (#1488), and whether the project changed since. */
+  performance?: PerformanceStatus | null;
   /** Named versions of the site saved in this project. */
   versions?: VersionsInfo;
   /** A save that failed, until a later one succeeds (or, when unfinished, until the project is reopened). */
@@ -587,9 +592,9 @@ export type ExportFormat = 'folder' | 'zip';
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
-  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
-  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
+  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'publisherUrl' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
+  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'canonical' | 'socialImage' | 'structuredData' | 'pageTitle' }
+  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'canonical' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
   /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
   | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
@@ -929,7 +934,7 @@ export interface ConversationSummary {
 export interface AiEvent {
   runId: string;
   conversationId: string;
-  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message';
+  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page';
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
@@ -946,6 +951,8 @@ export interface AiEvent {
   at?: number;
   activity?: ChatActivity;
   message?: ChatMessage;
+  /** With `open-page`: the page the author asked the request to go to, for the editor to show (#1357). */
+  pageId?: string;
 }
 
 /** One file in an import review: what it is, and what importing it would add to Assets. */
@@ -1101,26 +1108,38 @@ export interface PostImportPreview {
   /** Pictures the posts show that are not in the chosen folder, with why. */
   missing: Array<{ post: string; ref: string; problem: string }>;
   newTerms: { categories: string[]; tags: string[] };
-  /** Old addresses kept working. */
+  /** Old addresses of the posts kept working. */
   redirects: number;
   /** Of those, the ones kept for a post that arrives as a draft: they start working once it is published. */
   redirectsPending: number;
-  /** Old addresses that can't keep working (each post's note says why). */
+  /** Old addresses of the posts that can't keep working (each post's note says why). */
   redirectsLost?: number;
   /** New posts that bring search settings of their own from the site's SEO plugin (a search title, description, canonical address or noindex). */
   searchSettings: number;
+  /**
+   * The old site's category and tag archive addresses (`/category/<slug>/`, `/tag/<slug>/`): how many are kept
+   * working, of those how many start working once a post filed under their term is published, and each that can't, with why.
+   */
+  archiveRedirects: PostImportArchiveRedirects;
   /** What is not imported at all. */
   skipped: string[];
   /**
    * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
-   * the new address an old category archive's sends visitors to, when the import keeps it working; `pending` while no
-   * published post is filed under that category, so the archive is not there yet.
+   * the new address an old category's or tag's archive sends visitors to, when the import keeps it working; `pending`
+   * while no published post is filed under it, so the archive is not there yet.
    */
   oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
   /** With posts already in the project: what updating them as well brings (`posts` of them), and what stops that. */
-  update?: { posts: number; pictures: number; missing: Array<{ post: string; ref: string; problem: string }>; newTerms: { categories: string[]; tags: string[] }; oldSiteLinks: PostImportPreview['oldSiteLinks']; problems: string[] };
+  update?: { posts: number; pictures: number; missing: Array<{ post: string; ref: string; problem: string }>; newTerms: { categories: string[]; tags: string[] }; oldSiteLinks: PostImportPreview['oldSiteLinks']; archiveRedirects: PostImportArchiveRedirects; problems: string[] };
+}
+
+/** The old site's category and tag archive addresses an import keeps working (see PostImportPreview.archiveRedirects). */
+export interface PostImportArchiveRedirects {
+  kept: number;
+  pending: number;
+  lost: Array<{ from: string; reason: string }>;
 }
 
 /** What importing does with posts already in the project: leaves them as they are, or updates each from the source. */
@@ -1824,6 +1843,8 @@ export interface BuilderApi {
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
+  /** F10, off macOS: open the application menu as the menu button does (#1355). */
+  on(channel: 'menu:open', cb: () => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   /** The host's live session changed: started, a guest joined or left, it dropped or came back, or it ended. */
   on(channel: 'live:state', cb: (state: LiveHostState) => void): () => void;
@@ -1855,6 +1876,11 @@ export interface BuilderApi {
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */
   menuReceived(id: number): void;
+  /**
+   * Open the application menu under a point of the page, in CSS pixels (the menu button's bottom-left corner), on the
+   * platforms that show the menu button rather than a menu bar (#1355). Resolves once the menu has closed.
+   */
+  popupMenu(at: { x: number; y: number }): Promise<void>;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
   leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;

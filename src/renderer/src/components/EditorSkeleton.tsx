@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { api, useStore } from '../store';
 import { Spinner, useWindowWidth } from './ui';
 import { fitPanels, toolbarTier } from '../lib/layout';
+import { useToolbarChrome } from '../lib/window-chrome';
 
 /** An opening shorter than this shows only the outline: the one loading sign appears once the wait is noticeable
  *  (Fluent's one second: under it, no wait animation at all). */
@@ -98,9 +99,10 @@ export function EditorSkeleton({ name }: { name: string | null }) {
   const rightWidth = useStore((s) => s.rightWidth);
   const shown = fitPanels(windowWidth, { left: leftTab ? leftWidth : null, right: dockOpen ? rightWidth : null });
   const mac = api.platform === 'darwin';
+  const chrome = useToolbarChrome();
   return (
     <div className="editor-skeleton" aria-hidden="true" inert data-testid="editor-skeleton">
-      <div className={`sk-toolbar${mac ? ' mac' : ''}`} data-tier={toolbarTier(windowWidth, mac)}>
+      <div className={`sk-toolbar${mac ? ' mac' : ''}`} data-tier={toolbarTier(windowWidth, chrome)}>
         <div className="sk-toolbar-start">
           <span className="sk-bar sk-switcher" />
           <span className="sk-bar sk-title" />
