@@ -18,6 +18,7 @@ import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
 import { createVariantClient, MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type WebCopyResult } from './media-client';
 import type { SiteIconRenderer } from './site-icons';
+import { DESKTOP_FONT_EXTENSIONS, DesktopFontError, sfntKind, sfntToWoff2 } from './woff2';
 
 export { WEB_EDGE, webCopySize };
 import { addCredits, cleanPhoto, hasCredits, sniffImageType, textCreditsAsTiff, type PhotoCredits, type PhotoMetadata } from './photo-metadata';
@@ -42,7 +43,10 @@ const MAX_BYTES = 25 * 1024 * 1024;
 export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'];
 /** The type of a picture the library takes, by its extension (".jpg"), or undefined for anything else. */
 export const pictureMime = (ext: string): string | undefined => (IMAGE_EXTENSIONS.includes(ext.slice(1).toLowerCase()) ? MIME[ext.toLowerCase()] : undefined);
-export const FONT_EXTENSIONS = ['woff2', 'woff'];
+/** File extensions the font chooser offers: the web fonts the library stores, and the desktop fonts it converts. */
+export const FONT_EXTENSIONS = ['woff2', 'woff', ...DESKTOP_FONT_EXTENSIONS];
+/** TrueType and OpenType fonts browsers load slowly or not at all: the importer stores a WOFF2 copy of each instead. */
+const isDesktopFont = (path: string) => DESKTOP_FONT_EXTENSIONS.includes(extname(path).slice(1).toLowerCase());
 /** Phone photos browsers can't show: the importer stores a web-sized copy of each instead. */
 const PHOTO_EXTENSIONS = ['heic', 'heif'];
 /** File extensions the import chooser offers: every image the library stores, and the photos it converts. */
@@ -86,6 +90,7 @@ function unusableReason(problem: ImageProblem | 'damaged', mime: string): string
 /** Is this a file of the given kind, going by its extension? A HEIC photo is an image: it is imported as a copy. */
 export function isAssetOfKind(path: string, kind: AssetKind): boolean {
   if (isPhotoToConvert(path)) return kind === 'image';
+  if (isDesktopFont(path)) return kind === 'font';
   const mime = MIME[extname(path).toLowerCase()];
   return !!mime && kindOfMime(mime) === kind;
 }
@@ -194,8 +199,9 @@ const refusal = (sourcePath: string, verb: string): Refusal => (reason) => new E
 /** Read and check a file for the library, before anything is written to the project. */
 async function prepareFile(sourcePath: string, refuse: Refusal): Promise<PreparedFile> {
   const ext = extname(sourcePath).toLowerCase();
+  if (isDesktopFont(sourcePath)) return prepareDesktopFont(sourcePath, refuse);
   const mime = MIME[ext];
-  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be imported.`);
+  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2, WOFF, TTF or OTF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be imported.`);
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
   const bytes = await fs.readFile(sourcePath);
@@ -203,8 +209,33 @@ async function prepareFile(sourcePath: string, refuse: Refusal): Promise<Prepare
   return prepareBytes(sourcePath, bytes, mime, ext, refuse);
 }
 
-/** Check a file's bytes for the library as `mime`, stored with `ext`. */
-async function prepareBytes(sourcePath: string, bytes: Buffer, mime: string, ext: string, refuse: Refusal): Promise<PreparedFile> {
+/**
+ * A TrueType or OpenType font, read and stored as the WOFF2 web font made of it, checked as any WOFF2 font is. A file
+ * already holding a WOFF2 or WOFF font under a desktop font's name is stored as the web font it is.
+ */
+async function prepareDesktopFont(sourcePath: string, refuse: Refusal): Promise<PreparedFile> {
+  const stat = await fs.stat(sourcePath);
+  if (stat.size > CONVERT_MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 64 MB.`);
+  const bytes = await fs.readFile(sourcePath);
+  countMediaRead(bytes.length);
+  const kind = sfntKind(bytes);
+  if (kind === 'woff' || kind === 'woff2') {
+    if (bytes.length > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
+    return prepareBytes(sourcePath, bytes, `font/${kind}`, `.${kind}`, refuse);
+  }
+  let web: Buffer;
+  try {
+    web = await sfntToWoff2(bytes);
+  } catch (e) {
+    if (e instanceof DesktopFontError) throw refuse(e.message);
+    throw refuse('it is damaged: its font tables cannot be read. Download the font again.');
+  }
+  if (web.length > MAX_BYTES) throw refuse('even its web font version is larger than 25 MB.');
+  return prepareBytes(sourcePath, web, 'font/woff2', '.woff2', refuse, 'Download the font again, or choose another file of it.');
+}
+
+/** Check a file's bytes for the library as `mime`, stored with `ext`. `fontAdvice` follows what is wrong with a font. */
+async function prepareBytes(sourcePath: string, bytes: Buffer, mime: string, ext: string, refuse: Refusal, fontAdvice = 'Use a WOFF2 or WOFF web font.'): Promise<PreparedFile> {
   let buf = bytes;
   // A document is copied as it is, once it is the kind of file its name says.
   if (kindOfMime(mime) === 'document') {
@@ -233,7 +264,7 @@ async function prepareBytes(sourcePath: string, bytes: Buffer, mime: string, ext
     try {
       ({ joins, ...font } = await fontInfo(buf));
     } catch (e) {
-      throw refuse(`${(e as Error).message}. Use a WOFF2 or WOFF web font.`);
+      throw refuse(`${(e as Error).message}. ${fontAdvice}`);
     }
   }
   return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext, mime, buf, hash: sha(buf), ...(font ? { font } : {}), ...(joins ? { fontJoins: joins } : {}) };
@@ -915,7 +946,7 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
   const refuse = refusal(sourcePath, "can't be used");
   // A font is put back only from its very file: another file is another face, which Add fonts adds as one of its own.
   if (record.kind === 'font') {
-    if (!isAssetOfKind(sourcePath, 'font')) throw refuse('it is not a font. Choose the WOFF2 or WOFF file the font was added from.');
+    if (!isAssetOfKind(sourcePath, 'font')) throw refuse('it is not a font. Choose the WOFF2, WOFF, TTF or OTF file the font was added from.');
     const p = await prepareFile(sourcePath, refuse);
     if (p.hash !== record.hash || p.mime !== record.mime) throw refuse(`it is not the file of ${record.name.trim() || 'this font'}. Choose the file the font was added from, or add this one with Add fonts.`);
     return { same: true, written: (await restoreFontFile(projectDir, record, p.buf, fence)) ? [record.file] : [], failed: [] };

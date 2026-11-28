@@ -3329,7 +3329,7 @@ export class Controller {
       if ((!only || only === 'image') && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
       else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font') || isAssetOfKind(f, 'document')) rows.push({ path: f, name, bytes: 0, action: 'import' });
       // What the import would skip or refuse, the review names, so it is never counted among the files added.
-      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
+      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2, WOFF, TTF or OTF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be added.' });
     }
     return { paths: files, rows };
   }
