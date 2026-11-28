@@ -321,7 +321,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
   const [dialog, setDialog] = useState<Dialog>(null);
-  const [importing, setImporting] = useState(false);
+  /** The dialog session an import was started in (see importIntoDialog); the dialog now open, whatever it is, is the latest one. */
+  const [importing, setImporting] = useState<number | null>(null);
+  const dialogRef = useRef(dialog);
+  dialogRef.current = dialog;
+  const dialogSession = useRef(0);
+  const dialogOpen = dialog !== null;
+  useEffect(() => {
+    dialogSession.current++;
+  }, [dialogOpen]);
+  const readOnlyRef = useRef(false);
   /** The latest drop of image files, and whether this writer is still mounted: a late import is checked against both. */
   const dropRun = useRef(0);
   const mounted = useRef(true);
@@ -861,8 +870,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    */
   const importIntoDialog = async (paths?: string[]) => {
     const opening = getState().snapshot?.workspaceKey;
-    if (!opening || importing || readOnly) return;
-    setImporting(true);
+    const session = dialogSession.current;
+    const began = dialogRef.current;
+    if (!opening || importing !== null || readOnlyRef.current || began?.kind !== 'image') return;
+    setImporting(session);
+    // The import still counts for the dialog it began in: closed, another one opened, or another picture chosen
+    // (or described) meanwhile, it is not applied, and the picture waits in Assets with a note.
+    const same = () => mounted.current && !getState().leaving && !readOnlyRef.current && session === dialogSession.current && dialogRef.current?.kind === 'image' && dialogRef.current.value === began.value;
     try {
       const plan = await reviewImport(paths, 'image', () => mounted.current && getState().snapshot?.workspaceKey === opening).catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
       if (!plan || !mounted.current) return;
@@ -885,13 +899,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       const assets = snap.state.assets.assets;
       const asset = r.assetIds.map((id) => (Object.hasOwn(assets, id) ? assets[id] : undefined)).find((a) => a?.kind === 'image');
       if (!asset) return;
-      if (!mounted.current || !shownRef.current.dialog || getState().leaving) {
+      // The same file again changes nothing: its choice and description stand.
+      if (asset.id === began.value.assetId && same()) return;
+      if (!same()) {
         toast(`“${asset.name}” was added to Assets.`, 'info');
         return;
       }
       setDialog((d) => (d?.kind === 'image' ? { ...d, value: { assetId: asset.id, alt: asset.altSuggestion ?? '', ...(d.value.decorative ? { decorative: true } : {}) }, altError: false } : d));
     } finally {
-      if (mounted.current) setImporting(false);
+      if (mounted.current) setImporting(null);
     }
   };
   /**
@@ -1083,6 +1099,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const structured = collectionKind(collection.settings) === 'structured';
   const paged = hasDetailPages(collection.settings);
   const readOnly = isReadOnlyCollection(collection);
+  readOnlyRef.current = readOnly;
   const noun = entryNoun(collection);
   const nounLower = entryNounLower(collection);
   // The collection's own name in a sentence ("lists of case studies"), an acronym ("FAQs") kept as it is.
@@ -1522,7 +1539,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               value={dialog.value}
               altError={dialog.altError}
               tried={dialog.tried ?? 0}
-              importing={importing}
+              importing={importing === dialogSession.current}
               onImport={(paths) => void importIntoDialog(paths)}
               // A description written, decorative turned on or another picture chosen settles what was asked.
               onChange={(value) => setDialog({ ...dialog, value, altError: dialog.altError && !value.decorative && !value.alt.trim() && value.assetId === dialog.value.assetId })}
@@ -1644,7 +1661,8 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, importi
       if (!isFileDrag(e)) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'copy';
+      // One import at a time: a file let go meanwhile is not taken, and the cursor says so.
+      e.dataTransfer.dropEffect = importing ? 'none' : 'copy';
       if (!over) setOver(true);
     },
     onDragLeave: (e: React.DragEvent) => {
@@ -1655,6 +1673,7 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, importi
       e.preventDefault();
       e.stopPropagation();
       setOver(false);
+      if (importing) return;
       const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
       if (paths.length) onImport(paths);
     }

@@ -421,4 +421,37 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
     await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
     expect(await dialog().count()).toBe(0);
   });
+  it('does not apply an import to a dialog opened after the one it began in, nor over a picture chosen meanwhile (#1375)', async () => {
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    await dialog().getByRole('button', { name: 'Import…' }).click();
+    await expect.poll(imports).toBe(1);
+    await dialog().getByRole('button', { name: 'Cancel' }).click();
+    await expect.poll(() => dialog().count()).toBe(0);
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    // The new dialog does not say Adding… for the old one's import, and is not given its picture.
+    expect(await dialog().getByRole('button', { name: 'Import…' }).count()).toBe(1);
+    await land(0, [kiln.id]);
+    await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
+    expect(await dialog().getByText('Chosen: kiln.jpg').count()).toBe(0);
+  });
+
+  it('leaves a picture chosen while the import was still copying as it is (#1375)', async () => {
+    const wheel = image('img_wheel', { name: 'wheel.jpg', altSuggestion: 'A potter’s wheel' });
+    const library = structuredClone(start);
+    library.assets.assets[wheel.id] = wheel;
+    await so('change', library);
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    await dialog().getByRole('button', { name: 'Import…' }).click();
+    await expect.poll(imports).toBe(1);
+    await dialog().getByRole('option', { name: 'wheel.jpg' }).click();
+    const both = structuredClone(library);
+    both.assets.assets[kiln.id] = kiln;
+    await land(0, [kiln.id], both);
+    await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
+    await dialog().getByText('Chosen: wheel.jpg').waitFor();
+    expect(await dialog().getByLabel('Description').inputValue()).toBe('A potter’s wheel');
+  });
 });
