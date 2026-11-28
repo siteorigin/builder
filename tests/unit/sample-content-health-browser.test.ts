@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { keptSampleKey } from '@engine/sample-content';
+import { sampleDiagnostics, sampleGroups } from '../../src/renderer/src/lib/sample-review';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://sample-health.test';
@@ -63,6 +64,8 @@ describe.skipIf(!browserInstalled)('sample content in Project health (#1640)', {
   let errors: string[];
   const state = createStarterState('business', 'Test Studio', false);
   const found = validateState(state).filter((d) => d.code.startsWith('SAMPLE_'));
+  // The starter's sample contact details (#1633), which Project health lists beside them with their own choices.
+  const contacts = sampleDiagnostics(sampleGroups(state), []);
   const json = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c');
 
   beforeAll(async () => {
@@ -98,7 +101,8 @@ describe.skipIf(!browserInstalled)('sample content in Project health (#1640)', {
 
   it('lists each finding with the way to its field and a way to keep it, and remembers the one kept', async () => {
     await open();
-    expect(await warnings().count()).toBe(found.length);
+    expect(contacts.map((d) => d.code)).toEqual(['SAMPLE_CONTACT', 'SAMPLE_CONTACT', 'SAMPLE_CONTACT']);
+    expect(await warnings().count()).toBe(found.length + contacts.length);
     expect(await page.getByRole('button', { name: 'Keep as is' }).count()).toBe(found.length);
     const heading = 'Calm, considered spaces for everyday life';
     const kept = found.find((d) => d.message.includes(heading))!;
@@ -109,14 +113,14 @@ describe.skipIf(!browserInstalled)('sample content in Project health (#1640)', {
     expect(await page.evaluate('window.__kept()')).toEqual([keptSampleKey(kept)]);
     // Main sends the project again without it: its row goes, the others stay, and what happened is said.
     await page.evaluate(`window.__send(${json(found.filter((d) => d !== kept))})`);
-    await expect.poll(() => warnings().count()).toBe(found.length - 1);
+    await expect.poll(() => warnings().count()).toBe(found.length + contacts.length - 1);
     expect(await row(heading).count()).toBe(0);
     await expect.poll(() => page.getByText('Kept as it is. Project health no longer lists it.').count()).toBeGreaterThan(0);
   });
 
   it('offers no keeping in a project open read-only', async () => {
     await open(true);
-    expect(await warnings().filter({ hasText: 'still' }).count()).toBe(found.length);
+    expect(await warnings().filter({ hasText: 'still' }).count()).toBe(found.length + contacts.length);
     expect(await page.getByRole('button', { name: 'Keep as is' }).count()).toBe(0);
   });
 });

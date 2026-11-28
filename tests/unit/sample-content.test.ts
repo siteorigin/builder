@@ -458,7 +458,8 @@ describe('keeping sample content as it is', () => {
       const tree = session.state.pages[owner.id];
       const was = (tree.nodes[node] as InstanceNode).props[prop];
       await session.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: node, prop, value: 'Our own words' }] }, { label: 'Edit', source: 'user' });
-      expect(session.diagnostics().some((d) => d.nodeId === node && (placeOf(d) as { prop?: string }).prop === prop)).toBe(false);
+      // Only sample findings have a place: another finding on the same section (#1633's) has none.
+      expect(session.diagnostics().some((d) => d.nodeId === node && (placeOf(d) as { prop?: string } | null)?.prop === prop)).toBe(false);
       await session.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: node, prop, value: was }] }, { label: 'Edit back', source: 'user' });
       expect(session.diagnostics()).not.toContainEqual(first);
       // Another sample value at that place is named again: an eyebrow kept as "About" set to the starter's "Contact".
