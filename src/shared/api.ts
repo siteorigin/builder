@@ -951,6 +951,8 @@ export interface ComponentImportResult {
   entryId?: string;
   /** The project's revision once it landed. */
   revision?: number;
+  /** What landed differently from the project it came from (a dark colour this site's own style keeps, say). */
+  notes?: string[];
   message?: string;
 }
 

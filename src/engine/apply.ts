@@ -3102,10 +3102,13 @@ function tokenSetColorScheme(state: ProjectState, op: Op<'token.setColorScheme'>
     return {};
   }
   t.colorSchemeMode = op.mode;
-  if (op.regenerate || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
+  const staged = t.darkPending && t.darkOverrides && typeof t.darkOverrides === 'object' ? t.darkOverrides : null;
+  if (op.regenerate || staged || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
     const theme = getTheme(state.site.themeId);
-    t.darkOverrides = deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []);
+    // The dark colours imported components brought before it was ever on are their own, beside the theme's made ones.
+    t.darkOverrides = { ...deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []), ...staged };
   }
+  delete t.darkPending;
   assertNoTokenCycles(state);
   return {};
 }
@@ -3261,10 +3264,13 @@ function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
         fail(`"${t.label}" has a different color in the dark palette${hasDarkPalette(state.tokens) ? '' : ' (kept for when it is turned back on)'}, so the places that use it cannot keep one color for both. Choose a replacement color.`);
     }
     const darkMap = state.tokens.darkOverrides;
+    // A dark palette never made yet makes the theme's own colours when it is first turned on: none is kept for them.
+    const theme = state.tokens.darkPending ? new Set(getTheme(state.site.themeId).tokens.map((x) => x.id)) : null;
     forEachTokenRef(state, (id, site) => {
       if (id !== t.id) return;
       // A colour whose light value followed it, and has no dark value of its own, followed it in the dark palette too.
-      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId)) darkMap[site.tokenId] = dark;
+      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId) && !theme?.has(site.tokenId))
+        darkMap[site.tokenId] = dark;
       site.replace(clone(site.scheme === 'dark' ? dark : literal));
     });
   }

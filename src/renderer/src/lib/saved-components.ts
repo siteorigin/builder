@@ -90,9 +90,13 @@ export async function insertSaved(entry: SavedComponent, tile?: unknown): Promis
   const nodes = now.snapshot && treeFor(now.snapshot.state, owner)?.nodes;
   const there = !!nodes && Object.hasOwn(nodes, r.nodeId);
   if (!shown || !here || !there || now.selection !== start.selection || now.slotTarget !== start.slotTarget) {
-    if (there) toast(`Added ${entry.name}.`, 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
+    if (there) toast([`Added ${entry.name}.`, ...(r.notes ?? [])].join(' '), 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
+    // Landed, though not shown where it went: what landed differently is still said.
+    else if (r.notes?.length) toast(r.notes.join(' '), 'info');
     return;
   }
+  // Selected where it went, so only what landed differently is said.
+  if (r.notes?.length) toast(r.notes.join(' '), 'info');
   const ref: ElementRef = { owner, instancePath: [], nodeId: r.nodeId };
   if (now.mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
