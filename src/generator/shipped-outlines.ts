@@ -19,8 +19,8 @@ import { derived, isTracked } from './cache';
 
 type Build = (b: TreeBuilder) => string;
 
-/** A heading whose tag the placement chooses, as `<svelte:element this={headingLevel}>` renders it. */
-const chosenHeading = (b: TreeBuilder, id: string, text: Binding) => b.text(id, prop('headingLevel'), text);
+/** A heading whose tag the placement chooses, as `{#if has(heading)}<svelte:element this={headingLevel}>` renders it. */
+const chosenHeading = (b: TreeBuilder, id: string, text: Binding) => b.text(id, prop('headingLevel'), text, { when: text });
 
 /** The eyebrow, heading and lead most sections open with. */
 const intro = (b: TreeBuilder) => [b.text('eyebrow', 'p', prop('eyebrow')), chosenHeading(b, 'heading', prop('heading')), b.text('lead', 'p', prop('lead'))];
@@ -93,7 +93,7 @@ const OUTLINES: Readonly<Record<string, Build>> = {
   'content.article': (b) =>
     b.el('root', 'section', {}, [
       b.text('eyebrow', 'p', prop('eyebrow')),
-      b.repeat('md-article', 'article', [b.text('heading', 'h1', item('title')), b.el('meta', 'p', {}, [b.text('md-date', 'span', item('dateLabel')), b.text('md-byline', 'span', item('byline'))]), b.text('lead', 'p', item('excerpt'))])
+      b.repeat('md-article', 'article', [b.text('heading', 'h1', item('title'), { when: item('title') }), b.el('meta', 'p', {}, [b.text('md-date', 'span', item('dateLabel')), b.text('md-byline', 'span', item('byline'))]), b.text('lead', 'p', item('excerpt'))])
     ]),
   // A logo's name shows only while it has no picture.
   'logos.strip': (b) => b.el('root', 'section', {}, [b.text('heading', 'p', prop('heading')), b.el('row', 'ul', {}, [b.repeat('md-logos', 'logos', [b.el('md-logo', 'li', {}, [b.text('wordmark', 'span', item('name'), { unless: item('logo') })])])])]),
@@ -136,7 +136,7 @@ const OUTLINES: Readonly<Record<string, Build>> = {
       ...intro(b),
       b.repeat('md-tabs', 'tabs', [
         b.el('list', 'div', {}, [b.el('md-tab', 'dt', {}, [b.text('md-label', 'span', item('label'))])]),
-        b.el('panels', 'div', {}, [b.el('md-panel', 'div', {}, [b.text('md-heading', 'h3', item('heading')), rich(b, 'md-copy', item('copy')), b.link('md-action', item('actionLink'), item('actionLabel'), 'text')])])
+        b.el('panels', 'div', {}, [b.el('md-panel', 'div', {}, [b.text('md-heading', 'h3', item('heading'), { when: item('heading') }), rich(b, 'md-copy', item('copy')), b.link('md-action', item('actionLink'), item('actionLabel'), 'text')])])
       ])
     ]),
   // Each step's title is the button that shows its picture, read as the step's heading.
@@ -219,7 +219,7 @@ const OUTLINES: Readonly<Record<string, Build>> = {
       b.el('list', 'ul', {}, [b.repeat('md-items', 'items', [b.el('method', 'li', {}, [b.text('md-label', 'span', item('label')), ...plainLink(b, 'md-value', item('link'), item('value'))])])])
     ]),
   // The search form's own words are controls; its results are found as the visitor searches.
-  'site.search': (b) => b.el('root', 'section', {}, [b.text('eyebrow', 'p', prop('eyebrow')), b.text('heading', 'h2', prop('heading')), b.text('lead', 'p', prop('lead'))]),
+  'site.search': (b) => b.el('root', 'section', {}, [b.text('eyebrow', 'p', prop('eyebrow')), b.text('heading', 'h2', prop('heading'), { when: prop('heading') }), b.text('lead', 'p', prop('lead'))]),
   'block.feature': (b) => b.el('root', 'div', {}, [chosenHeading(b, 'title', prop('title')), b.el('md-badge', 'p', {}, [b.text('badge', 'span', prop('badge'))]), b.text('description', 'p', prop('description')), b.link('link', prop('link'), prop('linkLabel'), 'text')]),
   'block.stat': (b) =>
     b.el('root', 'div', {}, [b.el('md-figure', 'dl', {}, [b.el('label', 'dt', {}, [b.text('md-label', 'span', prop('label'))]), b.el('md-value-row', 'dd', {}, [b.text('value', 'span', prop('value')), b.text('unit', 'span', prop('unit'))])]), b.text('footnote', 'p', prop('footnote'))]),
@@ -281,6 +281,15 @@ export function shippedOutline(state: ProjectState, def: ComponentDefinition): C
   }
   return out ?? undefined;
 }
+
+/**
+ * Words a design reads as a heading for the Markdown copies that the markup does not make one, by component ID: a
+ * step's title is the button that shows its picture. The heading outline leaves them out.
+ */
+const READ_AS_HEADINGS: Readonly<Record<string, readonly string[]>> = { 'content.steps-media': ['stepTitle'] };
+
+/** Whether a node of the design read for a section is a heading only in the Markdown copies, not in its markup. */
+export const headingInMarkdownOnly = (componentId: string, nodeId: string) => Object.hasOwn(READ_AS_HEADINGS, componentId) && READ_AS_HEADINGS[componentId].includes(nodeId);
 
 /** The component IDs read through a design of their own. */
 export const OUTLINED: readonly string[] = Object.keys(OUTLINES);

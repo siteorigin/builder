@@ -142,6 +142,49 @@ describe('heading outline', () => {
     expect(headingWarnings(fixed)).toEqual([]);
   });
 
+  it('leaves out the release hero’s heading where its words are only spaces or its part is hidden at every size', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroId = s.pages[pageId].rootIds[1];
+    const owner = { kind: 'page' as const, id: pageId };
+    const firsts = (st: ProjectState) => rows(st, pageId).filter(([level]) => level === 1);
+    // `{#if has(heading)}`: a heading of spaces renders nothing.
+    const blank = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: heroId, prop: 'heading', value: '   ' }]).state;
+    expect(firsts(blank)).toEqual([[1, 'Let’s talk']]);
+    expect(headingWarnings(blank)).toEqual([]);
+    // Its heading part hidden at every size by the placement: no screen reader reaches it.
+    const hero = s.pages[pageId].nodes[heroId] as InstanceNode;
+    hero.overrides = { ...hero.overrides, heading: { base: { hidden: true } } };
+    expect(firsts(s)).toEqual([[1, 'Let’s talk']]);
+    // Shown again on phones, it is in the outline.
+    hero.overrides = { ...hero.overrides, heading: { base: { hidden: true }, phone: { hidden: false } } };
+    expect(firsts(s)).toEqual([
+      [1, 'Let’s talk'],
+      [1, HERO_HEADING]
+    ]);
+  });
+
+  it('reads the release’s step tour titles as the buttons they are, and its layouts as holding no headings', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const owner = { kind: 'page' as const, id: about.id };
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner, componentId: 'content.steps-media', props: { heading: '', steps: [{ id: 'a', title: 'Plan', description: 'First.' }] } },
+      { type: 'node.insert', owner, componentId: 'layout.section', props: {} }
+    ]).state;
+    // The steps' titles are buttons, so nothing follows the page's title as a skipped level.
+    expect(rows(r, about.id)).toEqual([[1, 'About']]);
+    expect(headingWarnings(r)).toEqual([]);
+    expect(pageOutline(r, about.id).uninspected).toBe(false);
+  });
+
+  it('lists the release footer’s column headings only over columns with something in them', () => {
+    const s = fresh();
+    const [placed] = s.site.shell.footer.rootIds;
+    const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: placed, prop: 'contact', value: [] }]).state;
+    expect(headingOutline(r, pageAt(r, '/about/').id).filter((h) => h.owner.kind === 'shell').map((h) => h.text)).toEqual(['Explore']);
+  });
+
   it('lists the headings of the release’s feature grid, FAQ and plan comparison', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
@@ -161,6 +204,11 @@ describe('heading outline', () => {
     ]);
     expect(pageOutline(r, about.id).uninspected).toBe(false);
     expect(headingWarnings(r).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // The comparison's level is its placement's choice, set from the outline.
+    const compare = own(r, about.id).at(-1)!;
+    const fixed = applyOperations(r, headingLevelOps(compare, 2)!).state;
+    expect(rows(fixed, about.id).at(-1)).toEqual([2, 'Compare plans']);
+    expect(headingWarnings(fixed)).toEqual([]);
   });
 
   it('reads the shared header and footer around the page, unless the page leaves them out', () => {
