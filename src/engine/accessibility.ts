@@ -82,8 +82,13 @@ function pageIdUses(state: ProjectState, page: PageDoc): IdUse[] {
     const parents = new Map<string, string>();
     for (const n of Object.values(tree.nodes)) for (const c of n.kind === 'element' || n.kind === 'repeat' ? n.children : []) parents.set(c, n.id);
     // A condition on the way from the loop decides row by row whether the element renders: such an id is not counted.
+    // `seen` ends the climb in a damaged document whose element holds itself, which validation reports.
     const conditional = (id: string, loop: string) => {
-      for (let at: string | undefined = id; at && at !== loop; at = parents.get(at)) if (tree.nodes[at]?.when || tree.nodes[at]?.unless) return true;
+      const seen = new Set<string>();
+      for (let at: string | undefined = id; at && at !== loop && !seen.has(at); at = parents.get(at)) {
+        seen.add(at);
+        if (tree.nodes[at]?.when || tree.nodes[at]?.unless) return true;
+      }
       return false;
     };
     for (const [nodeId, loop] of loops) {

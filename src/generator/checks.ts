@@ -1325,21 +1325,18 @@ export function accessibilityProblems(state: ProjectState, owner: OwnerRef, tree
   const hidden = () => hiddenOnPath(path);
   // The cards being walked, innermost last, until something inside them names them.
   const cards: Array<{ n: GraphNode; scope: Scope; reportId: string; named: boolean }> = [];
-  // The slots whose content names the cards around it: shown again by a second slot, it names those cards too.
+  // The slots whose content has words of its own: shown again by a second slot, it names the cards around that one,
+  // where that one is not hidden.
   const naming = new Set<string>();
-  const named = (scope: Scope) => {
-    cards.forEach((c) => (c.named = true));
-    for (const slot of scope.slots ?? []) naming.add(slot);
-  };
+  const named = () => cards.forEach((c) => (c.named = true));
   walkRendered(state, tree, {
     everyState: true,
     again: (slot) => {
-      if (naming.has(slot)) cards.forEach((c) => (c.named = true));
+      if (naming.has(slot) && cards.length && !hidden()) named();
     },
     node: (n, scope, reportId, inDef, def) => {
       path.push({ n, scope, def });
-      // What is hidden at every size names nothing: an accessible name leaves out what is not displayed.
-      if (cards.length && !hidden()) {
+      if (cards.length || scope.slots?.length) {
         let names = false;
         if (n.kind === 'text') names = !!nameText(evaluate(n.text, scope));
         if (n.kind === 'icon') names = !!nameText(evaluate(n.ariaLabel, scope));
@@ -1353,7 +1350,10 @@ export function accessibilityProblems(state: ProjectState, owner: OwnerRef, tree
         if (n.kind === 'link') names = !!(nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope)));
         // Code says what its own markup says: whatever it shows may name the card.
         if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') names = true;
-        if (names) named(scope);
+        // What is hidden at every size names nothing: an accessible name leaves out what is not displayed. Content of a
+        // slot names wherever it is shown again unless its own styles hide it.
+        if (names && !hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined)) for (const slot of scope.slots ?? []) naming.add(slot);
+        if (names && cards.length && !hidden()) named();
       }
       if (n.kind !== 'element' || n.link === undefined) return;
       // A card links the whole container. One with an action follows its destination only while that action is `link`.

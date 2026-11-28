@@ -159,6 +159,16 @@ describe('HTML ids rendered twice on a page', () => {
     expect(advice(s, 'HTML_ID_DUPLICATE')).toEqual([]);
   });
 
+  it('reads a damaged loop whose row holds itself without hanging', () => {
+    const s = applyOperations(fresh(), [
+      { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false }, fields: { role: { type: 'string', label: 'Role' } } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false, values: { role: 'Architect' } }
+    ]).state;
+    const loop: RepeatNode = { id: 'loop', kind: 'repeat', list: { $query: { collectionId: 'team' } }, children: ['row'] };
+    addToHome(s, box('wrap', ['loop']), loop, box('row', ['row'], { anchor: 'member' }));
+    expect(() => validateState(s)).not.toThrow();
+  });
+
   it('counts slot content a design shows twice through two slots of one name', () => {
     const s = fresh();
     const def: ComponentDefinition = {
@@ -284,6 +294,17 @@ describe('links, buttons and cards with no accessible name', () => {
     page.nodes['c1-t'] = text('c1-t', 'p', 'Visit the harbour', { styles: { base: { hidden: true } } as never });
     expect(advice(s, 'LINK_NAME_MISSING')).toHaveLength(1);
     page.nodes.c1 = { ...card, children: ['c1-img', 'c1-t'], ariaLabel: 'Visit the harbour' };
+    expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
+  });
+
+  it('names a card by slot content whose first copy is hidden and second is shown', () => {
+    const s = fresh();
+    const card = { type: 'url' as const, target: 'https://example.com/' };
+    const def = design(s, 'p_cards', [box('root', ['hide', 'card']), box('hide', ['a'], { styles: { base: { hidden: true } } as never }), { id: 'a', kind: 'slot', slot: 'content' }, box('card', ['b'], { link: card }), { id: 'b', kind: 'slot', slot: 'content' }], {
+      slots: { content: { label: 'Content' } }
+    } as never);
+    const inst: InstanceNode = { ...makeInstance(def, {}), slots: { content: ['words'] } };
+    addToHome(s, inst, text('words', 'p', 'Read the guide'));
     expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
   });
 
