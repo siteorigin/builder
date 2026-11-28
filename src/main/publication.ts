@@ -43,7 +43,6 @@ import {
   leaveOutDrafts,
   missingAssetsStop,
   missingWebsiteAssets,
-  missingWebsiteFonts,
   ownNotFoundFileStop,
   projectReadme,
   pruneWebsiteAssets,
@@ -381,8 +380,6 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   if (around) return stop(`${around.file} is at ${around.route}, the address of the draft ${around.draft}, so publishing the website would publish it there. Remove or move the file, then prepare the publication again.`);
   const missing = (await missingWebsiteAssets(dir, projected)).filter((m) => m.used);
   if (missing.length) return { ok: false, ...missingAssetsStop(missing), assetId: missing[0].asset.id };
-  const font = (await missingWebsiteFonts(dir, projected))[0];
-  if (font) return { ok: false, message: `The font ${font.name} is missing its file (${font.file}), which the website uses. Put the file back or remove the font in Assets, then prepare the publication again.`, warnings: [], assetId: font.id };
   const credits = await variantCredits(dir, projected);
   await pruneWebsiteAssets(dir, projected);
   const photos = await cleanWebsitePhotos(dir, projected, credits);

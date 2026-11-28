@@ -270,7 +270,7 @@ describe('finding image files that left the project folder', () => {
     expect((await findMissingAssetFiles(dir, assets))[0]).toEqual({ assetId: record.id, original: true, variants: record.variants!.map((v) => v.file) });
   });
 
-  it('does not count a folder or a link in place of a file, and leaves fonts and pictures without copies alone', async () => {
+  it('does not count a folder or a link in place of a file, and reports a font or a picture without copies by its file alone', async () => {
     const { dir, record } = await photoProject();
     const gif = (await importFile('logo.gif', await picture('gif'), dir)).record;
     const font = { ...gif, id: 'a_font', kind: 'font' as const, file: 'static/assets/gone-00000000.woff2' };
@@ -280,9 +280,12 @@ describe('finding image files that left the project folder', () => {
     const outside = sourceFile('elsewhere.jpg', await picture('jpeg'));
     unlinkSync(join(dir, record.variants![0].file));
     symlinkSync(outside, join(dir, record.variants![0].file));
-    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [record.variants![0].file] }]);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([
+      { assetId: record.id, original: true, variants: [record.variants![0].file] },
+      { assetId: font.id, original: true, variants: [] }
+    ]);
     unlinkSync(join(dir, gif.file));
-    expect((await findMissingAssetFiles(dir, assets)).map((m) => m.assetId)).toEqual([record.id, gif.id]);
+    expect((await findMissingAssetFiles(dir, assets)).map((m) => m.assetId)).toEqual([record.id, gif.id, font.id]);
   });
 
   it('names the image in Project health, as a problem while the site uses it, without mentioning how often', () => {
@@ -713,4 +716,108 @@ describe('exporting with missing image files', () => {
     unlinkSync(join(dir, used.file));
     expect(missingSourceWarnings(state, await findMissingAssetFiles(dir, state.assets.assets))).toEqual(['Reading nook is missing its original file in the project folder, so the exported project does not have it either. Fix it in Assets and export again.']);
   });
+});
+
+describe('a font whose file left the project folder (#1425)', () => {
+  const LORA = 'node_modules/@fontsource-variable/lora/files/lora-latin-wght-normal.woff2';
+  const LORA_ITALIC = 'node_modules/@fontsource-variable/lora/files/lora-latin-wght-italic.woff2';
+  const fileName = (r: AssetRecord) => r.file.split('/').pop()!;
+
+  it('is found missing, and named by its file in Project health and the editable export notes', async () => {
+    const dir = temp('project');
+    const { record } = await importAsset(dir, sourceFile('Lora.woff2', readFileSync(LORA)), []);
+    expect(record.kind).toBe('font');
+    const assets = { [record.id]: record };
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
+    unlinkSync(join(dir, record.file));
+    const missing = await findMissingAssetFiles(dir, assets);
+    expect(missing).toEqual([{ assetId: record.id, original: true, variants: [] }]);
+    const state = createStarterState('blank', 'Fonts', false);
+    state.assets.assets[record.id] = record;
+    const said = `${record.name} is missing its font file (${fileName(record)}) in the project folder.`;
+    // A warning while no style uses the family, a problem once one does.
+    expect(missingFileDiagnostics(state, missing, () => ({}))).toEqual([{ severity: 'warning', code: 'ASSET_FILE_MISSING', message: `${said} Locate the file in Assets, or remove the font.`, owner: { kind: 'asset', id: record.id } }]);
+    expect(missingFileDiagnostics(state, missing, () => ({ [record.id]: 1 }))[0].severity).toBe('error');
+    expect(missingSourceWarnings(state, missing)).toEqual([`${record.name} is missing its font file (${fileName(record)}) in the project folder, so the exported project does not have it either. Fix it in Assets and export again.`]);
+  });
+
+  it('stops a website export whose styles name the missing font, naming the face', async () => {
+    const dir = temp('staged');
+    const state = createStarterState('blank', 'Staged', false);
+    const { record } = await importAsset(dir, sourceFile('Lora.woff2', readFileSync(LORA)), []);
+    state.assets.assets[record.id] = record;
+    mkdirSync(join(dir, 'src/lib'), { recursive: true });
+    writeFileSync(join(dir, 'src/lib/tokens.css'), `@font-face { font-family: 'Lora'; src: url('/assets/${fileName(record)}') format('woff2'); }`);
+    expect(await missingWebsiteAssets(dir, state)).toEqual([]);
+    unlinkSync(join(dir, record.file));
+    const found = await missingWebsiteAssets(dir, state);
+    expect(found).toEqual([{ asset: record, missing: { assetId: record.id, original: true, variants: [] }, used: true }]);
+    expect(missingAssetsStop(found).message).toBe(`${record.name} is missing its font file (${fileName(record)}) in the project folder, and the website uses it. Locate the file in Assets, then export again.`);
+    // Named nowhere, it lets the export pass with a note.
+    writeFileSync(join(dir, 'src/lib/tokens.css'), '');
+    expect(missingUnusedWarnings(await missingWebsiteAssets(dir, state))).toEqual([`${record.name} is missing its font file (${fileName(record)}) in the project folder. No page or code names it, so the website was exported without it.`]);
+  });
+
+  it('puts the very same file back, from Add fonts or Locate, under its recorded name and nothing else', async () => {
+    const dir = temp('project');
+    const original = readFileSync(LORA);
+    const { record } = await importAsset(dir, sourceFile('Lora.woff2', original), []);
+    unlinkSync(join(dir, record.file));
+    // Added again under another name, it is the record already there, and its file is back.
+    const again = await importAsset(dir, sourceFile('lora-renamed.woff2', original), [record]);
+    expect(again).toMatchObject({ record, existing: true, restored: true });
+    expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
+    // A healthy duplicate is only the record.
+    const twice = await importAsset(dir, sourceFile('lora-renamed.woff2', original), [record]);
+    expect(twice.existing).toBe(true);
+    expect(twice).not.toHaveProperty('restored');
+    // Located under any name, the same bytes go back; another face of the family, or an image, is refused.
+    unlinkSync(join(dir, record.file));
+    await expect(locateAssetFile(dir, record, sourceFile('Lora.woff2', readFileSync(LORA_ITALIC)))).rejects.toThrow(/^Lora\.woff2 can't be used because it is not the file of /);
+    await expect(locateAssetFile(dir, record, sourceFile('lora.png', await picture('png')))).rejects.toThrow(/^lora\.png can't be used because it is not a font/);
+    expect(existsSync(join(dir, record.file))).toBe(false);
+    expect(await locateAssetFile(dir, record, sourceFile('downloaded.woff2', original))).toEqual({ same: true, written: [record.file], failed: [] });
+    expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
+    // Nothing is written once the project may no longer be written to.
+    unlinkSync(join(dir, record.file));
+    const closed = async () => false;
+    await expect(importAsset(dir, sourceFile('lora.woff2', original), [record], closed)).rejects.toThrow(/was not restored because the project was closed/);
+    expect(existsSync(join(dir, record.file))).toBe(false);
+  });
+
+  it('in an open project, shows in Project health, comes back through Add fonts with its styles kept, and stops a website export', async () => {
+    const { c, dir } = await openProject();
+    const s = c.session!;
+    const added = await c.importAssets([sourceFile('Lora.woff2', readFileSync(LORA))], 'font');
+    expect(added.ok).toBe(true);
+    const id = added.assetIds[0];
+    const font = s.state.assets.assets[id];
+    expect((await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: "'Lora', system-ui, sans-serif" }] }, { label: 'Use font', source: 'user' })).ok).toBe(true);
+    expect(c.snapshot()!.assetUsage[id]).toBeGreaterThan(0);
+    unlinkSync(join(dir, font.file));
+    await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === id), 'the missing font to be noticed', 10_000);
+    expect(c.snapshot()!.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING' && d.owner?.id === id)).toMatchObject({ severity: 'error', message: expect.stringMatching(new RegExp(`^${font.name} is missing its font file`)) });
+    // A website export stops before the build, naming the face; an editable one goes ahead and says which face it lacks.
+    const site = await c.buildStaticTo(join(temp('dest'), 'site'));
+    expect(site).toMatchObject({ ok: false, assetId: id, message: `${font.name} is missing its font file (${fileName(font)}) in the project folder, and the website uses it. Locate the file in Assets, then export again.` });
+    const source = await c.exportSourceTo(join(temp('dest'), 'source'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings).toContainEqual(expect.stringMatching(new RegExp(`^${font.name} is missing its font file \\(${fileName(font).replace('.', '\\.')}\\)`)));
+    // Added again, the original goes back where the record says, with no change to the project.
+    const revision = s.revision;
+    const tokens = JSON.stringify(s.state.tokens);
+    const back = await c.importAssets([sourceFile('Lora-Variable.woff2', readFileSync(LORA))], 'font');
+    expect(back).toMatchObject({ ok: true, assetIds: [id], restoredAssetIds: [id] });
+    expect(readFileSync(join(dir, font.file)).equals(readFileSync(LORA))).toBe(true);
+    expect(s.revision).toBe(revision);
+    expect(s.state.assets.assets[id]).toEqual(font);
+    expect(JSON.stringify(s.state.tokens)).toBe(tokens);
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+    // Locate file does the same.
+    unlinkSync(join(dir, font.file));
+    await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === id), 'the missing font to be noticed again', 10_000);
+    expect(await c.locateAsset(id, sourceFile('somewhere.woff2', readFileSync(LORA)))).toEqual({ ok: true, message: `${font.name} is back in the project folder.` });
+    expect(s.revision).toBe(revision);
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+  }, 60_000);
 });
