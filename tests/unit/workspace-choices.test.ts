@@ -10,13 +10,15 @@ let flushes: Array<{ opening: string | undefined; resolve: (saved: boolean) => v
 let undos: Array<(r: ApplyResult) => void> = [];
 let undoFails: Array<(e: Error) => void> = [];
 const held = () => new Promise<ApplyResult>((resolve, reject) => (undos.push(resolve), undoFails.push(reject)));
+/** Each Undo and Redo the editor sent the project, in order. */
+const sent: string[] = [];
 const holdFlush = (opening: string | undefined) => new Promise<boolean>((resolve) => flushes.push({ opening, resolve }));
 const bridge = {
   project: {
     saveLocalState: async (state: LocalWorkspaceState, key: string) => void saved.push({ state, key }),
     flush: holdFlush as (opening: string | undefined) => Promise<boolean>,
-    undo: held,
-    redo: held,
+    undo: () => (sent.push('undo'), held()),
+    redo: () => (sent.push('redo'), held()),
     undoEntry: held
   },
   platform: 'darwin'
@@ -56,6 +58,7 @@ const notices = () => store.getState().toasts.map((t) => t.text);
 
 afterEach(() => {
   saved.length = 0;
+  sent.length = 0;
   flushes = [];
   undos = [];
   undoFails = [];
@@ -331,5 +334,82 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
     show('opening#a', 7, null);
     view().toasts[0].action!.run();
     expect(view().pageId).toBe('home');
+  });
+});
+
+describe('Undo or Redo held down (#1452)', () => {
+  const lands = async (r: ApplyResult = { ok: true, revision: 5 }) => {
+    undos.at(-1)!(r);
+    await tick();
+  };
+
+  it('sends one step at a time, and the presses made while it is on its way make one more step, not a backlog', async () => {
+    open('opening#a');
+    // A second of key repeat while each step takes longer than a press.
+    for (let i = 0; i < 28; i++) store.projectHistory('undo');
+    expect(sent).toEqual(['undo']);
+    await lands();
+    expect(sent).toEqual(['undo', 'undo']);
+    await lands();
+    // The key was let go: nothing more is undone.
+    expect(sent).toEqual(['undo', 'undo']);
+    // The next press goes at once.
+    store.projectHistory('undo');
+    expect(sent).toEqual(['undo', 'undo', 'undo']);
+    await lands();
+    expect(sent).toEqual(['undo', 'undo', 'undo']);
+  });
+
+  it('holds Redo back the same way, and an Undo and a Redo pressed while a step is on its way cancel out', async () => {
+    open('opening#a');
+    for (let i = 0; i < 40; i++) store.projectHistory('redo');
+    expect(sent).toEqual(['redo']);
+    await lands();
+    expect(sent).toEqual(['redo', 'redo']);
+    await lands();
+    expect(sent).toEqual(['redo', 'redo']);
+
+    // Undo, then Undo and Redo while it is on its way: one step back in all.
+    store.projectHistory('undo');
+    store.projectHistory('undo');
+    store.projectHistory('redo');
+    await lands();
+    expect(sent).toEqual(['redo', 'redo', 'undo']);
+
+    // Undo, then Redo while it is on its way: the Redo follows it.
+    store.projectHistory('undo');
+    store.projectHistory('redo');
+    await lands();
+    expect(sent).toEqual(['redo', 'redo', 'undo', 'undo', 'redo']);
+    await lands();
+    expect(sent).toEqual(['redo', 'redo', 'undo', 'undo', 'redo']);
+  });
+
+  it('lets the next press through after a step that was refused or could not be sent', async () => {
+    open('opening#a');
+    store.projectHistory('undo');
+    await lands({ ok: false, revision: 5, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } });
+    store.projectHistory('undo');
+    expect(sent).toEqual(['undo', 'undo']);
+    undoFails.at(-1)!(new Error("Error invoking remote method 'project:undo': Error: The project was closed."));
+    await tick();
+    store.projectHistory('redo');
+    expect(sent).toEqual(['undo', 'undo', 'redo']);
+    await lands();
+  });
+
+  it('never takes a step held back for one project in another, or once the project is being left', async () => {
+    open('opening#a');
+    store.projectHistory('undo');
+    store.projectHistory('undo');
+    open('opening#b');
+    await lands();
+    expect(sent).toEqual(['undo']);
+
+    store.projectHistory('undo');
+    store.projectHistory('undo');
+    store.setState({ leaving: true });
+    await lands();
+    expect(sent).toEqual(['undo', 'undo']);
   });
 });
