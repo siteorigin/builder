@@ -584,15 +584,25 @@ describe('reading footnotes (#1505)', () => {
     expect(text(source.posts[0].body)).toEqual(['Bring[1]:', 'Boots | Gloves', 'Footnotes', 'Waterproof.']);
   });
 
-  it('puts the footnotes where the post’s footnotes block is, never where its words only mention one', async () => {
+  it('puts the footnotes at the post’s end when it has a footnotes block, never for one its words or code only mention', async () => {
     const body = `<div title="<!-- wp:footnotes /-->"><p>Intro<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>.</p></div><pre>Code <!-- wp:footnotes /--> shown</pre><!-- wp:footnotes /--><p>After.</p>`;
     const source = await readWordPress(wxr([item(5, published, `<!-- wp:paragraph -->${body}`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
-    expect(text(source.posts[0].body)).toEqual(['Intro[1].', 'Code shown', 'Footnotes', 'A note.', 'After.']);
-    // A footnotes block inside a link or a list: the notes are a list of their own, never linked or numbered with it.
-    const inside = await readWordPress(wxr([item(8, published, `<!-- wp:paragraph --><p><a href="#contact">Reach us<!-- wp:footnotes /--></a></p><ol><li>One<!-- wp:footnotes /--></li></ol><p>Peaked<sup data-fn="fn-a"><a href="#fn-a">1</a></sup>.</p>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
+    expect(text(source.posts[0].body)).toEqual(['Intro[1].', 'Code shown', 'After.', 'Footnotes', 'A note.']);
+    // Only a real block shows them: a post that mentions one in code and never numbers its notes shows none.
+    const code = await readWordPress(wxr([item(10, published, `<!-- wp:paragraph --><pre><!-- wp:footnotes /--></pre>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
+    expect(text(code.posts[0].body)).toEqual([]);
+    // A footnotes block inside a link, a list, or before a list: the notes are a list of their own, never linked or
+    // numbered with another, as the entry keeps them.
+    const inside = await readWordPress(
+      wxr([item(8, published, `<!-- wp:paragraph --><p><a href="#contact">Reach us<!-- wp:footnotes /--></a></p><ol><li>One<!-- wp:footnotes /--></li></ol><p>Peaked<sup data-fn="fn-a"><a href="#fn-a">1</a></sup>.</p><!-- wp:footnotes /--><ol><li>Two</li></ol>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]),
+      {}
+    );
     const [post] = inside.posts;
-    expect(text(post.body)).toEqual(['Reach us', 'Footnotes', 'A note.', 'One', 'Peaked[1].']);
-    expect(JSON.stringify(post.body.slice(1, 3))).not.toContain('link');
+    expect(text(post.body)).toEqual(['Reach us', 'One', 'Peaked[1].', 'Two', 'Footnotes', 'A note.']);
+    expect(JSON.stringify(post.body.slice(4))).not.toContain('link');
+    const { after } = commit(site(), inside);
+    const [entry] = Object.values(after.collections.posts.entries);
+    expect(text(entry.body).slice(-3)).toEqual(['Two', 'Footnotes', 'A note.']);
   });
 
   it('keeps one item per footnote, whatever a note holds, so each number still names its note', async () => {

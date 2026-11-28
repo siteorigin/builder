@@ -60,8 +60,8 @@ export interface ReadHtmlOptions {
   /** WordPress shortcodes: [caption] becomes a captioned picture, [embed] a link, and the rest are removed. */
   shortcodes?: boolean;
   /**
-   * A WordPress post: its footnotes (from its meta) are shown where its footnotes block is, or at its end when it numbers
-   * them and has none, and links to places the post itself names lose their address, since an entry's text has none.
+   * A WordPress post: its footnotes (from its meta) are shown at its end when it has a footnotes block or numbers them,
+   * and links to places the post itself names lose their address, since an entry's text has none.
    */
   wordpress?: { footnotes: Footnote[] };
 }
@@ -290,12 +290,8 @@ function parseHtml(html: string, report: HtmlReport, scan?: PostScan, post = fal
     if (html.startsWith('<!--', i)) {
       const end = html.indexOf('-->', i + 4);
       // Where WordPress shows the post's footnotes: never in code the post shows as text.
-      // Where WordPress shows the post's footnotes: never in code the post shows as text. At the top of the tree, so
-      // no link, list or picture around the comment takes the notes in.
-      if (post && scan && !scan.block && !dropping && end >= 0 && /^\s*wp:footnotes\b/.test(html.slice(i + 4, Math.min(end, i + 64))) && !stack.some((e) => e.tag === 'pre' || e.tag === 'code')) {
-        scan.block = true;
-        root.children.push({ tag: FOOTNOTES, attrs: {}, children: [] });
-      }
+      // The post shows its footnotes: a footnotes block, never one in code the post shows as text.
+      if (post && scan && !dropping && end >= 0 && /^\s*wp:footnotes\b/.test(html.slice(i + 4, Math.min(end, i + 64))) && !stack.some((e) => e.tag === 'pre' || e.tag === 'code')) scan.block = true;
       i = end < 0 ? n : end + 3;
       continue;
     }
@@ -413,9 +409,8 @@ function parseHtml(html: string, report: HtmlReport, scan?: PostScan, post = fal
   return root.children;
 }
 
-/** The place in the tree where a WordPress post's footnotes go, and where their list ends. */
+/** Where a WordPress post's footnotes go in its tree: at its end. */
 const FOOTNOTES = '#footnotes';
-const NOTES_END = '#footnotes-end';
 
 function noteEmbed(report: HtmlReport, src: string) {
   if (report.embeds.length < 20) report.embeds.push(/^https?:\/\//i.test(src) ? src.slice(0, 300) : '');
@@ -529,7 +524,7 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
         const words = inlineOnly(convert(note, opts, report, false, places));
         return { tag: 'li', children: richTextToPlain(blocksFromDom(words, {}).blocks).trim() ? words : ['—'] };
       });
-      out.push({ tag: 'ol', children: items }, { tag: NOTES_END, children: [] });
+      out.push({ tag: 'ol', children: items });
       places.notes = null;
     } else if (tag === 'img') {
       const key = opts.image({ src: node.attrs.src ?? '', alt: oneLine(node.attrs.alt ?? '') });
@@ -591,28 +586,24 @@ export function htmlToRichText(html: string, opts: ReadHtmlOptions, report: Html
   const parsed = parseHtml(text, report, scan, true);
   const places = opts.wordpress && scan ? postPlaces(parsed, opts.wordpress.footnotes, report, scan, opts) : undefined;
   const tree = convert(parsed, opts, report, false, places);
-  // What follows the footnotes is read on its own, so a list just after them never joins theirs.
-  const end = tree.findIndex((n) => typeof n !== 'string' && n.tag === NOTES_END);
-  const parts = end < 0 ? [tree] : [tree.slice(0, end), tree.slice(end + 1)];
-  const out: RichText = [];
-  for (const part of parts) {
-    const { blocks, droppedLinks } = blocksFromDom(part, {}, { link: opts.link });
-    report.droppedLinks += droppedLinks;
-    out.push(...blocks);
-  }
-  return out;
+  const { blocks, droppedLinks } = blocksFromDom(tree, {}, { link: opts.link });
+  report.droppedLinks += droppedLinks;
+  return blocks;
 }
 
 /**
- * What a WordPress post's text names, read from its tree: the footnotes it shows (put at its end when it numbers some
- * and has no footnotes block), the IDs its numbers and elements carry, and what its report says of them.
+ * What a WordPress post's text names: the footnotes it shows (at its end, when it has a footnotes block or numbers
+ * some), the IDs its numbers and elements carry, and what its report says of them.
  */
 function postPlaces(tree: HNode[], footnotes: Footnote[], report: HtmlReport, scan: PostScan, opts: ReadHtmlOptions): PostPlaces {
   const known = new Set(footnotes.map((f) => f.id));
   const shown = footnotes.length > 0 && (scan.block || footnotes.some((f) => scan.numbered.has(f.id)));
-  // Notes the post doesn't show are never read: nothing of theirs reaches it.
+  // Notes the post doesn't show are never read: nothing of theirs reaches it. Each is an item of the post's text.
+  if (shown && (scan.nodes += footnotes.length) > MAX_NODES) throw new Error('it is too long to read.');
   const notes = shown ? footnotes.map((f) => parseHtml(opts.shortcodes ? readShortcodes(f.content, report) : f.content, report, scan)) : null;
-  if (shown && !scan.block) tree.push({ tag: FOOTNOTES, attrs: {}, children: [] });
+  // At the post's end, where WordPress puts its footnotes block: nothing after them, so no list there can join theirs
+  // (entries keep lists side by side as one) and no block moves past them.
+  if (shown) tree.push({ tag: FOOTNOTES, attrs: {}, children: [] });
   report.footnotes = shown ? footnotes.length : 0;
   report.lostFootnotes = [...scan.numbered].filter((id) => !known.has(id)).length;
   return { notes, noteIds: new Set([...known, ...scan.numbered]), ids: scan.ids };
