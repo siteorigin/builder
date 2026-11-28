@@ -122,15 +122,41 @@ const selRange = () => {
   return sel?.rangeCount ? sel.getRangeAt(0) : null;
 };
 
-/** Whether the caret, or any of the selection, is in a link of the text. */
+/** Whether Remove link has a link to take off: the one holding the caret, or one with some of the chosen text in it. */
 function linkAtCaret(root: HTMLElement): boolean {
+  const range = selRange();
+  if (!range) return false;
+  if (range.collapsed) return !!heldLink(root, range);
+  // A selection that only reaches a link's edge holds none of it, and unlinks nothing.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (coveredText(range, t) && t.parentElement?.closest('a[href]')) return true;
+  return false;
+}
+
+/**
+ * Remove link, from the toolbar: chosen words are unlinked as they are. The browser leaves a link alone around a bare
+ * caret, so the link holding it comes off all its words, as in Edit link, and the caret stays where it was.
+ */
+function unlinkSelection(root: HTMLElement): void {
   const sel = document.getSelection();
-  if (!sel?.rangeCount) return false;
-  const at = (n: Node | null) => (n instanceof Element ? n : n?.parentElement)?.closest('a[href]');
-  const a = at(sel.anchorNode) ?? at(sel.focusNode);
-  if (a && root.contains(a)) return true;
-  const range = sel.getRangeAt(0);
-  return !range.collapsed && [...root.querySelectorAll('a[href]')].some((x) => range.intersectsNode(x));
+  const range = selRange();
+  if (!sel || !range?.collapsed) return void document.execCommand('unlink');
+  const a = heldLink(root, range);
+  if (!a) return;
+  const { startContainer: at, startOffset: offset } = range;
+  // A caret in the link element itself is between two of its children, which move out of it.
+  const next = at === a ? a.childNodes[offset] : undefined;
+  const last = a.lastChild;
+  sel.selectAllChildren(a);
+  document.execCommand('unlink');
+  const back = document.createRange();
+  if (next && root.contains(next)) back.setStartBefore(next);
+  else if (at === a && last && root.contains(last)) back.setStartAfter(last);
+  else if (at !== a && root.contains(at)) back.setStart(at, offset);
+  else return;
+  back.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(back);
 }
 
 /**
@@ -1074,9 +1100,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     { id: 'ul', label: 'Bulleted list', icon: <List />, on: pressed.block === 'ul', run: () => list('ul'), gap: true },
     { id: 'ol', label: 'Numbered list', icon: <ListOrdered />, on: pressed.block === 'ol', run: () => list('ol') },
     { id: 'check', label: 'Check list', icon: <ListChecks />, on: pressed.block === 'check', run: () => list('check') },
-    // Edit only when the Link command will edit (see heldLink); Remove link takes any link the selection touches.
+    // Edit only when the Link command will edit (see heldLink); Remove link takes any link holding chosen text.
     { id: 'link', label: pressed.held ? 'Edit link' : 'Link', keys: '⌘K', icon: <Link />, on: pressed.link, run: openLink, gap: true },
-    { id: 'unlink', label: 'Remove link', icon: <Unlink />, off: !pressed.link, run: () => command(() => document.execCommand('unlink')) },
+    { id: 'unlink', label: 'Remove link', icon: <Unlink />, off: !pressed.link, run: () => command(() => unlinkSelection(root.current!)) },
     { id: 'image', label: pressed.figure ? 'Edit picture' : 'Picture', icon: <ImagePlus />, run: () => openImage(null), gap: true },
     { id: 'undo', label: 'Undo', keys: '⌘Z', icon: <Undo2 />, off: !canUndo, run: () => void history('undo'), gap: true },
     { id: 'redo', label: 'Redo', keys: '⇧⌘Z', icon: <Redo2 />, off: !canRedo, run: () => void history('redo') }
