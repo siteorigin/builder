@@ -70,6 +70,15 @@
   .overlay-layer.paged .ov-add-at:not(:focus-within) > *, .overlay-layer.paged .ov-space-group:not(:focus-within), .overlay-layer.paged:not(:has(.ov-space-group:focus-within)) .ov-space-band { opacity: 0; }
   .overlay-layer.paged .ov-add-at:not(:focus-within) > *, .overlay-layer.paged .ov-space-group:not(:focus-within) * { pointer-events: none; }
   .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
+  /* Forced colours remove box-shadows, so the marks are drawn as outlines in system colours: the selection a solid
+     SelectedItem ring (double while text is edited, dashed while dimmed or moved, as above; kept while the page scrolls,
+     as the page's own ring is a shadow too), hover a thin CanvasText one. */
+  @media (forced-colors: active) {
+    .ov-hover { outline: 2px solid CanvasText; outline-offset: -2px; }
+    .ov-selected { outline: 3px solid SelectedItem; outline-offset: -3px; }
+    .ov-selected.editing { outline-style: double; outline-width: 4px; outline-offset: -4px; }
+    .ov-selected.dim, .ov-selected.moving { outline-style: dashed; outline-color: SelectedItem; }
+  }
   /* Spacing handles. One colour, the selection's (green on a shared header or footer), with the kind told by shape:
      padding a solid bar inside the box, margin a hollow bar outside it, a gap two parallel lines, a column divider an
      ink grip with two dots, a max width an I-beam on the box's edge. Each sits between white and ink keylines so it
@@ -429,6 +438,8 @@
   /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
   .canvas-notice.issue .issue-text strong { display: inline-block; }
   .canvas-notice.issue .issue-safe { white-space: nowrap; }
+  /* What went wrong, on a line of its own under the words: two lines at most, the whole of it on hover. */
+  .canvas-notice.issue .issue-detail { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; margin-top: 2px; color: var(--text-2); font-size: 12px; text-wrap: pretty; }
   .canvas-notice.issue .canvas-notice-icon { color: var(--red); }
   /* Reloading is progress, not a fresh failure. */
   .canvas-notice.issue.retrying { background: var(--raised); border-color: var(--border-strong); }

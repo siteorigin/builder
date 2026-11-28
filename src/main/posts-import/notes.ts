@@ -39,6 +39,9 @@ export function reportNotes(r: HtmlReport): string[] {
     out.push(`Left out ${what}: the export does not include ${missing === 1 ? 'it' : 'them'}. Export All content to bring pictures’ details along.`);
   }
   if (r.galleryOverflow) out.push(`Left out ${count(r.galleryOverflow, 'gallery picture', 'gallery pictures')} past the first ${MAX_POST_GALLERY_PICTURES}: a post brings at most ${MAX_POST_GALLERY_PICTURES} from its galleries.`);
+  if (r.footnotes) out.push(r.footnotes === 1 ? 'Its footnote is under a Footnotes heading, and its number no longer links to it.' : `Its ${r.footnotes} footnotes are a numbered list under a Footnotes heading, and their numbers no longer link to them.`);
+  if (r.lostFootnotes) out.push(r.lostFootnotes === 1 ? 'The text of its footnote was not in the export: its number is left without a note.' : `The text of ${r.lostFootnotes} of its footnotes was not in the export: their numbers are left without notes.`);
+  if (r.inPostLinks) out.push(`${r.inPostLinks === 1 ? 'A link to a place in the post itself (a note number, say) is plain words now' : `${r.inPostLinks} links to places in the post itself (its note numbers, say) are plain words now`}: an imported post can’t link within itself.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }

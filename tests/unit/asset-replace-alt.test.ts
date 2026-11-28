@@ -243,3 +243,40 @@ describe('replacing a library image everywhere in the editor', () => {
     expect({ one: standalone(session.state), rows: gallery(session.state) }).toEqual(after);
   });
 });
+
+/** Issue #1385: Locate file with a different picture gives the image a new file, and its descriptions are checked. */
+describe('giving an image a different file', () => {
+  const relink: EditOperation = { type: 'asset.relink', assetId: 'a_kitchen', file: 'static/assets/mussels-9f8e7d6c.png', mime: 'image/png', bytes: 20, hash: 'hash-mussels', width: 900, height: 600 };
+
+  it('keeps every description, lists each one carried over (or missing) to check, and drops the old suggestion', () => {
+    const { state, owner, imageId, galleryId, definitionId, standalone, gallery } = lookbook();
+    const r = applyOperations(state, [relink]);
+    // Nothing a use says is rewritten: the author decides what fits the new picture.
+    expect(standalone(r.state)).toEqual(standalone(state));
+    expect(gallery(r.state)).toEqual(gallery(state));
+    // The suggestion described the old picture, so a new use no longer starts with it.
+    expect(r.state.assets.assets.a_kitchen.altSuggestion).toBeUndefined();
+    expect(r.state.assets.assets.a_kitchen).toMatchObject({ file: 'static/assets/mussels-9f8e7d6c.png', hash: 'hash-mussels' });
+    expect(r.results[0].altReview).toEqual([
+      { owner, nodeId: imageId, path: ['image'], reason: 'custom', alt: KITCHEN },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g1', 'image'], reason: 'custom', alt: KITCHEN },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g2', 'image'], reason: 'custom', alt: 'Our kitchen after the refit' },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g4', 'image'], reason: 'custom', alt: `  ${KITCHEN} ` },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g5', 'image'], reason: 'missing', alt: '' },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g6', 'image'], reason: 'custom', alt: PORTRAIT },
+      { definitionId, path: ['images', 'fields', 'image', 'default'], reason: 'custom', alt: 'Our kitchen' },
+      { definitionId, path: ['images', 'default', 'd1', 'image'], reason: 'custom', alt: KITCHEN }
+    ]);
+    // Listed against the image itself, which keeps its ID; an edited description drops out, and undone there is none.
+    const review = r.results[0].altReview as AltReview[];
+    expect(altChecks(r.state, 'a_kitchen', review)).toHaveLength(8);
+    const fixed = applyOperations(r.state, [{ type: 'node.setContent', owner, nodeId: imageId, field: 'image', value: { assetId: 'a_kitchen', alt: 'Mussels on a rock' } }]).state;
+    expect(altChecks(fixed, 'a_kitchen', review)).toHaveLength(7);
+  });
+
+  it('lists nothing for an image nothing shows', () => {
+    const { state } = lookbook();
+    const unused = applyOperations(state, [{ ...relink, assetId: 'a_plain' } as EditOperation]);
+    expect(unused.results[0].altReview).toEqual([]);
+  });
+});

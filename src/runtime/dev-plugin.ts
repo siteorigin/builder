@@ -84,7 +84,12 @@ try {
 	const { default: Preview } = await import(${JSON.stringify(url(PREVIEW_MODULE))});
 	mount(Preview, { target: document.body });
 	flushSync();
-	preview.mounted = true;
+	// A code component that throws shows its note in its place (renderErrorBoundary), a moment after the throw: the
+	// preview did not get on the page then, as when the throw reached here.
+	await new Promise((resolve) => setTimeout(resolve));
+	const failed = document.querySelector('[data-so-render-error]');
+	if (failed) preview.error = (failed.getAttribute('data-so-render-error') || 'Something went wrong.').slice(0, 2000);
+	else preview.mounted = true;
 } catch (e) {
 	preview.error = String((e && e.message) || e).slice(0, 2000);
 }
@@ -93,7 +98,35 @@ await import('virtual:siteorigin-bridge');
 `;
 }
 
-type Middleware = (req: { url?: string; method?: string }, res: { statusCode: number; setHeader(k: string, v: string): unknown; end(body?: string): unknown }, next: (e?: unknown) => void) => void;
+/** SvelteKit's generated client app (its hooks among the rest), from the project's folder, as Vite names it. */
+const KIT_CLIENT_APP = /^\.svelte-kit\/generated\/(?:(?:dev|build)\/)?client(?:-optimized)?\/app\.js$/;
+
+/**
+ * The preview's client hook for errors, added to SvelteKit's generated client app: whatever the site's own hook
+ * returns (or SvelteKit's default), an error thrown while the page rendered in the browser also keeps its own
+ * message, as `soRenderError`, which SvelteKit otherwise replaces with "Internal Error" before any boundary sees it.
+ * A code placement's note shows it and the bridge reports it (#1526). The server's half is the generated server
+ * hook's `handleError` (see generateServerHook).
+ */
+export function withRenderErrors(code: string): string {
+  return `${code}
+// SiteOrigin Builder's preview: an error thrown while the page rendered keeps its own message for the editor to say.
+{
+	const own = hooks.handleError;
+	const keep = (input, body) => {
+		if (input.kind !== 'unknown') return body;
+		const e = input.error;
+		return { ...(body && typeof body === 'object' ? body : {}), soRenderError: String((e && e.message) || e).slice(0, 2000) };
+	};
+	hooks.handleError = (input) => {
+		const body = own(input);
+		return body && typeof body.then === 'function' ? body.then((b) => keep(input, b)) : keep(input, body);
+	};
+}
+`;
+}
+
+type Middleware =(req: { url?: string; method?: string }, res: { statusCode: number; setHeader(k: string, v: string): unknown; end(body?: string): unknown }, next: (e?: unknown) => void) => void;
 /** What the plugin uses of a Vite module graph: modules by ID, and dropping one's transformed code. */
 type ModuleGraph = { idToModuleMap?: Map<string, object>; invalidateModule(mod: object): void };
 /** Vite's own resolution, from a plugin's resolveId. */
@@ -278,6 +311,17 @@ export function devPlugin(dir: string) {
       }
       if (!from.rel.startsWith('src/')) return null;
       return resolve.call(this, id, viteId(join(dir, ...from.rel.split('/'))), { ...options, skipSelf: true });
+    },
+    transform(code: string, id: string) {
+      const file = id.split('?')[0];
+      // Only the project's own: a file of the same name anywhere else (in src/, or another folder) is left as it is.
+      const own = names.some((name) => {
+        const root = viteId(name).replace(/\/+$/, '') + '/';
+        const inside = process.platform === 'win32' ? file.toLowerCase().startsWith(root.toLowerCase()) : file.startsWith(root);
+        return inside && KIT_CLIENT_APP.test(file.slice(root.length));
+      });
+      if (!own || !/\bexport const hooks\b/.test(code)) return null;
+      return { code: withRenderErrors(code), map: null };
     },
     load(id: string) {
       if (id === '\0' + VIRTUAL + '.js') return bridgeSource;
