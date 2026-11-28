@@ -8,7 +8,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runSync } from '../../src/main/sources/run';
-import { ADAPTERS, wordpressView } from '../../src/main/sources/adapters';
+import { ADAPTERS } from '../../src/main/sources/adapters';
 import { contentfulRichText, markdownRichText, type LinkRead } from '../../src/main/sources/richtext';
 import type { SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import { graphqlReadProblem, sourceDocProblem, sourceSecretNames } from '@shared/sources';
@@ -475,8 +475,15 @@ describe('Sanity, Strapi and WordPress sources', () => {
       ['2026-11-25', '2026-11-25'],
       ['2026-11-20', undefined]
     ]);
-    // The view keeps what WordPress sent under its own names, so a mapping can choose the GMT time and the sample shows both.
-    expect(wordpressView(posts[0])).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
+    // The sample shows what WordPress sent under its own names, so a mapping can choose the GMT time instead.
+    const sample = await run({ adapter: 'wordpress', config: { url: api.origin }, mode: 'sample' });
+    expect(sample.ok && sample.raw?.[0]).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
+    const gmt = await run({ adapter: 'wordpress', config: { url: api.origin }, mapping: { publishedAt: 'date_gmt', updatedAt: 'modified_gmt' } });
+    expect(gmt.ok && gmt.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-24', '2026-11-25'],
+      ['2026-11-26', '2026-11-26'],
+      ['2026-11-20', undefined]
+    ]);
   });
 
   it('WordPress: a post’s relative links go where they went on its own page (#1426)', async () => {
