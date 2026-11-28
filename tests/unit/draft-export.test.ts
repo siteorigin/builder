@@ -56,6 +56,7 @@ const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { editedGeneratedFile } = await import('../../src/main/export');
 const { applyOperations } = await import('@engine/apply');
+const { findTheme, listThemes, registerPacks } = await import('@catalogue/index');
 const { setSiteIconRenderer, siteIconTiming, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
 const { renderSiteIcons } = await import('../../src/main/project/image-variants');
 const { sha } = await import('../../src/main/project/fsutil');
@@ -166,6 +167,27 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.recentExports[0].notes).toEqual([]);
     const zip = await c.exportSourceTo(join(temp('out'), 'handoff.zip'), 'zip');
     expect(zip).toMatchObject({ ok: true, message: 'Source project exported as a ZIP file. Private files such as .env, keys and credentials were left out.', warnings: [], notes: [] });
+  });
+
+  it('#1477: the editable project’s export names the installed theme whoever edits it needs', async () => {
+    const packs = listThemes();
+    registerPacks([...packs.filter((p) => p.id !== 'foundation-alt'), { ...findTheme('foundation-alt')!, name: 'Harbour', version: '1.2.0', source: 'user', digest: 'd1' }]);
+    try {
+      const dir = temp('project');
+      await (await ProjectSession.create(dir, applyOperations(cleanSite(), [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state)).close();
+      const c = await open(dir);
+      const note = 'This project uses the installed theme Harbour (foundation-alt) 1.2.0. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of 1.2.0 or a newer release, or the project opens read-only: send them the theme pack with it. The project’s README says the same.';
+      const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
+      expect(r.ok).toBe(true);
+      expect(r.warnings).toContain(note);
+      expect(c.snapshot()!.recentExports[0].notes?.map((n) => n.message)).toContain(note);
+      expect(readFileSync(join(r.path!, 'README.md'), 'utf8')).toContain('This project uses the installed theme Harbour (`foundation-alt`) 1.2.0,');
+      // The website needs no theme to be published: its export says nothing of it.
+      const site = await c.buildStaticTo(join(temp('out'), 'site'));
+      expect(site.warnings.join('\n')).not.toContain('Harbour');
+    } finally {
+      registerPacks(packs);
+    }
   });
 
   it('#1550: names a published page with nothing on it in the notes of both exports', async () => {

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
+import { findTheme, installedThemeRequirement, listThemes, registerPacks } from '@catalogue/index';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { defFile, generateProject, publishedState, RUNTIME_DIR } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
@@ -900,6 +901,45 @@ describe('source export helpers', () => {
     await finishExportedSource(dest, createStarterState('blank', 'New', false), join(dest, 'missing.md'));
     expect(readFileSync(join(dest, 'README.md'), 'utf8')).toBe(own);
     expect(existsSync(join(dest, 'NOTICE.md'))).toBe(false);
+  });
+
+  it('#1477: says in the README which installed theme the project needs to be edited, and still knows the README as its own', async () => {
+    const packs = listThemes();
+    // An installed copy of the development fixture under another name and release.
+    const harbour = { ...findTheme('foundation-alt')!, name: 'Harbour', version: '1.2.0', source: 'user' as const, digest: 'd1' };
+    registerPacks([...packs.filter((p) => p.id !== 'foundation-alt'), harbour]);
+    try {
+      const state = applyOperations(createStarterState('blank', 'Harbour Site', false), [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+      expect(installedThemeRequirement(state)).toEqual({ id: 'foundation-alt', name: 'Harbour', version: '1.2.0' });
+      const dest = temp();
+      await finishExportedSource(dest, state, join(dest, 'missing.md'));
+      const readme = readFileSync(join(dest, 'README.md'), 'utf8');
+      expect(readme).toContain('## Editing in SiteOrigin Builder\n\nThis project uses the installed theme Harbour (`foundation-alt`) 1.2.0, which does not come with SiteOrigin Builder.');
+      expect(readme).toContain('the same copy of 1.2.0 the project was made with, or a newer release.');
+      expect(readme).toContain('Without it, SiteOrigin Builder opens the project read-only.');
+      expect(readme.indexOf('## Editing in SiteOrigin Builder')).toBeLessThan(readme.indexOf('## Notices'));
+      expect(isGeneratedReadme(readme)).toBe(true);
+      // The release the lock records, not the installed copy's: a newer copy installed since still opens it.
+      const locked = { ...state, themeLock: { ...state.themeLock, theme: { ...state.themeLock.theme, version: '1.1.0' } } };
+      expect(installedThemeRequirement(locked)?.version).toBe('1.1.0');
+      // A later export rewrites it for the release then recorded, and after a switch back to a built-in theme, without it.
+      await finishExportedSource(dest, locked, join(dest, 'missing.md'));
+      expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('Harbour (`foundation-alt`) 1.1.0,');
+      const builtIn = applyOperations(state, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
+      expect(installedThemeRequirement(builtIn)).toBeNull();
+      await finishExportedSource(dest, builtIn, join(dest, 'missing.md'));
+      expect(readFileSync(join(dest, 'README.md'), 'utf8')).not.toContain('## Editing in SiteOrigin Builder');
+      // An owner's change to the section makes the README theirs.
+      expect(isGeneratedReadme(readme.replace('Ask whoever sent you the project for the theme pack.', 'The pack is in our shared drive.'))).toBe(false);
+      expect(isGeneratedReadme(readme.replace('1.2.0, which', '1.3.0, which'))).toBe(false);
+    } finally {
+      registerPacks(packs);
+    }
+  });
+
+  it('#1477: a built-in theme needs nothing installed', () => {
+    expect(installedThemeRequirement(createStarterState('blank', 'Plain', false))).toBeNull();
+    expect(projectReadme('Plain')).not.toContain('## Editing in SiteOrigin Builder');
   });
 
   it('tells whoever receives the project how to serve its not-found page and what its folders hold', () => {
