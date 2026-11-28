@@ -69,3 +69,38 @@ describe('column layouts in Insert (#514)', () => {
     expect(new Set(BASICS.map((b) => b.id)).size).toBe(BASICS.length);
   });
 });
+
+describe('word forms in Insert (#1360)', () => {
+  const names = (q: string) => searchItems(offered(), q).map((it) => it.name);
+  const pricing = ['Pricing', 'Pricing with billing switch', 'Pricing comparison'];
+
+  it('finds every pricing section by price, prices or pricing, ahead of what only mentions a price', () => {
+    for (const q of ['price', 'prices', 'pricing', 'Prices']) expect(names(q).slice(0, 3), q).toEqual(pricing);
+    expect(names('price')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+    expect(names('prices')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+  });
+
+  it('matches another form only as a whole word, and only for the words listed', () => {
+    const items = ['Repricing notes', 'Sitemap'].map((name) => ({ name, hay: `${name} location_x relocation`.toLowerCase() }));
+    expect(searchItems(items, 'prices')).toEqual([]);
+    expect(searchItems(items, 'map').map((it) => it.name)).toEqual(['Sitemap']);
+    expect(searchItems(items, 'constructor')).toEqual([]);
+    // General plurals are not stripped: Contact details says "There is no form".
+    expect(names('forms')).not.toContain('Contact details');
+  });
+
+  it('still needs every word, so a second word narrows what price finds', () => {
+    expect(names('price list')).toEqual(expect.arrayContaining(['Data table', 'Downloads']));
+    expect(names('price list')).not.toContain('Pricing');
+    expect(names('prices billing')).toEqual(['Pricing with billing switch']);
+  });
+
+  it('ranks a name as typed ahead of another form, and a name starting with the form ahead of one only holding it', () => {
+    const items = ['Our pricing', 'Pricing', 'Price card'].map((name) => ({ name, hay: name.toLowerCase() }));
+    expect(searchItems(items, 'price').map((it) => it.name)).toEqual(['Price card', 'Pricing', 'Our pricing']);
+  });
+
+  it('finds the contact details by map', () => {
+    expect(names('map')).toEqual(['Contact details']);
+  });
+});

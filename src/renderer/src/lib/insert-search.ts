@@ -85,8 +85,25 @@ export function projectInsertDefinitions(state: ProjectState, developerMode: boo
 }
 
 /**
- * Search: every word must match; exact names first, then names that start with the query, then names that contain
- * every word, then description and tag matches. Ties keep the panel's own order. Nothing for an empty query.
+ * Other words a typed word also finds, each only as a whole word: a pricing section says "pricing" where its visitor
+ * types "price", and a shop's "map" is under its location. A short list on purpose: stripping any plural or ending
+ * would bring in strays ("forms" would find "There is no form").
+ */
+const WORD_FORMS = new Map([
+  ['price', ['pricing']],
+  ['prices', ['price', 'pricing']],
+  ['map', ['location']]
+]);
+
+const hasWord = (text: string, word: string) => new RegExp(`\\b${word}\\b`).test(text);
+
+/** Whether a typed word is in the text: as typed, anywhere in it, or as one of its other forms. */
+const finds = (text: string, word: string) => text.includes(word) || (WORD_FORMS.get(word)?.some((form) => hasWord(text, form)) ?? false);
+
+/**
+ * Search: every word must match, as typed or as another of its forms (WORD_FORMS). Exact names first, then names that
+ * start with the query, then names that contain every word as typed; then the same by another form, names that start
+ * with one first; then description and tag matches. Ties keep the panel's own order. Nothing for an empty query.
  * `shown` is the name an item shows (a section in Variants adds its option's name); its own name ranks it too.
  */
 export function searchItems<T extends { name: string; hay: string }>(items: T[], q: string, shown: (it: T) => string = (it) => it.name): T[] {
@@ -96,10 +113,14 @@ export function searchItems<T extends { name: string; hay: string }>(items: T[],
   const rank = (it: T) => {
     const n = it.name.toLowerCase();
     const full = shown(it).toLowerCase();
-    return n === query || full === query ? 0 : n.startsWith(query) || full.startsWith(query) ? 1 : words.every((w) => full.includes(w)) ? 2 : 3;
+    if (n === query || full === query) return 0;
+    if (n.startsWith(query) || full.startsWith(query)) return 1;
+    if (words.every((w) => full.includes(w))) return 2;
+    if (!words.every((w) => finds(full, w))) return 5;
+    return WORD_FORMS.get(words[0])?.some((form) => full.split(/\s+/)[0] === form) ? 3 : 4;
   };
   return items
-    .filter((it) => words.every((w) => it.hay.includes(w)))
+    .filter((it) => words.every((w) => finds(it.hay, w)))
     .map((it, i) => ({ it, r: rank(it), i }))
     .sort((a, b) => a.r - b.r || a.i - b.i)
     .map((x) => x.it);
