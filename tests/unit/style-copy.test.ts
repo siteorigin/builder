@@ -11,7 +11,7 @@ import { P, item, prop } from '@catalogue/dsl';
 import { projectDesign } from './fixtures/packs';
 import { generateSiteCss, overrideClass } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
-import { captureStyle, planStylePaste, styleSelection, type StyleCopy } from '../../src/renderer/src/lib/style-copy';
+import { PLACEMENT_PROPS, captureStyle, pasteRowKey, planStylePaste, styleSelection, type StyleCopy } from '../../src/renderer/src/lib/style-copy';
 
 const fresh = () => createStarterState('business', 'Test Studio', true);
 const homeId = (s: ProjectState) => s.site.homePageId;
@@ -215,6 +215,16 @@ describe('paste style', () => {
       const after = grid(applyOperations(s, plan.operations).state);
       expect(after.overrides?.card).toBeUndefined();
       expect(after.itemOverrides?.card.items).toEqual({ [items[0].id]: { base: { background: '#FDE68A', radius: '28px' } } });
+    });
+
+    it('leaves out the rows the caller names, keeping them listed', () => {
+      const { s, card, copy } = setup();
+      const full = planStylePaste(s, copy, card(0), 'every', () => 'item');
+      const left = planStylePaste(s, copy, card(0), 'every', () => 'item', new Set([pasteRowKey({ part: full.rows[0].part, property: 'radius' })]));
+      expect(left.rows.map((r) => r.property)).toEqual(full.rows.map((r) => r.property));
+      expect(left.rows.find((r) => r.property === 'radius')).toMatchObject({ status: 'change', left: true });
+      expect(left.operations).toEqual(full.operations.filter((o) => o.type === 'node.setStyle' && o.property !== 'radius'));
+      expect(PLACEMENT_PROPS).toEqual(['columnStart', 'columnSpan', 'rowSpan', 'order']);
     });
 
     it('writes the style every card shares when Apply to is All cards, and names the cards that keep their own', () => {

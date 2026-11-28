@@ -9,7 +9,7 @@ import { ChoiceField, Modal, type MenuItem } from '../components/ui';
 import { ColorChip } from '../components/ColorPick';
 import { BlockedNote, useProjectBlock } from '../components/BlockedNote';
 import { commitOps, dismissToast, getState, setState, toast, undoAction, useStore, type State } from '../store';
-import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeLabel, changeSize, planStylePaste, styleSelection, type PasteRow, type PasteScope, type RepeatReach } from '../lib/style-copy';
+import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeLabel, changeSize, pasteRowKey, planStylePaste, PLACEMENT_PROPS, styleSelection, type PasteRow, type PasteScope, type RepeatReach } from '../lib/style-copy';
 import { chosenReach } from '../lib/item-reach';
 import { CONTAINER_SCOPES, isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
 import { allSizesReach } from '../lib/style-source';
@@ -164,6 +164,9 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const stored = useStore((s) => s.styleCopy);
   const [scope, setScope] = useState<PasteScope>('every');
   const [busy, setBusy] = useState(false);
+  // Each change can be left out: the user's choice here, else placement in the parent starts left out.
+  const [chosen, setChosen] = useState<Record<string, boolean>>({});
+  const toggle = (r: PasteRow) => setChosen((c) => ({ ...c, [pasteRowKey(r)]: !!r.left }));
   // Not pasted folds away under its count while there are changes to read; it is the whole answer when there are none.
   const [skippedOpen, setSkippedOpen] = useState<boolean | null>(null);
   const summaryId = useId();
@@ -181,7 +184,12 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const copy = current && stored?.opening === opening ? stored : null;
   const state = current ? snap.state : undefined;
   // A card picked on the page goes where its Apply to says, as the inspector behind this shows it.
-  const plan = useMemo(() => (state && copy ? planStylePaste(state, copy, target, scope, chosenReach) : null), [state, copy, target, scope]);
+  const plan = useMemo(() => {
+    if (!state || !copy) return null;
+    const full = planStylePaste(state, copy, target, scope, chosenReach);
+    const left = new Set(full.rows.filter((r) => r.status === 'change' && !(chosen[pasteRowKey(r)] ?? !PLACEMENT_PROPS.includes(r.property))).map(pasteRowKey));
+    return left.size ? planStylePaste(state, copy, target, scope, chosenReach, left) : full;
+  }, [state, copy, target, scope, chosen]);
   const tokens = useMemo(() => (state ? effectiveTokens(state) : []), [state]);
   const destination = plan?.destination ?? null;
   // What was reviewed is the reach it opened with: one card, or the style every card shares, over a list that keeps
@@ -197,7 +205,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   if (bound.current !== null && !ended.current) ended.current = reachNow === null ? 'lost' : reachNow !== bound.current ? 'moved' : null;
   const moved = ended.current !== null;
   const rows = plan?.rows ?? [];
-  const changing = rows.filter((r) => r.status === 'change');
+  const listed = rows.filter((r) => r.status === 'change');
+  const changing = listed.filter((r) => !r.left);
   const same = rows.filter((r) => r.status === 'same');
   const skipped = rows.filter((r) => r.status === 'skip');
   // Onto the style every card shares: the cards that keep a value of their own over something this paste changes.
@@ -248,7 +257,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const targetOf = (r: PasteRow) => destination?.targets.find((t) => t.part === r.part) ?? (destination?.targets.length === 1 ? destination.targets[0] : undefined);
   // A value at a size as the paste leaves it: what the review writes or clears, else what is there now.
   const valueAfter = (r: PasteRow, property: string, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
-    const planned = rows.find((x) => x.part === r.part && x.property === property && x.status === 'change')?.changes.find((c) => c.scope === size && c.state === state);
+    const planned = rows.find((x) => x.part === r.part && x.property === property && x.status === 'change' && !x.left)?.changes.find((c) => c.scope === size && c.state === state);
     return planned ? planned.to : targetOf(r)?.styles?.[styleScopeKey(size, state)]?.[property];
   };
   // What a size with nothing of its own shows now: the All sizes value, where the stylesheet carries it there (as
@@ -308,8 +317,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const projectHold = useProjectBlock('paste');
   const hold = changing.length ? projectHold : null;
   const heldId = useId();
-  const blocked = hold ?? (destination && !changing.length ? { icon: <Info aria-hidden="true" />, text: empty } : null);
-  const showSkipped = skippedOpen ?? !changing.length;
+  const blocked = hold ?? (destination && !changing.length ? { icon: <Info aria-hidden="true" />, text: listed.length ? 'Choose at least one style to paste.' : empty } : null);
+  const showSkipped = skippedOpen ?? !listed.length;
   // The copy is gone, or the selection takes no style now: there is nothing to review, only the reason and a way out.
   const gone = !copy
     ? 'Nothing copied is available to paste. Choose Copy style on a section, part or element first.'
@@ -409,12 +418,12 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
             </div>
             <section className="paste-section" aria-label="Changes">
               <h3 className="paste-heading">
-                {changing.length ? `Changes to ${plural(changing.length, 'style')}` : 'Nothing to change'}
-                {(cleared > 0 || (changing.length > 0 && skipped.length > 0)) && (
+                {listed.length ? `Changes to ${plural(changing.length, 'style')}` : 'Nothing to change'}
+                {(cleared > 0 || (listed.length > 0 && skipped.length > 0)) && (
                   <span className="paste-heading-note">
                     {cleared > 0 && `${plural(cleared, 'value')} cleared`}
-                    {cleared > 0 && changing.length > 0 && skipped.length > 0 && ' · '}
-                    {changing.length > 0 && skipped.length > 0 && (
+                    {cleared > 0 && listed.length > 0 && skipped.length > 0 && ' · '}
+                    {listed.length > 0 && skipped.length > 0 && (
                       <button type="button" className="paste-heading-link" aria-controls={skippedId} onClick={showSkippedList}>
                         {skipped.length} not pasted
                       </button>
@@ -422,8 +431,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                   </span>
                 )}
               </h3>
-              {changing.length ? (
-                byTarget(changing).map(([where, list]) => (
+              {listed.length ? (
+                byTarget(listed).map(([where, list]) => (
                   <div key={where} className="paste-group">
                     {sectionWide && (
                       <h4 className="paste-target">
@@ -433,8 +442,12 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                     )}
                     <ul className="paste-list">
                       {list.map((r) => (
-                        <li key={`${r.part}:${r.property}`} className="paste-row">
-                          <span className="paste-prop">{named(r)}</span>
+                        <li key={`${r.part}:${r.property}`} className={`paste-row${r.left ? ' paste-left' : ''}`}>
+                          <label className="paste-prop paste-pick">
+                            <input type="checkbox" checked={!r.left} disabled={busy} onChange={() => toggle(r)} />
+                            <span>{named(r)}</span>
+                            {r.left && <span className="paste-part">left out</span>}
+                          </label>
                           <span className="paste-changes">
                             {r.changes.map((c) => (
                               <span key={styleScopeKey(c.scope, c.state)} className="paste-change">
@@ -514,7 +527,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                   </div>
                 ))
               ) : null}
-              {changing.length > 0 && same.length > 0 && (
+              {listed.length > 0 && same.length > 0 && (
                 <p className="paste-same">
                   <CircleCheck aria-hidden="true" />
                   <span>Already the same: {same.map((r) => (sectionWide ? `${named(r).toLowerCase()} (${r.target.toLowerCase()})` : named(r).toLowerCase())).join(', ')}.</span>
