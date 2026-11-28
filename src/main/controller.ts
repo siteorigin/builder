@@ -468,6 +468,8 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
+  /** Look at what the watches were told while an AI request held the project, now that it has ended (#1533). */
+  private lookAfterAi: () => void = () => undefined;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -683,7 +685,7 @@ export class Controller {
       history: s.historyInfo(),
       versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s), ...s.refusedSourceDiagnostics()],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -706,6 +708,11 @@ export class Controller {
   broadcast() {
     this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /** An AI request that held the project ended: what the file watches were told meanwhile is looked at. */
+  aiEnded() {
+    this.lookAfterAi();
   }
 
   /**
@@ -1654,6 +1661,10 @@ export class Controller {
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
     });
+    // An outside edit of a code component refused for its errors, or one no longer refused, is told at once (#1533).
+    session.on('refused-sources', () => {
+      if (this.session === session) this.broadcast();
+    });
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
@@ -2417,6 +2428,13 @@ export class Controller {
     const onChange = (path: string | null) => {
       if (path === null) owed = true;
       else named.add(path);
+      lookSoon();
+    };
+    // A change told while an AI request held the project waited for it, with no later one to bring it to a look.
+    this.lookAfterAi = () => {
+      if (current() && (named.size || owed)) lookSoon();
+    };
+    const lookSoon = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         // The watch has seen the documents change and gone quiet: what follows is the look at them.
@@ -2548,6 +2566,8 @@ export class Controller {
     this.watchers = [];
     this.unwatched.clear();
     this.watchGeneration++;
+    // Its watches' look holds the closed session: let it go with them.
+    this.lookAfterAi = () => undefined;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);
