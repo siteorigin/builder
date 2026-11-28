@@ -29,7 +29,7 @@ import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ContrastPair, ForegroundSuggestion } from '@shared/contrast';
-import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText, notFoundCopy, notFoundDefaults } from '@shared/not-found';
+import { NOT_FOUND_ENGLISH, NOT_FOUND_LIMITS, clipText, notFoundCopy, notFoundDefaults, notFoundEnglish } from '@shared/not-found';
 import { VisitorTextFields, WordingField, visitorTextScope, type Wording } from './VisitorText';
 import { directionHint, languageCodeFor, namedLanguage, notFoundScope, ownWording, siteDetailsScope } from './site-details';
 import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
@@ -574,9 +574,9 @@ function NotFoundFields({ site, onCommit }: { site: ProjectState['site']; onComm
   const defaults = notFoundDefaults(siteLanguage(site));
   const shown = notFoundCopy(site);
   const language = siteLanguage(site);
-  // Built-in wording a language has none of its own for is English, and is marked so for screen readers.
-  const builtIn = defaults === NOT_FOUND_DEFAULTS ? 'en' : undefined;
-  const langOf = (key: (typeof NOT_FOUND_FIELDS)[number]['key']) => (ownWording(site[key]) ? undefined : builtIn);
+  // Marked as the website marks it: built-in English reads as English, left to right.
+  const english = notFoundEnglish(site);
+  const phrase = (key: keyof typeof shown) => (english[key] ? <span {...NOT_FOUND_ENGLISH}>{shown[key]}</span> : shown[key]);
   return (
     <>
       <p className="agents-intro">Visitors see this page, with your header and footer, at any address your site doesn’t have. Leave a field empty to use the wording shown.</p>
@@ -599,15 +599,9 @@ function NotFoundFields({ site, onCommit }: { site: ProjectState['site']; onComm
       <figure className="nf-preview" aria-label="How the page reads">
         <figcaption className="ss-group-label">How the page reads</figcaption>
         <div className="nf-page" lang={language} dir={siteDirection(site)}>
-          <div className="nf-heading" lang={langOf('notFoundHeading')}>
-            {shown.heading}
-          </div>
-          <p className="nf-message" lang={langOf('notFoundMessage')}>
-            {shown.message}
-          </p>
-          <span className="nf-link" lang={langOf('notFoundLinkLabel')}>
-            {shown.linkLabel}
-          </span>
+          <div className="nf-heading">{phrase('heading')}</div>
+          <p className="nf-message">{phrase('message')}</p>
+          <span className="nf-link">{phrase('linkLabel')}</span>
         </div>
       </figure>
     </>

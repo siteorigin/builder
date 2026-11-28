@@ -85,7 +85,7 @@ import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/rout
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
 import { sha256Hex } from '@shared/sha256';
-import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
+import { NOT_FOUND_ENGLISH, NOT_FOUND_ROUTE, notFoundCopy, notFoundEnglish } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
 import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
@@ -5082,6 +5082,9 @@ export const ERROR_PAGE_FILE = 'src/routes/+error.svelte';
 export function generateNotFound(state: ProjectState): string {
   const { heading, message, linkLabel } = notFoundCopy(state.site);
   const title = `${heading} · ${state.site.name}`;
+  // Built-in English is marked on a span of its own, so its block still lines up the way the page runs.
+  const english = notFoundEnglish(state.site);
+  const phrase = (text: string, isEnglish: boolean) => (isEnglish ? `<span lang="${NOT_FOUND_ENGLISH.lang}" dir="${NOT_FOUND_ENGLISH.dir}">{${js(text)}}</span>` : `{${js(text)}}`);
   // The sections the header and footer link to "on this page": the build sends those links to the page that has
   // each (see generateServerHook), and these targets keep the page buildable for a project with a hook of its own.
   const targets = Object.keys(notFoundSections(state))
@@ -5100,9 +5103,9 @@ export function generateNotFound(state: ProjectState): string {
 
 <section class="so-not-found">
 	<div class="so-container so-not-found__inner">${targets}
-		<h1 class="so-not-found__heading">{${js(heading)}}</h1>
-		<p class="so-not-found__message">{${js(message)}}</p>
-		<a class="so-btn so-btn--primary" href={resolve('/')}>{${js(linkLabel)}}</a>
+		<h1 class="so-not-found__heading">${phrase(heading, english.heading)}</h1>
+		<p class="so-not-found__message">${phrase(message, english.message)}</p>
+		<a class="so-btn so-btn--primary" href={resolve('/')}>${phrase(linkLabel, english.linkLabel)}</a>
 	</div>
 </section>
 
