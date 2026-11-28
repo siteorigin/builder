@@ -141,8 +141,8 @@ function routeInventory(state: ProjectState) {
       out.push({ route: r.route, kind: 'entry', collectionId: r.collectionId, entryId: r.entryId, ...(!e || isDraftEntry(e) ? { draft: true } : {}) });
     }
   }
-  // A collection's own address is already listed: its archive adds the later pages of its index and its categories.
-  for (const p of archivePages(state)) if (p.category !== undefined || p.page > 1) out.push({ route: p.route, kind: 'archive', collectionId: p.collectionId, ...(p.category !== undefined ? { category: p.category } : {}), page: p.page });
+  // A collection's own address is already listed: its archive adds the later pages of its index and its categories and tags.
+  for (const p of archivePages(state)) if (p.term !== undefined || p.page > 1) out.push({ route: p.route, kind: 'archive', collectionId: p.collectionId, ...(p.term !== undefined ? { term: p.term } : {}), page: p.page });
   return out;
 }
 

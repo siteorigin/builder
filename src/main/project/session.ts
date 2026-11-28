@@ -6,7 +6,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, PublishedDoc, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { BRIEF_FILE } from '@shared/brief';
+import { BRIEF_FILE, briefWriteRefusal, type BriefWriteGrant } from '@shared/brief';
 import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -3604,7 +3604,8 @@ export class ProjectSession extends EventEmitter {
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
-   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
+   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts), and `briefWrite`
+   * the one brief field its brief tool composed (see shared/brief).
    * `formRouting` is the grant `grantFormRouting` gave when the user allowed an AI batch that changes where a contact
    * form sends: used up by this call, whatever it does.
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
@@ -3618,6 +3619,7 @@ export class ProjectSession extends EventEmitter {
       componentImport?: ComponentImport;
       collectionWrite?: CollectionWriteGrant;
       sourceWrite?: SourceWriteGrant;
+      briefWrite?: BriefWriteGrant;
       sourceSync?: SourceSyncGrant;
       formRouting?: FormRoutingGrant;
       stillWanted?: () => boolean;
@@ -3715,9 +3717,12 @@ export class ProjectSession extends EventEmitter {
       // And a component's placement role, chosen in Component Studio (#661).
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.setInsertAs'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.setInsertAs is only for the editor.', recoverable: true } };
-      // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
-      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
+      // The project brief is the author's own (#518): the assistant reads it as background (#519), and changes it only
+      // as its brief tool composed, when the author asked (#1407).
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update')) {
+        const refused = opts.briefWrite ? briefWriteRefusal(ops, opts.briefWrite, this.state.brief) : 'The project brief can only be changed in the editor, or with update_project_brief when the author asks for it.';
+        if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
+      }
       // So are external sources' settings (#676), which name the secrets the user signs in with, apart from the one
       // mapping or converter the assistant's source tool tested (#680), as it tested it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove')) {
@@ -3725,13 +3730,14 @@ export class ProjectSession extends EventEmitter {
         if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
       }
       // The assistant reaches a collection only through its collection and entry tools, and a layout only from a request
-      // sent while it is open: each grants exactly that batch (see shared/collection-grant). Any other collection change
+      // sent while it is open or through a whole-site run's layout tool: each grants exactly that batch (see
+      // shared/collection-grant). Any other collection change
       // is the editor's.
       const ai = opts.source === 'ai' || !!opts.runId;
       const granted = ai && opts.collectionWrite ? collectionGrantRefusal(ops, opts.collectionWrite, this.state.collections) : null;
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection, upsert_collection_entry and edit_collection_layout write and a layout edited from a request sent while it is open.', recoverable: true } };
       // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
       // the request covers are listed instead. So does new code's whole property schema, which renames or drops the values
       // a layout's placement holds: the code alone may change. Each is checked against the project as the batch leaves it

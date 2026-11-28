@@ -320,6 +320,13 @@
   .ss-token:has(.ss-css-area) .ss-size { display: contents; }
   .ss-token .ss-size > .ss-css-area { grid-column: 1 / -1; margin-left: 48px; }
   .ss-text-body .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; }
+  /* Buttons: two samples on the site's own background, drawn as the theme draws a button, then the fields under them. */
+  .ss-btn-sample { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .ss-btn-sample-btn { display: inline-flex; align-items: center; justify-content: center; max-width: 100%; min-height: 46px; padding: 0.7em 1.35em; border: 1px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ss-btn-sample-btn.secondary { border-color: color-mix(in srgb, currentColor 52%, transparent); }
+  .ss-btn-note { margin: 8px 2px 12px; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .ss-btn-fields { display: flex; flex-direction: column; gap: 10px; }
+  .ss-btn-fields .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; }
   /* Fonts start their own part of Basics, after the brand colour and what it says. */
   .ss-group > :not(.ss-font) + .ss-font { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
   .ss-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -452,6 +459,18 @@
   .so-redirect .so-redirect-form { padding: 6px 0 0; }
   .so-redirect-kinds { display: flex; flex-direction: column; gap: 4px; }
   .so-redirect-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+  /* ---------- Integrations and Custom code (SiteCode.tsx) ---------- */
+  /* Code reads as code: monospaced, its lines as written, scrolled sideways rather than wrapped. */
+  .site-code-input { min-height: 120px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.55; tab-size: 2; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+  .site-code-id { font-family: var(--mono); font-size: 12px; }
+  .site-code-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .site-integration { display: flex; flex-direction: column; gap: 10px; padding: 10px; border-radius: var(--r-md); background: var(--panel-2); }
+  .site-integration-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .site-integration-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; font-weight: 500; color: var(--text); }
+  .site-integration-summary { font-size: 12px; font-weight: 400; line-height: 1.4; color: var(--text-2); }
+  .site-integration-add { display: flex; flex-direction: column; gap: 8px; }
+  .site-integration-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
   /* ---------- AI agents (AgentDiscovery.tsx) ---------- */
   /* Plain names first; the file or standard each writes follows as secondary text. The index's summary and preview

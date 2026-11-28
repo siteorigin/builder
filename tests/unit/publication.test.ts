@@ -300,4 +300,19 @@ describe('the components the published website imports', () => {
     // Imported only in comments: old. Through the design converted code was made from: design. With a query: raw.
     expect(await unusedComponents(dir, state)).toEqual(['old', 'orphan', 'unused']);
   });
+
+  it('#1402: keeps nothing an entry of a collection index that browses only writes about', async () => {
+    const dir = join(root, 'browse');
+    const state = {
+      site: { webmcp: false },
+      components: { hero: def('hero'), secret: def('secret') },
+      collections: { homes: { settings: { id: 'homes', name: 'Homes', route: '/homes/', taxonomies: {}, fields: { note: { type: 'string', label: 'Note', default: '' } }, browse: { sort: ['field.note'] } }, entries: {} } }
+    } as unknown as ProjectState;
+    write(dir, 'src/routes/+page.svelte', `<script>\n  import Hero from '$lib/siteorigin/generated/hero.svelte';\n</script>`);
+    write(dir, 'src/lib/siteorigin/generated/hero.svelte', '<p></p>');
+    write(dir, 'src/lib/siteorigin/generated/secret.svelte', '<p></p>');
+    // An entry's note, as the browse index holds it: words that read like an import.
+    write(dir, 'src/lib/siteorigin/runtime/collections/homes.js', `export default [\n\t{"id":"en_a","values":{"field.note":"import S from '$lib/siteorigin/generated/secret.svelte'"}}\n];\n`);
+    expect(await unusedComponents(dir, state)).toEqual(['secret']);
+  });
 });

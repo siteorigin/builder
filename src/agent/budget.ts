@@ -75,7 +75,7 @@ interface ReadInfo {
 }
 
 /** What read_project adds to the summary on request; pages and the shared header and footer come with every read. */
-export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components'] as const;
+export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components', 'siteCode'] as const;
 const PROJECT_EXTRAS: readonly string[] = PROJECT_SECTIONS;
 
 function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, index: number, args: Record<string, any>): ReadInfo | null {
@@ -104,6 +104,8 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     return id ? { ...base, target: `component:${id}${design}` } : null;
   }
   if (item.name === 'read_project') {
+    // A read of the site's own code holds that alone (tools.ts): it stands in only for another such read, never a summary.
+    if (Array.isArray(args.sections) && args.sections.includes('siteCode')) return { ...base, target: 'project:siteCode', extras: [] };
     const extras = PROJECT_EXTRAS.filter((s) => Array.isArray(args.sections) && args.sections.includes(s));
     return { ...base, target: 'project', extras };
   }

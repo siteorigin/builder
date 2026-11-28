@@ -2,7 +2,7 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { Collection, ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, NodeTree, OwnerRef, ProjectState, PropSchema, ScalarPropSchema, SlotDef, StateAction } from '@shared/types';
+import type { Collection, ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, ListProp, NodeTree, ObjectProp, OwnerRef, ProjectState, PropSchema, ScalarPropSchema, SlotDef, StateAction } from '@shared/types';
 import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
@@ -213,7 +213,9 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
   }
   // Changing the type of a property that has content keeps that content only where the conversion is lossless.
   const lossless: Record<string, string[]> = { string: ['richtext', 'enum', 'number'], richtext: ['string'], enum: ['string'], number: ['string'] };
-  const retyped = prev && prev.type !== schema.type;
+  // A token property that takes another group is as much a change of type: no value of the old group fits it.
+  const retyped = prev && (prev.type !== schema.type || (prev.type === 'token' && schema.type === 'token' && prev.tokenGroup !== schema.tokenGroup));
+  const carried = movedTokenFields(prev, schema);
   // List items carry IDs, and each placement needs its own, as a new placement gets them. A property that starts
   // holding items now gives every placement without a value its own copy of the default items, so no two share an
   // item's ID and the items the Inspector shows are the ones its edits find. A computed list stores nothing.
@@ -235,12 +237,13 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       if (startsList) node.props[name] = ownItems(owner, node);
       continue;
     }
-    const v = node.props[name];
+    const v = carried(node.props[name]);
     if (isBinding(v)) {
       // Bound straight through from an enclosing component: both ends must keep the same type.
       const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
       const from = parent ? boundSchema(parent, node.id, v) : undefined;
-      if (from && from.type !== schema.type) fail(`"${parent!.name}" passes its ${from.type} property to "${name}". Change both together, or unbind it there first.`);
+      if (from && (from.type !== schema.type || (from.type === 'token' && schema.type === 'token' && from.tokenGroup !== schema.tokenGroup)))
+        fail(`"${parent!.name}" passes its ${typeName(from)} property to "${name}". Change both together, or unbind it there first.`);
       // What arrives through the binding must never be empty where the property now requires a value.
       const source = from ?? bindingSource(state, owner, node, v);
       const gap = source ? requiredGap(source, schema) : null;
@@ -252,7 +255,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       node.props[name] = schema.type === 'list' ? ownItems(owner, node) : clone(schema.default);
       continue;
     }
-    if (retyped && !(lossless[prev!.type] ?? []).includes(schema.type)) fail(`${label}: "${name}" has content that a ${schema.type} property cannot keep. Remove the property and add it again to start over.`);
+    if (retyped && !(lossless[prev!.type] ?? []).includes(schema.type)) fail(`${label}: "${name}" has content that a ${typeName(schema)} property cannot keep. Remove the property and add it again to start over.`);
     try {
       // Rich text kept as a plain string keeps its words.
       const kept = retyped && prev!.type === 'richtext' && schema.type === 'string' ? richTextToPlain(toRichText(v)) : v;
@@ -268,6 +271,38 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     }
   }
   def.properties[name] = schema;
+}
+
+/** A property's type as a message names it: a token property takes one group's tokens and no other. */
+const typeName = (schema: PropSchema | ScalarPropSchema) => (schema.type === 'token' ? `${schema.tokenGroup} token` : schema.type);
+
+/**
+ * Carries a placement's list items or object through a change of a field to or from a token, or to another token group:
+ * no value of the old field fits the new one, so a value still at what it started with (the object's own default for
+ * the field, else the field's) takes the new start. Anything else is left for the new schema to refuse: a new item's
+ * ID does not say which starting item it came from.
+ */
+function movedTokenFields(prev: PropSchema | undefined, schema: PropSchema): (v: unknown) => unknown {
+  const kept = (v: unknown) => v;
+  if ((prev?.type !== 'list' && prev?.type !== 'object') || prev.type !== schema.type) return kept;
+  const next = schema as ListProp | ObjectProp;
+  const moves = Object.entries(next.fields).flatMap(([field, now]) => {
+    const was = own(prev.fields, field);
+    if (!was || (was.type !== 'token' && now.type !== 'token')) return [];
+    const same = was.type === 'token' && now.type === 'token' ? was.tokenGroup === now.tokenGroup : was.type === now.type;
+    return same ? [] : [{ field, was, now }];
+  });
+  if (!moves.length) return kept;
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v) && !isBinding(v);
+  // An object can start a field at a default of its own.
+  const start = (of: PropSchema, field: string, otherwise: unknown) => (of.type === 'object' && record(of.default) && Object.hasOwn(of.default, field) ? of.default[field] : otherwise);
+  const move = (holder: unknown) => {
+    if (!record(holder)) return holder;
+    const out = { ...holder };
+    for (const m of moves) if (Object.hasOwn(out, m.field) && JSON.stringify(out[m.field]) === JSON.stringify(start(prev, m.field, m.was.default))) out[m.field] = clone(start(schema, m.field, m.now.default));
+    return out;
+  };
+  return (v) => (Array.isArray(v) ? v.map(move) : move(v));
 }
 
 /**

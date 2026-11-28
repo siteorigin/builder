@@ -871,7 +871,7 @@ const collectionArchives: SeoAuditRule = {
   check({ state, links }) {
     const live = publishedState(state);
     const pages = archivePages(live);
-    const indexes = pages.filter((p) => p.page === 1 && p.category === undefined);
+    const indexes = pages.filter((p) => p.page === 1 && p.term === undefined);
     if (!indexes.length) return [];
     const name = (id: string) => `“${seoText(state.collections[id]?.settings.name) || id}”`;
     const out: SeoFinding[] = [];

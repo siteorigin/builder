@@ -168,7 +168,37 @@ describe('the brief in a project session', () => {
     await again.close();
   });
 
-  it('is never written by the AI, however a run asks', async () => {
+  it('is written by a run only as the brief tool composed it, with its grant (#1407)', async () => {
+    const { dir, s } = await session();
+    expect((await s.apply({ operations: [{ type: 'brief.update', description: DESCRIPTION, notes: NOTES }] }, { label: 'Edit brief' })).ok).toBe(true);
+    const next = `${NOTES}\n\nWe also fire raku on Sundays.`;
+    const grant = { field: 'notes' as const, text: next, base: NOTES };
+    const ai = (ops: EditOperation[], briefWrite?: typeof grant) => s.apply({ operations: ops }, { label: 'AI', source: 'ai', ...(briefWrite ? { briefWrite } : {}) });
+    // Another field, other text, a second operation beside it, or no grant at all: each refused, with nothing saved.
+    for (const [ops, g] of [
+      [[{ type: 'brief.update', notes: next }], undefined],
+      [[{ type: 'brief.update', notes: `${next} And more.` }], grant],
+      [[{ type: 'brief.update', description: 'Rewritten', notes: next }], grant],
+      [[{ type: 'brief.update', notes: next }, { type: 'site.update', name: 'Elsewhere' }], grant],
+      [[{ type: 'brief.update', notes: next }], { ...grant, field: 'description' as const }]
+    ] as Array<[EditOperation[], typeof grant | undefined]>) {
+      const r = await ai(ops, g);
+      expect(r.ok, JSON.stringify(ops)).toBe(false);
+      expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    }
+    expect(onDisk(dir)).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: NOTES });
+    // Composed from notes the author has since changed: refused, so the author's edit is never lost.
+    expect((await ai([{ type: 'brief.update', notes: next }], { ...grant, base: 'Older notes' })).error?.message).toMatch(/changed since/);
+    // The change it composed, from the notes as saved, lands, and undoes like any other.
+    const r = await ai([{ type: 'brief.update', notes: next }], grant);
+    expect(r.error).toBeUndefined();
+    expect(onDisk(dir)).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: next });
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.brief?.notes).toBe(NOTES);
+    await s.close();
+  });
+
+  it('is never written by the AI without the brief tool\'s grant, however a run asks', async () => {
     const { dir, s } = await session();
     const r = await s.apply({ operations: [{ type: 'brief.update', notes: 'Written by a model' }] }, { label: 'AI', source: 'ai' });
     expect(r.ok).toBe(false);

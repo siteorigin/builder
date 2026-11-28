@@ -24,6 +24,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent } from '@agent/types';
 import { executeTool, MUTATING_TOOLS, serializeResult, TOOL_ARGS, type ToolHost, type ToolName } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
+import { BRIEF_ACTIONS } from '@agent/brief-tools';
 import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ToolResult } from '@agent/result';
 import { applyContextBudget } from '@agent/budget';
 import { ProjectSession } from '../../src/main/project/session';
@@ -131,6 +132,8 @@ interface Case {
   sameStep?: { fail?: (s: ProjectState, revision: number, ids: { note: string; design: string }) => unknown };
   /** What the project needs first, done as the author would: a change in History for an Undo to take. */
   seed?: (session: ProjectSession) => Promise<unknown>;
+  /** What the author asks, for a tool offered only to a request that asks for it (open_page, the brief tool #1407). */
+  request?: string;
 }
 
 /** The author's own change, for step_history to undo. */
@@ -169,6 +172,7 @@ const CASES = {
   validate_project: { where: 'site', ok: () => ({}), fail: () => ({ profile: 'everything' }), code: 'INVALID_ARGUMENT' },
   audit_seo: { where: 'site', ok: () => ({}), fail: () => ({ pageId: 'pg_missing' }), code: 'INVALID_ARGUMENT' },
   request_clarification: { where: 'site', ok: () => ({ question: 'Which one?', choices: ['This', 'That'] }), fail: () => ({ question: 'Which picture, and may I change more?', widenScope: true, assetIds: [PHOTO.id] }), code: 'INVALID_ARGUMENT' },
+  open_page: { where: 'ask', request: 'Take me to the Home page', ok: (s) => ({ page: s.site.homePageId }), fail: () => ({ page: 'Nowhere' }), code: 'INVALID_ARGUMENT' },
   locate_field: { where: 'ask', ok: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'heading' }), fail: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'nothing' }), code: 'INVALID_ARGUMENT' },
   upsert_page_with_sections: {
     where: 'site',
@@ -207,7 +211,14 @@ const CASES = {
     fail: () => ({ sourceId: 'team-api', mapping: { title: 'headline' }, converter: 'export function convert(items) { return items; }' }),
     code: 'INVALID_ARGUMENT'
   },
+  update_project_brief: { where: 'site', request: 'Add to my project brief notes that we specialise in historic limestone estates.', ok: () => ({ action: 'add_note', text: 'We specialise in historic limestone estates.' }), fail: () => ({ action: 'add_note', text: ' ' }), code: 'INVALID_ARGUMENT' },
   read_layout: { where: 'layout', ok: () => ({}), fail: () => ({ nodeId: 'n_missing' }), code: 'INVALID_ARGUMENT' },
+  edit_collection_layout: {
+    where: 'site',
+    ok: (_s, revision) => ({ owner: { kind: 'template', id: 'posts' }, expectedRevision: revision, action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Written by the studio' }] }),
+    fail: (_s, revision) => ({ owner: { kind: 'template', id: 'posts' }, expectedRevision: revision + 5, action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Too late' }] }),
+    code: 'STALE_REVISION'
+  },
   update_theme_component: { where: 'site', ok: () => ({ definitionId: HEADER }), fail: () => ({ definitionId: 'proj.nothing-abcde' }), code: 'INVALID_ARGUMENT', sameStep: { fail: () => ({ definitionId: HEADER }) } },
   update_selected_props: { where: 'hero', ok: () => ({ props: { heading: 'Thoughtful spaces' } }), fail: () => ({ props: { nothing: 'here' } }), code: 'VALIDATION_FAILED' },
   edit_selected_list: { where: 'grid', ok: (s) => ({ prop: 'items', action: 'update', itemId: firstItem(s), fields: { title: 'Renamed' } }), fail: () => ({ prop: 'items', action: 'update', itemId: 'item_gone', fields: { title: 'Nowhere' } }), code: 'VALIDATION_FAILED' },
@@ -260,7 +271,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     state: () => session.state,
     revision: () => session.revision,
     diagnostics: () => session.diagnostics(),
-    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}) }),
+    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(grants?.briefWrite ? { briefWrite: grants.briefWrite } : {}) }),
+    briefWrite: () => ({ actions: BRIEF_ACTIONS }),
     sources: sourcesOf(session),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [], images: { total: 0, loaded: 0, failed: 0, unverified: 0 } }),
@@ -278,7 +290,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     selectionLimited: () => !!sel,
     pageLimit: () => null,
     entryLimit: () => null,
-    layoutLimit: () => (where === 'layout' ? { owner: { kind: 'template', id: 'posts' }, label: 'the Posts layout' } : null)
+    layoutLimit: () => (where === 'layout' ? { owner: { kind: 'template', id: 'posts' }, label: 'the Posts layout' } : null),
+    siteWide: () => where === 'site'
   };
 }
 
@@ -358,7 +371,7 @@ describe('one result envelope for every tool (#744)', () => {
     const caps: Partial<ModelCapabilities> = c.where === 'design' ? { contextWindowTokens: 48_000, maxOutputTokens: 4000 } : {};
     const { run } = runner(session, turns, caps);
     const sel = selectionAt(session.state, c.where);
-    await run('Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}), ...(c.where === 'layout' ? { template: { collectionId: 'posts', name: 'Posts' } } : {}) });
+    await run(c.request ?? 'Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}), ...(c.where === 'layout' ? { template: { collectionId: 'posts', name: 'Posts' } } : {}) });
     // Offered at each call, so each result is the tool's own, never a refusal of a tool the step did not offer.
     for (const tools of offered) expect(tools, `${name} is offered ${c.where === 'site' ? 'to a site run' : `with ${c.where}`}`).toContain(name);
     const ok = results.get('call_ok')!;
