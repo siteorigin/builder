@@ -1456,7 +1456,15 @@ export class Orchestrator {
     const transcript: RunTranscript = { opening: this.opening, session, dir: session.local('sessions', 'chat'), conv, deleted: this.deleted, names: this.names };
     const recorder = this.deps.learning?.() ?? null;
     const learned = conv.id;
-    const learn = recorder ? (record: ChatRecord) => recorder.record(learned, { ...record, runId, ...(userMsg.guest ? { guest: userMsg.guest } : {}) }) : null;
+    const learn = recorder
+      ? (record: ChatRecord) => {
+          try {
+            recorder.record(learned, { ...record, runId, ...(userMsg.guest ? { guest: userMsg.guest } : {}) });
+          } catch {
+            // Recording never reaches the run.
+          }
+        }
+      : null;
     const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, authorEdits: [], message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript, learn };
     learn?.({ type: 'user', mode: active.mode, project: session.dir, message: userMsg });
     this.run = active;
@@ -1974,6 +1982,8 @@ export class Orchestrator {
       ];
     };
     let turns = 0;
+    /** The run's requests to the model, counted from 1, for learning mode: a step asked again (`continue outer`) keeps its step. */
+    let requests = 0;
     let toolCalls = 0;
     let repairs = 0;
     let activeMs = 0;
@@ -2074,9 +2084,10 @@ export class Orchestrator {
           edits: [],
           resolve: (a) => {
             lastResume = Date.now();
-            run.learn?.({ type: 'answer', questionId: id, answer: a, ...(msg.questions?.find((q) => q.id === id)?.answeredAssetId ? { assetId: msg.questions.find((q) => q.id === id)!.answeredAssetId } : {}) });
-            // Stop settles the question too; the run is stopping, not working again.
+            // Stop settles the question too; the run is stopping, not working again. Its stop is recorded, not an answer.
             if (signal.aborted) return resolve(a);
+            const assetId = msg.questions?.find((q) => q.id === id)?.answeredAssetId;
+            run.learn?.({ type: 'answer', questionId: id, answer: a, ...(assetId ? { assetId } : {}) });
             this.setStatus(resume);
             if (widen && (a === yes || TYPED_YES.test(a))) {
               authority = { kind: 'site' };
@@ -2637,7 +2648,7 @@ export class Orchestrator {
             let err: Extract<ModelEvent, { type: 'error' }> | null = null;
             // Reasoning models spend part of the output budget thinking, so the adapter's full budget is used.
             const request: CanonicalModelRequest = { model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens };
-            const learnCall: CallContext = { call: 'turn', provider: ad.provider, step: turns, attempt };
+            const learnCall: CallContext = { call: 'turn', provider: ad.provider, requestIndex: ++requests, step: turns, attempt };
             for await (const ev of run.learn ? recordedStream(run.learn, learnCall, request, (note) => ad.adapter.streamTurn(request, turn.signal, note)) : ad.adapter.streamTurn(request, turn.signal)) {
               // Anything but an error is the model answering, so it has this turn's request.
               if (ev.type !== 'error') run.reached = true;
@@ -3004,8 +3015,8 @@ export class Orchestrator {
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
               : await (startReads(index), started.get(call) ?? runCall(call));
-          // Kept before Stop or a repeated failure can end the run with this result never sent.
-          learnResult(call, outcome);
+          // Kept before a repeated failure can end the run with this result never sent; a call Stop cut short is not.
+          if (!signal.aborted) learnResult(call, outcome);
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.ok && outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.

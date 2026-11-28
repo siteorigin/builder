@@ -16,7 +16,7 @@ Set the variables when you launch the app:
 | Variable | Meaning |
 | --- | --- |
 | `SITEORIGIN_LEARNING` | `1` (or `true`, `yes`, `on`) turns learning mode on. Anything else, or unset, leaves it off. |
-| `SITEORIGIN_LEARNING_DIR` | The folder the files go to. Unset, it is `learning` in the app's user data folder. Name a folder outside every project: a chat of a project that holds the folder is not recorded. |
+| `SITEORIGIN_LEARNING_DIR` | The folder the files go to. Unset, it is `learning` in the app's user data folder. Name a folder outside every project: a folder inside a Builder project is never written to, and nothing is recorded while one is named. |
 | `SITEORIGIN_LEARNING_LABELS` | Labels for every chat recorded in this launch, as comma-separated `key=value` pairs, such as `experiment=sol-baseline,prompt=v3,source=manual`. A part that is not a `key=value` pair is left out and reported in the log. |
 
 For example, on macOS:
@@ -42,9 +42,9 @@ the records of a request also name its `runId`, and those of a request a live se
 | --- | --- |
 | `header` | Written each time a launch first adds to the file: the labels, the app's name, version and commit, the time, and `continued` when the file was already there. |
 | `user` | The author's message whole, with the images it attached (by their library IDs and names: the pictures themselves are never sent to a model), its context and the project folder. |
-| `request` | A request to the model exactly as it went: `provider`, `model`, and the `request` with its system prompt, items, tool definitions and output budget. `call` is `turn` for a chat's own turns and `fixer` for the code fixer's; `step` and `attempt` say which turn and which retry it is. |
+| `request` | A request to the model as Builder sent it to the provider: `provider`, `model`, and the `request` with its system prompt, items, tool definitions and output budget, before the provider's adapter put it in that provider's own wire format (the header's commit names the adapter that did). `call` is `turn` for a chat's own turns and `fixer` for the code fixer's; `requestIndex` counts a run's requests from 1, `step` says which of its turns the request is for, and `attempt` which retry of it. |
 | `resend` | The provider adapter sent the request again, changed: a correction after a reply it could not use (with that reply), a fallback the server needed, or a smaller output budget. |
-| `response` | The model's answer to a request: its `reply` (text, tool calls, stop reason, token usage) or its `error` (including a retry's). A request that ended with neither, stopped or cut off, says so with what had arrived. |
+| `response` | The model's answer to a request: its `reply` (text, tool calls, stop reason, token usage) or its `error` (including one that was retried). A request that ended without a reply, stopped or cut off, keeps what had arrived as `partial`. |
 | `tool_result` | A tool call and its result: the item the model was sent, the error whole when it failed, and the edits a change applied. |
 | `question`, `answer` | A question the assistant or the app asked the author, and the answer. |
 | `stop` | The author stopped the request. |
@@ -59,10 +59,12 @@ a chat you are recording.
 
 The app never rotates, truncates, overwrites or deletes a learning file; remove them yourself when you no longer want
 them. A file that cannot be written (a folder without permission, a full disk) is reported in the main log once, and the
-chat carries on unrecorded.
+chat carries on unrecorded. A line cut off part way (a disk that filled) stays as it is, and the next record starts a
+line of its own.
 
 A conversation's file is looked for in the folder learning mode writes to, so a conversation continued after the folder
-is changed starts a new file in the new folder. Point one app profile at a folder at a time: two profiles continuing the
+is changed starts a new file in the new folder, and an undo of a request recorded only in the old folder is not
+recorded. Point one app profile at a folder at a time: two profiles continuing the
 same conversation into one folder at the same moment can start two files for it.
 
 Turning the recordings into a particular fine-tuning format is not part of the app.

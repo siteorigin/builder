@@ -18,12 +18,14 @@ export interface ChatRecorder {
 export type LearnSink = (record: ChatRecord) => void;
 
 /**
- * Which model call a request is. `call`: `turn` for a run's own turns, `fixer` for the code fixer's. `step`: the run's
- * turn it was asked for; `attempt`: from 0, each retry of that turn after a provider error.
+ * Which model call a request is. `call`: `turn` for a run's own turns, `fixer` for the code fixer's. `requestIndex`:
+ * the run's requests counted from 1, one for each sent. `step`: the run's turn it was asked for (a turn asked again after
+ * the provider found it too long keeps its step); `attempt`: from 0, each retry of that request after a provider error.
  */
 export interface CallContext {
   call: 'turn' | 'fixer';
   provider: ProviderId;
+  requestIndex?: number;
   step?: number;
   attempt?: number;
 }
@@ -46,7 +48,9 @@ export async function* recordedStream(learn: LearnSink, ctx: CallContext, reques
       else if (ev.type === 'tool_call') toolCalls.push(ev.call);
       else {
         answered = true;
-        learn({ type: 'response', ...ctx, ...(ev.type === 'done' ? { reply: ev } : { error: ev }) });
+        // An error keeps whatever the model had sent before it.
+        const partial = ev.type === 'error' && (text || toolCalls.length) ? { partial: { text, toolCalls } } : {};
+        learn({ type: 'response', ...ctx, ...(ev.type === 'done' ? { reply: ev } : { error: ev }), ...partial });
       }
       yield ev;
     }

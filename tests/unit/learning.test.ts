@@ -9,7 +9,9 @@ import type { AdapterNote, AgentModelAdapter, CanonicalModelRequest, ModelEvent 
 import { recordedAdapter, recordedStream, type ChatRecord } from '@agent/learning';
 import { fixComponentSource } from '@agent/fixer';
 import { ProjectSession } from '../../src/main/project/session';
-import { LearningRecorder, fileKey, isWithin, parseLearningLabels, readLearningConfig } from '../../src/main/learning';
+import { LearningRecorder, PROJECT_MARKER, fileKey, parseLearningLabels, projectHolding, readLearningConfig } from '../../src/main/learning';
+import { MANIFEST_FILE } from '../../src/main/project/documents';
+import type { ChatRecorder } from '@agent/learning';
 
 type Turn = (req: CanonicalModelRequest, signal: AbortSignal) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -58,7 +60,7 @@ const lines = (file: string) =>
     .map((l) => JSON.parse(l) as ChatRecord & { conversationId: string; time: string });
 const files = (dir: string) => (existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort() : []);
 
-async function setup(turns: Turn[], learning: LearningRecorder | null, project?: string) {
+async function setup(turns: Turn[], learning: ChatRecorder | null, project?: string, onEvent?: (e: AiEvent) => void) {
   const dir = project ?? scratch('so-learning-project');
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
   const adapter = new FakeAdapter(turns);
@@ -67,7 +69,10 @@ async function setup(turns: Turn[], learning: LearningRecorder | null, project?:
   const orch = new Orchestrator({
     session: () => session,
     adapter: async () => ({ adapter, model: 'fake-model', provider: 'openai' }),
-    emit: (e) => events.push(e),
+    emit: (e) => {
+      events.push(e);
+      onEvent?.(e);
+    },
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
     onBusyChange: (b) => (busy = b),
@@ -76,7 +81,7 @@ async function setup(turns: Turn[], learning: LearningRecorder | null, project?:
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   const settle = async () => {
     while (orch.busy || busy) await new Promise((res) => setTimeout(res, 10));
-    await learning?.flush();
+    await (learning as LearningRecorder | null)?.flush?.();
   };
   const run = async (text: string, extra: Partial<ChatContext> = {}, delegation?: RunDelegation) => {
     const r = await orch.send(text, { ...ctx, ...extra }, undefined, undefined, delegation);
@@ -149,9 +154,11 @@ describe('learning mode recording a chat (#1566)', () => {
     expect(user.message).toMatchObject({ role: 'user', text: 'What pages are there?' });
     expect(user.project).toBe(env.session.dir);
     // Each request exactly as the adapter received it, items as they were when it was sent.
-    expect(first).toMatchObject({ call: 'turn', provider: 'openai', model: 'fake-model', step: 1, attempt: 0 });
+    expect(first).toMatchObject({ call: 'turn', provider: 'openai', model: 'fake-model', requestIndex: 1, step: 1, attempt: 0 });
     expect(first.request).toEqual(JSON.parse(JSON.stringify(env.adapter.requests[0])));
     expect(second.request).toEqual(JSON.parse(JSON.stringify(env.adapter.requests[1])));
+    expect(second).toMatchObject({ requestIndex: 2, step: 2, attempt: 0 });
+    expect(first.request.items[0]).toMatchObject({ kind: 'user' });
     expect(first.request.system).toBeTruthy();
     expect(first.request.tools.length).toBeGreaterThan(0);
     expect(first.request.maxOutputTokens).toBeGreaterThan(0);
@@ -181,6 +188,7 @@ describe('learning mode recording a chat (#1566)', () => {
     const records = lines(join(dir, files(dir)[0])) as Array<Record<string, any>>;
     const result = records.find((r) => r.type === 'tool_result');
     expect(result).toMatchObject({ ok: true, mutated: true, ops: [{ type: 'instance.setProp', prop: 'heading', value: 'Learned' }] });
+    expect(result.results).toHaveLength(1);
     expect(records.at(-1)).toMatchObject({ type: 'outcome', status: 'completed' });
   });
 
@@ -249,43 +257,118 @@ describe('learning mode recording a chat (#1566)', () => {
   it('records a stop, what the model had sent before it, and the cancelled outcome', async () => {
     const dir = scratch('so-learning');
     let env!: Awaited<ReturnType<typeof setup>>;
+    // Stopped as the first piece of the reply arrives: the adapter answers the rest with a cancellation.
     env = await setup(
-      [
-        async (_req, signal) => {
-          env.orch.stop();
-          await new Promise((res) => setTimeout(res, 5));
-          expect(signal.aborted).toBe(true);
-          return [{ type: 'text', delta: 'Half' }];
-        }
-      ],
-      recorder(dir)
+      [() => [{ type: 'text', delta: 'Half' }, { type: 'text', delta: ' more' }, { type: 'done', stopReason: 'end', text: 'Half more', toolCalls: [] }]],
+      recorder(dir),
+      undefined,
+      (e) => e.kind === 'text' && env.orch.stop()
     );
     await env.run('Do something long');
     const records = lines(join(dir, files(dir)[0])) as Array<Record<string, any>>;
     expect(records.map((r) => r.type)).toEqual(['header', 'user', 'request', 'stop', 'response', 'outcome']);
-    expect(records[4]).toMatchObject({ error: { code: 'cancelled' } });
+    expect(records[4]).toMatchObject({ error: { code: 'cancelled' }, partial: { text: 'Half', toolCalls: [] } });
     expect(records[5]).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('records a question, and a stop while it waits as a stop rather than an answer', async () => {
+    const dir = scratch('so-learning');
+    let env!: Awaited<ReturnType<typeof setup>>;
+    env = await setup([() => [call('q1', 'request_clarification', { question: 'Which colour?', choices: ['Red', 'Blue'] })]], recorder(dir), undefined, (e) => e.kind === 'status' && e.status === 'awaiting-input' && env.orch.stop());
+    await env.run('Make it pop');
+    const records = lines(join(dir, files(dir)[0])) as Array<Record<string, any>>;
+    expect(records.map((r) => r.type)).toEqual(['header', 'user', 'request', 'response', 'question', 'stop', 'outcome']);
+    expect(records[4]).toMatchObject({ question: { text: 'Which colour?', choices: ['Red', 'Blue'] } });
+  });
+
+  it('records the answer to a question', async () => {
+    const dir = scratch('so-learning');
+    let env!: Awaited<ReturnType<typeof setup>>;
+    env = await setup([() => [call('q1', 'request_clarification', { question: 'Which colour?', choices: ['Red', 'Blue'] })], () => finish('Blue it is.')], recorder(dir), undefined, (e) => {
+      if (e.kind === 'status' && e.status === 'awaiting-input') {
+        // The turn with its question is sent just after the status.
+        setTimeout(() => {
+          const q = [...env.events].reverse().find((x) => x.kind === 'message' && x.message?.questions?.length)!.message!.questions!.at(-1)!;
+          expect(env.orch.answer(e.runId, q.id, 'Blue')).toBe(true);
+        });
+      }
+    });
+    await env.run('Make it pop');
+    const records = lines(join(dir, files(dir)[0])) as Array<Record<string, any>>;
+    expect(records.map((r) => r.type)).toEqual(['header', 'user', 'request', 'response', 'question', 'answer', 'tool_result', 'request', 'response', 'outcome']);
+    expect(records[5]).toMatchObject({ questionId: records[4].question.id, answer: 'Blue' });
+  });
+
+  it('never lets a recorder that throws reach the chat', async () => {
+    const throwing: ChatRecorder = {
+      record: () => {
+        throw new Error('broken recorder');
+      }
+    };
+    const env = await setup([() => [call('c1', 'read_project', {})], () => finish('Fine.')], throwing);
+    await env.run('Hello');
+    expect(env.events.find((e) => e.kind === 'message' && e.message?.result)?.message?.result?.status).toBe('no-changes');
+    env.orch.stop();
   });
 
   it("marks a live session guest's turns as the guest's", async () => {
     const dir = scratch('so-learning');
-    const env = await setup([() => finish('Done for the guest.')], recorder(dir));
+    const env = await setup([() => [call('c1', 'read_page', { pageId: 'home' })], () => finish('Done for the guest.')], recorder(dir));
     const delegation: RunDelegation = { guestName: 'Sam', grantId: 'g_1', accept: () => null, check: () => null };
     await env.run('Change the page', { mode: 'edit', scope: 'page' }, delegation);
     const records = lines(join(dir, files(dir)[0]));
+    expect(records.some((r) => r.type === 'tool_result')).toBe(true);
     expect(records.filter((r) => r.type !== 'header').every((r) => (r.guest as { name: string })?.name === 'Sam' && (r.guest as { id: string }).id === 'g_1')).toBe(true);
   });
 
-  it('does not record the chats of a project that holds its folder', async () => {
+  it('never writes to a folder inside a project, whichever project the chat or fix is in', async () => {
+    expect(PROJECT_MARKER).toBe(MANIFEST_FILE);
+    const other = scratch('so-learning-other');
+    writeFileSync(join(other, PROJECT_MARKER), '{}');
+    for (const dir of [join(other, '.siteorigin', 'learning'), join(other, '..learning'), join(other, 'static', 'learning')]) {
+      const warnings: string[] = [];
+      const learning = recorder(dir, { warn: (m) => warnings.push(m) });
+      const env = await setup([() => finish('Hi.')], learning);
+      await env.run('Hello');
+      // A code fix, which names no project, is held to the same.
+      learning.record('fix_1', { type: 'fix', call: 'fixer' });
+      await learning.flush();
+      expect(existsSync(dir)).toBe(false);
+      expect(warnings).toEqual([expect.stringContaining(`inside the project ${projectHolding(other)}`)]);
+    }
+    expect(projectHolding(`${other}-sibling`)).toBeNull();
+    // The project a chat is in holds its folder like any other.
     const project = scratch('so-learning-project');
-    const dir = join(project, 'learning');
+    const inside = join(project, 'learning');
     const warnings: string[] = [];
-    const env = await setup([() => finish('Hi.')], recorder(dir, { warn: (m) => warnings.push(m) }), project);
+    const env = await setup([() => finish('Hi.')], recorder(inside, { warn: (m) => warnings.push(m) }), project);
     await env.run('Hello');
-    expect(existsSync(dir)).toBe(false);
-    expect(warnings).toEqual([expect.stringContaining('is inside that project')]);
-    expect(isWithin(join(project, 'a', 'b'), project)).toBe(true);
-    expect(isWithin(`${project}-other`, project)).toBe(false);
+    expect(existsSync(inside)).toBe(false);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('starts a new line after a line an earlier write left unfinished', async () => {
+    const dir = scratch('so-learning');
+    writeFileSync(join(dir, '20261101T000000000Z-c_torn.jsonl'), '{"type":"header","conversationId":"c_torn"}\n{"type":"user","conv');
+    const learning = recorder(dir);
+    learning.record('c_torn', { type: 'user', text: 'again' });
+    await learning.flush();
+    const text = readFileSync(join(dir, '20261101T000000000Z-c_torn.jsonl'), 'utf8').split('\n');
+    expect(text[1]).toBe('{"type":"user","conv');
+    expect(JSON.parse(text[2])).toMatchObject({ type: 'header', continued: true });
+    expect(JSON.parse(text[3])).toMatchObject({ type: 'user', text: 'again' });
+  });
+
+  it('finds a run by its own records, not a label that names it, and keeps its place among later steps', async () => {
+    const dir = scratch('so-learning');
+    writeFileSync(join(dir, '20261101T000000000Z-c_a.jsonl'), `${JSON.stringify({ type: 'user', runId: 'run_r', conversationId: 'c_a' })}\n`);
+    writeFileSync(join(dir, '20261102T000000000Z-c_b.jsonl'), `${JSON.stringify({ type: 'header', labels: { runId: 'run_r' }, conversationId: 'c_b' })}\n`);
+    const learning = recorder(dir);
+    learning.recordRun('run_r', { type: 'undo', via: 'history' });
+    learning.record('c_a', { type: 'user', runId: 'run_s' });
+    await learning.flush();
+    expect(lines(join(dir, '20261101T000000000Z-c_a.jsonl')).map((r) => r.type)).toEqual(['user', 'header', 'undo', 'user']);
+    expect(lines(join(dir, '20261102T000000000Z-c_b.jsonl')).map((r) => r.type)).toEqual(['header']);
   });
 
   it("files an undo under the run's conversation, found in the folder after a restart", async () => {
@@ -337,6 +420,17 @@ describe('learning mode recording model calls outside a chat turn (#1566)', () =
     for await (const ev of recordedStream((r) => got.push(r), { call: 'turn', provider: 'openai', step: 2, attempt: 1 }, request, open)) if (ev.type === 'text' && ev.delta === ' way') break;
     expect(got.map((r) => r.type)).toEqual(['request', 'response']);
     expect(got[1]).toMatchObject({ ended: 'without an answer', step: 2, attempt: 1, partial: { text: 'Part way', toolCalls: [{ id: 'c1' }] } });
+  });
+
+  it('keeps what had arrived before an error', async () => {
+    const got: ChatRecord[] = [];
+    const request: CanonicalModelRequest = { model: 'm', system: 'S', items: [], tools: [], maxOutputTokens: 100 };
+    async function* open(): AsyncIterable<ModelEvent> {
+      yield { type: 'text', delta: 'Before' };
+      yield { type: 'error', code: 'network', message: 'Could not reach the provider.' };
+    }
+    for await (const _ of recordedStream((r) => got.push(r), { call: 'turn', provider: 'openai' }, request, open)) void _;
+    expect(got[1]).toMatchObject({ type: 'response', error: { code: 'network' }, partial: { text: 'Before' } });
   });
 
   it('records each time an adapter sends a request again, changed, with the reply it could not use', async () => {

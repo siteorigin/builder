@@ -675,7 +675,7 @@ export class LocalAdapter implements AgentModelAdapter {
       if (result.kind === 'http') {
         if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, req.tools)) {
           fallbacks++;
-          note?.({ kind: 'resend', reason: 'server fallback', status: result.status, body: result.body });
+          note?.({ kind: 'resend', reason: 'server fallback', status: result.status, message: serverMessage(result.body, this.endpoint.apiKey) });
           continue;
         }
         const error = httpError(result.status, result.body, req.model, result.retryAfterMs, this.endpoint.apiKey);

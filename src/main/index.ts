@@ -58,6 +58,7 @@ import { fixComponentSource } from '@agent/fixer';
 import { recordedAdapter, type ChatRecord } from '@agent/learning';
 import { newId } from '@shared/ids';
 import { LearningRecorder, readLearningConfig } from './learning';
+import { redact } from '@agent/types';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
 import type { ComponentDefinition } from '@shared/types';
@@ -451,11 +452,13 @@ async function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
   };
   const before = session ? standing() : null;
   const result = await act();
-  if (learning && session && before && controller.session === session) {
-    for (const [runId, stands] of standing()) {
-      const stood = before.get(runId);
-      if (stood !== undefined && stood !== stands) learning.recordRun(runId, { type: stands ? 'redo' : 'undo', via });
-    }
+  // A step refused (another one got there first) changed nothing of its own.
+  if (learning && session && before && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) {
+    const changed = [...standing()].filter(([runId, stands]) => before.has(runId) && before.get(runId) !== stands);
+    // In the order History took them: back from the newest, forward from the oldest.
+    const undone = changed.filter(([, stands]) => !stands).reverse();
+    for (const [runId] of undone) learning.recordRun(runId, { type: 'undo', via });
+    for (const [runId, stands] of changed) if (stands) learning.recordRun(runId, { type: 'redo', via });
   }
   return result;
 }
@@ -1454,8 +1457,8 @@ const learningConfig = automated ? null : readLearningConfig(process.env, join(a
 if (learningConfig) {
   learning = new LearningRecorder({ dir: learningConfig.dir, labels: learningConfig.labels, app: { name: app.name, version: app.getVersion(), commit: BUILD.commit }, warn: (m) => mainLog.write('warn', m) });
   const labels = Object.entries(learningConfig.labels).map(([k, v]) => `${k}=${v}`);
-  mainLog.write('start', `Learning mode is on: every AI chat is recorded to ${learningConfig.dir}${labels.length ? `, labelled ${labels.join(', ')}` : ''}.`);
-  for (const problem of learningConfig.problems) mainLog.write('warn', problem);
+  mainLog.write('start', redact(`Learning mode is on: every AI chat is recorded to ${learningConfig.dir}${labels.length ? `, labelled ${labels.join(', ')}` : ''}.`));
+  for (const problem of learningConfig.problems) mainLog.write('warn', redact(problem));
 }
 /** Learning mode's last records written before the app quits, waiting no more than two seconds. */
 const drainLearning = (): Promise<void> => (learning?.busy ? Promise.race([learning.flush(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]) : Promise.resolve());
@@ -1590,8 +1593,9 @@ app.on('before-quit', (e) => {
       // A place in another computer's live session is given up first, so the host sees it go at once.
       controller.remote.dispose();
       await controller.close();
-      await drainLearning();
     } finally {
+      // Even when the close failed: what the project's last request left is written before the app goes.
+      await drainLearning();
       quitState = 'done';
       app.quit();
     }

@@ -1,6 +1,6 @@
-import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { appendFile, mkdir, open, readFile, readdir, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { redact } from '@agent/types';
 import type { ChatRecorder, ChatRecord } from '@agent/learning';
 import { stableHash } from '@shared/ids';
@@ -19,8 +19,8 @@ import { stableHash } from '@shared/ids';
  * with the labels, the app's version and commit, and the time. Files are only ever appended to: never rotated,
  * truncated, overwritten or deleted.
  *
- * A conversation of a project that holds the folder itself (a folder named inside a project) is never recorded: the
- * files would be in the project, where clearing its chat history could delete them.
+ * A folder inside any Builder project is never written to: the recordings would be in that project, where an export
+ * could carry them or clearing its chat history could delete them.
  *
  * A record is turned into its line as it is recorded, so a request whose items grow afterwards is kept as it was sent,
  * and the line is passed through `redact` so no API key reaches the file. Writes run one after another off the caller's
@@ -93,6 +93,12 @@ export function fileKey(conversationId: string): string {
 /** `2026-11-28T10:15:30.123Z` as `20261128T101530123Z`, which sorts as the time does and is a valid file name everywhere. */
 const fileStamp = (d: Date) => d.toISOString().replace(/[-:.]/g, '');
 
+/**
+ * The file at the root of every Builder project (main/project/documents.ts MANIFEST_FILE): a folder with one in it or
+ * above it is in a project.
+ */
+export const PROJECT_MARKER = 'siteorigin.project.json';
+
 /** A path as the file system resolves it (symbolic links followed), as far as it exists: the rest as written. */
 function realPath(path: string): string {
   const abs = resolve(path);
@@ -104,22 +110,36 @@ function realPath(path: string): string {
   }
 }
 
-/** Whether `path` is `folder` or inside it. */
-export function isWithin(path: string, folder: string): boolean {
-  const rel = relative(realPath(folder), realPath(path));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+/** The project folder that holds `path` (it, or a folder above it, is a Builder project), or null when none does. */
+export function projectHolding(path: string): string | null {
+  for (let at = realPath(path); ; ) {
+    try {
+      if (statSync(join(at, PROJECT_MARKER)).isFile()) return at;
+    } catch {
+      // Not a project here.
+    }
+    const up = dirname(at);
+    if (up === at) return null;
+    at = up;
+  }
 }
+
+/** A folder learning mode will not write to, said as the log says it. */
+class RefusedFolder extends Error {}
 
 export class LearningRecorder implements ChatRecorder {
   /** The file each conversation is written to in this launch, once its header is written. */
   private files = new Map<string, string>();
   /** The conversation each run recorded in this launch belongs to, for an undo that names only the run. */
   private runs = new Map<string, string>();
-  /** Conversations of projects that hold the folder: never recorded. */
-  private refused = new Set<string>();
+  /** Files whose last write failed, which may end part way through a line: the next write starts a line of its own. */
+  private torn = new Set<string>();
+  /** The project the folder is in, looked for once per launch: a folder in a project is never written to. */
+  private holder: string | null | undefined;
   private queue: Promise<void> = Promise.resolve();
   private pending = 0;
-  private warned = false;
+  /** What has been reported (the folder, or one file): each is reported once. */
+  private warned = new Set<string>();
   private readonly now: () => Date;
 
   constructor(private readonly opts: LearningRecorderOptions) {
@@ -136,72 +156,86 @@ export class LearningRecorder implements ChatRecorder {
   }
 
   record(conversationId: string, record: ChatRecord): void {
-    if (!conversationId || this.refused.has(conversationId)) return;
-    if (typeof record.project === 'string' && isWithin(this.opts.dir, record.project)) {
-      this.refused.add(conversationId);
-      this.report(`Learning mode does not record chats of ${record.project}: its folder ${this.opts.dir} is inside that project.`);
-      return;
-    }
-    if (typeof record.runId === 'string') this.runs.set(record.runId, conversationId);
-    const time = this.now();
-    let line: string;
     try {
-      line = JSON.stringify({ ...record, conversationId, time: time.toISOString() });
+      if (!conversationId) return;
+      if (typeof record.runId === 'string') this.runs.set(record.runId, conversationId);
+      const time = this.now();
+      const line = this.line(conversationId, record, time);
+      this.enqueue(() => this.write(conversationId, line, time));
     } catch (e) {
-      line = JSON.stringify({ type: 'unrecordable', step: record.type, error: String((e as Error)?.message ?? e), conversationId, time: time.toISOString() });
+      // Recording never reaches the chat.
+      this.fail(e, this.opts.dir);
     }
-    line = redact(line);
-    this.enqueue(() => this.write(conversationId, line, time));
   }
 
   /**
    * Keep one step of the conversation run `runId` was in, such as an undo of its changes from History: found among the
-   * runs recorded in this launch, or else in the folder's files. A run in no file is not recorded.
+   * runs recorded in this launch, or else in the folder's files. A run in no file is not recorded. It keeps its place
+   * among the steps recorded after it, however long the search takes.
    */
   recordRun(runId: string, record: ChatRecord): void {
-    const known = this.runs.get(runId);
-    if (known) return this.record(known, { ...record, runId });
-    this.enqueue(async () => {
-      const conversationId = this.runs.get(runId) ?? (await this.findRun(runId));
-      if (conversationId) this.record(conversationId, { ...record, runId });
-    });
+    try {
+      const known = this.runs.get(runId);
+      if (known) return this.record(known, { ...record, runId });
+      const time = this.now();
+      this.enqueue(async () => {
+        const conversationId = this.runs.get(runId) ?? (await this.findRun(runId));
+        if (!conversationId) return;
+        this.runs.set(runId, conversationId);
+        await this.write(conversationId, this.line(conversationId, { ...record, runId }, time), time);
+      });
+    } catch (e) {
+      this.fail(e, this.opts.dir);
+    }
   }
 
   /** Settles once everything recorded so far is written (or has failed to be). */
   async flush(): Promise<void> {
-    // Work in the queue can add more (an undo found in a file is then recorded), which is waited for too.
+    // Work in the queue can add more, which is waited for too.
     for (let tail = this.queue; ; tail = this.queue) {
       await tail;
       if (tail === this.queue) return;
     }
   }
 
+  /** A record's line, taken now: what it holds may change once the caller goes on. No API key survives it. */
+  private line(conversationId: string, record: ChatRecord, time: Date): string {
+    let line: string;
+    try {
+      line = JSON.stringify({ ...record, conversationId, time: time.toISOString() });
+    } catch (e) {
+      line = JSON.stringify({ type: 'unrecordable', step: record.type, error: String((e as Error)?.message ?? e), conversationId, time: time.toISOString() });
+    }
+    return redact(line);
+  }
+
   private enqueue(work: () => Promise<void>) {
     this.pending++;
     this.queue = this.queue
       .then(work)
-      .catch((e) => this.fail(e))
+      .catch((e) => this.fail(e, (e as { learningFile?: string })?.learningFile ?? this.opts.dir))
       .finally(() => this.pending--);
   }
 
   /** The conversation of the file that names run `runId`, read from that file's own records. */
   private async findRun(runId: string): Promise<string | null> {
     const needle = `"runId":${JSON.stringify(runId)}`;
-    let names: string[];
-    try {
-      names = (await readdir(this.opts.dir)).filter((n) => n.endsWith('.jsonl')).sort().reverse();
-    } catch {
-      return null;
-    }
+    const names = (await readdir(this.opts.dir, { withFileTypes: true }).catch(() => []))
+      .filter((d) => d.isFile() && d.name.endsWith('.jsonl'))
+      .map((d) => d.name)
+      .sort()
+      .reverse();
     for (const name of names) {
       const text = await readFile(join(this.opts.dir, name), 'utf8').catch(() => '');
-      const line = text.split('\n').find((l) => l.includes(needle));
-      if (!line) continue;
-      try {
-        const id = (JSON.parse(line) as { conversationId?: unknown }).conversationId;
-        if (typeof id === 'string' && id) return id;
-      } catch {
-        // A line that cannot be read names nothing.
+      for (const line of text.split('\n')) {
+        if (!line.includes(needle)) continue;
+        try {
+          // The run's own record, not a label or a message that happens to name it.
+          const r = JSON.parse(line) as { runId?: unknown; conversationId?: unknown };
+          if (r.runId === runId && typeof r.conversationId === 'string' && r.conversationId) return r.conversationId;
+        } catch {
+          // A line that cannot be read names nothing.
+        }
       }
     }
     return null;
@@ -209,29 +243,47 @@ export class LearningRecorder implements ChatRecorder {
 
   private async write(conversationId: string, line: string, time: Date) {
     const file = this.files.get(conversationId) ?? (await this.open(conversationId, time));
-    await appendFile(file, `${line}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+    await this.append(file, line);
+  }
+
+  /** Add one line to `file`, on a line of its own even when the last write to it failed part way. */
+  private async append(file: string, line: string) {
+    try {
+      await appendFile(file, `${this.torn.has(file) ? '\n' : ''}${line}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+      this.torn.delete(file);
+    } catch (e) {
+      this.torn.add(file);
+      throw Object.assign(e as Error, { learningFile: file });
+    }
   }
 
   /** The conversation's file, found or made, with this launch's header written to it. */
   private async open(conversationId: string, time: Date): Promise<string> {
     const { dir } = this.opts;
+    if (this.holder === undefined) this.holder = projectHolding(dir);
+    if (this.holder) throw new RefusedFolder(`Learning mode does not write to ${dir}: it is inside the project ${this.holder}, and its recordings must stay outside every project. Chats go on unrecorded.`);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const suffix = `-${fileKey(conversationId)}.jsonl`;
-    const existing = (await readdir(dir)).filter((n) => n.endsWith(suffix)).sort()[0];
+    // Only a file of the folder's own: never one a link points to elsewhere.
+    const existing = (await readdir(dir, { withFileTypes: true }))
+      .filter((d) => d.isFile() && d.name.endsWith(suffix))
+      .map((d) => d.name)
+      .sort()[0];
     const file = join(dir, existing ?? `${fileStamp(time)}${suffix}`);
     // A new file is made only when none is there: `wx` never replaces one.
     if (!existing) await writeFile(file, '', { flag: 'wx', mode: 0o600 }).catch((e: NodeJS.ErrnoException) => (e.code === 'EEXIST' ? undefined : Promise.reject(e)));
+    else if (!(await endsWithNewline(file))) this.torn.add(file);
     const { name, version, commit } = this.opts.app;
     const header = { type: 'header', conversationId, time: time.toISOString(), continued: !!existing, labels: this.opts.labels, app: { name, version, commit } };
-    await appendFile(file, `${redact(JSON.stringify(header))}\n`, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+    await this.append(file, redact(JSON.stringify(header)));
     this.files.set(conversationId, file);
     return file;
   }
 
-  private fail(e: unknown) {
-    if (this.warned) return;
-    this.warned = true;
-    this.report(`Learning mode could not write to ${this.opts.dir}: ${(e as Error)?.message ?? e}. Chats go on unrecorded where it cannot write.`);
+  private fail(e: unknown, key: string) {
+    if (this.warned.has(key)) return;
+    this.warned.add(key);
+    this.report(e instanceof RefusedFolder ? e.message : `Learning mode could not write to ${key}: ${(e as Error)?.message ?? e}. Chats go on unrecorded where it cannot write.`);
   }
 
   private report(message: string) {
@@ -240,5 +292,19 @@ export class LearningRecorder implements ChatRecorder {
     } catch {
       // Reporting is best effort.
     }
+  }
+}
+
+/** Whether a file is empty or ends a line: one that does not was cut off part way through its last line. */
+async function endsWithNewline(file: string): Promise<boolean> {
+  const handle = await open(file, 'r');
+  try {
+    const { size } = await handle.stat();
+    if (!size) return true;
+    const last = Buffer.alloc(1);
+    await handle.read(last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    await handle.close();
   }
 }
