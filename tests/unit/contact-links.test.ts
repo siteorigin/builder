@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { contactInText, contactMismatch, followText, joinedLines, sameContact, type Contact } from '@shared/contact-links';
 import { createStarterState } from '@catalogue/starters';
@@ -18,7 +18,7 @@ import { withManagedContact } from './fixtures/contact-links-designs';
 const release = () => createStarterState('business', 'Kloof', false);
 /**
  * The business starter with its Contact details and footer drawn as managed designs (fixtures/contact-links-designs.ts),
- * whose links the editor pairs with their text; the release's cannot be (the Release gap tests at the end).
+ * whose links the editor pairs with their text from the design's tree; the release's are read from its code (the shipped theme tests at the end).
  */
 const fresh = () => withManagedContact(release());
 const contactPage = (s: ProjectState) => s.site.pageOrder.find((id) => s.pages[id].route === '/contact/')!;
@@ -402,22 +402,66 @@ describe('contact link edits undo as one step', () => {
 });
 
 describe('contact links in the shipped theme', () => {
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('pairs the release’s Contact details links with the value each shows', () => {
+  it('pairs the release’s Contact details links with the value each shows', () => {
     const s = release();
     expect(itemLinkPairs(s.components[details(s).definitionId], 'items')).toEqual([{ text: 'value', link: 'link' }]);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('pairs the release footer’s contact links with the label each shows', () => {
+  it('pairs the release footer’s contact links with the label each shows', () => {
     const s = release();
     expect(itemLinkPairs(s.components[footer(s).definitionId], 'contact')).toEqual([{ text: 'label', link: 'link' }]);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('moves the email link of the release’s Contact details to the edited address', () => {
+  it('moves the email link of the release’s Contact details to the edited address', () => {
     let s = release();
     s = apply(s, [setField(s, item(s, 'mail').id, 'value', 'bookings@kloof.example')]);
     expect(item(s, 'mail').link).toEqual(email('bookings@kloof.example'));
+    expect(exported(s)).toContain('"value":"bookings@kloof.example","link":{"href":"mailto:bookings@kloof.example"}');
+  });
+
+  it('moves the phone link of the release’s Contact details, and keeps it for a deliberate label', () => {
+    let s = release();
+    const phone = item(s, 'phone');
+    s = apply(s, [setField(s, phone.id, 'value', '+1 202 555 0142')]);
+    expect(item(s, 'phone').link).toEqual(tel('+12025550142'));
+    expect(exported(s)).toContain('"value":"+1 202 555 0142","link":{"href":"tel:+12025550142"}');
+    s = apply(s, [setField(s, phone.id, 'value', 'Call reception')]);
+    expect(item(s, 'phone').link).toEqual(tel('+12025550142'));
+  });
+
+  it('moves the release footer’s contact link with its label', () => {
+    let s = release();
+    const f = footer(s);
+    const mail = (f.props.contact as ListItem[]).find((i) => (i.link as LinkValue).type === 'email')!;
+    s = apply(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: f.id, prop: 'contact', itemId: mail.id, field: 'label', value: 'bookings@kloof.example' }]);
+    expect((footer(s).props.contact as ListItem[]).find((i) => i.id === mail.id)!.link).toEqual(email('bookings@kloof.example'));
+  });
+
+  it('reads the pairs of a project’s own code from the item each link shows', () => {
+    const list = (fields: string[]) => ({ type: 'list' as const, label: 'List', itemLabel: 'Item', fields: Object.fromEntries(fields.map((k) => [k, ['link', 'url', 'alt'].includes(k) ? { type: 'link' as const, label: k } : { type: 'string' as const, label: k }])) });
+    const code = (properties: ComponentDefinition['properties'], lines: string[]) => ({ ...release().components[details(release()).definitionId], owner: 'project', properties, source: lines.join('\n') }) as ComponentDefinition;
+    const def = code({ ways: list(['text', 'link', 'note']), other: list(['text', 'link']), shared: list(['a', 'b', 'url']), groups: list(['title', 'link', 'url']), quoted: list(['text', 'link', 'alt']) }, [
+      '<script>const x = `{#each other as way}<SoLink link={way.link}>{way.text}</SoLink>{/each}`;</script>',
+      '{#each ways as way, i (way.id)}{#if way.note}<b>{way.note}</b>{:else}<i></i>{/if}<li><SoLink class="v" link={ way . link } aria-label={way.note}>',
+      '  { way.text }',
+      '</SoLink></li>{/each}',
+      '<!-- {#each other as way}<SoLink link={way.link}>{way.text}</SoLink>{/each} -->',
+      '{#each shared as s}<SoLink link={s.url}>{s.a}</SoLink><SoLink link={s.url}>{s.b}</SoLink>{/each}',
+      '{#each groups as g}{#each g.items as g}<SoLink link={g.link}>{g.title}</SoLink>{/each}<SoLink link={g.url}>{g.title}</SoLink>{/each}',
+      '{#each quoted as item}<SoLink data-note="opens link={item.link}" link={item.alt}>{item.text}</SoLink>{/each}'
+    ]);
+    expect(itemLinkPairs(def, 'ways')).toEqual([{ text: 'text', link: 'link' }]);
+    // Only in a script and a comment.
+    expect(itemLinkPairs(def, 'other')).toEqual([]);
+    // One destination shown by two texts belongs to neither.
+    expect(itemLinkPairs(def, 'shared')).toEqual([]);
+    // The inner list hides the outer item's name, so only the outer link is the list's.
+    expect(itemLinkPairs(def, 'groups')).toEqual([{ text: 'title', link: 'url' }]);
+    // What a quoted attribute says is not where the link goes.
+    expect(itemLinkPairs(def, 'quoted')).toEqual([{ text: 'text', link: 'alt' }]);
+    // An each's {:else} has no item of its own: the name there is the outer list's item.
+    const empty = code({ outer: list(['text', 'link']), rows: list(['text', 'link']) }, ['{#each outer as item}{#each rows as item}{:else}<SoLink link={item.link}>{item.text}</SoLink>{/each}{/each}']);
+    expect(itemLinkPairs(empty, 'rows')).toEqual([]);
+    expect(itemLinkPairs(empty, 'outer')).toEqual([{ text: 'text', link: 'link' }]);
   });
 });

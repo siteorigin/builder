@@ -134,24 +134,77 @@ export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): s
 /**
  * The links a list repeats whose visible text and destination are two fields of the same item (a contact method's
  * value and link): `{ text, link }` field names. Read from the definition's own tree, so a project's copy with
- * renamed fields pairs the same way; a code component has no tree to read and pairs nothing. A destination shared
- * by two different texts belongs to neither, so it is left out.
+ * renamed fields pairs the same way, or from a code component's markup (codeItemLinks). A destination shared by two
+ * different texts belongs to neither, so it is left out.
  */
 export function itemLinkPairs(def: ComponentDefinition, listProp: string): Array<{ text: string; link: string }> {
   const schema = Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
-  if (!def.tree || schema?.type !== 'list') return [];
+  if (schema?.type !== 'list') return [];
+  const shown: Array<{ text: string; link: string }> = [];
+  if (def.tree) {
+    for (const n of Object.values(def.tree.nodes)) {
+      if (n.kind !== 'link' || !isBinding(n.label) || !isBinding(n.link) || !('$item' in n.label) || !('$item' in n.link)) continue;
+      if (enclosingRepeatProp(def, n.id) === listProp) shown.push({ text: n.label.$item, link: n.link.$item });
+    }
+  } else if (def.kind === 'code') shown.push(...codeItemLinks(def.source ?? '', listProp));
   const found = new Map<string, { text: string; link: string }>();
-  for (const n of Object.values(def.tree.nodes)) {
-    if (n.kind !== 'link' || !isBinding(n.label) || !isBinding(n.link) || !('$item' in n.label) || !('$item' in n.link)) continue;
-    const text = n.label.$item;
-    const link = n.link.$item;
+  for (const { text, link } of shown) {
     if (!Object.hasOwn(schema.fields, text) || !Object.hasOwn(schema.fields, link)) continue;
     if (schema.fields[text].type !== 'string' || schema.fields[link].type !== 'link') continue;
-    if (enclosingRepeatProp(def, n.id) !== listProp) continue;
     found.set(`${text}\u0000${link}`, { text, link });
   }
   const pairs = [...found.values()];
   return pairs.filter((p) => pairs.filter((q) => q.link === p.link).length === 1);
+}
+
+const JS_ID = '[A-Za-z_$][\\w$]*';
+/** `item.field` alone, as a link's destination or a link's only content. */
+const ITEM_FIELD = new RegExp(`^\\s*(${JS_ID})\\s*\\.\\s*(${JS_ID})\\s*$`);
+/** One attribute of a tag, its value quoted, in braces, or absent. */
+const ATTRIBUTE = /\s*([^\s=/>"'{]+)(?:\s*=\s*("[^"]*"|'[^']*'|\{[^{}]*\}|[^\s>"'{]+))?|\s*(\{[^{}]*\})/y;
+
+/**
+ * The links a code component's markup draws for each item of a list, each showing only one field of the item:
+ * `{#each items as item}…<SoLink link={item.link} …>{item.value}</SoLink>…{/each}` reads as `{ text: 'value', link:
+ * 'link' }`. The item is the one the innermost open `#each` names, as Svelte scopes it: a nested list with the same
+ * name hides its parent's, and an `{:else}` (shown when the list is empty) has no item of its own.
+ */
+function codeItemLinks(source: string, listProp: string): Array<{ text: string; link: string }> {
+  const markup = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '').replace(/<!--[\s\S]*?-->/g, '');
+  const out: Array<{ text: string; link: string }> = [];
+  // Every block is kept, so each `{/…}` closes its own; only an `#each` over a property names a list's item.
+  const open: Array<{ list: string | null; item: string | null }> = [];
+  const tokens = /\{#(\w+)\s*([^}]*)\}|\{:else\b[^}]*\}|\{\/\w+\s*\}|<SoLink\b((?:[^>"'{]|"[^"]*"|'[^']*'|\{[^{}]*\})*)>\s*\{([^{}]*)\}\s*<\/SoLink>/g;
+  for (const m of markup.matchAll(tokens)) {
+    if (m[1] !== undefined) {
+      const each = m[1] === 'each' ? new RegExp(`^(.*?)\\s+as\\s+(${JS_ID})\\b`, 's').exec(m[2]) : null;
+      const list = each && new RegExp(`^\\s*(${JS_ID})\\s*$`).exec(each[1]);
+      open.push({ list: list?.[1] ?? null, item: each?.[2] ?? null });
+    } else if (m[0].startsWith('{:else')) {
+      // An `{:else if}` of an `#if` keeps its block; an each's `{:else}` shows no item.
+      const top = open.at(-1);
+      if (top?.item) open[open.length - 1] = { list: null, item: null };
+    } else if (m[0].startsWith('{/')) open.pop();
+    else {
+      const text = ITEM_FIELD.exec(m[4]);
+      const link = linkAttribute(m[3]);
+      if (!text || !link || link[1] !== text[1]) continue;
+      const each = open.findLast((e) => e.item === text[1]);
+      if (each?.list === listProp) out.push({ text: text[2], link: link[2] });
+    }
+  }
+  return out;
+}
+
+/** The `item.field` a SoLink's `link={…}` attribute names, read attribute by attribute so quoted text never counts. */
+function linkAttribute(attrs: string): RegExpExecArray | null {
+  let found: RegExpExecArray | null = null;
+  ATTRIBUTE.lastIndex = 0;
+  for (let m = ATTRIBUTE.exec(attrs); m && m[0]; m = ATTRIBUTE.exec(attrs)) {
+    if (m[1] !== 'link') continue;
+    found = m[2]?.startsWith('{') ? ITEM_FIELD.exec(m[2].slice(1, -1)) : null;
+  }
+  return found;
 }
 
 /**

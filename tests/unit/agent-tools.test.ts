@@ -354,8 +354,7 @@ describe('upsert_page_with_sections', () => {
     expect(stored.find((i) => i.label === 'Phone')).toMatchObject({ value: '+1 202 555 0142', link: { type: 'tel', target: '+15550134' } });
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails("moves the release's contact link with the address a rewrite changes", async () => {
+  it("moves the release's contact link with the address a rewrite changes", async () => {
     const stored = await rewriteContact(false);
     expect(stored.find((i) => i.label === 'Email')).toMatchObject({ value: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } });
   });
