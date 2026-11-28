@@ -1327,6 +1327,18 @@ export type SourceSyncResult =
   | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number; droppedLinks?: SourceDroppedLinks }
   | { ok: false; message: string; code?: string };
 
+/**
+ * The props a code component's code takes from $props() that a property could set, in the order the code takes them,
+ * with the default it writes for each as a literal value (main/codecheck.ts codePropsTaken). `handed` says the code
+ * hands the props object on, where a property may be read without the check seeing it.
+ */
+export interface CodePropsTaken {
+  props: Array<{ name: string; default?: { value: unknown } }>;
+  handed: boolean;
+  /** The props the component's variant axes arrive in: never properties, whether the code takes them or not. */
+  axes: string[];
+}
+
 /** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */
 export interface SourceManifest {
   /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
@@ -1595,7 +1607,7 @@ export interface BuilderApi {
      * Checks a code component's source as saving it would. With `manifest`, the props the code takes are held to the
      * properties given (the editor's draft), or else those of the component `definitionId` names, and to its axes.
      */
-    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }>; props: CodePropsTaken | null }>;
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;

@@ -1,6 +1,6 @@
 import './SourceModal.css';
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { CircleAlert, CircleCheck, Code, FileCode2, Lock, Sparkles } from 'lucide-react';
+import { CircleAlert, CircleCheck, Code, FileCode2, ListPlus, Lock, Sparkles } from 'lucide-react';
 import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog, warningsToast } from '../store';
 import { CODE_DRAFT } from '../lib/pending';
 import { Field, Modal, Spinner, Tabs } from '../components/ui';
@@ -11,7 +11,8 @@ import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, row
 import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
-import { EXTERNAL_SOURCE_REFUSED, type SourceManifest } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, type CodePropsTaken, type SourceManifest } from '@shared/api';
+import { codePropsSync, declareFromCode, removeProperties } from '../lib/prop-schema';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -276,6 +277,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const [liveLine, setLiveLine] = useState<number | undefined>();
   // The live check is still to report on the code as it stands: until it does, its last count says nothing.
   const [liveChecking, setLiveChecking] = useState(true);
+  // What the code took from $props() when the live check last reported on it.
+  const [taken, setTaken] = useState<CodePropsTaken | null>(null);
   const editor = useRef<CodeEditorHandle | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const problemsList = useRef<HTMLElement | null>(null);
@@ -411,6 +414,14 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     setSaved(false);
     setCheckedOk(false);
     setErrors((e) => (e.length ? [] : e));
+  };
+  /** Declare the properties from the code (or remove those it never reads), then show the result to review. */
+  const syncRows = (edit: (rows: SchemaRow[]) => SchemaRow[]) => {
+    setRows(edit);
+    setSaved(false);
+    setCheckedOk(false);
+    setErrors((e) => (e.length ? [] : e));
+    setTab('manifest');
   };
   /** Settle a code conflict: take the newer code (Undo in the editor brings the edits back), or keep the edits. */
   const takeNewerCode = () => {
@@ -627,6 +638,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
                     saveHint={saveHint}
                     onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                     onChecking={setLiveChecking}
+                    onProps={setTaken}
                     problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
                     manifest={manifest}
                     handle={editor}
@@ -702,12 +714,54 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             </button>
           </div>
         )}
+        {src?.editable && !liveChecking && <CodePropsNote rows={rows} taken={taken} disabled={saving} onRows={syncRows} />}
         <SaveProblems problems={errors} onGoTo={goToLine} focusRef={problemsList} />
         <span className="sr-only" role="status">
           {refusal(errors)}
         </span>
       </div>
     </Modal>
+  );
+}
+
+/** Names joined for a sentence: “a”, “a and b”, “a, b and c”. */
+const joined = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+
+/**
+ * Where the properties and the props the code takes disagree, with one action that declares the props the code takes
+ * (each undeclared one added, each default the code writes taken) and one that removes the properties it never reads.
+ * Either shows its result in the Properties tab, to review before saving. Says nothing while the check has yet to
+ * report on the code as it stands, so it never acts on code that has since changed.
+ */
+function CodePropsNote({ rows, taken, disabled, onRows }: { rows: SchemaRow[]; taken: CodePropsTaken | null; disabled: boolean; onRows: (edit: (rows: SchemaRow[]) => SchemaRow[]) => void }) {
+  if (!taken) return null;
+  const sync = codePropsSync(rows, taken);
+  if (!sync.add.length && !sync.defaults.length && !sync.unread.length) return null;
+  const labelOf = (name: string) => {
+    const r = rows.find((x) => x.name.trim() === name);
+    return `“${String(r?.schema.label || name)}”`;
+  };
+  const said: string[] = [];
+  if (sync.add.length) said.push(`The code takes ${joined(sync.add.map((a) => a.name))}, which ${sync.add.length === 1 ? 'is not a property' : 'are not properties'}.`);
+  if (sync.defaults.length) said.push(`It writes ${sync.defaults.length === 1 ? 'another default' : 'other defaults'} for ${joined(sync.defaults.map((d) => labelOf(d.name)))}.`);
+  if (sync.unread.length) said.push(`It never reads ${joined(sync.unread.map(labelOf))}.`);
+  return (
+    <div className="scope-note code-props-sync" role="status">
+      <ListPlus aria-hidden="true" />
+      <span className="grow">
+        <strong>The properties don’t match the code.</strong> {said.join(' ')}
+      </span>
+      {(sync.add.length > 0 || sync.defaults.length > 0) && (
+        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => declareFromCode(r, codePropsSync(r, taken)))}>
+          Declare from code
+        </button>
+      )}
+      {sync.unread.length > 0 && (
+        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => removeProperties(r, codePropsSync(r, taken).unread))}>
+          {sync.unread.length === 1 ? 'Remove it' : `Remove ${sync.unread.length}`}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -804,6 +858,7 @@ export function NewCodeComponentModal() {
   const [liveLine, setLiveLine] = useState<number | undefined>();
   const [liveChecking, setLiveChecking] = useState(true);
   const [checkedOk, setCheckedOk] = useState(false);
+  const [taken, setTaken] = useState<CodePropsTaken | null>(null);
   const alive = useAlive();
   const tabNow = useRef(tab);
   tabNow.current = tab;
@@ -970,6 +1025,7 @@ export function NewCodeComponentModal() {
                   saveHint={saveHint}
                   onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                   onChecking={setLiveChecking}
+                  onProps={setTaken}
                   problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
                   manifest={manifest}
                   handle={editor}
@@ -996,6 +1052,18 @@ export function NewCodeComponentModal() {
             }
           ]}
         />
+        {!liveChecking && (
+          <CodePropsNote
+            rows={rows}
+            taken={taken}
+            disabled={saving}
+            onRows={(edit) => {
+              setRows(edit);
+              setErrors((e) => (e.length ? [] : e));
+              setTab('manifest');
+            }}
+          />
+        )}
         <SaveProblems problems={errors} onGoTo={goToLine} focusRef={problemsList} heading="Not created" />
         <span className="sr-only" role="status">
           {refusal(errors, 'Not created')}

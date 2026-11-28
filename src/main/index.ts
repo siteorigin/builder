@@ -29,7 +29,7 @@ import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
-import { checkSvelteSource, codeContractNames, componentSources, projectTokenVars } from './codecheck';
+import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, projectTokenVars } from './codecheck';
 import { designCalled } from '@generator/index';
 import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -853,7 +853,9 @@ function registerIpc() {
     const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
     const problems = await checkSvelteSource(String(source), { contract, ...held, ...(state ? { tokens: projectTokenVars(state) } : {}) });
     const errors = problems.filter((p) => p.severity === 'error');
-    return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
+    // What the code takes from $props(), so the editor can declare its properties from it.
+    const props = await codePropsTaken(String(source), { variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) });
+    return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems, props };
   });
   // Save's last step: resolves once the project's queued writes are on disk, saying whether they all got there.
   handle('project:flush', (opening?: unknown) => controller.flush(typeof opening === 'string' ? opening : undefined));
