@@ -281,12 +281,16 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   }
 }
 
+/** The release sections, written in code, whose outer box is known to show a picture behind its content. */
+const CODE_PHOTO_SECTIONS = ['layout.section', 'hero.centered'];
+
 /**
  * The style controls a component part offers: the part's own list, plus Image focus on an image it lets authors
- * crop to an aspect ratio, and Background image on a box whose background it lets authors change. Derived rather
- * than stored, so components already in a project offer them too.
+ * crop to an aspect ratio, and Background image on a box whose background it lets authors change. A box is an
+ * element of a design, or the whole of one of CODE_PHOTO_SECTIONS: no tree says what other code draws. Derived
+ * rather than stored, so components already in a project offer them too.
  */
-export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree'>, partId: string): string[] | undefined {
+export function partStyleControls(def: Pick<ComponentDefinition, 'kind' | 'owner' | 'componentId' | 'parts' | 'tree'>, partId: string): string[] | undefined {
   const part = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
   const list = part?.styleControls;
   if (!part || !list?.length) return list;
@@ -296,7 +300,8 @@ export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree
     return at < 0 || list.includes(add) ? list : [...list.slice(0, at + 1), add, ...list.slice(at + 1)];
   };
   if (node?.kind === 'image') return after(list, 'aspectRatio', 'objectPosition');
-  if (node?.kind === 'element') return after(list, 'background', 'backgroundImage');
+  const photoSection = partId === 'root' && def.kind === 'code' && def.owner === 'theme' && CODE_PHOTO_SECTIONS.includes(def.componentId);
+  if (node?.kind === 'element' || photoSection) return after(list, 'background', 'backgroundImage');
   return list;
 }
 
@@ -309,7 +314,7 @@ const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'ra
  * at some sizes whatever else its design lets change; so does each part of a code component that places the
  * override classes it is given (`codeStyled`). A managed section's other parts offer their own list.
  */
-export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'tree'>, partId: string, codeStyled: boolean): string[] | undefined | null {
+export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | 'owner' | 'componentId' | 'parts' | 'tree'>, partId: string, codeStyled: boolean): string[] | undefined | null {
   if (partId !== 'root' && !Object.hasOwn(def.parts, partId)) return null;
   if (def.kind === 'code' && !codeStyled) return null;
   const list = partStyleControls(def, partId);
