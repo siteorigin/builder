@@ -27,8 +27,8 @@ const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find(
 
 describe('the way a language is written', () => {
   it('runs right to left for Arabic, Hebrew and their kin, and by the script a code names', () => {
-    for (const code of ['ar', 'AR', 'ar-EG', 'arz', 'ary', 'ARZ-EG', 'ary-MA', 'arz-Arab', 'apc', 'acm', 'aeb', 'afb', 'ajp', 'arb', 'bgn', 'he', 'iw', 'he-IL', 'fa', 'fa-IR', 'ur', 'ps', 'dv', 'yi', 'ckb', 'syr', 'az-Arab', 'ku-Arab', 'pa-Arab', 'zh-Hebr']) expect(languageDirection(code), code).toBe('rtl');
-    for (const code of ['en', 'en-GB', 'fr-CA', 'de', 'zh-Hant-TW', 'ja', 'ar-Latn', 'arz-Latn', 'ary-Latn', 'az-Latn', 'az', 'ku', 'sr-Cyrl']) expect(languageDirection(code), code).toBe('ltr');
+    for (const code of ['ar', 'AR', 'ar-EG', 'arz', 'ary', 'ARZ-EG', 'ary-MA', 'arz-Arab', 'apc', 'acm', 'aeb', 'afb', 'ajp', 'arb', 'bgn', 'mey', 'mey-MR', 'jrb', 'he', 'iw', 'he-IL', 'fa', 'fa-IR', 'ur', 'ps', 'dv', 'yi', 'ckb', 'syr', 'az-Arab', 'ku-Arab', 'pa-Arab', 'zh-Hebr']) expect(languageDirection(code), code).toBe('rtl');
+    for (const code of ['en', 'en-GB', 'fr-CA', 'de', 'zh-Hant-TW', 'ja', 'ar-Latn', 'arz-Latn', 'ary-Latn', 'acy', 'pga', 'xaa', 'mey-SN', 'az-Latn', 'az', 'ku', 'sr-Cyrl']) expect(languageDirection(code), code).toBe('ltr');
     // A language written in another script in one region goes that script's way there (Unicode's likely subtags).
     for (const code of ['pa-PK', 'az-IR', 'ku-IQ', 'ku-IR', 'uz-AF', 'tg-PK', 'kk-CN', 'ky-CN']) expect(languageDirection(code), code).toBe('rtl');
     for (const code of ['pa', 'pa-IN', 'az-AZ', 'sd-IN', 'pa-Guru-PK']) expect(languageDirection(code), code).toBe('ltr');
