@@ -186,7 +186,12 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
 
   it('says how many old addresses wait for their draft to be published (#1501)', async () => {
     await mount(site, preview(true, { redirects: 4, redirectsPending: 1, redirectsLost: 2 }));
-    await page.getByText(/4 keep working · 1 once its post is published · 2 can’t/).waitFor();
+    await page.getByText(/^3 keep working · 1 once its post is published · 2 can’t$/).waitFor();
+  });
+
+  it('says when every old address waits for its draft (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 2, redirectsPending: 2 }));
+    await page.getByText(/^2 once their posts are published$/).waitFor();
   });
 
   it('says nothing of drafts when every old address works now (#1501)', async () => {

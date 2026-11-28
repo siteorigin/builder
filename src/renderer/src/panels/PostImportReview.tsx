@@ -382,8 +382,13 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           (preview.redirects > 0 || !!preview.redirectsLost) && [
             'Old addresses',
             <>
-              {preview.redirects ? `${plural(preview.redirects, 'keeps', 'keep')} working` : 'None keep working'}
-              {!!preview.redirectsPending && ` · ${preview.redirectsPending.toLocaleString()} once ${preview.redirectsPending === 1 ? 'its post is' : 'their posts are'} published`}
+              {(() => {
+                // The addresses kept for drafts start working once their posts are published, not now.
+                const pending = preview.redirectsPending;
+                const now = preview.redirects - pending;
+                const later = pending ? `${pending.toLocaleString()} once ${pending === 1 ? 'its post is' : 'their posts are'} published` : '';
+                return now ? `${plural(now, 'keeps', 'keep')} working${later ? ` · ${later}` : ''}` : later ? `${later.charAt(0).toUpperCase()}${later.slice(1)}` : 'None keep working';
+              })()}
               {!!preview.redirectsLost && (
                 <>
                   {' · '}

@@ -571,6 +571,10 @@ describe('reading posts in batches', () => {
 });
 
 describe('reading a WordPress export: statuses, dates and links', () => {
+  it('keeps the old address of a post whose text could not be read, which arrives as a draft (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Big', link: 'https://old.example/2020/01/big/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, '<b></b>'.repeat(200_001))]), {});
+    expect(source.posts[0]).toMatchObject({ title: 'Big', draft: true, draftReason: 'its text could not be read', oldPath: '/2020/01/big/' });
+  });
   it('keeps a post a draft when it was private, password-protected or has no date', async () => {
     const source = await readWordPress(
       wxr([
