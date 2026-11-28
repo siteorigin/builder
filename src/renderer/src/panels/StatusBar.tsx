@@ -14,6 +14,8 @@ import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
+import { healthDiagnostics, keepSamples, sampleGroups, sampleKindOf } from '../lib/sample-review';
+import type { SampleContactKind } from '@shared/sample-contact';
 import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, diffCaption, lineDiff, sameVersions, savedCopyDay, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
@@ -53,7 +55,7 @@ function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady
  */
 function useHealthAnnouncement(quietConflicts: () => boolean): string {
   const health = useStore((s) => {
-    const d = s.snapshot?.diagnostics ?? [];
+    const d = healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples);
     const conflicts = s.snapshot?.conflicts.length ?? 0;
     const info = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
     const broken = info.broken;
@@ -125,6 +127,8 @@ export function StatusBar() {
   const previewActionable = useStore((s) => !s.openingPage && ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
   // While the canvas outlines the project's first page, that outline is the opening's one sign: the preview's line waits.
   const openingPage = useStore((s) => s.openingPage);
+  // The project's findings with the starter's sample contact details not kept on purpose, as Project health lists them.
+  const diagnostics = useStore((s) => healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples));
   useLayoutEffect(() => {
     if (previewActionable || !previewHadFocus.current) return;
     previewHadFocus.current = false;
@@ -138,8 +142,8 @@ export function StatusBar() {
   // (the SEO view or the post writer over it), since the outline on it says so otherwise.
   const info = runtimeInfo(runtime, pageIssue, frameReady);
   const { dot, label, broken, phase } = openingPage ? { ...info, dot: 'busy', label: info.phase === 'opening' ? 'Opening page' : 'Starting preview', phase: 'starting' as const } : info;
-  const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
-  const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
+  const errors = diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
+  const warnings = diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
   // overview, then the design's own layers down to the selection.
   const def = definitionMode && !covered ? snap.state.components[definitionMode.definitionId] : undefined;
@@ -421,6 +425,35 @@ function showHeadings(pageId: string, d: Diagnostic) {
   let tries = 0;
   const step = () => (++tries > 2 && land()) || tries > 12 || requestAnimationFrame(step);
   requestAnimationFrame(step);
+}
+
+/**
+ * A sample contact detail's choices in Project health, as the Export dialog offers them: replace it everywhere it is
+ * on a page (Find and Replace), change it where Site settings names the publisher, or keep it on purpose, which this
+ * project remembers and the Export dialog respects.
+ */
+function SampleActions({ kind, state, readOnly, onKept }: { kind: SampleContactKind; state: ProjectState; readOnly: boolean; onKept: (value: string) => void }) {
+  const g = sampleGroups(state).find((x) => x.kind === kind);
+  if (!g) return null;
+  const identity = { kind: 'site', field: 'identity' } as const;
+  return (
+    <>
+      {g.matches.length > 0 && (
+        <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
+          Replace everywhere…
+        </button>
+      )}
+      {g.identity && (
+        <button className="btn btn-sm" onClick={() => openEditorDestination(identity)}>
+          {destinationLabel(identity)}
+        </button>
+      )}
+      {/* A read-only project keeps nothing. */}
+      <button className="btn btn-sm btn-ghost" disabled={readOnly} onClick={() => (keepSamples([g.value], true), onKept(g.value))}>
+        Keep it
+      </button>
+    </>
+  );
 }
 
 type Tone = 'danger' | 'warn' | 'quiet';
@@ -776,6 +809,8 @@ export function HealthModal() {
   const frameReady = useStore((s) => s.frameReady);
   // Opened at Search & AI readiness (from the export dialog's preflight): its heading takes focus, not the summary.
   const atSeo = useStore((s) => s.modal?.kind === 'health' && s.modal.section === 'seo');
+  // The project's findings with the starter's sample contact details not kept on purpose, as the status bar counts them.
+  const diagnostics = useStore((s) => healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples));
   // The SEO audit reads the project as it is now, while the dialog is open.
   const projectState = snap?.state;
   const seoAudit = useMemo(() => (projectState ? auditForHealth(projectState) : null), [projectState]);
@@ -813,7 +848,7 @@ export function HealthModal() {
   // Settling a problem (or removing a saved copy) removes the row holding the focused button, and one that failed may
   // have left focus nowhere: carry on from the summary, which says what is left.
   // The Search & AI readiness count too: the summary's jump to it goes once its last finding is fixed.
-  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, !!snap?.saveFailure, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
+  const listed = [diagnostics.length, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, !!snap?.saveFailure, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body) summaryRef.current?.focus();
@@ -919,7 +954,7 @@ export function HealthModal() {
   );
 
   // Conflicts are listed with their actions, so their diagnostic copies are skipped. The counts match the status bar's.
-  const listedDiagnostics = snap.diagnostics.filter((d) => d.code !== 'CONFLICT');
+  const listedDiagnostics = diagnostics.filter((d) => d.code !== 'CONFLICT');
   const errors = listedDiagnostics.filter((d) => d.severity === 'error');
   const warnings = listedDiagnostics.filter((d) => d.severity === 'warning');
   const notes = listedDiagnostics.filter((d) => d.severity === 'info');
@@ -1003,6 +1038,8 @@ export function HealthModal() {
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
     // A page with nothing on it has no element to show: the page itself is opened.
     const blankPage = d.code === 'PAGE_EMPTY' && d.owner?.kind === 'page' ? d.owner.id : null;
+    // A sample contact detail from the starter: replaced everywhere at once, changed in Site settings, or kept.
+    const sample = sampleKindOf(d);
     // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
@@ -1013,7 +1050,9 @@ export function HealthModal() {
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={
-          asset ? (
+          sample ? (
+            <SampleActions kind={sample} state={st} readOnly={readOnly} onKept={(value) => setStatus(`${value} is kept as you chose.`)} />
+          ) : asset ? (
             <button className="btn btn-sm" onClick={() => openAsset(asset)}>
               Open in Assets
             </button>

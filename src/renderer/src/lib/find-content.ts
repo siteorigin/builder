@@ -610,13 +610,31 @@ export interface SampleContactGroup {
   label: string;
   /** Every text and destination the published website shows it in. */
   matches: ContentMatch[];
+  /**
+   * The field of Site settings' Published by that holds it too, which the website names as its publisher's (in its
+   * structured data): changed there, not by Find and Replace.
+   */
+  identity?: SampleIdentityField;
+}
+
+/** The fields of the site's publisher (Site settings, Published by) a sample detail can be in. */
+export type SampleIdentityField = 'email' | 'telephone' | 'address';
+
+const IDENTITY_FIELD: Record<SampleContactKind, SampleIdentityField> = { email: 'email', phone: 'telephone', address: 'address' };
+
+/** Whether the site's publisher still gives the sample detail of this kind (its email, telephone or address). */
+function identityHolds(state: ProjectState, kind: SampleContactKind): boolean {
+  const value: unknown = state.site.identity?.[IDENTITY_FIELD[kind]];
+  if (typeof value !== 'string' || !value.trim()) return false;
+  return new RegExp(SAMPLE_PATTERNS[kind].source, SAMPLE_PATTERNS[kind].flags.replace('g', '')).test(value) || (kind === 'phone' && dialsSample(value));
 }
 
 /**
  * The catalogue's sample contact details the published website still shows (see @shared/sample-contact), one group
- * for each that it does: in words visitors read, and in the email and phone links they use. Drafts are left out, as
- * the website leaves them out, and the shared header and footer count when a published page shows them. The matches
- * are ordinary find results, so Find and Replace changes a group in one step and the inspector opens each one.
+ * for each that it does: in words visitors read, in the email and phone links they use, and as the publisher's
+ * email, telephone or address in Site settings. Drafts are left out, as the website leaves them out, and the shared
+ * header and footer count when a published page shows them. The matches are ordinary find results, so Find and
+ * Replace changes a group in one step and the inspector opens each one.
  */
 export function sampleContactMatches(state: ProjectState): SampleContactGroup[] {
   // What the published website shows, worked out as it is built (a condition on a link to a draft reads it as gone).
@@ -642,7 +660,8 @@ export function sampleContactMatches(state: ProjectState): SampleContactGroup[] 
         }
       }
     }
-    if (matches.length) groups.push({ ...sample, matches });
+    const identity = identityHolds(live, sample.kind);
+    if (matches.length || identity) groups.push({ ...sample, matches, ...(identity ? { identity: IDENTITY_FIELD[sample.kind] } : {}) });
   }
   return groups;
 }

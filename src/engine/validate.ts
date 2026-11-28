@@ -26,7 +26,7 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { blankPages, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { blankPages, describeDraftLink, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, publicationPlan, shownArchiveLayouts, unfilledImages, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -69,7 +69,7 @@ export const diagnosticKey = (d: Diagnostic): string => {
  * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section
  * that was just deleted, say), so they never stop a change from being saved or a file from being loaded.
  */
-const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING']);
+const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING', 'LINK_TO_DRAFT']);
 
 /** Whether a diagnostic leaves the project inconsistent enough that a change introducing it is refused. */
 export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTENT_ERRORS.has(d.code);
@@ -671,11 +671,58 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  append(links, draftLinkDiagnostics(state));
+  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...unfilledImageDiagnostics(state, keep), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   for (const d of elementContrastDiagnostics(state, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
   return [links, rest];
+}
+
+/**
+ * Links the published website shows that go to a draft page or entry (publicationPlan), which the website leaves out:
+ * the website export stops on them, so Project health says so first. They never stop a save (CONTENT_ERRORS). Each is
+ * told by the node holding it, which of its links it is, where it goes and the entry whose page shows it (for a
+ * layout's link), so Project health can open that page.
+ */
+export function draftLinkDiagnostics(state: ProjectState): Diagnostic[] {
+  return publicationPlan(state).draftLinks.map((l) => ({
+    severity: 'error',
+    code: 'LINK_TO_DRAFT',
+    message: `${describeDraftLink(state, l)}, a draft the website leaves out. The website export stops until the link is changed or the ${l.entryId !== undefined ? 'entry' : 'page'} is published.`,
+    owner: l.owner,
+    ...(l.nodeId ? { nodeId: l.nodeId } : {}),
+    site: JSON.stringify([l.nodeId || null, l.key, l.pageId ?? null, l.entryId ?? null, l.anchor ?? null, l.shownOn ?? null])
+  }));
+}
+
+/** The entry whose page shows a draft link found in a collection's layout (see draftLinkDiagnostics), from its `site`. */
+export function draftLinkShownOn(d: Diagnostic): string | undefined {
+  if (d.code !== 'LINK_TO_DRAFT' || !d.site) return undefined;
+  try {
+    const at = JSON.parse(d.site) as unknown[];
+    return typeof at[5] === 'string' ? at[5] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Images the published website shows as an empty placeholder box (unfilledImages): on its pages, the shared header
+ * and footer while anything published shows them, and the collection layouts it uses. Drafts are left out, as the
+ * website leaves them out. Each page's and shared part's are kept while its tree is the same (ValidationCache).
+ */
+function unfilledImageDiagnostics(state: ProjectState, keep: Keeper): Diagnostic[] {
+  const live = publishedState(state);
+  return websiteTrees(live).flatMap((t) =>
+    keep.tree(t, 'unfilledImages', () =>
+      unfilledImages(live, t.tree).map((img): Diagnostic => {
+        const node = t.tree.nodes[img.nodeId];
+        const what = node?.kind === 'instance' ? `${displayName(live, node)} shows ${img.name === 'Image' ? 'an image' : `“${img.name}”`}${img.item ? ` for “${img.item}”` : ''}` : img.name === 'Image' ? 'an image' : `the image “${img.name}”`;
+        return { severity: 'warning', code: 'IMAGE_UNFILLED', message: `${t.label}: ${what} with no picture chosen, so visitors see an empty placeholder box. Choose a picture for it, or remove it.`, owner: t.owner, nodeId: img.nodeId, site: img.site };
+      })
+    )
+  );
 }
 
 /** Published pages with nothing on them (see blankPages). */
