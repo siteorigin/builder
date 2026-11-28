@@ -1,7 +1,8 @@
 /**
  * The toolbar's page switcher names what the canvas shows (#1110): while a collection's entry layout or index layout
  * is open it names the layout, with no home glyph and no page checked in its menu, and names the page again once the
- * layout is left. The real toolbar and store run in a real browser.
+ * layout is left. Its Mode toggle has the SEO view as a third option (#1583). The real toolbar and store run in a
+ * real browser.
  */
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -20,10 +21,13 @@ const ENTRY = [
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
   `import { Toolbar } from ${renderer('panels/Toolbar')};`,
-  `import { useStore } from ${renderer('store')};`,
+  `import { setState, useStore } from ${renderer('store')};`,
   'const state = window.__project;',
   "flushSync(() => useStore.setState({ screen: 'editor', mode: 'edit', leftTab: 'layers', pageId: state.site.homePageId, snapshot: { state, revision: 1, workspaceKey: 'w1', conflicts: [], history: { canUndo: false, canRedo: false } }, selection: null }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Toolbar)));",
+  'window.__store = useStore;',
+  // As the editor's own panels change it, so the panel before the SEO view is remembered.
+  'window.storeSet = (patch) => flushSync(() => setState(patch));',
   'window.set = (patch) => flushSync(() => useStore.setState(patch));'
 ].join('\n');
 
@@ -127,6 +131,53 @@ describe.skipIf(!browserInstalled)('Toolbar place name (#1110)', { timeout: 60_0
     // Preview alone, as a visitor following a link to an entry sees it, names the layout.
     await set({ definitionMode: null, mode: 'preview', postView: 'write', post: null });
     expect(await place()).toBe(`${name} layout`);
+  });
+
+  it('offers SEO as the Mode toggle’s third option, chosen while the SEO view is open (#1583)', async () => {
+    const mode = page.getByRole('radiogroup', { name: 'Mode' });
+    const radio = (name: string) => mode.getByRole('radio', { name, exact: true });
+    const checked = () => mode.locator('[aria-checked="true"]').getAttribute('aria-label');
+    const leftTab = () => page.evaluate(() => (globalThis as unknown as { __store: { getState: () => { leftTab: string | null; mode: string } } }).__store.getState());
+    const names = async () => Promise.all((await mode.getByRole('radio').all()).map((r) => r.getAttribute('aria-label')));
+    const focused = () => page.evaluate('document.activeElement?.getAttribute("aria-label")');
+    expect(await names()).toEqual(['Edit', 'Preview', 'SEO']);
+    expect(await checked()).toBe('Edit');
+    // The rail's SEO entry (or any other way in) and the toggle agree.
+    await page.evaluate(() => (globalThis as unknown as { storeSet: (p: unknown) => void }).storeSet({ leftTab: 'seo' }));
+    expect(await checked()).toBe('SEO');
+    for (const name of ['Edit', 'Preview']) {
+      expect(await radio(name).isDisabled(), `${name} leaves the view`).toBe(false);
+      expect(await radio(name).getAttribute('title'), `${name} keeps its own tooltip`).toMatch(new RegExp(`^${name}: `));
+    }
+    await radio('Preview').click();
+    expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'preview' });
+    expect(await checked()).toBe('Preview');
+    await radio('SEO').click();
+    expect(await leftTab()).toMatchObject({ leftTab: 'seo', mode: 'preview' });
+    await radio('Edit').click();
+    expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'edit' });
+    // One radio group: one tab stop, and the arrow keys step through all three and wrap.
+    expect(await mode.locator('[tabindex="0"]').getAttribute('aria-label')).toBe('Edit');
+    await radio('Edit').focus();
+    await page.keyboard.press('ArrowLeft');
+    expect(await leftTab()).toMatchObject({ leftTab: 'seo' });
+    expect(await focused()).toBe('SEO');
+    await page.keyboard.press('ArrowRight');
+    expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'edit' });
+    expect(await focused()).toBe('Edit');
+    await page.keyboard.press('ArrowRight');
+    expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'preview' });
+    expect(await focused()).toBe('Preview');
+    expect(await checked()).toBe('Preview');
+    await page.keyboard.press('ArrowRight');
+    expect(await leftTab()).toMatchObject({ leftTab: 'seo' });
+    expect(await focused()).toBe('SEO');
+    // A guest in a live session has no SEO view, so no SEO option.
+    await set({
+      remote: { phase: 'admitted', joinId: 'j1', relayUrl: 'https://relay.test', roomId: 'r1', displayName: 'Guest', hostConnected: true, reconnecting: false, guestId: 'g1', role: 'collaborator', projectName: 'Host project', guestExpiresAt: null, sessionExpiresAt: null, relayClockOffsetMs: 0, hostRuntime: 'ready', previewRevision: 1, previewUrl: null, previewProblem: null, tooLarge: false, participants: [] },
+      snapshot: { state, revision: 1, workspaceKey: 'remote:j1', conflicts: [], history: { canUndo: false, canRedo: false } }
+    });
+    expect(await names()).toEqual(['Edit', 'Preview']);
   });
 
   it('follows the collection being renamed, and goes back to the page when the collection is gone', async () => {

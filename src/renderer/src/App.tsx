@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, claimNavigation, toast, transport, useStore, whenThemesReady } from './store';
-import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
+import { cleanDrafts, cleanGrants, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
 import { UnpackingModal } from './components/ProjectDialogs';
@@ -139,7 +139,7 @@ export function App() {
         // Notices (an error stays until dismissed) belong to the project that closed.
         // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
         // An open from Welcome still on its way ends here too: its project closed before it could show.
-        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatAnswer: { key: '', text: '' }, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatAnswer: { key: '', text: '' }, chatSiteGrants: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -176,6 +176,13 @@ export function App() {
         void loadEditor().then(
           (m) => m.runComponentPreviews(req),
           () => api.componentPreviewResult(req.requestId, [])
+        )
+      ),
+      // The assistant's set_preview (#1405), answered whatever happens, as an inspection is.
+      api.on('preview-control:request', (req) =>
+        void loadEditor().then(
+          (m) => m.runPreviewControl(req),
+          () => api.previewControlResult(req.requestId, { error: 'The editor could not be loaded, so the preview controls could not be changed.' })
         )
       ),
       api.on('component-preview:cancel', (req) => void loadEditor().then((m) => m.cancelComponentPreviews(req.requestId), () => undefined)),
@@ -359,6 +366,8 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
     // A choice to change the whole site was made for the last project, never for this one.
     chatContextEnabled: { page: true, scope: 'selection' },
+    // The conversations that allowed the whole site are this project's own too (#1412).
+    chatSiteGrants: cleanGrants(local.chatSiteGrants),
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     keptSampleContent: Array.isArray(local.keptSampleContent) ? local.keptSampleContent.filter((v): v is string => typeof v === 'string') : [],
     firstSteps: readFirstSteps(local.firstSteps),

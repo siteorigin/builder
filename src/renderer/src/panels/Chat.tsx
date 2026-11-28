@@ -1,7 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, PanelBottom, PanelTop, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { codeModeOff, turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
+import { codeModeOff, turnQuestions, grantsWider, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
@@ -11,7 +11,7 @@ import { importIntoChat, importPastedIntoChat, isFileDrag, pastedImageFiles, ret
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-model';
 import { modelPickerRows, type LocalListing, type ModelPickerRow } from '../lib/modelPicker';
-import { chatContextFor, codeDesign, composerScope, editScope, layoutName, requestTarget, retryView, targetOf } from '../lib/chatTarget';
+import { chatContextFor, codeDesign, composerScope, editScope, layoutName, requestTarget, retryView, targetOf, grantedScope, withGrant } from '../lib/chatTarget';
 import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { AI_IMAGE_PRIVACY } from '../lib/ai-privacy';
@@ -331,8 +331,22 @@ function checkCounts(r: NonNullable<ChatMessage['result']>): string[] {
   return [issues.length ? `${issues.length} ${issues.length === 1 ? 'issue' : 'issues'}` : '', unverified.length ? `${unverified.length} not checked` : ''].filter(Boolean);
 }
 
-/** Plain affirmative answers that grant a scope-widening question when typed, as the agent reads them (orchestrator.ts). */
-const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+/**
+ * Said under a scope-widening question, and with it when it is announced: what allowing it does, and for how long
+ * (#1412). A live-session guest's turn widens that turn alone: the host's own requests keep their scope.
+ */
+const widenNote = (conversation: { messages: ChatMessage[] } | null | undefined, messageId: string) =>
+  conversation?.messages.find((m) => m.id === messageId)?.guest
+    ? 'Allowing it lets this request change the whole site.'
+    : 'Allowing it lets this request change the whole site, and later requests in this conversation start from Whole site.';
+
+/** A record without one key, the same record when it has none. */
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.hasOwn(record, key)) return record;
+  const { [key]: _gone, ...rest } = record;
+  return rest;
+}
 
 /** The step a live run is on, which the run strip names; the transcript keeps the steps already taken. */
 function currentStep(activities: ChatActivity[] | undefined): string | undefined {
@@ -346,7 +360,7 @@ const FOLLOW_PX = 48;
 interface TurnActions {
   undoTurn: (runId: string) => unknown;
   reviewTurn: (entryId: string) => void;
-  continueRequest: (user: ChatMessage | undefined) => void;
+  continueRequest: (user: ChatMessage | undefined, turn?: ChatMessage) => void;
   retryRequest: (user: ChatMessage | undefined) => void;
   msgs: ChatMessage[];
 }
@@ -408,7 +422,8 @@ export function Chat() {
   const seoSubject = useStore((s) => s.seoSubject);
   const snap = useStore((s) => s.snapshot);
   const viewport = useStore((s) => s.viewport);
-  const ctxOn = useStore((s) => s.chatContextEnabled);
+  const ctxChosen = useStore((s) => s.chatContextEnabled);
+  const siteGrants = useStore((s) => s.chatSiteGrants);
   const chatMode = useStore((s) => s.chatMode);
   const runMode = useStore((s) => shownRun(s)?.mode ?? null);
   const askMode = chatMode === 'ask';
@@ -447,7 +462,7 @@ export function Chat() {
   const turnActions = useRef<TurnActions | null>(null);
   const onUndoTurn = useCallback((runId: string) => void turnActions.current?.undoTurn(runId), []);
   const onReviewTurn = useCallback((entryId: string) => turnActions.current?.reviewTurn(entryId), []);
-  const onContinueTurn = useCallback((id: string) => turnActions.current?.continueRequest(requestBefore(turnActions.current.msgs, id)), []);
+  const onContinueTurn = useCallback((id: string) => turnActions.current?.continueRequest(requestBefore(turnActions.current.msgs, id), turnActions.current.msgs.find((m) => m.id === id)), []);
   const onRetryTurn = useCallback((id: string) => turnActions.current?.retryRequest(requestBefore(turnActions.current.msgs, id)), []);
   // Scrolled back far enough that the latest turn is out of sight: offer the way back.
   const [away, setAway] = useState(false);
@@ -684,7 +699,7 @@ export function Chat() {
       trackedRun.current = activeRunId;
       if (runStatus === 'awaiting-input') {
         // Announced once per question, when it arrives; the composer is already where it is answered.
-        if (asking && askingKey) sayOnce(`${askingKey}:asked`, `The AI needs your answer to continue: ${asking.question.text}${asking.question.widen ? ' Allowing it lets this request change the whole site.' : ''}`);
+        if (asking && askingKey) sayOnce(`${askingKey}:asked`, `The AI needs your answer to continue: ${asking.question.text}${asking.question.widen ? ` ${widenNote(conversation, asking.messageId)}` : ''}`);
       } else if (runStatus === 'stopping') sayOnce(`${activeRunId}:stopping`, runMode === 'ask' ? 'Stopping the question.' : 'Stopping the AI. Its changes are being undone.');
       else {
         // The step the strip names, if one is under way: said once each, in the strip's words.
@@ -728,6 +743,17 @@ export function Chat() {
   // scope set from elsewhere since (Fix with AI opening its own conversation as Whole site, say): `widenedTo` is the
   // scope setting the widening made, and only that one is put back.
   const starterWidened = useRef(new Map<string, ChatEditScope>());
+  /** Counts each conversation's narrowings to This page, so an answer sent before one never undoes it (#1412). */
+  const narrowings = useRef(new Map<string, number>());
+  /**
+   * This page as the scope menu last chose it (#1412): the setting it made, the conversation it was chosen in, and when
+   * (`order`, shared with `grantedAt`). A conversation that allowed the whole site is held to it only where it was
+   * chosen, and only until a later Yes there. A page scope set any other way (Write page with AI, Edit and try again)
+   * is never this one, so it always holds.
+   */
+  const pagePick = useRef<{ setting: object; conversationId: string; order: number } | null>(null);
+  const grantedAt = useRef(new Map<string, number>());
+  const order = useRef(0);
   const widenedHere = useRef<string | null>(null);
   const widenedTo = useRef<object | null>(null);
   const setScope = (to: ChatEditScope) => setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: to } });
@@ -804,6 +830,13 @@ export function Chat() {
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
   const sel = selLabel?.toLowerCase();
+  // A conversation that allowed the whole site starts its next edit there (#1412); a question changes nothing.
+  const granted = !askMode && !!conversation && Object.hasOwn(siteGrants, conversation.id);
+  // This page chosen from the menu in another conversation, or here before the Yes, gives way to the grant.
+  const pick = pagePick.current;
+  const pickYields = granted && !!conversation && !!pick && pick.setting === ctxChosen && ctxChosen.scope === 'page' && (pick.conversationId !== conversation.id || (grantedAt.current.get(conversation.id) ?? -1) > pick.order);
+  const grantScope = grantedScope(scope, pickYields ? 'selection' : ctxChosen.scope, granted);
+  const ctxOn = grantScope === ctxChosen.scope ? ctxChosen : { ...ctxChosen, scope: grantScope };
   /** How far the next message goes, as the composer sends it: the selection only while something is selected. */
   const chosen = editScope(scope, ctxOn.scope);
   const toSelection = chosen === 'selection';
@@ -852,7 +885,7 @@ export function Chat() {
           ? (stepNow ?? 'Reading the site')
           : (stepNow ?? PHASE[runStatus ?? ''] ?? 'Thinking');
   // What the run may change, as it stands: once the author allows a wider change, that is the whole site.
-  const widened = !!working && turnQuestions(working).some((q) => q?.widen && typeof q.answered === 'string' && (q.answered === q.choices?.[0] || TYPED_YES.test(q.answered)));
+  const widened = !!working && turnQuestions(working).some((q) => grantsWider(q, q?.answered));
   // The run's scope is named as it stood when it was sent, so a rename or a removal meanwhile cannot rewrite it.
   if (activeRunId && workingUser?.context && frozenScope.current.run !== activeRunId) frozenScope.current = { run: activeRunId, text: scopeOf(workingUser.context, st) };
   const sentScope = activeRunId && frozenScope.current.run === activeRunId ? frozenScope.current.text : '';
@@ -961,7 +994,17 @@ export function Chat() {
           if (conversation) starterWidened.current.delete(conversation.id);
           widenedHere.current = null;
           setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
-          setState({ chatContextEnabled: { ...ctxOn, scope: o.value } });
+          // Choosing the page by hand narrows a conversation that allowed the whole site, for good (#1412): the one shown
+          // when it is chosen, which a menu left open across a switch may not have been opened on.
+          const now = getState();
+          const here = now.conversation;
+          const grants = now.chatSiteGrants;
+          const narrows = o.value === 'page' && !!here;
+          if (narrows) narrowings.current.set(here.id, (narrowings.current.get(here.id) ?? 0) + 1);
+          const narrowed = narrows ? withoutKey(grants, here.id) : grants;
+          const setting = { ...now.chatContextEnabled, scope: o.value };
+          pagePick.current = narrows ? { setting, conversationId: here.id, order: ++order.current } : null;
+          setState({ chatContextEnabled: setting, ...(narrowed !== grants ? { chatSiteGrants: narrowed } : {}) });
           focusComposer();
         } }))
       ],
@@ -1122,7 +1165,19 @@ export function Chat() {
     if ((typeof value === 'string' && !value.trim()) || answering.current === key) return;
     answering.current = key;
     if (typed) answeredAt.current = Date.now();
+    // Allowing the whole site holds for the rest of the conversation it was allowed in (#1412), unless the author has
+    // narrowed it, or left the project, while the answer was on its way. A guest's turn widens that turn alone.
+    const asked = getState().conversation;
+    const grant =
+      asked && grantsWider(q.question, typeof value === 'string' ? value.trim() : null) && !asked.messages.find((m) => m.id === q.messageId)?.guest
+        ? { workspaceKey: getState().snapshot?.workspaceKey, conversationId: asked.id, at: narrowings.current.get(asked.id) ?? 0 }
+        : null;
     const ok = await api.ai.answer(q.runId, q.question.id, typeof value === 'string' ? value.trim() : { assetId: value.assetId }).catch(() => false);
+    if (ok && grant && grant.at === (narrowings.current.get(grant.conversationId) ?? 0) && getState().snapshot?.workspaceKey === grant.workspaceKey) {
+      // Later than This page chosen before it in the same conversation, so that choice gives way (see pagePick).
+      grantedAt.current.set(grant.conversationId, ++order.current);
+      setState({ chatSiteGrants: { ...getState().chatSiteGrants, [grant.conversationId]: true } });
+    }
     if (!ok) {
       if (answering.current === key) {
         answering.current = null;
@@ -1254,7 +1309,7 @@ export function Chat() {
   }, [handed, conversation, running, sending, configured, notice, msgs.length, next?.id, snap.workspaceKey]);
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
-  const continueRequest = (user: ChatMessage | undefined) => {
+  const continueRequest = (user: ChatMessage | undefined, turn?: ChatMessage) => {
     const c = continueContext(user, st, viewport);
     if ('error' in c) {
       // The user picks the target in the editor and sends "Continue" from the composer, never over a draft.
@@ -1268,7 +1323,10 @@ export function Chat() {
       focusComposer();
       return;
     }
-    void send('Continue', c.ctx);
+    // A page request that was allowed the whole site part way through goes on from it, while its conversation still
+    // allows it (#1412); one kept to its page goes on as it was.
+    const widenedTurn = !!turn && !turn.guest && turnQuestions(turn).some((q) => grantsWider(q, q?.answered));
+    void send('Continue', withGrant(c.ctx, widenedTurn && !!conversation && Object.hasOwn(getState().chatSiteGrants, conversation.id)));
   };
 
   /** Send a request that failed on the AI setup again, as it was: same words, page, selection and images. */
@@ -1551,7 +1609,7 @@ export function Chat() {
                         // A starter about another page, a new page or the whole site needs more than this page, so it
                         // widens the chip to Whole site, where the change shows before anything is sent.
                         if (!askMode && !component && s.kind !== 'page' && s.kind !== 'selection' && chosen !== 'site') {
-                          starterWidened.current.set(conversation.id, ctxOn.scope);
+                          starterWidened.current.set(conversation.id, ctxChosen.scope);
                           widenedHere.current = conversation.id;
                           widen();
                           setAnnounce(WIDENED_SAY);
@@ -1774,7 +1832,7 @@ export function Chat() {
           {/* What yes allows is said right under the question, before how to answer it and before it is given. */}
           {asking.question.widen && (
             <p className="question-scope" id="ai-question-scope">
-              <Globe aria-hidden="true" /> Allowing it lets this request change the whole site.
+              <Globe aria-hidden="true" /> {widenNote(conversation, asking.messageId)}
             </p>
           )}
           {/* How to answer sits with the question, ahead of the options, so it is never scrolled out of sight. */}

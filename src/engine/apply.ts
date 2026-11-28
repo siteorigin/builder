@@ -1402,6 +1402,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page', undefined, routeFolder(src.route) ?? '/'), rootIds: [], nodes: {} };
   // A copy is in the same language until it is translated: it is nobody's translation yet.
   delete page.translationGroup;
+  // The copy keeps the original's publication unless the caller asks for a working draft copy.
+  if (op.draft) page.draft = true;
   const groups = new Map<string, string>();
   for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state, groups));
   state.pages[id] = page;

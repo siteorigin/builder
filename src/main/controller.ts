@@ -2919,7 +2919,7 @@ export class Controller {
    */
   forgetConversation(id: string, key: string): () => void {
     if (!this.session || !key || this.workspaceKey !== key) return () => undefined;
-    const { chatDrafts, chatImages, chatConversation } = this.localState;
+    const { chatDrafts, chatImages, chatConversation, chatSiteGrants } = this.localState;
     const patch: LocalWorkspaceState = {};
     const back: LocalWorkspaceState = {};
     if (chatDrafts && Object.hasOwn(chatDrafts, id)) {
@@ -2929,6 +2929,10 @@ export class Controller {
     if (chatImages && Object.hasOwn(chatImages, id)) {
       patch.chatImages = Object.fromEntries(Object.entries(chatImages).filter(([k]) => k !== id));
       back.chatImages = { [id]: chatImages[id] };
+    }
+    if (chatSiteGrants && Object.hasOwn(chatSiteGrants, id)) {
+      patch.chatSiteGrants = Object.fromEntries(Object.entries(chatSiteGrants).filter(([k]) => k !== id)) as Record<string, true>;
+      back.chatSiteGrants = { [id]: true };
     }
     // Left out of the file when it is written: the project reopens on the conversation main shows first.
     if (chatConversation === id) (patch.chatConversation = undefined), (back.chatConversation = id);
@@ -2941,6 +2945,7 @@ export class Controller {
         {
           ...(back.chatDrafts ? { chatDrafts: { ...now.chatDrafts, ...back.chatDrafts } } : {}),
           ...(back.chatImages ? { chatImages: { ...now.chatImages, ...back.chatImages } } : {}),
+          ...(back.chatSiteGrants ? { chatSiteGrants: { ...now.chatSiteGrants, ...back.chatSiteGrants } } : {}),
           // Only while no other conversation has been opened since.
           ...(back.chatConversation && now.chatConversation === undefined ? { chatConversation: back.chatConversation } : {})
         },

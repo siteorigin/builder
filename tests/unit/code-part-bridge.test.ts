@@ -37,13 +37,19 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
 <div style="display: contents" data-so-ctx="page:p" data-so-node="formy" data-so-code="true">
   <form style="display: contents"><input name="children" id="formy-input" style="display:block;width:80px;height:20px" /></form>
 </div>
+<div style="display: contents" data-so-ctx="shell:header" data-so-node="hdr" data-so-code="true">
+  <nav><a id="nl1" class="so-header__link so-part--link">About</a> <a id="nl2" class="so-header__link so-part--link so-part--linkCurrent" aria-current="page">Home</a> <a id="nl3" class="so-header__link so-part--link">Contact</a></nav>
+</div>
+<div style="display: contents" data-so-ctx="shell:header" data-so-node="hdr1" data-so-code="true">
+  <nav><a id="only" class="so-header__link so-part--link so-part--linkCurrent" aria-current="page">Home</a></nav>
+</div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
 let browser: Browser;
 let page: Page;
 let frame: Frame;
 
-type Message = { type: string; payload: { chain?: Array<Record<string, unknown>>; selected?: Array<{ x: number; y: number; width: number; height: number }> } };
+type Message = { type: string; payload: { chain?: Array<Record<string, unknown>>; selected?: Array<{ x: number; y: number; width: number; height: number }>; hovered?: Array<{ x: number; y: number; width: number; height: number }> } };
 const messages = () => page.evaluate<Message[]>(`window.seen`);
 const post = (type: string, payload: object) => page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: ${JSON.stringify(type)}, payload: ${JSON.stringify(payload)} }, '*')`);
 const boxOf = (id: string) => frame.evaluate<{ x: number; y: number; width: number; height: number }>(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
@@ -113,6 +119,51 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     await page.mouse.move(s2.x + s2.width - 5, s2.y + s2.height - 3);
     await page.mouse.move(n2.x + 5, n2.y + 5);
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'hover').map((m) => m.payload.chain?.[0]?.part ?? m.payload.chain?.[0]?.node)).toEqual(['total', 'calc2', 'note']);
+  });
+
+  it('names a link given two parts by the last, and outlines it as either (#1492)', async () => {
+    await post('setMode', { mode: 'edit' });
+    await frame.evaluate(`document.getElementById('nl1').scrollIntoView({ block: 'center' })`);
+    await page.evaluate(`window.seen = []`);
+    const nl2 = await boxOf('nl2');
+    await page.mouse.click(nl2.x + 3, nl2.y + 3);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'shell:header', node: 'hdr', items: '', part: 'linkCurrent', tag: 'a' });
+    const nl1 = await boxOf('nl1');
+    // Every menu link, the current one too, since every link's styles reach it.
+    await post('track', { selected: { ctx: 'shell:header', node: 'hdr', items: '', part: 'link' } });
+    const nl3 = await boxOf('nl3');
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([nl1, nl2, nl3]);
+    await post('track', { selected: { ctx: 'shell:header', node: 'hdr', items: '', part: 'linkCurrent' } });
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([nl2]);
+    // A menu whose only link is the current page still shows it as the menu's links.
+    await post('track', { selected: { ctx: 'shell:header', node: 'hdr1', items: '', part: 'link' } });
+    const only = await boxOf('only');
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([only]);
+    await frame.evaluate(`window.scrollTo(0, 0)`);
+  });
+
+  it('outlines the showing of a hovered part the pointer is on, and follows it to the next (#1492)', async () => {
+    await post('setMode', { mode: 'edit' });
+    await frame.evaluate(`document.getElementById('nl1').scrollIntoView({ block: 'center' })`);
+    const link = { ctx: 'shell:header', node: 'hdr', items: '', part: 'link' };
+    const hovered = async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.hovered;
+    const nl1 = await boxOf('nl1');
+    const nl3 = await boxOf('nl3');
+    await page.mouse.move(nl3.x + 3, nl3.y + 3);
+    // The editor answers a hover over either ordinary link with the same part, Menu links.
+    await post('track', { selected: { ctx: 'shell:header', node: 'hdr', items: '' }, hovered: link });
+    await expect.poll(hovered).toEqual([nl3]);
+    // Onto the other link: the editor's hover stays as it was, and the outline moves with the pointer.
+    await page.mouse.move(nl1.x + 3, nl1.y + 3);
+    await expect.poll(hovered).toEqual([nl1]);
+    // With the pointer outside the frame (over Layers), the part is outlined where it first shows.
+    await page.mouse.move(690, 395);
+    await page.mouse.move(800, 600);
+    await page.evaluate(`window.seen = []`);
+    await post('track', { selected: { ctx: 'shell:header', node: 'hdr', items: '' }, hovered: link });
+    await expect.poll(hovered).toEqual([nl1]);
+    await post('track', { selected: null, hovered: null });
+    await frame.evaluate(`window.scrollTo(0, 0)`);
   });
 
   it('names the one card of a list a repeated part was clicked in, and outlines that card alone', async () => {

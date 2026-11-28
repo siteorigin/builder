@@ -637,7 +637,7 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
       return 'all';
     } else if ((op.type === 'page.update' && op.draft !== undefined) || op.type === 'page.duplicate') {
       // Publishing or drafting an article, or copying one, changes the News lists elsewhere.
-      if (article(op.pageId)) return 'all';
+      if (article(op.pageId) && !(op.type === 'page.duplicate' && op.draft)) return 'all';
       if (op.type === 'page.update') pages.add(op.pageId);
     } else if (op.type === 'page.update') pages.add(op.pageId);
     else if (op.type === 'page.reorder') {

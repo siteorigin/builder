@@ -7034,7 +7034,8 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
       const page = structuredClone(env.session.state.pages[env.session.state.site.homePageId]);
       const { result } = await env.run('Give the paragraph a class', { component: { id: ids.note, name: 'Note' } });
       // Every model gets the same small set: the source to read and patch, pinned to this component.
-      expect(offered).toEqual(['read_source', 'apply_source_patch', 'search_assets', 'request_clarification']);
+      // The editor's Undo and Redo come after it (#1405), on a small model only when the request asks for them.
+      expect(offered).toEqual(['read_source', 'apply_source_patch', 'search_assets', 'request_clarification', ...(window > 8_000 ? ['step_history'] : [])]);
       expect(pinned).toEqual([
         { type: 'string', enum: [ids.note] },
         { type: 'string', enum: [ids.note] }

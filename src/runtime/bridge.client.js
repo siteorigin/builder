@@ -183,6 +183,15 @@ function partIdOf(el) {
   for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
   return part;
 }
+/**
+ * Whether a code component's element is `part`: by its author's marker, or, without one, by any part class the
+ * placement gave it. One element can take two parts' classes (a header's current page link is one of its menu links
+ * too), and is found as either, while a click on it names the last (partIdOf).
+ */
+function marksPart(el, part) {
+  if (HAS_ATTRIBUTE.call(el, 'data-so-part')) return el.getAttribute('data-so-part') === part;
+  return !!el.classList && el.classList.contains(PART_CLASS + part);
+}
 /** The attribute a code component's author marks text with, through the hook only the preview gives it (#1074). */
 const TEXT_ATTR = 'data-so-text';
 /**
@@ -326,7 +335,7 @@ function findAll(desc) {
   const marked = `[data-so-part="${cssEscape(part)}"], .${cssEscape(PART_CLASS + part)}`;
   return els
     .filter((el) => el.hasAttribute('data-so-code'))
-    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
+    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && marksPart(p, part) && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */
@@ -695,7 +704,11 @@ function sendRects() {
   // A slot's placeholder is outlined where it first shows: a copy hidden at this width (a layout's mobile copy on
   // desktop) has no box to outline.
   const hovEls = hovered && mode === 'edit' ? findAll(hovered) : [];
-  const hov = (typeof hovered?.slot === 'string' ? hovEls : hovEls.slice(0, 1)).map(rectOf).filter(Boolean).slice(0, 1);
+  // A part shown more than once (a header's menu links) is outlined where the pointer is on it, else where it first
+  // shows. Called from Node: a form's control named "contains" shadows the method.
+  const under = typeof hovered?.slot === 'string' || !pointerEl?.isConnected ? null : hovEls.find((el) => el === pointerEl || Node.prototype.contains.call(el, pointerEl));
+  const underBox = under ? rectOf(under) : null;
+  const hov = underBox ? [underBox] : (typeof hovered?.slot === 'string' ? hovEls : hovEls.slice(0, 1)).map(rectOf).filter(Boolean).slice(0, 1);
   // A divider between items is not part of the item it follows.
   const rev = revealRoots().filter((el) => !isSeparator(el)).map(rectOf).filter(Boolean);
   // The padding, border and margin of the first selected box the editor outlines, for its spacing handles, with
@@ -1717,9 +1730,12 @@ document.addEventListener(
     const next = at ? at.desc : null;
     // Another element with the same descriptor is news too: the same part of a component placed in another list item
     // differs only further out, in the items its placement carries.
-    if (el === pointerEl && sameDesc(next, pointerAt)) return;
+    const same = sameDesc(next, pointerAt);
+    if (el === pointerEl && same) return;
     pointerAt = next;
     pointerEl = el;
+    // Onto another showing of the same part: the editor's hover stays as it was, and its outline moves here.
+    if (same && hovered && typeof hovered.slot !== 'string') scheduleRects();
     // `at`: when the pointer moved, on the clock the editor's timing marks use, so the time to its outline can be told.
     send('hover', { chain: chainFrom(el, true), at: performance.timeOrigin + e.timeStamp });
   },

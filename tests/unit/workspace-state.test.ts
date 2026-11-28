@@ -384,30 +384,30 @@ describe('a deleted conversation’s workspace state (#235)', () => {
     const { c, parent } = setup();
     const dir = await create(c, parent, 'Kiln and Clay');
     const key = opening(c);
-    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form', c_kept: 'Warmer hero' }, chatImages: { c_gone: ['a_1'], c_kept: ['a_2'] }, chatConversation: 'c_gone', rightTab: 'chat' }, key);
+    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form', c_kept: 'Warmer hero' }, chatImages: { c_gone: ['a_1'], c_kept: ['a_2'] }, chatSiteGrants: { c_gone: true, c_kept: true }, chatConversation: 'c_gone', rightTab: 'chat' }, key);
     // Another opening's delete changes nothing here.
     c.forgetConversation('c_gone', 'another-opening');
     expect(c.snapshot()!.localState.chatDrafts).toEqual({ c_gone: 'Ask about the contact form', c_kept: 'Warmer hero' });
     c.forgetConversation('c_gone', key);
     // Closing straight after still writes the state without it.
     await c.close();
-    expect(onDisk(dir)).toEqual({ chatDrafts: { c_kept: 'Warmer hero' }, chatImages: { c_kept: ['a_2'] }, rightTab: 'chat' });
+    expect(onDisk(dir)).toEqual({ chatDrafts: { c_kept: 'Warmer hero' }, chatImages: { c_kept: ['a_2'] }, chatSiteGrants: { c_kept: true }, rightTab: 'chat' });
   });
 
   it('puts everything back for a delete that failed, and drops a remembered place or images held alone', async () => {
     const { c, parent } = setup();
     await create(c, parent, 'Kiln and Clay');
     const key = opening(c);
-    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatConversation: 'c_gone' }, key);
+    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatSiteGrants: { c_gone: true }, chatConversation: 'c_gone' }, key);
     const restore = c.forgetConversation('c_gone', key);
-    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: {}, chatImages: {}, chatConversation: undefined });
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: {}, chatImages: {}, chatSiteGrants: {}, chatConversation: undefined });
     restore();
-    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatConversation: 'c_gone' });
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatSiteGrants: { c_gone: true }, chatConversation: 'c_gone' });
     // Put back beside whatever changed meanwhile, which stays: another thread's draft, and another one opened.
     const again = c.forgetConversation('c_gone', key);
-    c.saveLocalState({ chatDrafts: { c_new: 'Newer draft' }, chatImages: { c_new: ['a_9'] }, chatConversation: 'c_new' }, key);
+    c.saveLocalState({ chatDrafts: { c_new: 'Newer draft' }, chatImages: { c_new: ['a_9'] }, chatSiteGrants: { c_new: true }, chatConversation: 'c_new' }, key);
     again();
-    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_new: 'Newer draft', c_gone: 'Ask about the contact form' }, chatImages: { c_new: ['a_9'], c_gone: ['a_1'] }, chatConversation: 'c_new' });
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_new: 'Newer draft', c_gone: 'Ask about the contact form' }, chatImages: { c_new: ['a_9'], c_gone: ['a_1'] }, chatSiteGrants: { c_new: true, c_gone: true }, chatConversation: 'c_new' });
     // Only the remembered place, or only images: each goes on its own.
     c.saveLocalState({ chatDrafts: {}, chatImages: {}, chatConversation: 'c_pointer' }, key);
     c.forgetConversation('c_pointer', key);
