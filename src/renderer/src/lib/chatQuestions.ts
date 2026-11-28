@@ -27,6 +27,29 @@ export function shownQuestions(m: ChatMessage, waiting: WaitingQuestion | null):
     .filter((q) => q.answered !== undefined || !(waiting?.messageId === m.id && waiting.question.id === q.id));
 }
 
+/**
+ * `/clear` typed on its own, which starts a new conversation as the New conversation button does instead of going to
+ * the AI (#1356). Only that one command: any other text that starts with `/` is an ordinary message.
+ */
+export function isClearCommand(text: string): boolean {
+  return text.trim() === '/clear';
+}
+
+/**
+ * Why `/clear` can't start a new conversation now, or null when it can: the times the New conversation button is
+ * unavailable, and any request still running, whose thread a new conversation would leave behind while it works.
+ */
+export function clearRefusal(opts: { loaded: boolean; configured: boolean; clearingHistory: boolean; sending: boolean; running: boolean; waiting?: boolean; messages: number }): string | null {
+  if (!opts.loaded) return 'The conversation is still loading. Try /clear again in a moment.';
+  if (opts.clearingHistory) return 'The conversation history is being cleared, which leaves the chat empty.';
+  if (opts.waiting) return 'The AI is waiting for your answer. Answer it, or stop the request, before clearing the chat.';
+  if (opts.running) return 'The chat can be cleared once the AI finishes. Stop the request first to clear it now.';
+  if (opts.sending) return 'Your message is still being sent. Try /clear again once it has started.';
+  if (!opts.messages) return 'This conversation is already empty: there is nothing to clear.';
+  if (!opts.configured) return 'Set up an AI provider in Settings to start a new conversation.';
+  return null;
+}
+
 /** How soon after a typed answer an Enter is taken as a second press of the same key, not a new message. */
 export const ANSWER_ECHO_MS = 1000;
 
@@ -35,8 +58,10 @@ export const ANSWER_ECHO_MS = 1000;
  * after the current request, or nothing. An empty box sends nothing, and an Enter that comes right after a typed
  * answer never sends the message the composer shows again once the question is answered.
  */
-export function composerAction(opts: { text: string; waiting: boolean; running: boolean; sinceAnswerMs?: number }): 'answer' | 'send' | 'hold' | 'none' {
+export function composerAction(opts: { text: string; waiting: boolean; running: boolean; sinceAnswerMs?: number }): 'answer' | 'send' | 'hold' | 'clear' | 'none' {
   if (!opts.text.trim()) return 'none';
+  // `/clear` is never sent, not even as an answer: Chat clears the conversation or says why it can't (#1356).
+  if (isClearCommand(opts.text)) return 'clear';
   if (opts.waiting) return 'answer';
   if (opts.running) return 'hold';
   return (opts.sinceAnswerMs ?? Infinity) < ANSWER_ECHO_MS ? 'none' : 'send';

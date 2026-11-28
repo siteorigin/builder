@@ -395,6 +395,27 @@ describe('component packages: export and import (#371)', () => {
     await s.close();
   });
 
+  it('won’t export code that another project would refuse on import, naming each problem, and exports it once fixed (#1417)', async () => {
+    const s = await blank('Code');
+    const properties = { heading: { type: 'string' as const, label: 'Heading', default: 'Hello' }, text: { type: 'string' as const, label: 'Text', default: 'A custom component.' } };
+    // Saved in the author's own project with warnings: a default that is not the manifest's, and a property never taken.
+    const made = ok(
+      await s.apply({ operations: [{ type: 'component.createCode', name: 'Shore window', source: `<script>\n  let { heading = 'Choose a short shore window' } = $props();\n</script>\n\n<h3>{heading}</h3>\n`, properties }] }, { label: 'Create', codeAllowed: true })
+    ).results![0];
+    const id = made.definitionId as string;
+    const refused = buildComponentPackage(s.dir, s.state, id);
+    await expect(refused).rejects.toThrow(/another project would refuse it on import\. The code for "Shore window" has problems: /);
+    await expect(refused).rejects.toThrow(/line 2: The code's default for heading/);
+    await expect(refused).rejects.toThrow(/default for heading/);
+    await expect(refused).rejects.toThrow(/never takes from \$props\(\)/);
+    // Fixed, it exports and lands in another project.
+    ok(await s.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source: `<script>\n  let { heading = 'Hello', text = 'A custom component.' } = $props();\n</script>\n\n<h3>{heading}</h3>\n<p>{text}</p>\n` }] }, { label: 'Edit', codeAllowed: true }));
+    const { path } = await exportTo(s, id);
+    const dest = await blank('Dest');
+    ok(await importInto(dest, path));
+    await Promise.all([s.close(), dest.close()]);
+  });
+
   it('refuses unsafe or non-compiling code with the reason, changing nothing', async () => {
     const dest = await blank('Dest');
     const untouched = snapshot(dest);

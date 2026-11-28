@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -3007,7 +3007,7 @@ export class Controller {
   }
 
   /** Restore saved version `id` as reviewed at `revision` with the `reviewed` files to put back, in the opening `key` only. */
-  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, key: string): Promise<RestoreVersionResult> {
+  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, key: string): Promise<RestoreVersionResult> {
     const s = this.openedAs(key);
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
@@ -3258,17 +3258,29 @@ export class Controller {
             { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
           );
           const started = outcomes.findIndex((o) => !o);
-          for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
+          // The files that came to each record, by name: those that matched are one record, and the author is told which.
+          const matched = new Map<string, { record: AssetRecord; names: string[] }>();
+          for (const [i, o] of (started < 0 ? outcomes : outcomes.slice(0, started)).entries()) {
             if (!o) continue;
             if ('error' in o) {
               errors.push(o.error.message);
               continue;
             }
             const { record, existing, font, note } = o;
-            if (note) notes.push(note);
-            if (!ids.includes(record.id)) ids.push(record.id);
+            const name = originalNameOf(picked[i]);
+            const same = matched.get(record.id);
+            if (same) same.names.push(name);
+            else {
+              matched.set(record.id, { record, names: [name] });
+              ids.push(record.id);
+              // A later match is not added, so nothing about it says it was.
+              if (note) notes.push(note);
+            }
             if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
             if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+          }
+          for (const { record, names } of matched.values()) {
+            if (names.length > 1) notes.push(`${listNames(names)} match, so Assets keeps only one file for them: ${record.originalName ?? record.name}.`);
           }
           if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
           if (backfills.length) {
@@ -3669,23 +3681,23 @@ export class Controller {
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
    * does. Refused once the project has changed since the review.
    */
-  commitPostImport(id: string, opening: string): Promise<PostImportResult> {
-    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
   }
 
-  private async commitPostImportNow(id: string, opening: string): Promise<PostImportResult> {
+  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     // Taken, once: its plan on disk goes whatever comes of it.
     this.postImport = null;
     try {
-      return await this.commitPending(pending, opening);
+      return await this.commitPending(pending, opening, addToNavigation);
     } finally {
       this.dropReview(pending.stored);
     }
   }
 
-  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string): Promise<PostImportResult> {
+  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
     const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
@@ -3755,12 +3767,15 @@ export class Controller {
         if (!open()) return closed;
         if (this.aiBusy()) return busy;
         const n = plan.posts.length;
-        const r = await s.apply({ operations: planOperations(plan, assetIds, added), expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        const operations = planOperations(plan, assetIds, added, { addToNavigation });
+        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
         if (!r.ok) {
           if (r.error?.code === 'STALE_REVISION') return stale;
           return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
-        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
+        // Whether the blog's link joined the header menu, when one was asked for.
+        const joined = r.results?.[operations.findIndex((o) => o.type === 'collection.create')]?.addedToNavigation;
+        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
       })
     );
   }

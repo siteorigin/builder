@@ -742,7 +742,7 @@ function registerIpc() {
     return controller.insertSavedComponent(id, digest, at, opening, revision as number);
   });
   handle('project:reviewPostImport', (kind: unknown, opening: unknown) => controller.reviewPostImport(kind === 'markdown' ? 'markdown' : 'wordpress', String(opening ?? '')));
-  handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));
+  handle('project:commitPostImport', (id: unknown, opening: unknown, addToNavigation: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? ''), addToNavigation === true));
   handle('project:cancelPostImport', (id: unknown) => controller.cancelPostImport(String(id ?? '')));
   handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
   // External sources (#678): tested, saved and synced by the main process, with secrets that never reach the editor.
@@ -781,9 +781,9 @@ function registerIpc() {
   );
   const paths = (v: unknown): v is string[] => Array.isArray(v) && v.every((f) => typeof f === 'string');
   handle('project:restoreVersion', (id: unknown, revision: unknown, reviewed: unknown, key: unknown) => {
-    const r = reviewed as { files?: unknown; replaced?: unknown } | null;
-    return typeof id === 'string' && Number.isInteger(revision) && r && paths(r.files) && paths(r.replaced) && typeof key === 'string'
-      ? controller.restoreVersion(id, revision as number, { files: r.files, replaced: r.replaced }, key)
+    const r = reviewed as { files?: unknown; replaced?: unknown; others?: unknown } | null;
+    return typeof id === 'string' && Number.isInteger(revision) && r && paths(r.files) && paths(r.replaced) && (r.others === undefined || paths(r.others)) && typeof key === 'string'
+      ? controller.restoreVersion(id, revision as number, { files: r.files, replaced: r.replaced, ...(r.others ? { others: r.others } : {}) }, key)
       : { ok: false, message: 'That saved version is no longer there.' };
   });
   handle('project:renameVersion', (id: unknown, name: unknown, key: unknown) =>

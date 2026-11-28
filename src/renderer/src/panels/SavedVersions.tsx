@@ -8,7 +8,7 @@ import { Spinner } from '../components/ui';
 import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
 import { settleEdits } from '../lib/leave';
 import { formatBytes, plural } from '../lib/storage';
-import { describeReview, fileName, restoredNotice, savedAt } from '../lib/versions';
+import { describeReview, fileName, othersOnly, restoredNotice, savedAt } from '../lib/versions';
 import { fullWhen, lowerDay } from '../lib/when';
 
 /** The longest version name the project accepts (src/main/project/versions.ts). */
@@ -144,7 +144,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
       return setError(r.message ?? 'That saved version could not be read.');
     }
     const got = r.review;
-    const says = (v: VersionReview) => JSON.stringify([v.problem, v.unchanged, describeReview(v), v.missing, v.replaced.length]);
+    const says = (v: VersionReview) => JSON.stringify([v.problem, v.unchanged, describeReview(v), v.missing, v.replaced.length, v.others]);
     if (!quiet) setReviewSaid('Review ready.');
     else if (shown && says(shown) !== says(got)) setReviewSaid('The site changed: review updated.');
     setOpen((o) => (o?.version.id === version.id ? { version, review: got } : o));
@@ -158,7 +158,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     setError(null);
     const problem = await settled();
     if (getState().snapshot?.workspaceKey !== key) return setBusy(false);
-    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, { files: seen.files, replaced: seen.replaced }, key).catch((err: Error) => ({ ok: false, message: err.message }));
+    const r = problem ? { ok: false, message: problem } : await api.project.restoreVersion(version.id, seen.revision, { files: seen.files, replaced: seen.replaced, others: seen.others }, key).catch((err: Error) => ({ ok: false, message: err.message }));
     setBusy(false);
     if (getState().snapshot?.workspaceKey !== key) return;
     // The project changed since the review (a field still being typed in landed, say): show what restoring does now.
@@ -167,10 +167,10 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     // Only this view closes: the author may have moved on to another dialog meanwhile.
     const m = getState().modal;
     if (m?.kind === 'history' && m.tab === 'versions') close();
-    if ('unchanged' in r && r.unchanged) return toast(`Your site already matches “${version.name}”.`, 'info');
     const done = r as RestoreVersionResult;
+    if (done.unchanged) return toast(done.others?.length ? `Your pages, settings and media already match “${version.name}”.` : `Your site already matches “${version.name}”.`, 'info');
     // A restore done whose own saved version is not (or not yet) saved says so, with its Undo all the same.
-    const said = [restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), ...(done.notice ? [done.notice] : [])].join(' ');
+    const said = [restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? [], done.others ?? []), ...(done.notice ? [done.notice] : [])].join(' ');
     toast(said, done.notice ? 'info' : 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
   };
 
@@ -335,6 +335,15 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
             <HistoryNote tone="danger" icon={<CircleAlert aria-hidden="true" />}>
               {r.problem}
             </HistoryNote>
+          ) : r.unchanged && r.others.length ? (
+            // Only files a restore never copies differ (#1396): said so, rather than that the whole site matches.
+            <>
+              {othersOnly(r.others).map((line, i) => (
+                <p key={line} className={i ? 'muted' : undefined}>
+                  {line}
+                </p>
+              ))}
+            </>
           ) : r.unchanged ? (
             <p>Your site already matches this version.</p>
           ) : (

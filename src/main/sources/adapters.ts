@@ -397,7 +397,8 @@ const strapi: SourceAdapter = {
     let expected: number | null = null;
     for (let page = 1; ; page++) {
       const u = under(config.url!, `api/${encodeURIComponent(config.resource!)}`);
-      for (const [k, v] of Object.entries({ 'pagination[page]': String(page), 'pagination[pageSize]': '100', populate: '*' })) u.searchParams.set(k, v);
+      // A server can leave its count of pages out unless asked (Strapi 5's rest.withCount), and only that count says the read is whole.
+      for (const [k, v] of Object.entries({ 'pagination[page]': String(page), 'pagination[pageSize]': '100', 'pagination[withCount]': 'true', populate: '*' })) u.searchParams.set(k, v);
       const r = await transport.json(u.href, { headers });
       const items = listAt(r.body, 'data', 'data').map((x) => {
         const flat = flattenStrapi(x, origin) as Record<string, unknown>;
