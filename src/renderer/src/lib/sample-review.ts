@@ -1,22 +1,13 @@
 /**
  * The starter's sample contact details the published website still shows (sampleContactMatches), as Project health
- * and the Export dialog both review them: one warning for each detail not kept on purpose, and the way to keep one,
- * which this project remembers (`keptSamples`, saved with the workspace). Project health counts them with the
+ * and the Export dialog both review them: one warning for each detail not kept on purpose (`keptSamples`, which the
+ * store's keepSamples remembers with the workspace). Project health counts them with the
  * project's own findings, so the status bar never says "No problems" over a detail the Export dialog asks about.
  */
 import type { Diagnostic } from '@shared/api';
 import type { ProjectState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
-import { getState, saveLocal, setState } from '../store';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from './find-content';
-
-/** Remember the sample details the author keeps on purpose (or, with `keep` false, review again), for this project. */
-export function keepSamples(values: string[], keep: boolean) {
-  const was = getState().keptSamples;
-  const next = keep ? [...new Set([...was, ...values])] : was.filter((v) => !values.includes(v));
-  setState({ keptSamples: next });
-  saveLocal({ keptSamples: next });
-}
 
 /** "Contact", "Contact and the shared footer": where a sample detail is, by page or shared part, in reading order. */
 export function placesOf(fields: ContentField[]): string {

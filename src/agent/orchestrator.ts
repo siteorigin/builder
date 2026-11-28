@@ -14,7 +14,7 @@ import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/compo
 import { newId } from '@shared/ids';
 import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
-import { diagnosticKey, type Diagnostic } from '@engine/validate';
+import { diagnosticKey, stopsExportOnly, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
@@ -1789,7 +1789,8 @@ export class Orchestrator {
       const fresh: Diagnostic[] = [];
       const known: Diagnostic[] = [];
       for (const d of diags) {
-        if (d.severity !== 'error') continue;
+        // A link to a draft is often what was asked for (a page published next); the website export says so itself.
+        if (d.severity !== 'error' || stopsExportOnly(d)) continue;
         const n = left.get(diagnosticKey(d)) ?? 0;
         if (n > 0) {
           left.set(diagnosticKey(d), n - 1);
@@ -1960,9 +1961,11 @@ export class Orchestrator {
       post: ctx?.post ? { collectionId: ctx.post.collectionId, entryId: ctx.post.entryId } : null
     });
     let diagnosticsRoom = diagnosticsChars(capabilities.contextWindowTokens);
+    // An image still waiting for the author's own picture is the author's to choose (Project health and validate_project
+    // list it): left out of what every request carries.
     const diagnostics = () =>
       diagnosticsContext(
-        [...startDiagnostics, ...startBuild],
+        [...startDiagnostics, ...startBuild].filter((d) => d.code !== 'IMAGE_UNFILLED'),
         diagnosticOrder,
         diagnosticsRoom,
         current.tools.some((t) => t.name === 'validate_project') ? 'validate_project shows them' : 'the author sees them in Project health',

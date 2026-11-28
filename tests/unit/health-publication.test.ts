@@ -9,7 +9,7 @@ import type { OwnerRef, ProjectState } from '@shared/types';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, stopsExportOnly, validateState, type Diagnostic } from '@engine/validate';
 import { describeDraftLink, publicationPlan, unfilledImages } from '@generator/checks';
 import { draftLinksStop } from '../../src/main/export';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
@@ -54,8 +54,9 @@ describe('links on the published website to drafts', () => {
     expect(found).toEqual([expect.objectContaining({ severity: 'error', owner: { kind: 'page', id: home }, nodeId: 'n_soon' })]);
     expect(found[0].message).toBe(`${describeDraftLink(s, publicationPlan(s).draftLinks[0])}, a draft the website leaves out. The website export stops until the link is changed or the page is published.`);
     expect(draftLinksStop(s)).not.toBeNull();
-    // A content error: a save, an edit or an import that brings one in is never refused for it.
+    // A content error: a save, an edit or an import that brings one in is never refused for it, nor an undo or the AI.
     expect(found.some(blocksSaving)).toBe(false);
+    expect(found.every(stopsExportOnly)).toBe(true);
     // On a page, the row shows the element itself.
     expect(destinationForDiagnostic(s, found[0])).toBeNull();
     // Publishing the page clears it, as it clears the export's stop.
@@ -94,8 +95,13 @@ describe('links on the published website to drafts', () => {
     const start = site();
     const s = banner(start, { kind: 'page', id: start.site.homePageId }, 'n_soon', { type: 'page', target: 'pg_soon' });
     const diagnostics = validateState(s);
+    const other: Diagnostic = { severity: 'warning', code: 'X', message: 'Something else to check.' };
+    const notes = healthNotes({ seo: [], diagnostics: [...diagnostics, other], shown: [] });
     const without = diagnostics.filter((d) => d.code !== 'LINK_TO_DRAFT');
-    expect(healthNotes({ seo: [], diagnostics, shown: [] })).toEqual(healthNotes({ seo: [], diagnostics: without, shown: [] }));
+    expect(diagnostics.length).toBeGreaterThan(without.length);
+    expect(notes).toEqual(healthNotes({ seo: [], diagnostics: [...without, other], shown: [] }));
+    // Everything else is still counted.
+    expect(notes.otherDue).toBe(without.filter((d) => d.severity !== 'info').length + 1);
   });
 });
 
@@ -138,7 +144,7 @@ describe('images the published website shows as empty placeholder boxes', () => 
     expect(unfilledImages(t, t.pages.pg_soon)).toHaveLength(1);
     // Publishing the draft brings its image in.
     expect(of(run(t, { type: 'page.update', pageId: 'pg_soon', draft: false }), 'IMAGE_UNFILLED')).toHaveLength(2);
-    // Decorative, or with a picture: no box.
+    // Marked decorative (as the issue asks: the runtime still draws its box), or with a picture: no warning.
     const asset = { id: 'img_studio', name: 'Studio', file: 'static/assets/img_studio.png', mime: 'image/png', bytes: 1000, width: 1200, height: 800, hash: 'img_studio', kind: 'image' as const, createdAt: '2026-11-24T09:00:00.000Z' };
     t = run(t, { type: 'asset.add', asset });
     t = run(t, { type: 'instance.setProp', owner: home, nodeId: 'n_hero', prop: 'image', value: { assetId: null, alt: '', decorative: true } });
@@ -180,8 +186,14 @@ describe('the starter’s sample contact details in Project health', () => {
       ['phone', 'telephone'],
       ['address', 'address']
     ]);
-    // Another address in Site settings is not the sample.
-    expect(sampleContactMatches(run(blank, { type: 'site.update', identity: { kind: 'Organization', email: 'hello@example.com.au' } } as EditOperation))).toEqual([]);
+    // Another address or number in Site settings is not the sample, even with the sample inside it.
+    for (const identity of [{ email: 'hello@example.com.au' }, { email: "o'hello@example.com" }, { telephone: '+27 1 555 0134' }, { address: '12 Harbor Lane, Millbrook East' }])
+      expect(sampleContactMatches(run(createStarterState('blank', 'Studio', true), { type: 'site.update', identity: { kind: 'Organization', ...identity } } as EditOperation)), JSON.stringify(identity)).toEqual([]);
+    // The starter's footer holds the samples on its own; with Site settings giving them too, a group has both.
+    const footer = sampleContactMatches(createStarterState('business', 'Riverside Studio', true));
+    expect(footer.length).toBeGreaterThan(0);
+    expect(footer.every((g) => g.matches.length > 0 && g.identity === undefined)).toBe(true);
+    expect(all.every((g) => g.matches.length > 0)).toBe(true);
   });
 
   it('is one warning for each detail not kept, and keeping one takes its warning away', () => {
@@ -195,6 +207,7 @@ describe('the starter’s sample contact details in Project health', () => {
     ]);
     expect(warned[0].message).toMatch(/^Sample email address: hello@example\.com came with the starter and is still on the website \(.+, and in Site settings, under Published by\)/);
     expect(sampleDiagnostics(groups, [SAMPLE_CONTACT.email]).map(sampleKindOf)).toEqual(['phone', 'address']);
+    expect(sampleDiagnostics(groups, [SAMPLE_CONTACT.phone, SAMPLE_CONTACT.address]).map(sampleKindOf)).toEqual(['email']);
   });
 
   it('is counted with the project’s own findings, the same list while nothing changes', () => {
@@ -205,6 +218,12 @@ describe('the starter’s sample contact details in Project health', () => {
     expect(all.slice(0, 1)).toEqual(own);
     expect(all.filter((d) => d.code === 'SAMPLE_CONTACT')).toHaveLength(3);
     expect(healthDiagnostics(s, own, kept)).toBe(all);
+    // New findings from the project are listed in their place, with the same samples.
+    const next: Diagnostic[] = [{ severity: 'warning', code: 'Y', message: 'y' }];
+    expect(healthDiagnostics(s, next, kept).map((d) => d.code)).toEqual(['Y', 'SAMPLE_CONTACT', 'SAMPLE_CONTACT', 'SAMPLE_CONTACT']);
+    // A project without samples lists its own findings alone.
+    const blank = createStarterState('blank', 'Studio', true);
+    expect(healthDiagnostics(blank, own, kept)).toBe(own);
     // A detail kept on purpose leaves the list; all three kept, the project's own findings are all there is.
     expect(healthDiagnostics(s, own, [SAMPLE_CONTACT.email]).filter((d) => d.code === 'SAMPLE_CONTACT')).toHaveLength(2);
     expect(healthDiagnostics(s, own, groupsValues(s))).toBe(own);

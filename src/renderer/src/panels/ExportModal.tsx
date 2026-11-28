@@ -4,14 +4,14 @@ import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } fr
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
 import { BUILD_FAILED_UNPLACED, type Diagnostic, type ExportFormat, type ExportNote, type ExportResult, type RecentExport } from '@shared/api';
-import { api, editRunStatus, getState, setState, toast, useStore } from '../store';
+import { api, editRunStatus, getState, keepSamples, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout, showArchiveLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
 import { settleEdits } from '../lib/leave';
 import { afterEditsSettle } from '../lib/pending';
 import type { SampleContactGroup, SampleIdentityField } from '../lib/find-content';
-import { keepSamples, sampleGroups, sampleWhere } from '../lib/sample-review';
+import { sampleGroups, sampleWhere } from '../lib/sample-review';
 import { openContentMatch } from './FindReplace';
 import { websiteFormNotes, websiteFormProblems, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
@@ -271,11 +271,12 @@ function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { 
                           </div>
                           <div className="export-review-actions">
                             {/* Site settings' Published by is changed there, not by Find and Replace. */}
-                            {g.matches.length > 0 ? (
+                            {g.matches.length > 0 && (
                               <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
-                                Replace everywhere…
+                                {g.identity ? 'Replace on pages…' : 'Replace everywhere…'}
                               </button>
-                            ) : (
+                            )}
+                            {g.identity && (
                               <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => openEditorDestination(IDENTITY)}>
                                 {destinationLabel(IDENTITY)}
                               </button>

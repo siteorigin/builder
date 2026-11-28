@@ -5,7 +5,7 @@ import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileCon
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { diagnosticKey } from '@engine/validate';
-import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { api, applyOps, confirmDialog, getState, keepSamples, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { saveFailureNotice } from '../lib/savestate';
@@ -14,7 +14,7 @@ import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
-import { healthDiagnostics, keepSamples, sampleGroups, sampleKindOf } from '../lib/sample-review';
+import { healthDiagnostics, sampleGroups, sampleKindOf } from '../lib/sample-review';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, diffCaption, lineDiff, sameVersions, savedCopyDay, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
@@ -393,7 +393,8 @@ function showElement(ref: ElementRef) {
   if (ref.owner.kind === 'page') {
     if (pageOutOfSight(s, ref.owner.id)) selectPage(ref.owner.id);
   } else if (!goToShellPart(ref.owner.id)) {
-    toast(`No page shows the shared ${ref.owner.id} right now.`, 'error');
+    // Shown only on a post's page or a collection's index: opened there, as the export's notes open it.
+    openEditorDestination({ kind: 'element', owner: ref.owner, nodeId: ref.nodeId });
     return;
   }
   setState({ modal: null, mode: 'edit', selection: ref, rightTab: 'inspect', dockOpen: true });
@@ -440,7 +441,7 @@ function SampleActions({ kind, state, readOnly, onKept }: { kind: SampleContactK
     <>
       {g.matches.length > 0 && (
         <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
-          Replace everywhere…
+          {g.identity ? 'Replace on pages…' : 'Replace everywhere…'}
         </button>
       )}
       {g.identity && (
@@ -1046,7 +1047,7 @@ export function HealthModal() {
     const lead = rest === undefined ? assetLead(st, d) : null;
     return (
       <HealthRow
-        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
+        key={sample ? d.site : `${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={

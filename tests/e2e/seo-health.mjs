@@ -162,9 +162,12 @@ assert.equal(await row('The site has no sharing image.').getByRole('button', { n
 const unlinked = row('No link on the rest of the site leads to “Kiln hire”.');
 assert.equal(await unlinked.getByRole('button').count(), 0, 'an unlinked page has no single place to fix it');
 assert.match(await unlinked.innerText(), /Link to it from a menu or a related page\./, 'the row says why it matters and what to do');
-// The status bar's count stays the project's own: the readiness findings are not in it.
+// The status bar's count stays the project's own: the readiness findings are not in it. It has the starter's sample
+// contact details beside the project's own warnings, as the Export dialog reviews them (#1633).
+const samples = await health.locator('[data-group="warnings"] .health-row', { hasText: 'came with the starter' }).count();
+assert.equal(samples, 3, 'the sample email, phone and street address are each a warning');
 const ownWarnings = (await snapshot()).diagnostics.filter((d) => d.severity === 'warning').length;
-assert.equal(Number(await health.locator('[data-group="warnings"] h3 .health-count').innerText()), ownWarnings, 'Warnings counts the project’s own warnings, and no readiness finding');
+assert.equal(Number(await health.locator('[data-group="warnings"] h3 .health-count').innerText()), ownWarnings + samples, 'Warnings counts the project’s own warnings and the sample details, and no readiness finding');
 // The entry's picture is also one of the project's own warnings, and leads to the same place there.
 const generalAlt = health.locator('[data-group="warnings"] .health-row', { hasText: 'picture 2 in its text has no description' });
 assert.equal(await generalAlt.getByRole('button', { name: 'Go to picture' }).count(), 1, 'the project’s own warning leads to the picture too');

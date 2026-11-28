@@ -45,7 +45,7 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
       return found ? { kind: 'entry', collectionId: found.collection.settings.id, entryId: id, field: 'body' } : null;
     }
     if ((kind === 'template' || kind === 'archive') && d.nodeId) {
-      const shownOn = kind === 'template' ? draftLinkShownOn(d) : undefined;
+      const shownOn = draftLinkShownOn(state, d);
       return { kind: 'element', owner: { kind, id }, nodeId: d.nodeId, ...(shownOn ? { entryId: shownOn } : {}) };
     }
     return null;

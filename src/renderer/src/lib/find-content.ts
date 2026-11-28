@@ -622,11 +622,18 @@ export type SampleIdentityField = 'email' | 'telephone' | 'address';
 
 const IDENTITY_FIELD: Record<SampleContactKind, SampleIdentityField> = { email: 'email', phone: 'telephone', address: 'address' };
 
-/** Whether the site's publisher still gives the sample detail of this kind (its email, telephone or address). */
+/** An address as written, with its spacing and case set aside: "12 harbor lane,millbrook". */
+const plainAddress = (t: string) => t.trim().toLowerCase().replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ');
+
+/**
+ * Whether the site's publisher still gives the sample detail of this kind: its email or address is the sample's (in
+ * any case or spacing), or its telephone dials it. A field holds one value, so a longer one is someone else's.
+ */
 function identityHolds(state: ProjectState, kind: SampleContactKind): boolean {
   const value: unknown = state.site.identity?.[IDENTITY_FIELD[kind]];
   if (typeof value !== 'string' || !value.trim()) return false;
-  return new RegExp(SAMPLE_PATTERNS[kind].source, SAMPLE_PATTERNS[kind].flags.replace('g', '')).test(value) || (kind === 'phone' && dialsSample(value));
+  if (kind === 'phone') return dialsSample(dialString(value));
+  return kind === 'email' ? value.trim().toLowerCase() === SAMPLE_CONTACT.email : plainAddress(value) === plainAddress(SAMPLE_CONTACT.address);
 }
 
 /**

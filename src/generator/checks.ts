@@ -2293,7 +2293,8 @@ const emptyImage = (v: unknown): boolean => !!v && typeof v === 'object' && !isB
 function namesFor(source: string, names: string[]): string[] {
   const out = new Set(names);
   const script = [...source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
-  const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g)].map((m) => [m[1], m[2]] as const);
+  // The script's declarations, and the markup's own (`{@const hasMedia = !!image?.src}`).
+  const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g), ...source.matchAll(/\{@const\s+([A-Za-z_$][\w$]*)\s*=([^}]*)\}/g)].map((m) => [m[1], m[2]] as const);
   for (let grew = true; grew; ) {
     grew = false;
     for (const [name, rhs] of decls) if (!out.has(name) && [...out].some((n) => mentions(rhs, n))) (out.add(name), (grew = true));
@@ -2312,8 +2313,8 @@ const mentions = (code: string, name: string) => new RegExp(`(?<![\\w$])${name.r
  */
 function guardedImage(source: string, at: number, names: string[]): boolean {
   const known = namesFor(source, names);
-  // The markup alone, at its own offsets: braces in a script or a stylesheet open no block.
-  const markup = source.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/g, (m) => ' '.repeat(m.length));
+  // The markup alone, at its own offsets: braces in a script, a stylesheet or a comment open no block.
+  const markup = source.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
   const open: Array<{ block: string; conditions: string[] }> = [];
   for (const m of markup.slice(0, at).matchAll(/\{([#:/])\s*([a-z]+)/g)) {
     const end = closingBrace(markup, m.index);
@@ -2352,7 +2353,9 @@ export function unfilledImages(state: ProjectState, tree: NodeTree): UnfilledIma
       // The field a placement fills it from, when it is the tree's own placement's.
       const f = scope.instance ? placementField(n.image, scope) : null;
       const field = f && fieldSchema(state, tree, reportId, f)?.type === 'image' ? f : null;
-      add(reportId, `${(scope.instances ?? []).join('/')}|${n.id}|${(scope.path ?? []).join('/')}`, n.name?.trim() || 'Image', title, field);
+      // Told apart by the placements, the design's node and the items it is shown for, those of a list around the
+      // design it is in (a card placed in each item) included.
+      add(reportId, `${(scope.instances ?? []).join('/')}|${n.id}|${(scope.path ?? []).join('/')}|${scope.occurrence ?? ''}`, n.name?.trim() || 'Image', title, field);
     },
     code: (def, props, reportId, _placement, n, _scope, inDef) => {
       if (inDef) return;
@@ -2930,7 +2933,7 @@ export function ownSiteAddress(state: ProjectState, target: string): { route: st
  * Those links would lead visitors to a page the website does not have, so the website export stops until they
  * change. Links on a draft are not checked: the draft is not published.
  */
-export function publicationPlan(state: ProjectState): PublicationPlan {
+export function publicationPlan(state: ProjectState, parts?: CheckParts): PublicationPlan {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const published = pages.filter((p) => !isDraftPage(state, p));
   const drafts = pages.filter((p) => isDraftPage(state, p));
@@ -2974,22 +2977,32 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     }
     return mayLink.get(collectionId)!;
   };
-  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree; shownOn?: string }> = [
-    ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
+  const sources: Array<{ owner: DraftLink['owner']; tree: () => NodeTree; shownOn?: string }> = [
+    ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: () => p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
-    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: () => state.site.shell[part] })),
     // Each collection's layout, as each published entry shows it: its own words on the layout's buttons, and only the
     // elements that entry shows. Read only for a layout that links where a draft could be at all.
     ...entries
       .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
-      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id })),
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: () => entryArticle(state, e.collection, e.entry), shownOn: e.entry.id })),
     // Each archive layout an archive page shows, once: a collection's index shows it with no entry published yet.
-    ...shownArchiveLayouts(state, archives).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree }))
+    ...shownArchiveLayouts(state, archives).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree: () => tree }))
   ];
+  // With `parts`, the links each page and shared part renders are kept with its tree, and each entry's page's (which
+  // read what any part of the project but the pages' trees may hold) with those; where they go is read afresh.
+  const entryLinks = parts?.shared('draftLayoutLinks', () => new Map<string, RenderedLink[]>());
+  const linksOf = (src: (typeof sources)[number]): RenderedLink[] => {
+    if (!parts || !entryLinks || src.owner.kind === 'archive') return renderedLinks(state, src.tree(), true);
+    if (src.owner.kind === 'page' || src.owner.kind === 'shell') return parts.tree({ owner: { kind: src.owner.kind, id: src.owner.id }, tree: src.tree(), label: '' }, 'draftLinks', () => renderedLinks(state, src.tree(), true));
+    const key = JSON.stringify([src.owner.id, src.shownOn ?? null]);
+    if (!entryLinks.has(key)) entryLinks.set(key, renderedLinks(state, src.tree(), true));
+    return entryLinks.get(key)!;
+  };
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
   for (const src of sources)
-    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree, true)) {
+    for (const { link, label, reportId, key, inText } of linksOf(src)) {
       const to =
         link.type === 'page' && draftIds.has(link.target)
           ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }

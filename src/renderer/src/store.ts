@@ -797,6 +797,17 @@ export function saveLocal(state: LocalWorkspaceState) {
   if (key) void api.project.saveLocalState(state, key);
 }
 
+/**
+ * Remember the starter's sample contact details the author keeps on purpose (or, with `keep` false, review again), for
+ * this project: Project health and the Export dialog both leave them out (lib/sample-review).
+ */
+export function keepSamples(values: string[], keep: boolean) {
+  const was = getState().keptSamples;
+  const next = keep ? [...new Set([...was, ...values])] : was.filter((v) => !values.includes(v));
+  setState({ keptSamples: next });
+  saveLocal({ keptSamples: next });
+}
+
 /** Show the preview at `width` and remember it for this project, wherever the width was chosen. */
 export function setViewport(width: number) {
   setState({ viewport: width });

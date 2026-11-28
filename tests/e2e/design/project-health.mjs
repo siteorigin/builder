@@ -157,6 +157,15 @@ await win.waitForSelector('.editor', { timeout: 120000 });
 await frame.locator('h1').first().waitFor({ timeout: 240000 });
 await pause(1500);
 
+// The starter's sample contact details are kept on purpose, as an author can, so the project checks out (#1633).
+await openHealth();
+const sampleRow = win.locator('.modal .health-row', { hasText: 'came with the starter' });
+while (await sampleRow.count()) {
+  await sampleRow.first().getByRole('button', { name: 'Keep it' }).click();
+  await pause(200);
+}
+await closeHealth();
+
 await shot('sb-clean', '.status-bar .problems', { area: 'status', text: 'No problems' });
 await frame.locator('h1').first().click();
 await pause(600);
