@@ -5345,9 +5345,9 @@ export function handleError({ error, event, kind }) {
   const sections = `/** Sections the shared header and footer link to "on this page", with the page that has each. */
 const SECTIONS = ${js(notFoundSections(state))};
 `;
-  // The website's pages ask for the theme fonts they show first from <head> (#1487); the editor's preview has no
-  // built files to preload.
-  const fonts = instrument ? [] : preloadFontFiles(state);
+  // The website's pages ask for the theme fonts they show first from <head> (#1487). The editor's preview has the
+  // same hook: SvelteKit's dev server lists no fonts to preload, so it is never asked about one there.
+  const fonts = preloadFontFiles(state);
   const preload = fonts.length
     ? `
 /** The theme font faces every page shows first (body text, the main heading), as project files. */

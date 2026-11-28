@@ -81,8 +81,10 @@ describe('font preloads', () => {
     expect((await resolveOptions(hook, '/'))?.preload?.({ type: 'font', path: '/x.woff2', filename: FRAUNCES })).toBe(true);
   });
 
-  it('are left out of the editor’s preview, which has no built files', () => {
-    expect(generateProject(fresh(), { instrument: true }).get(SERVER_HOOK_FILE)).not.toContain('preload');
+  it('are named the same in the editor’s preview, whose dev server has no fonts to ask about', () => {
+    const preload = (hook: string) => hook.match(/\nconst FONTS = [^\n]*\n/)?.[0];
+    expect(preload(generateProject(fresh(), { instrument: true }).get(SERVER_HOOK_FILE)!)).toBe(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!));
+    expect(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!)).toContain(INTER);
   });
 
   it('name one file when body text and headings share a family', () => {

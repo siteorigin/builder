@@ -277,11 +277,14 @@ describe('exporting a project with a draft', () => {
     expect([...r.warnings, ...(r.notes ?? []).map((n) => n.message)].filter((w) => /404\.html/.test(w))).toEqual([]);
     expect(readFileSync(join(r.path!, '_redirects'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['/team/ /about/ 301', '/team /about/ 301']);
     expect(JSON.parse(readFileSync(join(r.path!, 'vercel.json'), 'utf8'))).toEqual({
+      headers: [{ source: '/_app/immutable/(.*)', headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }] }],
       redirects: [
         { source: '/team/', destination: '/about/', statusCode: 301 },
         { source: '/team', destination: '/about/', statusCode: 301 }
       ]
     });
+    // #1487: the built website carries the caching rules Cloudflare Pages and Netlify read, at its root.
+    expect(readFileSync(join(r.path!, '_headers'), 'utf8')).toContain('\n/_app/immutable/*\n  Cache-Control: public, max-age=31536000, immutable\n');
     expect(existsSync(join(r.path!, 'team/index.html'))).toBe(true);
     expect(filesIn(r.path!).filter((f) => /winter|teaser/.test(f))).toEqual([]);
     // The editable project's export keeps the drafts' rules out of its own build too.
