@@ -463,8 +463,8 @@ describe('Sanity, Strapi and WordPress sources', () => {
       { id: 1, title: { rendered: 'East' }, date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' },
       // UTC−8: a local evening is the next morning in GMT.
       { id: 2, title: { rendered: 'West' }, date: '2026-11-25T21:30:00', date_gmt: '2026-11-26T05:30:00', modified: '2026-11-25T22:00:00', modified_gmt: '2026-11-26T06:00:00' },
-      // A post that gives only its GMT time is still dated.
-      { id: 3, title: { rendered: 'Only GMT' }, date_gmt: '2026-11-20T09:00:00' }
+      // A post whose local times are null is still dated by its GMT ones.
+      { id: 3, title: { rendered: 'Only GMT' }, date: null, date_gmt: '2026-11-20T09:00:00', modified: null, modified_gmt: '2026-11-21T09:00:00' }
     ];
     const api = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
     const reply = await run({ adapter: 'wordpress', config: { url: api.origin } });
@@ -473,16 +473,17 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(reply.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
       ['2026-11-25', '2026-11-26'],
       ['2026-11-25', '2026-11-25'],
-      ['2026-11-20', undefined]
+      ['2026-11-20', '2026-11-21']
     ]);
     // The sample shows what WordPress sent under its own names, so a mapping can choose the GMT time instead.
     const sample = await run({ adapter: 'wordpress', config: { url: api.origin }, mode: 'sample' });
     expect(sample.ok && sample.raw?.[0]).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
+    expect(sample.ok && sample.raw?.[2]).toMatchObject({ date: '2026-11-20T09:00:00', date_gmt: '2026-11-20T09:00:00', modified: '2026-11-21T09:00:00' });
     const gmt = await run({ adapter: 'wordpress', config: { url: api.origin }, mapping: { publishedAt: 'date_gmt', updatedAt: 'modified_gmt' } });
     expect(gmt.ok && gmt.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
       ['2026-11-24', '2026-11-25'],
       ['2026-11-26', '2026-11-26'],
-      ['2026-11-20', undefined]
+      ['2026-11-20', '2026-11-21']
     ]);
   });
 
