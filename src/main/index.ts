@@ -1462,7 +1462,7 @@ const learningConfig = automated ? null : readLearningConfig(process.env, join(a
 if (learningConfig) {
   learning = new LearningRecorder({ dir: learningConfig.dir, labels: learningConfig.labels, app: { name: app.name, version: app.getVersion(), commit: BUILD.commit }, warn: (m) => mainLog.write('warn', m) });
   const labels = Object.entries(learningConfig.labels).map(([k, v]) => `${k}=${v}`);
-  mainLog.write('start', redact(`Learning mode is on: every AI chat is recorded to ${learningConfig.dir}${labels.length ? `, labelled ${labels.join(', ')}` : ''}.`));
+  mainLog.write('start', redact(`Learning mode is on: every AI chat is recorded to ${learningConfig.dir}${labels.length ? `, labeled ${labels.join(', ')}` : ''}.`));
   for (const problem of learningConfig.problems) mainLog.write('warn', redact(problem));
 }
 /** Learning mode's last records written before the app quits, waiting no more than two seconds. */
