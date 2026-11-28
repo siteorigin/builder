@@ -442,6 +442,8 @@ export function PostsPanel() {
   const [filing, setFiling] = useState<string[] | null>(null);
   /** A change to the picked posts on its way: one at a time. */
   const bulkBusy = useRef(false);
+  /** A filing from the dialog on its way: its own change may take its posts out of the list (a category filter). */
+  const filingNow = useRef(false);
   /** The row keyboard focus last sat on, which keeps the list's one tab stop. */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -496,7 +498,7 @@ export function PostsPanel() {
   // The categories and tags of posts no longer all picked (one deleted, or hidden by a change elsewhere) are not asked
   // about: the dialog closes and says why.
   useEffect(() => {
-    if (!filing) return;
+    if (!filing || filingNow.current) return;
     const shown = new Set(rows.map((r) => r.id));
     if (filing.some((id) => !picked?.has(id) || !shown.has(id))) {
       setFiling(null);
@@ -866,7 +868,6 @@ export function PostsPanel() {
   // What the panel shows and has picked as of its last render, for an action that waited (a save, a question) to see
   // whether it still acts on what is picked.
   pickedNow.current = { collectionId: collection?.settings.id ?? null, ids: chosen, shown: rows.map((r) => r.id), query, sort, filter: { status, category: categoryId } };
-  const openHere = post && collection && post.collectionId === collection.settings.id ? post.entryId : null;
   /**
    * Pick with Shift (the range from the anchor) or Cmd/Ctrl (one more, or one less), as in a file manager. The first
    * pick starts from the open post, the list's selection until then. A pick is a choice too: an entry still opening
@@ -877,12 +878,13 @@ export function PostsPanel() {
     ++navigation.current;
     // From the pick and the list as they are when it lands (a menu opened earlier asks after both have moved on).
     const shown = pickedNow.current.shown;
-    const start = openHere && shown.includes(openHere) ? openHere : null;
+    const open = getState().post;
+    const start = open && open.collectionId === pickedNow.current.collectionId && shown.includes(open.entryId) ? open.entryId : null;
     const from = anchor.current && shown.includes(anchor.current) ? anchor.current : start;
     if (how === 'toggle' || !from) anchor.current = id;
     setPicked((was) => {
-      const next = pickRows(shown, was ?? new Set(start ? [start] : []), from, id, how);
-      return next.size ? next : null;
+      // Emptied by hand, it stays an empty pick: the open post is let go of too, as asked.
+      return pickRows(shown, was ?? new Set(start ? [start] : []), from, id, how);
     });
   };
   /** Every post the list shows now, as found and filtered. */
@@ -918,8 +920,10 @@ export function PostsPanel() {
   const stillPicked = (ids: string[], collectionId: string) => {
     const now = pickedNow.current;
     // As the project is now, too, with the list's find and filters: a panel put away draws nothing meanwhile.
-    const live = getState().snapshot?.state;
-    const c = live && Object.hasOwn(live.collections, collectionId) ? live.collections[collectionId] : undefined;
+    const g = getState();
+    const live = g.snapshot?.state;
+    const listedNow = live ? listedCollection(live, g.contentCollection, g.post)?.settings.id : undefined;
+    const c = live && listedNow === collectionId && Object.hasOwn(live.collections, collectionId) ? live.collections[collectionId] : undefined;
     const shown = new Set(c ? postRows(c, now.query, now.sort, now.filter).map((r) => r.id) : []);
     const same = now.collectionId === collectionId && now.ids.length === ids.length && ids.every((id) => now.ids.includes(id) && shown.has(id));
     if (!same) toast(`The ${pluralNoun(noun)} picked changed meanwhile, so nothing was changed. Choose again.`, 'error');
@@ -983,18 +987,19 @@ export function PostsPanel() {
   /** File the picked posts under terms, or take them out of them, as one change. True once it is made (or needs none). */
   const bulkTerms = async (ids: string[], changes: TermChange[]): Promise<boolean> => {
     let done = false;
+    filingNow.current = true;
     await bulk(async () => {
       const at = await ready(ids);
       if (!at) return;
       const { ops, full } = bulkTermOps(at.s.state, at.collectionId, ids, changes);
       // Every one is filed as asked, or none is: one already at the most it can hold says so, and the dialog stays.
-      if (full.length) return void toast(`${someOf(full)} ${full.length === 1 ? 'is' : 'are'} filed under ${MAX_ENTRY_TERMS} of one grouping, the most ${withArticle(noun)} can have. Take one off ${full.length === 1 ? 'it' : 'them'} first.`, 'error');
+      if (full.length) return void toast(`${someOf(full)} would be filed under more than ${MAX_ENTRY_TERMS} of one grouping, the most ${withArticle(noun)} can have. Check fewer, or clear some.`, 'error');
       if (!ops.length) return void (done = true);
       const r = await commitOps(ops, `File ${many(ops.length)}`, undefined, at.s.revision);
       if (!r?.ok) return;
       done = true;
       toast(`Changed the ${termsManagerTitle(state.collections[at.collectionId]).toLowerCase()} of ${many(ops.length)}.`, 'success', undoOf(r));
-    });
+    }).finally(() => (filingNow.current = false));
     return done;
   };
 
@@ -1569,7 +1574,7 @@ export function PostsPanel() {
                   if (e.key === ' ' && !readOnly && pickKey(e)) (e.preventDefault(), pick(r.id, 'toggle'));
                   else if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), unpick(), (anchor.current = r.id), void open(r.id));
                   // Escape lets go of the picked posts first.
-                  else if (e.key === 'Escape' && picked) (e.stopPropagation(), unpick());
+                  else if (e.key === 'Escape' && picked?.size) (e.stopPropagation(), unpick());
                   // Escape puts away a card that shows (the row cut short); a find's whole titles show none, so it leaves the find.
                   else if (e.key === 'Escape' && peek && titleCut(e.currentTarget)) (e.stopPropagation(), setPeek(null));
                   else if (e.key === 'Escape' && finding) {

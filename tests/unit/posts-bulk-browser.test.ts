@@ -335,4 +335,32 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     expect((await so<string[]>('toasts')).join(' ')).toContain('picked changed, so nothing was filed');
     expect((await project()).collections.posts.entries.en_one.terms?.categories ?? []).toEqual([]);
   });
+
+  it('lets go of the open post with Cmd+click, so the next Cmd+click picks that post alone', async () => {
+    await mount(blog());
+    await so('setPost', { collectionId: 'posts', entryId: 'en_one' });
+    await expect.poll(selected).toEqual(['en_one']);
+    // The open post is the selection until something is picked: Cmd+click on it lets go of it.
+    await row('One').click({ modifiers: ['Meta'] });
+    await expect.poll(selected).toEqual([]);
+    await row('Three').click({ modifiers: ['Meta'] });
+    await expect.poll(selected).toEqual(['en_three']);
+  });
+
+  it('files posts out of the category the list is filtered by without saying nothing was filed', async () => {
+    const s = blog();
+    s.collections.posts.entries.en_one.terms = { categories: ['news'] };
+    s.collections.posts.entries.en_two.terms = { categories: ['news'] };
+    await mount(s);
+    await page.getByRole('combobox', { name: 'Filter by category' }).selectOption({ label: 'News' });
+    await row('One').click({ modifiers: ['Meta'] });
+    await row('Two').click({ modifiers: ['Meta'] });
+    await action(/Categories and tags/);
+    const dialog = page.getByRole('dialog', { name: /Categories and tags of 2 posts/ });
+    await dialog.getByRole('checkbox', { name: 'News' }).click();
+    await dialog.getByRole('button', { name: 'Apply' }).click();
+    await expect.poll(() => dialog.count()).toBe(0);
+    await expect.poll(async () => (await so<string[]>('toasts')).join(' ')).toContain('Changed the categories and tags of 2 posts');
+    expect((await so<string[]>('toasts')).join(' ')).not.toContain('nothing was filed');
+  });
 });
