@@ -1177,38 +1177,63 @@ export const SEARCH_HISTORY_JS = `/**
  * results of its last search, ready to open another one. SvelteKit's snapshot() holds them for each history entry,
  * in memory and in the tab's session storage, never in the address: the root layout hands it keptSearches.
  *
- * One snapshot serves the whole site: the searches showing are told apart by their order on the page, which is the
- * same each time an entry is shown, so a search in the header and one in the page each get their own back. The
- * layout mounts after the searches inside it, so on a fresh load every one of them is here to restore. Nothing here
- * imports SvelteKit, so a search shows wherever its component does.
+ * One snapshot serves the whole site. Each search is known by where it is (the header, the footer, the page) and by
+ * its name, and among searches alike by their order on the page, so a search in the header and one in the page each
+ * get their own back, and one that is not showing when the entry comes back never hands its words to another. A
+ * search that shows later in the same visit to the entry (one inside a part that opens) takes its own back then.
+ * The layout mounts after the searches inside it, so on a fresh load every one showing is here to restore. Nothing
+ * here imports SvelteKit, so a search shows wherever its component does.
  */
 
 // The searches on screen, by the box each one searches from.
 const searches = new Map();
+// What the entry on screen kept for searches that were not showing when it came back, until another entry shows.
+let unclaimed = [];
 
-/** The searches on screen, in their order on the page. */
+/** Which search a box is, the same each time its entry is shown: where it is on the page, and its name. */
+function keyOf(box) {
+	const form = box.form;
+	const named = form?.getAttribute('aria-labelledby');
+	const name = (named && box.ownerDocument.getElementById(named)?.textContent) || form?.getAttribute('aria-label') || '';
+	const where = box.closest('header, footer, nav, aside, main')?.localName ?? '';
+	return [where, name.trim(), box.labels?.[0]?.textContent.trim() ?? ''].join('\\n');
+}
+
+/** The searches on screen, in their order on the page, each with its key. */
 function inOrder() {
 	return [...searches]
 		.filter(([box]) => box.isConnected)
 		.sort(([a], [b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
-		.map(([, search]) => search);
+		.map(([box, search]) => ({ key: keyOf(box), search }));
+}
+
+/** Gives a search what was kept for the first search alike in the entry, once. */
+function claim(key, search) {
+	const at = unclaimed.findIndex((kept) => kept.key === key);
+	if (at < 0) return;
+	const [kept] = unclaimed.splice(at, 1);
+	search.restore(kept.state);
 }
 
 /** The snapshot the root layout keeps for every search on the page. */
 export const keptSearches = {
 	id: 'siteorigin-searches',
-	capture: () => inOrder().map((search) => search.capture()),
+	// What a search not showing has yet to claim stays the entry's, however often the entry is captured.
+	capture: () => [...inOrder().map(({ key, search }) => ({ key, state: search.capture() })), ...unclaimed],
 	restore: (kept) => {
-		if (!Array.isArray(kept)) return;
-		inOrder().forEach((search, at) => {
-			if (kept[at]) search.restore(kept[at]);
-		});
+		unclaimed = Array.isArray(kept) ? kept.filter((one) => one && typeof one.key === 'string' && one.state) : [];
+		for (const { key, search } of inOrder()) claim(key, search);
+	},
+	// An entry that kept nothing (a new one): nothing from the last is left to claim.
+	reset: () => {
+		unclaimed = [];
 	}
 };
 
 /** A search on screen, from its box: what it keeps for the entry, and how it takes that back. Returns its removal. */
 export function rememberSearch(box, search) {
 	searches.set(box, search);
+	if (unclaimed.length) claim(keyOf(box), search);
 	return () => {
 		if (searches.get(box) === search) searches.delete(box);
 	};

@@ -102,10 +102,18 @@ const LAYOUT = `<script>
 	import { snapshot } from '$app/navigation';
 	import { keptSearches } from '../runtime/search-history.js';
 	import Search from 'site-search-component';
-	let { searches } = $props();
+	import { flushSync } from 'svelte';
+	// Searches that show only once a part of the page opens, as one inside a section that unfolds.
+	let { searches, later = [] } = $props();
+	let opened = $state(false);
+	window.openLater = () => {
+		opened = true;
+		flushSync();
+	};
 	snapshot(keptSearches);
 </script>
-{#each searches as props}<Search {...props} />{/each}`;
+{#each searches as props}<Search {...props} />{/each}
+{#if opened}{#each later as props}<Search {...props} />{/each}{/if}`;
 
 /** `$app/paths` for a site published under a sub-path. */
 const PATHS_STUB = `export const base = ${JSON.stringify(BASE)};
@@ -116,8 +124,8 @@ async function bundle(): Promise<string> {
   const { files, searchFile } = exportedSite();
   const modules: Record<string, string> = {
     '\0entry': `import { flushSync, mount } from 'svelte'; import Layout from '\0layout';
-window.mountSearch = (searches) => {
-	mount(Layout, { target: document.getElementById('app'), props: { searches } });
+window.mountSearch = (searches, later) => {
+	mount(Layout, { target: document.getElementById('app'), props: { searches, later } });
 	flushSync();
 };`,
     '\0layout': compile(LAYOUT, { filename: 'Layout.svelte', generate: 'client', runes: true }).js.code,
@@ -188,7 +196,8 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
   }
 
   /** Starts the search on the page as the page's scripts do, as a visit or a Back to it does. */
-  const mount = (page: Page, searches: Record<string, string>[] = [{ heading: 'Find a project' }]) => page.evaluate(`window.mountSearch(${JSON.stringify(searches)})`);
+  const mount = (page: Page, searches: Record<string, string>[] = [{ heading: 'Find a project' }], later: Record<string, string>[] = []) =>
+    page.evaluate(`window.mountSearch(${JSON.stringify(searches)}, ${JSON.stringify(later)})`);
   const box = (page: Page) => page.getByRole('searchbox', { name: 'Search for' });
   const status = (page: Page) => page.getByRole('status');
   const results = (page: Page) => page.locator('.so-search__result');
@@ -301,8 +310,9 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await page.waitForURL(`${ORIGIN}${BASE}/portfolio/workshop-commission-105/`);
       await page.goBack();
       await page.waitForURL((url) => url.pathname === AT);
-      await mount(page);
-      await expect.poll(() => status(page).innerText()).toBe('1 page matches “commission 105”.');
+      // The list the visitor left is there as the search starts, kept rather than searched for again.
+      await expect(page.evaluate(`window.mountSearch(${JSON.stringify([{ heading: 'Find a project' }])}), document.querySelectorAll('.so-search__result').length`)).resolves.toBe(1);
+      await expect(status(page).innerText()).resolves.toBe('1 page matches “commission 105”.');
       await expect(box(page).inputValue()).resolves.toBe('commission 105');
       await expect(results(page).first().getByRole('link').getAttribute('href')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
     });
@@ -323,6 +333,52 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect(results(page).count()).resolves.toBe(0);
       await expect(status(page).innerText()).resolves.toBe('');
     });
+  });
+
+  it('brings back a search sent with nothing in it, still saying what to do', async () => {
+    await withSearch(async (page) => {
+      await box(page).fill('commission 105');
+      await box(page).press('Enter');
+      await expect.poll(() => results(page).count()).toBe(1);
+      await box(page).fill('   ');
+      await box(page).press('Enter');
+      await expect.poll(() => status(page).innerText()).toBe('Type a word or phrase to search for.');
+      await page.goto(`${ORIGIN}${BASE}/about/`);
+      await page.goBack();
+      await page.waitForURL((url) => url.pathname === AT);
+      await mount(page);
+      await expect.poll(() => status(page).innerText()).toBe('Type a word or phrase to search for.');
+      await expect(box(page).inputValue()).resolves.toBe('   ');
+      await expect(results(page).count()).resolves.toBe(0);
+    });
+  });
+
+  it('never hands one search’s words to another, and gives a search that shows later its own', async () => {
+    const first = { heading: 'Find a project' };
+    const second = { heading: 'Search again', label: 'Search the series' };
+    await withSearch(
+      async (page) => {
+        const other = page.getByRole('searchbox', { name: 'Search the series' });
+        await box(page).fill('commission 105');
+        await box(page).press('Enter');
+        await other.fill('commission 7');
+        await other.press('Enter');
+        await expect.poll(() => results(page).count()).toBeGreaterThan(1);
+        await page.goto(`${ORIGIN}${BASE}/about/`);
+        await page.goBack();
+        await page.waitForURL((url) => url.pathname === AT);
+        // The first search is not showing as the entry comes back: the other takes only its own words.
+        await mount(page, [second], [first]);
+        await expect.poll(() => other.inputValue()).toBe('commission 7');
+        await expect(page.getByRole('status').first().innerText()).resolves.toMatch(/“commission 7”/);
+        // Shown later in the same visit, the first takes its own back.
+        await page.evaluate('window.openLater()');
+        await expect.poll(() => box(page).inputValue()).toBe('commission 105');
+        await expect(page.getByRole('status').nth(1).innerText()).resolves.toBe('1 page matches “commission 105”.');
+      },
+      AT,
+      [first, second]
+    );
   });
 
   it('brings back what each search on the page held, and words typed after the last search beside its results', async () => {
