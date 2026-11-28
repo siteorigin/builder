@@ -491,6 +491,65 @@ describe('component packages: export and import (#371)', () => {
     await Promise.all([src.s.close(), dest.close(), brandy.s.close(), navy.close(), theme.close()]);
   });
 
+  it('lands a dark colour whose CSS names a style that follows it back in light, never takes two of the package’s styles as one, and finds an earlier import’s copy past a gap (#1441)', async () => {
+    const src = await darkSea();
+    const { path } = await exportTo(src.s, src.rootId);
+    const base = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
+    const sea = 'color.custom-sea';
+    const variant = (edit: (p: ComponentPackage) => void) => {
+      const p = structuredClone(base);
+      edit(p);
+      return writePackage(JSON.stringify(p));
+    };
+    // Sea's dark colour mixes in Deep, which follows Sea in light and has a dark colour of its own: no palette loops.
+    const mixed = variant((p) => {
+      p.tokens.find((t) => t.id === sea)!.dark = 'color-mix(in srgb, var(--so-color-custom-deep) 50%, white)';
+      p.tokens.push({ id: 'color.custom-deep', group: 'color', label: 'Deep', custom: true, value: { token: sea }, resolved: '#0a6e8a', dark: '#112233' });
+    });
+    const dest = await darkSite('Mixed');
+    ok(await importInto(dest, mixed));
+    expect(dest.state.tokens.darkOverrides).toMatchObject({ [sea]: 'color-mix(in srgb, var(--so-color-custom-deep) 50%, white)', 'color.custom-deep': '#112233' });
+    expect(dest.state.tokens.custom.find((t) => t.id === 'color.custom-deep')).toMatchObject({ value: { token: sea } });
+    expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
+    // With one palette and its own Sea, the dark colour is left out, and so is Deep, which only it named.
+    const single = await blank('Single mixed');
+    ok(await single.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' }));
+    const r = ok(await importInto(single, mixed));
+    expect(single.state.tokens.custom.map((t) => t.id)).toEqual([sea]);
+    expect(r.results!.at(-1)!.notes).toHaveLength(1);
+
+    // The component's colour mixes the package's Sea 2 and Sea, the same colour but two styles: a site whose own Sea
+    // differs keeps them apart, rather than taking Sea 2 for both.
+    const two = variant((p) => {
+      for (const d of p.definitions) Object.assign(d, JSON.parse(JSON.stringify(d).replaceAll(`"${sea}"`, '"color.custom-wave"')));
+      p.tokens.push(
+        { id: 'color.custom-sea-2', group: 'color', label: 'Sea', custom: true, value: '#0a6e8a', resolved: '#0a6e8a' },
+        { id: 'color.custom-wave', group: 'color', label: 'Wave', custom: true, value: 'color-mix(in srgb, var(--so-color-custom-sea-2) 50%, var(--so-color-custom-sea))', resolved: '#0a6e8a' }
+      );
+      p.tokens.find((t) => t.id === sea)!.dark = undefined;
+    });
+    const red = await blank('Red sea');
+    ok(await red.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#ff0000' }] }, { label: 'Add' }));
+    ok(await importInto(red, two));
+    expect(red.state.tokens.custom.map((t) => [t.id, t.value])).toEqual([
+      [sea, '#ff0000'],
+      ['color.custom-sea-2', '#0a6e8a'],
+      ['color.custom-sea-3', '#0a6e8a'],
+      ['color.custom-wave', 'color-mix(in srgb, var(--so-color-custom-sea-2) 50%, var(--so-color-custom-sea-3))']
+    ]);
+
+    // The package keeps the name Sea 2 for a style of its own that never lands, so its Sea lands as Sea 3, which a
+    // second import finds again past the gap.
+    const gap = variant((p) => p.tokens.push({ id: 'color.custom-sea-2', group: 'color', label: 'Sea', custom: true, value: '#123456', resolved: '#123456' }));
+    const yellow = await darkSite('Yellow sea');
+    ok(await yellow.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' }));
+    ok(await yellow.apply({ operations: [{ type: 'token.set', tokenId: sea, scheme: 'dark', value: '#ffff00' }] }, { label: 'Dark' }));
+    ok(await importInto(yellow, gap));
+    ok(await importInto(yellow, gap));
+    expect(yellow.state.tokens.custom.map((t) => t.id)).toEqual([sea, 'color.custom-sea-3']);
+    await Promise.all([src.s.close(), dest.close(), single.close(), red.close(), yellow.close()]);
+  });
+
   it('carries a site style a design uses only at part strength, and keeps the strength where the style is renamed (#353)', async () => {
     const s = await blank('Glass');
     const owner = home(s);

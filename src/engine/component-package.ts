@@ -701,8 +701,23 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     return id;
   };
   const same = (existing: TokenDef | undefined, group: TokenGroup, value: unknown) => !!existing && existing.group === group && canonical(existing.value) === canonical(value);
-  /** A package colour's dark colour, the style variables in its CSS pointed at what they became here. */
-  const darkCss = (t: PackageToken): string | undefined => (t.dark === undefined ? undefined : mapVars(normalizeColorText(t.dark), byVar, (ref) => tokenFor(ref, t.label)));
+  /** Colours this import made, by their name here, whose dark colour lands once every style is decided (see landDark). */
+  const darkToLand = new Map<string, PackageToken>();
+  /**
+   * A package colour's dark colour, the style variables in its CSS pointed at what they became here: undefined when it
+   * has none, null when one names a style of the package's not decided yet. Only `land` decides those: one may follow
+   * this colour back in light, which is no loop, as each palette is checked alone.
+   */
+  const darkCss = (t: PackageToken, how: 'look' | 'land'): string | null | undefined => {
+    if (t.dark === undefined) return undefined;
+    let unknown = false;
+    const css = mapVars(normalizeColorText(t.dark), byVar, (ref) => {
+      const to = tokenIds.get(ref) ?? (how === 'land' ? tokenFor(ref, t.label) : !tokens.has(ref) && here.has(ref) ? ref : undefined);
+      if (to === undefined) unknown = true;
+      return to;
+    });
+    return unknown ? null : css;
+  };
   /** The colour a style shows here in the dark palette, links followed. */
   const darkHere = (value: unknown): string | null => {
     const link = linkOf(value, 'color');
@@ -712,18 +727,33 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
    * Whether this site's colour `id` shows in the dark palette what the package's would where it lands: its own dark
    * colour, or else its light `value` (pointed at the styles here) followed through this site's dark palette.
    */
-  const sameDark = (id: string, value: unknown, dark: string | undefined) => {
+  const sameDark = (id: string, value: unknown, dark: string | null | undefined) => {
+    if (dark === null) return false;
     const mine = resolvedCss(effectiveTokens(state, 'dark'), id);
     return mine !== null && mine === (dark ?? darkHere(value));
+  };
+  /** This site's styles named `base` or a numbered name after it ("color.custom-sea-2"), in order. */
+  const numbered = (base: string): string[] => {
+    const re = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-(\\d+))?$`);
+    return [...here.keys()]
+      .flatMap((k) => {
+        const m = re.exec(k);
+        return m ? [{ k, n: m[1] ? Number(m[1]) : 1 }] : [];
+      })
+      .sort((x, y) => x.n - y.n)
+      .map((x) => x.k);
   };
   /**
    * The style of this site's own that stands for the package's `t` with `value` (and `dark`), among `base` and the
    * numbered names after it: one that looks the same in both palettes. On a site with one palette, one that looks the
-   * same in light will do, keeping its own dark colour, which is said after the import.
+   * same in light will do, keeping its own dark colour, which is said after the import. A style of the site's own in the
+   * package never stands in for another of them, nor takes one this import made that has yet to get its dark colour.
    */
-  const lookalike = (base: string, t: PackageToken, value: unknown, dark: string | undefined): string | undefined => {
+  const lookalike = (base: string, t: PackageToken, value: unknown, dark: string | null | undefined): string | undefined => {
+    const taken = new Set(tokenIds.values());
     let light: string | undefined;
-    for (let i = 1, at = base; here.has(at); at = `${base}-${++i}`) {
+    for (const at of numbered(base)) {
+      if (darkToLand.has(at) || (t.custom && at !== t.id && (tokens.has(at) || taken.has(at)))) continue;
       if (!same(here.get(at), t.group, value)) continue;
       if (t.group !== 'color' || sameDark(at, value, dark)) return at;
       light ??= at;
@@ -732,7 +762,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (dark !== undefined) keptDark.add(t.label);
     return light;
   };
-  const make = (t: PackageToken, id: string, value: unknown, dark: string | undefined) => {
+  const make = (t: PackageToken, id: string, value: unknown) => {
     if (state.tokens.custom.length >= MAX_CUSTOM_TOKENS) fail(`Importing it would give the site more than ${MAX_CUSTOM_TOKENS} styles of its own. Remove some in Site styles first.`);
     const v = t.group === 'text' && isRecord(value) ? Object.fromEntries(TEXT_KEYS.filter((k) => value[k] !== undefined).map((k) => [k, value[k]])) : value;
     const def: TokenDef = { id, label: t.label, group: t.group, value: v as TokenValue, ...(t.description ? { description: t.description } : {}) };
@@ -740,14 +770,24 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     helpers.setToken(state, id, v);
     here.set(id, state.tokens.custom.find((c) => c.id === id)!);
     created.push(id);
-    if (dark === undefined || t.group !== 'color') return;
-    // Its dark colour too; a site with no dark palette yet keeps it for when it first has one (see darkPending).
-    const doc = state.tokens;
-    if (!isRecord(doc.darkOverrides)) {
-      doc.darkOverrides = {};
-      if (!dual) doc.darkPending = true;
+    if (t.group === 'color' && t.dark !== undefined) darkToLand.set(id, t);
+  };
+  /**
+   * Give each colour made here the package's dark colour, deciding the styles its CSS names (which may make more, with
+   * dark colours of their own). A site with no dark palette yet keeps them for when it first has one (see darkPending).
+   */
+  const landDark = () => {
+    for (let next = darkToLand.entries().next(); !next.done; next = darkToLand.entries().next()) {
+      const [id, t] = next.value;
+      const css = darkCss(t, 'land') as string;
+      darkToLand.delete(id);
+      const doc = state.tokens;
+      if (!isRecord(doc.darkOverrides)) {
+        doc.darkOverrides = {};
+        if (!dual) doc.darkPending = true;
+      }
+      doc.darkOverrides[id] = css;
     }
-    doc.darkOverrides[id] = dark;
   };
   /** A value with its links to other styles, and the style variables in its CSS, pointed at what they became here. */
   const relinked = (value: unknown, group: TokenGroup, by: string): unknown => {
@@ -783,24 +823,22 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
       else {
         const base = `${t!.group}.custom-${slugify(t!.label) || 'style'}`;
         const value = relinked(t!.resolved, t!.group, t!.label);
-        const dark = darkCss(t!);
-        const match = lookalike(base, t!, value, dark);
+        const match = lookalike(base, t!, value, darkCss(t!, 'look'));
         if (match) to = match;
         else {
           to = freeId(base);
-          make(t!, to, value, dark);
+          make(t!, to, value);
         }
       }
     } else {
       const value = relinked(t!.group === 'text' && linkOf(t!.value) ? t!.resolved : t!.value, t!.group, t!.label);
-      const dark = darkCss(t!);
       // The same style here under its name, or under a numbered one an earlier import of it took.
-      const match = existing ? lookalike(id, t!, value, dark) : undefined;
+      const match = existing ? lookalike(id, t!, value, darkCss(t!, 'look')) : undefined;
       if (match) to = match;
       else {
         // Free here: it keeps its name, which was kept for it. Taken by a different style: the next free name.
         to = existing ? freeId(id) : id;
-        make(t!, to, value, dark);
+        make(t!, to, value);
       }
     }
     visiting.delete(id);
@@ -844,6 +882,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (!(COMPONENT_CATEGORIES as readonly string[]).includes(def.category)) def.category = 'custom';
     landed.push(def);
   }
+  landDark();
   // A form a package brings never sends visitors' messages to the package author's account. Every setting that decides
   // where (the form's own, and any property of a component around it that passes one on, however deep) is emptied, so
   // whoever imports it sets the service up here.

@@ -209,6 +209,28 @@ describe('choosing the palettes', () => {
     expect(() => run(withMode(styled, 'single'), { type: 'token.remove', tokenId: sea, detach: true })).toThrow(/kept for when it is turned back on/);
     expect(run(withMode(styled, 'single'), { type: 'token.remove', tokenId: sea, replacementTokenId: 'color.brand' }).tokens.custom.some((t) => t.id === sea)).toBe(false);
   });
+
+  it('keeps no dark colour for a theme colour while the dark palette is still to be made, which makes its own then (#1441)', () => {
+    // A colour an imported component brought, with its dark colour kept for when the site first has a dark palette.
+    const created = applyOperations(fresh(), [{ type: 'token.create', group: 'color', label: 'Foam', value: '#e8f4f0' }]);
+    const foam = created.results[0].tokenId as string;
+    const pending = structuredClone(created.state);
+    pending.tokens.darkOverrides = { [foam]: '#ffffff' };
+    pending.tokens.darkPending = true;
+    const s = run(pending, { type: 'token.set', tokenId: 'color.background', value: { token: foam } }, { type: 'token.set', tokenId: 'color.border', value: { token: foam } });
+    const custom = applyOperations(s, [{ type: 'token.create', group: 'color', label: 'Mist', value: { token: foam } }]);
+    const mist = custom.results[0].tokenId as string;
+    const detached = run(custom.state, { type: 'token.remove', tokenId: foam, detach: true });
+    expect(detached.tokens.overrides['color.background']).toBe('#e8f4f0');
+    expect(detached.tokens.darkOverrides).not.toHaveProperty('color.background');
+    expect(detached.tokens.darkOverrides).not.toHaveProperty('color.border');
+    // A colour of the site's own gets none made: it keeps the dark colour it followed.
+    expect(detached.tokens.darkOverrides?.[mist]).toBe('#ffffff');
+    // Turned on: the theme's colours are made from the light palette, the site's own kept.
+    const on = run(detached, { type: 'token.setColorScheme', mode: 'system' });
+    const theme = getTheme(on.site.themeId);
+    expect(on.tokens.darkOverrides).toEqual({ ...deriveDarkPalette(effectiveTokens(detached), theme.tokens, theme.contrastPairs ?? []), [mist]: '#ffffff' });
+  });
 });
 
 describe('what the site gets in each mode', () => {
