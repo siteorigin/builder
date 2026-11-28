@@ -319,6 +319,30 @@ describe('the library through the app (#372)', () => {
     return c;
   }
 
+  it('neither exports nor saves code another project would refuse, keeping the copy saved before (#1417)', async () => {
+    env.userData = tmp('so-lib-userdata-');
+    await updateSettings({ developerMode: true });
+    const properties = { heading: { type: 'string', label: 'Heading', default: 'Hello' } };
+    const made = applyOperations(blank('Studio A'), [{ type: 'component.createCode', name: 'Shore window', source: `<script>\n  let { heading = 'Hello' } = $props();\n</script>\n\n<h3>{heading}</h3>\n`, properties }]);
+    const id = made.results[0].definitionId as string;
+    const a = await opened(await projectFolder(made.state));
+    const first = await a.saveComponentToLibrary(id, a.openingKey!);
+    expect(first).toMatchObject({ ok: true, name: 'Shore window' });
+    const before = await store.listSaved(join(env.userData, 'saved-components'));
+    // A default the author's project only warns about: a project importing the package refuses it.
+    ok(await a.session!.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source: `<script>\n  let { heading = 'Choose a short shore window' } = $props();\n</script>\n\n<h3>{heading}</h3>\n` }] }, { label: 'Edit', codeAllowed: true }));
+    const resaved = await a.saveComponentToLibrary(id, a.openingKey!);
+    expect(resaved.ok).toBe(false);
+    expect(resaved.message).toMatch(/^“Shore window” was not saved to your library: another project would refuse it on import\. .*line 2: The code's default for heading/);
+    expect(await store.listSaved(join(env.userData, 'saved-components'))).toEqual(before);
+    const file = join(tmp('so-lib-export-'), 'shore.socomponent.json');
+    const exported = await a.exportComponent(id, file);
+    expect(exported.ok).toBe(false);
+    expect(exported.message).toMatch(/^“Shore window” was not exported: another project would refuse it on import\./);
+    expect(readdirSync(join(file, '..'))).toEqual([]);
+    await a.close();
+  });
+
   it('saves in one project and inserts in another, asking before any code comes in, whatever was saved', async () => {
     env.userData = tmp('so-lib-userdata-');
     await updateSettings({ developerMode: true });
