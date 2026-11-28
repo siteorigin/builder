@@ -26,9 +26,13 @@ const names = (path: string): string[] => {
  */
 const CLIENT_HOOKS = ['src/hooks.client', 'src/hooks.client.js', 'src/hooks.client.ts', 'src/hooks.client/index.js', 'src/hooks.client/index.ts'];
 
-/** SvelteKit's page and layout files, as it takes them (`+page.svelte`, `+layout@group.ts`, `+page.server.js`). */
-const PAGE_OR_LAYOUT = /^\+(?:page|layout)(?:@[^./]*)?(?:\.server)?\.(?:svelte|js|ts)$/;
-const LAYOUT = /^\+layout(?:@[^./]*)?(?:\.server)?\.(?:svelte|js|ts)$/;
+/**
+ * SvelteKit's page and layout files, as it takes them (`+page.svelte`, `+layout@group.ts`, `+page.server.js`), under any
+ * one extension: a project's own config may add module extensions (`.mjs`). A name with two (`+page.test.ts`,
+ * `+layout.svelte.bak`) is one SvelteKit passes by.
+ */
+const PAGE_OR_LAYOUT = /^\+(?:page|layout)(?:@[^./]*)?(?:\.server)?\.[a-z0-9]+$/i;
+const LAYOUT = /^\+layout(?:@[^./]*)?(?:\.server)?\.[a-z0-9]+$/i;
 
 /**
  * Whether a path is a page's route module of the kind SiteOrigin Builder writes for one served as plain HTML: one under
@@ -48,7 +52,8 @@ export function ownRouteFiles(dir: string, path: string, claimed: (path: string)
   const folder = posix.dirname(path);
   for (let at = folder; at === 'src/routes' || at.startsWith('src/routes/'); at = posix.dirname(at)) {
     const kinds = at === folder ? PAGE_OR_LAYOUT : LAYOUT;
-    for (const name of names(join(dir, ...at.split('/')))) if (kinds.test(name) && !claimed(`${at}/${name}`)) return true;
+    // A folder by such a name is no route file: SvelteKit reads files alone.
+    for (const name of names(join(dir, ...at.split('/')))) if (kinds.test(name) && !claimed(`${at}/${name}`) && isFile(join(dir, ...at.split('/'), name))) return true;
   }
   return CLIENT_HOOKS.some((hook) => isFile(join(dir, ...hook.split('/'))));
 }

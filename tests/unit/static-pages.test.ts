@@ -360,6 +360,8 @@ describe('a project’s own route files', () => {
     expect(own('src/routes/services/design/+layout.svelte')).toBe(true);
     expect(own('src/routes/services/+layout.svelte')).toBe(true);
     expect(own('src/routes/+layout.server.ts')).toBe(true);
+    // Under a module extension a project's own config adds.
+    expect(own('src/routes/services/+layout.mjs')).toBe(true);
     expect(own('src/hooks.client.js')).toBe(true);
     expect(own('src/hooks.client.ts')).toBe(true);
     expect(own('src/hooks.client/index.ts')).toBe(true);
@@ -369,6 +371,10 @@ describe('a project’s own route files', () => {
     expect(own('src/routes/+layout.svelte.bak')).toBe(false);
     expect(own('src/routes/services/design/+page.test.ts')).toBe(false);
     expect(own('src/hooks.client/helpers.js')).toBe(false);
+    // A folder by a route file's name is no route file.
+    mkdirSync(join(dir, 'src/routes/services/design/+page.ts'));
+    expect(ownRouteFiles(dir, path, claimed)).toBe(false);
+    rmSync(join(dir, 'src/routes/services/design/+page.ts'), { recursive: true });
   });
 
   it('leave the generated module out of a staged copy, which then lists only what it has', async () => {
@@ -421,9 +427,12 @@ describe('a project’s own route files', () => {
       expect(existsSync(join(dir, '.siteorigin/cache/dev/src/routes/landing/+page.js'))).toBe(false);
       expect(readFileSync(own, 'utf8')).toBe('export const prerender = true;\n');
       expect(s.conflicts).toEqual([]);
+      // The Inspector is told: the documents alone would say the page is plain.
+      expect(s.keptPageModules).toEqual(['src/routes/landing/+page.js']);
       rmSync(own);
       await s.apply({ operations: [{ type: 'page.update', pageId: LANDING, title: 'Landing' }] }, { label: 'Rename' });
       expect(readFileSync(module, 'utf8')).toBe(STATIC_PAGE_JS);
+      expect(s.keptPageModules).toEqual([]);
 
       // The hero's generated code edited outside the app: what the edit runs is not in the documents.
       const hero = Object.values(s.state.pages[LANDING].nodes).find((n) => n.kind === 'instance') as InstanceNode;
@@ -434,6 +443,7 @@ describe('a project’s own route files', () => {
       await s.apply({ operations: [{ type: 'page.update', pageId: LANDING, title: 'Landing again' }] }, { label: 'Rename' });
       expect(s.conflicts.map((c) => c.path)).toContain(heroPath);
       expect(existsSync(module)).toBe(false);
+      expect(s.keptPageModules).toEqual(['src/routes/landing/+page.js']);
       expect(existsSync(join(dir, '.siteorigin/cache/dev/src/routes/landing/+page.js'))).toBe(false);
       expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).not.toHaveProperty('src/routes/landing/+page.js');
       // Restored, the page is plain again.

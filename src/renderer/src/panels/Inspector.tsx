@@ -67,7 +67,7 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
-import { staticHtmlReason, staticHtmlVerdict } from '@generator/static-pages';
+import { staticHtmlReason, staticHtmlVerdict, staticPageModule } from '@generator/static-pages';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@shared/form-contract';
@@ -3489,8 +3489,14 @@ function addressNote(published: boolean, inside: number): string | undefined {
 function PageStaticHtml({ page, state, upd }: { page: PageDoc; state: ProjectState; upd: PageUpd }) {
   const on = page.preferStaticHtml === true;
   const verdict = useMemo(() => (on ? staticHtmlVerdict(state, page.id) : null), [on, state, page.id]);
+  // What the project's files on disk decide, which the documents cannot say: its own route files win.
+  const kept = useStore((s) => !!s.snapshot?.keptPageModules?.includes(staticPageModule(page)));
   const hint = !verdict ? undefined : verdict.static ? (
-    'Served as plain HTML, without SvelteKit’s scripts'
+    kept ? (
+      'Still loads SvelteKit’s scripts: the project’s own route files, client hooks or edited generated code decide how this page runs.'
+    ) : (
+      'Served as plain HTML, without SvelteKit’s scripts'
+    )
   ) : (
     <>
       Still loads JavaScript. {staticHtmlReason(verdict)}

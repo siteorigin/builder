@@ -888,6 +888,12 @@ export class ProjectSession extends EventEmitter {
   /** The parts of validation one state can share with the next: each document checked again only when it changes. */
   private validation = new ValidationCache();
   conflicts: Conflict[] = [];
+  /**
+   * The route modules of pages served as plain HTML (generator/static-pages.ts) that the last publication left out, as
+   * the project's own route files or generated code edited outside the app decide how those pages run: they load their
+   * scripts, whatever the documents say.
+   */
+  keptPageModules: string[] = [];
   /** While the open's publication runs after the project is shown: the conflicts as they were before it (shownConflicts). */
   private conflictsBeforeOpen: Conflict[] | null = null;
   /**
@@ -3000,10 +3006,12 @@ export class ProjectSession extends EventEmitter {
     // A page served as plain HTML says so in a route module of its own (generator/static-pages.ts). A page with route
     // files of the project's own runs as they say instead (see ownRouteFiles), its preview's copy of the module gone too.
     const pageModules = [...clean].filter(([, content]) => content === STATIC_PAGE_JS).map(([path]) => path);
+    const kept: string[] = [];
     for (const path of pageModules) {
       if (!ownRouteFiles(this.dir, path, known)) continue;
       for (const files of [clean, dev]) files.delete(path);
       await fs.rm(safeJoin(devRoot, path), { force: true });
+      kept.push(path);
     }
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
@@ -3173,8 +3181,10 @@ export class ProjectSession extends EventEmitter {
         hashes.delete(safeJoin(this.dir, path));
         const planned = plan.findIndex((f) => f.path === path);
         if (planned >= 0) plan.splice(planned, 1);
+        kept.push(path);
       }
     }
+    this.keptPageModules = kept.sort();
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
     // app has no variant: the preview shows the external version, as the exported site would.

@@ -826,6 +826,7 @@ export class Controller {
       missingAssets: s.missingAssets,
       conflicts: s.shownConflicts,
       savedCopies: s.savedCopies,
+      keptPageModules: s.keptPageModules,
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : s.themeUpdates(),
       localState: this.localState,
