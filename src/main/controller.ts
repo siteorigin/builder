@@ -33,7 +33,7 @@ import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
-import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
+import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -151,6 +151,12 @@ const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true
 const STALE_INSERT = 'The page changed while the component was being inserted. Insert it again.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
+
+/**
+ * How often the open project's folder is looked for. A folder moved with a parent of it, or renamed as a whole, may tell
+ * no watch, and the preview must not go on serving (and writing at) an address with no project there (#1454).
+ */
+export const FOLDER_POLL_MS = 1000;
 
 /** A project only a newer version can generate has no preview here (spec 16.6): its kind of read-only cannot be unlocked. */
 function previewUnavailable(s: ProjectSession): boolean {
@@ -2353,9 +2359,18 @@ export class Controller {
     for (const w of this.watchers) w.close();
     this.watchers = [];
     this.unwatched.clear();
-    // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
+    // A folder moved with a parent of it may tell no watch, and the lock heartbeat (none while read-only) is slow: the
+    // folder is looked for every second, one look at a time, whatever the watches are reporting.
     if (this.folderPoll) clearInterval(this.folderPoll);
-    this.folderPoll = setInterval(() => this.checkFolderSoon(session), LOCK_HEARTBEAT_MS);
+    let lookingForFolder = false;
+    this.folderPoll = setInterval(() => {
+      if (lookingForFolder || this.session !== session) return;
+      lookingForFolder = true;
+      void session
+        .checkFolder()
+        .catch(() => false)
+        .finally(() => (lookingForFolder = false));
+    }, FOLDER_POLL_MS);
     this.folderPoll.unref?.();
     if (this.assetTimer) clearTimeout(this.assetTimer);
     this.assetTimer = null;

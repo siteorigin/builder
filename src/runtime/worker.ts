@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
 import { firstPagePlugin } from './first-page';
+import { guardProjectFolder } from './folder-guard';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy, unwatched } from './policy';
 import { collectGarbage, createIdleCollector, heapGrowth, IDLE_COLLECT, idleCollectPlugin, type IdleCollector } from './idle-collect';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
@@ -65,6 +66,8 @@ function useRealProjectDir(dir: string): string {
 }
 
 async function start(dir: string, wantedPort = 0, packaged = true) {
+  // Once the folder is moved, renamed or deleted, nothing this server runs makes it again at its old address (#1454).
+  guardProjectFolder(dir);
   const site = JSON.parse(await readFile(join(dir, 'siteorigin/site.json'), 'utf8')) as { homePageId: string };
   const home = JSON.parse(await readFile(join(dir, 'siteorigin/pages', `${site.homePageId}.json`), 'utf8')) as { route: string };
   const vite = await loadVite(dir);
