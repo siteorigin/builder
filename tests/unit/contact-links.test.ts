@@ -463,5 +463,8 @@ describe('contact links in the shipped theme', () => {
     const empty = code({ outer: list(['text', 'link']), rows: list(['text', 'link']) }, ['{#each outer as item}{#each rows as item}{:else}<SoLink link={item.link}>{item.text}</SoLink>{/each}{/each}']);
     expect(itemLinkPairs(empty, 'rows')).toEqual([]);
     expect(itemLinkPairs(empty, 'outer')).toEqual([{ text: 'text', link: 'link' }]);
+    // Spread attributes can replace the link, so what it opens is not known.
+    const spread = code({ items: list(['value', 'link', 'alt']) }, ['{#each items as item}{@const to = { link: item.alt }}<SoLink link={item.link} {...to}>{item.value}</SoLink>{/each}']);
+    expect(itemLinkPairs(spread, 'items')).toEqual([]);
   });
 });

@@ -196,11 +196,15 @@ function codeItemLinks(source: string, listProp: string): Array<{ text: string; 
   return out;
 }
 
-/** The `item.field` a SoLink's `link={…}` attribute names, read attribute by attribute so quoted text never counts. */
+/**
+ * The `item.field` a SoLink's `link={…}` attribute names, read attribute by attribute so quoted text never counts.
+ * None when the tag spreads attributes, which can replace the link.
+ */
 function linkAttribute(attrs: string): RegExpExecArray | null {
   let found: RegExpExecArray | null = null;
   ATTRIBUTE.lastIndex = 0;
   for (let m = ATTRIBUTE.exec(attrs); m && m[0]; m = ATTRIBUTE.exec(attrs)) {
+    if (m[3] && /^\{\s*\.\.\./.test(m[3])) return null;
     if (m[1] !== 'link') continue;
     found = m[2]?.startsWith('{') ? ITEM_FIELD.exec(m[2].slice(1, -1)) : null;
   }
