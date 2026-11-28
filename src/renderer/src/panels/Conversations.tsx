@@ -7,7 +7,7 @@ import { api, confirmDialog, errorText, getState, setState, toast, useStore } fr
 import { Modal, Spinner } from '../components/ui';
 import { draftFor, imagesFor, withDraft, withImages } from '../lib/chatDrafts';
 import { retargetDrops } from '../lib/chat-drop';
-import { activityPhrase, matchExcerpt } from '../lib/conversations';
+import { activityPhrase, matchExcerpt, runLabel } from '../lib/conversations';
 import { isImeComposing } from '../lib/ime';
 import { plural } from '../lib/storage';
 import { clock, dayKey, dayName, fullWhen } from '../lib/when';
@@ -66,6 +66,7 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
   const readOnly = useStore((s) => s.snapshot?.readOnly?.reason ?? null);
   const runStatus = useStore((s) => s.runStatus);
   const running = !!runStatus;
+  const runThread = useStore((s) => s.runConversationId);
   const ai = runStatus === 'awaiting-input' ? 'the AI is waiting for your answer.' : 'the AI is working.';
   // Why an action can't be taken now, each said once above the list. Open never waits: a request goes on in its own
   // conversation while another is read (#1125). Renaming and deleting wait for the AI (a request saves its thread when
@@ -468,6 +469,11 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
                           ) : null}
                           <span className="conversation-meta">
                             {current && <span className="badge accent">Current</span>}
+                            {runLabel(c.id, { status: runStatus, conversationId: runThread }) && (
+                              <span className={`badge ${runStatus === 'awaiting-input' ? 'amber' : 'accent'}`} data-testid="conversation-run">
+                                {runLabel(c.id, { status: runStatus, conversationId: runThread })}
+                              </span>
+                            )}
                             <span>
                               {plural(c.prompts.length, 'request', 'requests')} · Last active{' '}
                               <time dateTime={c.updatedAt} title={fullWhen(c.updatedAt)}>

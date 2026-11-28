@@ -35,7 +35,7 @@ import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu, type MenuItem } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
-import { activityHint } from '../lib/conversations';
+import { activityHint, runLabel } from '../lib/conversations';
 import './Chat.css';
 
 /**
@@ -1295,6 +1295,15 @@ export function Chat() {
   useEffect(() => {
     if (managing && managing.opening !== snap.workspaceKey) setManaging(null);
   }, [managing, snap.workspaceKey]);
+  // The history menu labels the running conversation as it was when opened, so it closes when that changes.
+  const historyRun = useRef<string | null>(null);
+  const runKey = `${anyRunStatus ?? ''}:${runThreadId ?? ''}`;
+  useEffect(() => {
+    if (historyRun.current !== null && historyRun.current !== runKey) {
+      historyRun.current = null;
+      menu.close();
+    }
+  }, [runKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const openHistory = async (el: HTMLElement) => {
     const listed = await api.ai.conversations().catch((e: Error) => {
       if (stillOpen()) toast(e.message || 'Could not list the earlier conversations.', 'error');
@@ -1306,6 +1315,7 @@ export function Chat() {
     const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id, getState().chatImages);
     if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
     const now = new Date();
+    historyRun.current = `${getState().runStatus ?? ''}:${getState().runConversationId ?? ''}`;
     menu.openAt(
       el,
       [
@@ -1316,7 +1326,7 @@ export function Chat() {
             ]
           : []),
         // Listed by their latest activity, so a conversation continued today is near the top.
-        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: activityHint(c.updatedAt, now), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
+        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: [runLabel(c.id, { status: getState().runStatus, conversationId: getState().runConversationId }), activityHint(c.updatedAt, now)].filter(Boolean).join(' · '), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         ...(list.length ? [{ label: 'Find, rename or delete…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
