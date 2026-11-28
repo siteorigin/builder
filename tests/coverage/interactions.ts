@@ -1903,7 +1903,11 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'the first edit after the page opens, followed by an error, offers to revert it' },
       { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'an error with no edit before it offers no Revert, and Open source opens the generated component read only' },
       { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'an error after an edit offers to revert it, and Revert brings the page back without it, keeping the edit before' },
-      { test: 'tests/unit/preview-error.test.ts', kind: 'unit' }
+      { test: 'tests/e2e/render-error.mjs', kind: 'e2e', step: 'a code component that throws as it is inserted shows a note in its place, and the bar names it and its error' },
+      { test: 'tests/e2e/render-error.mjs', kind: 'e2e', step: 'Open source opens the component that threw' },
+      { test: 'tests/e2e/render-error.mjs', kind: 'e2e', step: 'fixed in its source, the component comes back and the problem clears' },
+      { test: 'tests/unit/preview-error.test.ts', kind: 'unit' },
+      { test: 'tests/unit/render-error-bridge.test.ts', kind: 'unit' }
     ]
   },
   {
