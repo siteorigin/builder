@@ -123,12 +123,11 @@ const ELLIPSIS = '…';
 /** A letter that opens a line of its own kind and so is never left at the end of a line: "(", "「", "【". */
 const OPENING = /[(\[{‘“‹«（［｛〈《「『【〔〖〘〚｟]/u;
 /** A mark that never starts a line: closing brackets, stops, the long-vowel mark and small kana. */
-const CLOSING = /[)\]}.,;:!?%’”›»、。，．：；！？）］｝〉》」』】〕〗〙〛｠゠ー々〻ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ～…‥・]/u;
+const CLOSING = /[)\]}.,;:!?%’”›»、。，．：；！？％）］｝〉》」』】〕〗〙〛｠゠ー々〻ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ～…‥・]/u;
 
 /** Whether a letter is one Chinese, Japanese or Korean text is broken after at will, with no space between words. */
 function ideographic(g: string): boolean {
-  const ch = g.codePointAt(0)!;
-  return ch > 0x2e7f && WIDE.test(String.fromCodePoint(ch)) && !/\p{Script=Hangul}/u.test(g);
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}\u3000-\u303f\uff61-\uff9f]/u.test(g);
 }
 
 /**
@@ -136,8 +135,12 @@ function ideographic(g: string): boolean {
  * break between any two letters (and at the edge of a Latin word or number next to them), except a mark that
  * must not start a line, or one that must not end it, as the Unicode line breaking rules have it.
  */
+function isSpace(g: string): boolean {
+  return g.trim() === '';
+}
+
 function breaksBetween(before: string, after: string): boolean {
-  if (/\s/.test(before) || /\s/.test(after)) return false;
+  if (isSpace(before) || isSpace(after)) return false;
   if (!ideographic(before) && !ideographic(after)) return false;
   return !CLOSING.test(after) && !OPENING.test(before);
 }
@@ -158,18 +161,18 @@ export function fitToWidth(value: string, fontPx: number, maxWidth: number): Ser
   let end = 0;
   while (end < chars.length) {
     const next = used + (graphemeAdvance(chars[end]) * fontPx) / 1000;
-    if (next > room) break;
+    if (next > room + 1e-6) break;
     used = next;
     end++;
   }
   // Back to the last place a line may break, unless the cut already falls on one.
-  if (end < chars.length && !/\s/.test(chars[end]) && !(end > 0 && breaksBetween(chars[end - 1], chars[end]))) {
+  if (end < chars.length && !isSpace(chars[end]) && !(end > 0 && breaksBetween(chars[end - 1], chars[end]))) {
     let back = end - 1;
-    while (back > 0 && !/\s/.test(chars[back]) && !breaksBetween(chars[back - 1], chars[back])) back--;
+    while (back > 0 && !isSpace(chars[back]) && !breaksBetween(chars[back - 1], chars[back])) back--;
     if (back > 0) end = back;
   }
   const kept = chars.slice(0, end).join('').replace(/[\s,;:–—-]+$/u, '');
-  const shown = kept ? kept + ELLIPSIS : ELLIPSIS;
+  const shown = kept && !kept.endsWith(ELLIPSIS) ? kept + ELLIPSIS : kept || ELLIPSIS;
   return { text: shown, lines: [shown], cut: true, width, max: maxWidth };
 }
 
@@ -191,15 +194,15 @@ export function fitLines(value: string, fontPx: number, lineWidth: number, lines
     let used = 0;
     let fit = at;
     let best = -1;
-    while (fit < chars.length && used + wide[fit] <= lineWidth) {
+    while (fit < chars.length && used + wide[fit] <= lineWidth + 1e-6) {
       used += wide[fit];
       fit++;
-      if (fit === chars.length || /\s/.test(chars[fit]) || breaksBetween(chars[fit - 1], chars[fit])) best = fit;
+      if (fit === chars.length || isSpace(chars[fit]) || breaksBetween(chars[fit - 1], chars[fit])) best = fit;
     }
     const stop = fit === chars.length ? fit : best > at ? best : Math.max(fit, at + 1);
     shown.push(chars.slice(at, stop).join('').trimEnd());
     at = stop;
-    while (at < chars.length && /\s/.test(chars[at])) at++;
+    while (at < chars.length && isSpace(chars[at])) at++;
   }
   if (at < chars.length) {
     const last = fitToWidth(chars.slice(at).join(''), fontPx, lineWidth);

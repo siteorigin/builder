@@ -194,6 +194,15 @@ describe('Chinese and Japanese titles (#1446)', () => {
     expect(mixed).not.toMatch(/Wee…|Weekl…/);
   });
 
+  it('breaks halfwidth katakana, keeps fullwidth numbers whole, and adds no second “…”', () => {
+    const half = fitToWidth('2026 ' + 'ﾄｳｷｮｳﾉﾌﾕﾉﾐﾅﾄ'.repeat(5), 20, 600);
+    expect(half.text.length).toBeGreaterThan(10);
+    const full = fitLines('2026 ' + '冬'.repeat(12) + '２０２６年の展示会日程', 20, 320, 2);
+    expect(full.lines[0].endsWith('２')).toBe(false);
+    expect(fitToWidth('2026 ' + 'あ'.repeat(24) + '……' + 'い'.repeat(10), 20, 600).text).not.toMatch(/…{3}$/);
+    expect(fitLines('あ'.repeat(15) + '九％割引のお知らせ', 20, 320, 2).lines[1]?.[0]).not.toBe('％');
+  });
+
   it('never starts a line with closing punctuation', () => {
     const r = fitLines('あ'.repeat(15) + '。' + 'い'.repeat(30), 20, 300, 2);
     expect(r.lines[1]?.[0]).not.toBe('。');
