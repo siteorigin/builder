@@ -35,13 +35,27 @@ export const UPDATE_BRIEF_BRIEF = "Change the private project brief, only as the
 /** The History and activity label of a brief change. */
 export const BRIEF_LABEL = 'Update the project brief';
 
-/** Asks something of the brief: names it, or its description or notes. "A brief intro" is not the brief. */
-const NAMES_BRIEF =
-  /\b(?:project(?:['’]s)?\s+(?:brief|description|notes?)|working\s+notes?|brief(?:['’]s)?\s+(?:description|notes?)|(?:my|our|the|this)\s+brief\b(?!\s+(?:intro|introduction|summary|overview|bio|biography|history|paragraph|sentence|line|blurb|tagline|text|copy|message|section|description|explanation|look|note|mention|answer|reply|version|list|caption|statement|story|title|heading|headline|cta)\b))/i;
-/** A change to what it says. */
-const WRITES = /\b(?:update|add|note|record|remember|save|put|include|append|change|edit|set|write|rewrite|replace|amend|mention|store|fill|clear|empty|wipe|remove|delete|fix|correct|revise|tweak|adjust|expand|extend|reword)\b/i;
-/** Something to remember about the project, without naming the brief. */
-const REMEMBERS = /\b(?:remember|keep\s+in\s+mind|make\s+a\s+note|take\s+note|note\s+down)\b[^.?!\n]{0,120}?\b(?:(?:for|in|about|across)\s+(?:this|the|our|my)\s+(?:project|site|website)|from\s+now\s+on|going\s+forward|for\s+(?:the\s+)?future|for\s+next\s+time|for\s+later)\b/i;
+/** The brief, its description or its notes, by name. "A brief intro" is not the brief. */
+const NAME = String.raw`(?:(?:my|our|the|this)\s+)?(?:project(?:['’]s)?\s+(?:brief|description|notes?)|working\s+notes?|brief['’]s\s+(?:description|notes?)|(?<=\b(?:my|our|the|this)\s+)brief\b(?!\s+(?:intro|introduction|summary|overview|bio|biography|history|paragraph|sentence|line|blurb|tagline|text|copy|message|section|description|explanation|look|note|mention|answer|reply|version|list|caption|statement|story|title|heading|headline|cta)\b))`;
+/** A change to what something says. */
+const VERB = String.raw`\b(?:update|add|note|record|remember|save|put|include|append|change|edit|set|write|rewrite|replace|amend|mention|store|fill|clear|empty|wipe|remove|delete|fix|correct|revise|tweak|adjust|expand|extend|reword)\b`;
+/**
+ * A change asked of the brief itself: the verb close before its name ("update my Project Brief", "add to the working
+ * notes"), what to add and then where ("add that we close in August to my brief"), or the brief and what it should say
+ * ("my brief should say"). "Rewrite the page so it follows the brief" and "edit the hero using the brief" change the page.
+ */
+const WRITES_BRIEF = new RegExp(
+  [
+    `${VERB}\\s+(?:(?!(?:using|from|with|per|follows?|following|based|matching|like|reading|reads?|for|so|as)\\b)\\S+\\s+){0,4}?\\b${NAME}`,
+    `${VERB}[^.?!\\n]{0,160}?(?<!\\b(?:according|due|true|close|refer|referring|stick|keep|faithful|similar|back)\\s)\\b(?:to|in|into|on|under)\\s+${NAME}`,
+    `\\b${NAME}[^.?!\\n]{0,20}?\\b(?:(?:to|should|must|needs?\\s+to)\\s+(?:say|note|include|mention|read|cover)|so\\s+(?:that\\s+)?it\\s+(?:says|notes|includes|mentions|reads|covers))\\b`
+  ].join('|'),
+  'i'
+);
+/** Something to remember about the project, without naming the brief: asked to remember it for good, either way round. */
+const REMEMBER = String.raw`\b(?:remember|keep\s+in\s+mind|make\s+a\s+note|take\s+note|note\s+down)\b`;
+const LASTING = String.raw`\b(?:(?:for|in|about|across)\s+(?:this|the|our|my)\s+(?:project|site|website)|from\s+now\s+on|going\s+forward|for\s+(?:the\s+)?future|for\s+next\s+time|for\s+later)\b`;
+const REMEMBERS = new RegExp(`${REMEMBER}[^.?!\n]{0,120}?${LASTING}|${LASTING}[^.?!\n]{0,40}?${REMEMBER}`, 'i');
 /** Asked not to, or asked how to do it by hand. */
 const DECLINES = /\b(?:don['’]?t|do\s+not|never|without|no\s+need\s+to|instead\s+of)\b[^.?!\n]{0,40}\b(?:brief|notes?|remember)\b/i;
 const ASKS_HOW = /\b(?:how|where)\s+(?:do|can|could|should|would)\s+(?:i|we)\b/i;
@@ -56,7 +70,7 @@ const REPLACES = /\b(?:replace|rewrite|overwrite|clear|empty|wipe|remove|delete|
  */
 export function briefWriteIntent(text: string, state?: Pick<ProjectState, 'brief'>): BriefAction[] {
   if (!text || DECLINES.test(text) || ASKS_HOW.test(text)) return [];
-  const named = NAMES_BRIEF.test(text) && WRITES.test(text);
+  const named = WRITES_BRIEF.test(text);
   if (!named && !REMEMBERS.test(text)) return [];
   const actions: BriefAction[] = ['add_note'];
   if (/\bdescription\b/i.test(text) || !briefFilled(briefText(state?.brief, 'description'))) actions.push('set_description');
