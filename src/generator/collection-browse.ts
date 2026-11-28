@@ -537,9 +537,9 @@ export const BROWSE_SVELTE = String.raw`<script>
 
 	/** What a keyboard can reach on the page. */
 	const reachable = () => [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')];
-	// No form of the page owns the controls: Enter in the search box, or a number a visitor is still typing, never
-	// submits or holds up a form the listing sits in.
-	const detached = 'so-browse-detached';
+	// No form of the page owns the controls (an empty form name matches no form): Enter in the search box, or a number
+	// a visitor is still typing, never submits or holds up a form the listing sits in, or any other.
+	const detached = '';
 
 	/** The next matches, and focus on the first of them, so a keyboard goes on from there. */
 	async function more() {

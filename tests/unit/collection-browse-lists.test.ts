@@ -170,10 +170,24 @@ describe("a listing's visitor browsing", () => {
     expect(homePage(s)).toMatch(/<li class=\{\["so-n-n_item"\]\}>\n\t\t\{#snippet so_listing_1\(so_matches_1\)\}/);
   });
 
+  it('shows a listing without controls when only text could hold them', () => {
+    const { s: base, loop } = site();
+    const s = structuredClone(base);
+    const nodes = s.pages[s.site.homePageId].nodes;
+    const holder = Object.values(nodes).find((n) => n.kind === 'element' && n.children.includes(loop))!;
+    // Inline rows in a span hidden on phones, inside a paragraph: the controls cannot leave the span, nor go in text.
+    Object.assign(holder, { tag: 'span', styles: { base: {}, mobile: { hidden: true } } });
+    Object.assign(nodes, { n_para: { id: 'n_para', kind: 'element', tag: 'p', children: [holder.id], styles: { base: {} } } } as unknown as typeof nodes);
+    const page = s.pages[s.site.homePageId];
+    page.rootIds = page.rootIds.map((id) => (id === holder.id ? 'n_para' : id));
+    expect(homePage(s).match(/<SoBrowse /g)).toHaveLength(1);
+  });
+
   it('leaves no browse control to a form the listing sits in', () => {
-    // Every control names a form that is not there, so none belongs to an author's form around it.
+    // Every control names no form (an empty name), so none belongs to an author's form around it or elsewhere.
     expect(BROWSE_SVELTE.match(/<(input|select|button)\b/g)!.length).toBe(BROWSE_SVELTE.match(/form=\{detached\}/g)!.length);
     expect(BROWSE_SVELTE).not.toMatch(/<form\b/);
+    expect(BROWSE_SVELTE).toContain("const detached = '';");
   });
 
   it('declares a footer\'s listing with no header listing before it', () => {
