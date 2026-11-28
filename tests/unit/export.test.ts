@@ -17,13 +17,13 @@ import {
   cleanWebsitePhotos,
   copyProjectSource,
   copyTree,
-  duplicatedAssetFilter,
   inProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
   exportedAssetFilter,
   finishExportedSource,
   isGeneratedReadme,
+  leaveOutRetiredAssets,
   locatedPhotos,
   locationKeptNote,
   locationRemovedNote,
@@ -555,47 +555,82 @@ describe('source export helpers', () => {
     const briefing = doc('briefing', 'Press briefing.');
     const prices = doc('price-list', 'Prices.');
     const offer = doc('offer', 'Offer.', 'doc');
-    const record = (id: string, file: string) => ({ id, name: id, file, mime: 'application/pdf', bytes: 1, hash: 'x', kind: 'document' as const, createdAt: '' });
-    // The project holds the guide and the price list; the folder's asset document (the one the copy carries) the guide
-    // and the briefing, and an original name that is no project file.
-    state.assets.assets = { g: record('g', current.rel), p: record('p', prices.rel) };
+    const card = doc('rate-card', 'Rate card.');
+    const catalogued = doc('catalogue', 'Catalogue.');
+    const redirected = doc('old-terms', 'Old terms.');
+    const record = (id: string, file: string, variants?: string[]) => ({ id, name: id, file, mime: 'application/pdf', bytes: 1, hash: 'x', kind: 'document' as const, createdAt: '', ...(variants ? { variants: variants.map((f) => ({ width: 480, file: f })) } : {}) });
+    // The project holds the guide, the price list and a picture (without the copy it has on disk); the folder's asset
+    // document (the one the copy carries) the guide, the briefing and a picture with its copy. Its original name is
+    // a file on the author's computer, which happens to share a retired picture's name.
+    state.assets.assets = { g: record('g', current.rel), p: record('p', prices.rel), l: record('l', 'static/assets/lib-8192a3b4.jpg') };
     const src = temp();
-    write(src, 'siteorigin/assets.json', JSON.stringify({ assets: { g: { ...record('g', current.rel), originalName: 'old-5e6f7081.png' }, b: record('b', briefing.rel) } }));
-    for (const d of [current, retired, briefing, prices, offer]) write(src, d.rel, d.text);
-    const media = ['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg', 'sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png'];
+    write(src, 'siteorigin/assets.json', JSON.stringify({ assets: { g: { ...record('g', current.rel), originalName: 'old-5e6f7081.png' }, b: record('b', briefing.rel), h: record('h', 'static/assets/hall2-92a3b4c5.jpg', ['static/assets/hall2-92a3b4c5-480w.webp']) } }));
+    for (const d of [current, retired, briefing, prices, offer, card, catalogued, redirected]) write(src, d.rel, d.text);
+    const media = ['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg', 'sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png', 'lib-8192a3b4.jpg', 'lib-8192a3b4-960w.webp', 'hall2-92a3b4c5.jpg', 'hall2-92a3b4c5-480w.webp', 'photo-9a8b7c6d.jpg', 'photo-9a8b7c6d-480w.webp', 'binary-a3b4c5d6.png'];
     for (const f of media) write(src, `static/assets/${f}`, f);
-    // An owner's dated file that only looks imported, one named otherwise, and one in a folder of its own.
-    for (const f of ['static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf']) write(src, f, f);
-    // Named by a public file, an authoring document, and hand-written source (which names the offer as a .docx only).
+    // An owner's dated file that only looks imported (a catalogue a page fetches), one named otherwise, and one in a
+    // folder of its own that has the hash its name gives.
+    const nested = `static/assets/docs/manual-${sha('Manual.').slice(0, 8)}.pdf`;
+    write(src, 'static/assets/downloads-20240131.csv', `title,file\nCatalogue,/assets/${basename(catalogued.rel)}\n`);
+    for (const f of ['static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf']) write(src, f, f);
+    write(src, nested, 'Manual.');
+    // Named by a public file, an authoring document, hand-written source (the offer as a .docx only, and a picture by
+    // the parts of its address), and a rule with no extension.
     write(src, 'static/site.webmanifest', '{"icons":[{"src":"/assets/icon-1a2b3c4d.png"}]}');
     write(src, 'siteorigin/pages/home.json', '{"background":"/assets/hall-2b3c4d5e.jpg"}');
-    write(src, 'src/routes/visit/+page.svelte', `<img src="/assets/map-3c4d5e6f.svg" alt="" /><a href="/assets/${basename(offer.rel)}x">Offer</a>`);
-    // Named only by the brief, by a file through a link, and by the editor's own data: none of them goes with the copy.
+    write(src, 'src/routes/visit/+page.svelte', `<img src="/assets/map-3c4d5e6f.svg" alt="" /><a href="/assets/${basename(offer.rel)}x">Offer</a><a href="/assets/${basename(card.rel)}">Rates</a>\n<script>const base = '/assets/photo-' + '9a8b7c6d';</script>`);
+    write(src, 'static/_redirects', `/terms /assets/${basename(redirected.rel)} 301\n`);
+    // Named only by the brief, by a file through a link (which no copy takes), by a file that isn't text, and by the
+    // editor's own data: none of them goes with the copy.
     write(src, 'siteorigin/brief.json', '{"notes":"Try /assets/sketch-4d5e6f70.png"}');
     const outside = temp();
-    write(outside, 'linked.svelte', '<img src="/assets/linked-708192a3.png" alt="" />');
-    symlinkSync(join(outside, 'linked.svelte'), join(src, 'src/routes/linked.svelte'));
+    write(outside, 'linked/page.svelte', '<img src="/assets/linked-708192a3.png" alt="" />');
+    symlinkSync(join(outside, 'linked'), join(src, 'src/routes/linked'));
+    write(src, 'static/brochure.png', '/assets/binary-a3b4c5d6.png');
     write(src, '.siteorigin/history.json', `["${basename(retired.rel)}"]`);
 
-    const dest = join(temp(), 'copy');
-    await copyProjectSource(src, dest, { keepBrief: true, keepAsset: await duplicatedAssetFilter(src, state) });
+    const stage = async () => {
+      const dest = join(temp(), 'copy');
+      await copyProjectSource(src, dest, { keepBrief: true });
+      return { dest, removed: await leaveOutRetiredAssets(dest, state) };
+    };
+    const { dest, removed } = await stage();
     const has = (rel: string) => existsSync(join(dest, rel));
-    for (const d of [current, briefing, prices]) expect(has(d.rel)).toBe(true);
-    for (const f of ['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg']) expect(has(`static/assets/${f}`)).toBe(true);
-    for (const f of ['static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf', 'static/site.webmanifest', 'siteorigin/brief.json']) expect(has(f)).toBe(true);
-    for (const rel of [retired.rel, offer.rel, ...['sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png'].map((f) => `static/assets/${f}`)]) expect(has(rel), rel).toBe(false);
+    const at = (f: string) => `static/assets/${f}`;
+    const kept = [current, briefing, prices, card, catalogued, redirected].map((d) => d.rel);
+    kept.push(...['icon-1a2b3c4d.png', 'hall-2b3c4d5e.jpg', 'map-3c4d5e6f.svg', 'lib-8192a3b4.jpg', 'lib-8192a3b4-960w.webp', 'hall2-92a3b4c5.jpg', 'hall2-92a3b4c5-480w.webp', 'photo-9a8b7c6d.jpg', 'photo-9a8b7c6d-480w.webp'].map(at));
+    kept.push('static/assets/downloads-20240131.csv', 'static/assets/rates-20240131.pdf', 'static/assets/my-own-file.pdf', nested, 'static/site.webmanifest', 'static/_redirects', 'siteorigin/brief.json');
+    for (const rel of kept) expect(has(rel), rel).toBe(true);
+    const gone = [retired.rel, offer.rel, ...['sketch-4d5e6f70.png', 'old-5e6f7081.png', 'deleted-6f708192.jpg', 'deleted-6f708192-480w.webp', 'linked-708192a3.png', 'binary-a3b4c5d6.png'].map(at)];
+    for (const rel of gone) expect(has(rel), rel).toBe(false);
+    expect(removed.sort()).toEqual([...gone].sort());
+    // The original keeps them all.
+    for (const rel of gone) expect(existsSync(join(src, rel)), rel).toBe(true);
 
-    // An asset document that can't be read for its files, or a file the search can't read, keeps every file.
+    // An asset document that can't be read for its files, or a file the search can't read, leaves every file.
+    const everything = async () => expect((await stage()).removed).toEqual([]);
     write(src, 'siteorigin/assets.json', '{"assets":');
-    expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(true);
+    await everything();
     write(src, 'siteorigin/assets.json', '{"assets":{}}');
-    expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(false);
+    expect((await stage()).removed).toContain(retired.rel);
     if (process.platform !== 'win32' && process.getuid?.() !== 0) {
-      chmodSync(join(src, 'src/routes/visit/+page.svelte'), 0o000);
+      const copied = join(temp(), 'copy');
+      await copyProjectSource(src, copied, { keepBrief: true });
+      for (const rel of ['siteorigin/assets.json', 'src/routes/visit/+page.svelte']) {
+        chmodSync(join(copied, rel), 0o000);
+        try {
+          expect(await leaveOutRetiredAssets(copied, state), rel).toEqual([]);
+        } finally {
+          chmodSync(join(copied, rel), 0o644);
+        }
+      }
+      // A folder the original keeps read-only is copied so, and still loses its retired files, keeping its mode.
+      chmodSync(join(copied, 'static/assets'), 0o555);
       try {
-        expect((await duplicatedAssetFilter(src, state))(retired.rel)).toBe(true);
+        expect(await leaveOutRetiredAssets(copied, state)).toContain(retired.rel);
+        expect(statSync(join(copied, 'static/assets')).mode & 0o777).toBe(0o555);
       } finally {
-        chmodSync(join(src, 'src/routes/visit/+page.svelte'), 0o644);
+        chmodSync(join(copied, 'static/assets'), 0o755);
       }
     }
   });

@@ -298,63 +298,87 @@ export function exportedAssetFilter(state: ProjectState): (rel: string) => boole
   };
 }
 
+/** The eight hash characters the importer names a file by, which an original shares with all its responsive copies. */
+const importedToken = (name: string) => name.match(/-([a-f0-9]{8})(?:-\d+w)?\.[a-z0-9]+$/)?.[1] ?? name;
+
 /**
- * Which project files a copy of the project that takes none of its history carries (Duplicate project, #1378). A file
- * the importer made that no asset record lists any more (a document replaced with a new edition, a deleted image) is
- * in the project only for undo and its saved versions, which the copy does not have: built as a plain SvelteKit
- * project, the copy would publish it at an address the project has retired. Such a file goes with the copy only when
- * something the copy carries names it: source and public files, hand-written or generated, and the authoring
- * documents, drafts included. The brief is the author's notes and the asset document's names are files on the
- * author's computer, so neither keeps one. Every file a record lists goes, used or not, as the folder lists it (the
- * asset document the copy carries) and as the project holds it. A document counts as the importer's only when its
- * bytes still have the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one;
- * anything else not named as the importer names files, or in a folder of its own, goes too. Read from the project
- * itself, before it is copied, so the copy can leave a file out as it goes.
+ * Remove from a staged copy of the project (Duplicate project, #1378) the files the importer made that are there only
+ * for the original's undo and saved versions, which the copy does not take: a document replaced with a new edition, a
+ * deleted image. Built as a plain SvelteKit project, the copy would otherwise publish them at addresses the project has
+ * retired. Every file an asset record lists stays, used or not: as the copied asset document lists it, and as the
+ * project holds it. Any other file the importer made stays when something in the copy names it, hand-written or
+ * generated, public or an authoring document, drafts included; the brief (the author's notes) and the asset document
+ * (whose original names are files on the author's computer) never keep one. A picture or font is named by its eight
+ * hash characters, as the session finds it (an address built from its parts holds them), and stays too while a library
+ * file shares them; a document by its whole name. A document counts as the importer's only while its bytes still have
+ * the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one. Anything that can't
+ * be read for what it names leaves every file in place. Read from the copy, so it decides by exactly what was copied.
+ * Returns the files it removed.
  */
-export async function duplicatedAssetFilter(project: string, state: ProjectState): Promise<(rel: string) => boolean> {
-  const keepAll = () => true;
+export async function leaveOutRetiredAssets(copy: string, state: ProjectState): Promise<string[]> {
   const library = libraryAssetFiles(state);
-  // An asset document the copy would carry that can't be read for its files: every file goes with it.
   try {
-    const text = await readIfExists(join(project, 'siteorigin', 'assets.json'));
+    const text = await fs.readFile(join(copy, 'siteorigin', 'assets.json'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
     const doc = text === null ? null : (JSON.parse(text) as { assets?: Record<string, { file?: unknown; variants?: Array<{ file?: unknown }> } | null> } | null);
     for (const a of Object.values(doc?.assets ?? {})) for (const f of [a?.file, ...(Array.isArray(a?.variants) ? a.variants.map((v) => v?.file) : [])]) if (typeof f === 'string') library.add(f);
   } catch {
-    return keepAll;
+    return [];
   }
-  const retired = new Set<string>();
-  for (const e of await fs.readdir(join(project, 'static', 'assets'), { withFileTypes: true }).catch(() => [])) {
+  const shared = new Set([...library].filter((f) => /^static\/assets\/[^/]+$/.test(f) && IMPORTED_MEDIA_FILE.test(basename(f))).map((f) => importedToken(basename(f))));
+  const dir = join(copy, 'static', 'assets');
+  const media = new Map<string, string>();
+  const documents = new Set<string>();
+  for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
     const rel = `static/assets/${e.name}`;
     if (!e.isFile() || library.has(rel)) continue;
-    if (IMPORTED_MEDIA_FILE.test(e.name)) retired.add(rel);
-    else if (IMPORTED_DOCUMENT_FILE.test(e.name)) {
-      const read = await hashFileAt(join(project, rel), () => undefined);
-      if (typeof read === 'object' && read.hash.startsWith(e.name.match(/-([a-f0-9]{8})\.[^.]+$/)![1])) retired.add(rel);
+    if (IMPORTED_MEDIA_FILE.test(e.name)) {
+      if (!shared.has(importedToken(e.name))) media.set(rel, importedToken(e.name));
+    } else if (IMPORTED_DOCUMENT_FILE.test(e.name)) {
+      const read = await hashFileAt(join(copy, rel), () => undefined);
+      if (typeof read === 'object' && read.hash.startsWith(importedToken(e.name))) documents.add(rel);
     }
   }
-  if (!retired.size) return keepAll;
-  // Searched as the copy takes the project: no link, nothing private, none of the editor's own data.
-  const named = new NameMatcher([...retired].map((rel) => basename(rel)));
-  const scan = async (rel: string): Promise<void> => {
-    for (const e of await fs.readdir(join(project, rel), { withFileTypes: true }).catch(() => [])) {
+  if (!media.size && !documents.size) return [];
+  const tokens = new Set(media.values());
+  const found = new Set<string>();
+  const named = new NameMatcher([...documents].map((rel) => basename(rel)));
+  const open = () => [...tokens].some((t) => !found.has(t)) || [...documents].some((rel) => !named.whole(basename(rel)));
+  // What the copy carries, read as text: the files the website build reads, and those with no extension (`_redirects`).
+  const searched = (name: string) => TEXT_FILE.test(name) || !/.\.[^.]+$/.test(name);
+  let unreadable = false;
+  const walk = async (rel: string): Promise<void> => {
+    for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
+      if (unreadable || !open()) return;
       const child = rel ? `${rel}/${e.name}` : e.name;
-      const abs = join(project, child);
-      if (e.isSymbolicLink() || !sourcePathKept(project, abs) || isProjectBrief(project, abs) || isSourcesFolder(project, abs)) continue;
-      if (e.isDirectory()) await scan(child);
-      // The importer's own files name nothing; the library's files are counted above, and not by their original names.
-      else if (e.isFile() && TEXT_FILE.test(e.name) && child !== 'siteorigin/assets.json' && !(rel === 'static/assets' && (IMPORTED_MEDIA_FILE.test(e.name) || IMPORTED_DOCUMENT_FILE.test(e.name)))) {
-        // One that can't be read may name any of them: every file goes.
-        const text = await fs.readFile(abs, 'utf8').catch(() => null);
-        if (text === null) return void retired.clear();
-        named.scan(text);
+      if (e.isDirectory()) await walk(child);
+      else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) {
+        const text = await fs.readFile(join(copy, child), 'utf8').catch(() => null);
+        if (text === null) unreadable = true;
+        else {
+          for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
+          named.scan(text);
+        }
       }
-      if (!retired.size) return;
     }
   };
-  await scan('');
-  // A document by its whole name: `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`.
-  for (const rel of retired) if ((documentFormat(rel) ? named.whole : named.file)(basename(rel))) retired.delete(rel);
-  return (rel) => !retired.has(rel);
+  await walk('').catch(() => (unreadable = true));
+  if (unreadable) return [];
+  const gone = [...[...media].filter(([, t]) => !found.has(t)).map(([rel]) => rel), ...[...documents].filter((rel) => !named.whole(basename(rel)))];
+  if (!gone.length) return [];
+  // The copy's folders have their originals' modes: one the original keeps read-only is opened for the removal alone.
+  const mode = (await fs.stat(dir)).mode & 0o7777;
+  if (!(mode & 0o200)) await fs.chmod(dir, mode | 0o700);
+  const removed: string[] = [];
+  try {
+    for (const rel of gone) {
+      // A read-only file can't be removed on Windows; one that won't go stays, as every file did before.
+      await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
+      if (await fs.rm(join(copy, rel)).then(() => true, () => false)) removed.push(rel);
+    }
+  } finally {
+    if (!(mode & 0o200)) await fs.chmod(dir, mode);
+  }
+  return removed;
 }
 
 /** Files the website build reads as text, searched for the asset file names they use. */
