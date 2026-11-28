@@ -12,10 +12,11 @@
  * posts only send visitors on, so they are never results; a page found always links to where it is now.
  */
 import type { Collection, ComponentDefinition, EntryDoc, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
-import { slotChildren } from '@shared/types';
+import { isEntryBinding, slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { renderedContent, showsEntryText } from './checks';
-import { siteEntries } from '@shared/collections';
+import { entryArticle, renderedContent, type RenderedContent } from './checks';
+import { showsBody } from './entry-template';
+import { collectionKind, siteEntries } from '@shared/collections';
 import { isDraftPage, publishedState } from './index';
 
 /** The search code, imported by the Site search component from the runtime folder. */
@@ -76,17 +77,22 @@ export function hiddenLayers(tree: NodeTree): Set<string> {
     const inside = n?.kind === 'element' ? n.children : n?.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [];
     for (const c of inside) hide(c);
   };
-  for (const n of Object.values(tree.nodes)) if (hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);
+  for (const n of Object.values(tree.nodes)) if (n && typeof n === 'object' && hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);
   return out;
 }
 
 /** The words a page shows, one line per field that shows any: its text, rich text, button labels and list items. */
 export function pageText(state: ProjectState, page: PageDoc): string {
+  return treeText(state, page);
+}
+
+/** The words a tree shows, one line per field that shows any, less the content `skip` says is found otherwise. */
+function treeText(state: ProjectState, tree: NodeTree, skip?: (c: RenderedContent) => boolean): string {
   const lines: string[] = [];
-  const hidden = hiddenLayers(page);
-  for (const c of renderedContent(state, page)) {
+  const hidden = hiddenLayers(tree);
+  for (const c of renderedContent(state, tree)) {
     // Where a link goes is not something the visitor reads, and what custom code shows of a setting is unknown.
-    if (c.kind !== 'text' || c.custom || hidden.has(c.nodeId)) continue;
+    if (c.kind !== 'text' || c.custom || hidden.has(c.nodeId) || skip?.(c)) continue;
     let text = '';
     if (typeof c.value === 'string' || typeof c.value === 'number') text = c.rich && typeof c.value === 'string' ? plain(c.value) : String(c.value);
     else if (c.rich && Array.isArray(c.value)) text = plain(c.value);
@@ -112,11 +118,37 @@ export function entrySearchHidden(entry: EntryDoc): boolean {
 }
 
 /**
+ * The entry fields a record's layout shows that search does not read from its page: the title, excerpt and text, found
+ * as the entry's own, and the links to the entries before and after it, which name other records.
+ */
+const FOUND_OTHERWISE: ReadonlySet<string> = new Set(['title', 'excerpt', 'body', 'prevEntry', 'prevEntry.title', 'prevEntry.label', 'nextEntry', 'nextEntry.title', 'nextEntry.label', 'entryNavLabel']);
+
+/** The entry field a piece of an entry's page reads, by the layout's own binding at the node that shows it. */
+function readsEntry(template: NodeTree | undefined, c: RenderedContent): string | undefined {
+  const node = template?.nodes && Object.hasOwn(template.nodes, c.nodeId) ? (template.nodes[c.nodeId] as unknown as Record<string, unknown>) : undefined;
+  if (!node || !c.source) return undefined;
+  const props = node.props as Record<string, unknown> | undefined;
+  const binding = c.source.kind === 'node' ? node[c.source.field] : !c.source.itemId && props && Object.hasOwn(props, c.source.prop) ? props[c.source.prop] : undefined;
+  return isEntryBinding(binding) ? binding.$entry : undefined;
+}
+
+/**
  * The words of an entry search finds: its excerpt, and its text where its page shows it (a collection layout without
- * the entry's text leaves it off the website, as the Markdown copies do), one line per field that has any.
+ * the entry's text leaves it off the website, as the Markdown copies do), one line per field that has any. A record
+ * (an entry of a structured collection) is also found by everything else its page shows: its custom fields and
+ * groupings as its layout places them (a price as the site writes it, a choice by its label, its categories' names),
+ * and the layout's own words, less what a condition or a hide leaves off its page.
  */
 export function entryText(state: ProjectState, collection: Collection, entry: EntryDoc): string {
-  return [oneLine(entry.excerpt), showsEntryText(state, collection, entry) ? oneLine(plain(entry.body)) : ''].filter(Boolean).join('\n');
+  // The page in full, its text included, so a section that shows something only beside the text shows it here too;
+  // the text itself is read once, from the entry.
+  const article = entryArticle(state, collection, entry, { body: true });
+  const lines = [oneLine(entry.excerpt), showsBody(collection, article) ? oneLine(plain(entry.body)) : ''];
+  if (collectionKind(collection.settings) === 'structured') {
+    const template = collection.settings.template;
+    lines.push(treeText(state, article, (c) => FOUND_OTHERWISE.has(readsEntry(template, c) ?? '')));
+  }
+  return lines.filter(Boolean).join('\n');
 }
 
 /**

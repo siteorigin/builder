@@ -1,6 +1,7 @@
 import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { repeatProp, STYLE_SCOPES, isAppearPreset, isBinding, slotFallback } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
+import { CODE_TEXT_ATTR, CODE_TEXT_HOOK } from '@shared/code-text';
 
 export class EngineError extends Error {
   constructor(
@@ -134,24 +135,148 @@ export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): s
 /**
  * The links a list repeats whose visible text and destination are two fields of the same item (a contact method's
  * value and link): `{ text, link }` field names. Read from the definition's own tree, so a project's copy with
- * renamed fields pairs the same way; a code component has no tree to read and pairs nothing. A destination shared
- * by two different texts belongs to neither, so it is left out.
+ * renamed fields pairs the same way, or from a code component's markup (codeItemLinks). A destination shared by two
+ * different texts belongs to neither, so it is left out.
  */
 export function itemLinkPairs(def: ComponentDefinition, listProp: string): Array<{ text: string; link: string }> {
   const schema = Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
-  if (!def.tree || schema?.type !== 'list') return [];
+  if (schema?.type !== 'list') return [];
+  const shown: Array<{ text: string; link: string }> = [];
+  if (def.tree) {
+    for (const n of Object.values(def.tree.nodes)) {
+      if (n.kind !== 'link' || !isBinding(n.label) || !isBinding(n.link) || !('$item' in n.label) || !('$item' in n.link)) continue;
+      if (enclosingRepeatProp(def, n.id) === listProp) shown.push({ text: n.label.$item, link: n.link.$item });
+    }
+  } else if (def.kind === 'code') shown.push(...codeItemLinks(def.source ?? '', listProp));
   const found = new Map<string, { text: string; link: string }>();
-  for (const n of Object.values(def.tree.nodes)) {
-    if (n.kind !== 'link' || !isBinding(n.label) || !isBinding(n.link) || !('$item' in n.label) || !('$item' in n.link)) continue;
-    const text = n.label.$item;
-    const link = n.link.$item;
+  for (const { text, link } of shown) {
     if (!Object.hasOwn(schema.fields, text) || !Object.hasOwn(schema.fields, link)) continue;
     if (schema.fields[text].type !== 'string' || schema.fields[link].type !== 'link') continue;
-    if (enclosingRepeatProp(def, n.id) !== listProp) continue;
     found.set(`${text}\u0000${link}`, { text, link });
   }
   const pairs = [...found.values()];
   return pairs.filter((p) => pairs.filter((q) => q.link === p.link).length === 1);
+}
+
+/** `name.field` alone: an item's field, as a link's destination or its only content. */
+const ITEM_FIELD = /^\s*([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*$/;
+/** The text hook's call for an item's field (src/shared/code-text.ts): its list, field and the item it names. */
+const ITEM_TEXT_HOOK = new RegExp(`^\\s*${CODE_TEXT_HOOK}\\s*\\?\\.\\s*\\(\\s*(['"])([A-Za-z][\\w]*)\\.([A-Za-z][\\w]*)\\1\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*\\.`);
+/** The SoLinks of a code source, read once per source. */
+const codeLinkCache = new Map<string, CodeItemLink[]>();
+type CodeItemLink = { list: string; text: string; link: string };
+
+/**
+ * The links a code component draws for each item of a list, read from the marker that already tells the canvas which
+ * field a link shows (src/shared/code-text.ts):
+ * `<SoLink data-so-text={so_text?.('items.value', item.id)} link={item.link}>{item.value}</SoLink>` reads as
+ * `{ text: 'value', link: 'link' }` of `items`. The marker names the list, so no reading of the blocks around it is
+ * needed; a link whose marker, destination and content are not all the same item's, or whose tag spreads attributes
+ * that could replace the link, pairs nothing.
+ */
+function codeItemLinks(source: string, listProp: string): Array<{ text: string; link: string }> {
+  let links = codeLinkCache.get(source);
+  if (!links) {
+    links = readCodeItemLinks(source);
+    if (codeLinkCache.size >= 64) codeLinkCache.delete(codeLinkCache.keys().next().value!);
+    codeLinkCache.set(source, links);
+  }
+  return links.filter((l) => l.list === listProp).map(({ text, link }) => ({ text, link }));
+}
+
+/**
+ * Every marked `<SoLink …>{item.field}</SoLink>` of a source, in one forward pass that steps over comments, scripts and
+ * styles, which draw no links.
+ */
+function readCodeItemLinks(source: string): CodeItemLink[] {
+  const out: CodeItemLink[] = [];
+  const next = /<SoLink|<!--|<(script|style)\b/g;
+  for (let m = next.exec(source); m; m = next.exec(source)) {
+    const at = m.index;
+    if (m[0] === '<!--' || m[1]) {
+      const close = m[1] ? source.indexOf(`</${m[1]}>`, at) : source.indexOf('-->', at + 4);
+      if (close < 0) break;
+      next.lastIndex = close + 1;
+      continue;
+    }
+    const tag = readTag(source, at + '<SoLink'.length);
+    next.lastIndex = Math.max(tag.end, at + 1);
+    if (!tag.attrs) continue;
+    const close = source.indexOf('</SoLink>', tag.end);
+    // No link closes after this one, so none of the rest has content to read.
+    if (close < 0) break;
+    // Content is one short expression: a longer run is not read.
+    const content = close - tag.end > 400 ? null : /^\s*\{([^{}]*)\}\s*$/.exec(source.slice(tag.end, close));
+    const shown = content && ITEM_FIELD.exec(content[1]);
+    const marker = tag.attrs.get(CODE_TEXT_ATTR);
+    const hook = marker && ITEM_TEXT_HOOK.exec(marker);
+    const to = tag.attrs.get('link');
+    const link = to && ITEM_FIELD.exec(to);
+    // An href or a click handler of its own decides where the link goes instead.
+    if (!shown || !hook || !link || [...tag.attrs.keys()].some((k) => k === 'href' || /^on(:|[a-z])/i.test(k))) continue;
+    const [, item, text] = shown;
+    // An item made in the markup (`{@const item = …}`) is not the stored one, whatever its ID.
+    if (new RegExp(`\\{@const\\s+${item.replace(/\$/g, '\\$')}\\b`).test(source)) continue;
+    if (hook[4] === item && link[1] === item && hook[3] === text) out.push({ list: hook[2], text, link: link[2] });
+  }
+  return out;
+}
+
+/**
+ * The attributes of a tag from just after its name, with the expressions in braces as written (strings in them
+ * skipped, braces counted), and where it ends. No attributes when it spreads any, or cannot be read to its `>`.
+ */
+function readTag(src: string, from: number): { attrs: Map<string, string> | null; end: number } {
+  const attrs = new Map<string, string>();
+  let i = from;
+  const expression = (): string | null => {
+    const start = i;
+    let depth = 0;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === '`') {
+        const q = src.indexOf(c, i + 1);
+        // Unclosed to the end: nothing after it is read again.
+        if (q < 0) return ((i = src.length), null);
+        i = q;
+      } else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) return src.slice(start + 1, i++);
+    }
+    return null;
+  };
+  if (!/\s|>|\//.test(src[i] ?? '')) return { attrs: null, end: i };
+  while (i < src.length) {
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '>') return { attrs, end: i + 1 };
+    if (src.startsWith('/>', i)) return { attrs: null, end: i + 2 };
+    // A spread, or the `{link}` shorthand: either way what the link opens is not read here.
+    if (src[i] === '{') return { attrs: null, end: i + 1 };
+    const name = /^[^\s=/>"'{}<]+/.exec(src.slice(i, i + 200));
+    if (!name) return { attrs: null, end: i };
+    i += name[0].length;
+    let value = '';
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '=') {
+      i++;
+      while (/\s/.test(src[i] ?? '')) i++;
+      if (src[i] === '{') {
+        const v = expression();
+        if (v === null) return { attrs: null, end: i };
+        value = v;
+      } else if (src[i] === '"' || src[i] === "'") {
+        const q = src.indexOf(src[i], i + 1);
+        if (q < 0) return { attrs: null, end: src.length };
+        // Text around expressions, whose quotes can sit inside them, is not read: the tag pairs nothing.
+        if (src.slice(i, q).includes('{')) return { attrs: null, end: q + 1 };
+        value = '';
+        i = q + 1;
+      } else return { attrs: null, end: i };
+    }
+    // An attribute named twice is not one value.
+    if (attrs.has(name[0])) return { attrs: null, end: i };
+    attrs.set(name[0], value);
+  }
+  return { attrs: null, end: i };
 }
 
 /**

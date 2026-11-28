@@ -228,6 +228,47 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
       [original, true]
     ]);
   });
+
+  it('keeps a pinned missing entry when another copy of the project, listed on its own, is chosen for it (#1541)', async () => {
+    // Two working copies of one project (an editable ZIP opened twice keeps its ID), each listed by its folder.
+    const root = temp('work');
+    const source = await makeProject(join(root, 'clients'), 'mill-road', 'Mill Road');
+    const staging = join(root, 'staging', 'mill-road');
+    mkdirSync(join(root, 'staging'));
+    cpSync(source, staging, { recursive: true, verbatimSymlinks: true });
+    expect(projectId(staging)).toBe(projectId(source));
+    const c = controller();
+    expect((await c.trustAndOpen(source)).ok).toBe(true);
+    await c.close();
+    expect((await c.trustAndOpen(staging)).ok).toBe(true);
+    await c.close();
+    expect(await settings.pinRecent(source, true)).toBe(true);
+
+    // The source's folder is moved away, and Find folder… on its entry chooses the staging copy.
+    renameSync(source, join(root, 'elsewhere'));
+    pick(staging);
+    expect(await c.open(undefined, { folder: true, replaces: source })).toEqual({ ok: true });
+    expect(c.session?.dir).toBe(staging);
+    await c.close();
+    expect((await listed(root)).map((r) => [r.dir, r.missing, r.pinned === true])).toEqual([
+      [staging, false, false],
+      [source, true, true]
+    ]);
+    expect(saved(root).map((r) => r.dir)).toEqual([staging, source]);
+    // Each folder's identity is kept in the settings, and never handed to the Welcome screen.
+    expect(saved(root).every((r) => typeof (r as { folderId?: unknown }).folderId === 'string')).toBe(true);
+    expect((await listed(root)).some((r) => 'folderId' in r)).toBe(false);
+
+    // The source's own folder, found for its entry, takes it over with its pin.
+    pick(join(root, 'elsewhere'));
+    const found = await c.open(undefined, { folder: true, replaces: source });
+    expect(found.needsTrust?.dir).toBe(join(root, 'elsewhere'));
+    expect(await c.trustAndOpen(join(root, 'elsewhere'), { replaces: source })).toEqual({ ok: true });
+    expect((await listed(root)).map((r) => [r.dir, r.missing, r.pinned === true])).toEqual([
+      [join(root, 'elsewhere'), false, true],
+      [staging, false, false]
+    ]);
+  });
 });
 
 describe('the recent entry a found project replaces', () => {

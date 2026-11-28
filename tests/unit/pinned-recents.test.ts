@@ -4,7 +4,7 @@
  * survives a restart, a rename of its site, a link to its folder, and its moved folder being found (#217). The newest
  * twenty unpinned projects rotate as before.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +31,13 @@ function site(folder: string): string {
   const dir = join(root, folder);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'siteorigin.project.json'), '{}');
+  return dir;
+}
+/** The project at `from`, listed there, moved to `to` while the app was not looking. */
+function moveSite(from: string, to: string): string {
+  const dir = join(root, to);
+  mkdirSync(join(dir, '..'), { recursive: true });
+  renameSync(join(root, from), dir);
   return dir;
 }
 const listed = async () => (await settings.recents()).map((r) => [r.name, r.pinned === true]);
@@ -139,10 +146,10 @@ describe('a pinned project on the Recent projects list (#259)', () => {
   });
 
   it('leaves one pinned entry when a pinned project’s moved folder is found where a link already listed it', async () => {
-    const gone = join(root, 'clients', 'mill-road');
+    const gone = site('clients/mill-road');
     await settings.addRecent(gone, 'Mill Road', 'pmill');
     await settings.pinRecent(gone, true);
-    const moved = site('delivered/mill-road');
+    const moved = moveSite('clients/mill-road', 'delivered/mill-road');
     const link = join(root, 'link-to-mill-road');
     symlinkSync(moved, link);
     await settings.addRecent(link, 'Mill Road', 'pmill');
@@ -151,9 +158,9 @@ describe('a pinned project on the Recent projects list (#259)', () => {
   });
 
   it('keeps the pin of a link that was pinned when its project’s missing entry, not pinned, is found through it', async () => {
-    const gone = join(root, 'clients', 'mill-road');
+    const gone = site('clients/mill-road');
     await settings.addRecent(gone, 'Mill Road', 'pmill');
-    const moved = site('delivered/mill-road');
+    const moved = moveSite('clients/mill-road', 'delivered/mill-road');
     const link = join(root, 'link-to-mill-road');
     symlinkSync(moved, link);
     await settings.addRecent(link, 'Mill Road', 'pmill');
