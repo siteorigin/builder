@@ -55,8 +55,8 @@ import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/
 import { formatArticleDate, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { collectionHasBody, collectionKind, findEntry, hasDetailPages } from '@shared/collections';
 import { entryQuery, listsEntries } from '@shared/entry-feed';
-import { postAt, postShown, postsCollection } from '../lib/posts';
-import { entryNounLower, isReadOnlyCollection } from '../lib/content';
+import { listedCollection, postAt, postShown } from '../lib/posts';
+import { entryNounLower, isArticleCollection, isReadOnlyCollection, nothingOpenNote } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
 import { usePanelHidden } from '../lib/hideable';
 import { seoDocument } from '../lib/seo-view';
@@ -3604,7 +3604,8 @@ function writerNote(collection: ProjectState['collections'][string]): string {
 function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'write' | 'preview' }) {
   const post = useStore((s) => s.post);
   const at = useStore((s) => s.postPreviewAt);
-  const shown = postShown(state, workspace, post, at);
+  const listed = useStore((s) => s.contentCollection);
+  const shown = postShown(state, workspace, post, at, listed);
   const opened = postAt(state, post);
   // The entry the writer has open, by its own collection's noun: a visitor's link may go on to another's.
   const openedCollection = post ? state.collections[post.collectionId] : undefined;
@@ -3617,15 +3618,15 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
   );
   const key = `post:${workspace}:${post?.collectionId ?? ''}:${post?.entryId ?? ''}`;
   if (shown.kind === 'post' && !shown.ref) {
-    // Named as the list beside it is: no collection yet, or the collection with none of its entries open.
-    const collection = postsCollection(state, post?.collectionId);
+    // Named as the list beside it is: no collection yet, or the collection it shows with none of its entries open.
+    const collection = listedCollection(state, listed, post);
     const noun = collection ? entryNounLower(collection) : '';
     return (
       <div className="panel-body insp" key={key}>
-        <Header title={shown.title} kind={collection ? `No ${noun} open` : 'No collections yet'} icon={collection ? <Newspaper /> : <Library />} />
+        <Header title={shown.title} kind={collection ? `No ${noun} open` : 'No collections yet'} icon={!collection ? <Library /> : isArticleCollection(collection) ? <Newspaper /> : <FileText />} />
         <div className="insp-empty">
-          {collection ? <Newspaper aria-hidden="true" /> : <Library aria-hidden="true" />}
-          <p>{collection ? `Choose ${noun === 'post' ? 'a post' : 'one'} in the list, or start a new one. ${noun === 'post' ? 'A post’s' : 'Its'} text and details are edited in the writer.` : 'Add a collection in the Content list to keep articles, people, projects or what clients say.'}</p>
+          {!collection ? <Library aria-hidden="true" /> : isArticleCollection(collection) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
+          <p>{collection && Object.keys(collection.entries).length && !isReadOnlyCollection(collection) ? `${nothingOpenNote(collection)} Its text and details are edited in the writer.` : nothingOpenNote(collection)}</p>
         </div>
       </div>
     );
@@ -3636,9 +3637,9 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
     const noun = entryNounLower(collection);
     return (
       <div className="panel-body insp" key={key}>
-        <Header title={shown.title} kind={`${shown.draft ? 'Draft' : 'Published'} ${noun}${workspace === 'preview' ? ' · preview' : ''}`} icon={<Newspaper />} actions={workspace === 'preview' ? back : undefined} />
+        <Header title={shown.title} kind={`${shown.draft ? 'Draft' : 'Published'} ${noun}${workspace === 'preview' ? ' · preview' : ''}`} icon={isArticleCollection(collection) ? <Newspaper /> : <FileText />} actions={workspace === 'preview' ? back : undefined} />
         <div className="insp-empty">
-          <Newspaper aria-hidden="true" />
+          {isArticleCollection(collection) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
           <p>
             {workspace === 'write'
               ? `${writerNote(collection)} Nothing here changes a page.`

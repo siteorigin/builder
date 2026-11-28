@@ -1,6 +1,6 @@
 import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Bold, Check, CircleAlert, Clock, Eye, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
+import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
@@ -28,7 +28,7 @@ import { assetArrived, reviewImport } from '../lib/import-review';
 import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
-import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, postAt } from '../lib/posts';
+import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
@@ -38,7 +38,7 @@ import { SeoInlineActions, subjectKey, useDocumentPreview, useTypedSeo } from '.
 import { Hideable, useShownValue } from '../lib/hideable';
 import { PostSearchFields } from './PostSearchFields';
 import { EntryValueFields } from './EntryValueFields';
-import { entryNoun, entryNounLower, isReadOnlyCollection } from '../lib/content';
+import { entryNoun, entryNounLower, isArticleCollection, isReadOnlyCollection, nothingOpenNote } from '../lib/content';
 
 const MAX_EXCERPT = 320;
 /** How long before an action a field's refusal still stops it: the blur its button press caused. */
@@ -138,6 +138,8 @@ function linkAtCaret(root: HTMLElement): boolean {
  */
 export function PostWriter({ hidden }: { hidden: boolean }) {
   const post = useStore((s) => s.post);
+  // With nothing open: what to do next, for the collection the list shows (lib/content nothingOpenNote).
+  const listed = useStore((s) => (s.snapshot ? listedCollection(s.snapshot.state, s.contentCollection, s.post) : undefined));
   const exists = useStore((s) => !!(s.snapshot && postAt(s.snapshot.state, s.post)));
   // A writer already open stays while the post is gone from the project (the AI, an Undo): it may hold unsaved text,
   // which it offers to keep. It lets go of the post itself once nothing is left unsaved.
@@ -151,8 +153,8 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
         <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
       ) : (
         <div className="post-none">
-          <Newspaper aria-hidden="true" />
-          <p>Choose an entry in the list, or start a new one.</p>
+          {!listed ? <Library aria-hidden="true" /> : isArticleCollection(listed) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
+          <p>{nothingOpenNote(listed)}</p>
         </div>
       )}
     </div>

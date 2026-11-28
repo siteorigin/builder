@@ -67,6 +67,18 @@ export function postsCollection(state: ProjectState, wanted?: string | null): Co
   return first ? all[first] : undefined;
 }
 
+/**
+ * The collection the Content list shows: the open entry's (the list turns to it, and turning the list elsewhere lets
+ * the entry go), else the one it was turned to (`listed`, the store's contentCollection), else the blog, else the
+ * first. Read from the open entry first, an entry opened from anywhere is named with its own collection in the same
+ * render. The list's head, the toolbar, the Inspector, the composer and the writer all name this one, so the window
+ * gives one answer to which collection is in front.
+ */
+export function listedCollection(state: ProjectState, listed: string | null | undefined, post: PostRef | null | undefined): Collection | undefined {
+  const all = state.collections ?? {};
+  return postsCollection(state, post && Object.hasOwn(all, post.collectionId) ? post.collectionId : listed);
+}
+
 /** The entry a reference names, while it is still in that collection. */
 export function postAt(state: ProjectState, ref: PostRef | null | undefined): EntryDoc | undefined {
   if (!ref) return undefined;
@@ -106,7 +118,7 @@ export type PostShown = { kind: 'post'; ref: PostRef | null; title: string; draf
 
 const named = (ref: PostRef, e: EntryDoc): PostShown => ({ kind: 'post', ref, title: typeof e.title === 'string' && e.title ? e.title : 'Untitled', draft: e.draft !== false });
 
-export function postShown(state: ProjectState, workspace: 'write' | 'preview', post: PostRef | null, at: string | null): PostShown {
+export function postShown(state: ProjectState, workspace: 'write' | 'preview', post: PostRef | null, at: string | null, listed: string | null = null): PostShown {
   if (workspace === 'preview' && at !== null) {
     // As the canvas resolves an address (lib/template-view viewAt): an entry's page first, then the site's pages.
     const same = (route: string) => route === at || route === `${at}/`;
@@ -117,10 +129,10 @@ export function postShown(state: ProjectState, workspace: 'write' | 'preview', p
   }
   const entry = postAt(state, post);
   if (entry && post) return named(post, entry);
-  // None open: the workspace, named as its list is (the blog's Posts, another collection's own name, or Content while
-  // the project has no collection yet).
-  const collection = postsCollection(state, post?.collectionId);
-  return { kind: 'post', ref: null, title: collection ? (collection.settings.id === POSTS_COLLECTION_ID ? 'Posts' : collection.settings.name) : 'Content', draft: false };
+  // None open: the workspace, named as its list's head names it (the collection it shows, by its own name, or Content
+  // while the project has no collection yet).
+  const collection = listedCollection(state, listed, post);
+  return { kind: 'post', ref: null, title: collection ? collection.settings.name : 'Content', draft: false };
 }
 
 /** Text as the find compares it, character by character as the list's marks do (lib/fold). */

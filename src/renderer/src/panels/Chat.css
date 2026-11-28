@@ -288,7 +288,9 @@
   .composer button.scope-chip:is(:hover, [aria-expanded='true']) { color: var(--text); }
   .composer .scope-chip svg { width: 12px; height: 12px; flex: none; }
   .composer .scope-chip > .ellipsis:not(.scope-where) { flex: 0 1 auto; min-width: 3ch; }
-  .composer .scope-where { flex: 0 1000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
+  /* The secondary text gives way first, all of it down to its floor, before the chip's name loses even the fraction of
+     a pixel that would turn "No essay open" into "No essay op…" (as the toolbar's place does, Toolbar.css). */
+  .composer .scope-where { flex: 0 1000000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
   .composer .scope-where::before { content: '·'; margin-right: 5px; }
   .composer .scope-chip.def .scope-where { color: inherit; }
   .composer .chip.scope-chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }

@@ -230,11 +230,83 @@ export function entryNoun(collection: Pick<Collection, 'settings'> | undefined):
   return !s || s.id === POSTS_COLLECTION_ID || collectionKind(s) === 'editorial' ? 'Post' : 'Entry';
 }
 
+/**
+ * A word with its indefinite article, by how it is said rather than spelled: "an essay", "a user story", "an hour",
+ * "a one-pager", and an acronym by its first letter's name ("an FAQ", "a URL").
+ */
+export function withArticle(word: string): string {
+  const w = word.trim();
+  // An initialism ("FAQ", "R&D", "B2B") is said by its letters' names; a long u ("unit", "user", "utility") and "one"
+  // start with a consonant sound, a silent h with a vowel.
+  const vowelSound = /^[A-Z][^\sa-z]*[A-Z]/.test(w)
+    ? /^[AEFHILMNORSX]/.test(w)
+    : /^(hour|honest|honou?r|heir)/i.test(w) || (!/^(uni(?![nmd])|us[eu]|ut[ei]|ur[aeio]|ubi|uku|eu|ewe|one\b|once)/i.test(w) && /^[aeiou]/i.test(w));
+  return `${vowelSound ? 'an' : 'a'} ${word}`;
+}
+
+/** Nouns whose plural is themselves, and the common irregular ones, by their last word. */
+const SAME_PLURAL = new Set(['news', 'series', 'species', 'sheep', 'fish', 'staff', 'information', 'equipment', 'feedback', 'media', 'press']);
+const IRREGULAR_PLURAL: Record<string, string> = { person: 'people', child: 'children', man: 'men', woman: 'women', criterion: 'criteria', phenomenon: 'phenomena', alumnus: 'alumni' };
+
+/**
+ * A noun's plural, for one a person typed ("essays", "stories", "properties", "boxes", "case studies", "FAQs"): English's
+ * regular rules and its commonest exceptions, applied to the last word, keeping its capitals.
+ */
+export function pluralNoun(noun: string): string {
+  const last = /(\S+)$/.exec(noun)?.[1] ?? noun;
+  const head = noun.slice(0, noun.length - last.length);
+  const lower = last.toLowerCase();
+  if (SAME_PLURAL.has(lower)) return noun;
+  if (/^[A-Z]{2,}$/.test(last)) return `${noun}s`;
+  if (Object.hasOwn(IRREGULAR_PLURAL, lower)) {
+    const p = IRREGULAR_PLURAL[lower];
+    return head + (last[0] === last[0].toUpperCase() ? p[0].toUpperCase() + p.slice(1) : p);
+  }
+  if (/[^aeiou]y$/i.test(last)) return `${noun.slice(0, -1)}ies`;
+  // analysis → analyses, axis → axes
+  if (/[sx]is$/i.test(last)) return `${noun.slice(0, -2)}es`;
+  if (/(s|x|z|ch|sh)$/i.test(last)) return `${noun}es`;
+  return `${noun}s`;
+}
+
+/** Whether a collection holds dated articles (the blog, or another editorial one): drawn with a newspaper wherever it is shown, and anything else as a page of its own. */
+export const isArticleCollection = (collection: Pick<Collection, 'settings'> | undefined) => !!collection && (collection.settings.id === POSTS_COLLECTION_ID || collectionKind(collection.settings) === 'editorial');
+
 /** The same, as it reads inside a sentence ("Delete this team member?"). */
 export function entryNounLower(collection: Pick<Collection, 'settings'> | undefined): string {
   const n = entryNoun(collection);
-  // An acronym or a name ("FAQ", "Case Study" kept as typed past its first letter) keeps its capitals.
-  return n.length > 1 && n[1] === n[1].toUpperCase() && /[A-Z]/.test(n[1]) ? n : n[0].toLowerCase() + n.slice(1);
+  // An acronym or a name whose first word has a capital past its first letter ("FAQ", "R&D", "McKinsey report") keeps
+  // its capitals; otherwise only the first letter is lowered ("Case Study" → "case Study", kept as typed past it).
+  const first = n.split(/\s/)[0];
+  return first.length > 1 && /[A-Z]/.test(first.slice(1)) ? n : n[0].toLowerCase() + n.slice(1);
+}
+
+/**
+ * What the Content workspace says while nothing is open, as the writer and the Inspector both say it: where the list
+ * starts (no collection yet), its first entry (an empty collection, with the verb its own button uses), or one to
+ * choose. A synced collection's entries are made at its source, so it never offers a new one.
+ */
+export function nothingOpenNote(collection: Collection | undefined): string {
+  if (!collection) return 'Add a collection in the Content list to keep articles, people, projects or what clients say.';
+  const noun = entryNounLower(collection);
+  const name = collection.settings.name;
+  if (!Object.keys(collection.entries).length)
+    return isReadOnlyCollection(collection) ? `Nothing in ${name} yet: its entries come from its source.` : `Nothing in ${name} yet. ${collection.settings.id === POSTS_COLLECTION_ID ? 'Write' : 'Add'} the first ${noun} from the sidebar.`;
+  return isReadOnlyCollection(collection) ? `Choose ${withArticle(noun)} in the list.` : `Choose ${withArticle(noun)} in the list, or start a new one.`;
+}
+
+/**
+ * What to do first, with nothing open, to ask the AI for a change: open an entry of the collection shown, write or add
+ * its first one when it has none, or, before the first collection, add one. A synced collection's entries are changed
+ * at its source, never here. Each names the collection, so two with the same noun never read alike. Starts in lower
+ * case unless it starts with that name, to follow "No essay open: " or "·".
+ */
+export function nothingOpenStep(collection: Collection | undefined): string {
+  if (!collection) return 'add a collection in the Content list';
+  const name = collection.settings.name;
+  if (isReadOnlyCollection(collection)) return `${name} is changed at its source`;
+  if (!Object.keys(collection.entries).length) return `${collection.settings.id === POSTS_COLLECTION_ID ? 'write' : 'add'} one in ${name}`;
+  return `open one from ${name}`;
 }
 
 /** One collection as the Content tab lists it. */

@@ -15,6 +15,11 @@ import { validateOperation } from '@shared/ops';
 import {
   STARTER_COLLECTIONS,
   contentRows,
+  isArticleCollection,
+  nothingOpenNote,
+  nothingOpenStep,
+  pluralNoun,
+  withArticle,
   customCollectionOps,
   draftFeedChoice,
   draftInFeed,
@@ -457,5 +462,65 @@ describe('the schema dialog', () => {
       expect(validateOperation({ type: 'collection.update', collectionId: 'team', fields: { [name]: { type: 'string', label, default: '' } } }).ok, `${label} → ${name}`).toBe(true);
       expect(name in Object.prototype).toBe(false);
     }
+  });
+});
+
+describe('what a collection’s entries are called in a sentence', () => {
+  it('gives a noun the article it is said with', () => {
+    expect(withArticle('essay')).toBe('an essay');
+    expect(withArticle('advisor')).toBe('an advisor');
+    expect(withArticle('team member')).toBe('a team member');
+    expect(withArticle('user story')).toBe('a user story');
+    expect(withArticle('unit')).toBe('a unit');
+    expect(withArticle('update')).toBe('an update');
+    expect(withArticle('hour')).toBe('an hour');
+    expect(withArticle('one-pager')).toBe('a one-pager');
+    expect(withArticle('FAQ')).toBe('an FAQ');
+    expect(withArticle('URL')).toBe('a URL');
+    expect(withArticle('unofficial update')).toBe('an unofficial update');
+    expect(withArticle('uninstall note')).toBe('an uninstall note');
+    expect(withArticle('utility')).toBe('a utility');
+    expect(withArticle('R&D project')).toBe('an R&D project');
+    // A name or initialism keeps its capitals inside a sentence.
+    const named = (singularName: string) => ({ settings: { id: 'c', name: 'C', singularName } }) as unknown as Parameters<typeof entryNounLower>[0];
+    expect(entryNounLower(named('R&D project'))).toBe('R&D project');
+    expect(entryNounLower(named('FAQ'))).toBe('FAQ');
+    expect(entryNounLower(named('Essay'))).toBe('essay');
+  });
+
+  it('says a count with the noun’s own plural', () => {
+    expect(pluralNoun('essay')).toBe('essays');
+    expect(pluralNoun('story')).toBe('stories');
+    expect(pluralNoun('property')).toBe('properties');
+    expect(pluralNoun('entry')).toBe('entries');
+    expect(pluralNoun('day')).toBe('days');
+    expect(pluralNoun('box')).toBe('boxes');
+    expect(pluralNoun('case study')).toBe('case studies');
+    expect(pluralNoun('Case Study')).toBe('Case Studies');
+    expect(pluralNoun('FAQ')).toBe('FAQs');
+    expect(pluralNoun('field note')).toBe('field notes');
+    expect(pluralNoun('person')).toBe('people');
+    expect(pluralNoun('Key person')).toBe('Key people');
+    expect(pluralNoun('news')).toBe('news');
+    expect(pluralNoun('business analysis')).toBe('business analyses');
+    expect(pluralNoun('criterion')).toBe('criteria');
+  });
+
+  it('says what to do with nothing open: the first entry of an empty collection, else one to choose', () => {
+    const bare = createStarterState('business', 'Riverside Studio', false);
+    expect(nothingOpenNote(undefined)).toMatch(/^Add a collection/);
+    const journal = applyOperations(bare, [{ type: 'collection.create', collectionId: 'posts', name: 'Journal', singularName: 'Essay' }]).state;
+    expect(nothingOpenNote(journal.collections.posts)).toBe('Nothing in Journal yet. Write the first essay from the sidebar.');
+    const advisors = applyOperations(journal, [
+      { type: 'collection.create', collectionId: 'advisors', name: 'Advisors', singularName: 'Advisor', kind: 'structured' },
+      { type: 'entry.create', collectionId: 'advisors', entryId: 'en_rosa', title: 'Rosa Finch' }
+    ]).state;
+    expect(nothingOpenNote(advisors.collections.advisors)).toBe('Choose an advisor in the list, or start a new one.');
+    // What to do first to ask the AI for a change: the first entry, one to open, or a collection.
+    expect(nothingOpenStep(journal.collections.posts)).toBe('write one in Journal');
+    expect(nothingOpenStep(advisors.collections.advisors)).toBe('open one from Advisors');
+    expect(nothingOpenStep(undefined)).toBe('add a collection in the Content list');
+    expect(isArticleCollection(journal.collections.posts)).toBe(true);
+    expect(isArticleCollection(advisors.collections.advisors)).toBe(false);
   });
 });

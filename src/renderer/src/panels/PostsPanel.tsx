@@ -9,13 +9,13 @@ import { Marked, fold, found, shortDate } from '../components/ListText';
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
 import { detachOps, sourceOfCollection, syncSummary } from '../lib/sources';
 import { sourceFingerprint } from '@shared/sources';
-import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps } from '../lib/content';
+import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
@@ -76,9 +76,11 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   const where = [...new Set(uses.map((u) => u.where))];
   // Only somewhere visitors can go: a draft is left out of the website, and so would be the links sent to it.
   const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && (state.pages[id].draft !== true || id === state.site.homePageId));
-  const posts = Object.keys(state.collections)
+  // Grouped by collection, each under its own name (a renamed blog is not "Posts").
+  const groups = Object.keys(state.collections)
     .sort()
-    .flatMap((id) => orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false));
+    .map((id) => ({ id, name: state.collections[id].settings.name, entries: orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false) }))
+    .filter((g) => g.entries.length > 0);
   const confirm = async () => {
     const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
     // Checked again now: a destination that has become a draft (or gone) since it was chosen is chosen again.
@@ -130,15 +132,15 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
                 </option>
               ))}
           </optgroup>
-          {posts.length > 0 && (
-            <optgroup label="Posts">
-              {posts.map((p) => (
+          {groups.map((g) => (
+            <optgroup key={g.id} label={g.name}>
+              {g.entries.map((p) => (
                 <option key={p.id} value={`entry:${p.id}`}>
                   {p.title}
                 </option>
               ))}
             </optgroup>
-          )}
+          ))}
         </select>
       </Field>
       <p className="posts-note">You can undo it.</p>
@@ -264,9 +266,10 @@ export function PostsPanel() {
   const snap = useStore((s) => s.snapshot);
   const post = useStore((s) => s.post);
   const previewing = useStore((s) => s.postView === 'preview');
+  /** The collection the list was turned to: in the store, since the toolbar, Inspector, composer and writer name it too. */
+  const listed = useStore((s) => s.contentCollection);
   const [query, setQuery] = useState('');
   const [sort, setSortState] = useState<PostSort>(lastSort);
-  const [collectionId, setCollectionId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -313,10 +316,10 @@ export function PostsPanel() {
   useEffect(() => () => markDraft(newKey, false), [newKey]);
   // An entry opened from elsewhere (the SEO view, Assets, an import) shows its own collection's list.
   useEffect(() => {
-    if (post?.collectionId) setCollectionId(post.collectionId);
+    if (post?.collectionId) setState({ contentCollection: post.collectionId });
   }, [post?.collectionId]);
   const state = snap?.state;
-  const collection = state ? postsCollection(state, collectionId ?? post?.collectionId) : undefined;
+  const collection = state ? listedCollection(state, listed, post) : undefined;
   const categories = termsOf(collection, 'categories');
   // A category renamed, deleted or undone away, or one of another collection, filters nothing.
   const categoryId = categories.some((c) => c.id === category) ? category : '';
@@ -416,8 +419,8 @@ export function PostsPanel() {
   const language = state.site.language;
   const isBlog = collection?.settings.id === POSTS_COLLECTION_ID;
   const noun = entryNounLower(collection);
-  // "posts" for a blog's entries, "entries" for anything else's, where a count is said.
-  const plural = (n: number) => (n === 1 ? noun : isBlog || collectionKind(collection?.settings) === 'editorial' ? `${noun}s` : 'entries');
+  // Where a count is said, the collection's own noun: "posts", "essays", "advisors", "properties" ("entries" with none).
+  const plural = (n: number) => (n === 1 ? noun : pluralNoun(noun));
   const readOnly = isReadOnlyCollection(collection);
   // What the new-entry form makes, named as the collection it was opened for, whichever the list shows by now.
   const formTarget = addTarget.current && Object.hasOwn(state.collections, addTarget.current.collectionId) ? state.collections[addTarget.current.collectionId] : collection;
@@ -439,9 +442,9 @@ export function PostsPanel() {
       if (!(await openSaved())) return;
       // Something else chosen meanwhile, or another project opened: that choice stands.
       if (seq !== navigation.current || getState().snapshot?.workspaceKey !== workspaceKey) return;
-      setState({ post: null, postView: 'write', postReveal: null });
-    }
-    setCollectionId(id);
+      // Let go of the entry and show the collection in one change, so nothing names the old one in between.
+      setState({ post: null, postView: 'write', postReveal: null, contentCollection: id });
+    } else setState({ contentCollection: id });
     setCategory('');
     setStatus('all');
     setQuery('');
@@ -627,7 +630,8 @@ export function PostsPanel() {
     void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision);
   };
 
-  const heading = isBlog ? 'Posts' : (collection?.settings.name ?? 'Content');
+  // The collection by its own name: a renamed blog is called what it was renamed to, everywhere.
+  const heading = collection?.settings.name ?? 'Content';
   // Folded as the list finds; a query of accents alone folds to nothing and finds nothing to mark.
   const needle = fold(query.trim());
   const words = needle ? [needle] : [];
@@ -666,12 +670,13 @@ export function PostsPanel() {
     requestAnimationFrame(() => (headAdd.current ?? headOptions.current)?.focus());
   };
 
+  const importTitle = collection ? `Import into ${collection.settings.name}` : 'Import posts from';
   const importItems: MenuItem[] = [
-    { heading: 'Import posts from' },
+    { heading: importTitle },
     { label: 'WordPress export (.xml)…', icon: <FileDown />, description: 'In WordPress: Tools → Export. Put the site’s uploads folder beside it for its pictures.', onSelect: () => void importFrom('wordpress') },
     { label: 'Folder of Markdown posts…', icon: <FileDown />, description: 'Jekyll, Hugo, Eleventy or Astro posts, with their pictures.', onSelect: () => void importFrom('markdown') }
   ];
-  const openImport = (el: HTMLElement) => menu.openAt(el, importItems, 'Import posts');
+  const openImport = (el: HTMLElement) => menu.openAt(el, importItems, importTitle);
 
   /** Show another collection, or add one: the head's title is this menu while the project has more than one. */
   const openSwitcher = (el: HTMLElement) =>
@@ -705,7 +710,7 @@ export function PostsPanel() {
       {
         label: 'Edit layout',
         icon: <LayoutTemplate />,
-        description: hasDetailPages(collection.settings) ? 'The layout every entry’s page is shown with.' : 'Its entries have no pages: turn them on in its settings.',
+        description: hasDetailPages(collection.settings) ? `The layout every ${noun}’s page is shown with.` : 'Its entries have no pages: turn them on in its settings.',
         disabled: !hasDetailPages(collection.settings),
         onSelect: () => void editLayout(id)
       },
@@ -838,12 +843,14 @@ export function PostsPanel() {
       <div className="panel-head">
         <div className="posts-head-title">
           {collections.length > 1 ? (
-            <button className="posts-switch" {...menu.triggerProps('switch')} title="Show another collection" onClick={(e) => openSwitcher(e.currentTarget)}>
+            <button className="posts-switch" {...menu.triggerProps('switch')} title={`${heading}: show another collection`} onClick={(e) => openSwitcher(e.currentTarget)}>
               <span className="ellipsis">{heading}</span>
               <ChevronDown aria-hidden="true" />
             </button>
           ) : (
-            <h3 className="ellipsis">{heading}</h3>
+            <h3 className="ellipsis" title={heading}>
+              {heading}
+            </h3>
           )}
         </div>
         {readOnly ? (
@@ -854,8 +861,8 @@ export function PostsPanel() {
             className="btn btn-sm btn-ghost posts-head-add"
             aria-expanded={adding}
             aria-controls={adding ? `${uid}-add` : undefined}
-            aria-label={resumes ? `Continue new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
-            title={resumes ? `Continue new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
+            aria-label={resumes ? `Continue draft: new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
+            title={resumes ? `Continue draft: new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
             onClick={() => (adding && !title.trim() ? cancelAdd() : openForm())}
           >
             <Plus aria-hidden="true" /> <span className="posts-head-label">{resumes ? 'Continue draft' : `New ${noun}`}</span>
@@ -880,7 +887,7 @@ export function PostsPanel() {
               ref={findInput}
               className="input"
               placeholder={`Find among ${all} ${plural(all)}`}
-              aria-label={`Find ${/^[aeiou]/i.test(noun) ? 'an' : 'a'} ${noun} by title, address, author or excerpt`}
+              aria-label={`Find ${withArticle(noun)} by title, address, author or excerpt`}
               aria-controls={`${uid}-list`}
               value={query}
               spellCheck={false}
@@ -975,16 +982,16 @@ export function PostsPanel() {
         )}
         {!all && !adding && (
           <div className="posts-empty">
-            {isBlog || dated ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
-            <p>{isBlog ? 'Write articles, news and updates. Each post gets its own page on the site, in the site’s header and footer.' : `${collection.settings.name} has no entries yet.`}</p>
+            {isArticleCollection(collection) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
+            <p>{isBlog ? `Write articles, news and updates. Each ${noun} gets its own page on the site, in the site’s header and footer.` : `${collection.settings.name} has no entries yet.`}</p>
             {!readOnly && (
               <button className="btn btn-sm btn-primary" onClick={openForm}>
-                <Plus aria-hidden="true" /> {isBlog ? 'Write the first post' : `Add the first ${noun}`}
+                <Plus aria-hidden="true" /> {isBlog ? `Write the first ${noun}` : `Add the first ${noun}`}
               </button>
             )}
             {canImport && !readOnly && (
-              <button className="btn btn-sm" {...menu.triggerProps('import-empty')} disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
-                <FileDown aria-hidden="true" /> Import posts…
+              <button className="btn btn-sm" {...menu.triggerProps('import-empty')} aria-label={`${importTitle}…`} disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+                <FileDown aria-hidden="true" /> Import…
               </button>
             )}
             {groupings.length > 0 && !readOnly && (
