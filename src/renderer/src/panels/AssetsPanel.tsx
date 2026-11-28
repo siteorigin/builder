@@ -794,7 +794,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   // The review is of the image's own new file (Locate file), rather than of another image replacing it.
   const relinked = altReview?.withId === altReview?.assetId;
   // Undone, the replacement has nothing to check; redone, the same uses are listed again.
-  const altToCheck = useMemo(() => (snap && sel && altReview?.assetId === sel.id && undoAvailable(altReview.undo, snap) ? altChecks(snap.state, altReview.withId, altReview.review) : []), [snap, sel, altReview]);
+  // A new file's review waits for the snapshot that has it: before, the uses still match, but show nothing new yet.
+  const altToCheck = useMemo(() => (snap && sel && altReview?.assetId === sel.id && undoAvailable(altReview.undo, snap) && (!relinked || snap.revision >= altReview.undo.revision) ? altChecks(snap.state, altReview.withId, altReview.review) : []), [snap, sel, altReview, relinked]);
   if (!snap) return null;
   const usage = snap.assetUsage;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -1058,7 +1059,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       const undo = { entryId: r.entryId, workspaceKey, revision: r.revision };
       const review = r.altReview ?? [];
       const check = review.length > 0 && selectedNow.current === a.id;
-      if (selectedNow.current === a.id) setAltReview(check ? { assetId: a.id, withId: a.id, undo, review } : null);
+      // With nothing to check, a review still open from replacing this image stays.
+      if (check) setAltReview({ assetId: a.id, withId: a.id, undo, review });
       const more = check ? ` Check the alt text in ${review.length === 1 ? 'one place' : `${review.length} places`} below.` : '';
       return { ...r, message: `${r.message ?? ''}${more}`, action: undoAction(undo) };
     });

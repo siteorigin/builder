@@ -140,7 +140,10 @@ describe.skipIf(!browserInstalled)('Locate file with a different picture, in the
     await page.evaluate((r) => ((globalThis as unknown as { located: unknown }).located = r), { ok: true, message: 'mussels.png now shows wherever Tide pools is used.', entryId: 'e_relink', revision: 2, altReview: relinked.results[0].altReview });
     await openMissing(state);
     await page.getByRole('button', { name: 'Locate file…' }).click();
-    // The new snapshot arrives after the reply, as it does from main.
+    await expect.poll(toasts).toContainEqual(expect.objectContaining({ action: 'Undo' }));
+    // Until the snapshot with the new file arrives, the places still show nothing new: no review yet.
+    expect(await page.getByTestId('asset-alt-review').count()).toBe(0);
+    // The new snapshot arrives after the reply, as it can from main.
     await receive(relinked.state, { revision: 2, assetUsage: { a_tide: 3 }, missingAssets: [], history: history(true) });
     const note = page.getByTestId('asset-alt-review');
     await note.waitFor();
