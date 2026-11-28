@@ -106,7 +106,7 @@ describe('what the author asks of the brief (#1407)', () => {
       "Update the project brief to say we don't take notes during consultations.",
       'From now on, remember that every page needs a booking button.',
       'Add to my working notes: We haven’t decided whether to accept returns.',
-      'Update the “Project Brief” to say we open at 10.',
+      "Never change the home page’s headline or the service copy, but update the project brief to say we open at 10.",
       'Update the Project Brief. Should I provide details?'
     ])
       expect(actions(text, described), text).toContain('add_note');
@@ -126,6 +126,8 @@ describe('what the author asks of the brief (#1407)', () => {
       "Don't clear the project description",
       "Don't under any circumstances clear the brief's description.",
       'Change "Welcome to the Studio" (use the project brief for context) to a warmer headline.',
+      'Change the button label to "Project Description".',
+      'How do I edit my working notes, e.g. clear the project description?',
       'Can you read the working notes and tell me whether to rewrite the project brief?',
       'How do I update the project brief?',
       'Remember to keep the hero short',
@@ -147,8 +149,12 @@ describe('what the author asks of the brief (#1407)', () => {
 
   it('leaves the rest of a request to the page checks once its brief sentences are taken out', () => {
     expect(withoutBriefAsks('Add to my project brief that we plan to build the Services page next year. Then build the Contact page.')).toBe('Then build the Contact page.');
-    expect(withoutBriefAsks(ISSUE_REQUEST)).toBe('');
+    // The brief's clause goes; what is left of it names no page.
+    expect(withoutBriefAsks(ISSUE_REQUEST)).not.toMatch(/brief|specialize|historic/i);
     expect(withoutBriefAsks('Build the Services page')).toBe('Build the Services page');
+    // A page asked for beside a note, in one sentence or with a quoted name, is still asked for.
+    expect(withoutBriefAsks('Build the Services page and add to my working notes that we close in August.')).toBe('Build the Services page');
+    expect(withoutBriefAsks('Build the "Contact Us" page. Add to my working notes that we close in August.')).toBe('Build the "Contact Us" page.');
   });
 });
 

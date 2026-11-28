@@ -63,25 +63,21 @@ const NAMES_DESCRIPTION = /\b(?:project(?:['’]s)?\s+description|brief['’]s\s
 const REMEMBER = String.raw`\b(?:remember|keep\s+in\s+mind|make\s+a\s+note|take\s+note|note\s+down)\b`;
 const LASTING = String.raw`\b(?:(?:for|in|about|across)\s+(?:this|the|our|my)\s+(?:project|site|website)|from\s+now\s+on|going\s+forward|for\s+(?:the\s+)?future|for\s+next\s+time|for\s+later)\b`;
 const REMEMBERS = new RegExp(`${REMEMBER}[^.?!\\n]{0,120}?${LASTING}|${LASTING}[^.?!\\n]{0,40}?${REMEMBER}|^(?:please\\s+)?(?:also\\s+)?remember\\s+that\\b`, 'i');
-/** Asked not to change the brief (a "don't" before its name, however far), or not to remember. */
-const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\b[^.?!\\n]*?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
+/** Asked not to change the brief (a "don't" before its name in the same clause), or not to remember. */
+const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\b(?:(?!\\bbut\\b)[^.?!\\n,;])*?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
 /** Asked how to, or whether to: a question for the author, not a change. */
 const ASKS = /\b(?:(?:how|where)\s+(?:do|can|could|should|would)\s+(?:i|we)\b|(?:tell|ask|advise)\s+(?:\S+\s+){0,2}?(?:whether|if)\b|^should\s+(?:i|we)\b)/i;
 /** Quoted words are copy, not what the author asks ("Change the button to 'Clear working notes'"), and stand in the
- *  sentence as one word. A quote of the brief's own name ("the “Project Brief”") is that name. An apostrophe inside a
- *  word (don't, the brief's) is no quote. */
-const QUOTED = /“([^”\n]*)”|"([^"\n]*)"|(^|[\s:(\[])'([^'\n]*)'(?=$|[\s.,!?;:)\]])|(^|[\s:(\[])‘([^’\n]*)’(?=$|[\s.,!?;:)\]])/g;
-const BRIEF_NAME = new RegExp(`^\\s*${NAME}\\s*$`, 'i');
-const unquoted = (text: string) =>
-  text.replace(QUOTED, (_m, d1?: string, d2?: string, p3?: string, s3?: string, p4?: string, s4?: string) => {
-    const inner = d1 ?? d2 ?? s3 ?? s4 ?? '';
-    const lead = p3 ?? p4 ?? '';
-    return `${lead}${/^\s*(?:project\s+)?brief\s*$|^\s*working\s+notes?\s*$/i.test(inner) || BRIEF_NAME.test(inner) ? inner : 'QUOTE'}`;
-  });
-/** A message's sentences, each judged on its own: a "don't" or a question in one never reaches another. */
-const sentences = (text: string) => unquoted(text).split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter(Boolean);
+ *  sentence as one word. An apostrophe inside a word (don't, the brief's) is no quote. */
+const QUOTED = /“[^”\n]*”|"[^"\n]*"|(^|[\s:(\[])'[^'\n]*'(?=$|[\s.,!?;:)\]])|(^|[\s:(\[])‘[^’\n]*’(?=$|[\s.,!?;:)\]])/g;
+const unquoted = (text: string) => text.replace(QUOTED, (_m, a?: string, b?: string) => `${a ?? b ?? ''}QUOTE`);
+/** A message's sentences, each judged on its own: a "don't" or a question in one never reaches another. A sentence ends
+ *  before a capital, so "e.g. clear it" stays one. */
+const SENTENCE_END = /(?<=[.!?])\s+(?=[\p{Lu}"“'‘(])|\n+/u;
+const sentences = (text: string) => text.split(SENTENCE_END).map((t) => t.trim()).filter(Boolean);
 /** Whether one sentence asks for a change to the brief, and whether it names the description doing so. */
-function asks(sentence: string): { brief: boolean; description: boolean } {
+function asks(raw: string): { brief: boolean; description: boolean } {
+  const sentence = unquoted(raw);
   if (DECLINES.test(sentence) || ASKS.test(sentence)) return { brief: false, description: false };
   const named = WRITES_BRIEF.test(sentence);
   return { brief: named || REMEMBERS.test(sentence), description: named && NAMES_DESCRIPTION.test(sentence) };
@@ -102,7 +98,12 @@ export function briefWriteIntent(text: string, state?: Pick<ProjectState, 'brief
 }
 
 /** The request without its sentences about the brief: what it asks of the website. */
-export const withoutBriefAsks = (text: string): string => sentences(text).filter((t) => !asks(t).brief).join(' ');
+export const withoutBriefAsks = (text: string): string =>
+  sentences(text)
+    // Clause by clause, as written: "Build the Services page and add to my notes that…" still asks for the page.
+    .flatMap((t) => t.split(/\s*(?:;|,?\s+(?:and\s+then|and|then)\s+)/i))
+    .filter((t) => t.trim() && !asks(t).brief)
+    .join(' ');
 
 /** The tool as a run with `actions` is offered it: only those actions. */
 export function updateBriefTool(actions: readonly BriefAction[], brief = UPDATE_BRIEF_BRIEF): ToolDefinition {
