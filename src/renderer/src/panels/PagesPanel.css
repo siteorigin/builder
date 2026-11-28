@@ -179,6 +179,16 @@
   .pages-collection-index .field-hint q { color: var(--text-2); }
   /* The switch row's hint keeps most of the card's width: the switch needs a gap from it, not the shared 24px. */
   .pages-collection-index .switch-row { gap: 12px; }
+  /* What visitors can do on the index: a switch, then a list of fields to tick for each of filters and sorting. */
+  .pages-collection-browse, .pages-collection-checks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .pages-collection-browse > legend { padding: 0; margin-bottom: 4px; font-weight: 600; color: var(--text); }
+  .pages-collection-browse > .pages-collection-note { margin-top: -4px; }
+  .pages-collection-checks > legend { padding: 0; margin-bottom: 4px; font-size: 12px; color: var(--text-2); }
+  .pages-collection-checks ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .pages-collection-checks label { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; }
+  .pages-collection-checks label > .grow { min-width: 0; overflow-wrap: anywhere; }
+  .pages-collection-browse:disabled label { cursor: default; }
+  .pages-collection-kind { flex: none; font-size: 11px; color: var(--text-2); }
   /* Going back to the ready-made cards is the card's footer, set off by a rule: it is the one action that removes work. */
   .pages-collection-reset { margin: 0 -10px; padding: 10px 10px 0; border-top: 1px solid var(--border); }
   .pages-collection-reset .btn { max-width: 100%; height: auto; min-height: 26px; white-space: normal; text-align: left; }
