@@ -767,6 +767,36 @@ describe('update_site_brand', () => {
     expect(contact.find((c) => c.link.type === 'email')).toMatchObject({ label: 'Email the studio', link: { type: 'email', target: 'bookings@kloof.example' } });
   });
 
+  it('makes the email and number the site’s own, which the Contact section, its action and the footer show (#1368)', async () => {
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example', contactPhone: '+1 202 555 0142' })], () => finish()], {}, 'business');
+    await run('Our email is bookings@kloof.example and our number is +1 202 555 0142');
+    const s = session.state;
+    expect(s.site.identity).toMatchObject({ email: 'bookings@kloof.example', telephone: '+1 202 555 0142' });
+    const page = Object.values(s.pages).find((p) => p.route === '/contact/')!;
+    const section = Object.values(page.nodes).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'contact.details')!;
+    const items = section.props.items as Array<{ value: string; link: LinkValue }>;
+    expect(items.slice(0, 2).map((i) => [i.value, i.link.target])).toEqual([
+      ['bookings@kloof.example', 'bookings@kloof.example'],
+      ['+1 202 555 0142', '+12025550142']
+    ]);
+    expect(section.props.actionLink).toEqual({ type: 'email', target: 'bookings@kloof.example' });
+    const contact = shellProps(s, 'footer').contact as Array<{ label: string; link: LinkValue }>;
+    expect(contact.map((c) => c.label).slice(0, 2)).toEqual(['bookings@kloof.example', '+1 202 555 0142']);
+  });
+
+  it('leaves a footer email of the author’s own as it is, and says so', async () => {
+    const { session, adapter, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'office@kloof.example' })], () => finish()], {}, 'business', (s) => {
+      const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+      Object.assign((footer.props.contact as Array<ListItem & { link: LinkValue }>).find((c) => c.link.type === 'email')!, { label: 'Bookings', link: { type: 'email', target: 'tickets@kloof.example' } });
+    });
+    await run('Our email is office@kloof.example');
+    const contact = shellProps(session.state, 'footer').contact as Array<{ label: string; link: LinkValue }>;
+    expect(contact.filter((c) => c.link.type === 'email')).toEqual([expect.objectContaining({ label: 'Bookings', link: { type: 'email', target: 'tickets@kloof.example' } })]);
+    expect(session.state.site.identity).toMatchObject({ email: 'office@kloof.example' });
+    const r = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(r.warnings).toEqual([expect.stringContaining("The footer's email address is one of the author's own")]);
+  });
+
   it('updates the site, header, footer and derived color tokens together', async () => {
     const { session, run } = await setup([
       () => [call('b1', 'update_site_brand', { siteName: 'Harbour Plumbing', tagline: 'Fast, honest repairs.', brandColor: '#0b5cad', headingFont: 'Lora', bodyFont: 'DM Sans', contactEmail: 'help@harbour.example', contactPhone: '+1 555 0199' })],

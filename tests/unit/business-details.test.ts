@@ -8,7 +8,8 @@ import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { detailPlaces } from '@engine/business-details';
+import { detailPlaces, placeNote, publisherDetailNote } from '@engine/business-details';
+import { visibleReach } from '@agent/preview-check';
 import { openingHoursText } from '@shared/site-identity';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 
@@ -59,6 +60,10 @@ describe('the site’s business details on its pages', () => {
     expect(details(s)[1][0]).toBe('+27 21 555 0199');
     s = apply(s, identity({ openingHours: ['Tu-Sa 10:00-16:00'] }));
     expect(details(s)[3][0]).toBe('Tuesday to Saturday, 10am – 4pm');
+    // The same number written another way is shown as Site details writes it; the number its links dial stays.
+    s = apply(s, identity({ telephone: '+27 (21) 555-0199' }));
+    expect(details(s)[1]).toEqual(['+27 (21) 555-0199', { type: 'tel', target: '+27215550199' }]);
+    expect(footerRows(s)[1][0]).toBe('+27 (21) 555-0199');
   });
 
   it('keeps a value a place was given of its own, and the words of a deliberate label', () => {
@@ -133,7 +138,7 @@ describe('the site’s business details on its pages', () => {
     const contact = def.properties.contact;
     if (contact.type !== 'list' || contact.fields.label.type !== 'string') throw new Error('unexpected footer');
     contact.fields.label.maxLength = 20;
-    expect(() => apply(s0, identity({ address: '4 Bree Street, Gardens, Cape Town' }))).toThrow(/Footer in the footer shows the site's address in Label, which holds at most 20 characters/);
+    expect(() => apply(s0, identity({ address: '4 Bree Street, Gardens, Cape Town' }))).toThrow("The footer shows the site's address in Contact details → Label, which holds at most 20 characters. Use a shorter address, or give it its own text first.");
   });
 
   it('writes the hours out again when the site’s language changes', () => {
@@ -159,6 +164,37 @@ describe('the site’s business details on its pages', () => {
   });
 });
 
+describe('what the editor says about where a detail shows', () => {
+  it('names the places beside each Site details field, and the samples still to replace', () => {
+    const s0 = business();
+    expect(publisherDetailNote(s0, 'email')).toBe('Replaces the sample email address in the footer and “Contact”.');
+    expect(publisherDetailNote(s0, 'openingHours')).toBe('Replaces the sample opening hours in “Contact”.');
+    let s = apply(s0, identity(FLORIST));
+    expect(publisherDetailNote(s, 'email')).toBe('Shown in the footer and “Contact”, which change with it.');
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    // A section placed with the sample shows the site's detail instead; one that still shows it (written in by hand)
+    // is named apart.
+    s = apply(s, { type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'cta.banner', newNodeId: 'n_write', props: { primaryLabel: 'Write', primaryLink: { type: 'email', target: SAMPLE_CONTACT.email } } } as EditOperation);
+    expect(publisherDetailNote(s, 'email')).toBe('Shown in the footer, “About” and “Contact”, which change with it.');
+    const banner = s.pages[about.id].nodes.n_write as InstanceNode;
+    expect(banner.props.primaryLink).toEqual({ type: 'email', target: 'orders@fernfield.co.za' });
+    s.pages[about.id].nodes[banner.id] = { ...banner, props: { ...banner.props, primaryLink: { type: 'email', target: SAMPLE_CONTACT.email } } };
+    expect(publisherDetailNote(s, 'email')).toBe('Shown in the footer and “Contact”, which change with it. The sample is still in “About”.');
+    // A footer without contact rows shows none.
+    const bare = business();
+    expect(publisherDetailNote(apply(bare, { type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer(bare).id, prop: 'contact', value: [] } as EditOperation), 'address')).toBe('Replaces the sample address in “Contact”.');
+  });
+
+  it('says beside a field whether it shows the site’s detail or a sample', () => {
+    const s = apply(business(), identity({ email: 'orders@fernfield.co.za' }));
+    const [text, link] = detailPlaces(s, footer(s));
+    expect(placeNote(text)).toBe("Shows the site's email address from Site details, and changes with it.");
+    expect(placeNote(link)).toBe("Opens the site's email address from Site details, and changes with it.");
+    const phone = detailPlaces(s, footer(s)).find((p) => p.detail === 'telephone')!;
+    expect(placeNote(phone)).toBe("Shows a sample telephone number. The site's telephone number in Site details replaces it.");
+  });
+});
+
 describe('opening hours as visitors read them', () => {
   it('writes Schema.org periods out in English', () => {
     expect(openingHoursText(['Mo-Fr 09:00-17:00'])).toBe(SAMPLE_CONTACT.hours);
@@ -177,3 +213,16 @@ describe('opening hours as visitors read them', () => {
   });
 });
 
+
+describe('what the AI’s checks count as changed', () => {
+  it('counts a detail the pages show as a change every page can show, and one nothing shows as none', () => {
+    const s = business();
+    expect(visibleReach([identity({ email: 'orders@fernfield.co.za' })], s).shared).toBe(true);
+    // The site keeps no other record of its X handle on the pages, and an English site stays English.
+    expect(visibleReach([identity({ twitterSite: '@fernfield' })], s).shared).toBe(false);
+    expect(visibleReach([{ type: 'site.update', language: 'en-AU' } as EditOperation], s).shared).toBe(false);
+    // Hours written out in another language are a change.
+    const open = apply(s, identity(FLORIST));
+    expect(visibleReach([{ type: 'site.update', language: 'fr' } as EditOperation], open).shared).toBe(true);
+  });
+});

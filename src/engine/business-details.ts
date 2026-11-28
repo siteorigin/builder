@@ -111,7 +111,7 @@ function trees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; la
 /** A field's value, or its default when the item or object leaves it out. */
 const fieldValue = (holder: Record<string, unknown>, key: string, schema: PropSchema) => (Object.hasOwn(holder, key) ? holder[key] : schema.default);
 
-type Visit = (at: { prop: string; value: unknown; schema: PropSchema; itemId?: string; field?: string }) => unknown;
+type Visit = (at: { prop: string; value: unknown; schema: PropSchema; itemId?: string; field?: string; label: string }) => unknown;
 
 /**
  * Visits every plain text and link a placement shows: its own properties, an object's fields and each list item's
@@ -124,13 +124,13 @@ function visitPlacement(owner: OwnerRef, node: InstanceNode, def: ComponentDefin
     const own = Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
     const value = own === undefined ? schema.default : own;
     if (schema.type === 'string' || schema.type === 'link') {
-      const next = visit({ prop, value, schema });
+      const next = visit({ prop, value, schema, label: schema.label });
       if (next !== undefined) writes.push({ node, prop, value: next });
     } else if (schema.type === 'object' && isRecord(value)) {
       let copy: Record<string, unknown> | null = null;
       for (const [field, f] of Object.entries(schema.fields)) {
         if (f.type !== 'string' && f.type !== 'link') continue;
-        const next = visit({ prop, value: fieldValue(value, field, f), schema: f, field });
+        const next = visit({ prop, value: fieldValue(value, field, f), schema: f, field, label: `${schema.label} → ${f.label}` });
         if (next !== undefined) (copy ??= clone(value))[field] = next;
       }
       if (copy) writes.push({ node, prop, value: copy });
@@ -143,7 +143,7 @@ function visitPlacement(owner: OwnerRef, node: InstanceNode, def: ComponentDefin
         if (!isRecord(item)) return;
         for (const [field, f] of Object.entries(schema.fields)) {
           if (f.type !== 'string' && f.type !== 'link') continue;
-          const next = visit({ prop, value: fieldValue(item, field, f), schema: f, itemId: item.id, field });
+          const next = visit({ prop, value: fieldValue(item, field, f), schema: f, itemId: item.id, field, label: `${schema.label} → ${f.label}` });
           if (next === undefined) continue;
           copy ??= clone(items);
           copy[i][field] = next;
@@ -170,7 +170,8 @@ function* placements(state: ProjectState, only?: InstanceNode): Generator<{ owne
 function swapped(swaps: readonly DetailSwap[], value: unknown, schema: PropSchema): { value: unknown; detail: BusinessDetail } | undefined {
   for (const s of swaps) {
     if (schema.type === 'string' && typeof value === 'string') {
-      if (s.from.some((f) => says(s.detail, value, f)) && !says(s.detail, value, s.to)) return { value: s.to, detail: s.detail };
+      // A number written another way is written as the site writes it now.
+      if (s.from.some((f) => says(s.detail, value, f)) && squash(value) !== squash(s.to)) return { value: s.to, detail: s.detail };
     } else if (schema.type === 'link' && isLink(value)) {
       if (s.from.some((f) => opens(s.detail, value, f)) && !opens(s.detail, value, s.to)) {
         const link = relinked(s.detail, value, s.to);
@@ -197,13 +198,14 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[]): { writes:
   if (!swaps.length) return { writes };
   for (const { owner, where, node, def } of placements(state)) {
     const refused: { problem?: string } = {};
-    const found = visitPlacement(owner, node, def, ({ value, schema }) => {
+    const found = visitPlacement(owner, node, def, ({ value, schema, label }) => {
       const next = refused.problem ? undefined : swapped(swaps, value, schema);
       if (!next) return undefined;
       const max = tooLong(schema, next.value);
       if (max === null) return next.value;
       const name = DETAIL_NAMES[next.detail];
-      refused.problem = `${displayName(state, node, def)} in ${owner.kind === 'shell' ? `the ${where.toLowerCase()}` : `“${where}”`} shows the site's ${name} in ${schema.label}, which holds at most ${max} characters. Use a shorter ${name}, or give it its own text first.`;
+      const placed = owner.kind === 'shell' ? `The ${where.toLowerCase()}` : `${displayName(state, node, def)} on “${where}”`;
+      refused.problem = `${placed} shows the site's ${name} in ${label}, which holds at most ${max} characters. Use a shorter ${name}, or give it its own text first.`;
       return undefined;
     });
     if (refused.problem) return { problem: refused.problem };
@@ -234,6 +236,15 @@ export function carryBusinessDetails(state: ProjectState, before: Partial<Record
   if ('problem' in plan) return plan.problem;
   for (const w of plan.writes) w.node.props[w.prop] = w.value;
   return null;
+}
+
+/**
+ * Whether the site's details becoming `site`'s would change what a page shows: a detail takes a new value (or its hours
+ * a new language) and some place shows the old one or the sample.
+ */
+export function changesShownDetails(state: ProjectState, site: SiteDoc): boolean {
+  const plan = planSwaps(state, detailSwaps(detailTexts(state.site), detailTexts(site)));
+  return 'problem' in plan || plan.writes.length > 0;
 }
 
 /**
@@ -269,4 +280,33 @@ export function detailPlaces(state: ProjectState, only?: InstanceNode): DetailPl
     });
   }
   return out;
+}
+
+/** "the footer and “Contact”": where places are, the shared parts first, then the pages by title. */
+function whereList(places: readonly DetailPlace[]): string {
+  const shared = [...new Set(places.filter((p) => p.owner.kind === 'shell').map((p) => `the ${p.where.toLowerCase()}`))];
+  const pages = [...new Set(places.filter((p) => p.owner.kind !== 'shell').map((p) => `${p.owner.kind}:${p.owner.id}`))].map((key) => places.find((p) => `${p.owner.kind}:${p.owner.id}` === key)!.where);
+  const onPages = pages.length > 3 ? [`${pages.length} pages`] : pages.map((t) => `“${t}”`);
+  const parts = [...shared, ...onPages];
+  return parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * What a Site details field says about where its detail shows: the places that follow it, or, while the site has none,
+ * the samples it will replace. Undefined when nothing shows it.
+ */
+export function publisherDetailNote(state: ProjectState, detail: BusinessDetail): string | undefined {
+  const places = detailPlaces(state).filter((p) => p.detail === detail);
+  const site = places.filter((p) => p.shows === 'site');
+  const samples = places.filter((p) => p.shows === 'sample');
+  if (site.length) return `Shown in ${whereList(site)}, which change with it.${samples.length ? ` The sample is still in ${whereList(samples)}.` : ''}`;
+  if (samples.length) return `Replaces the sample ${DETAIL_NAMES[detail]} in ${whereList(samples)}.`;
+  return undefined;
+}
+
+/** What the inspector says beside a field that shows one of the site's details, or its sample. */
+export function placeNote(place: DetailPlace): string {
+  const name = DETAIL_NAMES[place.detail];
+  const what = place.kind === 'link' ? 'Opens' : 'Shows';
+  return place.shows === 'site' ? `${what} the site's ${name} from Site details, and changes with it.` : `${what} a sample ${name}. The site's ${name} in Site details replaces it.`;
 }
