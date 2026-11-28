@@ -20,8 +20,14 @@ export const FONT_COLLECTION_EXTENSIONS = ['ttc', 'otc'];
  * than this is compressed at quality 9 (a few seconds, about 6% larger).
  */
 const BEST_QUALITY_MAX = 4 * 1024 * 1024;
-/** Browsers (Chromium's WOFF2 decoder) refuse a WOFF2 file whose fonts unpack to more than 100 times its size. */
+/** Browsers (Chromium's WOFF2 decoder) refuse a WOFF2 file whose tables unpack to more than 100 times its size. */
 const MAX_RATIO = 100;
+/** What a WOFF2 stream may unpack to, as the importer's own reader holds it (media.ts). */
+const MAX_TABLE_BYTES = 64 * 1024 * 1024;
+/** Browsers' font sanitizer (OTS) refuses a font with this many tables or more. */
+const MAX_TABLES = 4096;
+/** The tables browsers' font sanitizer requires of every font, besides its outlines (glyf and loca, or CFF). */
+const REQUIRED_TABLES = ['cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post'];
 
 /** Why a desktop font cannot be converted, as the end of "{file} was not imported because …". */
 export class DesktopFontError extends Error {}
@@ -59,18 +65,26 @@ export async function sfntToWoff2(buf: Buffer): Promise<Buffer> {
   const damaged = () => new DesktopFontError('it is damaged: its font tables cannot be read. Download the font again.');
   if (buf.length < 12) throw damaged();
   const n = buf.readUInt16BE(4);
-  if (!n || 12 + n * 16 > buf.length) throw damaged();
-  const tables: Array<{ tag: string; data: Buffer }> = [];
+  if (!n || n >= MAX_TABLES || 12 + n * 16 > buf.length) throw damaged();
+  const tables: Array<{ tag: string; data: Buffer; offset: number }> = [];
   const seen = new Set<string>();
   for (let k = 0; k < n; k++) {
     const r = 12 + k * 16;
     const tag = buf.toString('latin1', r, r + 4);
     const offset = buf.readUInt32BE(r + 8);
     const length = buf.readUInt32BE(r + 12);
-    if (seen.has(tag) || offset + length > buf.length) throw damaged();
+    // Every table lies past the directory, inside the file, and holds something.
+    if (seen.has(tag) || !length || offset < 12 + n * 16 || offset + length > buf.length) throw damaged();
     seen.add(tag);
-    if (tag !== 'DSIG') tables.push({ tag, data: buf.subarray(offset, offset + length) });
+    if (tag !== 'DSIG') tables.push({ tag, data: buf.subarray(offset, offset + length), offset });
   }
+  // No two tables share bytes, so what is copied out is never more than the file itself.
+  const byOffset = [...tables].sort((a, b) => a.offset - b.offset);
+  for (let k = 1; k < byOffset.length; k++) if (byOffset[k].offset < byOffset[k - 1].offset + byOffset[k - 1].data.length) throw damaged();
+  if (tables.reduce((s, t) => s + t.data.length, 0) > MAX_TABLE_BYTES) throw new DesktopFontError('it is too large once unpacked.');
+  const missing = REQUIRED_TABLES.filter((t) => !seen.has(t));
+  if (!seen.has('glyf') && !seen.has('CFF ') && !seen.has('CFF2')) missing.push(kind === 'opentype' ? 'CFF' : 'glyf');
+  if (missing.length) throw new DesktopFontError(`it is missing font data browsers need (${missing.map((t) => t.trim()).join(', ')}). Use a WOFF2 or WOFF version of it from the font’s maker.`);
   // As a WOFF2 encoder must, the head table says the font has been through a lossless conversion (flags bit 11); its
   // whole-font checksum, which no longer holds, is left for the browser to work out again as it rebuilds the font.
   const head = tables.find((t) => t.tag === 'head');
@@ -98,7 +112,8 @@ export async function sfntToWoff2(buf: Buffer): Promise<Buffer> {
   });
   const length = round4(48 + directory.length + compressed.length);
   const sfntSize = 12 + 16 * tables.length + tables.reduce((s, t) => s + round4(t.data.length), 0);
-  if (sfntSize > length * MAX_RATIO) throw new DesktopFontError('it compresses so far that browsers would refuse its web font version, which usually means it is mostly empty glyphs. Use a WOFF2 or WOFF version of it from the font’s maker.');
+  // Chromium compares the unpacked table stream with the whole file's length.
+  if (stream.length > length * MAX_RATIO) throw new DesktopFontError('it compresses so far that browsers would refuse its web font version, which usually means it is mostly empty glyphs. Use a WOFF2 or WOFF version of it from the font’s maker.');
   const header = Buffer.alloc(48);
   header.write('wOF2', 0, 'latin1');
   // An old Mac TrueType font says 'true': the web knows its outlines as 0x00010000.

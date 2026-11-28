@@ -21,25 +21,21 @@ describe.skipIf(!browserInstalled)('a desktop font converted to WOFF2, in Chromi
 
   /** Load `woff2` as a web font and measure `text` at 100px in it; null when the browser refuses the font. */
   async function measure(woff2: Buffer, text: string): Promise<number | null> {
+    // A browser takes a desktop font as it is too: what is measured must be the WOFF2 file.
+    expect(woff2.toString('latin1', 0, 4)).toBe('wOF2');
     const page = await browser.newPage();
     try {
       await page.setContent('<!doctype html><canvas></canvas>');
-      return await page.evaluate(
-        async ({ b64, text }) => {
-          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-          const face = new FontFace('Converted', bytes);
-          try {
-            await face.load();
-          } catch {
-            return null;
-          }
-          document.fonts.add(face);
-          const ctx = document.querySelector('canvas')!.getContext('2d')!;
-          ctx.font = '100px Converted';
-          return ctx.measureText(text).width;
-        },
-        { b64: woff2.toString('base64'), text }
-      );
+      // The page's own script, so no DOM types reach this Node-side file.
+      return await page.evaluate(`(async () => {
+        const bytes = Uint8Array.from(atob(${JSON.stringify(woff2.toString('base64'))}), (c) => c.charCodeAt(0));
+        const face = new FontFace('Converted', bytes);
+        try { await face.load(); } catch { return null; }
+        document.fonts.add(face);
+        const ctx = document.querySelector('canvas').getContext('2d');
+        ctx.font = '100px Converted';
+        return ctx.measureText(${JSON.stringify(text)}).width;
+      })()`);
     } finally {
       await page.close();
     }
@@ -53,8 +49,7 @@ describe.skipIf(!browserInstalled)('a desktop font converted to WOFF2, in Chromi
   }
 
   it.skipIf(!codicon)('loads a real TrueType icon font', async () => {
-    const width = await measure(await sfntToWoff2(readFileSync(join(CODICON_DIR, codicon!))), '');
-    expect(width).not.toBeNull();
-    expect(width!).toBeGreaterThan(0);
+    // U+EA60 is one of its icons, as wide as its em.
+    expect(await measure(await sfntToWoff2(readFileSync(join(CODICON_DIR, codicon!))), '\uea60')).toBeCloseTo(100, 0);
   });
 });
