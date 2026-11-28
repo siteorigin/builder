@@ -27,8 +27,10 @@ const ENTRY = [
   `import { PostWriter } from ${src('renderer/src/panels/PostWriter')};`,
   `import { useStore } from ${src('renderer/src/store')};`,
   `import { applyOperations } from ${src('engine/apply')};`,
+  // The writer is put away while the open post is previewed, as the editor does.
   'function Editor() {',
-  '  return h("div", null, h("div", { id: "panel" }, h(PostsPanel)), h("div", { id: "writer" }, h(PostWriter, { hidden: false })));',
+  '  const previewing = useStore((s) => s.postView === "preview");',
+  '  return h("div", null, h("div", { id: "panel" }, h(PostsPanel)), h("div", { id: "writer" }, h(PostWriter, { hidden: previewing })));',
   '}',
   'window.mount = (state, post, assetUsage, collection) => {',
   '  flushSync(() => useStore.setState({',
@@ -64,6 +66,8 @@ const ENTRY = [
   // The control with focus, by its name: its own label, or the label it is under.
   '  focused: () => { const a = document.activeElement; return a === document.body ? "body" : a?.getAttribute("aria-label") ?? a?.labels?.[0]?.textContent ?? a?.className ?? null; },',
   '  waiting: () => typeof window.release === "function",',
+  '  drafting: () => useStore.getState().drafting,',
+  '  set: (patch) => flushSync(() => useStore.setState(patch)),',
   '  release: () => window.release()',
   '};'
 ].join('\n');
@@ -238,6 +242,23 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     await cdp.send('Input.insertText', { text: '日本' });
     await expect.poll(open).toBe('Post 2');
     await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER\nSecond\n日本' });
+  });
+
+  it('shows the writer when a post is made while the open one is previewed, and counts what is typed ahead as unsaved', async () => {
+    await mountBlog();
+    await so('set', { postView: 'preview' });
+    expect(await page.locator('#writer .post-writer').getAttribute('hidden')).not.toBeNull();
+    await typeTitle('Post 2');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('MARKER-9', { delay: 20 });
+    expect(await page.locator('#writer .post-writer').getAttribute('hidden')).toBeNull();
+    expect(await focused()).toBe('Text for “Post 2”');
+    // Leaving the project meanwhile would say something is not saved yet.
+    expect(await so<number>('drafting')).toBeGreaterThan(0);
+    await release();
+    await expect.poll(open).toBe('Post 2');
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-9' });
+    await expect.poll(() => so<number>('drafting')).toBe(0);
   });
 
   it('waits for the new post to be in the project when the answer comes before it', async () => {

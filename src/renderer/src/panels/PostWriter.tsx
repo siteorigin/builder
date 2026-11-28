@@ -158,19 +158,27 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
     if (!el) return;
     const off = setTypedAheadField(el);
     el.focus({ preventScroll: true });
-    return off;
+    // Words typed there are a change not made yet: Save and leaving the project say so, as for the form's title.
+    const key = 'post-typed-ahead';
+    const typed = () => markDraft(key, !!el.value.trim());
+    el.addEventListener('input', typed);
+    return () => {
+      el.removeEventListener('input', typed);
+      markDraft(key, false);
+      off();
+    };
   }, [opening]);
   return (
     <div
       className="post-writer"
       hidden={hidden}
-      aria-busy={opening ? true : undefined}
+      // A click on the writer still showing goes to the field (never a dialog of its own, whose events bubble here).
       onMouseDown={(e) => {
         const el = ahead.current;
-        if (el && !el.contains(e.target as Node)) (e.preventDefault(), el.focus({ preventScroll: true }));
+        if (el && e.currentTarget.contains(e.target as Node) && !el.contains(e.target as Node)) (e.preventDefault(), el.focus({ preventScroll: true }));
       }}
     >
-      <div className="post-hold" inert={!!opening}>
+      <div className="post-hold" inert={!!opening} aria-busy={opening ? true : undefined}>
         {post && keep ? (
           <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
         ) : (
