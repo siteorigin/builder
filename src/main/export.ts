@@ -19,7 +19,7 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
@@ -1194,6 +1194,28 @@ export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
   ];
   return routes.map((r) => (answered.has(r.route.toLowerCase()) ? { ...r, answered: true as const } : r));
+}
+
+/**
+ * A file of the author's own at an address the website keeps back from a draft but answers at with a page of its own
+ * (withheldRoutes' `answered`: an old address kept working there, say), in the staged copy `dir`: a copy of the page in
+ * static/, or a route file beside or around the generated page there (a layout, a load, an error page) that
+ * generated-manifest.json does not list as SiteOrigin Builder's. Built with the website's page, it would publish what
+ * the author kept back. Null when there is none.
+ */
+export async function answeredAddressFile(dir: string, state: ProjectState, live: ProjectState): Promise<{ file: string; route: string; draft: string } | null> {
+  const answered = withheldRoutes(state, live).filter((r) => r.answered);
+  if (!answered.length) return null;
+  const owned = new Set(Object.keys((JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> }).files ?? {}));
+  for (const { route, draft } of answered) {
+    const copy = `static${route}index.html`;
+    if (isPlainFile(join(dir, copy))) return { file: copy, route, draft };
+    const folder = dirname(redirectFile(route));
+    const names = await fs.readdir(join(dir, folder)).catch(() => [] as string[]);
+    const file = names.map((n) => `${folder}/${n}`).find((f) => basename(f).startsWith('+') && !owned.has(f));
+    if (file) return { file, route, draft };
+  }
+  return null;
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */

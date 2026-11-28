@@ -258,11 +258,20 @@ describe('exporting a project with a draft', () => {
     expect(page).toContain('/winter/ is an old address of a page');
     expect(page).not.toContain('Winter stock preview');
     expect(readFileSync(join(ok.path!, '_redirects'), 'utf8')).toContain('/winter/ /about/ 301');
-    // A copy of the page as winter.html is no part of the old address's: it would publish the draft.
-    writeFileSync(join(dir, 'static/winter.html'), '<p>An older copy</p>');
+    // Nothing else of the author's at that address is the old address's own: each would publish the draft.
     const dest = join(temp('out'), 'site');
-    expect(await c.buildStaticTo(dest)).toMatchObject({ ok: false, message: 'The website has a page at /winter/, which leads to the draft Winter stock preview. Remove the file that puts it there, then export again.' });
-    expect(existsSync(dest)).toBe(false);
+    const refused = async (file: string, message: string) => {
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      writeFileSync(join(dir, file), '<p>An older copy of Winter stock preview</p>');
+      expect(await c.buildStaticTo(dest)).toMatchObject({ ok: false, message });
+      expect(existsSync(dest)).toBe(false);
+      rmSync(join(dir, file));
+    };
+    await refused('static/winter.html', 'The website has a page at /winter/, which leads to the draft Winter stock preview. Remove the file that puts it there, then export again.');
+    await refused('static/winter/index.html.md', 'The website has a Markdown copy of the draft Winter stock preview at /winter/index.html.md. Remove the file that puts it there, then export again.');
+    await refused('static/winter/index.html', 'The website has static/winter/index.html at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    await refused('src/routes/winter/+layout.svelte', 'The website has src/routes/winter/+layout.svelte at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    expect((await c.buildStaticTo(dest)).ok).toBe(true);
   });
 
   it('refuses to publish anything at a draft’s address, even a file of the author’s own', async () => {

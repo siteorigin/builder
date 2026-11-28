@@ -367,6 +367,7 @@ export const OPERATION_SCHEMAS = {
         'What the page starts with, from the sections the theme has. Omitted or "empty": no sections. "intro": a page introduction showing the title. "services": the introduction, service cards and a text section. "about": the introduction, a story beside an image and the team. "contact": the introduction, contact details and a contact form. "pricing": the introduction, pricing plans and questions about pricing. "faq": the introduction and expandable questions and answers. Each fills in the theme\'s sample text, to be replaced. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.'
       ),
     addToNavigation: z.boolean().optional().describe('Also add a link to the new page to the shared header navigation (a child page\'s link goes under its parent\'s).'),
+    draft: z.boolean().optional().describe('true makes the new page a draft: editable and previewed, but left out of the exported website. An old address kept working at its route keeps sending visitors on until it is published.'),
     ...ARTICLE_FIELDS,
     newsHidden: z.boolean().optional().describe('Articles only. true keeps the new article out of every News list while the page is published.')
   }),

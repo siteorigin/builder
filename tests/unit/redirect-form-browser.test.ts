@@ -141,8 +141,9 @@ describe.skipIf(!browserInstalled)('the redirect form', { timeout: 30_000 }, () 
     ] as const;
     const state = held.reduce((s, op) => applyOperations(s, [op]).state, before);
     await page.evaluate((s) => {
-      (window as unknown as { after: unknown }).after = s;
-      (window as unknown as { take: () => void }).take();
+      const w = globalThis as unknown as { after: unknown; take: () => void };
+      w.after = s;
+      w.take();
     }, state);
     const row = page.locator('[data-from="/old-studio/"]');
     await row.waitFor();

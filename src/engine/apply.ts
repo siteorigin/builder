@@ -1048,9 +1048,10 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
     refuseCollectionRoute(state, route);
   } else route = autoRoute(state, op.title, 'page');
   if (op.pageId && Object.hasOwn(state.pages, op.pageId)) fail(`Page "${op.pageId}" already exists.`);
-  claimRoute(state, route);
+  // A new draft leaves an old address kept at its route working, as a draft moved there does (#1363).
+  if (!op.draft) claimRoute(state, route);
   const id = op.pageId ?? newId('pg');
-  const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, showHeader: true, showFooter: true, rootIds: [], nodes: {} };
+  const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, showHeader: true, showFooter: true, rootIds: [], nodes: {}, ...(op.draft ? { draft: true } : {}) };
   // The starter's sections, from the components the theme has (see page-starters).
   if (op.starter) addPageStarter(state, page, op.starter);
   // An article is dated when it is made: the date given, or today for the article starter.

@@ -34,6 +34,7 @@ import { CUSTOM_SOURCE_RE, isCanonicalPath, MANIFEST_FILE, stateToDocs } from '.
 import { readIfExists, sha } from './project/fsutil';
 import { sameContent } from './project/session';
 import {
+  answeredAddressFile,
   carriesCodeMarker,
   cleanWebsitePhotos,
   draftLinksStop,
@@ -375,6 +376,9 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
     const file = (answering.get(route.toLowerCase()) ?? []).find((f) => !answered || !owned.has(f));
     if (file) return stop(`${file} answers at ${route}, the address of the draft ${draft}, so publishing the website would publish it there. Remove or move the file, then prepare the publication again.`);
   }
+  // Nor may a layout of the author's own show around the website's page at such an address.
+  const around = await answeredAddressFile(dir, state, live);
+  if (around) return stop(`${around.file} is at ${around.route}, the address of the draft ${around.draft}, so publishing the website would publish it there. Remove or move the file, then prepare the publication again.`);
   const missing = (await missingWebsiteAssets(dir, projected)).filter((m) => m.used);
   if (missing.length) return { ok: false, ...missingAssetsStop(missing), assetId: missing[0].asset.id };
   const font = (await missingWebsiteFonts(dir, projected))[0];

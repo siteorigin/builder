@@ -166,6 +166,10 @@ describe('held edit field check', () => {
     // Published where it was held, the draft takes nothing over; moved meanwhile onto the old address, it would.
     expect(check(s, apply(s, [{ type: 'page.update', pageId: 'pg_draft', title: 'Rewrite 2' }]), publish)).toEqual({ kind: 'apply' });
     expect(check(s, apply(s, [{ type: 'page.update', pageId: 'pg_draft', route: '/old-team/' }]), publish).kind).toBe('changed');
+    // Held at the old address, it takes over whichever redirect is kept there: one sent elsewhere meanwhile is a conflict.
+    const atOld = apply(s, [{ type: 'page.update', pageId: 'pg_draft', route: '/old-team/' }]);
+    expect(atOld.site.redirects).toHaveLength(1);
+    expect(check(atOld, apply(atOld, [{ type: 'redirect.update', from: '/old-team/', to: '/about/' }]), publish).kind).toBe('changed');
     // A page moved onto the old address takes it over only while it is published.
     const move: EditOperation[] = [{ type: 'page.update', pageId: about(s), route: '/old-team/' }];
     expect(check(s, apply(s, [{ type: 'page.update', pageId: about(s), draft: true }]), move).kind).toBe('changed');

@@ -194,7 +194,7 @@ const services = {
 };
 
 describe('upsert_page_with_sections', () => {
-  it('creates a page as a draft, publishes it, and leaves the flag alone when not asked', async () => {
+  it('creates a page as a draft, publishes it, and leaves the flag alone when not asked, keeping an old address there working until then (#1363)', async () => {
     const sections = [
       { componentId: 'intro.page', props: { heading: 'Winter stock' } },
       { componentId: 'features.grid', props: { heading: 'Arriving soon', items: [{ icon: 'leaf', title: 'Atlases', description: 'New editions.' }] } }
@@ -206,15 +206,18 @@ describe('upsert_page_with_sections', () => {
       () => finish(),
       () => [call('d3', 'upsert_page_with_sections', { slug: 'winter', draft: false })],
       () => finish()
-    ]);
+    ], {}, 'business', (s) => void (s.site.redirects = [{ from: '/winter/', pageId: Object.values(s.pages).find((p) => p.title === 'About')!.id }]));
     await run('Start a winter stock page as a draft');
     expect(pageAt(session.state, '/winter/')?.draft).toBe(true);
+    // The draft is made one as it is created: the old address there keeps sending visitors on.
+    expect(session.state.site.redirects).toHaveLength(1);
     await run('Retitle the winter intro');
     const winterPage = pageAt(session.state, '/winter/')!;
     expect((winterPage.nodes[winterPage.rootIds[0]] as InstanceNode).props.heading).toBe('Winter stock, soon');
     expect(winterPage.draft).toBe(true);
     await run('Publish the winter page');
     expect('draft' in pageAt(session.state, '/winter/')!).toBe(false);
+    expect(session.state.site.redirects).toBeUndefined();
     // The model is told it can ask for this, as an optional yes or no.
     const schema = upsertToolSchema(session.state) as { properties: Record<string, { type?: string }>; required: string[] };
     expect(schema.properties.draft.type).toBe('boolean');

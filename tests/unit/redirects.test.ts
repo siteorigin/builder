@@ -316,7 +316,9 @@ describe('a draft at an old address the website keeps (#1363)', () => {
   const published = (s: ProjectState) => {
     const live = publishedState(s);
     const files = generateProject(live);
-    const fallback = Object.hasOwn(live.pages, 'pg_ferry') && files.get(redirectFile('/ferry-times/')) === generateRedirect(live, '/ferry-times/', live.pages.pg_ferry);
+    // The page there sends visitors on to Ferry times' address, as its script and its meta refresh both say.
+    const there = files.get(redirectFile('/ferry-times/')) ?? '';
+    const fallback = there === generateRedirect(live, '/ferry-times/', { route: '/waterfront/ferry-times/' }) && there.includes('resolve("/waterfront/ferry-times/")') && there.includes('http-equiv="refresh"');
     return { redirects: live.site.redirects, fallback, rule: files.get(HOST_REDIRECTS_FILE)?.includes('/ferry-times/ /waterfront/ferry-times/ 301') ?? false, draft: Object.hasOwn(live.pages, 'pg_draft') };
   };
 
@@ -344,7 +346,14 @@ describe('a draft at an old address the website keeps (#1363)', () => {
     expect(discarded.site.redirects).toEqual([kept]);
     expect(published(discarded)).toEqual({ redirects: [kept], fallback: true, rule: true, draft: false });
     const page = run(moved(), { type: 'page.create', pageId: 'pg_draft', title: 'Draft timetable rewrite' });
-    expect(run(page, { type: 'page.update', pageId: 'pg_draft', route: '/ferry-times/', draft: true }).site.redirects).toEqual([kept]);
+    const both = run(page, { type: 'page.update', pageId: 'pg_draft', route: '/ferry-times/', draft: true });
+    expect(both.pages.pg_draft.draft).toBe(true);
+    expect(both.site.redirects).toEqual([kept]);
+    expect(published(both)).toEqual({ redirects: [kept], fallback: true, rule: true, draft: false });
+    // So does a page made a draft as it is created there.
+    const made = run(moved(), { type: 'page.create', pageId: 'pg_draft', title: 'Draft timetable rewrite', route: '/ferry-times/', draft: true });
+    expect(made.pages.pg_draft.draft).toBe(true);
+    expect(published(made)).toEqual({ redirects: [kept], fallback: true, rule: true, draft: false });
     // A published page moved there takes it over.
     expect(run(page, { type: 'page.update', pageId: 'pg_draft', route: '/ferry-times/' }).site.redirects).toBeUndefined();
   });
@@ -369,15 +378,19 @@ describe('a draft at an old address the website keeps (#1363)', () => {
   });
 
   it('sends an address leading to the draft’s on through the old address kept there, and refuses a loop only the website has', () => {
-    const s = run(atDraft(), { type: 'redirect.add', from: '/x/', to: '/ferry-times/' }, { type: 'redirect.add', from: '/private/', pageId: 'pg_draft' });
+    // /peek/ leads to the address of another draft (Preview), where no old address is kept.
+    const s = run(atDraft(), { type: 'redirect.add', from: '/x/', to: '/ferry-times/' }, { type: 'redirect.add', from: '/private/', pageId: 'pg_draft' }, { type: 'redirect.add', from: '/peek/', to: '/preview/' });
     // The editor sends both to the draft.
     expect(liveRedirects(s).map((r) => [r.from, r.page?.id])).toEqual([
       ['/x/', 'pg_draft'],
-      ['/private/', 'pg_draft']
+      ['/private/', 'pg_draft'],
+      ['/peek/', 'pg_preview01']
     ]);
-    // The website sends /x/ on through /ferry-times/ to Ferry times, and leaves out the one leading to the draft.
+    // The website sends /x/ on through /ferry-times/ to Ferry times, and leaves out the ones leading to a draft, which
+    // Project health never takes for addresses the site does not have.
     expect(publishedState(s).site.redirects).toEqual([kept, { from: '/x/', pageId: 'pg_ferry' }]);
     expect(codes(s)).toEqual([['REDIRECT_CHAIN', 'redirect:/x/']]);
+    expect(withheldRoutes(s, publishedState(s)).find((r) => r.route === '/peek/')).toEqual({ route: '/peek/', draft: 'Preview' });
     expect(withheldRoutes(s, publishedState(s)).flatMap((r) => (r.draft === 'Draft timetable rewrite' ? [[r.route, r.answered]] : []))).toEqual([
       ['/ferry-times/', true],
       ['/private/', undefined]
@@ -388,25 +401,51 @@ describe('a draft at an old address the website keeps (#1363)', () => {
     const live = run(s, { type: 'page.update', pageId: 'pg_draft', draft: false });
     expect(live.site.redirects).toEqual([
       { from: '/x/', custom: true, to: '/ferry-times/' },
-      { from: '/private/', custom: true, pageId: 'pg_draft' }
+      { from: '/private/', custom: true, pageId: 'pg_draft' },
+      { from: '/peek/', custom: true, to: '/preview/' }
     ]);
     expect(liveRedirects(publishedState(live)).map((r) => [r.from, r.to])).toEqual([
       ['/x/', '/ferry-times/'],
       ['/private/', '/ferry-times/']
     ]);
+    expect(generateProject(publishedState(live)).get(redirectFile('/ferry-times/'))).toContain('Draft timetable rewrite');
   });
 
   it('checks a typed link to the draft’s address as the website has it: it arrives where the old address sends visitors', () => {
-    const s = run(atDraft(), { type: 'redirect.add', from: '/private/', pageId: 'pg_draft' });
+    const s = run(atDraft(), { type: 'redirect.add', from: '/private/', pageId: 'pg_draft' }, { type: 'redirect.add', from: '/alias/', to: '/ferry-times/' });
     s.site.baseUrl = 'https://ferries.example';
-    const typed = (target: string) => {
+    const linked = (link: { type: 'url' | 'page'; target: string }) => {
       const t = structuredClone(s);
-      t.pages[t.site.homePageId].nodes['n_typed001'] = { id: 'n_typed001', kind: 'link', label: 'Times', appearance: 'primary', link: { type: 'url', target } };
+      t.pages[t.site.homePageId].nodes['n_typed001'] = { id: 'n_typed001', kind: 'link', label: 'Times', appearance: 'primary', link };
       t.pages[t.site.homePageId].rootIds.push('n_typed001');
       return publicationPlan(t).draftLinks.filter((l) => l.nodeId === 'n_typed001');
     };
+    const typed = (target: string) => linked({ type: 'url', target });
     expect(typed('https://ferries.example/ferry-times/')).toEqual([]);
+    // An address leading there goes on to Ferry times as well.
+    expect(typed('https://ferries.example/alias/')).toEqual([]);
     expect(typed('https://ferries.example/private/')).toMatchObject([{ pageId: 'pg_draft' }]);
+    // A link to the draft itself still goes to a page the website does not have.
+    expect(linked({ type: 'page', target: 'pg_draft' })).toMatchObject([{ pageId: 'pg_draft' }]);
+  });
+
+  it('lets a draft moved along with its parent land on an old address kept for another page, never a published one', () => {
+    // Harbour was exported at /harbour/ with Ferry times inside it; both moved away, keeping their old addresses working.
+    let s = exported(run(site(), { type: 'page.create', pageId: 'pg_harbour', title: 'Harbour' }, { type: 'page.create', pageId: 'pg_ferry', title: 'Ferry times', route: '/harbour/ferry-times/' }));
+    s = oneByOne(s, { type: 'page.update', pageId: 'pg_ferry', route: '/ferry-times/' }, { type: 'page.update', pageId: 'pg_harbour', route: '/port/' });
+    const harbourKept = [
+      { from: '/harbour/ferry-times/', pageId: 'pg_ferry' },
+      { from: '/harbour/', pageId: 'pg_harbour' }
+    ];
+    expect(s.site.redirects).toEqual(harbourKept);
+    // A new page with a draft rewrite of Ferry times inside it takes Harbour's old address on purpose.
+    s = oneByOne(s, { type: 'page.create', pageId: 'pg_rewrite', title: 'Rewrite' }, { type: 'page.create', pageId: 'pg_draft', title: 'Ferry rewrite', route: '/rewrite/ferry-times/', draft: true });
+    const moved = run(s, { type: 'page.update', pageId: 'pg_rewrite', route: '/harbour/' });
+    expect(moved.pages.pg_draft.route).toBe('/harbour/ferry-times/');
+    expect(moved.site.redirects).toEqual([harbourKept[0]]);
+    // A published page moved along never takes one over silently.
+    const live = run(s, { type: 'page.update', pageId: 'pg_draft', draft: false });
+    expect(refusal(live, { type: 'page.update', pageId: 'pg_rewrite', route: '/harbour/' })).toMatch(/an old address kept working for “Ferry times”/);
   });
 });
 
