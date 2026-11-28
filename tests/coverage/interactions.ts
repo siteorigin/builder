@@ -292,13 +292,15 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Make a copy of a project to try something without touching the original',
     start: 'Blank site open',
     routes: ['item:Toolbar:Duplicate project…', 'dialog:Duplicate project › Open copy'],
-    outcome: 'A folder that cannot take the copy is explained and nothing is written; the original stays open until Open copy; changes in the copy stay in the copy; Recent projects tells the two apart',
+    outcome: 'A folder that cannot take the copy is explained and nothing is written; a change still being saved lands first, and one that cannot be saved stops the copy before any folder is made, saying which; the original stays open until Open copy; changes in the copy stay in the copy; Recent projects tells the two apart',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/duplicate.mjs', kind: 'e2e', step: 'another folder takes the copy, and the original stays open until Open copy' },
       { test: 'tests/e2e/duplicate.mjs', kind: 'e2e', step: 'a change made in the copy lands in the copy' },
       { test: 'tests/e2e/duplicate.mjs', kind: 'e2e', step: 'Recent projects tells the two apart' },
-      { test: 'tests/unit/duplicate-project.test.ts', kind: 'unit' }
+      { test: 'tests/unit/duplicate-project.test.ts', kind: 'unit' },
+      { test: 'tests/unit/duplicate-project-pending-browser.test.ts', kind: 'unit', step: 'makes no copy while a field keeps an address it refused, and says which' },
+      { test: 'tests/unit/duplicate-project-pending-browser.test.ts', kind: 'unit', step: 'copies once a change still being saved has landed, never before' }
     ]
   },
   {

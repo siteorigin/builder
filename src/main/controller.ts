@@ -2615,7 +2615,8 @@ export class Controller {
    * as they are. The new folder is claimed first, so a folder already there (empty or not, another copy's or an
    * export's) is never taken over, and the copy is built in a private folder beside it and moved into place in one
    * step, so a copy that fails leaves nothing behind. The open project stays open, and nothing in its folder is
-   * written. Quitting waits for a copy under way.
+   * written. Quitting waits for a copy under way. While the folder does not hold every change yet (the AI is still
+   * making changes, or a save failed or did not finish), nothing is copied and the reason is given (#1373).
    */
   async duplicate(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
     if (this.quitting) return { ok: false, field: 'form', message: 'SiteOrigin Builder is quitting, so the project was not copied.' };
@@ -2637,6 +2638,17 @@ export class Controller {
     return this.duplicates.size > 0;
   }
 
+  /**
+   * Why the project's folder does not hold every change made to it yet, as Export asks (#753): the AI is still making
+   * changes (Stop would take them back), a save did not finish, or a change failed to save. Null when it does.
+   */
+  private duplicateBlocked(s: ProjectSession): string | null {
+    if (this.aiBusy()) return 'Wait for the AI to finish before duplicating the project.';
+    if (s.saveUnfinished) return 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then duplicate it.';
+    if (s.saveFailure) return 'A change could not be saved, so the copy would leave it out. Make the change again (Project health says what went wrong), then duplicate the project.';
+    return null;
+  }
+
   private async duplicateProject(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
     const s = this.session;
     const stale = { ok: false as const, field: 'form' as const, message: 'The project was closed or opened again before it was copied. Choose Duplicate project again.' };
@@ -2654,6 +2666,9 @@ export class Controller {
     if (!original && isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
     // A folder by the copy's name: another name answers it as well as another folder does.
     const taken = { ok: false as const, field: 'name' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
+    // A change the project does not hold yet would be left out of the copy without a word (#1373): no folder is made.
+    const unsaved = this.duplicateBlocked(s);
+    if (unsaved) return { ok: false, field: 'form', message: unsaved };
     // Claimed in the folder the author chose, which must still be there: a folder renamed or removed meanwhile is not
     // made again under its old name.
     try {
@@ -2679,6 +2694,9 @@ export class Controller {
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
         if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
+        // Asked again once the writes queued ahead of the copy have run: one of them may have failed, or the AI started.
+        const unsaved = this.duplicateBlocked(s);
+        if (unsaved) throw Object.assign(new Error(unsaved), { code: 'UNSAVED' });
         // The copy is the project itself, brief and all, with its sources' settings as the project holds them, and as
         // the folder holds them too, so they match the collections copied beside them.
         const sources = await this.sourcesCopyProblem(s);
@@ -2702,6 +2720,7 @@ export class Controller {
       if (claimed) await fs.rmdir(dest).catch(() => undefined);
       const err = e as NodeJS.ErrnoException;
       if (err.code === 'STALE_OPENING') return stale;
+      if (err.code === 'UNSAVED') return { ok: false, field: 'form', message: err.message };
       if (err.code === 'ENOENT' && !existsSync(opts.parentDir)) return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
       if (err.code === 'EEXIST') return taken;
       if (err.code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };

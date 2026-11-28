@@ -6,7 +6,8 @@ import { defaultTheme, getTheme, listThemes } from '@catalogue/index';
 import { STARTERS as CATALOGUE_STARTERS, starterProblem, starterTakesSamples, type StarterId } from '@catalogue/starters';
 import { showcaseHome, showcasePages } from '@catalogue/showcase';
 import { isImeComposing } from '../lib/ime';
-import { endEditingHold } from '../lib/leave';
+import { endEditingHold, settleEdits } from '../lib/leave';
+import { afterEditsSettle } from '../lib/pending';
 import { api, errorText, toast, useStore } from '../store';
 import { loadEditor } from '../lib/editor-module';
 import { usePackPreview, usePreviewExtent } from './PackPreview';
@@ -350,12 +351,17 @@ function copyName(name: string, dir: string): string {
   return `Copy of ${name}`.slice(0, MAX_COPY_NAME).trim();
 }
 
+/** What could not be saved, when it stops a copy before it starts (#1373), said as Export says it. */
+const notCopied = (problems: string[]) => `The project wasn’t copied, because a change isn’t saved yet. ${problems.join(' ')} Cancel, save or discard it, then duplicate the project again.`;
+
 /**
  * Duplicate project (#176), over the open project: the copy's own name, which Recent projects and the toolbar show in
  * place of the site's (the site's visitor-facing name is copied as it is), and the folder it is made in. A problem is
  * explained beneath the two, with the form kept to correct it and focus on what fixes it: the name when a folder by
- * that name is already there, Choose… when the folder cannot be used, Duplicate when the copy itself failed. Once
- * made, the copy is offered to open; until then, and unless it is opened, every change stays in the project open now.
+ * that name is already there, Choose… when the folder cannot be used, Duplicate when the copy itself failed. What is
+ * still being typed is saved first, so the copy holds what is on screen; an edit that can't be saved (text a field
+ * refused, an edit kept on hold) stops it before any folder is made, and is said the same way (#1373). Once made, the
+ * copy is offered to open; until then, and unless it is opened, every change stays in the project open now.
  */
 export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void; onOpen: (dir: string) => void }) {
   const snap = useStore((s) => s.snapshot);
@@ -367,6 +373,8 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
   const [since, setSince] = useState<number | null>(null);
   const busy = since !== null;
   const elapsed = useElapsed(since);
+  // Saving what is still being typed, before the copy is asked for.
+  const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<{ dir: string; name: string } | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const openRef = useRef<HTMLButtonElement>(null);
@@ -404,13 +412,25 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
     if (!source || !canDuplicate) return;
     keepFocusInDialog(nameRef.current);
     setSince(Date.now());
+    setSaving(true);
     setProblem(null);
-    let r: DuplicateProjectResult;
+    let r: DuplicateProjectResult | null;
     try {
-      r = await api.projects.duplicate({ name: trimmed, parentDir: parent, opening: source.opening });
+      const started = await afterEditsSettle(
+        () => settleEdits(),
+        async () => {
+          // The dialog went with the project it was over while its edits were being saved: nothing is copied. Another
+          // opening in its place is refused by the copy itself, which says so.
+          if (!live.current) return null;
+          setSaving(false);
+          return api.projects.duplicate({ name: trimmed, parentDir: parent, opening: source.opening });
+        }
+      );
+      r = started.ok ? started.value : live.current ? { ok: false, field: 'form', message: notCopied(started.problems) } : null;
     } catch (e) {
       r = { ok: false, field: 'form', message: `The project could not be copied: ${errorText(e)}` };
     }
+    if (!r) return;
     // The dialog went with the project it was over: what happened is told as a notice.
     if (!live.current) {
       if (r.ok) toast(`${r.name} was copied to ${r.dir}. Open it from Recent projects.`, 'success');
@@ -418,6 +438,7 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
       return;
     }
     setSince(null);
+    setSaving(false);
     if (r.ok) setDone({ dir: r.dir, name: r.name });
     else setProblem({ field: r.field, text: r.message, target, parent });
   };
@@ -443,7 +464,7 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
       >
         <div className="duplicate-form">
           <p id="duplicate-done" className="duplicate-note">
-            <strong>{done.name}</strong> is ready in its own folder. You’re still editing <strong>{source.name}</strong>, and from here on each project keeps its own changes.
+            <strong>{done.name}</strong> is ready in its own folder, with every change made so far. You’re still editing <strong>{source.name}</strong>, and from here on each project keeps its own changes.
           </p>
           <div className="path-group">
             <div className="field-label">Copy’s folder</div>
@@ -466,7 +487,7 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
             {busy ? (
               <>
                 <Spinner decorative />
-                <span className="ellipsis">Copying the project… The original is not changed.</span>
+                <span className="ellipsis">{saving ? 'Saving your changes first…' : 'Copying the project… The original is not changed.'}</span>
                 {elapsed && (
                   <span className="elapsed" aria-hidden="true">
                     {elapsed}
