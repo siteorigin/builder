@@ -1254,7 +1254,13 @@ export async function codePartTexts(source: string): Promise<Record<string, Code
     });
     return used;
   };
-  const addUses = (name: string, used: Array<{ name: string; presence: boolean }>) => uses.set(name, [...(uses.get(name) ?? []), ...used]);
+  const seen = new Map<string, Set<string>>();
+  const addUses = (name: string, used: Array<{ name: string; presence: boolean }>) => {
+    const had = seen.get(name) ?? seen.set(name, new Set()).get(name)!;
+    const list = uses.get(name) ?? uses.set(name, []).get(name)!;
+    // Each read once per name, however many writes repeat it.
+    for (const u of used) if (!had.has(`${u.presence}:${u.name}`)) had.add(`${u.presence}:${u.name}`) && list.push(u);
+  };
   for (const d of defaults) addUses(d.local, readsOf(d.right));
   /** The name an assignment or a method call changes: `copy` in `copy = …`, `copy.title = …`, `map.set(…)`. */
   const rootName = (n: Node | undefined): string | null => {
@@ -1272,11 +1278,13 @@ export async function codePartTexts(source: string): Promise<Record<string, Code
       if (n.type === 'FunctionDeclaration' && (n.id as Node)?.type === 'Identifier') functions.set(String((n.id as Node).name), (n.params as Node[]) ?? []);
       if (n.type === 'VariableDeclarator' && (n.id as Node)?.type === 'Identifier' && FUNCTION_TYPES.has(String((n.init as Node)?.type))) functions.set(String((n.id as Node).name), ((n.init as Node).params as Node[]) ?? []);
     });
+  const fnReads = new Map<Node, Array<{ name: string; presence: boolean }>>();
   for (const root of [ast.instance, ast.fragment])
     walkAst(root, (n, around) => {
       const scope = () => {
-        const fn = [...around].reverse().find((x) => FUNCTION_TYPES.has(x.type));
-        return readsOf(fn ?? n);
+        const fn = [...around].reverse().find((x) => FUNCTION_TYPES.has(x.type)) ?? n;
+        // Read once per function, however many writes it holds.
+        return fnReads.get(fn) ?? fnReads.set(fn, readsOf(fn)).get(fn)!;
       };
       if (n.type === 'AssignmentExpression') {
         const left = n.left as Node;

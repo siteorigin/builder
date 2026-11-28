@@ -306,6 +306,14 @@ ${HAS}	let { label = '', check, so_text, so_o = undefined } = $props();
     ).toMatchObject({ card: [] });
   });
 
+  it('reads code with many writes in one effect quickly', async () => {
+    const writes = Array.from({ length: 2000 }, (_, i) => `\t\tcopy = 'v${i}';`).join('\n');
+    const started = performance.now();
+    const texts = await paths(`<script>\n\tlet { label = '', so_text, so_o = undefined } = $props();\n\tlet copy = $state('');\n\t$effect(() => {\n${writes}\n\t});\n</script>\n<p class={so_o?.label} data-so-text={so_text?.('label')}>{label}</p>\n<footer>{copy}</footer>\n`);
+    expect(texts).toMatchObject({ label: ['label'] });
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
   it('reads nothing from code without the text hook, and nothing from code that does not parse', async () => {
     expect(await codePartTexts(`<script>let { heading = '', so_o } = $props();</script>\n<h2 class={so_o?.heading}>{heading}</h2>\n`)).toEqual({});
     expect(await codePartTexts('<div class={')).toBeNull();
