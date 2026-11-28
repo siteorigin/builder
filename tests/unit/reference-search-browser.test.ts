@@ -191,6 +191,11 @@ describe.skipIf(!browserInstalled)(
       expect(await page.getByRole("radio").count()).toBe(1);
       await find.fill("draft");
       expect(await page.getByRole("radio").count()).toBe(1);
+      // By date, as typed in the list or shown in words.
+      await find.fill('2026-07-10');
+      expect(await page.getByRole('radio').count()).toBeGreaterThan(0);
+      await find.fill('July 10, 2026');
+      expect(await page.getByRole('radio').count()).toBeGreaterThan(0);
       await find.fill("zzz");
       expect(await page.getByRole("radio").count()).toBe(0);
       await find.fill("drip");

@@ -74,7 +74,7 @@ function EntryValueField({
 }) {
   const label = `Change ${schema.label.toLowerCase()}`;
   if (schema.type === 'date') return <DateValue schema={schema} value={value} onSet={(v) => set(name, v, label)} refuse={refuse} />;
-  if (schema.type === 'reference') return <ReferenceValue state={state} schema={schema} value={value} self={self} disabled={readOnly} onSet={(v) => set(name, v, label)} />;
+  if (schema.type === 'reference') return <ReferenceValue key={schema.collection} state={state} schema={schema} value={value} self={self} disabled={readOnly} onSet={(v) => set(name, v, label)} />;
   // A link to a section can come with the change that gives the section its anchor (`edit`): sent together.
   return <ScalarField schema={schema as ScalarPropSchema} value={value} state={state} onChange={(v, edit) => (JSON.stringify(v) === JSON.stringify(value) && !edit?.operations.length ? undefined : set(name, v, label, edit))} />;
 }
@@ -206,7 +206,7 @@ function ReferenceValue({ state, schema, value, self, disabled, onSet }: { state
   const many = options.length > MANY_ENTRIES;
   const needle = find.trim().toLowerCase();
   // Found by the words each row shows (its title, and what tells it apart: a date, Draft), and by its address and author.
-  const shown = many && needle ? options.filter((o) => `${o.title} ${named(o.id).more} ${o.slug} ${o.author ?? ''}`.toLowerCase().includes(needle)) : options;
+  const shown = many && needle ? options.filter((o) => `${o.title} ${named(o.id).more} ${o.publishedAt} ${formatArticleDate(o.publishedAt, state.site.language)} ${o.slug} ${o.author ?? ''}`.toLowerCase().includes(needle)) : options;
   const findBox = many && (
     <div className="post-terms-add entry-ref-find">
       <Search className="post-terms-find" aria-hidden="true" />
