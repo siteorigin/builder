@@ -437,53 +437,35 @@ describe('contact links in the shipped theme', () => {
     expect((footer(s).props.contact as ListItem[]).find((i) => i.id === mail.id)!.link).toEqual(email('bookings@kloof.example'));
   });
 
-  it('reads the pairs of a project’s own code from the item each link shows', () => {
-    const list = (fields: string[]): PropSchema => ({
-      type: 'list',
-      label: 'List',
-      itemLabel: 'Item',
-      default: [],
-      fields: Object.fromEntries(fields.map((k): [string, PropSchema] => [k, ['link', 'url', 'alt'].includes(k) ? { type: 'link', label: k, default: { type: 'none', target: '' } } : { type: 'string', label: k, default: '' }]))
-    }) as PropSchema;
-    const code = (properties: ComponentDefinition['properties'], lines: string[]) => ({ ...release().components[details(release()).definitionId], owner: 'project', properties, source: lines.join('\n') }) as ComponentDefinition;
-    const def = code({ ways: list(['text', 'link', 'note']), other: list(['text', 'link']), shared: list(['a', 'b', 'url']), groups: list(['title', 'link', 'url']), quoted: list(['text', 'link', 'alt']) }, [
-      '<script>const x = `{#each other as way}<SoLink link={way.link}>{way.text}</SoLink>{/each}`;</script>',
-      '{#each ways as way, i (way.id)}{#if way.note}<b>{way.note}</b>{:else}<i></i>{/if}<li><SoLink class="v" link={ way . link } aria-label={way.note}>',
-      '  { way.text }',
-      '</SoLink></li>{/each}',
-      '<!-- {#each other as way}<SoLink link={way.link}>{way.text}</SoLink>{/each} -->',
-      '{#each shared as s}<SoLink link={s.url}>{s.a}</SoLink><SoLink link={s.url}>{s.b}</SoLink>{/each}',
-      '{#each groups as g}{#each g.items as g}<SoLink link={g.link}>{g.title}</SoLink>{/each}<SoLink link={g.url}>{g.title}</SoLink>{/each}',
-      '{#each quoted as item}<SoLink data-note="opens link={item.link}" link={item.alt}>{item.text}</SoLink>{/each}'
-    ]);
-    expect(itemLinkPairs(def, 'ways')).toEqual([{ text: 'text', link: 'link' }]);
-    // Only in a script and a comment.
-    expect(itemLinkPairs(def, 'other')).toEqual([]);
-    // One destination shown by two texts belongs to neither.
-    expect(itemLinkPairs(def, 'shared')).toEqual([]);
-    // The inner list hides the outer item's name, so only the outer link is the list's.
-    expect(itemLinkPairs(def, 'groups')).toEqual([{ text: 'title', link: 'url' }]);
+  it('reads the pairs of a project’s own code from the field each link’s text marker names', () => {
+    const list = (fields: string[]): PropSchema =>
+      ({
+        type: 'list',
+        label: 'List',
+        itemLabel: 'Item',
+        default: [],
+        fields: Object.fromEntries(fields.map((k): [string, PropSchema] => [k, ['link', 'url', 'alt'].includes(k) ? { type: 'link', label: k, default: { type: 'none', target: '' } } : { type: 'string', label: k, default: '' }]))
+      }) as PropSchema;
+    const code = (lines: string[]) => ({ ...release().components[details(release()).definitionId], owner: 'project', properties: { ways: list(['text', 'link', 'alt', 'note']), rows: list(['text', 'link']) }, source: lines.join('\n') }) as ComponentDefinition;
+    const pairs = (lines: string[]) => [itemLinkPairs(code(lines), 'ways'), itemLinkPairs(code(lines), 'rows')];
+    const marked = (attrs: string, content = '{way.text}') => [`{#each ways as way (way.id)}<SoLink ${attrs}>${content}</SoLink>{/each}`];
+    // The marker names the list and field; the link and the text are the same item's.
+    expect(pairs(marked(`class="v" data-so-text={so_text?.('ways.text', way.id)} link={ way . link } aria-label={way.note}`, '\n  { way.text }\n'))).toEqual([[{ text: 'text', link: 'link' }], []]);
+    expect(pairs(marked(`data-so-text={so_text?.("rows.text", way.id)} link={way.link}`))).toEqual([[], [{ text: 'text', link: 'link' }]]);
+    // No marker, a marker for another field or item, or a link or text of another item, pairs nothing.
+    for (const attrs of [`link={way.link}`, `data-so-text={so_text?.('ways.note', way.id)} link={way.link}`, `data-so-text={so_text?.('ways.text', row.id)} link={way.link}`, `data-so-text={so_text?.('ways.text', way.id)} link={row.link}`])
+      expect(pairs(marked(attrs)), attrs).toEqual([[], []]);
+    expect(pairs(marked(`data-so-text={so_text?.('ways.text', way.id)} link={way.link}`, '{row.text}'))).toEqual([[], []]);
     // What a quoted attribute says is not where the link goes.
-    expect(itemLinkPairs(def, 'quoted')).toEqual([{ text: 'text', link: 'alt' }]);
-    // An each's {:else} has no item of its own: the name there is the outer list's item.
-    const empty = code({ outer: list(['text', 'link']), rows: list(['text', 'link']) }, ['{#each outer as item}{#each rows as item}{:else}<SoLink link={item.link}>{item.text}</SoLink>{/each}{/each}']);
-    expect(itemLinkPairs(empty, 'rows')).toEqual([]);
-    expect(itemLinkPairs(empty, 'outer')).toEqual([{ text: 'text', link: 'link' }]);
-    // Spread attributes can replace the link, so what it opens is not known.
-    const spread = code({ items: list(['value', 'link', 'alt']) }, ['{#each items as item}{@const to = { link: item.alt }}<SoLink link={item.link} {...to}>{item.value}</SoLink>{/each}']);
-    expect(itemLinkPairs(spread, 'items')).toEqual([]);
-    const hidden = code({ items: list(['value', 'link', 'alt']) }, ['{#each items as item}<SoLink link={item.link} data-debug="{"x"}" {...to}>{item.value}</SoLink>{/each}']);
-    expect(itemLinkPairs(hidden, 'items')).toEqual([]);
-    // Literal text that reads like a block does not close or empty one.
-    const literal = code({ items: list(['value', 'link']), rows: list(['value', 'link']) }, ['{#each items as item}{#each rows as item}{\'{:else}\'}{"{/each}"}<SoLink link={item.link}>{item.value}</SoLink>{/each}{/each}']);
-    expect(itemLinkPairs(literal, 'items')).toEqual([]);
-    expect(itemLinkPairs(literal, 'rows')).toEqual([{ text: 'value', link: 'link' }]);
-    // A name bound again inside the list (destructured, a const, an await's result) is not the outer item.
-    for (const inner of ['{#each rows as { item }}', '{#each rows as [item, i]}', '{#await p}{:then item}', '{#if ok}{@const item = other}', '{#snippet row(item)}'])
-      expect(itemLinkPairs(code({ items: list(['value', 'link']), rows: list(['item']) }, [`{#each items as item}${inner}<SoLink link={item.link}>{item.value}</SoLink>{/${inner.slice(2, inner.search(/[\s}]/))}}{/each}`]), 'items'), inner).toEqual([]);
-    // A long run of spaces in a block's head is read in one pass.
+    expect(pairs(marked(`data-note="opens link={way.link}" data-so-text={so_text?.('ways.text', way.id)} link={way.alt}`))).toEqual([[{ text: 'text', link: 'alt' }], []]);
+    // Spread attributes can replace the link, so what it opens is not known, wherever they sit and whatever comes before.
+    for (const attrs of [`data-so-text={so_text?.('ways.text', way.id)} link={way.link} {...to}`, `{...to} data-so-text={so_text?.('ways.text', way.id)} link={way.link}`, `data-debug="{"x"}" data-so-text={so_text?.('ways.text', way.id)} link={way.link} {...to}`])
+      expect(pairs(marked(attrs)), attrs).toEqual([[], []]);
+    // One destination shown by two texts belongs to neither.
+    expect(itemLinkPairs(code([`{#each ways as way}<SoLink data-so-text={so_text?.('ways.text', way.id)} link={way.link}>{way.text}</SoLink><SoLink data-so-text={so_text?.('ways.note', way.id)} link={way.link}>{way.note}</SoLink>{/each}`]), 'ways')).toEqual([]);
+    // Markup made to be slow reads in one pass.
     const started = performance.now();
-    itemLinkPairs(code({ items: list(['value']) }, [`{#each items${' '.repeat(58000)}as {value}}<p>{value}</p>{/each}`]), 'items');
-    expect(performance.now() - started).toBeLessThan(200);
+    for (const lines of [[`<p title="${'<SoLink '.repeat(7000)}"></p>`], [`${"<SoLink a={'".repeat(5000)}`], [`${'<SoLink a="b">'.repeat(4000)}</SoLink>`], [`<SoLink link={${'{'.repeat(50000)}`]]) itemLinkPairs(code(lines), 'ways');
+    expect(performance.now() - started).toBeLessThan(300);
   });
 });

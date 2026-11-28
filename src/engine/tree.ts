@@ -1,6 +1,7 @@
 import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { repeatProp, STYLE_SCOPES, isAppearPreset, isBinding, slotFallback } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
+import { CODE_TEXT_ATTR, CODE_TEXT_HOOK } from '@shared/code-text';
 
 export class EngineError extends Error {
   constructor(
@@ -157,84 +158,110 @@ export function itemLinkPairs(def: ComponentDefinition, listProp: string): Array
   return pairs.filter((p) => pairs.filter((q) => q.link === p.link).length === 1);
 }
 
-const JS_ID = '[A-Za-z_$][\\w$]*';
-/** `item.field` alone, as a link's destination or a link's only content. */
-const ITEM_FIELD = new RegExp(`^\\s*(${JS_ID})\\s*\\.\\s*(${JS_ID})\\s*$`);
-/** One attribute of a tag, its value quoted, in braces, or absent. */
-const ATTRIBUTE = /\s*([^\s=/>"'{]+)(?:\s*=\s*("[^"]*"|'[^']*'|\{[^{}]*\}|[^\s>"'{]+))?|\s*(\{[^{}]*\})/y;
+/** `name.field` alone: an item's field, as a link's destination or its only content. */
+const ITEM_FIELD = /^\s*([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*$/;
+/** The text hook's call for an item's field (src/shared/code-text.ts): its list, field and the item it names. */
+const ITEM_TEXT_HOOK = new RegExp(`^\\s*${CODE_TEXT_HOOK}\\s*\\?\\.\\s*\\(\\s*(['"])([A-Za-z][\\w]*)\\.([A-Za-z][\\w]*)\\1\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*\\.`);
+/** The SoLinks of a code source, read once per source. */
+const codeLinkCache = new Map<string, CodeItemLink[]>();
+type CodeItemLink = { list: string; text: string; link: string };
 
 /**
- * The links a code component's markup draws for each item of a list, each showing only one field of the item:
- * `{#each items as item}…<SoLink link={item.link} …>{item.value}</SoLink>…{/each}` reads as `{ text: 'value', link:
- * 'link' }`. A name means what Svelte scopes it to: the innermost block that binds it (a nested list, a snippet's
- * parameter, an `{@const}` or an await's result), and an each's `{:else}` (shown when it is empty) binds nothing.
- * Anything it cannot read for certain pairs nothing, since a wrong pair would move a link its text never showed.
+ * The links a code component draws for each item of a list, read from the marker that already tells the canvas which
+ * field a link shows (src/shared/code-text.ts):
+ * `<SoLink data-so-text={so_text?.('items.value', item.id)} link={item.link}>{item.value}</SoLink>` reads as
+ * `{ text: 'value', link: 'link' }` of `items`. The marker names the list, so no reading of the blocks around it is
+ * needed; a link whose marker, destination and content are not all the same item's, or whose tag spreads attributes
+ * that could replace the link, pairs nothing.
  */
 function codeItemLinks(source: string, listProp: string): Array<{ text: string; link: string }> {
-  const markup = source
-    .replace(/(^|\n)[ \t]*<(script|style)\b[^>]*>[\s\S]*?<\/\2>/g, '$1')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    // Literal text in braces (`{'{/each}'}`) is not markup.
-    .replace(/\{\s*(['"`])(?:\\[\s\S]|(?!\1)[^\\])*\1\s*\}/g, '{0}');
-  const out: Array<{ text: string; link: string }> = [];
-  // Every block is kept, so each `{/…}` closes its own; only an `#each` over a property names a list's item.
-  type Block = { list: string | null; item: string | null; binds: Set<string> };
-  const open: Block[] = [];
-  const names = (code: string) => new Set(code.match(new RegExp(JS_ID, 'g')) ?? []);
-  // A name bound again inside a block is no longer the list's item there.
-  const bind = (block: Block, code: string) =>
-    names(code).forEach((n) => {
-      block.binds.add(n);
-      if (block.item === n) block.item = null;
-    });
-  const tokens = /\{([#:@])(\w+)([^}]*)\}|\{\/\w+\s*\}|<SoLink\b((?:[^>"'{]|"[^"]*"|'[^']*'|\{[^{}]*\})*)>\s*\{([^{}]*)\}\s*<\/SoLink>/g;
-  for (const m of markup.matchAll(tokens)) {
-    const [whole, sigil, word, rest] = m;
-    if (sigil === '#') open.push(word === 'each' ? eachBlock(rest, names) : { list: null, item: null, binds: word === 'snippet' ? names(rest.replace(/^\s*[\w$]+/, '')) : new Set() });
-    else if (sigil === ':' && open.length) {
-      const top = open[open.length - 1];
-      if (word === 'else' && top.item) open[open.length - 1] = { list: null, item: null, binds: new Set() };
-      else if (word === 'then' || word === 'catch') bind(top, rest);
-    } else if (sigil === '@' && word === 'const' && open.length) bind(open[open.length - 1], rest.split('=')[0]);
-    else if (whole.startsWith('{/')) open.pop();
-    else if (m[4] !== undefined) {
-      const text = ITEM_FIELD.exec(m[5]);
-      const link = linkAttribute(m[4]);
-      if (!text || !link || link[1] !== text[1]) continue;
-      const scope = open.findLast((e) => e.binds.has(text[1]));
-      if (scope?.item === text[1] && scope.list === listProp) out.push({ text: text[2], link: link[2] });
-    }
+  let links = codeLinkCache.get(source);
+  if (!links) {
+    links = readCodeItemLinks(source);
+    if (codeLinkCache.size >= 64) codeLinkCache.delete(codeLinkCache.keys().next().value!);
+    codeLinkCache.set(source, links);
+  }
+  return links.filter((l) => l.list === listProp).map(({ text, link }) => ({ text, link }));
+}
+
+/** Every marked `<SoLink …>{item.field}</SoLink>` of a source, in one forward pass. */
+function readCodeItemLinks(source: string): CodeItemLink[] {
+  const out: CodeItemLink[] = [];
+  for (let at = source.indexOf('<SoLink'); at >= 0; at = source.indexOf('<SoLink', at)) {
+    const tag = readTag(source, at + '<SoLink'.length);
+    at = Math.max(tag.end, at + 1);
+    if (!tag.attrs) continue;
+    const close = source.indexOf('</SoLink>', tag.end);
+    // No link closes after this one, so none of the rest has content to read.
+    if (close < 0) break;
+    // Content is one short expression: a longer run is not read.
+    const content = close - tag.end > 400 ? null : /^\s*\{([^{}]*)\}\s*$/.exec(source.slice(tag.end, close));
+    const shown = content && ITEM_FIELD.exec(content[1]);
+    const marker = tag.attrs.get(CODE_TEXT_ATTR);
+    const hook = marker && ITEM_TEXT_HOOK.exec(marker);
+    const to = tag.attrs.get('link');
+    const link = to && ITEM_FIELD.exec(to);
+    if (!shown || !hook || !link) continue;
+    const [, item, text] = shown;
+    if (hook[4] === item && link[1] === item && hook[3] === text) out.push({ list: hook[2], text, link: link[2] });
   }
   return out;
 }
 
-/** An `{#each list as item, i (key)}` block: the property it repeats and the item's name, or what else it binds. */
-function eachBlock(head: string, names: (code: string) => Set<string>): { list: string | null; item: string | null; binds: Set<string> } {
-  // A plain search, so a long run of spaces costs one pass.
-  const at = head.search(/\sas\s/);
-  if (at < 0) return { list: null, item: null, binds: new Set() };
-  const list = new RegExp(`^\\s*(${JS_ID})\\s*$`).exec(head.slice(0, at));
-  const ctx = head.slice(at + 4);
-  const item = new RegExp(`^\\s*(${JS_ID})\\s*(?:[,(]|$)`).exec(ctx);
-  // A destructured item binds every name in it; the key and index are counted too, which only hides more.
-  return { list: list?.[1] ?? null, item: item?.[1] ?? null, binds: names(ctx) };
-}
-
 /**
- * The `item.field` a SoLink's `link={…}` attribute names, read attribute by attribute so quoted text never counts.
- * None when the tag spreads attributes, which can replace the link, or holds anything the reading cannot follow.
+ * The attributes of a tag from just after its name, with the expressions in braces as written (strings in them
+ * skipped, braces counted), and where it ends. No attributes when it spreads any, or cannot be read to its `>`.
  */
-function linkAttribute(attrs: string): RegExpExecArray | null {
-  if (/\{\s*\.\.\./.test(attrs)) return null;
-  let found: RegExpExecArray | null = null;
-  let end = 0;
-  ATTRIBUTE.lastIndex = 0;
-  for (let m = ATTRIBUTE.exec(attrs); m && m[0]; m = ATTRIBUTE.exec(attrs)) {
-    end = m.index + m[0].length;
-    if (m[1] !== 'link') continue;
-    found = m[2]?.startsWith('{') ? ITEM_FIELD.exec(m[2].slice(1, -1)) : null;
+function readTag(src: string, from: number): { attrs: Map<string, string> | null; end: number } {
+  const attrs = new Map<string, string>();
+  let i = from;
+  const expression = (): string | null => {
+    const start = i;
+    let depth = 0;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === '`') {
+        const q = src.indexOf(c, i + 1);
+        // Unclosed to the end: nothing after it is read again.
+        if (q < 0) return ((i = src.length), null);
+        i = q;
+      } else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) return src.slice(start + 1, i++);
+    }
+    return null;
+  };
+  if (!/\s|>|\//.test(src[i] ?? '')) return { attrs: null, end: i };
+  while (i < src.length) {
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '>') return { attrs, end: i + 1 };
+    if (src.startsWith('/>', i)) return { attrs: null, end: i + 2 };
+    // A spread, or the `{link}` shorthand: either way what the link opens is not read here.
+    if (src[i] === '{') return { attrs: null, end: i + 1 };
+    const name = /^[^\s=/>"'{}<]+/.exec(src.slice(i, i + 200));
+    if (!name) return { attrs: null, end: i };
+    i += name[0].length;
+    let value = '';
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '=') {
+      i++;
+      while (/\s/.test(src[i] ?? '')) i++;
+      if (src[i] === '{') {
+        const v = expression();
+        if (v === null) return { attrs: null, end: i };
+        value = v;
+      } else if (src[i] === '"' || src[i] === "'") {
+        const q = src.indexOf(src[i], i + 1);
+        if (q < 0) return { attrs: null, end: src.length };
+        // Text, or text around expressions: never an item's field on its own.
+        value = '';
+        i = q + 1;
+      } else return { attrs: null, end: i };
+    }
+    // An attribute named twice is not one value.
+    if (attrs.has(name[0])) return { attrs: null, end: i };
+    attrs.set(name[0], value);
   }
-  return attrs.slice(end).trim() ? null : found;
+  return { attrs: null, end: i };
 }
 
 /**
