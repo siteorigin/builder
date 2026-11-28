@@ -1,9 +1,12 @@
 // Design capture harness for hosting a live session: the toolbar's Share button and its Live pill, the Share popover in
 // each of its phases (start, starting, live with nobody yet, a full room with guests waiting, a session that lasts until
-// the project closes, reconnecting, ending, a guest's removal and the session's end being confirmed), and the
-// join-request notices (one, a crowd, while reconnecting, and with a dialog open). Host states are pushed through the
-// editor's own `live:state` channel, as the main process sends them, so no relay is needed. Drives the real (built) app
-// and writes crops of the toolbar's right end and the notices' band, in light and dark. Opt-in only, never part of
+// the project closes, reconnecting, ending, a guest's removal and the session's end being confirmed), the
+// join-request notices (one, a crowd, while reconnecting, and with a dialog open), and requests being answered (let in
+// while others wait, turned away, the last one let in from the keyboard, one from the notice, a burst with a new request
+// arriving midway, a request arriving into an emptied queue, and one arriving while a notice's answer is on its way).
+// Host states are pushed through the editor's own `live:state` channel, as the main process sends them, so no relay is
+// needed. Drives the real (built) app and writes crops of the toolbar's right end and the notices' band, in light and
+// dark. Opt-in only, never part of
 // `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/share-popover.mjs
@@ -124,9 +127,11 @@ const room = (over = {}) => ({
   expiresAt: now + 102 * MIN,
   relayClockOffsetMs: 0,
   locked: false,
+  guestNotes: true,
   participants: [],
   previewReady: true,
   lastError: null,
+  ai: {},
   ...over
 });
 const admitted = (guestId, displayName, role = 'viewer', guestExpiresAt = null, colorSlot = 0) => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt, colorSlot, connected: true });
@@ -134,10 +139,10 @@ const pending = (guestId, displayName) => ({ guestId, displayName, status: 'pend
 const crowd = [
   pending('g5', 'Priya Raman'),
   pending('g6', 'Bartholomew Okonkwo-Fitzgerald'),
-  admitted('g1', 'Ann Whitaker', 'collaborator'),
-  admitted('g2', 'Mo Haddad', 'viewer', now + 14 * MIN),
-  admitted('g3', 'Quill', 'viewer'),
-  admitted('g4', 'Hēmi Tūhoe-Marsden', 'collaborator')
+  admitted('g1', 'Ann Whitaker', 'collaborator', null, 0),
+  admitted('g2', 'Mo Haddad', 'viewer', now + 14 * MIN, 1),
+  admitted('g3', 'Quill', 'viewer', null, 2),
+  admitted('g4', 'Hēmi Tūhoe-Marsden', 'collaborator', null, 3)
 ];
 const share = win.locator('.toolbar .share-btn');
 const openShare = async () => {
@@ -272,6 +277,137 @@ await win.waitForSelector('.modal');
 await pause(400);
 await shot('notices-dialog', '.toast.live-request', { area: 'window', themes: ['light'] });
 await escape();
+
+// ---- Answering: a request let in while others wait, one turned away, and the last one let in from the keyboard ----
+// Admit and Decline are answered here as the relay would take them, and the roster that follows is pushed as the main
+// process sends it. An answered request holds its place for a moment; the renderer's timers are held still while
+// it is captured, so each theme shows the same moment.
+await app.evaluate(({ ipcMain }) => {
+  for (const channel of ['live:admit', 'live:decline']) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, () => ({ ok: true }));
+  }
+});
+async function holdTimers(on) {
+  await win.evaluate((on) => {
+    const w = /** @type {any} */ (window);
+    if (!w.__heldTimers) {
+      const set = w.setTimeout.bind(w);
+      const clear = w.clearTimeout.bind(w);
+      w.__heldTimers = new Map();
+      let next = -1;
+      w.setTimeout = (fn, ms = 0, ...args) => {
+        if (!w.__holdTimers || ms < 100) return set(fn, ms, ...args);
+        const id = next--;
+        w.__heldTimers.set(id, () => fn(...args));
+        return id;
+      };
+      w.clearTimeout = (id) => (typeof id === 'number' && id < 0 ? w.__heldTimers.delete(id) : clear(id));
+      w.__setTimeout = set;
+    }
+    w.__holdTimers = on;
+    if (!on) {
+      const due = [...w.__heldTimers.values()];
+      w.__heldTimers.clear();
+      for (const fn of due) w.__setTimeout(fn, 0);
+    }
+  }, on);
+}
+const answering = (waitingNow, inNow) => room({ participants: [...waitingNow, ...inNow] });
+const inRoom = [admitted('g1', 'Ann Whitaker', 'collaborator', null, 0), admitted('g3', 'Quill', 'viewer', null, 1)];
+const priya = pending('g5', 'Priya Raman');
+const bart = pending('g6', 'Bartholomew Okonkwo-Fitzgerald');
+const lena = pending('g7', 'Lena Sørensen');
+await live(answering([priya, bart, lena], inRoom));
+await openShare();
+await holdTimers(true);
+const answer = (name, label) => win.locator(`.share-popover [aria-label="Answer ${name}"]`).getByRole('button', { name: label });
+await answer('Priya Raman', 'Admit as viewer').click();
+await pause(200);
+await shot('pop-admitting', '.share-popover .live-waiting li[data-guest="g5"] .live-settled', { keepPointer: true });
+// The roster lets her in: she is in the session now, and two still wait.
+const priyaIn = admitted('g5', 'Priya Raman', 'viewer', null, 2);
+await live(answering([bart, lena], [...inRoom, priyaIn]));
+await shot('pop-admitted', '.share-popover .live-roster li:has-text("Priya Raman")', { keepPointer: true });
+// Turned away: Bartholomew leaves the queue without joining.
+await answer('Bartholomew Okonkwo-Fitzgerald', 'Decline').click();
+await pause(200);
+await live(answering([lena], [...inRoom, priyaIn]));
+await shot('pop-declined', '.share-popover .live-waiting :text("Bartholomew Okonkwo-Fitzgerald")', { keepPointer: true });
+// Let the held moments pass, then the last one waiting is let in from the keyboard, as the issue saw it.
+await holdTimers(false);
+await pause(2000);
+await closeShare();
+await openShare();
+await holdTimers(true);
+await win.keyboard.press('Enter');
+await pause(200);
+await live(answering([], [...inRoom, priyaIn, admitted('g7', 'Lena Sørensen', 'viewer', null, 3)]));
+await shot('pop-admitted-last', '.share-popover .live-roster li:has-text("Lena Sørensen")');
+await holdTimers(false);
+await closeShare();
+// Answered from the notice with Share closed: once the roster lets them in, a notice says so where the request was.
+const jun = pending('g9', 'Jun Park');
+const allIn = [...inRoom, priyaIn, admitted('g7', 'Lena Sørensen', 'viewer', null, 3)];
+await live(answering([jun], allIn));
+await win.locator('.toast.live-request').getByRole('button', { name: 'Admit as viewer' }).click();
+await pause(200);
+await holdTimers(true);
+await live(answering([], [...allIn, admitted('g9', 'Jun Park', 'viewer', null, 4)]));
+await shot('notices-answered', '.toasts .toast:not(.live-request):has-text("Jun Park")', { area: 'notices' });
+await holdTimers(false);
+await clearNotices();
+// A burst: Mia let in while Theo waits, Zoe asking meanwhile, then Theo let in too. Zoe keeps her place under the
+// pointer that answered Theo until the slots above her close together.
+const junIn = [...allIn, admitted('g9', 'Jun Park', 'viewer', null, 4)];
+const mia = pending('g10', 'Mia Hoffmann');
+const theo = pending('g11', 'Theo Castellanos');
+const zoe = pending('g12', 'Zoe Adeyemi');
+await live(answering([mia, theo], junIn));
+await openShare();
+await holdTimers(true);
+await answer('Mia Hoffmann', 'Admit as viewer').click();
+await pause(200);
+const miaIn = admitted('g10', 'Mia Hoffmann', 'viewer', null, 5);
+await live(answering([theo], [...junIn, miaIn]));
+await live(answering([theo, zoe], [...junIn, miaIn]));
+await answer('Theo Castellanos', 'Admit as viewer').click();
+await pause(200);
+await live(answering([zoe], [...junIn, miaIn, admitted('g11', 'Theo Castellanos', 'viewer', null, 6)]));
+await shot('pop-burst', '.share-popover .live-waiting li[data-guest="g12"]', { keepPointer: true });
+await holdTimers(false);
+await pause(2000);
+// The only request let in, and a new one arriving while its slot is still held: it comes in below that slot, never
+// into it.
+const theoIn = admitted('g11', 'Theo Castellanos', 'viewer', null, 6);
+const ravi = pending('g13', 'Ravi Menon');
+const ines = pending('g14', 'Inês Carvalho');
+await live(answering([ravi], [...junIn, miaIn, theoIn]));
+await pause(300);
+await holdTimers(true);
+await answer('Ravi Menon', 'Admit as viewer').click();
+await pause(200);
+const raviIn = admitted('g13', 'Ravi Menon', 'viewer', null, 7);
+await live(answering([], [...junIn, miaIn, theoIn, raviIn]));
+await live(answering([ines], [...junIn, miaIn, theoIn, raviIn]));
+await shot('pop-arrival', '.share-popover .live-waiting li[data-guest="g14"]', { keepPointer: true });
+await holdTimers(false);
+await closeShare();
+// From the notice: one answered, and another asking before the roster lets the first in. The notice counts only the
+// one still to answer, says the other is on its way, and offers Review in Share rather than an answer where the last
+// press landed.
+const omar = pending('g15', 'Omar Haddad');
+const tess = pending('g16', 'Tess Lindqvist');
+const allSoFar = [...junIn, miaIn, theoIn, raviIn, admitted('g14', 'Inês Carvalho', 'viewer', null, 0)];
+await live(answering([omar], allSoFar));
+await holdTimers(true);
+await win.locator('.toast.live-request').getByRole('button', { name: 'Admit as viewer' }).click();
+await pause(200);
+await live(answering([omar, tess], allSoFar));
+await shot('notices-answering', '.toast.live-request .live-request-sending', { area: 'notices' });
+await live(answering([tess], [...allSoFar, admitted('g15', 'Omar Haddad', 'viewer', null, 1)]));
+await holdTimers(false);
+await clearNotices();
 
 await live({ phase: 'idle', lastError: null });
 await app.close();

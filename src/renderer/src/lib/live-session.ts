@@ -105,7 +105,8 @@ export interface LivePill {
   label: string;
 }
 
-export function livePill(state: LiveHostState, at: number): LivePill {
+/** `waiting`: how many requests are still to be answered, when some are answered and not yet let go by the roster. */
+export function livePill(state: LiveHostState, at: number, waiting = waitingGuests(state).length): LivePill {
   switch (state.phase) {
     case 'idle':
       return { kind: 'idle', text: 'Share', label: 'Share: start a live session' };
@@ -115,13 +116,11 @@ export function livePill(state: LiveHostState, at: number): LivePill {
       return { kind: 'busy', text: 'Ending…', label: 'Share: the live session is ending' };
     case 'reconnecting': {
       const people = admittedGuests(state).length;
-      const waiting = waitingGuests(state).length;
       const words = [`${people} ${people === 1 ? 'guest' : 'guests'}`, ...(waiting ? [`${waiting} waiting to join`] : []), ...(state.locked ? ['locked'] : [])];
       return { kind: 'reconnecting', text: 'Reconnecting…', label: `Share: the live session is reconnecting, ${words.join(', ')}` };
     }
     case 'active': {
       const people = admittedGuests(state).length;
-      const waiting = waitingGuests(state).length;
       const left = remainingMs(state, at);
       const timed = state.duration !== 'project';
       const words = [`${people} ${people === 1 ? 'guest' : 'guests'}`, ...(waiting ? [`${waiting} waiting to join`] : []), ...(state.locked ? ['locked'] : []), ...(timed ? [`${spanWords(left)} left`] : [])];
