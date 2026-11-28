@@ -44,8 +44,8 @@ export function clipKeyIsEditors(chord: 'copy' | 'paste', target: Target, body: 
  * has made the selection their target there, focus moves to the body, which `deleteKeyIsEditors` takes: on a press of
  * the pointer that the canvas took at once and that selected something (`pick`), or on Enter or Escape ending an edit of
  * the page's text with focus still on it (no `pick`). Only while editing, with the page still holding the keyboard and
- * none of its text being edited. A pick from the keyboard or a screen reader (Enter on a link) leaves focus on the page,
- * and so does one held for a save and taken later: the author may have moved on there meanwhile.
+ * none of its text being edited. A pick from the keyboard (Enter on a link) leaves focus on the page, and so does one
+ * held for a save and taken later: the author may have moved on there meanwhile.
  */
 export function keyboardLeavesPage(at: { frameFocused: boolean; mode: string; inlineEdit: boolean }, pick?: { pointer: unknown; picked: boolean; held: boolean }): boolean {
   if (!at.frameFocused || at.mode !== 'edit' || at.inlineEdit) return false;

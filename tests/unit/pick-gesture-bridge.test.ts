@@ -18,6 +18,7 @@ const SITE = 'http://bridge.test';
 const FRAME = `<!doctype html><html><head><style>body{margin:0;font:20px/1.4 sans-serif}header,section{padding:10px}section{height:200px}</style></head><body>
 <header data-so-node="nav" data-so-ctx="shell:header"><a data-so-node="about" data-so-ctx="shell:header" href="/about">About</a></header>
 <section data-so-node="hero" data-so-ctx="page:p"><h1 data-so-node="title" data-so-ctx="page:p">Split hero</h1></section>
+<div class="so-rich" data-so-node="copy" data-so-ctx="page:p"><p>Some words</p></div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
 type Sent = { type: string; payload: { chain?: { node: string }[]; pointer?: unknown; key?: string; editId?: string } };
@@ -41,15 +42,18 @@ async function tabToAbout() {
   await expect.poll(focused).toBe('about');
   await reset();
 }
-/** Start an edit of the heading's text, as the editor does after a double-click, with keys reaching the frame. */
-async function editTitle(editId: string) {
+const post = (type: string, payload: unknown) => page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: ${JSON.stringify(type)}, payload: ${JSON.stringify(payload)} }, '*')`);
+/** Start an edit of an element's text, as the editor does after a double-click, with keys reaching the frame. */
+async function editText(editId: string, node = 'title') {
   await page.evaluate(`document.querySelector('iframe').focus()`);
   await reset();
-  await page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'beginTextEdit', payload: { desc: { ctx: 'page:p', node: 'title', items: '' }, editId: '${editId}' } }, '*')`);
+  await post('beginTextEdit', { desc: { ctx: 'page:p', node, items: '' }, editId });
   await expect.poll(async () => (await page.evaluate<Sent[]>(`window.seen`)).some((m) => m.type === 'textEditStarted')).toBe(true);
-  await expect.poll(() => frame.getAttribute('[data-so-node="title"]', 'contenteditable')).toBe('plaintext-only');
+  await expect.poll(() => frame.getAttribute(`[data-so-node="${node}"]`, 'contenteditable')).not.toBeNull();
   await reset();
 }
+/** How the edits that ended since the last reset ended, and whether the keyboard was said to be left on them. */
+const ends = async () => (await flushed()).filter((m) => ['textCancel', 'textCommit', 'editLeftByKey'].includes(m.type)).map((m) => [m.type, m.payload.editId]);
 
 describe.skipIf(!browserInstalled)('where the keyboard is, as the bridge reports it', () => {
   beforeAll(async () => {
@@ -127,31 +131,53 @@ describe.skipIf(!browserInstalled)('where the keyboard is, as the bridge reports
 
   it('says when Enter or Escape ended an edit of the page’s text, after the edit’s own end', async () => {
     for (const key of ['Escape', 'Enter']) {
-      await editTitle(`e-${key}`);
+      await editText(`e-${key}`);
       await page.keyboard.press(key);
-      const ends = (await flushed()).filter((m) => ['textCancel', 'textCommit', 'editLeftByKey'].includes(m.type));
-      expect(ends.map((m) => [m.type, m.payload.editId])).toEqual([
+      expect(await ends()).toEqual([
         ['textCancel', `e-${key}`],
         ['editLeftByKey', `e-${key}`]
       ]);
       expect(await frame.getAttribute('[data-so-node="title"]', 'contenteditable')).toBeNull();
     }
+    // Text that was typed over is committed, and said the same way.
+    await editText('e-typed');
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+    await page.keyboard.press('Enter');
+    expect(await ends()).toEqual([
+      ['textCommit', 'e-typed'],
+      ['editLeftByKey', 'e-typed']
+    ]);
+  });
+
+  it('says so for Cmd or Ctrl+Enter in the formatting toolbar too', async () => {
+    await editText('e-toolbar', 'copy');
+    await page.keyboard.press('Tab');
+    await expect.poll(() => frame.evaluate(`(() => { const a = document.activeElement; return !!(a && a.shadowRoot && a.shadowRoot.activeElement); })()`)).toBe(true);
+    await page.keyboard.press('ControlOrMeta+Enter');
+    expect(await ends()).toEqual([
+      ['textCancel', 'e-toolbar'],
+      ['editLeftByKey', 'e-toolbar']
+    ]);
   });
 
   it('says nothing of the keyboard when an edit ends any other way', async () => {
     // A key that goes on typing, then a click elsewhere on the page that ends the edit.
-    await editTitle('e-click');
+    await editText('e-click');
     await page.keyboard.press('ArrowLeft');
     const hero = (await frame.locator('[data-so-node="hero"]').boundingBox())!;
     await page.mouse.click(hero.x + 20, hero.y + hero.height - 20);
-    const sent = await flushed();
-    expect(sent.map((m) => m.type)).toContain('textCancel');
-    expect(sent.map((m) => m.type)).not.toContain('editLeftByKey');
+    expect(await ends()).toEqual([['textCancel', 'e-click']]);
     // The editor asks for the text back (saving, leaving the page).
-    await editTitle('e-asked');
-    await page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'commitTextEdit', payload: {} }, '*')`);
-    const asked = await flushed();
-    expect(asked.map((m) => m.type)).toContain('textCancel');
-    expect(asked.map((m) => m.type)).not.toContain('editLeftByKey');
+    await editText('e-asked');
+    await post('commitTextEdit', {});
+    expect(await ends()).toEqual([['textCancel', 'e-asked']]);
+    // Another edit begins (a double-click elsewhere) while one is open: the open one ends, and the new one has the keyboard.
+    await editText('e-first');
+    await post('beginTextEdit', { desc: { ctx: 'page:p', node: 'copy', items: '' }, editId: 'e-second' });
+    await expect.poll(() => frame.getAttribute('[data-so-node="copy"]', 'contenteditable')).not.toBeNull();
+    expect(await ends()).toEqual([['textCancel', 'e-first']]);
+    await post('commitTextEdit', {});
+    await expect.poll(() => frame.getAttribute('[data-so-node="copy"]', 'contenteditable')).toBeNull();
   });
 });

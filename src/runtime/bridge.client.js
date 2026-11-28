@@ -1725,8 +1725,8 @@ document.addEventListener(
       scheduleRects();
     }
     // `pointer`: a press of the mouse, a pen or a finger, which hands the keyboard back to the editor. Not Enter or Space
-    // on a control reached with Tab, a screen reader's activation (both clicks with no pointer type), or a click the
-    // page's own code made: those keep the keyboard where it is on the page.
+    // on a control reached with Tab (a click with no pointer type) or a click the page's own code made: those keep the
+    // keyboard where it is on the page.
     send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey, pointer: e.isTrusted && !!e.pointerType });
   },
   true
@@ -2434,19 +2434,24 @@ function onEditKey(e) {
     focusToolbar();
     return;
   }
-  const { editId } = editing;
   if (e.key === 'Escape') {
     e.preventDefault();
-    cancelEdit();
+    endEditByKey(cancelEdit);
   } else if (e.key === 'Enter' && !e.shiftKey && !editing.rich) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   }
-  // Ended from its own text, which keeps the focus: the editor takes the keyboard back for the selection (#1361). Sent
-  // after the commit or cancel, so the editor has closed the edit by then.
+}
+/**
+ * End the edit with a key the author pressed in it (in its text or its toolbar), where the keyboard stays: the editor
+ * takes it back for the selection (#1361). Said after the commit or cancel, so the editor has closed the edit by then.
+ */
+function endEditByKey(end) {
+  const { editId } = editing;
+  end();
   if (!editing) send('editLeftByKey', { editId });
 }
 function onEditBlur(e) {
@@ -2839,7 +2844,7 @@ function onToolbarKey(e) {
     restoreText();
   } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   }
 }
 /** Each command is one step of the text's own Undo while editing; the whole edit is one step once it is done. */

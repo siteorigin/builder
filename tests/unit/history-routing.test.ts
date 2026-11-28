@@ -63,7 +63,7 @@ describe('undo and redo routing', () => {
     expect(keyboardLeavesPage(at, pick)).toBe(true);
     // No pick: Enter or Escape ended an edit of the page's text, which kept the focus.
     expect(keyboardLeavesPage(at)).toBe(true);
-    // A pick from the keyboard or a screen reader, one that selected nothing, and one held for a save and taken later.
+    // A pick from the keyboard, one that selected nothing, and one held for a save and taken later.
     for (const p of [{ ...pick, pointer: false }, { ...pick, pointer: undefined }, { ...pick, pointer: 'true' }, { ...pick, picked: false }, { ...pick, held: true }]) expect(keyboardLeavesPage(at, p)).toBe(false);
     // Nothing once the page no longer has the keyboard (Layers or another panel does), in Preview, or while its text is edited.
     for (const a of [{ ...at, frameFocused: false }, { ...at, mode: 'preview' }, { ...at, inlineEdit: true }]) {
