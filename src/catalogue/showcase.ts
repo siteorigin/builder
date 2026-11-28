@@ -3,16 +3,21 @@
  * all of them can be clicked, edited, switched, previewed and exported in one place. Home places a few of the strongest
  * sections; then one page per kind of component (heroes, features, content and so on) places every component of that
  * kind once, and the shared header and footer link them all. Everything is read from the theme's own list, so a
- * component a theme adds lands on a page of its kind without a change here.
+ * component a theme adds lands on a page of its kind without a change here. The one thing not left at its default is a
+ * button with no destination, which goes to one of these pages.
  */
 import type { ComponentDefinition, GraphNode, ImageValue, InstanceNode, ListItem, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { pickImagesField } from '@shared/image-lists';
+import { formatArticleDate } from '@shared/articles';
 import { newId } from '@shared/ids';
 import { installComponent, makeInstance } from '@engine/install';
 import { collectionCreate, entryCreate } from '@engine/collections';
 import { shownOnceSlots, slotDecl, takesComponent } from '@engine/slots';
+import { labelKeyFor } from '@generator/checks';
+import { stateActionWorks } from '@generator/index';
+import { isEmptyPropValue } from '@shared/required';
 import { getTheme } from './index';
 import type { StarterAsset } from './starters';
 
@@ -51,8 +56,26 @@ const SAMPLE_POSTS = [
 
 /** The dated pages a news list shows: news lists leave out the page they are on, so these are pages of their own. */
 const SAMPLE_NEWS = [
-  { title: 'The studio moves to Harbor Lane', route: '/news/harbor-lane/', date: '2025-06-02', excerpt: 'A bigger room, more light and a proper materials library.' },
-  { title: 'Open studio weekend', route: '/news/open-studio/', date: '2025-04-18', excerpt: 'Come and see the work in progress, and bring your questions.' }
+  {
+    title: 'The studio moves to Harbor Lane',
+    route: '/news/harbor-lane/',
+    date: '2025-06-02',
+    excerpt: 'A bigger room, more light and a proper materials library.',
+    body: [
+      'After four years in two small rooms, the studio has a new home on Harbor Lane. There is space to lay out a whole project on one table and to leave it there overnight.',
+      'The materials library has its own wall at last, so samples can be compared side by side in daylight. Drop in to see it the next time you are nearby.'
+    ]
+  },
+  {
+    title: 'Open studio weekend',
+    route: '/news/open-studio/',
+    date: '2025-04-18',
+    excerpt: 'Come and see the work in progress, and bring your questions.',
+    body: [
+      'For one weekend the studio is open to everyone. Drawings, models and material samples from current projects will be out on the tables.',
+      'There is nothing to book. Stay for ten minutes or an hour, and bring a plan or a few photographs if there is a room you would like to talk about.'
+    ]
+  }
 ];
 
 const hasFeed = (def: ComponentDefinition, feed?: string) => Object.values(def.properties).some((p) => p.type === 'list' && !!p.feed && (feed === undefined || p.feed === feed));
@@ -97,15 +120,36 @@ export function showcaseHome(themeId: string): string[] {
   return out;
 }
 
-/** Puts sample photos in a placement's empty images, and gives an empty gallery, carousel or page list a few rows. */
+/**
+ * The link fields a design gives to buttons that work the component itself (opening a panel, say), by the field's own
+ * name. Such a button needs no destination, and one would turn it into a link away from the page.
+ */
+function controlLinks(def: ComponentDefinition): Set<string> {
+  const out = new Set<string>();
+  for (const n of Object.values(def.tree?.nodes ?? {})) {
+    if (n.kind !== 'link' || !stateActionWorks(def, n.stateAction, n.id)) continue;
+    if ('$item' in n.link) out.add(n.link.$item);
+    else if ('$prop' in n.link) out.add(n.link.field ?? n.link.$prop);
+  }
+  return out;
+}
+
+/**
+ * Puts sample photos in a placement's empty images, gives an empty gallery, carousel or page list a few rows, and
+ * gives each button with words but no destination one of the showcase's pages: the site leaves such a button out.
+ */
 class Filler {
   private room = 0;
   private person = 0;
   /** The definition of the placement being filled. */
   private def: ComponentDefinition | null = null;
+  /** Where an unfinished button on the placement being filled goes. */
+  private destination = '';
   constructor(
     private readonly photos: { rooms: StarterAsset[]; people: StarterAsset[] } | null,
-    private readonly pageIds: string[]
+    private readonly pageIds: string[],
+    /** The pages a button may go to, the most fitting first. */
+    private readonly destinations: string[]
   ) {}
 
   private photo(field: string): ImageValue | null {
@@ -141,7 +185,19 @@ class Filler {
         if (filled !== s.default && (filled as ImageValue | undefined)?.assetId) out[k] = filled;
       }
     }
+    for (const [k, s] of Object.entries(schema)) if (s.type === 'link') this.link(schema, out, k, s);
     return out;
+  }
+
+  /** A link whose paired label has words is a button visitors are meant to see: with nowhere to go, it gets a page. */
+  private link(schema: Record<string, PropSchema>, out: Record<string, unknown>, key: string, s: PropSchema) {
+    if (this.def && controlLinks(this.def).has(key)) return;
+    const labelKey = labelKeyFor(key);
+    const label = Object.hasOwn(schema, labelKey) ? schema[labelKey] : undefined;
+    if (label?.type !== 'string') return;
+    const words = Object.hasOwn(out, labelKey) ? out[labelKey] : label.default;
+    if (typeof words !== 'string' || !words.trim() || !isEmptyPropValue(s, Object.hasOwn(out, key) ? out[key] : s.default)) return;
+    out[key] = { type: 'page', target: this.destination };
   }
 
   private row(schema: Extract<PropSchema, { type: 'list' }>, values: Record<string, unknown>): ListItem {
@@ -163,8 +219,10 @@ class Filler {
     return rows.map((it) => ({ ...this.fields(schema.fields, it), id: it.id }));
   }
 
-  fill(def: ComponentDefinition, node: InstanceNode): InstanceNode {
+  fill(def: ComponentDefinition, node: InstanceNode, pageId: string): InstanceNode {
     this.def = def;
+    // Never the page the button is on, while there is another.
+    this.destination = this.destinations.find((id) => id !== pageId) ?? pageId;
     node.props = this.fields(def.properties, node.props);
     this.def = null;
     return node;
@@ -193,16 +251,20 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
   const kinds = showcasePages(themeId);
   const ids = new Map(kinds.map((k) => [k.kind, newId('pg')]));
   const people = photos?.filter((a) => /^Portrait/.test(a.name)) ?? [];
-  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()]);
-  const place = (componentId: string): InstanceNode => {
+  // Buttons ask a visitor to get in touch, so they go to Contact first, then Pricing, then any other page.
+  const preferred = (['contact', 'pricing'] as const).flatMap((k) => ids.get(k) ?? []);
+  const destinations = [...new Set([...preferred, ...ids.values(), homeId])];
+  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()], destinations);
+  const placeOn = (pageId: string) => (componentId: string): InstanceNode => {
     const def = state.components[installComponent(state, componentId)];
-    return filler.fill(def, makeInstance(def));
+    return filler.fill(def, makeInstance(def), pageId);
   };
 
-  const homeNodes = showcaseHome(themeId).map(place);
+  const homeNodes = showcaseHome(themeId).map(placeOn(homeId));
   const pages: PageDoc[] = [];
   for (const k of kinds) {
     const id = ids.get(k.kind)!;
+    const place = placeOn(id);
     if (k.kind !== 'blocks') {
       const nodes = k.components.map((c) => place(c.componentId));
       // The Article header reads the page it is on as an article: this one, kept out of news lists.
@@ -220,7 +282,10 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
   }
   // News lists show the site's dated pages other than their own.
   const news: PageDoc[] = kinds.some((k) => k.components.some((c) => hasFeed(c, 'articles')))
-    ? SAMPLE_NEWS.map((n) => sitePage(newId('pg'), n.title, n.route, [], [], { article: { date: n.date, byline: 'Studio team', excerpt: n.excerpt } }))
+    ? SAMPLE_NEWS.map((n) => {
+        const id = newId('pg');
+        return newsPage(state, id, n, placeOn(id));
+      })
     : [];
 
   return {
@@ -228,6 +293,52 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
     pages: [...pages, ...news],
     nav: [{ label: 'Home', pageId: homeId }, ...kinds.map((k) => ({ label: k.title, pageId: ids.get(k.kind)! }))]
   };
+}
+
+/**
+ * A sample news article's own page: the theme's Article header, which reads the page's title and details, over a Text
+ * section with the article's words. A theme without either gets the same from plain text, so no article opens blank.
+ */
+function newsPage(state: ProjectState, id: string, n: (typeof SAMPLE_NEWS)[number], place: (componentId: string) => InstanceNode): PageDoc {
+  const theme = getTheme(state.site.themeId);
+  const find = (componentId: string) => theme.components.find((c) => c.componentId === componentId);
+  const nodes: GraphNode[] = [];
+  const roots: string[] = [];
+  const text = (tag: 'h1' | 'p', words: string, datetime?: string): string => {
+    const id = newId('n');
+    nodes.push({ id, kind: 'text', tag, text: words, ...(datetime ? { datetime } : {}) });
+    return id;
+  };
+  const section = (children: string[]) => {
+    const node: GraphNode = { id: newId('n'), kind: 'element', tag: 'section', children };
+    nodes.push(node);
+    roots.push(node.id);
+  };
+  const add = (node: InstanceNode) => {
+    nodes.push(node);
+    roots.push(node.id);
+  };
+
+  const header = find('content.article');
+  if (header && hasFeed(header, 'currentPage')) {
+    const node = place(header.componentId);
+    if (header.properties.eyebrow?.type === 'string') node.props.eyebrow = '';
+    add(node);
+  } else section([text('h1', n.title), text('p', formatArticleDate(n.date, state.site.language), n.date)]);
+
+  const words = find('content.text');
+  // The section goes under the article's header with no heading of its own, so a theme that requires one is passed over.
+  const optional = (k: string) => !words?.properties[k]?.required;
+  if (words?.properties.body?.type === 'richtext' && optional('eyebrow') && optional('heading')) {
+    const node = place(words.componentId);
+    for (const k of ['eyebrow', 'heading']) if (words.properties[k]?.type === 'string') node.props[k] = '';
+    node.props.body = n.body.map((p) => ({ type: 'p', spans: [{ text: p }] }));
+    // With no heading of its own, the text sits in one column under the article's header.
+    if (words.variantAxes?.layout && Object.hasOwn(words.variantAxes.layout.options, 'stacked')) node.variants = { ...node.variants, layout: 'stacked' };
+    add(node);
+  } else section(n.body.map((p) => text('p', p)));
+
+  return sitePage(id, n.title, n.route, nodes, roots, { article: { date: n.date, byline: 'Studio team', excerpt: n.excerpt } });
 }
 
 /**

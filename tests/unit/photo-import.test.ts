@@ -63,7 +63,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { checkPixels, importAsset, importAssetBatch, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { checkPixels, importAsset, importAssetBatch, importPackageImage, locateAssetFile, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
 const { generateProject } = await import('../../src/generator/index');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
@@ -183,6 +183,39 @@ describe('reviewing an import before anything is written', () => {
     const webp = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#808080' } }).webp().toBuffer();
     expect((await reviewOf(sourceFile('big.webp', webp))).action).toBe('import');
   });
+
+  it('refuses a picture over 100 megapixels however small its file, saying so first, and writes or decodes nothing (#1444)', async () => {
+    const poster = await sharp({ create: { width: 20_000, height: 6_000, channels: 3, background: '#335577' } }).png({ palette: true, compressionLevel: 9 }).toBuffer();
+    expect(poster.length).toBeLessThan(1_500_000);
+    const reason = 'it is over 100 megapixels, too large to make web-sized copies of. Save a smaller copy of it in an image editor, then add that.';
+    const path = sourceFile('poster.png', poster);
+    expect(await reviewOf(path)).toMatchObject({ action: 'refuse', format: 'PNG', reason, fingerprint: sha(poster) });
+    const project = temp('project');
+    later.requests = [];
+    const refused = new RegExp(`^poster\\.png was not imported because ${reason.replace(/\./g, '\\.')}$`);
+    await expect(importAsset(project, path, [])).rejects.toThrow(refused);
+    await expect(importAsset(project, path, [], undefined, { fingerprint: sha(poster) })).rejects.toThrow(refused);
+    await expect(importAsset(project, path, [], undefined, { webCopy: true })).rejects.toThrow(refused);
+    // The same picture as a WebP, and a JPEG named .heic, are refused alike.
+    const webp = sourceFile('poster.webp', await sharp({ create: { width: 12_000, height: 9_000, channels: 3, background: '#335577' } }).webp().toBuffer());
+    await expect(importAsset(project, webp, [])).rejects.toThrow(/^poster\.webp was not imported because it is over 100 megapixels/);
+    const disguised = sourceFile('poster.heic', await sharp({ create: { width: 12_000, height: 9_000, channels: 3, background: '#335577' } }).jpeg().toBuffer());
+    expect(await reviewOf(disguised, false)).toMatchObject({ action: 'refuse', reason });
+    expect(later.requests).toEqual([]);
+    expect(existsSync(join(project, 'static/assets')) ? readdirSync(join(project, 'static/assets')) : []).toEqual([]);
+    // Nor can one stand in for a library image whose file is missing.
+    const lost = { id: 'a_lost', name: 'Lost', kind: 'image', file: 'static/assets/lost-00000000.png', mime: 'image/png', bytes: 10, hash: 'other', createdAt: '2026-01-01T00:00:00.000Z' } as const;
+    await expect(locateAssetFile(project, lost, path)).rejects.toThrow(/^poster\.png can't be used because it is over 100 megapixels/);
+    // A sync or a package bringing one stores it as it is, with no copies, rather than hold up everything else it
+    // brings: Project health names it instead.
+    const synced = await importPackageImage(project, { name: 'Poster', mime: 'image/png', ext: '.png', bytes: poster }, []);
+    expect(synced.record).toMatchObject({ width: 20_000, height: 6_000 });
+    expect(synced.record.variants).toBeUndefined();
+    expect(later.requests).toEqual([]);
+    // At the cap a picture is still added, with its copies.
+    const atCap = sourceFile('square.png', await sharp({ create: { width: 10_000, height: 10_000, channels: 3, background: '#335577' } }).png().toBuffer());
+    expect((await reviewOf(atCap)).action).toBe('import');
+  }, 60_000);
 
   it('counts out an ordinary-looking file that cannot be added, so the review never overcounts', async () => {
     expect(await reviewOf(sourceFile('notes.png', Buffer.from('just some text, not a picture')))).toMatchObject({ action: 'refuse', format: 'PNG', reason: expect.any(String) });

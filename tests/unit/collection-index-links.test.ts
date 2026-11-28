@@ -168,6 +168,21 @@ describe('links to a collection index', () => {
     expect(menuLinks(plain.state)).toHaveLength(before);
   });
 
+  it('names the link after a renamed blog instead of "Blog" (#1311)', () => {
+    const start = site();
+    const r = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: 'Journal', route: '/journal/', addToNavigation: true }]);
+    expect(r.results[0]).toMatchObject({ addedToNavigation: true });
+    const last = menuLinks(r.state).at(-1)!;
+    expect(last).toMatchObject({ label: 'Journal', link: INDEX });
+    expect(resolveLink(last.link, { state: r.state })).toEqual({ href: '/journal/' });
+    // A blog left with no name of its own (only spaces) still shows "Blog" rather than a blank link.
+    const blank = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: '   ', addToNavigation: true }]);
+    expect(menuLinks(blank.state).at(-1)).toMatchObject({ label: 'Blog', link: INDEX });
+    // Only the blog becomes "Blog": another collection called Posts keeps its name.
+    const other = applyOperations(start, [{ type: 'collection.create', collectionId: 'case-studies', name: 'Posts', addToNavigation: true }]);
+    expect(menuLinks(other.state).at(-1)).toMatchObject({ label: 'Posts', link: { type: 'collection', target: 'case-studies' } });
+  });
+
   it('leaves a full menu as it is, and still starts the blog', () => {
     const start = site();
     let s = start;

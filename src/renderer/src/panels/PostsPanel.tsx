@@ -16,7 +16,7 @@ import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
 import { detachOps, sourceOfCollection, syncSummary } from '../lib/sources';
 import { sourceFingerprint } from '@shared/sources';
-import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection } from '../lib/content';
+import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection, deleteDestinations, isDeleteDestination } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
@@ -72,19 +72,24 @@ function keptAddresses(state: ProjectState, entryId: string): number {
   return Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === entryId).length : 0;
 }
 
+const DESTINATION_GONE = 'That destination is no longer on the website. Choose another.';
+
 /** Remove a post, letting go of it in the writer only once it is gone. */
 async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number): Promise<boolean> {
+  const chosen = replacement.replacementEntryId !== undefined ? `entry:${replacement.replacementEntryId}` : replacement.replacementPageId !== undefined ? `page:${replacement.replacementPageId}` : null;
   // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
   // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
   const ops = [{ type: 'entry.remove' as const, collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }];
+  // Read before sending: the newer project may arrive ahead of the answer that says it moved on.
+  const was = getState().snapshot;
   let r = await commitOps(ops, 'Delete post', undefined, revision, { replanStale: true });
   // Only moved on (a save landing): sent again if what was checked still holds — the same links and old addresses.
   if (r && !r.ok) {
-    const was = getState().snapshot;
     const now = await api.project.snapshot().catch(() => null);
     const same = (s: typeof now) => (s ? `${entryLinkUses(s.state, ref.entryId).length}/${keptAddresses(s.state, ref.entryId)}` : '');
-    r = now && was && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
-    if (!r && now) toast('Something now links to this post. Delete it again to choose where those links go.', 'error');
+    const gone = !!now && chosen !== null && !isDeleteDestination(now.state, ref, chosen);
+    r = now && was && !gone && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
+    if (!r && now) toast(gone ? DESTINATION_GONE : 'Something now links to this post. Delete it again to choose where those links go.', 'error');
   }
   if (!r?.ok) return false;
   toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
@@ -107,24 +112,25 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   const uses = entryLinkUses(state, target.entryId);
   const kept = keptAddresses(state, target.entryId);
   const where = [...new Set(uses.map((u) => u.where))];
-  // Only somewhere visitors can go: a draft is left out of the website, and so would be the links sent to it.
-  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && (state.pages[id].draft !== true || id === state.site.homePageId));
-  // Grouped by collection, each under its own name (a renamed blog is not "Posts").
-  const groups = Object.keys(state.collections)
-    .sort()
-    .map((id) => ({ id, name: state.collections[id].settings.name, entries: orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false) }))
-    .filter((g) => g.entries.length > 0);
+  // Only somewhere visitors can go.
+  const { pages, groups } = deleteDestinations(state, target);
   const confirm = async () => {
     const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
-    // Checked again now: a destination that has become a draft (or gone) since it was chosen is chosen again.
+    // Checked again now: a destination that has become a draft, lost its page or gone since it was chosen is chosen again.
     const now = getState().snapshot;
     if (!now) return;
-    const live = kind === 'entry' ? findEntry(now.state, id)?.entry.draft === false : Object.hasOwn(now.state.pages, id) && (now.state.pages[id].draft !== true || id === now.state.site.homePageId);
-    if (!live) return toast('That destination is no longer on the website. Choose another.', 'error');
+    if (!isDeleteDestination(now.state, target, to)) {
+      // The list no longer shows it: what is chosen is what the list shows.
+      setTo(`page:${now.state.site.homePageId}`);
+      return toast(DESTINATION_GONE, 'error');
+    }
     setBusy(true);
     const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision);
     setBusy(false);
-    if (done) onClose();
+    if (done) return onClose();
+    // Lost while it was being sent: what is chosen is what the list shows.
+    const latest = getState().snapshot;
+    if (latest && !isDeleteDestination(latest.state, target, to)) setTo(`page:${latest.state.site.homePageId}`);
   };
   return (
     <Modal
@@ -159,17 +165,17 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
       <Field label="Send its links to" controlId={`${uid}-to`}>
         <select id={`${uid}-to`} className="select" value={to} onChange={(ev) => setTo(ev.target.value)}>
           <optgroup label="Pages">
-            {pages.map((id) => (
-                <option key={id} value={`page:${id}`}>
-                  {state.pages[id].title} ({state.pages[id].route})
-                </option>
-              ))}
+            {pages.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
           </optgroup>
           {groups.map((g) => (
             <optgroup key={g.id} label={g.name}>
               {g.entries.map((p) => (
-                <option key={p.id} value={`entry:${p.id}`}>
-                  {p.title}
+                <option key={p.value} value={p.value}>
+                  {p.label}
                 </option>
               ))}
             </optgroup>

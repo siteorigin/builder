@@ -12,15 +12,16 @@ import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameL
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
-import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { formNameClashMessage, pixelLimitMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { overPixelLimit } from '@shared/picture-formats';
 import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { blankPages, describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
@@ -88,10 +89,10 @@ import { withoutCodeMarkers } from './codecheck';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
-import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
+import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName, missingFiles } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
-import type { ExportNote, MissingAssetFiles } from '@shared/api';
+import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
@@ -615,9 +616,10 @@ export interface MissingInExport {
 }
 
 /**
- * Library images with files missing from a staged copy of the project, and whether the website uses those files:
- * generated pages, code components or other public files name one. The build would fail on a used one without
- * saying which picture it was, so the export stops first and names it.
+ * Library images, documents and fonts with files missing from a staged copy of the project, and whether the website
+ * uses those files: generated pages, styles (a font's @font-face rule), code components or other public files name
+ * one. The build would fail on a used one without saying which file it was, or (a font) pass and leave visitors a
+ * fallback typeface, so the export stops first and names it.
  */
 export async function missingWebsiteAssets(project: string, state: ProjectState): Promise<MissingInExport[]> {
   const missing = await findMissingAssetFiles(project, state.assets.assets);
@@ -637,18 +639,6 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
     const named = (f: string) => found.whole(basename(f));
     return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) };
   });
-}
-
-/**
- * Library fonts whose file is missing from a staged copy of the project while the website names it (its @font-face
- * rules, or code that reads it): a publication is built elsewhere, where a missing font file cannot be put back
- * (#1154). missingWebsiteAssets leaves fonts to Project health.
- */
-export async function missingWebsiteFonts(project: string, state: ProjectState): Promise<AssetRecord[]> {
-  const fonts = Object.values(state.assets.assets).filter((a) => a?.kind === 'font' && typeof a.file === 'string' && !isPlainFile(join(project, a.file)));
-  if (!fonts.length) return [];
-  const found = await websiteNames(project, await websiteFiles(project, state), fonts.map((a) => basename(a.file)));
-  return fonts.filter((a) => found.whole(basename(a.file)));
 }
 
 /** Characters namesFile reads as part of a file name, around one. */
@@ -717,37 +707,55 @@ export function namesWholeFile(text: string, file: string): boolean {
   return false;
 }
 
-/** The export notes for library images with missing files that nothing on the site names, so the export went ahead. */
+/** The export notes for library files with missing files that nothing on the site names, so the export went ahead. */
 export function missingUnusedWarnings(missing: MissingInExport[]): string[] {
-  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${unnamed(asset)} is missing ${missingParts(m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
+  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${libraryName(asset)} is missing ${missingFiles(asset, m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
 }
-
-/** A library file's name, or what it is when it has none. */
-const unnamed = (a: AssetRecord | undefined) => (typeof a?.name === 'string' && a.name.trim()) || (a?.kind === 'document' ? 'A document' : 'An image');
 
 /** "it" for one missing file, "them" for more. */
 const them = (m: MissingAssetFiles) => ((m.original ? 1 : 0) + m.variants.length > 1 ? 'them' : 'it');
 
-/** Why a website export stopped for images whose files are missing, and the files themselves for the details. */
+/** What several library files are, together: "images", "fonts", "images and documents", "images, documents and fonts". */
+function kindsOf(assets: AssetRecord[]): string {
+  const kinds = (['image', 'document', 'font'] as const).filter((k) => assets.some((a) => (a.kind === 'document' || a.kind === 'font' ? a.kind : 'image') === k)).map((k) => `${k}s`);
+  return kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}` : kinds[0];
+}
+
+/** Why a website export stopped for library files that are missing, and the files themselves for the details. */
 export function missingAssetsStop(used: MissingInExport[]): { message: string; warnings: string[] } {
-  const nameOf = unnamed;
+  const nameOf = libraryName;
   const warnings = used.map(({ asset, missing }) => `${nameOf(asset)}: ${[...(missing.original ? [asset.file] : []), ...missing.variants].join(', ')} not found.`);
   if (used.length === 1) {
     const { asset, missing } = used[0];
     const fix = missing.original ? 'Locate the file in Assets' : 'Make the copies again in Assets';
-    return { message: `${nameOf(asset)} is missing ${missingParts(missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
+    return { message: `${nameOf(asset)} is missing ${missingFiles(asset, missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
   }
   const names = used.map((u) => nameOf(u.asset));
-  const what = used.every((u) => u.asset.kind === 'document') ? 'documents' : used.some((u) => u.asset.kind === 'document') ? 'images and documents' : 'images';
+  const what = kindsOf(used.map((u) => u.asset));
   return { message: `${used.length} ${what} the website uses are missing files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
 }
 
-/** The export notes for an editable project that leaves out image files missing from the project folder. */
+/** The export notes for an editable project that leaves out library files missing from the project folder. */
 export function missingSourceWarnings(state: ProjectState, missing: MissingAssetFiles[]): string[] {
   return missing.map((m) => {
     const a = state.assets.assets[m.assetId];
-    return `${unnamed(a)} is missing ${missingParts(m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
+    return `${libraryName(a)} is missing ${missingFiles(a, m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
   });
+}
+
+/**
+ * The notes on library images the website ships that are heavy for its pages: one too large to make copies of (which
+ * goes out whole, however small its file, #1444), or else a large file. `omitted` were left out of the website and
+ * `absent` (asset ids) have no original in the project, so neither ships.
+ */
+export function assetSizeWarnings(state: ProjectState, omitted: readonly AssetRecord[], absent: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const a of Object.values(state.assets.assets)) {
+    if (omitted.includes(a) || absent.has(a.id)) continue;
+    if (a.kind === 'image' && overPixelLimit(a.mime, a.width, a.height)) out.push(pixelLimitMessage(a));
+    else if (a.bytes > 1_500_000) out.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+  }
+  return out;
 }
 
 /**
@@ -1653,9 +1661,10 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
 }
 
 /**
- * Why the exported site has no canonical links, social image URLs or sitemap (nor an RSS feed, when it publishes
- * posts): no public URL is set, or the one saved can't be used (saved by hand or by an earlier version). Null when the
- * site has a public URL it was built from.
+ * Why the exported site has no canonical links, social image URLs or sitemap (nor the links that tell search engines
+ * about each page's translations, when pages are linked as translations, nor an RSS feed, when it publishes posts): no
+ * public URL is set, or the one saved can't be used (saved by hand or by an earlier version). Null when the site has a
+ * public URL it was built from.
  */
 export function publicUrlWarning(state: ProjectState): string | null {
   // A value of another kind (a number written by hand) is a URL that can't be used, not a missing one.
@@ -1663,8 +1672,12 @@ export function publicUrlWarning(state: ProjectState): string | null {
   const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
   const check = checkPublicUrl(saved);
   if (check.ok && check.url) return null;
-  // A feed reader needs each post's full address, so a site that publishes posts loses its feed too.
-  const omitted = hasFeedEntries(state) ? 'canonical links, social image URLs, the sitemap and the RSS feed' : 'canonical links, social image URLs and the sitemap';
+  // Search engines read a page's translations only at full addresses, and a feed reader needs each post's, so a site
+  // with translated pages loses those links and a site that publishes posts loses its feed.
+  const live = publishedState(state);
+  const translated = live.site.pageOrder.some((id) => live.pages[id] && pageAlternates(live, live.pages[id]).length > 0);
+  const parts = ['canonical links', 'social image URLs', ...(translated ? ['search-engine links between translations'] : []), 'the sitemap', ...(hasFeedEntries(state) ? ['the RSS feed'] : [])];
+  const omitted = `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   if (!check.ok) return `The public site URL “${saved}” can’t be used, so ${omitted} were omitted. ${check.message} Correct the Public URL in Site styles › Site details.`;
   // Optional: a site handed over without a domain of its own is still a whole website.
   return `No public site URL is set, so ${omitted} were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.`;
@@ -1776,6 +1789,15 @@ export function emptySectionWarnings(state: ProjectState): string[] {
   return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
 }
 
+/** Warnings for published pages with nothing on them (see blankPages): each by its title and address. */
+export function blankPageWarnings(state: ProjectState): string[] {
+  const found = blankPages(state).map((p) => `${p.title} (${p.route})`);
+  if (!found.length) return [];
+  const lead = found.length === 1 ? 'A page has nothing on it, so visitors find it blank. Add content to it, or keep it off the website:' : `${found.length} pages have nothing on them, so visitors find them blank. Add content to each one, or keep it off the website:`;
+  const more = found.length - UNLINKED_LISTED;
+  return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
+}
+
 /**
  * Why a production build failed, in words a person can act on: the page or file it was building, what went wrong,
  * and a report to copy into a support request. When the build refused a link to a missing section (SvelteKit's
@@ -1808,7 +1830,7 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
   const place = file ? `${file}${line ? `, line ${line}` : ''}` : '';
   // A project component is named as the author knows it; its file is how a developer finds it.
   const at = component ? `the “${component}” component (${place})` : place;
-  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : 'The production build failed.';
+  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : BUILD_FAILED_UNPLACED;
   const warnings = [...read.causes];
   if (at && (page || route)) warnings.push(`The build was working in ${at}.`);
   if (!warnings.length) warnings.push('The build did not say what went wrong. The technical details list everything it printed.');

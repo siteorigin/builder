@@ -74,7 +74,7 @@ async function loadHook(files: Map<string, string>, { building = true } = {}) {
 }
 
 /** The page's alternate links: the language and the address, a site path given as `resolve(...)` written as it. */
-const alternatesIn = (file: string) => [...file.matchAll(/<link rel="alternate" hreflang="([^"]+)" href=\{(?:"([^"]+)"|resolve\("([^"]+)"\))\} \/>/g)].map((m) => [m[1], m[2] ?? `resolve:${m[3]}`]);
+const alternatesIn = (file: string) => [...file.matchAll(/<link rel="alternate" hreflang="([^"]+)" href=\{"([^"]+)"\} \/>/g)].map((m) => [m[1], m[2]]);
 /** The structured data a page file renders. */
 /** The nodes of the one structured data graph a page carries, none when it carries none. */
 const graphNodes = (file: string) => {
@@ -529,22 +529,17 @@ describe('page languages in the website', () => {
     expect(generateProject(reordered).get('src/routes/+layout.svelte')).toBe(generateProject(s).get('src/routes/+layout.svelte'));
   });
 
-  it('lists every version, itself included, on each version, with or without a public address', () => {
+  it('lists every version, itself included, on each version, only at full addresses', () => {
     const { s, en, fr, de } = trilingual();
-    const files = generateProject(s);
-    const local = [
-      ['en', 'resolve:/about/'],
-      ['fr', 'resolve:/fr/a-propos/'],
-      ['de', 'resolve:/de/ueber-uns/']
-    ];
-    for (const id of [en, fr, de]) {
-      expect(alternatesIn(files.get(pageFile(s.pages[id]))!)).toEqual(local);
-      // Site paths are resolved as authored links are, so they hold wherever the site is put.
-      expect(files.get(pageFile(s.pages[id]))).toContain("\timport { resolve } from '$app/paths';");
-      expect(() => compile(files.get(pageFile(s.pages[id]))!, { generate: 'server', filename: pageFile(s.pages[id]), runes: true })).not.toThrow();
-    }
-    // Pages without translations list none.
-    expect(files.get(pageFile(byTitle(s, 'Contact')))).not.toContain('hreflang');
+    // Without a public address there are no full addresses, and search engines take no others, so the versions list
+    // none, preview and website alike; each page still says its own language.
+    for (const files of [generateProject(s), generateProject(s, { instrument: true })])
+      for (const id of [en, fr, de]) {
+        expect(files.get(pageFile(s.pages[id]))).not.toContain('hreflang');
+        expect(files.get(pageFile(s.pages[id]))).not.toContain('$app/paths');
+        expect(() => compile(files.get(pageFile(s.pages[id]))!, { generate: 'server', filename: pageFile(s.pages[id]), runes: true })).not.toThrow();
+      }
+    expect(pageAlternates(s, s.pages[fr]).map((a) => a.language)).toEqual(['en', 'fr', 'de']);
     // With a public address (under a sub-path here), the addresses are complete.
     const published = apply(s, { type: 'site.update', baseUrl: 'https://example.com/studio/' });
     const pub = generateProject(published);
@@ -556,7 +551,10 @@ describe('page languages in the website', () => {
     for (const id of [en, fr, de]) {
       expect(alternatesIn(pub.get(pageFile(s.pages[id]))!)).toEqual(full);
       expect(pub.get(pageFile(s.pages[id]))).not.toContain('$app/paths');
+      expect(() => compile(pub.get(pageFile(s.pages[id]))!, { generate: 'server', filename: pageFile(s.pages[id]), runes: true })).not.toThrow();
     }
+    // Pages without translations list none.
+    expect(pub.get(pageFile(byTitle(s, 'Contact')))).not.toContain('hreflang');
     // Each page also says which language it is in, for search engines; the website stays in the site's own.
     for (const [id, language] of [[en, 'en'], [fr, 'fr'], [de, 'de']])
       expect(languagesOf(pub.get(pageFile(s.pages[id]))!)).toEqual([
@@ -576,18 +574,40 @@ describe('page languages in the website', () => {
     expect(ld(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
   });
 
-  it('follows a version to its new address and to the Home page', () => {
+  it('lists the versions at full addresses once a public address is set, with no relinking', () => {
     const { s, en, fr } = bilingual();
+    const cache = new GenerationCache();
+    for (const opts of [{}, { instrument: true }]) expect(generateProject(s, opts, cache).get(pageFile(s.pages[fr]))).not.toContain('hreflang');
+    const published = apply(s, { type: 'site.update', baseUrl: 'https://example.com/' });
+    expect(published.pages[fr].translationGroup).toBe(s.pages[fr].translationGroup);
+    for (const opts of [{}, { instrument: true }]) {
+      const files = generateProject(published, opts, cache);
+      expect([...files]).toEqual([...generateProject(published, opts)]);
+      for (const id of [en, fr])
+        expect(alternatesIn(files.get(pageFile(published.pages[id]))!)).toEqual([
+          ['en', 'https://example.com/about/'],
+          ['fr', 'https://example.com/fr/a-propos/']
+        ]);
+    }
+    // Cleared again, the cached pages drop them.
+    const cleared = apply(published, { type: 'site.update', baseUrl: '' });
+    for (const opts of [{}, { instrument: true }]) for (const id of [en, fr]) expect(generateProject(cleared, opts, cache).get(pageFile(cleared.pages[id]))).not.toContain('hreflang');
+  });
+
+  it('follows a version to its new address and to the Home page', () => {
+    const two = bilingual();
+    const { en, fr } = two;
+    const s = apply(two.s, { type: 'site.update', baseUrl: 'https://example.com/' });
     const moved = apply(s, { type: 'page.update', pageId: fr, route: '/fr/studio/' });
     expect(alternatesIn(generateProject(moved).get(pageFile(moved.pages[en]))!)).toEqual([
-      ['en', 'resolve:/about/'],
-      ['fr', 'resolve:/fr/studio/']
+      ['en', 'https://example.com/about/'],
+      ['fr', 'https://example.com/fr/studio/']
     ]);
     const home = apply(s, { type: 'page.setHome', pageId: fr });
     const files = generateProject(home);
     const both = [
-      ['en', 'resolve:/about/'],
-      ['fr', 'resolve:/']
+      ['en', 'https://example.com/about/'],
+      ['fr', 'https://example.com/']
     ];
     expect(alternatesIn(files.get(pageFile(home.pages[en]))!)).toEqual(both);
     expect(alternatesIn(files.get(pageFile(home.pages[fr]))!)).toEqual(both);
@@ -596,13 +616,13 @@ describe('page languages in the website', () => {
 
   it('leaves a draft version out of the website, and previews it in its own language', async () => {
     const { s, en, fr, de } = trilingual();
-    const drafted = apply(s, { type: 'page.update', pageId: de, draft: true });
+    const drafted = apply(s, { type: 'site.update', baseUrl: 'https://example.com/' }, { type: 'page.update', pageId: de, draft: true });
     // The preview shows the draft in German; the published versions list each other and not the draft, which lists none.
     const preview = generateProject(drafted, { instrument: true });
     expect((await loadHook(preview))('/de/ueber-uns', ['<!doctype html><html lang="en">'])[0]).toBe('<!doctype html><html lang="de">');
     const pair = [
-      ['en', 'resolve:/about/'],
-      ['fr', 'resolve:/fr/a-propos/']
+      ['en', 'https://example.com/about/'],
+      ['fr', 'https://example.com/fr/a-propos/']
     ];
     expect(alternatesIn(preview.get(pageFile(drafted.pages[en]))!)).toEqual(pair);
     expect(alternatesIn(preview.get(pageFile(drafted.pages[fr]))!)).toEqual(pair);

@@ -258,7 +258,7 @@ describe('the typed entity in the page’s connected graph', () => {
 
   it('names the publisher whatever kind it is, and keeps a page’s FAQ beside its typed entity', () => {
     // The FAQ built in the editor (fixtures/nested-output-designs.ts), whose questions the generator reads from its
-    // tree: the release's is code (the Release gap test below).
+    // tree. The release's is code, read through its outline (the test below).
     const s = withEditorStructure(copy(guide()));
     const g = graph(s, 'pg_guide');
     expectLinked(g);
@@ -274,8 +274,7 @@ describe('the typed entity in the page’s connected graph', () => {
     expect(node(g, `${ROOT}guide/#howto`)).toMatchObject({ name: 'Glazing guide', publisher: { '@id': `${ROOT}#person` } });
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('keeps the shipped theme’s FAQ beside a page’s typed entity', () => {
+  it('keeps the shipped theme’s FAQ beside a page’s typed entity', () => {
     const webpage = node(graph(guide(), 'pg_guide'), `${ROOT}guide/#webpage`);
     expect(webpage['@type']).toEqual(['WebPage', 'FAQPage']);
     expect((webpage.mainEntity as unknown[]).length).toBeGreaterThan(0);

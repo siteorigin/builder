@@ -400,7 +400,7 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
   if (node.appear && !anchors) restyled.push('Entrance');
   // A form's own tool name and description (WebMCP) go with it unless it becomes another form.
   const tool = toolOverrides(node);
-  if ((tool.toolName || tool.toolDescription) && !isWebMcpForm(target)) dropped.push({ label: 'Agent tool name and description', reason: 'only a contact form is a tool for AI agents' });
+  if ((tool.toolName || tool.toolDescription) && !isWebMcpForm(target)) dropped.push({ label: 'Agent tool name and description', reason: 'only a contact or signup form is a tool for AI agents' });
   return plan;
 }
 

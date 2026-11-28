@@ -135,6 +135,42 @@ function PlainPosts({ posts, language }: { posts: PostImportPreviewPost[]; langu
   );
 }
 
+/** Old-site addresses this few are listed open; more fold behind their count. */
+const OLD_LINKS_SHOWN = 5;
+
+/**
+ * The old site's addresses the posts still link to, each once with how many posts link to it: they keep going to the
+ * old site, which the new site may replace at the same address. One kept working says where it now sends visitors.
+ */
+function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks']; site?: string }) {
+  const label = `The posts link to ${plural(links.length, 'address', 'addresses')} of the old site`;
+  const list = (
+    <>
+      <p className="import-review-what">
+        The posts keep these links as they are. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found: Project health then lists those on published posts.
+      </p>
+      <ul className="import-names single" data-testid="post-import-old-links">
+        {links.map((l) => (
+          <li key={l.url}>
+            <b>{l.url}</b> · {plural(l.posts, 'post', 'posts')}
+            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under that category is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+  return links.length <= OLD_LINKS_SHOWN ? (
+    <section className="import-review-group" aria-labelledby="post-import-old-links">
+      <ReviewHeading id="post-import-old-links">{label}</ReviewHeading>
+      {list}
+    </section>
+  ) : (
+    <ReviewDisclosure className="import-review-group" summary={label}>
+      {list}
+    </ReviewDisclosure>
+  );
+}
+
 /** "From export.xml (https://riverside.example)" names a file; a folder is named as one. */
 const sourceOf = (p: PostImportPreview) => `${p.kind === 'markdown' ? `The folder “${p.source}”` : p.source}${p.site ? ` (${p.site})` : ''}`;
 
@@ -414,6 +450,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             {missingList}
           </ReviewDisclosure>
         ))}
+      {preview.oldSiteLinks.length > 0 && <OldSiteLinks links={preview.oldSiteLinks} site={preview.site} />}
       {skippedLong && (
         <ReviewDisclosure className="import-review-group" summary="What is not imported, item by item">
           <ul className="import-names single">
