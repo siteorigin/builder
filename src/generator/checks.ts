@@ -667,6 +667,9 @@ export function firstSectionImages(
     return [hiddenInDesign(def, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def, n.id, scope)[0] ?? new Set()];
   };
   const hidden = (k: 0 | 1) => hiddenEverySize(hiding.map((h) => h[k]));
+  // A placement of code (or of a definition no longer there), and how many of them the walk is inside.
+  const isCode = (n: GraphNode) => n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed';
+  let inCode = 0;
   // Only content slotted into a list can load eagerly there: a list holding no slot is never walked, however long.
   const slotsUnder = new Map<string, boolean>();
   const holdsSlot = (t: NodeTree, id: string, seen = new Set<string>()): boolean => {
@@ -685,18 +688,24 @@ export function firstSectionImages(
   walkRendered(state, tree, {
     roots: [first],
     ...(entry ? { entry } : {}),
-    // Code is looked at only by `code`, as one placement: where it puts the content of its slots its own markup says.
-    prune: (n, scope, _reportId, def) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed' && (!code || !!scope.codeSlot)) || (n.kind === 'repeat' && (!def || !listHoldsSlot(def, n.id))),
+    // Code is looked at only by `code`, as one placement: nothing inside it (the content of its slots, which shows where
+    // and whether its own markup says) is walked.
+    prune: (n, _scope, _reportId, def) =>
+      done || inCode > 0 || (!code && isCode(n)) || (n.kind === 'repeat' && (!def || !listHoldsSlot(def, n.id))),
     node: (n, scope, _reportId, _inDef, def) => {
       hiding.push(own(n, scope, def));
-      if (done || n.kind !== 'image' || scope.codeSlot || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
+      if (isCode(n)) inCode++;
+      if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
       done = each(n, scope, def);
     },
     code: (def, props, _reportId, _placement, _n, scope) => {
-      if (done || !code || scope.codeSlot || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
+      if (done || !code || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
       done = code(def, props, scope);
     },
-    done: () => void hiding.pop()
+    done: (n) => {
+      hiding.pop();
+      if (isCode(n)) inCode--;
+    }
   });
 }
 
@@ -1900,112 +1909,178 @@ export function showsItemsWithSoImage(source: string, prop: string, field: strin
   return givesImage(attr.expr, `${each[2]}.${field}`);
 }
 
-/** The end of a `{...}` expression that opens at `from` (just past its end), past nested braces and strings; -1 if it never closes. */
+/** The end of a `{...}` expression that opens at `from` (just past its end), past nested braces, strings and comments; -1 if it never closes. */
 function braceEnd(s: string, from: number): number {
   let depth = 0;
   for (let i = from; i < s.length; i++) {
     const c = s[i];
     if (c === '"' || c === "'" || c === '`') {
       for (i++; i < s.length && s[i] !== c; i++) if (s[i] === '\\') i++;
+    } else if (c === '/' && (s[i + 1] === '*' || s[i + 1] === '/')) {
+      const end = s[i + 1] === '*' ? s.indexOf('*/', i + 2) + 1 : s.indexOf('\n', i);
+      if (end <= 0) return -1;
+      i = end;
     } else if (c === '{') depth++;
     else if (c === '}' && --depth === 0) return i + 1;
   }
   return -1;
 }
 
-/** An attribute of a markup tag: a bare one, a quoted or unquoted string (`text`), or an expression (`expr`). */
+/** An attribute of a markup tag: a bare one, a plain string (`text`), or an expression (`expr`, a string with one in it too). */
 type TagAttr = { bare: true } | { text: string } | { expr: string };
 
-/** A tag's attributes from just past its name to its end, by name; null for a spread or a tag that never ends. */
-function tagAttrs(s: string, from: number): Map<string, TagAttr> | null {
-  const out = new Map<string, TagAttr>();
+/**
+ * A tag's attributes, from just past its name, by name, with where the tag ends and whether it closes itself; null for
+ * a spread, an attribute named twice, or a tag that never ends.
+ */
+function tagAttrs(s: string, from: number): { attrs: Map<string, TagAttr>; end: number; selfClosing: boolean } | null {
+  const attrs = new Map<string, TagAttr>();
+  const set = (name: string, value: TagAttr) => !attrs.has(name) && !!attrs.set(name, value);
   let i = from;
   for (;;) {
     while (/\s/.test(s[i] ?? '')) i++;
     if (i >= s.length) return null;
-    if (s[i] === '>' || s.startsWith('/>', i)) return out;
+    if (s[i] === '>') return { attrs, end: i + 1, selfClosing: false };
+    if (s.startsWith('/>', i)) return { attrs, end: i + 2, selfClosing: true };
     if (s[i] === '{') {
       const end = braceEnd(s, i);
       if (end < 0) return null;
       const inner = s.slice(i + 1, end - 1).trim();
       // `{...rest}` can carry any attribute; `{image}` is `image={image}`.
-      if (!/^[A-Za-z_$][\w$]*$/.test(inner)) return null;
-      out.set(inner, { expr: inner });
+      if (!/^[A-Za-z_$][\w$]*$/.test(inner) || !set(inner, { expr: inner })) return null;
       i = end;
       continue;
     }
-    const name = s.slice(i).match(/^[^\s=/>{]+/)?.[0];
+    const name = s.slice(i).match(/^[^\s=/>{"']+/)?.[0];
     if (!name) return null;
     i += name.length;
     while (/\s/.test(s[i] ?? '')) i++;
     if (s[i] !== '=') {
-      out.set(name, { bare: true });
+      if (!set(name, { bare: true })) return null;
       continue;
     }
     i++;
     while (/\s/.test(s[i] ?? '')) i++;
     const q = s[i];
-    if (q === '"' || q === "'") {
-      const end = s.indexOf(q, i + 1);
-      if (end < 0) return null;
-      const text = s.slice(i + 1, end);
-      // A string with an expression in it is worked out as the page renders.
-      out.set(name, text.includes('{') ? { expr: `\`${text}\`` } : { text });
-      i = end + 1;
-    } else if (q === '{') {
+    if (q === '{') {
       const end = braceEnd(s, i);
-      if (end < 0) return null;
-      out.set(name, { expr: s.slice(i + 1, end - 1) });
+      if (end < 0 || !set(name, { expr: s.slice(i + 1, end - 1) })) return null;
       i = end;
-    } else {
-      const text = s.slice(i).match(/^[^\s>]+/)?.[0] ?? '';
-      if (text.endsWith('/') && s[i + text.length] === '>') return out.set(name, { text: text.slice(0, -1) });
-      out.set(name, text.includes('{') ? { expr: text } : { text });
-      i += text.length;
+      continue;
     }
+    // A quoted string (its expressions skipped whole, so a `>` or quote inside one ends nothing), or an unquoted one.
+    const start = q === '"' || q === "'" ? i + 1 : i;
+    let j = start;
+    let dynamic = false;
+    while (j < s.length && (start > i ? s[j] !== q : !/[\s>]/.test(s[j]) && !s.startsWith('/>', j))) {
+      if (s[j] === '{') {
+        dynamic = true;
+        j = braceEnd(s, j);
+        if (j < 0) return null;
+      } else j++;
+    }
+    if (j >= s.length) return null;
+    const text = s.slice(start, j);
+    if (!set(name, dynamic ? { expr: `\`${text}\`` } : { text })) return null;
+    i = start > i ? j + 1 : j;
   }
+}
+
+/** The attributes the runtime image reads or passes on without changing which picture loads, or how: any other is declined. */
+const PLAIN_IMAGE_ATTR = /^(?:image|eager|sizes|class|fallbackAlt|style|id|title|(?:data|aria)-[\w-]+|class:[\w-]+)$/;
+
+/**
+ * Whether the component's instance script takes `name` as a property under its own name (`let { name } = $props()`,
+ * with or without a default) and never declares or assigns it otherwise.
+ */
+function plainProp(script: string, name: string): boolean {
+  const props = script.match(/\blet\s*\{([\s\S]*?)\}\s*=\s*\$props\(\s*\)/);
+  if (!props) return false;
+  const n = name.replace(/\$/g, '\\$');
+  if (!new RegExp(`(?:^|,)\\s*${n}\\s*(?:=|,|$)`).test(props[1]) || new RegExp(`:\\s*${n}\\b`).test(props[1])) return false;
+  const rest = script.slice(0, props.index) + script.slice(props.index! + props[0].length);
+  return !new RegExp(`\\b(?:const|let|var|function|class)\\s+${n}\\b|(?<![\\w$.])${n}\\s*(?:[-+*/%&|^]|\\?\\?|\\*\\*|<<|>>>?)?=(?![=>])|(?<![\\w$.])${n}\\s*(?:\\+\\+|--)|(?:\\+\\+|--)\\s*${n}\\b`).test(rest);
 }
 
 /**
  * How code markup loads `prop`'s picture first, as the head's preload must ask for it: its one runtime image (the
- * name the source imports `runtime/Image.svelte` as) shows `prop`'s picture, or its thumbnail, whichever way its
- * `image` goes; it loads eagerly (`eager`, `eager={true}`, or `eager={so_eager}` where the placement is handed the flag,
- * `flagged`); it sits in no block but an `{#if}` on the property itself, before any `{:else}`; and its `sizes` is
- * written out (none is the runtime's 100vw). Null for anything else the head cannot read as the page renders it: a
- * spread, `sizes` worked out as the page renders, or a picture that may not show.
+ * name the instance script imports `runtime/Image.svelte` as) is the first picture the markup shows, outside every
+ * block (a `{#key}` aside) and every other component's content, and shows `prop`'s picture, or its runtime thumbnail,
+ * whichever way its `image` goes; it loads eagerly (`eager`, `eager={true}`, or `eager={so_eager}` where the placement
+ * is handed the flag, `flagged`); it takes no attribute that changes which picture loads or how; and its `sizes` is
+ * written out (none is the runtime's 100vw). `prop`, `so_eager` and `thumbnail` must be what they say: the
+ * properties under their own names and the runtime's helper. Null for anything else the head cannot read as the page
+ * renders it.
  */
 export function eagerCodeImage(source: string, prop: string, flagged: boolean): { thumbnail: boolean; sizes: string } | null {
   if (!/^[A-Za-z_$][\w$]*$/.test(prop)) return null;
-  const name = source.match(/\bimport\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])[^'"\n]*\/runtime\/Image\.svelte\2/)?.[1];
-  if (!name) return null;
-  // The markup alone, its script, styles and comments left out.
+  const scripts = [...source.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+  const instance = scripts.filter((m) => !/\b(?:context\s*=\s*["']module["']|module)\b/.test(m[1]));
+  if (instance.length !== 1) return null;
+  // Comments left out, so an import written in one is not read.
+  const script = instance[0][2].replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+  const imports = [...script.matchAll(/^\s*import\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])[^'"\n]*\/runtime\/Image\.svelte\2\s*;?\s*$/gm)];
+  if (imports.length !== 1) return null;
+  const name = imports[0][1];
+  if (!plainProp(script, prop)) return null;
+  // The markup alone, its scripts, styles and comments left out, read in order: expressions and tags whole.
   const markup = source.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<!--[\s\S]*?-->/g, '');
-  const tags = [...markup.matchAll(new RegExp(`<${name.replace(/\$/g, '\\$')}(?![\\w$.:-])`, 'g'))];
-  if (tags.length !== 1) return null;
-  const at = tags[0].index;
-  const attrs = tagAttrs(markup, at + 1 + name.length);
-  if (!attrs) return null;
-  // Every block it sits in must be an {#if} the property's picture passes, and it must be in that block's first branch.
-  const p = prop.replace(/\$/g, '\\$');
-  const onProp = new RegExp(`^(?:!!\\s*)?(?:${p}(?:\\??\\.src)?|has\\(\\s*${p}\\s*\\))$`);
-  const open: Array<{ kind: string; ok: boolean }> = [];
-  for (const m of markup.slice(0, at).matchAll(/\{\s*([#:/@])\s*([a-z]+)([^}]*)\}/g)) {
-    if (m[1] === '#') open.push({ kind: m[2], ok: m[2] === 'key' || (m[2] === 'if' && onProp.test(bare(m[3]))) });
-    else if (m[1] === ':' && open.length) open[open.length - 1].ok = false;
-    else if (m[1] === '/') open.pop();
+  const blocks: string[] = [];
+  const components: string[] = [];
+  let found: { attrs: Map<string, TagAttr>; blocks: string[]; inside: boolean } | null = null;
+  for (let i = 0; i < markup.length; ) {
+    if (markup[i] === '{') {
+      const end = braceEnd(markup, i);
+      if (end < 0) return null;
+      const block = markup.slice(i + 1, end - 1).match(/^\s*([#/])\s*([a-z]+)/);
+      if (block?.[1] === '#') blocks.push(block[2]);
+      else if (block?.[1] === '/') blocks.pop();
+      i = end;
+      continue;
+    }
+    if (markup[i] !== '<') {
+      i++;
+      continue;
+    }
+    const close = markup.slice(i).match(/^<\/\s*([A-Za-z][\w$.:-]*)\s*>/);
+    if (close) {
+      if (components[components.length - 1] === close[1]) components.pop();
+      i += close[0].length;
+      continue;
+    }
+    const tag = markup.slice(i).match(/^<([A-Za-z][\w$.:-]*)/)?.[1];
+    if (!tag) {
+      i++;
+      continue;
+    }
+    const t = tagAttrs(markup, i + 1 + tag.length);
+    if (!t) return null;
+    if (tag === name) {
+      if (found) return null;
+      found = { attrs: t.attrs, blocks: [...blocks], inside: components.length > 0 };
+    } else if (!found && /^(?:img|picture|video|iframe|object|embed)$/i.test(tag)) return null;
+    // Content given to another component (or to a special element but `svelte:element`) shows where, and whether, it says.
+    else if (!t.selfClosing && (/^[A-Z]/.test(tag) || tag.includes('.') || (tag.startsWith('svelte:') && tag !== 'svelte:element'))) components.push(tag);
+    i = t.end;
   }
-  if (open.some((b) => !b.ok)) return null;
+  if (!found || found.inside || found.blocks.some((b) => b !== 'key')) return null;
+  const { attrs } = found;
+  if ([...attrs.keys()].some((k) => !PLAIN_IMAGE_ATTR.test(k))) return null;
   const image = attrs.get('image');
-  if (!image || !('expr' in image)) return null;
+  // A long expression is not worth reading branch by branch.
+  if (!image || !('expr' in image) || image.expr.length > 1000) return null;
   const shown = outcomes(image.expr).map((o) => shownOf(o, prop));
   if (shown.some((x) => x === null) || new Set(shown).size !== 1) return null;
+  const thumbnail = shown[0] === 'thumbnail';
+  const fromRuntime = /^\s*import\s*\{[^}]*\bthumbnail\b[^}]*\}\s*from\s*(['"])[^'"\n]*\/runtime\/util\.js\1/m.test(script);
+  if (thumbnail && (!fromRuntime || /\bthumbnail\s+as\b|\b(?:const|let|var|function|class)\s+thumbnail\b/.test(script))) return null;
   const eager = attrs.get('eager');
-  const loads = !!eager && ('bare' in eager || ('expr' in eager && (bare(eager.expr) === 'true' || (flagged && bare(eager.expr) === 'so_eager'))));
+  const loads = !!eager && ('bare' in eager || ('expr' in eager && (bare(eager.expr) === 'true' || (flagged && bare(eager.expr) === 'so_eager' && plainProp(script, 'so_eager')))));
   if (!loads) return null;
   const sizes = attrs.get('sizes');
-  if (!sizes) return { thumbnail: shown[0] === 'thumbnail', sizes: '100vw' };
-  const literal = 'text' in sizes ? sizes.text : 'expr' in sizes ? bare(sizes.expr).match(/^(['"])([^'"\\]*)\1$/)?.[2] : undefined;
-  return literal ? { thumbnail: shown[0] === 'thumbnail', sizes: literal } : null;
+  if (!sizes) return { thumbnail, sizes: '100vw' };
+  const literal = 'text' in sizes ? sizes.text : bare((sizes as { expr: string }).expr).match(/^(['"])([^'"\\]*)\1$/)?.[2];
+  return literal?.trim() ? { thumbnail, sizes: literal } : null;
 }
 
 /** An expression without the parentheses around the whole of it (`(photo)` is `photo`). */

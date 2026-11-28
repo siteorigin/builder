@@ -224,9 +224,15 @@ describe('the hero’s preload', () => {
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
   });
 
-  /** The home page with a project's own code hero first, its picture `photo`, its markup `markup` (Image.svelte imported as `Pic`). */
-  const codeHero = (markup: string, opts: { asset?: AssetRecord | null; wrap?: boolean } = {}) => {
+  /**
+   * The home page with a project's own code hero first, its picture `photo`, its markup `markup` (Image.svelte imported
+   * as `Pic`), placed on the page itself, in a slot the page fills of the first section's design (`slot`), or in that
+   * design's own tree (`tree`), which then hands it the page's `so_eager`. `after` puts another picture after it there.
+   */
+  const codeHero = (markup: string, opts: { asset?: AssetRecord | null; wrap?: 'slot' | 'tree'; after?: boolean; script?: string } = {}) => {
     const s = site(opts.asset === undefined ? picture('hero') : opts.asset);
+    s.assets.assets.a_other = { ...picture('other'), id: 'a_other' };
+    const script = opts.script ?? `let { photo = null, so_eager = false, open = false, size = '50vw', class: className = '' } = $props();`;
     const def = {
       schemaVersion: 2,
       id: 'project.code-hero',
@@ -241,59 +247,102 @@ describe('the hero’s preload', () => {
       icon: 'component',
       properties: { photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } },
       parts: { root: { nodeId: 'root', label: 'Root' } },
-      source: `<script>\n\timport Pic from '../runtime/Image.svelte';\n\timport { thumbnail } from '../runtime/util.js';\n\tlet { photo = null, so_eager = false, open = false, size = '50vw', class: className = '' } = $props();\n</script>\n\n<section class={['code-hero', className]}>\n\t${markup}\n</section>\n`,
+      source: `<script>\n\timport Pic from '../runtime/Image.svelte';\n\timport { thumbnail } from '../runtime/util.js';\n\t${script}\n</script>\n\n<section class="code-hero">\n\t${markup}\n</section>\n`,
       sourcePath: 'src/lib/siteorigin/custom/CodeHero.svelte',
       provenance: { createdBy: 'user' },
       license: 'Project'
     } as unknown as (typeof s.components)[string];
     s.components[def.id] = def;
     const home = homeOf(s);
-    home.nodes.code = { id: 'code', kind: 'instance', definitionId: def.id, props: { photo: { assetId: 'a_hero', alt: 'Ours' } } } as InstanceNode;
+    const code = { id: 'code', kind: 'instance', definitionId: def.id, props: { photo: { assetId: 'a_hero', alt: 'Ours' } } } as InstanceNode;
+    const other = { id: 'other', kind: 'image', image: { assetId: 'a_other', alt: 'Other' } } as (typeof home.nodes)[string];
     if (opts.wrap) {
-      // Placed inside the first section's own design, in a slot the page fills.
-      const tree = { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'section', children: ['body'] }, body: { id: 'body', kind: 'slot', slot: 'body' } } };
-      s.components['project.band'] = { ...def, id: 'project.band', componentId: 'project.band', kind: 'managed', name: 'Band', properties: {}, slots: { body: { label: 'Body' } }, tree, source: undefined, sourcePath: undefined } as unknown as (typeof s.components)[string];
-      home.nodes.band = { id: 'band', kind: 'instance', definitionId: 'project.band', props: {}, slots: { body: ['code'] } } as InstanceNode;
+      // The first section's own design: its content, then what the page puts in its slot.
+      const nodes: Record<string, unknown> = { root: { id: 'root', kind: 'element', tag: 'section', children: [...(opts.wrap === 'tree' ? ['code'] : []), ...(opts.after ? ['other'] : []), 'body'] }, body: { id: 'body', kind: 'slot', slot: 'body' } };
+      if (opts.wrap === 'tree') nodes.code = code;
+      if (opts.after) nodes.other = other;
+      s.components['project.band'] = { ...def, id: 'project.band', componentId: 'project.band', kind: 'managed', name: 'Band', properties: {}, slots: { body: { label: 'Body' } }, tree: { rootIds: ['root'], nodes }, source: undefined, sourcePath: undefined } as unknown as (typeof s.components)[string];
+      home.nodes.band = { id: 'band', kind: 'instance', definitionId: 'project.band', props: {}, slots: { body: opts.wrap === 'slot' ? ['code'] : [] } } as InstanceNode;
+      if (opts.wrap === 'slot') home.nodes.code = code;
       home.rootIds = ['band', ...home.rootIds];
-    } else home.rootIds = ['code', ...home.rootIds];
+    } else {
+      home.nodes.code = code;
+      home.rootIds = ['code', ...home.rootIds];
+    }
     return s;
+  };
+
+  /** The code hero's own <picture> on the page: its first source's attributes and its <img>'s. */
+  const codePicture = (body: string) => {
+    const pic = body.slice(body.indexOf('<section class="code-hero">')).match(/<picture\b[^>]*>[\s\S]*?<\/picture>/)![0];
+    return { source: attrs(pic.match(/<source\b[^>]*>/)![0]), img: attrs(pic.match(/<img\b[^>]*>/)![0]) };
   };
 
   it('asks for the picture a project’s code hero loads eagerly, at the sizes its markup writes', async () => {
     const { head, body } = await renderHome(codeHero('<Pic image={photo} eager={true} sizes="(min-width: 1120px) 1080px, 100vw" class="code-hero__media" />'));
-    const first = firstSource(body);
-    expect(first.sizes).toBe('(min-width: 1120px) 1080px, 100vw');
-    expect(first.srcset).toContain('/studio/assets/hero-1a2b3c4d-160w.avif 160w');
-    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
-    // The flag the page hands it, the runtime's own sizes when it writes none, inside an {#if} on its own picture, and
-    // placed in a slot of the first section's design.
-    for (const [markup, wrap] of [
-      ['{#if photo?.src}<Pic image={photo} eager={so_eager} />{/if}', false],
-      ['<Pic image={{ ...photo, decorative: true }} eager />', true]
+    const { source, img } = codePicture(body);
+    expect(img).toMatchObject({ loading: 'eager', fetchpriority: 'high' });
+    expect(source.sizes).toBe('(min-width: 1120px) 1080px, 100vw');
+    expect(source.srcset).toContain('/studio/assets/hero-1a2b3c4d-160w.avif 160w');
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: source.srcset, imagesizes: source.sizes }]);
+    // The flag the page hands it, on the page and through the first section's design; the runtime's own sizes when it
+    // writes none; its thumbnail; a copy with settings added; and placed in a slot of the first section's design.
+    for (const [markup, wrap, thumbnail] of [
+      ['<Pic image={photo} eager={so_eager} />', undefined, false],
+      ['{#key photo}<Pic image={photo} eager={so_eager} />{/key}', 'tree', false],
+      ['<Pic image={thumbnail(photo)} eager={so_eager} />', 'tree', true],
+      ['<Pic image={{ ...photo, decorative: true }} eager />', 'slot', false]
     ] as const) {
       const shown = await renderHome(codeHero(markup, { wrap }));
-      const source = firstSource(shown.body);
-      expect(preloads(shown.head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: source.srcset, imagesizes: '100vw' }]);
+      const pic = codePicture(shown.body);
+      expect(pic.img, markup).toMatchObject({ loading: 'eager', fetchpriority: 'high' });
+      expect(pic.source.srcset.includes('2000w'), markup).toBe(!thumbnail);
+      expect(preloads(shown.head), markup).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: pic.source.srcset, imagesizes: '100vw' }]);
     }
   });
 
   it('asks for nothing from code whose eager picture the head cannot read as the page renders it', async () => {
+    const lazy = await renderHome(codeHero('<Pic image={photo} sizes="50vw" />'));
+    expect(codePicture(lazy.body).img.loading).toBe('lazy');
+    expect(preloads(lazy.head)).toEqual([]);
     for (const markup of [
-      // Loaded lazily; shown only when something else allows; sized as it renders; spread with anything; two images.
-      '<Pic image={photo} sizes="50vw" />',
+      // Shown only when something else allows, or by another component as it likes.
       '{#if open}<Pic image={photo} eager />{/if}',
+      '{#if photo?.src}<Pic image={photo} eager />{/if}',
       '{#if photo}<span></span>{:else}<Pic image={photo} eager />{/if}',
+      '{#each [1] as one}<Pic image={photo} eager />{/each}',
+      '<svelte:boundary><Pic image={photo} eager /></svelte:boundary>',
+      // Sized as it renders, or changed by what is passed with it.
       '<Pic image={photo} eager sizes={size} />',
       '<Pic image={photo} eager sizes="{size}" />',
+      '<Pic image={photo} eager loading="lazy" />',
       '<Pic {...{ image: photo }} eager />',
+      "<Pic image={{ ...photo, ['sources']: [] }} eager />",
+      // Another picture first, or two of its own.
+      '<img src="/other.jpg" alt="" /><Pic image={photo} eager />',
       '<Pic image={photo} eager /><Pic image={photo} />',
       // The picture or its thumbnail, as the page decides.
       '<Pic image={open ? photo : thumbnail(photo)} eager />'
     ]) {
       expect(preloads((await renderHome(codeHero(markup))).head), markup).toEqual([]);
     }
-    // Nor for a code hero with no picture chosen.
+    // A flag or a property the script makes something else.
+    for (const script of [
+      `let { photo = null, so_eager: given = false } = $props();\n\tconst so_eager = given && false;`,
+      `let { photo: given = null, so_eager = false } = $props();\n\tconst photo = null;`
+    ]) {
+      expect(preloads((await renderHome(codeHero('<Pic image={photo} eager={so_eager} />', { script }))).head), script).toEqual([]);
+    }
+    // Nor anything after code the head cannot read in the same section; nor for a code hero with no picture chosen.
+    expect(preloads((await renderHome(codeHero('<Pic image={photo} eager sizes={size} />', { wrap: 'tree', after: true }))).head)).toEqual([]);
     expect(preloads((await renderHome(codeHero('<Pic image={photo} eager />', { asset: null }))).head)).toEqual([]);
+  });
+
+  it('asks for the picture after code that loads none eagerly, in the same section', async () => {
+    const { head, body } = await renderHome(codeHero('<Pic image={photo} sizes="50vw" />', { wrap: 'tree', after: true }));
+    const other = [...body.matchAll(/<picture\b[^>]*>[\s\S]*?<\/picture>/g)].map((m) => m[0]).find((p) => p.includes('alt="Other"'))!;
+    const first = attrs(other.match(/<source\b[^>]*>/)![0]);
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
   });
 
   it('asks for the <img>’s own set, untyped, for an image with copies in its own format only, and its file for one with none', async () => {

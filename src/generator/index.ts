@@ -4241,14 +4241,16 @@ function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: strin
   }, (def, props) => {
     // A code placement's picture is its one image property, when its markup shows it as the head can read it (see
     // eagerCodeImage). Outside lists in the first section, it is handed `so_eager` whenever it takes the flag.
+    const source = def.source ?? '';
     const prop = codeImageProp(def);
-    const shown = prop ? eagerCodeImage(def.source ?? '', prop, takesEager(state, def)) : null;
-    if (!prop || !shown) return false;
-    const value = (props[prop] ?? def.properties[prop]?.default) as ImageValue | null | undefined;
+    const value = (prop ? (props[prop] ?? def.properties[prop]?.default) : null) as ImageValue | null | undefined;
     const id = value && typeof value === 'object' ? value.assetId : null;
-    if (typeof id !== 'string' || !Object.hasOwn(state.assets.assets, id) || state.assets.assets[id]?.kind !== 'image') return false;
-    const image = resolveImage(value!, ctx.rctx);
-    if (!image?.src) return false;
+    const chosen = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id]?.kind === 'image';
+    const shown = prop && chosen ? eagerCodeImage(source, prop, takesEager(state, def)) : null;
+    const image = shown ? resolveImage(value!, ctx.rctx) : null;
+    // Code that may load a picture eagerly in a way the head cannot read ends the walk with none, rather than asking
+    // for a later picture than the one the page loads first. One waiting for its picture loads nothing.
+    if (!shown || !image?.src) return (chosen || !prop) && /\beager\b/.test(source);
     hero = { image: shown.thumbnail ? thumbnailOf(image) : image, sizes: shown.sizes };
     return true;
   });
