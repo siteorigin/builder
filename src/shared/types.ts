@@ -1081,6 +1081,13 @@ export interface SiteDoc {
    */
   redirects?: SiteRedirect[];
   /**
+   * Addresses an export delivered for a page that the author stopped keeping working (removed in Site settings, or
+   * left behind by a new Home page told not to keep it), lowercased, with that page's ID. An address an export
+   * delivered is otherwise kept working for its page whenever the page has left it, however it left (an undone move
+   * too, src/shared/published.ts), so these say which of them stay gone. Undo takes one back with the edit that left it.
+   */
+  droppedAddresses?: Array<{ from: string; pageId: string }>;
+  /**
    * The host the website is published on, for the HTTP 301 rules written beside each old address's page
    * (src/generator/host-redirects.ts): `netlify` forces its `_redirects` rules past those pages, `vercel` adds a
    * `vercel.json`. Absent: `_redirects` as Cloudflare Pages reads it.

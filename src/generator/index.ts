@@ -122,7 +122,7 @@ import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
-import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from './site-icons';
+import { generateWebManifest, siteColors, HEAD_ASSET, HEAD_ASSET_SCRIPT, siteIconLinks, themeColorMeta } from './site-icons';
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
@@ -4308,14 +4308,14 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   if (hero) head.splice(1, 0, hero);
   // The page's Markdown copy beside it, for AI agents, while the site writes one (see generator/llms.ts).
   if (hasMarkdownMirror(state, { kind: 'page', pageId: page.id })) head.push(MARKDOWN_ALTERNATE);
-  // The same page in other languages, and this one among them: each version lists the same set.
-  // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
-  for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + routeUrl(alt.route)) : `resolve(${js(alt.route)})`}} />`);
+  // The same page in other languages, and this one among them: each version lists the same set. Search engines read
+  // only full addresses here, so without a public address there are none, as there are no canonical links.
+  if (base) for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${js(base + routeUrl(alt.route))}} />`);
   // Structured data: one connected graph of who publishes the site, the website, this page and its trail from Home,
   // its FAQ and contact sections. A page search engines are asked not to list, or one with no public URL, has none.
   const graph = graphScript(state, { kind: 'page', pageId: page.id });
   if (graph) head.push(`\t{@html ${js(graph)}}`);
-  const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : '', hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
+  const imports = [renderImports(ctx.imports), hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
@@ -4461,7 +4461,7 @@ ${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	const text = visitorText();
-	const textLang = visitorTextLang();
+	const textLang = visitorTextLang();${HEAD_ASSET_SCRIPT}
 	// A message typed into a form and not sent comes back when the visitor returns with Back, which says whether one
 	// they left while it was sending went.
 	keepDrafts(text);${appearStart}${searchStart}
@@ -4473,7 +4473,7 @@ ${imports}${languages}${devBridge}
 ${editing}</script>
 
 <svelte:head>${bootstrap}
-	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
+	<link rel="icon" href={${HEAD_ASSET}(${js(iconHref)})} type=${js(iconType)} />
 	${siteIconLinks()}
 	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
 	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
@@ -4878,7 +4878,12 @@ export function publishedState(state: ProjectState): ProjectState {
           return [id, { ...c, settings, entries }];
         })
       );
-  return { ...state, site, collections, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
+  // Its redirects are every one the site keeps, worked out already: those an export delivered for a page that left them
+  // among them (see shared/published). Worked out again from the record without the drafts, an address the author sent
+  // to a draft would go back to the page it was exported for.
+  const { published: _published, ...rest } = state;
+  void _published;
+  return { ...rest, site, collections, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
 }
 
 /**

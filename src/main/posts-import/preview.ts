@@ -46,7 +46,8 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
     redirects: plan.posts.filter((p) => p.redirectFrom).length,
     redirectsLost: plan.posts.filter((p) => p.lostAddress).length,
     skipped: plan.skipped,
+    oldSiteLinks: skip.oldSiteLinks,
     problems: skip.problems,
-    ...(update ? { update: { posts: update.posts.filter((p) => p.existing).length, pictures: pictures(update), missing: missing(update), newTerms: newTerms(update), problems: update.problems } } : {})
+    ...(update ? { update: { posts: update.posts.filter((p) => p.existing).length, pictures: pictures(update), missing: missing(update), newTerms: newTerms(update), oldSiteLinks: update.oldSiteLinks, problems: update.problems } } : {})
   };
 }

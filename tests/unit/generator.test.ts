@@ -132,7 +132,8 @@ describe('the blank starter (#15)', () => {
     const s = createStarterState('blank', 'Kloof', false);
     const home = s.pages[s.site.homePageId];
     expect(home.rootIds).toEqual([]);
-    expect(validateState(s)).toEqual([]);
+    // The one thing to say of it: its Home page has nothing on it yet (#1550).
+    expect(validateState(s).map((d) => [d.severity, d.code, d.owner])).toEqual([['warning', 'PAGE_EMPTY', { kind: 'page', id: home.id }]]);
     const files = generateProject(s);
     // What visitors get: the pages and the shared layout (a component's own file may name its defaults).
     const shown = [...files].filter(([path]) => path.startsWith('src/routes/')).map(([, src]) => src).join('\n');
@@ -590,7 +591,7 @@ describe('SEO and performance', () => {
     expect(page).toContain('application/ld+json');
     expect(page).not.toContain('<script type');
     expect(files.get('static/favicon.svg')).toMatch(/^<svg[^]*>T<\/text>/);
-    expect(files.get('src/routes/+layout.svelte')).toContain('href={asset("favicon.svg")}');
+    expect(files.get('src/routes/+layout.svelte')).toContain('href={headAsset("favicon.svg")}');
   });
 
   it('derives the base path from the public URL', () => {

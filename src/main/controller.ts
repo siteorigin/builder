@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -77,6 +77,7 @@ import { ComponentThumbs, writeThumb, writeThumbReads, type CaptureResult } from
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
+import { unservableLocation, unservableProject } from './project-location';
 import { waitForPreviewPage } from '../runtime/preview-ready';
 import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
@@ -468,6 +469,8 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
+  /** Look at what the watches were told while an AI request held the project, now that it has ended (#1533). */
+  private lookAfterAi: () => void = () => undefined;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -610,6 +613,14 @@ export class Controller {
   private settled = new WeakMap<ProjectSession, { state: ProjectState; revision: number }>();
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
+  /**
+   * The website tools being set up or reinstalled in the open project's folder (#1395): how many such jobs are under
+   * way, and how many have ever begun, so a website build can tell that its copy of the tools was made while none was
+   * changing them.
+   */
+  private toolsWork = { running: 0, begun: 0 };
+  /** The openings whose preview has looked at their website tools: until it has, tools not set up are about to be. */
+  private toolsLooked = new WeakSet<ProjectSession>();
   private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
@@ -683,7 +694,7 @@ export class Controller {
       history: s.historyInfo(),
       versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s), ...s.refusedSourceDiagnostics()],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -706,6 +717,11 @@ export class Controller {
   broadcast() {
     this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /** An AI request that held the project ended: what the file watches were told meanwhile is looked at. */
+  aiEnded() {
+    this.lookAfterAi();
   }
 
   /**
@@ -981,6 +997,10 @@ export class Controller {
     if (themeProblem) return { ok: false, message: themeProblem };
     const { folder, fallback } = projectFolder(name);
     let dir = join(opts.parentDir, folder);
+    // A folder whose path the preview cannot run under (#1366) is refused before anything is made there: judged where
+    // the project would really be, so an empty folder of its name that links elsewhere is judged by where it leads.
+    const unservable = unservableLocation(dir);
+    if (unservable) return { ok: false, message: unservable };
     // Told the same way whenever the folder turns out to be taken. A name with nothing a folder can keep ("🌸🌸") always
     // leads to the same folder, so then the name is what to change, and the message says how.
     const taken = () =>
@@ -1320,6 +1340,9 @@ export class Controller {
     // Resolved first: a link or shortcut chosen as the folder must not lead into the open project (whose preview runs).
     const parent = canonicalDir(r.filePaths[0]);
     if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
+    // Nothing is unpacked where the preview could not run (#1366).
+    const unservable = unservableLocation(parent);
+    if (unservable) return { ok: false, message: unservable };
     // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
     const slug = slugify(name) || 'website';
     // The dialog names the folder it will be in, a number added already when a folder by its name is there.
@@ -1654,6 +1677,10 @@ export class Controller {
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
     });
+    // An outside edit of a code component refused for its errors, or one no longer refused, is told at once (#1533).
+    session.on('refused-sources', () => {
+      if (this.session === session) this.broadcast();
+    });
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
@@ -1754,6 +1781,8 @@ export class Controller {
     session.once('lock-lost', () => void this.dropEarly(session));
     const mine = async () => this.early === early && (await session.stillOwner()) && this.early === early;
     early.started = (async () => {
+      // No preview can run from this folder (#1366): the start says why, with no server forked.
+      if (unservableProject(dir)) return;
       if (!(await isTrusted(dir, await configHash(dir)))) return;
       if (this.early !== early || !(await dependenciesReady(dir)) || !(await mine())) return;
       // One started for this folder by an earlier opening and stopped since has exited first.
@@ -1842,8 +1871,13 @@ export class Controller {
       return;
     }
     const ready = await dependenciesReady(session.dir);
+    // A project in a folder the preview cannot run from (#1366) still gets its tools (an export copies them), but a
+    // setup that fails there says what would stop the preview anyway, not that the tools need reinstalling.
+    const unservableHere = session.readOnly ? null : unservableProject(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
+    // Found set up; tools that are not are looked at once the install below has ended, and until then are being set up.
+    if (ready) this.toolsLooked.add(session);
     if (!ready) {
       if (session.readOnly) {
         this.status({ state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
@@ -1853,15 +1887,18 @@ export class Controller {
       if (!(await session.stillOwner()) || this.session !== session) return;
       this.status({ state: 'preparing', message: 'Setting up website tools…' });
       const abort = (this.prepareAbort = new AbortController());
+      const done = this.changingTools();
       try {
         await prepareDependencies(session.dir, (line) => this.status({ state: 'preparing', message: line.slice(0, 120) }), abort.signal, async () => this.session === session && (await session.stillOwner()));
       } catch (e) {
         // Taken over by another app or closed: a restart already queued previews it from a copy instead.
         if (abort.signal.aborted) return;
-        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        this.status(unservableHere ? { state: 'unavailable', message: unservableHere } : { state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         this.broadcast();
         return;
       } finally {
+        if (!abort.signal.aborted) this.toolsLooked.add(session);
+        done();
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
     }
@@ -1876,6 +1913,15 @@ export class Controller {
     // Decided with no wait before the fork: a takeover after this point stops the worker and queues a staged restart.
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
+    // Judged where it would run, after the tools are set up (an export copies them): a project in a folder whose path
+    // the preview cannot run under is told how to move it, not offered a reinstall of tools that are fine (#1366).
+    const unservable = unservableProject(stage ?? session.dir);
+    if (unservable) {
+      if (stage) await removePreviewStage(stage).catch(() => undefined);
+      await this.dropEarly(session);
+      if (this.session === session) this.status({ state: 'unavailable', message: unservable });
+      return;
+    }
     // A save landing files since the server was judged usable (usableEarly) is waited for, so what it changed is known.
     if (usable && !stage) while (usable.holding > 0) await new Promise<void>((wake) => usable.idle.push(wake));
     if (this.session !== session) return;
@@ -2417,6 +2463,13 @@ export class Controller {
     const onChange = (path: string | null) => {
       if (path === null) owed = true;
       else named.add(path);
+      lookSoon();
+    };
+    // A change told while an AI request held the project waited for it, with no later one to bring it to a look.
+    this.lookAfterAi = () => {
+      if (current() && (named.size || owed)) lookSoon();
+    };
+    const lookSoon = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         // The watch has seen the documents change and gone quiet: what follows is the look at them.
@@ -2477,16 +2530,55 @@ export class Controller {
       const owned = async () => this.session === s && (await s.stillOwner());
       if (!(await owned())) return;
       this.status({ state: 'preparing', message: 'Reinstalling website tools…' });
+      // While the files go, a website build copies none of the tools. The marker goes first, so tools left part removed
+      // are never taken for set up; the install that follows is tracked as every install is (startRuntimeChecked).
+      const done = this.changingTools();
       try {
-        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
-        if (!(await owned())) return;
         await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+        if (!(await owned())) return;
+        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
       } catch (e) {
         this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         return;
+      } finally {
+        // The tools are about to be set up again, not missing, until the preview has looked at them once more.
+        this.toolsLooked.delete(s);
+        done();
       }
       await this.startRuntimeNow();
     });
+  }
+
+  /** The website tools in the project's folder are being changed until the function returned is called (toolsWork). */
+  private changingTools(): () => void {
+    this.toolsWork.running++;
+    this.toolsWork.begun++;
+    let ended = false;
+    return () => {
+      if (!ended) this.toolsWork.running--;
+      ended = true;
+    };
+  }
+
+  /**
+   * Why the website cannot be built with the open project's tools now, or null (#1395): they are being set up or
+   * reinstalled, or they are not set up, because setting them up failed or has not begun yet. A build copies them first,
+   * so one started meanwhile would build from a half-installed copy and fail in ways that name nothing of the project.
+   */
+  private async toolsUnready(s: ProjectSession): Promise<string | null> {
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    if (await dependenciesReady(s.dir)) return null;
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    // Not set up, and nothing setting them up. The preview stopped before setting them up (it says why, and Project
+    // health shows it), or has not looked at them yet for this opening, which it is about to; or it found them set up
+    // and they have changed since, which only a reinstall puts right.
+    const runtime = this.session === s ? this.runtimeStatus() : null;
+    if (runtime?.state === 'error' && runtime.message === TRUST_CHANGED) return TRUST_CHANGED;
+    // The package files are part of what the author trusted: changed outside the app, they are reviewed before any
+    // reinstall removes the tools they replace.
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return TRUST_CHANGED;
+    if (runtime?.state === 'error') return TOOLS_FAILED;
+    return this.toolsLooked.has(s) ? TOOLS_MISSING : TOOLS_SETTING_UP;
   }
 
   /**
@@ -2548,6 +2640,8 @@ export class Controller {
     this.watchers = [];
     this.unwatched.clear();
     this.watchGeneration++;
+    // Its watches' look holds the closed session: let it go with them.
+    this.lookAfterAi = () => undefined;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);
@@ -2682,6 +2776,9 @@ export class Controller {
     // name answers, as for any other.
     const original = existsSync(dest) && canonicalDir(dest) === s.dir;
     if (!original && isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
+    // Judged by where the copy goes, not the project's own folder: a copy made elsewhere is the way out of one (#1366).
+    const unservable = unservableLocation(opts.parentDir);
+    if (unservable) return { ok: false, field: 'location', message: unservable };
     // A folder by the copy's name: another name answers it as well as another folder does.
     const taken = { ok: false as const, field: 'name' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
     // A change the project does not hold yet would be left out of the copy without a word (#1373): no folder is made.
@@ -3215,7 +3312,7 @@ export class Controller {
    * Import files. `only` limits a picker that can only use one kind, before anything is written to the project.
    * `choices` is what the author confirmed in a review (see reviewImport): it holds for the opening it was made in.
    */
-  async importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }> {
+  async importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; restoredAssetIds?: string[]; message?: string; note?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
     if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
@@ -3233,8 +3330,10 @@ export class Controller {
       const span = perf.span('controller.importAssets');
       let added = 0;
       try {
-        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
+        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; restoredAssetIds?: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
           const ids: string[] = [];
+          // Fonts already in the library whose missing file this import put back (#1425).
+          const restored: string[] = [];
           const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
           const notes: string[] = [];
           const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
@@ -3255,7 +3354,8 @@ export class Controller {
             known,
             this.writeFence(s),
             // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
-            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
+            // A font's missing file is put back only while its record still names that file.
+            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing, repair: (record) => this.restoreFence(s, record) }
           );
           const started = outcomes.findIndex((o) => !o);
           // The files that came to each record, by name: those that matched are one record, and the author is told which.
@@ -3266,8 +3366,9 @@ export class Controller {
               errors.push(o.error.message);
               continue;
             }
-            const { record, existing, font, note } = o;
+            const { record, existing, restored: back, font, note } = o;
             const name = originalNameOf(picked[i]);
+            if (back && !restored.includes(record.id)) restored.push(record.id);
             const same = matched.get(record.id);
             if (same) same.names.push(name);
             else {
@@ -3283,6 +3384,8 @@ export class Controller {
             if (names.length > 1) notes.push(`${listNames(names)} match, so Assets keeps only one file for them: ${record.originalName ?? record.name}.`);
           }
           if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
+          // Project health and Assets stop saying a restored font is missing as soon as the answer arrives.
+          if (restored.length) await this.checkAssetFiles(s);
           if (backfills.length) {
             const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
             if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
@@ -3298,10 +3401,11 @@ export class Controller {
             const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
             if (!r.ok) {
               for (const a of waiting) claimed.delete(a.id);
-              return { answer: { ok: false, assetIds: [], message: r.error?.message } };
+              // A font's file already put back stays back, and is said so.
+              return { answer: { ok: false, assetIds: [...restored], ...(restored.length ? { restoredAssetIds: restored } : {}), message: r.error?.message } };
             }
           }
-          const answer = { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
+          const answer = { ok: errors.length === 0, assetIds: ids, ...(restored.length ? { restoredAssetIds: restored } : {}), message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
           // Started inside this import's hold on the asset sweep, so there is no moment between them for a sweep.
           return { answer, rest: waiting.length ? this.makeCopies(s, waiting) : undefined };
         });
@@ -4060,7 +4164,8 @@ export class Controller {
   /**
    * Find the file of a library image whose original is missing. The same picture is put back where the library
    * expects it, with its smaller copies, and the project itself does not change. A different picture becomes the
-   * image's file (one step that can be undone), so every use, with its alt text, shows it. `path` skips the dialog.
+   * image's file (one step that can be undone), so every use, with its alt text, shows it. A font takes only its very
+   * file, put back the same way (#1425). `path` skips the dialog.
    */
   async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
@@ -4069,16 +4174,17 @@ export class Controller {
     const before = s.state.assets.assets[assetId];
     // A document's file can be swapped for a new version whenever the author likes: its links follow.
     const document = before?.kind === 'document';
-    const what = document ? 'document' : 'image';
+    const font = before?.kind === 'font';
+    const what = document ? 'document' : font ? 'font' : 'image';
     const gone = { ok: false, message: `That ${what} is no longer in the library.` };
-    if (before?.kind !== 'image' && !document) return gone;
+    if (before?.kind !== 'image' && !document && !font) return gone;
     let file = path;
     if (!file) {
       const r = await dialog.showOpenDialog(this.getWindow()!, {
-        title: document ? `Choose a file for ${before.name || 'the document'}` : `Locate ${before.name || 'the image'}`,
+        title: document ? `Choose a file for ${before.name || 'the document'}` : `Locate ${before.name || `the ${what}`}`,
         buttonLabel: 'Use this file',
         properties: ['openFile'],
-        filters: [document ? { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } : { name: 'Images', extensions: IMAGE_EXTENSIONS }]
+        filters: [document ? { name: 'Documents', extensions: DOCUMENT_EXTENSIONS } : font ? { name: 'Fonts', extensions: FONT_EXTENSIONS } : { name: 'Images', extensions: IMAGE_EXTENSIONS }]
       });
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       file = r.filePaths[0];
@@ -4091,7 +4197,7 @@ export class Controller {
       // The dialog gave the library time to change: a file chosen for what the image was then is not used for what it is now.
       const record = s.state.assets.assets[assetId];
       if (record?.kind !== before.kind) return gone;
-      const name = record.name.trim() || (document ? 'The document' : 'The image');
+      const name = record.name.trim() || `The ${what}`;
       if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
       try {
         const at = { revision: -1 };
@@ -4100,7 +4206,7 @@ export class Controller {
           await this.checkAssetFiles(s);
           // An image waiting for copies its missing file kept from being made has them made now.
           if (this.copiesFailed.delete(`${record.id}:${record.hash}`)) this.copyPending(s);
-          if (document) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
+          if (document || font) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
         }
@@ -4118,6 +4224,17 @@ export class Controller {
         return { ok: false, message: (e as Error).message };
       }
     }));
+  }
+
+  /**
+   * A font's missing file is put back (restoreFontFile) only while the project is still this one, open and owned by
+   * this app, and the font's record still names that file: one removed or relinked meanwhile is not written for.
+   */
+  private restoreFence(s: ProjectSession, record: AssetRecord) {
+    return this.writeFence(s, () => {
+      const now = s.state.assets.assets[record.id];
+      if (now?.file !== record.file || now.hash !== record.hash) throw new Error(`${record.name.trim() || 'The font'} changed while its file was being put back. Look at it again in Assets.`);
+    });
   }
 
   /**
@@ -4214,6 +4331,10 @@ export class Controller {
     // Published pages that link to a draft would send visitors to a page the website leaves out.
     const drafts = draftLinksStop(s!.state) ?? publishedChanged(s!.state, published);
     if (drafts) return { ok: false, ...drafts };
+    // Said before a folder is chosen when it is already known; the build checks again when it copies the tools.
+    const tools = await this.toolsUnready(s!);
+    if (tools) return { ok: false, message: tools, warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     const dest = await this.chooseExportTarget('site', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
     if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
@@ -4299,7 +4420,7 @@ export class Controller {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session!;
-    const bad = this.badExportTarget(s, dest, format);
+    const bad = this.badExportTarget(s, dest, format) ?? (format === 'folder' ? unservableLocation(dest) : null);
     if (bad) return { ok: false, message: bad, warnings: [] };
     // Images just added carry the copies being made of them (#979).
     await this.copiesMade();
@@ -4326,7 +4447,7 @@ export class Controller {
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
-      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
       // just before it is delivered, once everything said about the copy's files has looked at them where they are.
       const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
@@ -5078,12 +5199,24 @@ export class Controller {
     if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };
     // The build gets its own copy of the tools: what they write must not land in the project, which may have been
     // taken over by the time the build starts. The copy is kept between exports, checked against the project's tools.
+    // Only tools that are set up, copied while nothing was setting them up or reinstalling them (#1395): a copy made
+    // while one of those ran may hold some files from before it and some from after, or none at all.
+    const begun = this.toolsWork.begun;
+    const unready = await this.toolsUnready(s);
+    if (unready) return { ok: false, message: unready, warnings: [] };
+    const changed = () => this.toolsWork.begun !== begun || this.toolsWork.running > 0;
     let tools: BuildTools;
     try {
       tools = await timed('export.copyTools', () => (this.keptTools ??= new KeptTools(join(this.stagingRoot(), 'tools'))).take(s.dir, project, s.settleMs))();
     } catch (e) {
-      return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
+      if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
+      return { ok: false, message: TOOLS_MISSING, warnings: [(e as Error).message] };
     }
+    // The copy is thrown away with the staging folder, and never kept for the next export. Another app that took the
+    // project over meanwhile may be changing its tools where this app's count cannot see.
+    if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the website was built.', warnings: [] };
+    if (!(await s.stillOwner())) return { ok: false, message: s.readOnly?.reason ?? READ_ONLY, warnings: [] };
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
     // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
     if (build.exited) await timed('export.keepTools', () => tools.keep())();
@@ -5184,9 +5317,9 @@ export class Controller {
     if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
     if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    warn(...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
-    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    warn(...assetSizeWarnings(state, omitted, absent));
     warn(...missingUnusedWarnings(missingFiles));
     const left = omittedAssetsWarning(omitted);
     if (left) warn(left);
@@ -5318,6 +5451,13 @@ async function occupied(dir: string): Promise<boolean> {
 
 /** The new project's folder was found taken: told as written, never mistaken for another failure by its wording. */
 class FolderTakenError extends Error {}
+
+/** A website build asked for while the website tools are being set up or reinstalled (#1395). */
+const TOOLS_SETTING_UP = 'SiteOrigin Builder is still setting up the website tools. Wait until it finishes, then try again.';
+/** A website build asked for once setting the tools up has failed (#1395): Project health has the details and the way back. */
+const TOOLS_FAILED = 'The website tools could not be set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
+/** A website build asked for when the website tools are not set up and nothing is setting them up (#1395). */
+const TOOLS_MISSING = 'The website tools are not set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
 
 export function friendlyError(msg: string): string {
   if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))

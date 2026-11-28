@@ -74,8 +74,9 @@ const preview = (posts: PostImportPreviewPost[], over: Partial<PostImportPreview
   redirects: 0,
   redirectsLost: 0,
   skipped: [],
+  oldSiteLinks: [],
   problems: [],
-  update: { posts: posts.filter((p) => p.existing).length, pictures: 2, missing: [], newTerms: { categories: [], tags: [] }, problems: [] },
+  update: { posts: posts.filter((p) => p.existing).length, pictures: 2, missing: [], newTerms: { categories: [], tags: [] }, oldSiteLinks: [], problems: [] },
   ...over
 });
 

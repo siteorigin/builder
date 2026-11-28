@@ -9,7 +9,7 @@ import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
 import type { Component } from 'svelte';
 import { chromium, type Browser } from 'playwright';
-import type { ComponentDefinition, InstanceNode, ListItem, ListProp, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, ListItem, ListProp, PageDoc, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -17,6 +17,7 @@ import { blocksSaving, validateState } from '@engine/validate';
 import { formNameWarnings, runtimeFontWarnings } from '../../src/main/export';
 import { choosesFontAtRunTime, installedFonts } from '@catalogue/fonts';
 import { generateProject, nodeClass, pageFile } from '@generator/index';
+import { structuredContent } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
 import { codeImportantProps } from '@engine/tree';
 import { definitionPick, descOf, selectionFromChain, shownValue, type BridgeDesc } from '../../src/renderer/src/lib/model';
@@ -1182,8 +1183,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType(about.head, 'WebPage')).toHaveLength(1);
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('describes the contact point and place the shipped theme’s Contact details show', async () => {
+  it('describes the contact point and place the shipped theme’s Contact details show', async () => {
     const s = publishedRelease();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
@@ -1201,8 +1201,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     ]);
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
+  it('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
     const s = publishedRelease();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
@@ -1210,6 +1209,134 @@ describe('structured data on a page with contact details and an FAQ', () => {
     const [faqPage] = ofType((await renderPage(s, contact)).head, 'FAQPage');
     expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `https://studio.example${contact.route}#webpage` });
     expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
+  });
+
+  it('leaves out what the shipped theme’s FAQ and Contact details hide, and what a design around them hides', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    const faq = firstOf(s, contact, 'faq.list');
+    const details = firstOf(s, contact, 'contact.details');
+    const items = faq.props.items as ListItem[];
+    const pairs = (list: ListItem[]) => list.map((i) => ({ question: i.question, answer: i.answer }));
+    const facts = { email: ['hello@example.com'], telephone: ['+1 555 0134'], address: ['12 Harbor Lane, Millbrook'] };
+    expect(structuredContent(s, contact)).toEqual({ faq: pairs(items), businesses: [facts] });
+    // One question hidden at every size by its own item styles, and a contact method by the placement's part.
+    faq.itemOverrides = { item: { list: 'items', items: { [String(items[0].id)]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq).toEqual(pairs(items.slice(1)));
+    details.overrides = { method: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).businesses).toEqual([]);
+    delete details.overrides;
+    // One method hidden by its own item styles: the others stay.
+    const methods = details.props.items as ListItem[];
+    details.itemOverrides = { method: { list: 'items', items: { [String(methods[1].id)]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).businesses).toEqual([{ ...facts, telephone: [] }]);
+    delete details.itemOverrides;
+    expect(structuredContent(s, contact).businesses).toEqual([facts]);
+    // The FAQ placed in a design's slot whose box the placement hides: none of it shows.
+    const box: ComponentSpec = {
+      componentId: 'test.box',
+      name: 'Box',
+      category: 'layout',
+      tags: [],
+      icon: 'square',
+      description: '',
+      properties: {},
+      parts: { root: { label: 'Box', nodeId: 'root' }, panel: { label: 'Panel', nodeId: 'panel' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.el('panel', 'div', {}, [b.slot('body-slot', 'body')])])
+    };
+    const def = { ...FOUNDATION_AUTHOR.managed(box), owner: 'project' as const };
+    s.components[def.id] = def;
+    const wrapper = makeInstance(def, {});
+    wrapper.slots = { body: [faq.id] };
+    contact.rootIds = contact.rootIds.map((id) => (id === faq.id ? wrapper.id : id));
+    contact.nodes[wrapper.id] = wrapper;
+    expect(structuredContent(s, contact).faq.map((e) => e.question)).toEqual(items.slice(1).map((i) => i.question));
+    wrapper.overrides = { panel: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toEqual([]);
+    // What follows the hidden design is still read.
+    expect(structuredContent(s, contact).businesses).toEqual([facts]);
+    // Hidden only on phones, the rest of the way it shows.
+    wrapper.overrides = { panel: { phone: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toEqual(pairs(items.slice(1)));
+  });
+
+  it('reads the FAQ a design’s own slot fallback shows in each row of its list as each row shows it', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    contact.rootIds = contact.rootIds.filter((id) => !(contact.nodes[id].kind === 'instance' && s.components[(contact.nodes[id] as InstanceNode).definitionId]?.componentId === 'faq.list'));
+    const def = addDef(s, {
+      componentId: 'test.fallback-rows',
+      name: 'Fallback rows',
+      properties: { rows: P.list('Rows', 'Row', { title: P.str('Title', 'Row') }, [{ title: 'One' }, { title: 'Two' }]) },
+      parts: { root: { label: 'Rows', nodeId: 'root' }, row: { label: 'Row', nodeId: 'row' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.repeat('rows-list', 'rows', [b.el('row', 'div', {}, [b.el('holder', 'div', {}, [])])])])
+    });
+    const faq = nest(def, 'holder', s.components[installComponent(s, 'faq.list')]);
+    // The FAQ is the slot's fallback, in place of the holder.
+    const tree = def.tree!;
+    const row = tree.nodes.row as Extract<GraphNode, { kind: 'element' }>;
+    tree.nodes['body-slot'] = { id: 'body-slot', kind: 'slot', slot: 'body', children: [faq.id] } as GraphNode;
+    row.children = ['body-slot'];
+    delete tree.nodes.holder;
+    const wrapper = place(s, def, {}, contact);
+    const count = (faq.props.items as ListItem[] | undefined)?.length ?? (s.components[faq.definitionId].properties.items.default as unknown[]).length;
+    // Each row shows its own copy.
+    expect(structuredContent(s, contact).faq).toHaveLength(2 * count);
+    const ids = (wrapper.props.rows as ListItem[]).map((r) => String(r.id));
+    wrapper.itemOverrides = { row: { list: 'rows', items: { [ids[0]]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+  });
+
+  it('reads an FAQ placed in a slot a design shows in every row of its list, whichever rows it hides', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    const faq = firstOf(s, contact, 'faq.list');
+    const count = (faq.props.items as ListItem[]).length;
+    const rows: ComponentSpec = {
+      componentId: 'test.rows',
+      name: 'Rows',
+      category: 'layout',
+      tags: [],
+      icon: 'square',
+      description: '',
+      properties: { rows: P.list('Rows', 'Row', { title: P.str('Title', 'Row') }, [{ title: 'One' }, { title: 'Two' }]) },
+      parts: { root: { label: 'Rows', nodeId: 'root' }, row: { label: 'Row', nodeId: 'row' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.repeat('rows-list', 'rows', [b.el('row', 'div', {}, [b.slot('body-slot', 'body')])])])
+    };
+    const def = { ...FOUNDATION_AUTHOR.managed(rows), owner: 'project' as const };
+    s.components[def.id] = def;
+    const wrapper = makeInstance(def, {});
+    wrapper.slots = { body: [faq.id] };
+    contact.rootIds = contact.rootIds.map((id) => (id === faq.id ? wrapper.id : id));
+    contact.nodes[wrapper.id] = wrapper;
+    const ids = (wrapper.props.rows as ListItem[]).map((r) => String(r.id));
+    const hide = (...which: string[]) => (wrapper.itemOverrides = { row: { list: 'rows', items: Object.fromEntries(which.map((id) => [id, { base: { hidden: true } }])) } });
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // The second row still shows it, and so does the first.
+    hide(ids[0]);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    hide(ids[1]);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // Each row hidden by its own styles: which rows show is the placement's to say, so it stays, in doubt.
+    hide(...ids);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // Every row hidden by the placement's style for all of them: no row shows it, whatever else a row's own styles say.
+    wrapper.itemOverrides = { row: { list: 'rows', items: { [ids[0]]: { base: { opacity: '0.5' } } } } };
+    wrapper.overrides = { row: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toEqual([]);
+    // Unless a row's own styles show it again.
+    hide(ids[0]);
+    wrapper.itemOverrides!.row.items[ids[0]] = { base: { hidden: false } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // The FAQ's own rows still hide by their own styles there.
+    delete wrapper.overrides;
+    delete wrapper.itemOverrides;
+    const first = String((faq.props.items as ListItem[])[0].id);
+    faq.itemOverrides = { item: { list: 'items', items: { [first]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count - 1);
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {

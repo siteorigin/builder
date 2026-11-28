@@ -52,10 +52,36 @@ export function themeColorMeta(state: ProjectState, chosen?: string): string {
   return `<meta name="theme-color" content=${js(dark)} media="(prefers-color-scheme: dark)" />\n\t<meta name="theme-color" content=${js(light)} />`;
 }
 
+/**
+ * The root layout's function for the addresses of the files its head links to (the favicon, the home-screen icon, the
+ * manifest), and the script that defines it. On the server SvelteKit's asset() is relative to the page rendered
+ * ("../manifest.webmanifest" on About), and when the page starts Svelte keeps a <link>'s address as the server wrote
+ * it. The root layout's head is never drawn again, so after the visitor moves to another page that address would
+ * lead nowhere. Once the page has started, each address is written again in full ("https://example.com/shop/
+ * manifest.webmanifest"), which leads to the same file from every page. It has to differ from what the page started
+ * with, or Svelte would not write it: in the browser asset() already gives the address from the root.
+ */
+export const HEAD_ASSET = 'headAsset';
+export const HEAD_ASSET_SCRIPT = `
+	// The head's links lead to the site's own files from every page the visitor moves on to, not only the first.
+	let started = $state(false);
+	$effect(() => {
+		started = true;
+	});
+	const ${HEAD_ASSET} = (file) => {
+		if (!started) return asset(file);
+		// A page with no address of its own (about:blank) has nothing to resolve it from.
+		try {
+			return new URL(asset(file), location.href).href;
+		} catch {
+			return asset(file);
+		}
+	};`;
+
 /** The head links to the icon iOS puts on the home screen and to the manifest, beside the favicon's. */
 export function siteIconLinks(): string {
   const apple = APP_ICONS.find((i) => i.file === APPLE_TOUCH_ICON)!;
-  return `<link rel="apple-touch-icon" sizes="${apple.size}x${apple.size}" href={asset(${js(APPLE_TOUCH_ICON)})} />\n\t<link rel="manifest" href={asset(${js(WEB_MANIFEST)})} />`;
+  return `<link rel="apple-touch-icon" sizes="${apple.size}x${apple.size}" href={${HEAD_ASSET}(${js(APPLE_TOUCH_ICON)})} />\n\t<link rel="manifest" href={${HEAD_ASSET}(${js(WEB_MANIFEST)})} />`;
 }
 
 /**
