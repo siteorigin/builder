@@ -80,6 +80,9 @@
   .post-import-missing ul { padding-left: 20px; }
   .post-import-menu { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 13px; color: var(--text); }
   /* Every line's details, on demand: the whole address wraps instead of being cut. */
+  /* Skip or update the posts already in the project: the two choices under the count that says so. */
+  .post-import-existing { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; }
+  .post-import-existing label { display: inline-flex; align-items: center; gap: 6px; }
   .post-import-details { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 12px; color: var(--text-2); }
   .post-import-line.full { flex-direction: column; gap: 2px; }
   .post-import-line-more { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

@@ -19,6 +19,10 @@ export const POST_LINK_PREFIX = 'post:';
 export interface SourcePost {
   /** Unique within the import: `wp:<post ID>` or `md:<file>`. */
   key: string;
+  /** Its ID on the WordPress site, when the export gives one: what a later import of that site knows it by. */
+  postId?: string;
+  /** Its text could not be read, so it arrives with none: never put over a post already imported. */
+  unread?: boolean;
   /** Where it came from, as the report names it: its file, or its title in the export. */
   from: string;
   title: string;
@@ -37,10 +41,22 @@ export interface SourcePost {
   body: RichText;
   /** The featured picture's media key. */
   featured?: string;
+  /** It names a featured picture the export does not include, so none can be read for it. */
+  featuredLost?: boolean;
   /** The address it had on the old site, when that was a path a static site can have. */
   oldPath?: string;
   /** What reading it left out or changed, in plain words. */
   notes: string[];
+}
+
+/**
+ * The posts of the project imported before (#1519), so a link in a post to one an export leaves out still goes to its
+ * entry: entry IDs by site (ParsedSource.siteKey), then by the post's ID there; and by an old address kept for one, with
+ * the site it came from. Never by its address here, which the old site may have used for something else.
+ */
+export interface KnownPosts {
+  ids: Record<string, Record<string, string>>;
+  paths: Record<string, { entryId: string; site: string }>;
 }
 
 /** A picture a post shows: the file found for it inside the chosen folder, or why there is none. */
@@ -63,6 +79,8 @@ export interface ParsedSource {
   realRoot: string;
   /** The old site's address, when the export says. */
   site?: string;
+  /** The old site as its posts' IDs belong to it (its address with its installation's path), when the export says. */
+  siteKey?: string;
   posts: SourcePost[];
   media: SourceMedia[];
   /** What was not imported at all, in plain words ("3 pages: only posts are imported"). */

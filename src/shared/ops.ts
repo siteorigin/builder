@@ -344,6 +344,12 @@ const ENTRY_FIELDS = {
   searchHidden: z.boolean().optional().describe("Leave it out of the site's own Site search results. Independent of noindex.")
 };
 
+/** Where a posts import made an entry from (see EntryImport). */
+const ENTRY_IMPORTED = z
+  .object({ site: z.string().min(1).max(400), postId: z.string().regex(/^\d{1,20}$/) })
+  .optional()
+  .describe('Internal: the WordPress post a posts import made it from.');
+
 /** The longest address a redirect takes: a route four levels deep, every byte of it percent-encoded as a browser copies it. */
 const REDIRECT_PATH_MAX = 2000;
 
@@ -1049,7 +1055,8 @@ export const OPERATION_SCHEMAS = {
     entryId: z.string().regex(/^en_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch create an entry and link to it.'),
     title: z.string().min(1).max(200),
     ...ENTRY_FIELDS,
-    redirectFrom: z.string().max(1100).optional().describe('An address the post had on an earlier site, such as "/2019/03/winter-workshop/", kept working by sending visitors to the new entry. Nothing else may use it.')
+    redirectFrom: z.string().max(1100).optional().describe('An address the post had on an earlier site, such as "/2019/03/winter-workshop/", kept working by sending visitors to the new entry. Nothing else may use it.'),
+    imported: ENTRY_IMPORTED
   }),
   'entry.update': z.object({ type: z.literal('entry.update'), collectionId: z.string(), entryId: z.string(), title: z.string().min(1).max(200).optional(), ...ENTRY_FIELDS }),
   'entry.reorder': z.object({

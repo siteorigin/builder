@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
@@ -53,7 +53,7 @@ import { createAgentSources } from './sources/agent';
 import { sourceFingerprint } from '@shared/sources';
 import type { SourceToolHost } from '@agent/source-tools';
 import type { AuthorSave } from '@agent/orchestrator';
-import { checkPlan, planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
+import { checkPlan, knownPosts, planOperations, planPostImport, selectPlan, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { dropPlan, loadPlan, storePlan, sweepPlans, type StoredPlan } from './posts-import/review-store';
 import { readContained } from './posts-import/files';
@@ -3678,9 +3678,10 @@ export class Controller {
   /**
    * The posts import under review (#399): the plan shown to the author, bound to the project and the revision it was
    * made against. Importing takes it, once; anything else that changes the project makes it stale. The plan itself
-   * waits on disk while the review is open (review-store.ts), or, when something stops it, only the reason does.
+   * waits on disk while the review is open (review-store.ts), or, when something stops it, only the reason does: for
+   * each way of importing the posts already in the project (#1519), which is chosen when importing.
    */
-  private postImport: { id: string; session: ProjectSession; opening: string; revision: number; stored: StoredPlan | null; problem: string | null; realRoot: string } | null = null;
+  private postImport: { id: string; session: ProjectSession; opening: string; revision: number; stored: StoredPlan | null; problems: Record<PostImportExisting, string | null>; realRoot: string } | null = null;
   /** Reviews begun (and projects closed): a review that ends after a later one began, or its project closed, is no one's. */
   private postReviews = 0;
   /** Plans being kept or removed on disk: a close waits for them, so none outlives its project. */
@@ -3746,7 +3747,8 @@ export class Controller {
       let source: ParsedSource;
       const read = perf.span('posts.read', { kind });
       try {
-        source = await postReader.read(kind, file, pages);
+        // The posts imported before, so a link to one this export leaves out still goes to its entry (#1519).
+        source = await postReader.read(kind, file, pages, kind === 'wordpress' ? knownPosts(s.state) : undefined);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       } finally {
@@ -3778,23 +3780,28 @@ export class Controller {
         }
       }
       // What the review shows, then the engine's check, which spends the plan's posts: only its problems are read after.
+      // With posts already in the project, skipping them and updating them are each checked, the second spending them.
       const preview = postImportPreview(id, plan);
+      const skip = selectPlan(plan, 'skip');
+      const update = preview.existing ? selectPlan(plan, 'update') : null;
       if (stored) {
-        checkPlan(s.state, plan, { spend: true });
-        preview.problems = [...plan.problems];
-        if (plan.problems.length) {
+        if (update) checkPlan(s.state, skip);
+        checkPlan(s.state, update ?? skip, { spend: true });
+        preview.problems = [...skip.problems];
+        if (update && preview.update) preview.update.problems = [...update.problems];
+        if (skip.problems.length && (!update || update.problems.length)) {
           this.dropReview(stored);
           stored = null;
         }
       }
-      const problem = plan.problems[0] ?? null;
+      const problems = { skip: skip.problems[0] ?? null, update: (update ?? skip).problems[0] ?? null };
       // Kept while the project closed or another review began: it is no one's.
       if (generation !== this.postReviews || this.session !== s || opening !== this.workspaceKey || this.closing) {
         this.dropReview(stored);
         return generation !== this.postReviews ? { ok: false } : closed;
       }
       // Pictures are read later from the very folder the reader checked them in, never one moved into its place.
-      this.setPostImport({ id, session: s, opening, revision, stored, problem, realRoot: source.realRoot });
+      this.setPostImport({ id, session: s, opening, revision, stored, problems, realRoot: source.realRoot });
       return { ok: true, preview };
     } finally {
       review();
@@ -3809,25 +3816,26 @@ export class Controller {
   /**
    * Import the posts of review `id`: their pictures become library images (checked, with their responsive copies),
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
-   * does. Refused once the project has changed since the review.
+   * does. The posts already in the project are skipped, or with `update` each takes its source's details. Refused once
+   * the project has changed since the review.
    */
-  commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
-    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  commitPostImport(id: string, opening: string, addToNavigation: boolean, existing: PostImportExisting = 'skip'): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation, existing), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0, updated: r?.updated ?? 0 }))();
   }
 
-  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean, existing: PostImportExisting): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     // Taken, once: its plan on disk goes whatever comes of it.
     this.postImport = null;
     try {
-      return await this.commitPending(pending, opening, addToNavigation);
+      return await this.commitPending(pending, opening, addToNavigation, existing);
     } finally {
       this.dropReview(pending.stored);
     }
   }
 
-  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean, existing: PostImportExisting): Promise<PostImportResult> {
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
     const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
@@ -3835,15 +3843,18 @@ export class Controller {
     const open = () => !!s && this.session === s && s === pending.session && opening === pending.opening && opening === this.workspaceKey && !this.closing;
     if (!s || !open()) return closed;
     if (s.readOnly) return { ok: false, message: s.readOnly.reason };
-    if (pending.problem || !pending.stored) return { ok: false, message: pending.problem ?? 'These posts can’t be imported.' };
+    const problem = pending.problems[existing];
+    if (problem || !pending.stored) return { ok: false, message: problem ?? 'These posts can’t be imported.' };
     if (this.aiBusy()) return busy;
     if (s.revision !== pending.revision) return stale;
     let plan: PostImportPlan;
     try {
-      plan = await loadPlan<PostImportPlan>(pending.stored);
+      plan = selectPlan(await loadPlan<PostImportPlan>(pending.stored), existing);
     } catch {
       return { ok: false, message: 'The review could not be read back, so nothing was imported. Choose Import posts again.' };
     }
+    // Every post was already in the project, and they are skipped: there is nothing to do, still for the review it was.
+    if (!plan.posts.length) return !open() ? closed : s.revision !== pending.revision ? stale : { ok: true, imported: 0, updated: 0 };
     // The pictures are written before their records exist, so the session holds off sweeping meanwhile.
     return this.serialImport(() =>
       s.withImport(async (): Promise<PostImportResult> => {
@@ -3896,16 +3907,21 @@ export class Controller {
         }
         if (!open()) return closed;
         if (this.aiBusy()) return busy;
-        const n = plan.posts.length;
+        const updated = plan.posts.filter((p) => p.existing).length;
+        const n = plan.posts.length - updated;
+        const imports = n === 1 ? 'Import a post' : `Import ${n} posts`;
+        // As the review's button says it: "Import 3 posts and update 2", "Update a post".
+        const label = !updated ? imports : !n ? (updated === 1 ? 'Update a post' : `Update ${updated} posts`) : `${imports} and update ${updated}`;
         const operations = planOperations(plan, assetIds, added, { addToNavigation });
-        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label, source: 'user' });
         if (!r.ok) {
           if (r.error?.code === 'STALE_REVISION') return stale;
           return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
         // Whether the blog's link joined the header menu, when one was asked for.
         const joined = r.results?.[operations.findIndex((o) => o.type === 'collection.create')]?.addedToNavigation;
-        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
+        const first = plan.posts.find((p) => !p.existing) ?? plan.posts[0];
+        return { ok: true, imported: n, updated, entryId: r.entryId, revision: r.revision, firstEntryId: first?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
       })
     );
   }

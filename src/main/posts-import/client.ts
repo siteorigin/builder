@@ -5,7 +5,7 @@
  */
 import { basename } from 'node:path';
 import type { RichPages } from '@shared/richtext';
-import type { ParsedSource, SourceKind, SourcePost } from './source';
+import type { KnownPosts, ParsedSource, SourceKind, SourcePost } from './source';
 
 export interface ReadRequest {
   id: number;
@@ -13,6 +13,8 @@ export interface ReadRequest {
   path: string;
   /** The project's pages, so a link to one of them stays one. */
   pages: RichPages;
+  /** The posts imported before, so a link to one the export leaves out goes to its entry. */
+  known?: KnownPosts;
   /** Report what the read cost (asked only while performance marks are on). */
   stats?: boolean;
 }
@@ -42,7 +44,7 @@ export interface ReaderHandle {
 
 export interface SourceReader {
   /** The posts in `path`. Rejects with a reason the author can read. */
-  read(kind: SourceKind, path: string, pages: RichPages): Promise<ParsedSource>;
+  read(kind: SourceKind, path: string, pages: RichPages, known?: KnownPosts): Promise<ParsedSource>;
   /** End every read in progress; each rejects. */
   stop(): void;
 }
@@ -61,7 +63,7 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
     }
   };
   return {
-    read(kind, path, pages) {
+    read(kind, path, pages, known) {
       const name = basename(path);
       return new Promise<ParsedSource>((resolve, reject) => {
         const id = ++ids;
@@ -115,7 +117,7 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
         w.on('exit', () => fail(`${name} could not be read: the reader stopped. It may be damaged, or larger than an import can read.`));
         w.on('error', () => fail(`${name} could not be read: the reader stopped.`));
         try {
-          w.postMessage({ id, kind, path, pages, ...(opts.onStats ? { stats: true } : {}) });
+          w.postMessage({ id, kind, path, pages, ...(known ? { known } : {}), ...(opts.onStats ? { stats: true } : {}) });
         } catch {
           fail(`${name} could not be read: the reader did not start.`);
         }
