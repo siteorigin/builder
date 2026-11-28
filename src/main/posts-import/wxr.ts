@@ -12,8 +12,8 @@ import { XmlError, childElement, childElements, childText, parseXml, textOf, typ
 import { emptyReport, htmlToPlain, htmlToRichText, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
-import { reportNotes } from './notes';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { linkNotes, pageLink, postLink, reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
 /** The longest title, name or label read: the plan shortens what it keeps, and says so. */
@@ -198,8 +198,17 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     } catch {
       // The site's root, then.
     }
+    const links = linkNotes();
+    /** Links named above whose words alone are kept, which the report's count then leaves out. */
+    let namedLost = 0;
+    const lost = (href: string): null => {
+      namedLost++;
+      links.add(href, 'was left as plain words: its address could not be kept.');
+      return null;
+    };
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
+      if (t.startsWith('#') && t.length > 1) return linkFromTarget(t, pages, newTab) ?? lost(t);
       if (!t || /^(mailto|tel):/i.test(t) || t.startsWith('#')) return linkFromTarget(t, pages, newTab);
       let url: URL;
       try {
@@ -210,19 +219,22 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const onSite = url.protocol === 'relative:' || (!!siteOrigin && url.origin === siteOrigin);
       // What the post said about another site (a sponsored link) stays with it; a link to this site says nothing.
       if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab, rel) : null;
-      const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
-      const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
+      const selector = url.searchParams.has('p') ? 'p' : 'page_id';
+      const p = url.searchParams.get(selector);
       // An address WordPress read by its query (`/?p=88`, `/?cat=8`) named something other than what is at its path.
       const selected = WORDPRESS_SELECTORS.some((k) => !!url.searchParams.get(k)?.trim());
       const post = p !== null ? byId.get(p) : selected ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
-      if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
+      const section = url.hash.length > 1 ? url.hash : '';
+      // The ID has done its work once the post is found; the rest of the query goes on to its new address.
+      const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(`&${pair}`).has(selector)).join('&')}`;
+      if (post) return postLink(post, t, query, section, newTab, links);
       // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
-      const page = selected ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
+      const page = selected ? null : pageLink(sitePath(url.pathname), t, url.search, section, pages, newTab, links);
       if (page) return page;
       // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
       // (see planPostImport), since the new site may replace the old one there.
-      if (url.protocol === 'relative:') return null;
+      if (url.protocol === 'relative:') return url.search || section ? lost(t) : null;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
@@ -246,7 +258,8 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     const linkUrl = childText(item, 'link').trim();
-    const notes = reportNotes(report);
+    report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
+    const notes = [...reportNotes(report), ...links.list()];
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;
     try {
