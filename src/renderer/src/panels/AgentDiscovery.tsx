@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import type { ProjectState, SiteDoc } from '@shared/types';
 import { agentDiscovery, LLMS_FULL_FILE, LLMS_TXT_FILE, MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { publicUrl } from '@shared/public-url';
@@ -7,6 +6,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateLlmsTxt } from '@generator/llms';
 import { DisclosureMark, DraftInput, Field, SwitchRow } from '../components/ui';
+import { CopyText } from '../components/CopyText';
 
 /** How many of the section's four features are on, for its closed heading ("2 on", "All off"). */
 export function agentsScope(site: SiteDoc): string {
@@ -20,40 +20,6 @@ function Named({ name, tech }: { name: string; tech: string }) {
   return (
     <>
       {name} <span className="agents-tech">{tech}</span>
-    </>
-  );
-}
-
-/** Copies the preview's text, says so in place and to screen readers, and goes back to "Copy" after a moment. */
-function CopyText({ text, what }: { text: string; what: string }) {
-  const [copied, setCopied] = useState<boolean | 'failed'>(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
-  // A new text is not the copied one.
-  useEffect(() => setCopied(false), [text]);
-  const copy = () => {
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(true);
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => setCopied(false), 2400);
-      },
-      () => {
-        setCopied('failed');
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => setCopied(false), 4000);
-      }
-    );
-  };
-  return (
-    <>
-      <button type="button" className="btn btn-sm btn-ghost agents-copy" onClick={copy} aria-label={`Copy ${what}`}>
-        {copied === true ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-        {copied === true ? 'Copied' : copied ? 'Couldn’t copy' : 'Copy'}
-      </button>
-      <span className="sr-only" role="status">
-        {copied === true ? `${what} copied.` : copied ? `${what} couldn’t be copied.` : ''}
-      </span>
     </>
   );
 }
@@ -105,7 +71,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
                   <DisclosureMark />
                   The file as written
                 </button>
-                <CopyText text={preview} what={LLMS_TXT_FILE} />
+                <CopyText text={preview} what={LLMS_TXT_FILE} className="agents-copy" />
               </div>
               <div id="site-llms-preview" className="agents-file-body" hidden={!showFile}>
                 {showFile && (
@@ -140,7 +106,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         checked={webMcpOn(site)}
         onChange={(v) => onChange({ webmcp: v })}
         label={<Named name="Forms and search for browser assistants" tech="WebMCP" />}
-        hint="An assistant in the visitor’s browser can search the site and fill in a contact form for the visitor to check and send."
+        hint="An assistant in the visitor’s browser can search the site and fill in a contact or signup form for the visitor to check and send."
       />
     </>
   );

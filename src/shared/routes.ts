@@ -10,6 +10,9 @@ import { SITE_ICON_FILES } from './site-icons';
  */
 const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
 
+/** Names of the home page's and the not-found page's files (`build/index.html`, `build/404.html`), which a page at that address alone cannot be built beside. */
+const ROOT_FILES = new Set(['index', '404']);
+
 /** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
 const ACCENTS = /[\u0300-\u036f]/g;
 
@@ -219,6 +222,8 @@ export function validateRoute(route: string): string | null {
     const err = validateSegment(seg);
     if (err) return err;
   }
+  // Only the address itself: deeper ones ("/index/old/") are folders beside the two files.
+  if (segments.length === 1 && ROOT_FILES.has(segments[0])) return `The address "/${segments[0]}/" is kept for the website’s own files. Choose another.`;
   if (RESERVED.has(segments[0]) || segments[0].startsWith('_')) return `The address "/${segments[0]}/" is kept for the website’s own files. Choose another.`;
   return null;
 }

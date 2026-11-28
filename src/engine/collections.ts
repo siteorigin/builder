@@ -19,6 +19,7 @@ import {
   hasDetailPages,
   isCollectionId,
   isEntryId,
+  isEntryPath,
   isSyncedCollection,
   isTermId,
   pagesPrefix,
@@ -232,9 +233,12 @@ function keepsAddress(entryId: string, from: string, published: boolean, atStart
 /** "case-studies" → "Case studies". */
 const nameFromId = (id: string) => id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, ' ');
 
+/** The ready-made blog's name, which a header link to its index shows as "Blog". */
+export const POSTS_PRESET_NAME = 'Posts';
+
 /** The ready-made blog's settings, used for whatever a new "posts" collection is not given. */
 const POSTS_PRESET = {
-  name: 'Posts',
+  name: POSTS_PRESET_NAME,
   route: '/blog/',
   taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } }
 };
@@ -659,7 +663,8 @@ function sameValue(a: unknown, b: unknown): boolean {
  * picture replaced in them; an undo of an edit made before a sync, or one that attaches it again as it takes an edit
  * back). The source is where they change, and its next sync would put back what it says. Its settings (its layout,
  * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
- * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
+ * collection is refused on its own (see collectionRemove). `except` leaves out a collection, or several: the one a sync
+ * writes, or those only restores of saved versions change (#1474). Worded to follow "This" or "it".
  */
 /** Whether `after` is `before` with each entry given where it came from (`source`, from `sourceId`) and nothing else. */
 function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, EntryDoc>, sourceId: string): boolean {
@@ -673,15 +678,39 @@ function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, 
   });
 }
 
-export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string): string | null {
+export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string | ReadonlySet<string>): string | null {
+  const excepted = (id: string) => (typeof except === 'string' ? id === except : !!except?.has(id));
   for (const c of Object.values(after.collections ?? {})) {
-    if (!isSyncedCollection(c?.settings) || c.settings.id === except) continue;
+    if (!isSyncedCollection(c?.settings) || excepted(c.settings.id)) continue;
     const was = own(before.collections ?? {}, c.settings.id);
     if (!was || sameValue(was.entries, c.entries)) continue;
     // Attached again as it was detached (an undo of Detach): the very same entries, each given back only where it came
     // from, by the source it is attached to.
     if (!isSyncedCollection(was.settings) && sameEntriesBut(was.entries, c.entries, c.settings.sourceId!)) continue;
     return `would change the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
+  }
+  return null;
+}
+
+/**
+ * Why `state` leaves a synced collection among `ids` holding an entry its source never wrote, or two from one record,
+ * or null: an undo of a restore that takes the collection back to another source than the one that synced an entry
+ * since, or leaves beside an entry one synced since from the same record under another ID (#1474). Its next sync
+ * would refuse the collection. Worded to follow "it".
+ */
+export function foreignSyncedEntry(state: ProjectState, ids: Iterable<string>): string | null {
+  for (const id of ids) {
+    const c = own(state.collections ?? {}, id);
+    if (!c || !isSyncedCollection(c.settings)) continue;
+    // As its next sync reads them (syncedIndex): each written by its source, and no two from one record.
+    const records = new Set<string>();
+    for (const e of Object.values(c.entries)) {
+      const src = e.source;
+      if (src?.sourceId !== c.settings.sourceId || typeof src?.externalId !== 'string')
+        return `would leave “${e.title}” in the ${c.settings.name} collection, which would be synced from a source that did not write it. Restore a saved version instead.`;
+      if (records.has(src.externalId)) return `would leave two entries of the ${c.settings.name} collection from the same record of its source. Restore a saved version instead.`;
+      records.add(src.externalId);
+    }
   }
   return null;
 }
@@ -911,6 +940,15 @@ export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpRe
   return { collectionId: c.settings.id };
 }
 
+/**
+ * Whether an entry can take over from a removed one of `from`: one with a page of its own, which links and old addresses
+ * can send visitors to. Where reference fields name the removed entry, only another of its collection can take them, so
+ * while that collection's pages are off one without a page may.
+ */
+export function canReplaceEntry(from: Collection, to: { collection: Collection; entry: EntryDoc }, referenced: boolean): boolean {
+  return isEntryPath(to.collection, to.entry) || (referenced && to.collection === from && !hasDetailPages(from.settings));
+}
+
 export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, EntryAddress>, sync?: { collectionId: string }): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
@@ -920,7 +958,8 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
   if (custom) fail(`The old address ${custom.from} goes to “${entry.title}”, which its source no longer has. Point that address elsewhere in Site settings, under Redirects, before syncing.`);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
   if (op.replacementEntryId === entry.id) fail('The replacement must be a different entry.');
-  if (op.replacementEntryId !== undefined && !findEntry(state, op.replacementEntryId)) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);
+  const replacement = op.replacementEntryId !== undefined ? findEntry(state, op.replacementEntryId) : undefined;
+  if (op.replacementEntryId !== undefined && !replacement) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);
   if (op.replacementPageId !== undefined && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   const uses = entryLinkUses(state, entry.id);
   const refs = entryReferenceUses(state, entry.id);
@@ -937,6 +976,14 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     if (!Object.hasOwn(c.entries, op.replacementEntryId)) throw new EngineError('VALIDATION_FAILED', `${asked}, and only another entry of ${c.settings.name} can take its place. Choose one of those, or clear them first.`, { references: uses.length + n });
   }
   refuseSyncedHolders(state, [...uses, ...refs.map((r) => ({ owner: { kind: 'entry' as const, id: r.entry.id, collectionId: r.collection.settings.id }, where: `${r.entry.title} (${r.collection.settings.name})` }))], `“${entry.title}”`);
+  // The address it answers at now, when that was an old address of its own as the batch began (taken back during it):
+  // visitors' bookmarks to it go on to the replacement like the old addresses it still keeps.
+  const current = entryRoute(c, entry);
+  const start = current !== undefined ? atStart?.get(current.toLowerCase()) : undefined;
+  const reclaimed = start?.entryId === entry.id && start.old;
+  const handed = keptAddresses(state).filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
+  if (replacement && (uses.length || handed.length || reclaimed) && !canReplaceEntry(c, replacement, refs.length > 0))
+    fail(`“${replacement.entry.title}” has no page of its own, so links and old addresses can’t send visitors to it. Choose a page, or an entry with a page of its own.`);
   for (const { link } of uses) {
     link.type = to!.type;
     link.target = to!.target;
@@ -948,17 +995,11 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     if (Array.isArray(v)) holder.values[field] = [...new Set(v.map((id) => (id === entry.id ? op.replacementEntryId! : id)))] as string[];
     else holder.values[field] = op.replacementEntryId!;
   }
-  // The address it answers at now, when that was an old address of its own as the batch began (taken back during it):
-  // visitors' bookmarks to it go on to the replacement like the old addresses it still keeps.
-  const current = entryRoute(c, entry);
-  const start = current !== undefined ? atStart?.get(current.toLowerCase()) : undefined;
-  const reclaimed = start?.entryId === entry.id && start.old;
   delete c.entries[entry.id];
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder = c.settings.entryOrder.filter((id) => id !== entry.id);
   // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none.
   const heir: { entryId: string } | { pageId: string } | null = op.replacementEntryId !== undefined ? { entryId: op.replacementEntryId } : op.replacementPageId !== undefined ? { pageId: op.replacementPageId } : null;
   const kept = keptAddresses(state);
-  const handed = kept.filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
   if (handed.length || (reclaimed && heir)) {
     const rest = kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : heir ? [{ from: r.from, ...(r.custom ? { custom: true as const } : {}), ...heir }] : []));
     if (reclaimed && heir) {

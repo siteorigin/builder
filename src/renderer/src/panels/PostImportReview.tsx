@@ -3,6 +3,7 @@ import { FileDown, TriangleAlert } from 'lucide-react';
 import type { PostImportKind, PostImportPreview, PostImportPreviewPost, PostImportResult } from '@shared/api';
 import { formatArticleDate } from '@shared/articles';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
+import { headerMenu } from '@engine/tree';
 import { api, getState, setState, toast, undoAction, useStore } from '../store';
 import { Modal } from '../components/ui';
 import { flushOpenPost } from '../lib/post-draft';
@@ -36,6 +37,13 @@ export async function reviewPostImport(kind: PostImportKind): Promise<void> {
 const NAMES = / \((?:“[^”]*”|\d+ untitled)(?:,? (?:and )?(?:“[^”]*”|\d+ untitled))*\)/;
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+/** What became of the header link an import asked for; nothing when it asked for none. */
+const menuSaid = (added?: boolean) =>
+  added === undefined
+    ? ''
+    : added
+      ? 'Added the Blog link to the header menu.'
+      : 'Its Blog link could not join the header menu, which is full or shows links from somewhere else: link one to the Posts index in the header’s menu.';
 /** Routine posts past this many are folded behind a counted disclosure, so the posts to check stay in view. */
 const ROUTINE_SHOWN = 8;
 
@@ -127,6 +135,42 @@ function PlainPosts({ posts, language }: { posts: PostImportPreviewPost[]; langu
   );
 }
 
+/** Old-site addresses this few are listed open; more fold behind their count. */
+const OLD_LINKS_SHOWN = 5;
+
+/**
+ * The old site's addresses the posts still link to, each once with how many posts link to it: they keep going to the
+ * old site, which the new site may replace at the same address. One kept working says where it now sends visitors.
+ */
+function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks']; site?: string }) {
+  const label = `The posts link to ${plural(links.length, 'address', 'addresses')} of the old site`;
+  const list = (
+    <>
+      <p className="import-review-what">
+        The posts keep these links as they are. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found: Project health then lists those on published posts.
+      </p>
+      <ul className="import-names single" data-testid="post-import-old-links">
+        {links.map((l) => (
+          <li key={l.url}>
+            <b>{l.url}</b> · {plural(l.posts, 'post', 'posts')}
+            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under that category is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+  return links.length <= OLD_LINKS_SHOWN ? (
+    <section className="import-review-group" aria-labelledby="post-import-old-links">
+      <ReviewHeading id="post-import-old-links">{label}</ReviewHeading>
+      {list}
+    </section>
+  ) : (
+    <ReviewDisclosure className="import-review-group" summary={label}>
+      {list}
+    </ReviewDisclosure>
+  );
+}
+
 /** "From export.xml (https://riverside.example)" names a file; a folder is named as one. */
 const sourceOf = (p: PostImportPreview) => `${p.kind === 'markdown' ? `The folder “${p.source}”` : p.source}${p.site ? ` (${p.site})` : ''}`;
 
@@ -148,6 +192,11 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
   }, [done]);
   const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
   const language = useStore((s) => s.snapshot?.state.site.language);
+  // A blog the import makes is offered its link in the header menu, as the blog's starter card is: ticked, while the
+  // header has a menu to take it.
+  const hasMenu = useStore((s) => !!s.snapshot && !!headerMenu(s.snapshot.state));
+  const [toMenu, setToMenu] = useState(true);
+  const offersMenu = preview.collection.create && hasMenu;
   const close = () => {
     if (getState().modal === own) setState({ modal: null });
   };
@@ -180,7 +229,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
     setBusy(true);
     let r: PostImportResult;
     try {
-      r = await api.project.commitPostImport(preview.id, opening);
+      r = await api.project.commitPostImport(preview.id, opening, offersMenu && toMenu);
     } catch {
       r = { ok: false, message: 'The posts could not be imported: the project could not be saved. Check that there is space on the disk, then try again.' };
     } finally {
@@ -199,7 +248,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
     // with what to do about it above its text.
     if (r.firstEntryId && (await flushOpenPost()) && getState().snapshot?.workspaceKey === opening)
       setState({ post: { collectionId: POSTS_COLLECTION_ID, entryId: r.firstEntryId }, postView: 'write', postReveal: null });
-    if (!r.notes?.length) toast(`Imported ${plural(r.imported ?? n, 'post', 'posts')}.`, 'info', r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined);
+    if (!r.notes?.length) toast([`Imported ${plural(r.imported ?? n, 'post', 'posts')}.`, menuSaid(r.addedToNavigation)].filter(Boolean).join(' '), 'info', r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined);
   };
 
   if (done) {
@@ -236,6 +285,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           {preview.missing.length > 0 ? `, and ${preview.missing.length.toLocaleString()} more ${preview.missing.length === 1 ? 'was' : 'were'} already missing from the chosen folder` : ''}, so{' '}
           {notes.length + preview.missing.length === 1 ? 'its post shows without it' : 'their posts show without them'}.
         </p>
+        {done.addedToNavigation !== undefined && <p className="import-result-steps">{menuSaid(done.addedToNavigation)}</p>}
         <p className="import-result-steps">
           {notes.length === 1
             ? `To put it back, fix the file as described below, add it to Assets, then place it in ${notes[0].posts.length > 1 ? 'each listed post' : 'its post'}. Or undo the import, fix the file, and import again.`
@@ -382,6 +432,11 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       >
         {blocked ? 'Nothing has been imported.' : 'Nothing changes until you import, and you can undo the import in one step.'}
       </ReviewSummary>
+      {!blocked && offersMenu && (
+        <label className="post-import-menu">
+          <input type="checkbox" checked={toMenu} disabled={busy} onChange={(e) => setToMenu(e.target.checked)} onKeyDown={(e) => enterToggles(e, () => setToMenu(!toMenu))} /> Add a Blog link to the header menu
+        </label>
+      )}
       {preview.missing.length > 0 &&
         (preview.missing.length <= 3 ? (
           <section className="import-review-group post-import-missing" aria-labelledby="post-import-missing">
@@ -395,6 +450,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             {missingList}
           </ReviewDisclosure>
         ))}
+      {preview.oldSiteLinks.length > 0 && <OldSiteLinks links={preview.oldSiteLinks} site={preview.site} />}
       {skippedLong && (
         <ReviewDisclosure className="import-review-group" summary="What is not imported, item by item">
           <ul className="import-names single">

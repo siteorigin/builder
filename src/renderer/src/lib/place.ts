@@ -24,7 +24,7 @@ export function takeShowAsset(): { opening: string; assetId: string } | null {
 }
 
 /**
- * Open the Assets panel on an image or document, if it is still in the opening of the project it was offered in. A
+ * Open the Assets panel on an image, document or font, if it is still in the opening of the project it was offered in. A
  * panel already built hears it as SHOW_ASSET_EVENT; one built by this showing takes it from `takeShowAsset` as it
  * mounts. Either way the panel checks the opening again, so a request left over from another opening does nothing.
  */
@@ -32,7 +32,7 @@ export function showAsset(opening: string, assetId: string): void {
   const snap = getState().snapshot;
   if (snap?.workspaceKey !== opening) return;
   const kind = Object.hasOwn(snap.state.assets.assets, assetId) ? snap.state.assets.assets[assetId]?.kind : undefined;
-  if (kind !== 'image' && kind !== 'document') return toast('That file is no longer in Assets.', 'info');
+  if (kind !== 'image' && kind !== 'document' && kind !== 'font') return toast('That file is no longer in Assets.', 'info');
   unshown = { opening, assetId };
   setState({ leftTab: 'assets' });
   window.dispatchEvent(new CustomEvent(SHOW_ASSET_EVENT, { detail: { opening, assetId } }));

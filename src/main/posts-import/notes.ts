@@ -1,5 +1,5 @@
 /** What reading a post left out or changed, as the import's report says it. */
-import type { HtmlReport } from './html';
+import { MAX_POST_GALLERY_PICTURES, type HtmlReport } from './html';
 
 const count = (n: number, one: string, many: string) => (n === 1 ? `${/^[aeiou]/i.test(one) ? 'an' : 'a'} ${one}` : `${n} ${many}`);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -19,6 +19,23 @@ export function reportNotes(r: HtmlReport): string[] {
   if (r.raised) out.push(`${cap(count(r.raised, 'superscript or subscript', 'superscripts and subscripts'))} became ordinary text on the line.`);
   if (r.struck) out.push(`Kept ${count(r.struck, 'struck-through passage', 'struck-through passages')} as ordinary text, no longer struck through.`);
   if (r.ticked) out.push(`Left out the tick of ${count(r.ticked, 'done task', 'done tasks')}: a check list shows every item alike.`);
+  const empty = r.galleries.filter((g) => !g.pictures).length;
+  if (empty) out.push(`Left out ${empty === 1 ? 'a gallery' : `${empty} galleries`}: the export lists no pictures for ${empty === 1 ? 'it' : 'them'}.`);
+  const short = r.galleries.filter((g) => g.missing);
+  if (short.length) {
+    const missing = short.reduce((n, g) => n + g.missing, 0);
+    const { pictures, missing: one } = short[0];
+    const what =
+      short.length > 1
+        ? `${missing} pictures of ${short.length} galleries (${short.map((g) => `${g.missing} of ${g.pictures}`).join(', ')})`
+        : one === pictures
+          ? pictures === 1
+            ? 'a gallery’s picture'
+            : `a gallery’s ${pictures} pictures`
+          : `${one} of a gallery’s ${pictures} pictures`;
+    out.push(`Left out ${what}: the export does not include ${missing === 1 ? 'it' : 'them'}. Export All content to bring pictures’ details along.`);
+  }
+  if (r.galleryOverflow) out.push(`Left out ${count(r.galleryOverflow, 'gallery picture', 'gallery pictures')} past the first ${MAX_POST_GALLERY_PICTURES}: a post brings at most ${MAX_POST_GALLERY_PICTURES} from its galleries.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }

@@ -1,7 +1,7 @@
 import './SourceModal.css';
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { CircleAlert, CircleCheck, Code, FileCode2, Lock, Sparkles } from 'lucide-react';
-import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog } from '../store';
+import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog, warningsToast } from '../store';
 import { CODE_DRAFT } from '../lib/pending';
 import { Field, Modal, Spinner, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
@@ -11,7 +11,7 @@ import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, row
 import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
-import type { SourceManifest } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, type SourceManifest } from '@shared/api';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -249,6 +249,10 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => s.snapshot?.state.components[definitionId]);
   const canFix = useStore((s) => !!s.providers.find((p) => p.id === s.settings?.ai.provider)?.configured);
   const [src, setSrc] = useState<{ source: string; hash: string; path: string; editable: boolean } | null>(null);
+  // The file was edited outside the app into code with errors, so it was not loaded: what shows is the version that
+  // last loaded, and saving waits for the file to be put right rather than write over the edit (#1533).
+  const refused = useStore((s) => s.snapshot?.diagnostics.find((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.owner?.id === definitionId));
+  const projectDir = useStore((s) => s.snapshot?.dir);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -436,7 +440,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     reloadProps();
   };
   const save = async () => {
-    if (!src?.editable || !dirty || saving) return;
+    if (!src?.editable || !dirty || saving || refused) return;
     setErrors([]);
     setSaved(false);
     if (propsStale) return setTab('manifest');
@@ -449,6 +453,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       if (!r.ok) return setErrors(r.problems);
       while (discarding.current) if ((await discarding.current) === true) return;
       if (!alive()) return;
+      // The file was edited outside the app while the code was checked: the banner says so, and nothing is written.
+      if (useStore.getState().snapshot?.diagnostics.some((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.owner?.id === definitionId)) return;
       const properties = propsDirty ? propertiesFromRows(rows) : undefined;
       // A renamed property takes every placement's content with it.
       const renames = properties ? renamesFromRows(rows) : [];
@@ -484,7 +490,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       // Save disables itself once the refreshed code shows nothing left to save; the focus keeper hands focus on.
       setSaved(true);
       if (r.fixed) toast(`Fixed and saved: ${r.fixed}`);
-      else if (r.warnings?.length) toast(`Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}`);
+      else if (r.warnings?.length) warningsToast('Saved', r.warnings);
     } catch {
       setErrors([wrote ? WRITE_FAILED : CHECK_FAILED]);
     } finally {
@@ -503,8 +509,10 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   // Property problems the table shows in place. Text still being typed counts once it commits, which Save does.
   const propIssues = propsDirty && !typing ? schemaProblems(rows).length : 0;
   // Save waits: for an edit when the listed errors can't be repaired here, for a choice between two versions, for
-  // the latest code to load, or for the property problems to be fixed.
-  const blocked = (reviewing && listed) || codeStale || refreshFailed || propIssues > 0;
+  // the latest code to load, for the file edited outside the app to be put right, or for the property problems to be fixed.
+  // A newer version of the code is in the project but not yet in the editor: saving waits for it to load.
+  const behind = !!src?.editable && def.kind === 'code' && src.source !== (def.source ?? '');
+  const blocked = (reviewing && listed) || codeStale || refreshFailed || !!refused || behind || propIssues > 0;
   const reviewErrors = () => {
     if (saving) return;
     const line = firstLine(errors);
@@ -530,13 +538,15 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   };
   latest.current = { close, save: () => void save(), request: requestSave };
   // Saved stays on screen only while nothing new is waiting, typed-in-but-uncommitted fields included.
-  const justSaved = saved && !dirty && !status;
+  const justSaved = saved && !dirty && !status && !refused;
   const busy = !!status || writing;
   const action = reviewing ? 'Review errors' : dirty && settledErrors && canFix ? 'Fix and save' : 'Save';
   // What the footer says, in order of what matters most right now.
   const footNote = () => {
     if (status) return tidy(status);
     if (writing) return 'Saving…';
+    if (refused) return refused.severity === 'error' ? 'Showing the last version that loaded. Saving waits until the file on disk is fixed.' : 'Showing the last version that loaded. Saving waits until the file on disk loads.';
+    if (behind) return 'Loading the latest code…';
     if (justSaved) return 'Saved. Every page using this component is updated.';
     if (!dirty) return 'No unsaved changes';
     if (refreshFailed) return 'Saving waits until the latest code loads.';
@@ -651,6 +661,19 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             <button className="btn btn-sm" disabled={loading} onClick={() => setReload((n) => n + 1)}>
               {loading ? 'Loading…' : 'Try again'}
             </button>
+          </div>
+        )}
+        {refused && (
+          <div className="scope-note danger source-stale" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span className="grow">
+              <strong>{refused.severity === 'error' ? 'The file on disk has an edit that was not loaded.' : 'The file on disk has an edit that is waiting to load.'}</strong> This is the last version that loaded{dirty ? ', and your edits are based on it' : ''}. {refused.message}
+            </span>
+            {projectDir && refused.site && (
+              <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${projectDir}/${refused.site}`)}>
+                Show file
+              </button>
+            )}
           </div>
         )}
         {codeStale && (
@@ -842,7 +865,7 @@ export function NewCodeComponentModal() {
       const id = r?.[0]?.definitionId as string | undefined;
       if (!id) return setErrors([CREATE_FAILED]);
       if (checked.fixed) toast(`Fixed and created: ${checked.fixed}`);
-      else if (checked.warnings?.length) toast(`Created with ${checked.warnings.length} warning${checked.warnings.length === 1 ? '' : 's'}. ${checked.warnings[0]}`);
+      else if (checked.warnings?.length) warningsToast('Created', checked.warnings);
       setState({ modal: null });
       await insert({ definitionId: id }, title);
     } catch {

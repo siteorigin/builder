@@ -5,7 +5,9 @@ import { STARTERS, STARTER_ASSETS, createStarterState, starterProblem, starterTa
 import { showcaseKind, showcasePages } from '@catalogue/showcase';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
-import { registerBeside, restorePacks, testPack } from './fixtures/packs';
+import { pageHeadings } from '@generator/checks';
+import { P, prop } from '@catalogue/dsl';
+import { foundationDesign, registerBeside, restorePacks, testPack } from './fixtures/packs';
 
 const shipped = listThemes().filter((t) => !t.devOnly);
 /** Foundation as the app loads it. */
@@ -45,12 +47,13 @@ describe('Component showcase starter', () => {
   });
 
   for (const theme of shipped)
-    it(`places every component ${theme.name} ships exactly once outside Home`, () => {
+    it(`places every component ${theme.name} ships exactly once outside Home and the sample news articles`, () => {
       const s = createStarterState('showcase', 'Showcase', false, theme.id);
       const home = s.site.homePageId;
       const outside = [
         ...Object.values(s.pages)
-          .filter((p) => p.id !== home)
+          // The sample news articles are made of the sections an article takes, whatever the kind pages hold.
+          .filter((p) => p.id !== home && !p.route.startsWith('/news/'))
           .flatMap((p) => componentIds(s, placed(p))),
         ...componentIds(s, placed(s.site.shell.header)),
         ...componentIds(s, placed(s.site.shell.footer))
@@ -97,6 +100,61 @@ describe('Component showcase starter', () => {
     expect(Object.values(s.pages).filter((p) => p.article && !p.article.hidden)).toHaveLength(2);
   });
 
+  // #1550: a news list's headline led to a page with only the header and footer on it.
+  for (const theme of shipped)
+    it(`opens each of ${theme.name}’s sample news articles as an article: its title, date and some text`, () => {
+      const s = createStarterState('showcase', 'Showcase', false, theme.id);
+      const news = Object.values(s.pages).filter((p) => p.article && !p.article.hidden);
+      const files = generateProject(s);
+      expect(news).toHaveLength(2);
+      for (const page of news) {
+        expect(componentIds(s, placed(page)), page.route).toEqual(['content.article', 'content.text']);
+        expect(placed(page)[1].props, page.route).toMatchObject({ eyebrow: '', heading: '' });
+        const out = String(files.get(`src/routes${page.route}+page.svelte`));
+        // The Article header is given the page's own details, and the text section the article's words.
+        for (const part of [`"title":"${page.title}"`, `"date":"${page.article!.date}"`, page.article!.excerpt!]) expect(out.replaceAll('\\"', '"'), page.route).toContain(part);
+        const body = placed(page)[1].props.body as Array<{ spans: Array<{ text: string }> }>;
+        expect(body.length, page.route).toBeGreaterThanOrEqual(2);
+        expect(out, page.route).toContain(body[0].spans[0].text);
+      }
+    });
+
+  // A theme need not ship either section: the articles still open with their title, date and words.
+  it('writes the sample news articles in plain text for a theme without the article sections', () => {
+    const author = testPack('plain', { name: 'Plain', license: 'MIT' });
+    registerBeside(author.define(FOUNDATION.components.filter((c) => c.componentId !== 'content.article' && c.componentId !== 'content.text').map((c) => author.adopt(c))));
+    const s = createStarterState('showcase', 'Plain', false, 'plain');
+    const news = Object.values(s.pages).filter((p) => p.article && !p.article.hidden);
+    expect(news).toHaveLength(2);
+    const files = generateProject(s);
+    for (const page of news) {
+      expect(pageHeadings(s, page.id, { shell: false }).outline.map((h) => [h.level, h.text]), page.route).toEqual([[1, page.title]]);
+      const out = String(files.get(`src/routes${page.route}+page.svelte`));
+      expect(out, page.route).toContain(`datetime=`);
+      expect(out, page.route).toContain(page.article!.date);
+      const paragraphs = Object.values(page.nodes).flatMap((n) => (n.kind === 'text' && n.tag === 'p' && !n.datetime ? [String(n.text)] : []));
+      expect(paragraphs, page.route).toHaveLength(2);
+      for (const words of paragraphs) expect(out, page.route).toContain(words);
+    }
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('writes the articles’ words in plain text for a theme whose Text section requires a heading', () => {
+    const author = testPack('headed', { name: 'Headed', license: 'MIT' });
+    const defs = FOUNDATION.components.map((c) => {
+      const d = author.adopt(c);
+      if (d.componentId === 'content.text') d.properties.heading = { ...d.properties.heading, required: true };
+      return d;
+    });
+    registerBeside(author.define(defs));
+    const s = createStarterState('showcase', 'Headed', false, 'headed');
+    for (const page of Object.values(s.pages).filter((p) => p.article && !p.article.hidden)) {
+      expect(componentIds(s, placed(page)), page.route).toEqual(['content.article']);
+      expect(page.rootIds, page.route).toHaveLength(2);
+    }
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
   it('fills empty images, galleries and carousels with the sample photos when asked, and generates', () => {
     const s = withSampleRecords(createStarterState('showcase', 'Showcase', true, 'foundation'));
     const all = Object.values(s.pages).flatMap((p) => placed(p));
@@ -139,6 +197,32 @@ describe('Component showcase starter', () => {
     const content = Object.values(s.pages).find((p) => p.title === 'Content')!;
     expect(componentIds(s, placed(content))).toContain('content.quote');
     expect(showcasePages('sparse').flatMap((p) => p.components.map((c) => c.componentId))).not.toContain('hero.split');
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('leaves a button that works its own component without a destination, and links the design’s others', () => {
+    const author = testPack('controls', { name: 'Controls', license: 'MIT' });
+    const none = { type: 'none' as const, target: '' };
+    const disclosure = foundationDesign({
+      componentId: 'content.disclosure',
+      name: 'Disclosure',
+      properties: { actionLabel: P.str('Toggle label', 'Show details'), actionLink: P.link('Toggle link'), linkLabel: P.str('Link label', 'Read more'), link: P.link('Link') },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      state: { open: { type: 'boolean', label: 'Open', initial: false } },
+      build: (b) =>
+        b.el('root', 'section', { name: 'Section' }, [
+          b.link('toggle', prop('actionLink'), prop('actionLabel'), 'primary', { stateAction: { state: 'open', op: 'toggle' } }),
+          b.link('more', prop('link'), prop('linkLabel'), 'text'),
+          b.el('panel', 'div', { when: { $state: 'open' } }, [b.text('details', 'p', 'The details.')])
+        ])
+    });
+    registerBeside(author.define([...FOUNDATION.components, disclosure].map((c) => author.adopt(c))));
+    const s = createStarterState('showcase', 'Controls', false, 'controls');
+    const placement = Object.values(s.pages)
+      .flatMap((p) => placed(p))
+      .find((n) => s.components[n.definitionId].componentId === 'content.disclosure')!;
+    expect(placement.props.actionLink).toEqual(none);
+    expect(placement.props.link).toMatchObject({ type: 'page' });
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
   });
 

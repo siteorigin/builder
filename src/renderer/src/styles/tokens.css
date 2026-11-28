@@ -132,7 +132,7 @@
     --z-canvas-bar: 5; /* over the canvas and the panel edges: the canvas's foot stack, a layout's band, the seams */
     --z-canvas-state: 6; /* the canvas's state card, over the foot stack it keeps clear of */
     --z-chrome: 20; /* the toolbar */
-    --z-peek: 50; /* the hover previews beside a panel (Insert, Layers) */
+    --z-peek: 50; /* the previews beside a panel: hover in Insert and Layers, a focused row in the Pages and Content lists */
     --z-under-dialog: 850; /* something kept open under a dialog's scrim (Share, while it asks a question) */
     --z-dialog: 900; /* a dialog's backdrop, and the dialog on it */
     --z-popover: 1000; /* menus, popovers and Quick insert */

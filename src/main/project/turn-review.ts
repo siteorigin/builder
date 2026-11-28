@@ -5,6 +5,7 @@
  */
 import type { StepChange } from '@shared/api';
 import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
+import { keptPublishedAddresses } from '@shared/collections';
 import { displayName } from '@engine/tree';
 import { codeImports } from '@engine/code-imports';
 import { publicUrl } from '@shared/public-url';
@@ -258,6 +259,8 @@ export function siteAddresses(state: ProjectState): Set<string> {
   const out = new Set<string>();
   for (const p of Object.values(state.pages)) if (typeof p.route === 'string') out.add(asRoute(p.route));
   for (const r of Array.isArray(state.site.redirects) ? state.site.redirects : []) if (typeof r?.from === 'string') out.add(asRoute(r.from));
+  // And those exports delivered for pages that have left them, which the site keeps working too (#1382).
+  for (const r of keptPublishedAddresses(state)) out.add(asRoute(r.from));
   return out;
 }
 

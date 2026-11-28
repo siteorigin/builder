@@ -105,8 +105,8 @@ describe('what the editor puts in front of its page', () => {
     expect(changeWithoutDocument('seo', false, false)).toBe(true);
     expect(changeWithoutDocument('seo', true, false)).toBe(false);
     expect(changeWithoutDocument('seo', false, true), 'a question changes nothing').toBe(false);
-    // The writer with no post open holds a change back too: the page under it is out of sight (#895).
-    expect(changeWithoutDocument('write', false, false)).toBe(true);
+    // The writer with no post open sends a change to the whole site instead (#1424), never to the page under it.
+    expect(changeWithoutDocument('write', false, false)).toBe(false);
     expect(changeWithoutDocument('write', true, false)).toBe(false);
     expect(changeWithoutDocument('write', false, true), 'a question changes nothing').toBe(false);
     expect(changeWithoutDocument('preview', false, false)).toBe(false);

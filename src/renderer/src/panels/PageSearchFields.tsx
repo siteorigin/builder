@@ -5,7 +5,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { pageAlive, type PageUpd } from '../lib/page-settings';
 import { DraftInput, Field, SwitchRow, useLockedFields } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
-import { sharingView } from '../lib/sharing';
+import { SHARING_IMAGE_SHAPE, sharingView } from '../lib/sharing';
 import type { DocumentPreview } from '../lib/seo-preview';
 import { ImageEditor } from './PropEditors';
 import { openSiteSharing } from './SharingPreview';
@@ -26,18 +26,20 @@ export function PageSearchFields({ page, state, draft, upd, on, doc, ids = 'page
   const sharing = sharingView(state, page);
   const base = publicUrl(state.site);
   const ownUrl = base ? base + routeUrl(page.route) : null;
+  // What results and the browser tab show while it has no title of its own, said in the field too.
+  const defaultTitle = isHome ? state.site.name : `${page.title} · ${state.site.name}`;
   return (
     <>
       <Field
         label="Search title"
         hint={
           <>
-            The title search results and the browser tab show. {locked ? 'With none of its own it uses' : 'Leave empty to use'} “{isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.
+            The title search results and the browser tab show. {locked ? 'With none of its own it uses' : 'Leave empty to use'} “{defaultTitle}”.
             <LengthMeter kind="title" doc={doc} />
           </>
         }
       >
-        <DraftInput id={`${ids}-title`} limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onDirty={on.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
+        <DraftInput id={`${ids}-title`} limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} placeholder={defaultTitle} quietCount onDirty={on.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
       </Field>
       <Field
         label="Description"
@@ -48,7 +50,7 @@ export function PageSearchFields({ page, state, draft, upd, on, doc, ids = 'page
           </>
         }
       >
-        <DraftInput id={`${ids}-description`} multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={on.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+        <DraftInput id={`${ids}-description`} multiline quietCount limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={on.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
       </Field>
       {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
       <fieldset className="col seo-field-group" disabled={locked} style={{ gap: 4 }} data-seo-field="socialImage" aria-label={`Sharing image: ${sharing.imageName ?? 'none'}`}>
@@ -60,9 +62,9 @@ export function PageSearchFields({ page, state, draft, upd, on, doc, ids = 'page
           onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
         />
         {/* Locked, it says which image is in use, never what to do about it. */}
-        <div className="field-hint">{locked ? sharing.imageNote.replace(/ Choose (one|another)[^.]*\.$/, '') : sharing.imageNote}</div>
+        <div className="field-hint">{locked ? sharing.imageNote.replace(/ Choose (one|another)[^.]*\.$/, '') : `${sharing.imageNote} ${SHARING_IMAGE_SHAPE}`}</div>
         {!locked && (
-          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
+          <button type="button" className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12 }} onClick={() => openSiteSharing('socialImage')}>
             Change the site’s sharing image
           </button>
         )}
@@ -78,7 +80,7 @@ export function PageSearchFields({ page, state, draft, upd, on, doc, ids = 'page
             : 'When on, search engines are asked not to list it. Anyone with the address can still open it.'
         }
       />
-      <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'When on, once it is published, this page is left out of the site’s own Site search results.' : 'When on, this page is left out of the site’s own Site search results.'} />
+      <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'When on, once it is published, this page is left out of the results of the site’s own search.' : 'When on, this page is left out of the results of the site’s own search.'} />
       <CanonicalUrlField id={`${ids}-canonical`} keep={`page:${page.id}:canonical`} keepWhile={pageAlive(page.id)} value={page.seo.canonical} ownUrl={ownUrl} what="page" onTyped={on.canonical} onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
       <RevisionDateField
         id={`${ids}-updated`}

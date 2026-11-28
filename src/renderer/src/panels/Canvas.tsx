@@ -28,7 +28,7 @@ import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestinat
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
 import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
-import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
+import { askFrame, followed, followReport, newFrameNav, samePath, sendsFrame } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
@@ -1889,9 +1889,13 @@ export function Canvas() {
     // A newly published entry can be on disk before Vite serves its route. This applies to ordinary pages as well
     // as template pages: navigating during that gap can leave the canvas on Vite's error page.
     // Ask the preview to compile the route first. The request remains authoritative while the old page reports
-    // its final state during the wait.
+    // its final state during the wait. A guest in a live session has no preview of its own to ask (#1529).
+    const asked = nav.current;
+    const remote = isRemoteShell(s);
     void api.project.previewRouteReady(shown.route, s.snapshot!.revision).catch(() => false).then((canServe) => {
-      if (canServe) post('navigate', { path: shown.route, navId, fullReload: true });
+      // Another page asked for meanwhile, or another frame since: a late answer sends neither frame back here.
+      if (nav.current !== asked || asked.request?.id !== navId) return;
+      if (sendsFrame(canServe, remote)) post('navigate', { path: shown.route, navId, fullReload: true });
       recoverRoute(shown.route!, s.snapshot!.revision, session);
     });
   }

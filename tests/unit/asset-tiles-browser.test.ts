@@ -12,6 +12,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
+import { findTheme } from '@catalogue/index';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { sortAssets } from '@shared/asset-order';
 
@@ -22,6 +23,8 @@ const src = (path: string) => JSON.stringify(resolve('src', path));
 const IMAGES = 120;
 /** The editor's styles and the panel's, which size the tiles: a picture loads only once its box has a size. */
 const CSS = ['styles/tokens.css', 'styles/reset.css', 'styles/primitives.css', 'styles/layout.css', 'panels/AssetsPanel.css'].map((f) => readFileSync(resolve('src/renderer/src', f), 'utf8')).join('\n');
+/** The library's theme, as the editor receives it before it first renders. */
+const THEME = JSON.stringify(findTheme(createStarterState('blank', 'Tiles', false).site.themeId)).replace(/</g, '\\u003c');
 /** A 1 × 1 PNG, for every picture the tiles load. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
 
@@ -34,6 +37,9 @@ const ENTRY = [
   `import { AssetsPanel } from ${src('renderer/src/panels/AssetsPanel')};`,
   `import { useStore } from ${src('renderer/src/store')};`,
   `import { showAsset } from ${src('renderer/src/lib/place')};`,
+  // The Fonts tab says which site styles use a family, which it reads from the theme.
+  "import { registerPacks } from '@catalogue/index';",
+  'registerPacks([window.__theme]);',
   'let revision = 1;',
   'let root;',
   "const snapshot = (state) => ({ workspaceKey: 'w', dir: '/project', state, revision, history: { canUndo: false, canRedo: false, entries: [] }, diagnostics: [], recoveryNotes: [], aiBusy: false, assetUsage: {}, missingAssets: [], conflicts: [], localState: {}, recentExports: [], runtime: { state: 'ready', url: " + JSON.stringify(DEV) + ' } });',
@@ -45,7 +51,9 @@ const ENTRY = [
   'window.so = {',
   "  renders: () => { window.__siteoriginPerf.mark('probe'); return window.perfRecords.at(-1).c['react.renders'] ?? 0; },",
   // A new snapshot, as one arrives over IPC: every object in it new.
-  '  receive: (state) => { revision++; flushSync(() => useStore.setState({ snapshot: snapshot(state) })); },',
+  '  receive: (state, missing) => { revision++; flushSync(() => useStore.setState({ snapshot: { ...snapshot(state), missingAssets: missing ?? [] } })); },',
+  // "Open in Assets", from Project health or an export, on a panel already built.
+  "  show: (id) => flushSync(() => showAsset('w', id)),",
   // "Show image" asked for while no Assets panel is built (the editor builds a panel the first time it shows): the
   // request comes first, then the panel it shows is built.
   "  showUnbuilt: (id) => { flushSync(() => root.unmount()); showAsset('w', id); root = createRoot(document.getElementById('root')); flushSync(() => root.render(h(AssetsPanel, { narrow: false }))); },",
@@ -119,7 +127,7 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     await page.route(`${SITE}/**`, (route) =>
       new URL(route.request().url()).pathname === '/app.js'
         ? route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script })
-        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><style>@layer tokens, reset, base, primitives, layout, components;\n${CSS}</style><body><aside class="side-panel" style="width: 320px; height: 700px; display: flex; flex-direction: column"><div id="root" style="display: contents"></div></aside><script>${BRIDGE}</script><script src="/app.js"></script></body>` })
+        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><style>@layer tokens, reset, base, primitives, layout, components;\n${CSS}</style><body><aside class="side-panel" style="width: 320px; height: 700px; display: flex; flex-direction: column"><div id="root" style="display: contents"></div></aside><script>${BRIDGE}window.__theme = ${THEME};</script><script src="/app.js"></script></body>` })
     );
     await page.goto(`${SITE}/`);
     state = library();
@@ -247,6 +255,28 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     expect(await focused()).toBe(ids[1 + cols]);
     await page.waitForTimeout(300);
     expect(await focused()).toBe(ids[1 + cols]);
+  });
+
+  it('opens a font whose file is missing in Fonts, with its family open and the focus on Locate file (#1425)', async () => {
+    const face = (id: string, family: string, style: 'normal' | 'italic'): AssetRecord => ({ id, name: `${family} ${style === 'italic' ? 'Italic' : 'Regular'}`, file: `static/assets/${id}-0000000${id.length % 10}.woff2`, mime: 'font/woff2', bytes: 30_000, hash: id, kind: 'font', createdAt: '2026-01-01T00:00:00.000Z', font: { family, weight: '400', style } });
+    const fonts = structuredClone(state);
+    for (const a of [face('lora-upright', 'Lora', 'normal'), face('lora-italic', 'Lora', 'italic'), face('inter', 'Inter', 'normal')]) fonts.assets.assets[a.id] = a;
+    const lost = [{ assetId: 'lora-italic', original: true, variants: [] }];
+    await page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [fonts, lost] as unknown[]);
+    await page.evaluate("so.show('lora-italic')");
+    const locate = page.locator('[data-font="lora-italic"] .font-locate');
+    await locate.waitFor();
+    await page.waitForFunction("document.activeElement?.classList.contains('font-locate')");
+    expect(await page.locator('[data-font="lora-italic"] .asset-missing').textContent()).toContain(`File missing. ${fonts.assets.assets['lora-italic'].file.split('/').pop()} is no longer in the project folder`);
+    // Only the face whose file is gone offers it; its family says how many of its files are missing, and the tab is flagged.
+    expect(await page.locator('.font-locate').count()).toBe(1);
+    expect(await page.locator('[data-font-family="Lora"] .font-family-meta').textContent()).toContain('1 of 2 missing');
+    expect(await page.locator('[data-font-family="Inter"] .font-family-meta').textContent()).not.toContain('missing');
+    expect(await page.getByRole('img', { name: '1 font is missing its file:' }).count()).toBe(1);
+    // The file put back, the note and the flag go.
+    await page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [fonts, []] as unknown[]);
+    expect(await page.locator('.font-locate').count()).toBe(0);
+    expect(await page.getByRole('img', { name: '1 font is missing its file:' }).count()).toBe(0);
   });
 
   it('opens on the image “Show image” asked for when that showing is what builds the panel', async () => {

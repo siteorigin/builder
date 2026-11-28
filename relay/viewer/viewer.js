@@ -218,6 +218,17 @@ let notesAgain = false;
 let notePath = null;
 let noteSending = false;
 /**
+ * A new note's page is confirmed when Notes opens (#1497): the frame's bridge is asked where it is, since the page the
+ * guest sees may be newer than its last word, and until it answers the note has no page and cannot be begun (a word
+ * typed meanwhile would be pinned to whatever page the answer names, even one shown only after it). The ask is
+ * numbered, so an older word still on its way is never taken for the answer; a page whose bridge says nothing is
+ * taken as last said.
+ * @type {{ id: number; timer: ReturnType<typeof setTimeout> } | null}
+ */
+let pageAsk = null;
+let pageAskSeq = 0;
+const PAGE_ASK_MS = 1000;
+/**
  * Calls to the host waiting for their answer, by request ID. IDs are never reused, so an answer to a call made on an
  * earlier socket can never be taken for one made since.
  * @type {Map<string, { method: string; resolve: (answer: any) => void; timer: ReturnType<typeof setTimeout> }>}
@@ -665,6 +676,7 @@ function unmountFrame() {
   iframe.remove();
   iframe = null;
   shownPath = null;
+  endPageAsk();
   clearTimeout(reloadFallback);
   frameShown = false;
   frameSlow = false;
@@ -760,6 +772,13 @@ window.addEventListener('message', (event) => {
     shownPath = data.path;
     const first = !bridgeReady;
     bridgeReady = true;
+    if (pageAsk) {
+      if (data.id === pageAsk.id) settlePage();
+      // A new page replaced the one asked, which can no longer answer: this one is asked instead.
+      else if (first) postPageAsk();
+    }
+    // A note begun before any page was confirmed is for the first page the frame says it shows, wherever it goes next.
+    else if (!notePath && ui.noteText.value.trim()) notePath = data.path;
     frameReady();
     if (stale && previewReady && hostConnected && !reconnecting) catchUp();
     if (!ui.notes.hidden) renderNotes();
@@ -1360,9 +1379,34 @@ function noteAge(/** @type {number} */ at) {
   return new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-/** The page a note will be left on: where writing began, else the page shown now. */
+/** The page a note will be left on: where writing began, else the page shown now, once the frame has confirmed it. */
 function notePage() {
-  return notePath ?? shownPath;
+  return notePath ?? (pageAsk ? null : shownPath);
+}
+
+/** Ask the frame's bridge which page it shows, for a note not yet pinned to one. */
+function askPage() {
+  endPageAsk();
+  if (notePath || !iframe) return;
+  pageAsk = { id: ++pageAskSeq, timer: setTimeout(settlePage, PAGE_ASK_MS) };
+  postPageAsk();
+}
+
+function postPageAsk() {
+  if (pageAsk && bridgeReady) iframe?.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.where, id: pageAsk.id }, config.previewOrigin);
+}
+
+function endPageAsk() {
+  if (!pageAsk) return;
+  clearTimeout(pageAsk.timer);
+  pageAsk = null;
+}
+
+/** The bridge answered, or never will: a note already begun is for the page the frame last said it shows. */
+function settlePage() {
+  endPageAsk();
+  if (!notePath && ui.noteText.value.trim()) notePath = shownPath;
+  renderNotes();
 }
 
 function renderNotes() {
@@ -1379,8 +1423,9 @@ function renderNotes() {
   ui.noteLength.textContent = `${length}/${config.noteMax}`;
   ui.noteLength.dataset.over = String(length > config.noteMax);
   ui.noteSend.disabled = noteSending || !page || length === 0 || length > config.noteMax;
-  // What is typed while a note is being sent would be lost when the field empties for it.
-  ui.noteText.readOnly = noteSending;
+  // What is typed while a note is being sent would be lost when the field empties for it, and a note begun before the
+  // frame confirms its page could be pinned to one the guest had not yet seen.
+  ui.noteText.readOnly = noteSending || !!pageAsk;
   ui.noteSend.textContent = noteSending ? 'Sending…' : 'Send note';
   const items = open.map((note) => {
     const li = document.createElement('li');
@@ -1411,6 +1456,7 @@ function showNotes() {
   // Read again on opening: whatever the last read missed is shown now.
   notesRetries = 0;
   void loadNotes();
+  askPage();
   renderNotes();
   ui.notesTitle.focus();
 }
@@ -1418,6 +1464,7 @@ function showNotes() {
 /** @param {boolean} [returnFocus] */
 function closeNotes(returnFocus = true) {
   ui.notes.hidden = true;
+  endPageAsk();
   ui.notesButton.setAttribute('aria-expanded', 'false');
   if (!returnFocus) return;
   if (ui.notesButton.offsetParent) ui.notesButton.focus();
@@ -1558,8 +1605,9 @@ ui.handoffClose.addEventListener('click', () => closeHandoff());
 ui.notesButton.addEventListener('click', () => (ui.notes.hidden ? showNotes() : closeNotes()));
 ui.notesClose.addEventListener('click', () => closeNotes());
 ui.noteText.addEventListener('input', () => {
-  // The note is pinned to the page shown when writing began, even if the frame follows the host elsewhere meanwhile.
-  notePath = ui.noteText.value.trim() ? (notePath ?? shownPath) : null;
+  // The note is pinned to the page shown when writing began, even if the frame follows the host elsewhere meanwhile;
+  // begun before the frame confirmed its page, it is pinned when it does.
+  notePath = ui.noteText.value.trim() ? notePage() : null;
   if (!ui.noteError.hidden) ui.noteError.hidden = true;
   renderNotes();
 });

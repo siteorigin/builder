@@ -387,6 +387,13 @@ export interface FontInfo {
   /** A CSS font-weight: one weight ("700") or a variable font's range ("100 900"). */
   weight: string;
   style: 'normal' | 'italic';
+  /**
+   * The families a static font named the legacy way may belong to, most likely first: its name ID 1 with the trailing
+   * weight and style words its OS/2 table agrees with taken off ("IBM Plex Mono Medium" at 500 → "IBM Plex Mono").
+   * Only a hint: the importer moves the file into one only when the project already has that family (#1469), since a
+   * name like "Arial Black" is also a family of its own.
+   */
+  joins?: string[];
 }
 
 const WOFF2_TAGS = [
@@ -541,7 +548,62 @@ async function readFontInfo(buf: Buffer): Promise<FontInfo> {
       if (min > 0 && max >= min) weight = min === max ? String(min) : `${min} ${max}`;
     }
   }
-  return { family: family.replace(/[^\p{L}\p{N} _-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Custom font', weight, style: italic ? 'italic' : 'normal' };
+  const clean = (f: string) => f.replace(/[^\p{L}\p{N} _-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const shown = clean(family) || 'Custom font';
+  // A typographic family (16) is already the whole family, a variable font's name holds no single weight or slant, and
+  // a font without an OS/2 table has no weight of its own to bear a weight word out.
+  const declared = !!os2 && os2.length >= 64 && os2.readUInt16BE(4) !== 0 && !fvar;
+  const joins = name && declared && !nameString(name, [16]) ? legacyFamilies(shown, Number(weight), italic).map(clean).filter(Boolean) : [];
+  return { family: shown, weight, style: italic ? 'italic' : 'normal', ...(joins.length ? { joins } : {}) };
+}
+
+/**
+ * The OS/2 weight classes each weight word in a legacy family name (name ID 1) stands for: its CSS weight, and for Thin
+ * and Extra Light the 250 and 275 that older Windows-compatible fonts use. Words for the regular weight ("Regular",
+ * "Normal", "Book") are left out: a family already has a regular face, so such a file is another design, not a face
+ * the family lacks.
+ */
+const WEIGHT_WORDS: Record<string, number[]> = {
+  thin: [100, 250],
+  hairline: [100],
+  extralight: [200, 275],
+  ultralight: [200, 275],
+  light: [300],
+  medium: [500],
+  semibold: [600],
+  demibold: [600],
+  demi: [600],
+  bold: [700],
+  extrabold: [800],
+  ultrabold: [800],
+  heavy: [800, 900],
+  black: [800, 900],
+  extrablack: [900],
+  ultrablack: [900]
+};
+
+/**
+ * The family a legacy-named static font may really belong to: `family` without its trailing style word ("Italic",
+ * "Oblique") and weight word ("Medium", "Semi Bold"), each taken off only when the font's own weight and slant agree,
+ * the fullest strip first ("X Medium Italic" → "X", then "X Medium"). None when no trailing word agrees.
+ */
+function legacyFamilies(family: string, weight: number, italic: boolean): string[] {
+  let words = family.split(' ');
+  const out: string[] = [];
+  if (words.length > 1 && /^(italic|oblique)$/i.test(words[words.length - 1])) {
+    if (!italic) return [];
+    words = words.slice(0, -1);
+    out.push(words.join(' '));
+  }
+  // "SemiBold", "Semi Bold" and "Semi-Bold" are one word.
+  for (const n of [2, 1]) {
+    if (words.length <= n) continue;
+    const word = words.slice(-n).join('').replace(/-/g, '').toLowerCase();
+    if (!WEIGHT_WORDS[word]?.includes(weight)) continue;
+    out.unshift(words.slice(0, -n).join(' '));
+    break;
+  }
+  return out;
 }
 
 /**

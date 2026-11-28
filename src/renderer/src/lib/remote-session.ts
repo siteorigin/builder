@@ -408,6 +408,9 @@ export function remoteApi(joinId: string): RemoteApi {
         const at = getState().remoteReload;
         setState({ remoteReload: { seq: at.seq + 1, revision: at.revision } });
       },
+      // The host's preview is the host's: this computer has none to check a page on before the canvas opens it (#1529),
+      // so the page is opened unchecked, and one the host's preview did not have yet is loaded again on its next reload.
+      previewRouteReady: async () => null,
       savedComponents: async () => [],
       componentThumb: async () => ({ state: 'unavailable' as const }),
       prepareComponentPreview: async () => ({ ok: false as const, message: 'Component previews are the host’s in a live session.' }),

@@ -5,7 +5,7 @@
  * author's own files are only ever read.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, promises, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, promises, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -63,7 +63,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { checkPixels, importAsset, importAssetBatch, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { checkPixels, importAsset, importAssetBatch, importPackageImage, locateAssetFile, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
 const { generateProject } = await import('../../src/generator/index');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
@@ -183,6 +183,39 @@ describe('reviewing an import before anything is written', () => {
     const webp = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#808080' } }).webp().toBuffer();
     expect((await reviewOf(sourceFile('big.webp', webp))).action).toBe('import');
   });
+
+  it('refuses a picture over 100 megapixels however small its file, saying so first, and writes or decodes nothing (#1444)', async () => {
+    const poster = await sharp({ create: { width: 20_000, height: 6_000, channels: 3, background: '#335577' } }).png({ palette: true, compressionLevel: 9 }).toBuffer();
+    expect(poster.length).toBeLessThan(1_500_000);
+    const reason = 'it is over 100 megapixels, too large to make web-sized copies of. Save a smaller copy of it in an image editor, then add that.';
+    const path = sourceFile('poster.png', poster);
+    expect(await reviewOf(path)).toMatchObject({ action: 'refuse', format: 'PNG', reason, fingerprint: sha(poster) });
+    const project = temp('project');
+    later.requests = [];
+    const refused = new RegExp(`^poster\\.png was not imported because ${reason.replace(/\./g, '\\.')}$`);
+    await expect(importAsset(project, path, [])).rejects.toThrow(refused);
+    await expect(importAsset(project, path, [], undefined, { fingerprint: sha(poster) })).rejects.toThrow(refused);
+    await expect(importAsset(project, path, [], undefined, { webCopy: true })).rejects.toThrow(refused);
+    // The same picture as a WebP, and a JPEG named .heic, are refused alike.
+    const webp = sourceFile('poster.webp', await sharp({ create: { width: 12_000, height: 9_000, channels: 3, background: '#335577' } }).webp().toBuffer());
+    await expect(importAsset(project, webp, [])).rejects.toThrow(/^poster\.webp was not imported because it is over 100 megapixels/);
+    const disguised = sourceFile('poster.heic', await sharp({ create: { width: 12_000, height: 9_000, channels: 3, background: '#335577' } }).jpeg().toBuffer());
+    expect(await reviewOf(disguised, false)).toMatchObject({ action: 'refuse', reason });
+    expect(later.requests).toEqual([]);
+    expect(existsSync(join(project, 'static/assets')) ? readdirSync(join(project, 'static/assets')) : []).toEqual([]);
+    // Nor can one stand in for a library image whose file is missing.
+    const lost = { id: 'a_lost', name: 'Lost', kind: 'image', file: 'static/assets/lost-00000000.png', mime: 'image/png', bytes: 10, hash: 'other', createdAt: '2026-01-01T00:00:00.000Z' } as const;
+    await expect(locateAssetFile(project, lost, path)).rejects.toThrow(/^poster\.png can't be used because it is over 100 megapixels/);
+    // A sync or a package bringing one stores it as it is, with no copies, rather than hold up everything else it
+    // brings: Project health names it instead.
+    const synced = await importPackageImage(project, { name: 'Poster', mime: 'image/png', ext: '.png', bytes: poster }, []);
+    expect(synced.record).toMatchObject({ width: 20_000, height: 6_000 });
+    expect(synced.record.variants).toBeUndefined();
+    expect(later.requests).toEqual([]);
+    // At the cap a picture is still added, with its copies.
+    const atCap = sourceFile('square.png', await sharp({ create: { width: 10_000, height: 10_000, channels: 3, background: '#335577' } }).png().toBuffer());
+    expect((await reviewOf(atCap)).action).toBe('import');
+  }, 60_000);
 
   it('counts out an ordinary-looking file that cannot be added, so the review never overcounts', async () => {
     expect(await reviewOf(sourceFile('notes.png', Buffer.from('just some text, not a picture')))).toMatchObject({ action: 'refuse', format: 'PNG', reason: expect.any(String) });
@@ -336,13 +369,34 @@ describe('a web-sized copy of a large photo', () => {
 });
 
 /** A Business site opened in the Controller, with its sample pictures in use on its pages. */
+/**
+ * The starter photos as a project's library holds them, with all their copies. They are the same for every project
+ * here, so they are imported once for the whole file and their files copied into each project: importing them again
+ * for every test encodes the same nine WebP and AVIF sets each time, which under the whole suite's load on a small CI
+ * runner left too little of a test's time for the work it is about.
+ */
+let starterDir: string | null = null;
+let starterLibrary: Promise<Record<string, Awaited<ReturnType<typeof importAsset>>['record']>> | null = null;
+const starterFiles = () =>
+  (starterLibrary ??= (async () => {
+    const dir = (starterDir = realpathSync(mkdtempSync(join(tmpdir(), 'so-photo-starter-'))));
+    const records: Record<string, Awaited<ReturnType<typeof importAsset>>['record']> = {};
+    for (const a of STARTER_ASSETS) {
+      const { record } = await importAsset(dir, join('resources/starter-assets', a.source), []);
+      records[a.id] = { ...record, id: a.id, name: a.name, altSuggestion: a.alt };
+    }
+    return records;
+  })());
+afterAll(() => {
+  if (starterDir) rmSync(starterDir, { recursive: true, force: true });
+});
+
 async function openProject(): Promise<{ c: InstanceType<typeof Controller>; dir: string }> {
   const dir = temp('project');
   const state = createStarterState('business', 'Field Notes', true);
-  for (const a of STARTER_ASSETS) {
-    const { record } = await importAsset(dir, join('resources/starter-assets', a.source), []);
-    state.assets.assets[a.id] = { ...record, id: a.id, name: a.name, altSuggestion: a.alt };
-  }
+  const starter = await starterFiles();
+  cpSync(starterDir!, dir, { recursive: true });
+  for (const a of STARTER_ASSETS) state.assets.assets[a.id] = structuredClone(starter[a.id]);
   const created = await ProjectSession.create(dir, state);
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
@@ -524,6 +578,13 @@ describe('importing a batch a few files at a time', () => {
   }, 60_000);
 });
 
+/**
+ * The time a test gets that adds a 3000 × 2000 noise photo to a project and makes a web-sized copy of it: the import's
+ * own copies of the photo and the copy's, in JPEG, WebP and AVIF, are 4 to 9 CPU-seconds on a fast Mac, and the CI
+ * runner (4 vCPUs shared by up to 6 test files) has taken five to six times as long.
+ */
+const LARGE_PHOTO_MS = 120_000;
+
 describe('making a web-sized copy of a large library image', () => {
   it('shows the copy everywhere the image was used, in one step that can be undone, and keeps the original', async () => {
     const { c, dir } = await openProject();
@@ -551,7 +612,7 @@ describe('making a web-sized copy of a large library image', () => {
     await c.session!.undo();
     expect(c.session!.state.assets.assets[copy.id]).toBeUndefined();
     expect(assetUsages(c.session!.state)[bigId]).toBe(used);
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('puts back the files of a copy already in Assets before using it', async () => {
     const { c, dir } = await openProject();
@@ -564,7 +625,7 @@ describe('making a web-sized copy of a large library image', () => {
     expect(again).toMatchObject({ ok: true, assetId: copy.id });
     expect(sha(readFileSync(join(dir, copy.file)))).toBe(copy.hash);
     expect((await sharp(readFileSync(join(dir, copy.variants![0].file))).metadata()).width).toBe(copy.variants![0].width);
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('keeps every use’s alt text when it uses a copy already in Assets, whatever that copy suggests', async () => {
     const { c } = await openProject();
@@ -592,7 +653,7 @@ describe('making a web-sized copy of a large library image', () => {
     const r = await c.makeWebCopy(bigId, { replace: true, opening: c.openingKey! });
     expect(r).toMatchObject({ ok: true, assetId: first.assetId });
     expect(altsOf(first.assetId!)).toEqual(before);
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('answers both of Assets’ questions about a photo from one read, and again from none while its file is as it was (#1046)', async () => {
     const { c, dir } = await openProject();
@@ -630,7 +691,7 @@ describe('making a web-sized copy of a large library image', () => {
     } finally {
       opened.mockRestore();
     }
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('looks at a large photo in the media worker, which is sent no bytes of it, and answers its metadata though the worker fails (#1046)', async () => {
     const { c, dir } = await openProject();
@@ -638,8 +699,8 @@ describe('making a web-sized copy of a large library image', () => {
     const id = (await c.importAssets([sourceFile('field.jpg', photo)])).assetIds[0];
     await c.copiesMade();
     const file = join(dir, c.session!.state.assets.assets[id].file);
-    // Nothing remembered by the file's stat, so every question is put to the worker.
-    c.session!.settleMs = 60_000;
+    // Nothing remembered by the file's stat, so every question is put to the worker, however long the import took.
+    c.session!.settleMs = Infinity;
     later.requests = [];
     const [meta, plan] = await Promise.all([c.photoMetadata(id), c.webCopyPlan(id)]);
     expect(meta).toEqual(photoMetadata(readFileSync(file)));
@@ -661,7 +722,7 @@ describe('making a web-sized copy of a large library image', () => {
     } finally {
       later.failLibrary = false;
     }
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('looks again at a large photo replaced while a look at it was under way, rather than give the old answers (#1046)', async () => {
     const { c, dir } = await openProject();
@@ -687,7 +748,7 @@ describe('making a web-sized copy of a large library image', () => {
     expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
     // No longer the recorded picture: no copy is offered for it.
     expect(await c.webCopyPlan(id)).toBeNull();
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('says what a large photo records as soon as the worker has read it, before its copy is made (#1046)', async () => {
     const { c, dir } = await openProject();
@@ -695,13 +756,16 @@ describe('making a web-sized copy of a large library image', () => {
     await c.copiesMade();
     const file = join(dir, c.session!.state.assets.assets[id].file);
     later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    later.requests = [];
     let planned = false;
     const plan = c.webCopyPlan(id).then((p) => ((planned = true), p));
     expect(await c.photoMetadata(id)).toEqual(photoMetadata(readFileSync(file)));
     expect(planned).toBe(false);
     later.releaseCopy!();
     expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
-  }, 60_000);
+    // Both answers came from that one look, not from a read here after the worker gave up on it.
+    expect(later.requests).toEqual([{ kind: 'library', bytes: 0, weighed: false }]);
+  }, LARGE_PHOTO_MS);
 
   it('never offers a lighter copy of its own web-sized copy, or of a photo a copy would hardly lighten', async () => {
     const { c } = await openProject();
@@ -714,7 +778,7 @@ describe('making a web-sized copy of a large library image', () => {
     const before = c.session!.revision;
     expect(await c.makeWebCopy(copy.id, { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of big (web-sized) would be less than a third lighter, so it was left as it is.' });
     expect(c.session!.revision).toBe(before);
-  }, 60_000);
+  }, LARGE_PHOTO_MS);
 
   it('offers no copy that saves less than a third, though it would be smaller', async () => {
     const { c } = await openProject();
@@ -806,19 +870,30 @@ describe('photos usable before their copies are made (#979)', () => {
     const { c } = await openProject();
     const photos = await Promise.all(Array.from({ length: 6 }, async (_, i) => sourceFile(`photo-${i}.jpg`, await noisy(1000 + i * 10, 750, 'jpeg'))));
     const release = hold();
-    const asked = later.asked;
-    const r = await c.importAssets(photos);
-    const revision = c.session!.revision;
-    expect(r.assetIds.every((id) => c.session!.state.assets.assets[id].copiesPending)).toBe(true);
-    // Every photo waits its turn in the worker, a few at a time, with nothing else asked of it.
-    await vi.waitFor(() => expect(later.asked - asked).toBe(Math.min(MEDIA_PARALLEL, photos.length)));
-    release();
-    await c.copiesMade();
-    expect(later.asked - asked).toBe(photos.length);
-    for (const id of r.assetIds) expect(c.session!.state.assets.assets[id].variants?.length).toBeGreaterThan(0);
-    // Given together once the last is made (and every few seconds before, which these are quicker than).
-    expect(c.session!.revision - revision).toBeLessThanOrEqual(2);
-    expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import 6 images');
+    // Copies made so far are also given every few seconds while a batch is made: the clock stands still here, so how
+    // long the copies take on a busy machine can never bring one of those in, and only the last is given.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    const fills = vi.spyOn(c.session!, 'fillCopies');
+    try {
+      const asked = later.asked;
+      const r = await c.importAssets(photos);
+      const revision = c.session!.revision;
+      expect(r.assetIds.every((id) => c.session!.state.assets.assets[id].copiesPending)).toBe(true);
+      // Every photo waits its turn in the worker, a few at a time, with nothing else asked of it.
+      await vi.waitFor(() => expect(later.asked - asked).toBe(Math.min(MEDIA_PARALLEL, photos.length)));
+      release();
+      await c.copiesMade();
+      expect(later.asked - asked).toBe(photos.length);
+      for (const id of r.assetIds) expect(c.session!.state.assets.assets[id].variants?.length).toBeGreaterThan(0);
+      // Given together once the last is made: one fill carrying every photo, one change.
+      expect(fills.mock.calls.map(([batch]) => batch.map((f) => f.assetId).sort())).toEqual([[...r.assetIds].sort()]);
+      expect(c.session!.revision - revision).toBeLessThanOrEqual(2);
+      expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import 6 images');
+    } finally {
+      release();
+      clock.mockRestore();
+      fills.mockRestore();
+    }
   }, 60_000);
 
   it('makes the copies a close left unmade when the project opens again, in the same window while the old ones finish', async () => {

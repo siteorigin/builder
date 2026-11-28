@@ -104,9 +104,9 @@ async function setup(people: () => unknown = () => ({ data: PEOPLE }), draft: Pa
     { label: 'Add the team' }
   );
   expect(made.error?.message).toBeUndefined();
-  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
+  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json')).in(dir);
   await secrets.set(s.state.manifest.projectId, 'api', SECRET);
-  const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
+  const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json')).in(dir);
   const spawn = (): SyncHandle => {
     const e = new EventEmitter();
     return {
@@ -120,7 +120,7 @@ async function setup(people: () => unknown = () => ({ data: PEOPLE }), draft: Pa
   const saved = await s.apply({ operations: [{ ...source, type: 'source.upsert' } as EditOperation] }, { label: 'Save the source' });
   expect(saved.error?.message).toBeUndefined();
   await approvals.approve(s.state.manifest.projectId, s.state.sources!.crew);
-  const host = createAgentSources({ project: () => s, runner, secrets, approvals })(new AbortController().signal);
+  const host = createAgentSources({ project: () => s, runner, stores: () => ({ secrets, approvals }) })(new AbortController().signal);
   const deps = { session: s, runner, secrets, approvals, current: () => true, importImage: async () => { throw new Error('no pictures here'); }, spoolRoot: join(env.userData, 'source-sync') };
   return { api, dir, s, host, runner, secrets, approvals, deps, source };
 }
@@ -190,7 +190,7 @@ describe('in an AI turn', () => {
       compileAll: async () => [],
       inspectLayout: async () => ({ issues: [] }),
       onBusyChange: () => undefined,
-      sources: (signal) => createAgentSources({ project: () => s, runner: env2.runner, secrets: env2.secrets, approvals: env2.approvals })(signal)
+      sources: (signal) => createAgentSources({ project: () => s, runner: env2.runner, stores: () => ({ secrets: env2.secrets, approvals: env2.approvals }) })(signal)
     });
     const groups = s.historyInfo().entries.length;
     const r = await orch.send('Map the Crew API into the Team collection', { pageId: s.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, scope: 'site' });
@@ -253,7 +253,7 @@ describe('links in the records’ text that keep only their words (#1426)', () =
       compileAll: async () => [],
       inspectLayout: async () => ({ issues: [] }),
       onBusyChange: () => undefined,
-      sources: (signal) => createAgentSources({ project: () => s, runner: env2.runner, secrets: env2.secrets, approvals: env2.approvals })(signal)
+      sources: (signal) => createAgentSources({ project: () => s, runner: env2.runner, stores: () => ({ secrets: env2.secrets, approvals: env2.approvals }) })(signal)
     });
     const r = await orch.send('Map the Crew API into the Team collection', { pageId: s.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, scope: 'site' });
     expect(r.message).toBeUndefined();
@@ -285,8 +285,8 @@ describe('the source tools’ host', () => {
   it('keeps no project for a tested change that never landed, and approves nothing once its project has gone (#1039)', async () => {
     const { s, runner, secrets, approvals } = await setup();
     // The project as the tools are given it, until it closes: an object of its own, so nothing here keeps it.
-    let current: { readonly state: typeof s.state } | null = { state: s.state };
-    const host = createAgentSources({ project: () => current, runner, secrets, approvals })(new AbortController().signal);
+    let current: { readonly state: typeof s.state; readonly dir: string } | null = { state: s.state, dir: s.dir };
+    const host = createAgentSources({ project: () => current, runner, stores: () => ({ secrets, approvals }) })(new AbortController().signal);
     const tested = await host.verify('crew', { converter: GOOD });
     if (!tested.ok) throw new Error(tested.message);
     const project = new WeakRef(current);

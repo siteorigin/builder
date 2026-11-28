@@ -14,6 +14,9 @@ import { validateOperation } from '@shared/ops';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
+import { MAX_ENTRY_CHARS } from '@engine/values';
+import { runSeoAudit } from '@engine/seo-audit';
+import { resolveRedirects } from '@shared/redirects';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
 import { readMarkdownFolder } from '../../src/main/posts-import/folder';
 import { checkPlan, planOperations, planPostImport } from '../../src/main/posts-import/plan';
@@ -88,9 +91,14 @@ describe('reading a WordPress export', () => {
     // A link to another post of the export goes to it, by its key.
     expect(winter.body[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'spring menu', link: { type: 'entry', target: 'post:wp:13' } }]) });
     expect(winter.notes).toEqual(['Removed a script.', 'Left out an embedded frame or player (https://ads.example/banner).', 'Kept an embedded video or post as a link to it.']);
-    expect(text(spring.body)).toEqual(['Our spring menu is here.\nIt has new pastries.', '[m3]', 'Click here for the workshop.']);
+    // Its gallery shows the one of its two pictures the export lists (the featured snow picture) and says the other is missing.
+    expect(text(spring.body)).toEqual(['Our spring menu is here.\nIt has new pastries.', '[m3]', '[m2]', 'Click here for the workshop.']);
     expect(spring.body[1]).toEqual({ type: 'image', assetId: 'm3', alt: 'Rhubarb tart', caption: 'Rhubarb tart' });
-    expect(spring.notes).toEqual(['Removed a script.', 'Removed the shortcode [gallery].', 'Kept the words of a link whose address could not be kept.']);
+    expect(spring.notes).toEqual([
+      'Removed a script.',
+      'Left out 1 of a gallery’s 2 pictures: the export does not include it. Export All content to bring pictures’ details along.',
+      'Kept the words of a link whose address could not be kept.'
+    ]);
     // A draft at the source needs no reason.
     expect(summer.draftReason).toBeUndefined();
     // Pictures: the original of a resized upload, the featured picture, and one not beside the export.
@@ -363,7 +371,7 @@ describe('planning an import from a read it may spend', () => {
   });
 
   it('still tells a published post that it links to one arriving as a draft, from the text as read', () => {
-    const big = 'w'.repeat(100_001);
+    const big = 'w'.repeat(MAX_ENTRY_CHARS + 1);
     const link = (target: string) => ({ type: 'p' as const, spans: [{ text: 'see', link: { type: 'entry' as const, target: `post:${target}` } }] });
     const posts = [post('a', { body: [link('b'), link('b'), link('c'), link('d')] }), post('b', { body: [{ type: 'p', spans: [{ text: big }] }] }), post('c', { draft: true }), post('d')];
     const plain = planPostImport(site(), src(structuredClone(posts)), '2026-11-24');
@@ -609,7 +617,87 @@ describe('reading a WordPress export: statuses, dates and links', () => {
       ['team', { type: 'page', target: about.id, anchor: 'team' }],
       ['by id', { type: 'entry', target: 'post:wp:11' }]
     ]);
-    expect(source.posts[0].notes).toContain('A link still goes to the old site.');
+    // The review lists the link kept to the old site with the import's others, rather than counting it on the post.
+    expect(source.posts[0].notes).toEqual([]);
+    expect(postImportPreview('r', planPostImport(s, source, '2026-11-24')).oldSiteLinks).toEqual([{ url: 'https://old.example/?p=88', posts: 1 }]);
+  });
+
+  it('issue 1518: names the old site’s addresses the posts still link to, keeps an old category archive working, and Project health names the rest once the site is at that address', async () => {
+    const s = site();
+    const soil = '<category domain="category" nicename="soil-science"><![CDATA[Soil science]]></category>';
+    const clay = '<category domain="category" nicename="clay"><![CDATA[Clay]]></category>';
+    const post = (id: number, title: string, body: string, extra = soil, status = 'publish') => item(id, { title, link: `https://old.example/2020/${id}/`, 'wp:status': status, 'wp:post_date': `2020-01-0${id} 00:00:00` }, body) + extra;
+    const source = await readWordPress(
+      wxr([
+        // The category twice and a relative link to the team page: each address is counted once for the post.
+        // A category WordPress called "page" is a category, not a later page of an archive.
+        post(1, 'First', '<p><a href="https://old.example/category/soil-science/">Soil</a>, <a href="/about/team/">the team</a>, <a href="/category/page/">pages</a> and <a href="https://old.example/category/soil-science/">soil again</a>.</p>', soil + '<category domain="category" nicename="page"><![CDATA[Page]]></category>'),
+        // A query WordPress reads nothing by leaves a post's address the post's; a link spelled otherwise than its
+        // address is kept is never sent on from an address it doesn't ask for.
+        post(2, 'Second', '<p>Meet <a href="https://old.example/about/team/">the team</a>, read <a href="/2020/1/?m=spring&amp;s=">the first</a>, or <a href="/category/soil-science/page/2/">older soil posts</a> and <a href="/category/Soil-Science/">Soil</a>.</p>'),
+        // A category no imported post is filed under has no archive to send visitors to; one only a draft is filed
+        // under has one once the draft is published. WordPress read a category by its query, whatever the path.
+        post(3, 'Third', '<p><a href="https://old.example/category/rain/">Rain</a>, <a href="/category/clay/">clay</a>, <a href="/?cat=8">a category</a> and <a href="https://other.example/about/team/">another site</a>.</p>', ''),
+        post(4, 'Fourth', '<p>Clay.</p>', clay, 'draft')
+      ]),
+      pages(s)
+    );
+    expect(source.posts.flatMap((p) => p.notes)).toEqual([]);
+    const { plan, after } = commit(s, source);
+    const rows = [
+      { url: 'https://old.example/about/team/', posts: 2 },
+      { url: 'https://old.example/?cat=8', posts: 1 },
+      { url: 'https://old.example/category/Soil-Science/', posts: 1 },
+      { url: 'https://old.example/category/clay/', posts: 1, to: '/blog/category/clay/', pending: true },
+      { url: 'https://old.example/category/page/', posts: 1, to: '/blog/category/page/' },
+      { url: 'https://old.example/category/rain/', posts: 1 },
+      { url: 'https://old.example/category/soil-science/', posts: 1, to: '/blog/category/soil-science/' },
+      { url: 'https://old.example/category/soil-science/page/2/', posts: 1 }
+    ];
+    expect(postImportPreview('r', plan).oldSiteLinks).toEqual(rows);
+    // Counted from the posts' text as planned, which a plan that spends the source's text still has.
+    expect(planPostImport(s, structuredClone(source), '2026-11-24', { consume: true }).oldSiteLinks).toEqual(rows);
+    // No post has anything left to check for its links.
+    expect(postImportPreview('r', plan).posts.map((p) => p.notes)).toEqual([[], [], [], []]);
+    const first = Object.values(after.collections.posts.entries).find((e) => e.title === 'First')!;
+    const second = Object.values(after.collections.posts.entries).find((e) => e.title === 'Second')!;
+    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}"}}`);
+    expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
+      { from: '/category/clay/', custom: true, to: '/blog/category/clay/' },
+      { from: '/category/page/', custom: true, to: '/blog/category/page/' },
+      { from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/' }
+    ]);
+    expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([
+      ['/category/page/', '/blog/category/page/'],
+      ['/category/soil-science/', '/blog/category/soil-science/']
+    ]);
+    expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
+    const own = (state: ProjectState) => runSeoAudit(state).filter((f) => f.code === 'SEO_LINK_OWN_MISSING');
+    // While the site's address is elsewhere, the old site may still be up there.
+    expect(own(after)).toEqual([]);
+    expect(own(applyOperations(after, [{ type: 'site.update', baseUrl: 'https://new.example' }]).state)).toEqual([]);
+    // At the old site's address, the links to what the website has no page at are Project health's, one per address:
+    // the draft-only category's too, until a post filed under it is published.
+    const moved = applyOperations(after, [{ type: 'site.update', baseUrl: 'https://old.example' }]).state;
+    expect(own(moved).map((f) => [f.severity, f.message])).toEqual([
+      ['warning', expect.stringMatching(/^“(First|Second)” and 1 other place link to https:\/\/old\.example\/about\/team\/, where the website has no page\.$/)],
+      ['warning', '“Third” links to https://old.example/?cat=8, where the website has no page.'],
+      ['warning', '“Third” links to https://old.example/category/clay/, where the website has no page.'],
+      ['warning', '“Third” links to https://old.example/category/rain/, where the website has no page.'],
+      ['warning', '“Second” links to https://old.example/category/soil-science/page/2/, where the website has no page.']
+    ]);
+    const fourth = Object.values(moved.collections.posts.entries).find((e) => e.title === 'Fourth')!;
+    const published = applyOperations(moved, [{ type: 'entry.update', collectionId: 'posts', entryId: fourth.id, draft: false }]).state;
+    expect(own(published).map((f) => f.site)).not.toContain('own-link|https://old.example/category/clay/');
+    // The same import into a collection without category archives keeps no old category address.
+    const flat = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }]).state;
+    flat.collections.posts.settings.categoryArchives = false;
+    const unarchived = planPostImport(flat, source, '2026-11-24');
+    expect(unarchived.archiveRedirects).toEqual([]);
+    expect(unarchived.oldSiteLinks.find((l) => l.url.endsWith('/category/soil-science/'))).toEqual({ url: 'https://old.example/category/soil-science/', posts: 1 });
+    // Into a collection that already has the category under another ID, the old address goes to that one's archive.
+    const named = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms: { soils: { label: 'Soil science' } } } } }]).state;
+    expect(planPostImport(named, source, '2026-11-24').archiveRedirects).toContainEqual({ from: '/category/soil-science/', to: '/blog/category/soils/' });
   });
 
   it('says when a featured picture is not in the export', async () => {
@@ -624,6 +712,128 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     writeFileSync(join(path, '..', 'uploads', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
     const source = await readWordPress(path, {});
     expect(source.media).toEqual([expect.objectContaining({ problem: 'it is an SVG drawing, which is added in Assets rather than with posts' })]);
+  });
+});
+
+describe('reading a WordPress export: galleries (#1513)', () => {
+  const attachment = (id: number, url: string, extra = '') =>
+    `<wp:post_id>${id}</wp:post_id><wp:post_type>attachment</wp:post_type><wp:attachment_url><![CDATA[${url}]]></wp:attachment_url>${extra}`;
+  const alt = (text: string) => `<wp:postmeta><wp:meta_key>_wp_attachment_image_alt</wp:meta_key><wp:meta_value><![CDATA[${text}]]></wp:meta_value></wp:postmeta>`;
+  const published = { title: 'Gallery', 'wp:status': 'publish', 'wp:post_date': '2018-01-02 00:00:00' };
+  const withUploads = (path: string, files: string[]) => {
+    for (const f of files) {
+      mkdirSync(join(path, '..', 'wp-content/uploads/2018/01'), { recursive: true });
+      writeFileSync(join(path, '..', 'wp-content/uploads/2018/01', f), `picture ${f}`);
+    }
+    return path;
+  };
+
+  it('brings a gallery’s pictures into the post, one after another, from the attachments the export lists', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('First "pic" <b>')),
+        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
+        attachment(5002, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg'),
+        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5002,5000,5002,5001" columns="3"]\n\nAfter.')
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const [post] = source.posts;
+    // In the order the gallery names them, not by ID.
+    expect(text(post.body)).toEqual(['Before.', '[m1]', '[m2]', '[m3]', '[m1]', 'After.']);
+    expect(post.body[1]).toEqual({ type: 'image', assetId: 'm1', alt: 'Solo', caption: 'Solo' });
+    expect(post.body[3]).toEqual({ type: 'image', assetId: 'm3', alt: 'First "pic" <b>' });
+    expect(post.body[4]).toEqual({ type: 'image', assetId: 'm1', alt: '' });
+    const uploaded = (f: string) => join(path, '..', 'wp-content/uploads/2018/01', f);
+    expect(source.media.map((m) => m.path)).toEqual([uploaded('g2-100.jpg'), uploaded('g3-100.jpg'), uploaded('g1-100.jpg')]);
+    expect(post.notes).toEqual([]);
+  });
+
+  it('says how many of a gallery’s pictures were left out when the export does not list them', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg'),
+        item(1, published, '[gallery ids="5000, 5002"]\n\n[gallery include="7,8,9"]')
+      ]),
+      ['g1-100.jpg']
+    );
+    const [post] = (await readWordPress(path, {})).posts;
+    expect(text(post.body)).toEqual(['[m1]']);
+    expect(post.notes).toEqual(['Left out 4 pictures of 2 galleries (1 of 2, 3 of 3): the export does not include them. Export All content to bring pictures’ details along.']);
+  });
+
+  it('shows a gallery that names no pictures with the pictures attached to its post, in their order', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5005, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>1</wp:menu_order>'),
+        attachment(5007, 'https://site.example/wp-content/uploads/2018/01/g4%2Ejpg?download=menu.pdf', '<wp:post_parent>1</wp:post_parent><wp:menu_order>3</wp:menu_order>'),
+        attachment(5004, 'https://site.example/wp-content/uploads/2018/01/menu.pdf', '<wp:post_parent>1</wp:post_parent><wp:post_mime_type>application/pdf</wp:post_mime_type>'),
+        attachment(5006, 'https://site.example/wp-content/uploads/2018/01/song.mp3', '<wp:post_parent>1</wp:post_parent>'),
+        attachment(5003, 'https://site.example/wp-content/uploads/2018/01/other.jpg', '<wp:post_parent>2</wp:post_parent>'),
+        item(1, published, '[gallery]'),
+        item(2, { ...published, title: 'Empty' }, 'Text\n\n[gallery exclude="5003"]')
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg', 'g4.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const [one, two] = source.posts;
+    // By menu order, then by ID; the document and the sound are no pictures of the gallery, and a picture's address
+    // is judged by its file's name, not its query.
+    expect(text(one.body)).toEqual(['[m1]', '[m2]', '[m3]', '[m4]']);
+    expect(source.media.map((m) => m.ref.split('/').pop())).toEqual(['g2-100.jpg', 'g1-100.jpg', 'g3-100.jpg', 'g4%2Ejpg?download=menu.pdf']);
+    expect(one.notes).toEqual([]);
+    expect(text(two.body)).toEqual(['Text']);
+    expect(two.notes).toEqual(['Left out a gallery: the export lists no pictures for it.']);
+  });
+
+  it('keeps a picture’s description as written, ignores exclude beside ids, and caps what a post’s galleries bring', async () => {
+    const many = Array.from({ length: 300 }, (_, i) => attachment(6000 + i, `https://site.example/wp-content/uploads/2018/01/p${i}.jpg`, '<wp:post_parent>1</wp:post_parent>'));
+    const path = withUploads(
+      wxr([
+        item(1, published, '[gallery ids="5000" exclude="5000"]\n\n[gallery]\n\n[gallery]'),
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('Band [audio] live')),
+        ...many
+      ]),
+      ['g1-100.jpg']
+    );
+    const [post] = (await readWordPress(path, {})).posts;
+    expect(post.body[0]).toEqual({ type: 'image', assetId: 'm1', alt: 'Band [audio] live' });
+    expect(post.body).toHaveLength(500);
+    expect(post.notes).toEqual(['Left out 101 gallery pictures past the first 500: a post brings at most 500 from its galleries.']);
+  });
+
+  it('reads a gallery’s attributes as WordPress does', async () => {
+    const ids = Array.from({ length: 400 }, (_, i) => 10000 + i).join(',');
+    const path = withUploads(
+      wxr([
+        attachment(7, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg'),
+        attachment(8, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
+        attachment(9, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg'),
+        ...Array.from({ length: 400 }, (_, i) => attachment(10000 + i, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg')),
+        item(1, published, '[gallery title="examples ids=9" ids=\'7\']'),
+        item(2, published, '[gallery ids=7,8/]'),
+        item(3, published, '[gallery ids="" include=8]'),
+        item(4, published, `[gallery ids="${ids}"]`),
+        item(5, published, '[gallery ids="9,404"]'),
+        item(6, published, '[gallery ids="404"]'),
+        item(7, published, `[gallery ids="8" ids="7"${' '.repeat(11_000)}]`)
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const refs = (p: SourcePost) => p.body.map((b) => source.media.find((m) => 'assetId' in b && m.key === b.assetId)?.ref.split('/').pop());
+    const [named, closed, included, long, half, gone, later] = source.posts;
+    expect(refs(later)).toEqual(['g1-100.jpg']);
+    expect(refs(named)).toEqual(['g1-100.jpg']);
+    expect(refs(closed)).toEqual(['g1-100.jpg', 'g2-100.jpg']);
+    expect(refs(included)).toEqual(['g2-100.jpg']);
+    // A gallery naming hundreds of pictures is still one gallery.
+    expect([long.body.length, long.notes]).toEqual([400, []]);
+    expect(half.notes).toEqual(['Left out 1 of a gallery’s 2 pictures: the export does not include it. Export All content to bring pictures’ details along.']);
+    expect(gone.notes).toEqual(['Left out a gallery’s picture: the export does not include it. Export All content to bring pictures’ details along.']);
   });
 });
 
@@ -775,8 +985,31 @@ describe('planning an import: limits, drafts and the review', () => {
     expect(postImportPreview('r', plan).posts[1].categories).toEqual(['Local News']);
   });
 
+  it('brings a 20,000-word long read whole and published, with its pictures', () => {
+    // 168 paragraphs of 20,040 words, 113,398 characters: a magazine's long read, as the report measured it.
+    const words = Array.from({ length: 20_040 }, (_, i) => ['harbour', 'light', 'over', 'the', 'water', 'and', 'nets'][i % 7]);
+    const paragraphs = Array.from({ length: 168 }, (_, i) => words.slice(Math.floor((i * words.length) / 168), Math.floor(((i + 1) * words.length) / 168)).join(' '));
+    const pad = 113_398 - paragraphs.join('').length;
+    paragraphs[0] = `${'w'.repeat(pad)} ${paragraphs[0]}`.slice(1);
+    expect(paragraphs.join('').length).toBe(113_398);
+    const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
+    const body: RichText = [...paragraphs.map((text) => ({ type: 'p' as const, spans: [{ text }] })), { type: 'image', assetId: 'm1', alt: 'The harbour at dusk', caption: 'The last boat in.' }];
+    const { plan, after } = commit(site(), src([post('long', { body, oldPath: '/2024/05/twenty-k/' })], media));
+    expect(plan.posts[0]).toMatchObject({ draft: false, redirectFrom: '/2024/05/twenty-k/' });
+    expect(plan.posts[0].draftReason).toBeUndefined();
+    expect(plan.posts[0].notes.join(' ')).not.toMatch(/longer than a post holds/);
+    expect(plan.posts[0].body).toHaveLength(169);
+    expect(plan.media).toHaveLength(1);
+    const entry = Object.values(after.collections.posts.entries).find((e) => e.title === 'long')!;
+    expect(entry.draft).toBeFalsy();
+    expect(text(entry.body!).slice(0, 168)).toEqual(paragraphs);
+    // Published at its old address, as it was on the old site.
+    expect(after.site.redirects).toEqual([{ from: '/2024/05/twenty-k/', entryId: entry.id }]);
+    expect(entry.body!.at(-1)).toMatchObject({ type: 'image', caption: 'The last boat in.' });
+  });
+
   it('keeps a post whose text had to be cut as a draft, importing only the pictures it still shows', () => {
-    const big = 'x'.repeat(100_001);
+    const big = 'x'.repeat(MAX_ENTRY_CHARS + 1);
     const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
     const plan = planPostImport(site(), src([post('long', { body: [{ type: 'p', spans: [{ text: big }] }, { type: 'image', assetId: 'm1', alt: '' }] })], media), '2026-11-24');
     expect(plan.posts[0]).toMatchObject({ draft: true, draftReason: 'its text was longer than a post holds, so it was cut', body: [] });
@@ -954,7 +1187,7 @@ describe('second review: drafts, sizes and links read as written', () => {
       skipped: [],
       posts: [
         { key: 'a', from: 'a', title: 'A', slug: 'a', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'See B', link: { type: 'entry', target: 'post:b' } }] }] },
-        { key: 'b', from: 'b', title: 'B', slug: 'b', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'x'.repeat(100_001) }] }] }
+        { key: 'b', from: 'b', title: 'B', slug: 'b', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'x'.repeat(MAX_ENTRY_CHARS + 1) }] }] }
       ]
     };
     const plan = planPostImport(site(), src2, '2026-11-24');
@@ -1023,5 +1256,111 @@ describe('last review: what a draft setting, an address or a name can hide', () 
 
   it('keeps a numeric reference without its semicolon as written in an address', () => {
     expect(htmlToRichTextFromMarkdown('[go](https://example.org/?q=&#65)')[0]).toMatchObject({ spans: [{ link: { target: 'https://example.org/?q=&#65' } }] });
+  });
+});
+
+describe('reading a static site folder (#1517)', () => {
+  const pictures = (source: ParsedSource) => source.media.map((m) => [m.ref, m.path ? m.path.slice(source.root.length + 1) : undefined, m.problem]);
+
+  it('reads a Jekyll site’s _posts and finds its pictures at the site’s root', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\ntitle: Jekyll post\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/cover.jpg) ![Beside](beside.jpg) [Next](2020-02-01-later.md)',
+      '_posts/2020-02-01-later.md': '---\ntitle: Later\n---\nText',
+      '_posts/beside.jpg': 'jpg',
+      'assets/img/cover.jpg': 'jpg',
+      '_config.yml': 'title: A blog',
+      'index.md': '---\nlayout: home\n---\nHome page',
+      'about.md': '---\ntitle: About\n---\nAbout page'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => [p.from, p.title, p.date])).toEqual([
+      ['_posts/2020-01-01-jekyll-post.md', 'Jekyll post', '2020-01-01'],
+      ['_posts/2020-02-01-later.md', 'Later', '2020-02-01']
+    ]);
+    const [post] = source.posts;
+    expect(post.featured).toBe('m1');
+    expect(pictures(source)).toEqual([
+      ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined],
+      ['beside.jpg', join('_posts', 'beside.jpg'), undefined]
+    ]);
+    expect(JSON.stringify(post.body)).toContain('"target":"post:md:_posts/2020-02-01-later.md"');
+  });
+
+  it('reads a Hugo site’s content/posts, page bundles included, and finds root pictures in static/', async () => {
+    const dir = mdFolder({
+      'content/posts/hugo-post.md': '---\ntitle: Hugo post\ndate: 2021-03-01\nimage: /images/cover.jpg\n---\nText',
+      'content/posts/bundle/index.md': '---\ntitle: Bundle\ndate: 2021-04-01\n---\n![Here](here.jpg)',
+      'content/posts/bundle/here.jpg': 'jpg',
+      'hugo.toml': 'title = "A blog"',
+      'index.md': 'Home page',
+      'about.md': 'About page',
+      'static/images/cover.jpg': 'jpg'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => [p.from, p.slug])).toEqual([
+      ['content/posts/bundle/index.md', 'bundle'],
+      ['content/posts/hugo-post.md', 'hugo-post']
+    ]);
+    expect(pictures(source).sort()).toEqual([
+      ['/images/cover.jpg', join('static', 'images', 'cover.jpg'), undefined],
+      ['here.jpg', join('content', 'posts', 'bundle', 'here.jpg'), undefined]
+    ]);
+  });
+
+  it('reads a site folder without settings from its posts folder when it has no posts of its own', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/inline.jpg)',
+      'assets/img/cover.jpg': 'jpg',
+      'assets/img/inline.jpg': 'jpg',
+      'index.md': 'Home page'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['_posts/2020-01-01-jekyll-post.md']);
+    expect(pictures(source)).toEqual([
+      ['/assets/img/inline.jpg', join('assets', 'img', 'inline.jpg'), undefined],
+      ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined]
+    ]);
+  });
+
+  it('reads a folder of posts as its posts even when it also holds a posts folder', async () => {
+    const dir = mdFolder({
+      'spring.md': '---\ntitle: Spring\ndate: 2020-01-01\n---\nText',
+      'summer/index.md': '---\ntitle: Summer\ndate: 2020-06-01\n---\nText',
+      '_posts/2010-01-01-old.md': 'Old',
+      'src/content/blog/example.md': 'Example',
+      'config.toml/readme.txt': 'A folder, not a settings file'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['spring.md', 'summer/index.md']);
+    // A bundle alone is posts of the folder's own too.
+    rmSync(join(dir, 'spring.md'));
+    expect((await readMarkdownFolder(dir, {})).posts.map((p) => p.from)).toEqual(['summer/index.md']);
+  });
+
+  it('never reads a posts folder a link leads to outside the chosen folder', async () => {
+    const outside = mdFolder({ 'posts/secret.md': '---\ntitle: Secret\ndate: 2020-01-01\n---\nText' });
+    const dir = mdFolder({ '_config.yml': 'title: A blog', 'mine.md': '---\ntitle: Mine\ndate: 2020-01-01\n---\nText' });
+    symlinkSync(outside, join(dir, 'content'));
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['mine.md']);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('says so when a site’s posts folder cannot be listed', async () => {
+    const dir = mdFolder({ '_config.yml': 'title: A blog', 'index.md': 'Home page', '_posts/2020-01-01-a.md': 'A' });
+    const { chmodSync } = await import('node:fs');
+    chmodSync(join(dir, '_posts'), 0o000);
+    try {
+      const source = await readMarkdownFolder(dir, {});
+      expect(source.posts.map((p) => p.from)).toEqual(['index.md']);
+      expect(source.skipped).toEqual([expect.stringMatching(/^_posts: it could not be read/)]);
+    } finally {
+      chmodSync(join(dir, '_posts'), 0o755);
+    }
+  });
+
+  it('still reads a folder of posts chosen on its own', async () => {
+    const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['one.md']);
   });
 });
