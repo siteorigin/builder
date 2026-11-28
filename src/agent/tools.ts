@@ -563,7 +563,7 @@ export function asksForCollection(text: string, state?: ProjectState): boolean {
   };
   if (Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName))) return true;
   // An address one of them holds: its index, an entry's page or an archive page ("/properties/", #1408).
-  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘`*_[<])(\/[^\s"'()”’,;!?`*<>\]]+)/gu)].some((m) => {
+  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘`*[<])(\/[^\s"'()”’,;!?`*<>\]]+)/gu)].some((m) => {
     // An address as written, without its #fragment or ?query; //host/... names another site.
     const path = m[1].replace(/[#?].*$/, '').replace(/[.:]+$/, '');
     if (path.startsWith('//')) return false;
@@ -1578,6 +1578,19 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   }
 }
 
+/** Room a whole layout leaves in a result for what goes beside it (the revision, a note). */
+const LAYOUT_RESULT_ROOM = MAX_RESULT_CHARS - 1000;
+
+/**
+ * A collection layout read whole by a whole-site run (#1408): every section as read_page shows a page's while it fits a
+ * result, else each section by its ID, kind and name (a layout run's first look), each then read whole with nodeId.
+ */
+function wholeLayout(state: ProjectState, owner: LayoutOwner, label: string): Record<string, unknown> {
+  const detail = layoutDetail(state, owner);
+  if (detail && JSON.stringify(detail).length <= LAYOUT_RESULT_ROOM) return detail;
+  return layoutGlance(state, owner, label, LAYOUT_RESULT_ROOM);
+}
+
 /** Capitalised, as a sentence starts with it: "The Team index layout". */
 const sentence = (label: string) => `${label[0].toUpperCase()}${label.slice(1)}`;
 
@@ -1609,8 +1622,7 @@ function readLayout(args: { owner?: LayoutOwner; nodeId?: string }, host: ToolHo
       if (args.nodeId !== undefined) return toolError('INVALID_ARGUMENT', `${sentence(found.label)} shows the ready-made cards, which have no node "${args.nodeId}": read it without nodeId.`);
       return { ok: true, content: { revision: host.revision(), owner: found.owner, collectionId: found.owner.id, custom: false, note: `${sentence(found.label)} shows the ready-made cards, which have no sections to change. edit_collection_layout with action "start" begins its own layout in their place, which you can then change.` } };
     }
-    // Read whole while it fits a result; else by its sections' IDs, each then read with nodeId (as a layout run's first look).
-    if (args.nodeId === undefined) return { ok: true, content: { revision: host.revision(), ...layoutGlance(host.state(), found.owner, found.label, MAX_RESULT_CHARS - 2000) } };
+    if (args.nodeId === undefined) return { ok: true, content: { revision: host.revision(), ...wholeLayout(host.state(), found.owner, found.label) } };
   }
   const detail = layoutDetail(host.state(), layout.owner, args.nodeId);
   if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${sentence(layout.label)} is no longer in the site.`);
@@ -1632,7 +1644,7 @@ async function runEditLayout(a: z.infer<(typeof TOOL_ARGS)['edit_collection_layo
     if (a.operations !== undefined) return toolError('INVALID_ARGUMENT', 'start takes no operations: change the layout it begins in your next step, with the IDs it returns.');
     if (owner.kind === 'template') return toolError('INVALID_ARGUMENT', `${sentence(label)} is always there: change it with action "edit".`);
     // Started already (by the author, or by a call before this one): never replaced with a new one.
-    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...layoutGlance(state, owner, label, MAX_RESULT_CHARS - 2000) } };
+    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...wholeLayout(state, owner, label) } };
     const op = { type: 'collection.update', collectionId: owner.id, archiveTemplate: 'start' } as EditOperation;
     const res = await host.apply([op], a.expectedRevision, `Start ${label}`.slice(0, 120), callId, { collectionWrite: { kind: 'indexLayout', collectionId: owner.id } });
     if (!res.ok) return applyFailure(res);

@@ -625,10 +625,10 @@ describe("a whole-site request and a collection's own layouts (#1408)", () => {
       expect(t.brief, t.name).toBeTruthy();
     }
     for (const text of ['Add a search intro to /properties/', 'Customise the /properties page', 'Show the price on /properties/harbour-loft/', 'Change /properties/page/2/', 'Tidy up `/properties/`', 'Link to /properties/#featured', 'Open /properties/?sort=new']) expect(asksForCollection(text, s), text).toBe(true);
-    for (const text of ['Move /properties-old/ to the footer', 'Change the /about/ page', 'Make the hero teal', 'Like https://example.com/properties/ does', 'See //properties/', 'Show the price on /properties/no-such-home/']) expect(asksForCollection(text, s), text).toBe(false);
+    for (const text of ['Move /properties-old/ to the footer', 'Change the /about/ page', 'Make the hero teal', 'Like https://example.com/properties/ does', 'See //properties/', 'Show the price on /properties/no-such-home/', 'Compare https://example.com/x_/properties/']) expect(asksForCollection(text, s), text).toBe(false);
     // A component's design widened to the whole site can reach a collection's layouts too.
     const design = Object.keys(s.components)[0];
-    expect(toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: null }).tools.map((t) => t.name)).toContain('edit_collection_layout');
+    expect(toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: null }).tools.map((t) => t.name)).toEqual(expect.arrayContaining(['read_layout', 'edit_collection_layout']));
     expect(toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: { definitionId: design } }).tools.map((t) => t.name)).not.toContain('edit_collection_layout');
     // A collection with no pages of its own has no layout to change.
     const data = studio();
@@ -697,7 +697,9 @@ describe("a whole-site request and a collection's own layouts (#1408)", () => {
     const session = await open(listings());
     const h = sessionHost(session);
     const owner = { kind: 'template', id: 'listings' };
-    expect((await tool(h, 'read_layout', { owner })).content).toMatchObject({ ok: true, owner, sections: expect.any(Array) });
+    const read = (await tool(h, 'read_layout', { owner })).content as unknown as { sections: Array<{ id: string }> };
+    expect(read).toMatchObject({ ok: true, owner });
+    expect(read.sections.map((x) => x.id)).toEqual(session.state.collections.listings.settings.template.rootIds);
     expect((await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'start' })).content).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/always there/) } });
     const added = await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Price' }] });
     expect(added.content, JSON.stringify(added.content).slice(0, 300)).toMatchObject({ ok: true });
@@ -706,6 +708,22 @@ describe("a whole-site request and a collection's own layouts (#1408)", () => {
     expect(bound.content, JSON.stringify(bound.content).slice(0, 300)).toMatchObject({ ok: true });
     expect(session.state.collections.listings.settings.template.nodes[nodeId]).toMatchObject({ text: { $entry: 'field.price' } });
     expect(session.state.collections.listings.settings.archiveTemplate).toBeUndefined();
+  });
+
+  it('reads a layout too long for one result by its sections, every one of them by its ID', async () => {
+    const big = listings();
+    const tpl = big.collections.listings.settings.template;
+    const first = tpl.rootIds[0];
+    for (let i = 0; i < 150; i++) {
+      tpl.nodes[`n_more${i}`] = { ...structuredClone(tpl.nodes[first]), id: `n_more${i}` } as never;
+      tpl.rootIds.push(`n_more${i}`);
+    }
+    const session = await open(big);
+    const owner = { kind: 'template', id: 'listings' };
+    const read = (await tool(sessionHost(session), 'read_layout', { owner })).content as unknown as { sections: Array<{ id: string }>; shortened?: string };
+    expect(read).toMatchObject({ ok: true, owner, shortened: expect.stringMatching(/nodeId/) });
+    expect(read.sections.map((x) => x.id)).toEqual(tpl.rootIds);
+    expect((await tool(sessionHost(session), 'read_layout', { owner, nodeId: 'n_more149' })).content).toMatchObject({ ok: true, node: expect.objectContaining({ id: 'n_more149' }) });
   });
 
   it('is held by the project: a start changes nothing else, and only while the index has no layout of its own', async () => {
