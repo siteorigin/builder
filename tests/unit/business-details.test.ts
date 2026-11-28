@@ -282,6 +282,32 @@ describe('the site’s business details on its pages', () => {
     expect(s.components[footer(s).definitionId].properties.contact.default).toEqual(was);
   });
 
+  it('keeps a link a placement leaves to its design kept through an edit of the field beside it', () => {
+    let s = apply(business(), identity({ email: 'info@fernfield.co.za' }));
+    const page = { kind: 'page' as const, id: contactPage(s).id };
+    const def = s.components[contactSection(s).definitionId];
+    def.properties.card = { type: 'object', label: 'Card', fields: { title: { type: 'string', label: 'Title', default: 'Write' }, link: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } }, default: { title: 'Press', link: { type: 'email', target: 'press@fernfield.co.za' } } } as never;
+    contactSection(s).props.card = { title: 'Press desk' };
+    s = apply(s, identity({ email: 'press@fernfield.co.za' }));
+    s = apply(s, { type: 'instance.setProp', owner: page, nodeId: contactSection(s).id, prop: 'card', field: 'title', value: 'Press office' });
+    s = apply(s, identity({ email: 'bookings@fernfield.co.za' }));
+    expect(contactSection(s).props.card).toMatchObject({ title: 'Press office', link: { type: 'email', target: 'press@fernfield.co.za' } });
+  });
+
+  it('leaves a link to a mailbox written in another case, which a mail host may tell apart', () => {
+    let s = apply(business(), identity({ email: 'press@fernfield.co.za' }));
+    const page = { kind: 'page' as const, id: contactPage(s).id };
+    s = apply(s, { type: 'instance.setProp', owner: page, nodeId: contactSection(s).id, prop: 'actionLink', value: { type: 'email', target: 'PRESS@FernField.co.za' } });
+    s = apply(s, identity({ email: 'Press@fernfield.co.za' }));
+    expect(contactSection(s).props.actionLink).toEqual({ type: 'email', target: 'PRESS@FernField.co.za' });
+    expect(details(s)[0]).toEqual(['Press@fernfield.co.za', { type: 'email', target: 'Press@fernfield.co.za' }]);
+    // A row ID of any characters is a name, never a failure.
+    const t = apply(business(), identity({ email: 'info@fernfield.co.za' }));
+    contactSection(t).props.items = [{ ...rows(contactSection(t), 'items')[0], id: '\ud800%5d]', value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } }];
+    const u = apply(apply(t, identity({ email: 'press@fernfield.co.za' })), identity({ email: 'bookings@fernfield.co.za' }));
+    expect(rows(contactSection(u), 'items')[0].value).toBe('press@fernfield.co.za');
+  });
+
   it('follows the fields of an object as the site build shows them', () => {
     const s0 = business();
     const def = s0.components[contactSection(s0).definitionId];

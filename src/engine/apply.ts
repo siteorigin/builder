@@ -2940,7 +2940,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
   // What the edit changes of a value kept through changes of the site's details is the author's again (#1368).
-  const settleKeeps = watchDetailKeeps(node, op.prop, Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : schema.default);
+  const settleKeeps = watchDetailKeeps(node, op.prop, Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : schema.default, schema);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);

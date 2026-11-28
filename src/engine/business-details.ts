@@ -70,9 +70,12 @@ function says(detail: BusinessDetail, text: string, value: string): boolean {
   return !!squash(value) && squash(text) === squash(value);
 }
 
+/** An address as mail hosts compare it: the mailbox as written, the domain in any case. */
+const mailbox = (t: string) => t.trim().replace(/@[^@]*$/, (d) => d.toLowerCase());
+
 /** Whether a link opens `value`: an email link to that one address (whatever it adds after it), or a call to that number. */
 function opens(detail: BusinessDetail, link: LinkValue, value: string): boolean {
-  if (detail === 'email') return link.type === 'email' && link.target.split('?')[0].trim().toLowerCase() === value.trim().toLowerCase();
+  if (detail === 'email') return link.type === 'email' && mailbox(link.target.split('?')[0]) === mailbox(value);
   if (detail === 'telephone') return link.type === 'tel' && !!dials(link.target) && dials(link.target) === dials(value);
   return false;
 }
@@ -153,20 +156,22 @@ const keepKey = (detail: BusinessDetail, path: string) => `${KEEP}${detail}:${pa
 /** The field a kept value's name names. */
 const keptPath = (key: string) => key.slice(key.indexOf(':', KEEP.length) + 1);
 /** A list item's field, its ID written so no ID can be read as more of the path. */
-const itemPath = (prop: string, itemId: string, field: string) => `${prop}[${encodeURIComponent(itemId)}].${field}`;
+const itemPath = (prop: string, itemId: string, field: string) => `${prop}[${itemId.replace(/[%[\]]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}].${field}`;
 /** The property, item and field a path names. */
 function parsePath(path: string): { prop: string; itemId?: string; field?: string } {
   const item = /^([^.[]+)\[([^\]]*)\]\.(.+)$/.exec(path);
-  if (item) return { prop: item[1], itemId: decodeURIComponent(item[2]), field: item[3] };
+  if (item) return { prop: item[1], itemId: item[2].replace(/%(25|5b|5d)/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), field: item[3] };
   const dot = path.indexOf('.');
   return dot < 0 ? { prop: path } : { prop: path.slice(0, dot), field: path.slice(dot + 1) };
 }
-/** What a property's value holds at a path, as text to compare. */
-function valueAt(value: unknown, path: string): string {
+/** What a property's value shows at a path (a field it leaves out, its design's), as text to compare. */
+function valueAt(value: unknown, path: string, schema: PropSchema | undefined): string {
   const { itemId, field } = parsePath(path);
+  const fields = schema && (schema.type === 'list' || schema.type === 'object') ? schema.fields : {};
+  const shown = (holder: unknown, base: unknown) => (isRecord(holder) && Object.hasOwn(holder, field!) ? holder[field!] : isRecord(base) && Object.hasOwn(base, field!) ? base[field!] : fields[field!]?.default);
   let v: unknown = value;
-  if (itemId !== undefined) v = Array.isArray(value) ? (value.find((it) => isRecord(it) && it.id === itemId) as Record<string, unknown> | undefined)?.[field!] : undefined;
-  else if (field !== undefined) v = isRecord(value) ? value[field] : undefined;
+  if (itemId !== undefined) v = Array.isArray(value) ? shown(value.find((it) => isRecord(it) && it.id === itemId), undefined) : undefined;
+  else if (field !== undefined) v = shown(value, schema?.type === 'object' ? schema.default : undefined);
   return JSON.stringify(v ?? null);
 }
 
@@ -186,14 +191,14 @@ function setKept(node: InstanceNode, keys: Set<string>) {
  * edit changed (its text, its link, even a link that moved with its text) is the author's choice again, and follows
  * the site's details if it shows them; one it left as it was stays kept. `before` is the value the placement showed.
  */
-export function watchDetailKeeps(node: InstanceNode, prop: string, before: unknown): (after: unknown) => void {
+export function watchDetailKeeps(node: InstanceNode, prop: string, before: unknown, schema?: PropSchema): (after: unknown) => void {
   const mine = [...keptOf(node)].filter((k) => parsePath(keptPath(k)).prop === prop);
   if (!mine.length) return () => {};
-  const was = new Map(mine.map((k) => [k, valueAt(before, keptPath(k))]));
+  const was = new Map(mine.map((k) => [k, valueAt(before, keptPath(k), schema)]));
   return (after) => {
     const kept = keptOf(node);
     let changed = false;
-    for (const [k, v] of was) if (valueAt(after, keptPath(k)) !== v && kept.delete(k)) changed = true;
+    for (const [k, v] of was) if (valueAt(after, keptPath(k), schema) !== v && kept.delete(k)) changed = true;
     if (changed) setKept(node, kept);
   };
 }
