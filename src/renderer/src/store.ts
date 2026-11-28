@@ -1031,13 +1031,19 @@ export function warningsToast(done: 'Saved' | 'Created', warnings: string[]): vo
 }
 
 let toastId = 0;
-export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action'], stays = false) {
+export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action'], stays = false): void {
+  toastWithId(text, kind, action, stays);
+}
+
+/** A toast, as `toast` shows it, with the id that dismisses it. */
+export function toastWithId(text: string, kind: Toast['kind'] = 'info', action?: Toast['action'], stays = false): number {
   const id = ++toastId;
   // An error stays until it is dismissed, so one said again takes the earlier one's place instead of stacking. One
   // with an action of its own stays beside it: that action can hold something else (the text for Copy text).
   const repeats = (t: Toast) => (kind === 'error' || stays) && t.kind === kind && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
   setState({ toasts: [...getState().toasts.filter((t) => !repeats(t)), { id, text, kind, action }] });
   if (kind !== 'error' && !stays) setTimeout(() => dismissToast(id), 4000);
+  return id;
 }
 
 export function dismissToast(id: number) {
