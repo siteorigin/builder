@@ -357,7 +357,7 @@ const COMPONENT_CHECK: ToolName = 'inspect_component';
 const MODEL_PAGE_STARTER = z
   .enum(['empty', 'intro', 'article'])
   .optional()
-  .describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.');
+  .describe('"intro" adds a page introduction section. "article" makes one dated announcement page (a news item): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body. Blog posts are entries of the "posts" collection, never article pages.');
 
 /**
  * The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it.
@@ -491,11 +491,11 @@ export function asksForSource(text: string, state?: ProjectState): boolean {
 
 /**
  * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
- * offered the tools for: in so many words, or by naming one of the project's collections (its ID, its name or what one
- * entry is called, "Add a Role field to Team").
+ * offered the tools for: in so many words, by asking for a blog or its posts (the ready-made "posts" collection, #1423),
+ * or by naming one of the project's collections (its ID, its name or what one entry is called, "Add a Role field to Team").
  */
 export function asksForCollection(text: string, state?: ProjectState): boolean {
-  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop)\b/i.test(text)) return true;
+  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging|posts)\b/i.test(text)) return true;
   const fold = (s: string) => s.normalize('NFKC').toLowerCase();
   const words = fold(text);
   const named = (n: unknown) => {
