@@ -18,6 +18,7 @@ export function reportNotes(r: HtmlReport): string[] {
   if (r.code) out.push(`${cap(count(r.code, 'block of code or preformatted text', 'blocks of code or preformatted text'))} became ordinary text.`);
   if (r.raised) out.push(`${cap(count(r.raised, 'superscript or subscript', 'superscripts and subscripts'))} became ordinary text on the line.`);
   if (r.struck) out.push(`Kept ${count(r.struck, 'struck-through passage', 'struck-through passages')} as ordinary text, no longer struck through.`);
+  if (r.ticked) out.push(`Left out the tick of ${count(r.ticked, 'done task', 'done tasks')}: a check list shows every item alike.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }

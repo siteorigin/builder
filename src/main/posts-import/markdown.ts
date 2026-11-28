@@ -337,8 +337,8 @@ interface ListItem {
   lines: string[];
 }
 
-/** A Markdown body as HTML. `depth` limits quotes and lists inside each other. */
-export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), budget = { left: MAX_HTML }): string {
+/** A Markdown body as HTML. `depth` limits quotes and lists inside each other; `inList` is inside a list's item. */
+export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), budget = { left: MAX_HTML }, inList = false): string {
   const lines = md.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n');
   // Link reference definitions are read first, wherever they are outside code, and leave no text.
   let inFence: string | null = null;
@@ -408,7 +408,7 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
       endPara();
       const quoted: string[] = [];
       while (i < lines.length && lines[i].trim() && (/^ {0,3}>/.test(lines[i]) || quoted.length)) quoted.push(lines[i++].replace(/^ {0,3}> ?/, ''));
-      out.push(`<blockquote>${depth < 8 ? markdownToHtml(quoted.join('\n'), depth + 1, refs, budget) : escapeHtml(quoted.join(' '))}</blockquote>`);
+      out.push(`<blockquote>${depth < 8 ? markdownToHtml(quoted.join('\n'), depth + 1, refs, budget, inList) : escapeHtml(quoted.join(' '))}</blockquote>`);
       continue;
     }
     if (BLOCK_TAGS.test(line.trim()) && !para.length) {
@@ -445,19 +445,22 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
         } else break;
         i++;
       }
-      // A list of tasks (`- [ ] task`, `- [x] done`) is a check list, as post text reads one; its markers go.
-      const TASK = /^\[[ xX]\](?:[ ]+|$)/;
-      const tasks = !ordered && items.every((it) => TASK.test(it.lines[0]));
-      if (tasks) for (const it of items) it.lines[0] = it.lines[0].replace(TASK, '');
-      const tag = ordered ? 'ol' : tasks ? 'ul class="contains-task-list"' : 'ul';
       const li = (it: ListItem) => {
         const inner = it.lines.join('\n').replace(/\n+$/, '');
         // An item of one paragraph holds its words; one with more holds blocks.
         if (depth >= 8) return escapeHtml(inner);
         // The item's first paragraph is its own words, as a tight list shows them.
-        return markdownToHtml(inner, depth + 1, refs, budget).replace(/^<p>([\s\S]*?)<\/p>(?=\n|$)/, '$1');
+        return markdownToHtml(inner, depth + 1, refs, budget, true).replace(/^<p>([\s\S]*?)<\/p>(?=\n|$)/, '$1');
       };
-      out.push(`<${tag}>${items.map((it) => `<li>${li(it)}</li>`).join('')}</${ordered ? 'ol' : 'ul'}>`);
+      const html = items.map(li);
+      // A list of tasks (`- [ ] task`, `- [x] done`), every item one, is a check list as post text reads one, and its
+      // markers go: taken from each item's words once they are read, so what follows a marker is read as it is
+      // written (`- [ ] ---` is a task, not a rule). A list inside a list joins the outer one, and keeps its markers.
+      const TASK = /^\[([ xX])\](?: +|$)/;
+      const tasks = !ordered && !inList && html.every((h) => TASK.test(h));
+      const done = (h: string) => (tasks && TASK.exec(h)![1] !== ' ' ? ' class="task-done"' : '');
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}${tasks ? ' class="contains-task-list"' : ''}>${html.map((h) => `<li${done(h)}>${tasks ? h.replace(TASK, '') : h}</li>`).join('')}</${tag}>`);
       continue;
     }
     // A table: a row of cells, then a line of dashes.
