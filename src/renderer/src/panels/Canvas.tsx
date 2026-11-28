@@ -1246,6 +1246,12 @@ export function Canvas() {
           const next = pick(chain, !!p.alt || !!p.meta);
           selectOnPage(next);
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
+          // A pick made with the pointer while the page had the keyboard (a link reached with Tab, the text just edited)
+          // takes it from the page, where Delete and Backspace are never the selection's (lib/history, #1361), to the
+          // editor's body, where they are (lib/clip-keys). Blurred rather than moved, as pagePick does: the window's
+          // last input was a key, so a moved focus would draw a ring. A pick made from the keyboard (Enter on a link)
+          // leaves focus on the page, and one held for a save takes nothing from a panel the author has moved on to.
+          if (next && p.pointer === true && document.activeElement === frameRef.current) frameRef.current?.blur();
           break;
         }
         case 'dblclick': {

@@ -39,9 +39,21 @@ describe('undo and redo routing', () => {
   it('undoes the project from the canvas in Edit mode exactly once', () => {
     const canvas = ctx({ focus: 'canvas' });
     for (const key of ['z', 'y']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
-    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false)).toBe(true);
     // The forwarded key undoes the project; the menu's copy of that key press must not undo a second step.
     expect(menu(canvas)).toEqual({ click: 'project', key: 'none' });
+  });
+
+  it('never deletes the selection with a key pressed on the page, whatever on it has focus (#1361)', () => {
+    // The reported bug: Split hero selected in Layers, the header's About link reached with Tab, and Backspace or Delete
+    // removed the hero. The page reports no field there, so only the forwarded key's own routing can keep it.
+    const canvas = ctx({ focus: 'canvas' });
+    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false)).toBe(false);
+    // Shift or Alt held is still Delete to the editor (only Cmd/Ctrl makes another key), and is still not the page's to run.
+    for (const askAi of [false, true]) for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false, askAi)).toBe(false);
+    // The editor's other keys still run from there, and so do Cmd/Ctrl with these two (none is a shortcut of the editor's).
+    for (const key of ['z', 'd', 'c', 'v', 'g']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
+    expect(forwardedKeyRuns(canvas, 'Escape', false)).toBe(true);
+    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
   });
 
   it('keeps inline site copy’s own history while it is being edited', () => {

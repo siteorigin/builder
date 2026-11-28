@@ -1724,7 +1724,9 @@ document.addEventListener(
       }
       scheduleRects();
     }
-    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
+    // `pointer`: a press of the mouse or a tap, not Enter or Space on a control reached with Tab (a click of no count),
+    // which keeps the keyboard where it is on the page.
+    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey, pointer: e.detail > 0 });
   },
   true
 );
