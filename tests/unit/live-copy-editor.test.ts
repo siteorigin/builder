@@ -4,9 +4,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, ComponentDefinition, ImageValue, InstanceNode, OwnerRef, ProjectState, RepeatNode, RichText, TextNode } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, ImageValue, InstanceNode, OwnerRef, ProjectState, PropSchema, RepeatNode, RichText, TextNode } from '@shared/types';
 import { copyEditorOperationProblem } from '@shared/live/copy-editor';
-import { catalogueComponent, listThemes } from '@catalogue/index';
+import { catalogueComponent, listThemes, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { P } from '@catalogue/dsl';
 import { readdirSync } from 'node:fs';
@@ -15,7 +15,7 @@ import { applyOperations } from '@engine/apply';
 import { copyEditableLookup, copyEditorBatchProblem } from '@engine/copy-editor';
 import { makeInstance } from '@engine/install';
 import { normalizePropSchema } from '@engine/schema';
-import { FOUNDATION_AUTHOR, ROOT } from './fixtures/packs';
+import { FOUNDATION_AUTHOR, ROOT, restorePacks } from './fixtures/packs';
 import { HERO, SECTION, heroDesign, sectionDesign } from './fixtures/live-copy-editor-designs';
 
 const FORM = 'foundation.contact.form';
@@ -262,7 +262,7 @@ describe('what a copy editor may change', () => {
     expect(editable(def.id, 'caption')).toBe(false);
   });
 
-  /** Each bundled theme's two heroes, with the copy each marks, and the lookup the copy editor reads for it. */
+  /** Each bundled theme's two heroes, with their copy (src/engine/shipped-copy.ts), and the lookup the copy editor reads for it. */
   const HEROES = [
     ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],
     ['hero.centered', ['eyebrow', 'heading', 'lead']]
@@ -286,8 +286,7 @@ describe('what a copy editor may change', () => {
     for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(false);
   });
 
-  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
-  it.fails.each(heroCases)('marks the copy of $theme’s $componentId', ({ theme, componentId, marked }) => {
+  it.each(heroCases)('lets a copy editor change the copy of $theme’s $componentId', ({ theme, componentId, marked }) => {
     const { id, editable } = heroLookup(theme, componentId);
     for (const prop of marked) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(true);
   });
@@ -468,6 +467,170 @@ describe('what a copy editor may not change', () => {
     // Two lists of a kind with nothing between them show as one, and are reworded as one.
     const split = withNode(state, owner, rich, { ...node<TextNode>(state, owner, rich), text: [{ type: 'ol', items: [[{ text: 'One' }]] }, { type: 'p', spans: [] }, { type: 'ol', items: [[{ text: 'Two' }]] }] });
     expect(copyEdit(split, [{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: [{ type: 'ol', items: [[{ text: 'First' }], [{ text: 'Second' }]] }] }]).problem).toBeNull();
+  });
+});
+
+describe('the copy of Foundation’s own sections', () => {
+  const SPLIT = 'foundation.hero.split';
+
+  /**
+   * A blank Foundation site with two library pictures, whose home page holds the release's own Split hero (showing
+   * pic1), another with no picture, and Content with image, whose text links to the FAQ.
+   */
+  function shipped() {
+    let state = createStarterState('blank', 'Shipped', false);
+    state = { ...state, assets: { ...state.assets, assets: { ...state.assets.assets, pic1: asset('pic1', 'image'), pic2: asset('pic2', 'image') } } };
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const step = (ops: EditOperation[]) => {
+      const r = applyOperations(state, ops);
+      state = r.state;
+      return r.results;
+    };
+    const hero = step([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split', props: { image: { assetId: 'pic1', alt: 'The studio' } } }])[0].nodeId as string;
+    const bare = step([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }])[0].nodeId as string;
+    const media = step([{ type: 'node.insert', owner, parentId: null, componentId: 'content.media' }])[0].nodeId as string;
+    step([{ type: 'instance.setProp', owner, nodeId: media, prop: 'body', value: [{ type: 'p', spans: [{ text: 'Call us or ' }, { text: 'read the FAQ', link: { type: 'url', target: 'https://example.com/faq' } }, { text: '.' }] }] }]);
+    expect(state.components[SPLIT]).toEqual(catalogueComponent('foundation', 'hero.split'));
+    return { state, owner, hero, bare, media, step };
+  }
+  const setProp = (owner: OwnerRef, nodeId: string, prop: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner, nodeId, prop, value });
+
+  it('rewords a placed section’s copy, and leaves its heading level, buttons and links to the host', () => {
+    const { state, owner, hero, media } = shipped();
+    const { problem, after } = copyEdit(state, [setProp(owner, hero, 'eyebrow', 'Bakery'), setProp(owner, hero, 'heading', 'Fresh bread daily'), setProp(owner, media, 'heading', 'How we start')]);
+    expect(problem).toBeNull();
+    expect(node<InstanceNode>(after, owner, hero).props).toMatchObject({ eyebrow: 'Bakery', heading: 'Fresh bread daily' });
+    expect(node<InstanceNode>(after, owner, media).props.heading).toBe('How we start');
+    // The design, shared by every placement of it, is untouched.
+    expect(after.components[SPLIT]).toBe(state.components[SPLIT]);
+    for (const [prop, value, label] of [
+      ['headingLevel', 'h2', 'Heading level'],
+      ['primaryLabel', 'Buy now', 'Primary button label'],
+      ['primaryLink', { type: 'url', target: 'https://evil.example' }, 'Primary button link']
+    ] as const) {
+      expect(copyEdit(state, [setProp(owner, hero, 'heading', 'Rooms'), setProp(owner, hero, prop, value)]).problem, prop).toEqual({ operationIndex: 1, message: `Only the host can change “${label}”.` });
+    }
+    expect(copyEdit(state, [setProp(owner, media, 'actionLabel', 'Write to us')]).problem).toMatchObject({ operationIndex: 0, message: expect.stringMatching(/Only the host/) });
+  });
+
+  it('leaves a heading that names a form or a search for screen readers to the host', () => {
+    const { state: start, owner } = shipped();
+    let state = start;
+    const placed = (componentId: string) => {
+      const r = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId }]);
+      state = r.state;
+      return r.results[0].nodeId as string;
+    };
+    const search = placed('site.search');
+    const form = placed('contact.form');
+    for (const nodeId of [search, form]) {
+      expect(copyEdit(state, [setProp(owner, nodeId, 'lead', 'Ask us anything.')]).problem).toBeNull();
+      expect(copyEdit(state, [setProp(owner, nodeId, 'heading', 'Find an article')]).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Heading”.' });
+    }
+  });
+
+  it('replaces a section’s picture with another from the library, but never fills or clears one', () => {
+    const { state, owner, hero, bare } = shipped();
+    const { problem, after } = copyEdit(state, [setProp(owner, hero, 'image', { assetId: 'pic2', alt: 'The workshop' })]);
+    expect(problem).toBeNull();
+    expect(node<InstanceNode>(after, owner, hero).props.image).toEqual({ assetId: 'pic2', alt: 'The workshop' });
+    expect(copyEdit(state, [setProp(owner, bare, 'image', { assetId: 'pic2', alt: 'The workshop' })]).problem).toMatchObject({ message: expect.stringMatching(/adding or clearing/) });
+    expect(copyEdit(state, [setProp(owner, hero, 'image', { assetId: null, alt: '' })]).problem).toMatchObject({ message: expect.stringMatching(/adding or clearing/) });
+  });
+
+  it('rewords a section’s rich text, but keeps where its links go', () => {
+    const { state, owner, media } = shipped();
+    const body = (target: string) => [{ type: 'p', spans: [{ text: 'Phone us or ' }, { text: 'see the questions', link: { type: 'url', target } }, { text: '.' }] }];
+    expect(copyEdit(state, [setProp(owner, media, 'body', body('https://example.com/faq'))]).problem).toBeNull();
+    expect(copyEdit(state, [setProp(owner, media, 'body', body('https://evil.example/faq'))]).problem).toMatchObject({ message: expect.stringMatching(/links/) });
+  });
+
+  it('grants nothing to a section that is not exactly the one the app ships', () => {
+    const { state, owner, hero } = shipped();
+    const heading = [setProp(owner, hero, 'heading', 'Rooms')];
+    const withDef = (def: ComponentDefinition) => ({ ...state, components: { ...state.components, [def.id]: def } });
+    // Its code or its properties changed in the project, its identity kept.
+    for (const changed of [{ ...state.components[SPLIT], source: `${state.components[SPLIT].source}\n<p>{heading}</p>` }, { ...state.components[SPLIT], properties: { ...state.components[SPLIT].properties, extra: { type: 'string', label: 'Extra', default: '' } } }] as ComponentDefinition[]) {
+      expect(copyEditableLookup(withDef(changed))(SPLIT, 'heading')).toBe(false);
+      expect(copyEdit(withDef(changed), heading).problem).toMatchObject({ operationIndex: 0 });
+    }
+    // Made unique: the project's own copy of the code decides what it does with its properties.
+    const forked = copyEdit(state, [{ type: 'component.fork', definitionId: SPLIT }]).after;
+    const copy = node<InstanceNode>(forked, owner, hero).definitionId;
+    expect(copy).not.toBe(SPLIT);
+    expect(forked.components[copy].properties.heading).toEqual(state.components[SPLIT].properties.heading);
+    expect(copyEditableLookup(forked)(copy, 'heading')).toBe(false);
+    expect(copyEdit(forked, heading).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Heading”.' });
+    // Code of the project's own, marked as copy: a mark on code grants nothing.
+    const own: ComponentDefinition = { ...structuredClone(state.components[SPLIT]), id: 'project.split', owner: 'project', provenance: { createdBy: 'user' } };
+    (own.properties.heading as { copyEditable?: true }).copyEditable = true;
+    expect(copyEditableLookup(withDef(own))(own.id, 'heading')).toBe(false);
+    // Claiming to be Foundation's under another ID, or another pack's.
+    expect(copyEditableLookup(withDef({ ...state.components[SPLIT], id: 'foundation.hero.split-2' }))('foundation.hero.split-2', 'heading')).toBe(false);
+    expect(copyEditableLookup(withDef({ ...state.components[SPLIT], provenance: { ...state.components[SPLIT].provenance, pack: 'acme' } }))(SPLIT, 'heading')).toBe(false);
+  });
+
+  it('grants nothing for Foundation when the Foundation registered is not a bundled pack', async () => {
+    const { state } = shipped();
+    expect(copyEditableLookup(state)(SPLIT, 'heading')).toBe(true);
+    try {
+      registerPacks(listThemes().map((t) => (t.id === 'foundation' ? { ...t, source: 'user' as const } : t)));
+      expect(copyEditableLookup(state)(SPLIT, 'heading')).toBe(false);
+    } finally {
+      await restorePacks();
+    }
+    expect(copyEditableLookup(state)(SPLIT, 'heading')).toBe(true);
+  });
+
+  it('never grants rich text a section is given as paragraphs, which it cannot show as they are edited', async () => {
+    const TEXT = 'foundation.content.text';
+    const paragraphs = (def: ComponentDefinition): ComponentDefinition => {
+      const { codeForm: _codeForm, ...body } = def.properties.body as Extract<PropSchema, { type: 'richtext' }>;
+      void _codeForm;
+      return { ...def, properties: { ...def.properties, body } };
+    };
+    try {
+      // The release itself as the app bundles it, with its Text section's body given as paragraphs.
+      registerPacks(listThemes().map((t) => (t.id === 'foundation' ? { ...t, components: t.components.map((c) => (c.id === TEXT ? paragraphs(c) : c)) } : t)));
+      const def = catalogueComponent('foundation', 'content.text')!;
+      expect(def.properties.body).not.toHaveProperty('codeForm');
+      const editable = copyEditableLookup({ ...createStarterState('blank', 'x', false), components: { [def.id]: def } });
+      expect(editable(TEXT, 'heading')).toBe(true);
+      expect(editable(TEXT, 'body')).toBe(false);
+    } finally {
+      await restorePacks();
+    }
+  });
+
+  it('follows a design that passes its marked copy on to the shipped hero’s heading, but never to its button', () => {
+    const { state: start, owner } = shipped();
+    let state = start;
+    sectionDesign(state);
+    const step = (ops: EditOperation[]) => {
+      const r = applyOperations(state, ops);
+      state = r.state;
+      return r.results;
+    };
+    const wrap = step([{ type: 'node.insert', owner, parentId: null, definitionId: SECTION }])[0].nodeId as string;
+    step([{ type: 'node.insert', owner, parentId: wrap, slot: 'content', componentId: 'hero.split' }]);
+    const band = step([{ type: 'component.createFromNode', owner, nodeId: wrap, name: 'Band' }])[0].definitionId as string;
+    const inner = Object.values(state.components[band].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === SPLIT)!.id;
+    const def: OwnerRef = { kind: 'component', id: band };
+    step([
+      { type: 'component.setPropSchema', definitionId: band, prop: 'title', schema: { type: 'string', label: 'Title', default: '', copyEditable: true } },
+      { type: 'component.setPropSchema', definitionId: band, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: '', copyEditable: true } },
+      { type: 'node.setBinding', owner: def, nodeId: inner, field: 'prop', prop: 'heading', binding: { $prop: 'title' } },
+      { type: 'node.setBinding', owner: def, nodeId: inner, field: 'prop', prop: 'primaryLabel', binding: { $prop: 'tagline' } }
+    ]);
+    const editable = copyEditableLookup(state);
+    expect(editable(band, 'title')).toBe(true);
+    expect(editable(band, 'tagline')).toBe(false);
+    // Placed on the page, its title is reworded there; its tagline stays the host's.
+    const placed = step([{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { title: 'Spring offer', tagline: 'Book now' } }])[0].nodeId as string;
+    const { problem, after } = copyEdit(state, [setProp(owner, placed, 'title', 'Summer offer')]);
+    expect(problem).toBeNull();
+    expect(node<InstanceNode>(after, owner, placed).props.title).toBe('Summer offer');
+    expect(copyEdit(state, [setProp(owner, placed, 'tagline', 'Book today')]).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Tagline”.' });
   });
 });
 
