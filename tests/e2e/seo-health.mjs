@@ -99,58 +99,63 @@ await apply(
   'Set up the site'
 );
 
-step('Project health counts Search & AI readiness on its own, by pillar, every count matching its rows');
+step('Project health counts Search & AI readiness on its own, by area: what needs fixing first, the notes folded below it');
 let health = await openHealth();
 const seo = health.getByTestId('health-seo');
 const seoHeading = seo.getByRole('heading', { level: 3 });
 const rows = seo.locator('.health-row');
 const row = (text) => seo.locator('.health-row', { hasText: text });
 const seoCount = async () => Number((await seo.locator('h3 .health-count').innerText()).trim());
-// Each pillar's rows, as their tone and the finding's words (after what screen readers hear of its severity).
-const pillarRows = () =>
-  seo.locator('.health-place').evaluateAll((els) =>
+// Each area's rows, as their tone and the finding's words (after what screen readers hear of its severity): the list of
+// what needs fixing, and the optional notes folded below it.
+const pillarRows = (places) =>
+  places.evaluateAll((els) =>
     els.map((el) => ({
       pillar: el.dataset.pillar,
-      name: el.querySelector('h4').textContent.replace(/\d+$/, '').trim(),
-      count: Number(el.querySelector('.seo-pillar-count').textContent),
+      name: el.querySelector('h4').textContent.trim(),
       rows: [...el.querySelectorAll('.health-row')].map((r) => {
         const said = [...r.querySelector('.health-text').childNodes].filter((n) => !n.classList?.contains('sr-only') && !n.classList?.contains('health-hint'));
         return `${r.classList.contains('warn') ? 'warning' : 'note'}: ${said.map((n) => n.textContent).join('').trim()}`;
       })
     }))
   );
-await eventually(async () => assert.equal(await seoCount(), 11, 'the site’s eleven findings are counted'));
+// The section counts what needs fixing (the seven warnings); all eleven findings are listed.
+await eventually(async () => assert.equal(await seoCount(), 7, 'the site’s seven warnings are counted'));
 const total = 11;
-assert.match(await seoHeading.innerText(), /^Search & AI readiness\s+11$/);
-assert.equal(await rows.count(), total, 'the section’s count is its rows');
-const found = await pillarRows();
-assert.deepEqual(
-  found.map(({ pillar, name, count }) => [pillar, name, count]),
-  [
-    ['technical', 'Technical', 2],
-    ['agentic', 'Agentic readiness', 1],
-    ['content', 'Content & links', 6],
-    ['social', 'Social & performance', 2]
-  ],
-  'the pillars with findings, in order, each counting its rows'
-);
-for (const p of found) assert.equal(p.count, p.rows.length, `${p.name} counts its rows`);
+assert.match(await seoHeading.innerText(), /^Search & AI readiness\s+7$/);
+assert.equal(await rows.count(), total, 'every finding has its row');
 const expected = {
   technical: [/^warning: No public site URL is set\.$/, /^warning: The Home page asks search engines not to list it\.$/],
   agentic: [/^warning: Posts: “Spring pottery classes”: picture 2 in its text has no description\.$/],
-  content: [/^warning: “Kiln hire” has no description\.$/, /^warning: “Spring pottery classes” \(Posts\) has no description\.$/, /^warning: No link on the rest of the site leads to “Kiln hire”\.$/, /^note: “About” has a description of \d+ characters/, /^note: “Contact” has a description of \d+ characters/, /^note: A link says only “Click here!” in the shared header\.$/],
-  social: [/^warning: The site has no sharing image\.$/, /^note: The site has no icon of its own/]
+  content: [/^warning: “Kiln hire” has no description\.$/, /^warning: “Spring pottery classes” \(Posts\) has no description\.$/, /^warning: No link on the rest of the site leads to “Kiln hire”\.$/],
+  social: [/^warning: The site has no sharing image\.$/]
 };
-for (const p of found) {
-  assert.equal(p.rows.length, expected[p.pillar].length, `${p.name}: ${p.rows.join(' | ')}`);
-  p.rows.forEach((text, i) => assert.match(text, expected[p.pillar][i], `${p.name} row ${i + 1}`));
+const expectedNotes = {
+  content: [/^note: “About” has a description of \d+ characters/, /^note: “Contact” has a description of \d+ characters/, /^note: A link says only “Click here!” in the shared header\.$/],
+  social: [/^note: The site has no icon of its own/]
+};
+for (const [places, want, what] of [
+  [seo.locator(':scope > .health-list > .health-place'), expected, 'what needs fixing'],
+  [seo.locator('.seo-notes .health-place'), expectedNotes, 'the notes']
+]) {
+  const found = await pillarRows(places);
+  assert.deepEqual(found.map((p) => p.pillar), Object.keys(want), `${what}: the areas with findings, in order`);
+  for (const p of found) {
+    assert.equal(p.rows.length, want[p.pillar].length, `${p.name}: ${p.rows.join(' | ')}`);
+    p.rows.forEach((text, i) => assert.match(text, want[p.pillar][i], `${p.name} row ${i + 1}`));
+  }
 }
-assert.equal(await seo.locator('.seo-readiness-summary').innerText(), '7 warnings and 4 notes. Technical, Agentic readiness, Content & links and Social & performance need attention; 1 of 5 areas is ready.');
+const notesFold = seo.locator('.seo-notes');
+assert.match(await notesFold.locator('> summary').innerText(), /^4 notes, optional$/, 'the notes wait, folded, below the warnings');
+assert.equal(await notesFold.getAttribute('open'), null, 'folded until asked for');
+assert.equal(await seo.locator('.seo-readiness-summary').innerText(), '7 warnings and 4 notes. 4 of 5 areas need attention.');
 assert.equal(await row('No public site URL is set.').getByRole('button', { name: 'Go to Public URL' }).count(), 1);
 assert.equal(await row('The Home page asks search engines not to list it.').getByRole('button', { name: 'Go to Search & sharing' }).count(), 1);
 assert.equal(await row('“Kiln hire” has no description.').getByRole('button', { name: 'Go to Search & sharing' }).count(), 1);
 assert.equal(await row('“Spring pottery classes” (Posts) has no description.').getByRole('button', { name: 'Open post' }).count(), 1);
 assert.equal(await row('picture 2 in its text has no description').getByRole('button', { name: 'Go to picture' }).count(), 1);
+// A note's way to its fix is there once the notes are opened.
+await notesFold.locator('> summary').click();
 assert.equal(await row('A link says only “Click here!” in the shared header.').getByRole('button', { name: 'Show on page' }).count(), 1);
 assert.equal(await row('The site has no sharing image.').getByRole('button', { name: 'Go to sharing image' }).count(), 1);
 // Fixed by a link from elsewhere, not on the page itself: said, with no button that would mislead.
@@ -167,16 +172,17 @@ await health.screenshot({ path: join(SHOTS, 'seo-health.png') });
 await health.locator('.health-jumps').getByRole('button', { name: /Search & AI/ }).click();
 await eventually(async () => assert.equal(await isFocused(seoHeading), true, 'the summary’s jump goes to the section'));
 
-step('the filters show one pillar, one severity, or both; every count is what the choice lists');
-const pillarSelect = seo.getByLabel('Pillar', { exact: true });
+step('the filters show one area, one severity, or both; every count is what the choice lists');
+const pillarSelect = seo.getByLabel('Area', { exact: true });
 const severitySelect = seo.getByLabel('Severity', { exact: true });
 const options = (select) => select.locator('option').allInnerTexts();
-assert.deepEqual(await options(pillarSelect), ['All pillars (11)', 'Technical (2)', 'Entity & structured data (0)', 'Agentic readiness (1)', 'Content & links (6)', 'Social & performance (2)']);
+assert.deepEqual(await options(pillarSelect), ['All areas (11)', 'Technical (2)', 'Entity & structured data (0)', 'Agentic readiness (1)', 'Content & links (6)', 'Social & performance (2)']);
 assert.deepEqual(await options(severitySelect), ['All (11)', 'Warnings (7)', 'Notes (4)']);
 await pillarSelect.selectOption('content');
-await eventually(async () => assert.deepEqual(await seo.locator('.health-place').evaluateAll((els) => els.map((el) => el.dataset.pillar)), ['content']));
+// The area's warnings, then its notes, folded below them.
+await eventually(async () => assert.deepEqual(await seo.locator('.health-place').evaluateAll((els) => els.map((el) => el.dataset.pillar)), ['content', 'content']));
 assert.equal(await rows.count(), 6, 'Content & links lists what its option counted');
-assert.equal(await seo.locator('.seo-showing').innerText(), `Showing 6 of ${total}`);
+assert.equal(await seo.locator('.seo-showing').innerText(), `6 of ${total} match, including 3 optional notes`);
 // The severities, counted in Content & links.
 assert.deepEqual(await options(severitySelect), ['All (6)', 'Warnings (3)', 'Notes (3)']);
 await severitySelect.selectOption('info');
@@ -184,7 +190,7 @@ await eventually(async () => assert.equal(await rows.count(), 3));
 assert.equal(await seo.locator('.health-row.warn').count(), 0, 'no warning is shown');
 assert.equal(await row('A link says only “Click here!”').count(), 1, 'the link’s note is shown');
 // The pillars, counted among the notes.
-assert.deepEqual(await options(pillarSelect), ['All pillars (4)', 'Technical (0)', 'Entity & structured data (0)', 'Agentic readiness (0)', 'Content & links (3)', 'Social & performance (1)']);
+assert.deepEqual(await options(pillarSelect), ['All areas (4)', 'Technical (0)', 'Entity & structured data (0)', 'Agentic readiness (0)', 'Content & links (3)', 'Social & performance (1)']);
 await pillarSelect.selectOption('social');
 await eventually(async () => assert.equal(await rows.count(), 1));
 assert.match(await rows.first().innerText(), /The site has no icon of its own/, 'Social & performance’s one note is the site icon');
@@ -199,7 +205,8 @@ step('a finding fixed while the dialog is open takes its row with it; focus else
 const footerClose = health.locator('.modal-foot').getByRole('button', { name: 'Close', exact: true });
 await footerClose.focus();
 await apply([{ type: 'page.update', pageId: Object.values(s0.pages).find((p) => p.title === 'Contact').id, description: 'Call in, write or visit the studio by the river: we answer every message within a day.' }], 'Describe Contact');
-await eventually(async () => assert.equal(await seoCount(), total - 1, 'the fixed note is gone'));
+await eventually(async () => assert.equal(await rows.count(), total - 1, 'the fixed note is gone'));
+assert.equal(await seoCount(), 7, 'the warnings are still counted');
 assert.equal(await isFocused(footerClose), true, 'focus outside the section is left alone');
 const kilnAction = row('“Kiln hire” has no description.').getByRole('button', { name: 'Go to Search & sharing' });
 await kilnAction.focus();
@@ -207,7 +214,8 @@ await kilnAction.focus();
 await apply([{ type: 'page.update', pageId: 'pg_kilns', description: 'Hire our kiln' }], 'Describe Kiln hire');
 await eventually(async () => assert.equal(await row('“Kiln hire” has no description.').count(), 0, 'the fixed finding is gone'));
 assert.equal(await row('“Kiln hire” has a description of 13 characters').count(), 1, 'its note took its place');
-assert.equal(await seoCount(), total - 1, 'the count is the same');
+assert.equal(await rows.count(), total - 1, 'as many findings as before');
+assert.equal(await seoCount(), 6, 'one warning fewer to fix');
 await eventually(async () => assert.equal(await isFocused(seoHeading), true, 'focus is on the section’s heading, not another finding’s action'));
 
 step('site: Go to Public URL opens Site details at the field');
@@ -252,6 +260,8 @@ for (const where of ['seo', 'warnings']) {
 
 step('element: from the post, Show on page selects the link’s menu in the shared header');
 health = await openHealth();
+// A note: it waits in the folded notes, below what needs fixing.
+await seo.locator('.seo-notes > summary').click();
 await row('A link says only “Click here!” in the shared header.').getByRole('button', { name: 'Show on page' }).click();
 await modal.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await writer.count(), 0, 'the post writer gives way to the page'));

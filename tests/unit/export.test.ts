@@ -24,7 +24,6 @@ import {
   inProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
-  exportedAssetFilter,
   finishExportedSource,
   leaveOutDrafts,
   isGeneratedReadme,
@@ -627,19 +626,25 @@ describe('source export helpers', () => {
   it('keeps every library image, used or not, but no deleted image, private file or link', async () => {
     const state = createStarterState('business', 'Test', false);
     state.assets.assets['a1'] = { id: 'a1', name: 'Kept', file: 'static/assets/kept-aaaaaaaa.jpg', mime: 'image/jpeg', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: [{ width: 480, file: 'static/assets/kept-aaaaaaaa-480w.jpg' }], createdAt: '' };
-    state.components['code.x'] = { ...Object.values(state.components)[0], id: 'code.x', kind: 'code', source: '<img src="/assets/used-by-code-cccccccc.png" alt="" />' };
     const src = temp();
-    for (const f of ['static/assets/kept-aaaaaaaa.jpg', 'static/assets/kept-aaaaaaaa-480w.jpg', 'static/assets/deleted-bbbbbbbb.jpg', 'static/assets/deleted-bbbbbbbb-480w.jpg', 'static/assets/used-by-code-cccccccc.png', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf', 'static/favicon.svg', 'src/routes/+page.svelte', '.env', 'package.json'])
+    for (const f of ['static/assets/kept-aaaaaaaa.jpg', 'static/assets/kept-aaaaaaaa-480w.jpg', 'static/assets/deleted-bbbbbbbb.jpg', 'static/assets/deleted-bbbbbbbb-480w.jpg', 'static/assets/used-by-code-cccccccc.png', 'static/assets/drafted-eeeeeeee.png', 'static/assets/fed-ffffffff.png', 'static/assets/my-own-file.pdf', 'static/assets/docs/guide-dddddddd.pdf', 'static/favicon.svg', 'src/routes/+page.svelte', '.env', 'package.json'])
       write(src, f, f);
+    write(src, 'src/lib/components/X.svelte', '<img src="/assets/used-by-code-cccccccc.png" alt="" />');
+    // A draft's authoring document names one deleted image, a source's converter another (#1391).
+    write(src, 'siteorigin/pages/draft.json', '{"background":"/assets/drafted-eeeeeeee.png"}');
     symlinkSync(join(src, 'package.json'), join(src, 'static', 'linked.json'));
     const dest = join(temp(), 'out');
-    await copyProjectSource(src, dest, { keepAsset: exportedAssetFilter(state) });
+    await copyProjectSource(src, dest);
+    write(dest, 'siteorigin/sources/feed/converter.mjs', "export default (item) => ({ ...item, image: '/assets/fed-ffffffff.png' });");
+    expect((await leaveOutRetiredAssets(dest, state, { authoring: false })).sort()).toEqual(['static/assets/deleted-bbbbbbbb-480w.jpg', 'static/assets/deleted-bbbbbbbb.jpg', 'static/assets/drafted-eeeeeeee.png']);
     expect(existsSync(join(dest, 'static/assets/kept-aaaaaaaa.jpg'))).toBe(true);
     expect(existsSync(join(dest, 'static/assets/kept-aaaaaaaa-480w.jpg'))).toBe(true);
     expect(existsSync(join(dest, 'static/assets/deleted-bbbbbbbb.jpg'))).toBe(false);
     expect(existsSync(join(dest, 'static/assets/deleted-bbbbbbbb-480w.jpg'))).toBe(false);
-    // Files nobody imported through the app are the owner's, and code components may use any public file.
+    expect(existsSync(join(dest, 'static/assets/drafted-eeeeeeee.png'))).toBe(false);
+    // Files nobody imported through the app are the owner's, and the site's code and converters may use any public file.
     expect(existsSync(join(dest, 'static/assets/used-by-code-cccccccc.png'))).toBe(true);
+    expect(existsSync(join(dest, 'static/assets/fed-ffffffff.png'))).toBe(true);
     expect(existsSync(join(dest, 'static/assets/my-own-file.pdf'))).toBe(true);
     expect(existsSync(join(dest, 'static/assets/docs/guide-dddddddd.pdf'))).toBe(true);
     expect(existsSync(join(dest, 'static/favicon.svg'))).toBe(true);

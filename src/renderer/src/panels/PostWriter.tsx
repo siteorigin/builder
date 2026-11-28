@@ -6,7 +6,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
-import { COLLECTION_LINK_PREFIX, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, entryTarget, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { linkIndexes } from '../lib/link-indexes';
 import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
@@ -272,6 +272,8 @@ type Dialog =
       /** The section of `page` an edited link went to, kept while it still goes to that page. */
       section: { page: string; id: string } | null;
       entry: string;
+      /** The query an edited link had after `entry`'s address, kept while it still goes to that post. */
+      query: { entry: string; text: string } | null;
       index: string;
       url: string;
       rel: LinkRel[];
@@ -662,7 +664,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       kept = null;
     }
     const pageLink = kept?.type === 'page' && Object.hasOwn(state.pages, kept.target) ? kept : href && !kept ? linkFromTarget(href, state.pages) : null;
-    const entryLink = kept?.type === 'entry' ? kept.target : href.startsWith('entry:') ? href.slice(6) : '';
+    const toEntry = kept?.type === 'entry' ? kept : href.startsWith(ENTRY_LINK_PREFIX) ? entryTarget(href.slice(ENTRY_LINK_PREFIX.length)) : null;
+    const entryLink = toEntry?.target ?? '';
     const indexes = linkIndexes(state);
     const indexLink = kept?.type === 'collection' ? kept.target : href.startsWith(COLLECTION_LINK_PREFIX) ? href.slice(COLLECTION_LINK_PREFIX.length) : '';
     const firstPage = state.site.pageOrder[0] ?? Object.keys(state.pages)[0] ?? '';
@@ -678,6 +681,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       section: pageLink?.type === 'page' && pageLink.anchor ? { page: pageLink.target, id: pageLink.anchor } : null,
       // An entry of the collection being written in first, as the list shows them.
       entry: entryLink || (posts.find((p) => p.collectionId === post.collectionId) ?? posts[0])?.id || '',
+      query: toEntry?.query ? { entry: entryLink, text: toEntry.query } : null,
       index: indexLink || (pageLink?.type === 'collection' ? pageLink.target : '') || indexes[0]?.id || '',
       // A web, email or phone link keeps its address in the field; only a page, an entry or an index is chosen from a list.
       url: (pageLink && (pageLink.type === 'page' || pageLink.type === 'collection')) || entryLink || indexLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
@@ -693,7 +697,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     let dest: string | undefined;
     // A section the link went to stays while it still goes to that page.
     if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route + (d.section?.page === d.page ? `#${d.section.id}` : '') : '';
-    else if (d.to === 'post') href = linkablePosts(state, post.entryId).some((p) => p.id === d.entry) ? `entry:${d.entry}` : '';
+    else if (d.to === 'post') href = linkablePosts(state, post.entryId).some((p) => p.id === d.entry) ? `${ENTRY_LINK_PREFIX}${d.entry}${d.query?.entry === d.entry ? d.query.text : ''}` : '';
     else if (d.to === 'index') href = linkIndexes(state).some((x) => x.id === d.index) ? `${COLLECTION_LINK_PREFIX}${d.index}` : '';
     else {
       const t = d.url.trim();

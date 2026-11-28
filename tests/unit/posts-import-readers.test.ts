@@ -7,6 +7,8 @@ import type { LinkValue } from '@shared/types';
 import { linkFromTarget } from '@shared/richtext';
 import { XmlError, childText, parseXml, textOf } from '../../src/main/posts-import/xml';
 import { autop, emptyReport, htmlToPlain, htmlToRichText, type ReadHtmlOptions } from '../../src/main/posts-import/html';
+import { reportNotes } from '../../src/main/posts-import/notes';
+import { markdownToHtml } from '../../src/main/posts-import/markdown';
 
 const images: string[] = [];
 const opts = (extra: Partial<ReadHtmlOptions> = {}): ReadHtmlOptions => ({
@@ -159,5 +161,100 @@ describe('the HTML reader', () => {
 
   it('reads plain text and entities', () => {
     expect(htmlToPlain('<p>Fish &amp; chips&nbsp;&mdash; <b>fresh</b></p><p>Daily</p>')).toBe('Fish & chips — fresh Daily');
+  });
+});
+
+describe('formatting post text has no form for (#1506)', () => {
+  const read = (html: string, extra: Partial<ReadHtmlOptions> = {}) => {
+    const report = emptyReport();
+    const blocks = htmlToRichText(html, opts(extra), report);
+    return { text: blocks.map((b) => ('spans' in b ? b.spans.map((s) => s.text).join('') : '')), report, notes: reportNotes(report), blocks };
+  };
+
+  it('keeps superscript and subscript digits apart from the text before them', () => {
+    expect(read('<p>1.2 × 10<sup>6</sup> cells, m<sup>2</sup>, CO<sub>2</sub>, H<sub>2</sub>O, October<sup>1</sup> and x<sup>n+1</sup>.</p>').text).toEqual([
+      '1.2 × 10⁶ cells, m², CO₂, H₂O, October¹ and xⁿ⁺¹.'
+    ]);
+    // No character of its own: a mark keeps the digits apart; letters alone (an ordinal) read as they are.
+    expect(read('<p>10<sup>-1.5</sup>2, x<sub>i,2</sub>, x<sup>٦</sup>7, the 19<sup>th</sup> century and <sup>[1]</sup></p>').text).toEqual(['10^(-1.5)2, x_(i,2), x^(٦)7, the 19th century and ^([1])']);
+    // One inside another is bracketed (never 10²³); one with nothing to show is no superscript at all.
+    const nested = read('<p>10<sup>2<sup>3</sup></sup>, e<sup>x<sub>2</sub></sup> and <strong>m<sup>2</sup></strong> and a<sup> </sup>b</p>');
+    expect(nested.text).toEqual(['10^(2³), e^(x₂) and m² and a b']);
+    expect(nested.blocks[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'm²', strong: true }]) });
+    expect(nested.report.raised).toBe(5);
+    expect(read('<p>10<sup>2<b><sup>3</sup></b></sup></p>').text).toEqual(['10^(2³)']);
+  });
+
+  it('writes superscripts and subscripts on the line in a picture’s caption', () => {
+    const { blocks, notes } = read('<figure><img src="c.jpg" alt="Gas"><figcaption>CO<sub>2</sub> at 10<sup>-1.5</sup>2 and 10<sup>2<sup>3</sup></sup>, <del>old</del></figcaption></figure>', { autop: true });
+    expect(blocks).toEqual([{ type: 'image', assetId: 'm:c.jpg', alt: 'Gas', caption: 'CO₂ at 10^(-1.5)2 and 10^(2³), old' }]);
+    expect(notes).toEqual(['4 superscripts and subscripts became ordinary text on the line.', 'Kept a struck-through passage as ordinary text, no longer struck through.']);
+    // Pictures that share a caption show none: nothing of it is said to be kept.
+    expect(read('<figure><img src="a.jpg" alt="A"><img src="b.jpg" alt="B"><figcaption>10<sup>6</sup></figcaption></figure>').notes).toEqual([]);
+  });
+
+  it('keeps a superscript’s link, as a footnote marker has', () => {
+    expect(read('<p>October<sup><a href="https://example.com/#fn1">1</a></sup></p>').blocks).toEqual([
+      { type: 'p', spans: [{ text: 'October' }, { text: '¹', link: { type: 'url', target: 'https://example.com/#fn1' } }] }
+    ]);
+    expect(read('<p>October<sup><a href="https://example.com/#fn1">1</a></sup></p>').notes).toEqual(['A superscript or subscript became ordinary text on the line.']);
+    expect(read('<p>October<a href="https://example.com/#fn1"><sup>1</sup></a></p>').blocks).toEqual([
+      { type: 'p', spans: [{ text: 'October' }, { text: '¹', link: { type: 'url', target: 'https://example.com/#fn1' } }] }
+    ]);
+  });
+
+  it('says in the review what became ordinary text: code, superscripts and subscripts, struck text', () => {
+    const { text, notes } = read(
+      '<p>Text with <u>underline</u>, <s>strike</s>, H<sub>2</sub>O and m<sup>2</sup>, and <mark>highlight</mark>.</p>\n<!-- wp:code -->\n<pre class="wp-block-code"><code>model &lt;- lmer(yield ~ treatment + (1|block), data = trials)</code></pre>\n<!-- /wp:code -->',
+      { autop: true }
+    );
+    expect(text).toEqual(['Text with underline, strike, H₂O and m², and highlight.', 'model <- lmer(yield ~ treatment + (1|block), data = trials)']);
+    expect(notes).toEqual([
+      'A block of code or preformatted text became ordinary text.',
+      '2 superscripts and subscripts became ordinary text on the line.',
+      'Kept a struck-through passage as ordinary text, no longer struck through.'
+    ]);
+    expect(read('<p><del>12%</del> 21%, <strike>a</strike> and <s></s></p><pre>a</pre><pre>b</pre><p><sup> </sup></p>').notes).toEqual([
+      '2 blocks of code or preformatted text became ordinary text.',
+      'Kept 2 struck-through passages as ordinary text, no longer struck through.'
+    ]);
+    expect(read('<p>Plain <strong>bold</strong> text.</p>').notes).toEqual([]);
+    // Preformatted text in a table cell is still code: both are said.
+    const cell = read('<table><tr><td><pre>a\nb</pre></td></tr></table>', { autop: true });
+    expect(cell.text).toEqual(['a\nb']);
+    expect(cell.notes).toEqual(['A table became plain lines of text.', 'A block of code or preformatted text became ordinary text.']);
+  });
+
+  it('reads Markdown strikethrough and task lists', () => {
+    const md = (s: string) => read(markdownToHtml(s));
+    const struck = md('A correction: ~~12%~~ 21%, `~~kept~~`, ~~ spaced ~~, ~~~three~~~ and ~~a ~ b~~.');
+    expect(struck.text).toEqual(['A correction: 12% 21%, ~~kept~~, ~~ spaced ~~, ~~~three~~~ and a ~ b.']);
+    expect(struck.report.struck).toBe(2);
+    // A strike across bold or italic is no strike: its marks stay as written, and no words are lost.
+    expect(md('**a ~~b** c~~ and ~~d *e~~ f*').blocks).toEqual([
+      { type: 'p', spans: [{ text: 'a ~~b', strong: true }, { text: ' c~~ and ~~d ' }, { text: 'e~~ f', em: true }] }
+    ]);
+    // The `~~` of a strike left as written can still close the next one.
+    expect(md('**a ~~b ~ c** then:~~remove A~~; keep B:~~remove C~~.').report.struck).toBe(2);
+    expect(md('**a ~~b ~ c** then:~~remove A~~; keep B:~~remove C~~.').text).toEqual(['a ~~b ~ c then:remove A; keep B:remove C.']);
+    expect(md('~~**bold** gone~~').notes).toEqual(['Kept a struck-through passage as ordinary text, no longer struck through.']);
+    const tasks = md('- [ ] task\n- [x] done\n- [X] **also**\n- [ ] ---');
+    expect(tasks.blocks).toEqual([{ type: 'check', items: [[{ text: 'task' }], [{ text: 'done' }], [{ text: 'also', strong: true }], [{ text: '---' }]] }]);
+    expect(tasks.notes).toEqual(['Left out the tick of 2 done tasks: a check list shows every item alike.']);
+    expect(md('- [ ] a\n- [ ] b').notes).toEqual([]);
+    // A list with only some task items, or tasks inside a list (which join it), keep their markers as written.
+    expect(md('- [ ] task\n- plain').blocks).toEqual([{ type: 'ul', items: [[{ text: '[ ] task' }], [{ text: 'plain' }]] }]);
+    expect(md('- outer\n  - [x] inner').blocks).toEqual([{ type: 'ul', items: [[{ text: 'outer' }], [{ text: '[x] inner' }]] }]);
+    expect(md('> - [ ] quoted').blocks).toEqual([{ type: 'check', items: [[{ text: 'quoted' }]] }]);
+    expect(md('- outer\n\n  > - [x] nested').blocks).toEqual([{ type: 'ul', items: [[{ text: 'outer' }], [{ text: '[x] nested' }]] }]);
+    // A marker is read from what was written: a reference named x is no task's tick, and an escaped bracket no marker.
+    expect(md('- [x] done\n- [ ] [x]\n\n[x]: https://example.com/x').blocks).toEqual([
+      { type: 'check', items: [[{ text: 'done' }], [{ text: 'x', link: { type: 'url', target: 'https://example.com/x' } }]] }
+    ]);
+    expect(md('- \\[x] literal').blocks).toEqual([{ type: 'ul', items: [[{ text: '[x] literal' }]] }]);
+    expect(md('- [x]\n  done').blocks).toEqual([{ type: 'check', items: [[{ text: 'done' }]] }]);
+    // GitHub's own task list markup is a form's checkboxes, not this reader's check list.
+    expect(read('<ul class="contains-task-list"><li><input type="checkbox" checked>Done</li></ul>').blocks).toEqual([{ type: 'ul', items: [[{ text: 'Done' }]] }]);
+    expect(md('```\nx\n```').notes).toEqual(['A block of code or preformatted text became ordinary text.']);
   });
 });
