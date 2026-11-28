@@ -64,20 +64,18 @@ const REMEMBER = String.raw`\b(?:remember|keep\s+in\s+mind|make\s+a\s+note|take\
 const LASTING = String.raw`\b(?:(?:for|in|about|across)\s+(?:this|the|our|my)\s+(?:project|site|website)|from\s+now\s+on|going\s+forward|for\s+(?:the\s+)?future|for\s+next\s+time|for\s+later)\b`;
 const REMEMBERS = new RegExp(`${REMEMBER}[^.?!\\n]{0,120}?${LASTING}|${LASTING}[^.?!\\n]{0,40}?${REMEMBER}|^(?:please\\s+)?(?:also\\s+)?remember\\s+that\\b`, 'i');
 /** Asked not to change the brief (a "don't" before its name in the same clause), or not to remember. */
-const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\b(?:(?!\\bbut\\b)[^.?!\\n,;])*?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
+const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\b(?:(?!\\bbut\\b)[^.?!\\n;])*?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
 /** Asked how to, or whether to: a question for the author, not a change. */
 const ASKS = /\b(?:(?:how|where)\s+(?:do|can|could|should|would)\s+(?:i|we)\b|(?:tell|ask|advise)\s+(?:\S+\s+){0,2}?(?:whether|if)\b|^should\s+(?:i|we)\b)/i;
 /** Quoted words are copy, not what the author asks ("Change the button to 'Clear working notes'"), and stand in the
  *  sentence as one word. An apostrophe inside a word (don't, the brief's) is no quote. */
 const QUOTED = /“[^”\n]*”|"[^"\n]*"|(^|[\s:(\[])'[^'\n]*'(?=$|[\s.,!?;:)\]])|(^|[\s:(\[])‘[^’\n]*’(?=$|[\s.,!?;:)\]])/g;
 const unquoted = (text: string) => text.replace(QUOTED, (_m, a?: string, b?: string) => `${a ?? b ?? ''}QUOTE`);
-/** A message's sentences, each judged on its own: a "don't" or a question in one never reaches another. A sentence ends
- *  before a capital, so "e.g. clear it" stays one. */
-const SENTENCE_END = /(?<=[.!?])\s+(?=[\p{Lu}"“'‘(])|\n+/u;
+/** A message's sentences, each judged on its own: a "don't" or a question in one never reaches another. "e.g." ends none. */
+const SENTENCE_END = /(?<!\b(?:e\.g|i\.e|etc|vs|cf)\.)(?<=[.!?])\s+|\n+/i;
 const sentences = (text: string) => text.split(SENTENCE_END).map((t) => t.trim()).filter(Boolean);
 /** Whether one sentence asks for a change to the brief, and whether it names the description doing so. */
-function asks(raw: string): { brief: boolean; description: boolean } {
-  const sentence = unquoted(raw);
+function asks(sentence: string): { brief: boolean; description: boolean } {
   if (DECLINES.test(sentence) || ASKS.test(sentence)) return { brief: false, description: false };
   const named = WRITES_BRIEF.test(sentence);
   return { brief: named || REMEMBERS.test(sentence), description: named && NAMES_DESCRIPTION.test(sentence) };
@@ -90,7 +88,8 @@ function asks(raw: string): { brief: boolean; description: boolean } {
  * (and only while it still has none: `descriptionIfEmpty`).
  */
 export function briefWriteIntent(text: string, state?: Pick<ProjectState, 'brief'>): BriefWriteAllowance | null {
-  const found = sentences(text ?? '').map(asks);
+  // Quotes go first, so a sentence quoted as copy is never one of the author's.
+  const found = sentences(unquoted(text ?? '')).map(asks);
   if (!found.some((f) => f.brief)) return null;
   if (found.some((f) => f.description)) return { actions: ['add_note', 'set_description'] };
   if (!briefFilled(briefText(state?.brief, 'description'))) return { actions: ['add_note', 'set_description'], descriptionIfEmpty: true };
@@ -100,9 +99,7 @@ export function briefWriteIntent(text: string, state?: Pick<ProjectState, 'brief
 /** The request without its sentences about the brief: what it asks of the website. */
 export const withoutBriefAsks = (text: string): string =>
   sentences(text)
-    // Clause by clause, as written: "Build the Services page and add to my notes that…" still asks for the page.
-    .flatMap((t) => t.split(/\s*(?:;|,?\s+(?:and\s+then|and|then)\s+)/i))
-    .filter((t) => t.trim() && !asks(t).brief)
+    .filter((t) => !asks(unquoted(t)).brief)
     .join(' ');
 
 /** The tool as a run with `actions` is offered it: only those actions. */
