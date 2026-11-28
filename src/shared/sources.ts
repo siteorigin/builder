@@ -15,7 +15,10 @@ export const isSourceId = (id: unknown): id is string => isCollectionId(id);
 /** What happens to an entry whose record the source no longer has. Absent: `unpublish`. */
 export const SOURCE_REMOVALS: readonly SourceRemoval[] = ['unpublish', 'remove', 'keep'];
 
-/** The removal a source asks for: its own, or `unpublish`, which keeps every link to the entry working. */
+/**
+ * The removal a source asks for: its own, or `unpublish`, which keeps the entry's ID, and so every saved link to it,
+ * in the project. The website leaves the draft out.
+ */
 export function sourceRemoval(doc: { removal?: unknown } | undefined): SourceRemoval {
   return SOURCE_REMOVALS.includes(doc?.removal as SourceRemoval) ? (doc!.removal as SourceRemoval) : 'unpublish';
 }

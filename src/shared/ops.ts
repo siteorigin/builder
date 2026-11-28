@@ -1079,7 +1079,7 @@ export const OPERATION_SCHEMAS = {
         .describe('Its kind of source’s settings (an address, headers, a query…). Credentials only as { "credentials": { "<slot>": { "$secret": "<name>" } } } or ${secret:NAME} in a header or query value, never the value.'),
       mapping: z.record(z.string().max(40), z.unknown()).optional().describe('Where each detail of an entry is read from in a record, by path ("fields.title"). Left out: the kind of source’s own reading.'),
       converter: z.string().max(60_000).optional().describe('The text of its converter.mjs, which puts its records in shape instead of a mapping. Left out: none.'),
-      removal: z.enum(['unpublish', 'remove', 'keep']).optional().describe('What a sync does with an entry the source no longer has. Defaults to unpublish, which drafts it so links keep working.')
+      removal: z.enum(['unpublish', 'remove', 'keep']).optional().describe('What a sync does with an entry the source no longer has. unpublish (the default) keeps it in the project as a draft: saved links and references remain, website exports leave it out, and a link to it on a published page stops the website export. remove deletes it, and stops the whole sync while a link, reference field or author-added redirect elsewhere still names the entry itself. keep leaves its content and draft status as they are.')
     })
     .describe('Add an external source, or replace its settings whole.'),
   'source.remove': z.object({ type: z.literal('source.remove'), sourceId: z.string() }).describe('Delete an external source. Refused while a collection is synced from it.'),

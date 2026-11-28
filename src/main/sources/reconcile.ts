@@ -2,8 +2,8 @@
  * Reconciling a source's records with the entries of the collection they are synced into, written nowhere: each
  * record is matched to the entry that says it came from it (its `source.externalId`), so an entry keeps its `en_` ID,
  * and with it every link to it, across syncs. A record whose content hash is the one its entry was last written from
- * is left alone, its file untouched. An entry whose record the source no longer has is drafted (links to it keep
- * their target), deleted, or kept, as the source says.
+ * is left alone, its file untouched. An entry whose record the source no longer has is drafted (saved links to it keep
+ * their target in the project; the website leaves the draft out), deleted, or kept, as the source says.
  */
 import { createHash } from 'node:crypto';
 import type { Collection, EntrySource, ProjectState, SourceDoc } from '@shared/types';
