@@ -108,7 +108,7 @@ export function translationPeers(state: Pick<ProjectState, 'site' | 'pages'>, pa
 export function lookAlikePages(state: Pick<ProjectState, 'site' | 'pages'>, pages: PageDoc[]): Set<string> {
   const seen = new Map<string, string[]>();
   for (const p of pages) {
-    const key = `${p.title}\u0000${pageLanguage(state.site, p)}`;
+    const key = `${p.title}\u0000${languageKey(pageLanguage(state.site, p))}`;
     seen.set(key, [...(seen.get(key) ?? []), p.id]);
   }
   return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());

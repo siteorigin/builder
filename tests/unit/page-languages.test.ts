@@ -834,5 +834,8 @@ describe('lookAlikePages', () => {
     s = apply(c.s, { type: 'page.update', pageId: a.id, language: 'fr' }, { type: 'page.update', pageId: b.id, language: 'fr' });
     const pages = [a.id, b.id, c.id].map((id) => s.pages[id]);
     expect([...lookAlikePages(s, pages)].sort()).toEqual([a.id, b.id].sort());
+    // Codes that differ only in case name the same language.
+    s = apply(s, { type: 'page.update', pageId: b.id, language: 'FR' });
+    expect([...lookAlikePages(s, [s.pages[a.id], s.pages[b.id]])]).toHaveLength(2);
   });
 });
