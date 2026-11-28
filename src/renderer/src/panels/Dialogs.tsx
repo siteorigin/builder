@@ -1566,18 +1566,22 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
         </>
       )
     });
-  if (review.menu.length)
+  for (const part of ['header', 'footer'] as const) {
+    const labels = part === 'header' ? review.menu : review.footer;
+    if (!labels.length) continue;
+    const why = part === 'header' && isHome ? (follows ? ', which follows the page order' : ', which already links to the new Home page') : '';
+    const id = `delete-page-${part === 'header' ? 'menu' : 'footer'}`;
     details.push({
       kind: 'lose',
       icon: <CircleMinus />,
       text: (
         <>
-          <span id="delete-page-menu">{review.menu.length === 1 ? (follows ? 'Its link is removed from the header menu, which follows the page order.' : 'Its link is removed from the header menu, which already links to the new Home page.') : `Its ${review.menu.length} links are removed from the header menu, which ${follows ? 'follows the page order' : 'already links to the new Home page'}.`}</span>
-          <ScrollList className="page-dialog-list" labelledBy="delete-page-menu">
-            {review.menu.map((label, i) => (
+          <span id={id}>{labels.length === 1 ? `Its link is removed from the ${part} menu${why}.` : `Its ${labels.length} links are removed from the ${part} menu${why}.`}</span>
+          <ScrollList className="page-dialog-list" labelledBy={id}>
+            {labels.map((label, i) => (
               <li key={i}>
-                {holderIcon({ kind: 'shell', id: 'header' })}
-                <span className="page-dialog-where">Header</span>
+                {holderIcon({ kind: 'shell', id: part })}
+                <span className="page-dialog-where">{part === 'header' ? 'Header' : 'Footer'}</span>
                 <span className="page-dialog-label">“{label}”</span>
               </li>
             ))}
@@ -1585,6 +1589,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
         </>
       )
     });
+  }
   if (under.length)
     details.push({
       kind: 'keep',

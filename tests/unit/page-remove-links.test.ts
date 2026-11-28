@@ -171,9 +171,28 @@ describe('deleting a page with a replacement', () => {
     const before = nav(s);
     const next = applyOperations(s, [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }]).state;
     expect(cta(next)).toEqual({ type: 'page', target: about.id, newTab: true });
-    expect(nav(next)).toEqual([before[0], before[1], ['Contact', { type: 'page', target: about.id }]]);
+    // The menu's own Contact item leaves with the page rather than opening About.
+    expect(nav(next)).toEqual([before[0], before[1]]);
     expect(before[0][1]).toEqual({ type: 'page', target: s.site.homePageId });
     expect(headerOf(next).props.ctaLabel).toBe('Book a call');
+  });
+
+  it('takes the page’s own header and footer items with it instead of opening the replacement twice (#1362)', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const home = s.site.homePageId;
+    const labels = (node: InstanceNode) => (node.props.links as Array<{ label: string; link: LinkValue }>).map((i) => i.label);
+    const review = reviewPageRemoval(s, about.id, home);
+    expect([review.menu, review.footer]).toEqual([['About'], ['About']]);
+    const next = applyOperations(s, planPageRemoval(s, about.id, home, new Map()).operations!).state;
+    expect(labels(headerOf(next))).not.toContain('About');
+    expect(labels(footerOf(next))).not.toContain('About');
+    expect((headerOf(next).props.links as Array<{ link: LinkValue }>).filter((i) => i.link.target === home)).toHaveLength(1);
+    // A kept old address still needs the replacement to follow to, though only menu items linked the page.
+    const kept = structuredClone(s);
+    kept.site.redirects = [{ route: '/old-about/', pageId: about.id }] as never;
+    expect(planPageRemoval(kept, about.id, home, new Map()).operations).toEqual([{ type: 'page.remove', pageId: about.id, replacementPageId: home }]);
+    expect(pageLinkReferences(s, about.id)).toBe(reviewPageRemoval(s, about.id, home).uses.length);
   });
 
   it('judges a section the shared footer provides by whether the replacement shows it', () => {
@@ -239,11 +258,12 @@ describe('the delete dialog’s review', () => {
     const { s, contact, about } = linkedToSection();
     const home = s.pages[s.site.homePageId];
     const rows = reviewPageRemoval(s, contact.id, about.id).uses.map((u) => [u.where, u.label, u.link.anchor ?? '']);
+    // Contact's own header and footer menu items leave with it, so they are not links that move.
+    const gone = reviewPageRemoval(s, contact.id, about.id);
+    expect([gone.menu, gone.footer]).toEqual([['Contact'], ['Contact']]);
     expect([...rows].sort()).toEqual(
       [
-        ['Header', 'Contact', ''],
         ['Header', 'Book a call', 'studio-hours'],
-        ['Footer', 'Contact', ''],
         [home.title, 'Start a project', ''],
         [home.title, 'Get in touch', ''],
         [about.title, 'Contact the studio', '']
@@ -391,8 +411,8 @@ describe('deleting a page in a session', () => {
     const given = session.state.pages[about.id].nodes[section.nodeId].anchor;
     expect(given).toBeTruthy();
     expect(cta(session.state)).toEqual({ type: 'page', target: about.id, anchor: given });
-    // Five of Contact's six links move here; About's own "Contact the studio" now points at its own page.
-    expect(pageLinkUses(session.state, about.id).length).toBe(toAbout + 5);
+    // Three of Contact's six links move here (its header and footer menu items leave with it); About's own "Contact the studio" now points at its own page.
+    expect(pageLinkUses(session.state, about.id).length).toBe(toAbout + 3);
     expect(JSON.stringify(session.state)).not.toContain(contact.id);
     await session.undo();
     expect(keep(session.state)).toEqual(before);

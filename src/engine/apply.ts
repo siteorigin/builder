@@ -72,7 +72,7 @@ import { isPictureAsset } from '@shared/background-image';
 import { NO_SHELL_IDS, labelKeyFor, pageIds, type CheckParts } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
-import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
+import { dropHeaderLinks, dropOwnMenuLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
@@ -884,11 +884,9 @@ function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string
 /** How many links from the rest of the site go to a page: the links deleting it would move to a replacement (page lists' cards for it go with it). */
 export function pageLinkReferences(state: ProjectState, pageId: string): number {
   // A header menu that follows the pages lets go of its links to the page instead, as pageRemove does.
-  let view = state;
-  if (followsPageOrder(state)) {
-    view = clone(state);
-    dropHeaderLinks(view, pageId);
-  }
+  const view = clone(state);
+  if (pageId !== state.site.homePageId) dropOwnMenuLinks(view, pageId);
+  else if (followsPageOrder(state)) dropHeaderLinks(view, pageId);
   return pageLinkUses(view, pageId).filter((u) => !u.card).length;
 }
 
@@ -1376,7 +1374,10 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   if (state.site.pageOrder.length <= 1 && !op.newHome) fail('A site needs at least one page.');
   // A header menu that follows the pages loses its links to the page rather than pointing them at another. A new
   // blank Home stands in the removed Home's place in the pages, so its menu links follow to it like every other link.
-  if (followsPageOrder(state) && !op.newHome) dropHeaderLinks(state, page.id);
+  // A page's own items in the header and footer menus leave with it, whatever order the header keeps. Home's stay as
+  // the way in, pointed at the page that takes its place.
+  if (!isHome && !op.newHome) dropOwnMenuLinks(state, page.id);
+  else if (followsPageOrder(state) && !op.newHome) dropHeaderLinks(state, page.id);
   // Removing Home: a menu with its own order that already links to the page taking its place drops Home's plain link
   // instead of pointing it at the same page a second time.
   else if (isHome && op.replacementPageId && op.replacementPageId !== page.id && own(state.pages, op.replacementPageId)) dropHeaderLinks(state, page.id, op.replacementPageId);
