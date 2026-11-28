@@ -101,6 +101,19 @@ export function translationPeers(state: Pick<ProjectState, 'site' | 'pages'>, pa
   return group ? translationMembers(state, group).filter((p) => p.id !== page.id) : [];
 }
 
+/**
+ * The pages whose title and language read the same as another's in `pages`: a picker row can't tell them apart by
+ * those words, so each shows its address.
+ */
+export function lookAlikePages(state: Pick<ProjectState, 'site' | 'pages'>, pages: PageDoc[]): Set<string> {
+  const seen = new Map<string, string[]>();
+  for (const p of pages) {
+    const key = `${p.title}\u0000${pageLanguage(state.site, p)}`;
+    seen.set(key, [...(seen.get(key) ?? []), p.id]);
+  }
+  return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());
+}
+
 /** The set a page is in: its group key when another page shares it, so a key left on one page alone counts as none. */
 export function linkedGroup(state: Pick<ProjectState, 'site' | 'pages'>, page: PageDoc): string | undefined {
   return translationPeers(state, page).length ? translationGroup(page) : undefined;

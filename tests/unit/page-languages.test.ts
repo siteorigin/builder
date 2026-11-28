@@ -12,7 +12,7 @@ import { NOT_FOUND_DIR, SERVER_HOOK_FILE, generateAppHtml, generateProject, gene
 import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
 import { GenerationCache } from '@generator/cache';
-import { declaredLanguage, languageKey, linkClash, pageLanguage, translationPeers } from '@shared/languages';
+import { declaredLanguage, languageKey, linkClash, lookAlikePages, pageLanguage, translationPeers } from '@shared/languages';
 import { pageLanguageWarning, rivalHookStop, settleServerHook } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
 
@@ -822,5 +822,17 @@ describe('page languages in the website', () => {
     } finally {
       await session.close();
     }
+  });
+});
+
+describe('lookAlikePages', () => {
+  it('flags pages sharing a title and language, and no others', () => {
+    let s = fresh();
+    const a = create(s, 'Horaires');
+    const b = create(a.s, 'Horaires');
+    const c = create(b.s, 'Horaires');
+    s = apply(c.s, { type: 'page.update', pageId: a.id, language: 'fr' }, { type: 'page.update', pageId: b.id, language: 'fr' });
+    const pages = [a.id, b.id, c.id].map((id) => s.pages[id]);
+    expect([...lookAlikePages(s, pages)].sort()).toEqual([a.id, b.id].sort());
   });
 });
