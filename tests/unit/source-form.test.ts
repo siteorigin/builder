@@ -113,6 +113,9 @@ describe('a sync, and detaching', () => {
     expect(syncSummary('Old blog', { ...base, created: 2, droppedLinks: { count: 3, records: 2, titles: ['Tickets', 'Hours'] } })).toBe(
       'Synced “Old blog”: 2 added. 3 links keep only their words, with no address an entry can keep (in “Tickets” and “Hours”). Change them at the source if they should go somewhere.'
     );
+    expect(syncSummary('Crew API', { ...base, unchanged: 2, droppedLinks: { count: 1, records: 0, titles: [] } })).toBe(
+      '“Crew API” is up to date: 2 entries unchanged. The converter read a link with no address an entry can keep, so any entry given it keeps only its words. Change it at the source or in the converter if it should go somewhere.'
+    );
   });
 
   it('says which records have links that kept only their words, the rest by how many (#1426)', () => {
@@ -132,7 +135,7 @@ describe('a sync, and detaching', () => {
     // A long title is cut at a character, never inside one, nor the sentence; nothing a terminal acts on is quoted.
     expect(droppedLinksText({ count: 1, records: 1, titles: ['x'.repeat(200)] })).toContain(`(in “${'x'.repeat(59)}…”)`);
     expect(droppedLinksText({ count: 1, records: 1, titles: [`${'x'.repeat(58)}😀😀😀`] })).toContain(`(in “${'x'.repeat(58)}😀…”)`);
-    expect(droppedLinksText({ count: 1, records: 1, titles: ['Red\u001b[31m alert\u0007'] })).toContain('(in “Red [31m alert”)');
+    expect(droppedLinksText({ count: 1, records: 1, titles: ['Red\u001b[31m alert\u0007\u0085'] })).toContain('(in “Red [31m alert”)');
   });
 
   it('drops the collection’s source and the source’s settings in one step, or only the settings before a first sync', () => {

@@ -21,10 +21,8 @@ export interface LinkRead {
   dropped: number;
 }
 
-/** The longest page address relative links are read from, as the longest a source's own may be. */
-const MAX_BASE = 2048;
-/** The longest address a relative link becomes, as the longest a picture's may be. */
-const MAX_RESOLVED = 4096;
+/** The longest address a relative link becomes, as the longest a source's own may be: a long page's sections are not read. */
+const MAX_RESOLVED = 2048;
 /** A web address as a link holds it (engine/values.ts normalizeLink): anything else would stop the whole sync. */
 const URL_RE = /^https?:\/\/[^\s<>"]+$/i;
 const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
@@ -34,7 +32,7 @@ const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
  * the server may have been asked with (never one its links gave a reader), or undefined.
  */
 export function linkBase(v: unknown): string | undefined {
-  if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim()) || v.trim().length > MAX_BASE) return undefined;
+  if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim())) return undefined;
   try {
     const u = new URL(v.trim());
     if (!/^https?:$/.test(u.protocol)) return undefined;

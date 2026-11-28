@@ -475,8 +475,8 @@ describe('Sanity, Strapi and WordPress sources', () => {
       { id: 4, title: { rendered: 'Clean' }, link: 'https://editor:pw@other.example/deep/clean/', content: { rendered: '<p><a href="../ok/">n</a> <a href="tel:+44 20 7946 0000">o</a></p>' } },
       // Addresses a link cannot hold as they are, which would stop the whole sync: a quote in a host, mail and a number that are neither.
       { id: 5, title: { rendered: 'Odd' }, link: 'https://old.example/odd/', content: { rendered: '<p><a href="//a%22b.example/p">p</a> <a href="mailto:nobody">q</a> <a href="tel:abc">r</a></p>' } },
-      // A page address too long to read links from.
-      { id: 6, title: { rendered: 'Long' }, link: `https://old.example/${'a'.repeat(3000)}/`, content: { rendered: '<p><a href="#x">s</a></p>' } }
+      // A page address so long that its sections are not read from it, though its site's other pages are.
+      { id: 6, title: { rendered: 'Long' }, link: `https://old.example/${'a'.repeat(3000)}/`, content: { rendered: '<p><a href="#x">s</a> <a href="/short/">t</a></p>' } }
     ];
     const many = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
     const two = await run({ adapter: 'wordpress', config: { url: many.origin } });
@@ -498,13 +498,27 @@ describe('Sanity, Strapi and WordPress sources', () => {
       ['o', 'tel', '+44 20 7946 0000']
     ]);
     expect(linksOf(two.records[4].body)).toEqual([]);
-    expect(linksOf(two.records[5].body)).toEqual([]);
+    expect(linksOf(two.records[5].body)).toEqual([['t', 'url', 'https://old.example/short/']]);
     // Every link it could not keep keeps its words.
     const words = (body: unknown) => (body as Array<{ spans: Array<{ text: string }> }>).map((b) => b.spans.map((x) => x.text).join('')).join('|');
     expect(words(two.records[0].body)).toBe('a b c d e f g h i j');
     expect(words(two.records[4].body)).toBe('p q r');
+    expect(words(two.records[5].body)).toBe('s t');
     // Script, data, a broken address and a link to nowhere keep their words, and are said, by the records they are in.
     expect(two.droppedLinks).toEqual({ count: 10, records: 5, first: [0, 1, 2] });
+  });
+
+  it('WordPress: never reads links from a post address that holds a secret the source was sent, however it is spelled (#1426)', async () => {
+    const encoded = SECRET.replace(/^t/, '%74');
+    const api = await server((_req, res) =>
+      send(res, [{ id: 1, title: { rendered: 'Shared' }, link: `https://old.example/post/?share=${encoded}`, content: { rendered: '<p><a href="#part">part</a> <a href="https://example.org/">kept</a></p>' } }], { 'x-wp-totalpages': '1' })
+    );
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin }, secrets: { wp: SECRET } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    expect(JSON.stringify(reply.records)).not.toContain(encoded);
+    expect(reply.records[0].body).toEqual([{ type: 'p', spans: [{ text: 'part ' }, { text: 'kept', link: { type: 'url', target: 'https://example.org/' } }] }]);
+    expect(reply.droppedLinks).toEqual({ count: 1, records: 1, first: [0] });
   });
 
   it('A source with no page to read its text from says the relative links it could not keep (#1426)', async () => {

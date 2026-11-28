@@ -229,7 +229,10 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
         if (wrong) return failed('invalid', wrong);
         read = await items();
         shaped = read.map((item, i) => {
-          const links: LinkRead = { base: adapter.pageOf?.(item), dropped: 0 };
+          // A page address that holds a secret the source was sent (a server echoing its token into its links), in
+          // any way it can be spelled, is never read from: its query would ride along into the entry's links.
+          const page = adapter.pageOf?.(item);
+          const links: LinkRead = { base: page && !holdsSecretValue(addressViews(page), secrets) ? page : undefined, dropped: 0 };
           const r = mapRecord(item, mapping, fields, i, links);
           if (links.dropped) {
             dropped.count += links.dropped;
