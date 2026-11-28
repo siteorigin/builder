@@ -44,7 +44,7 @@ export function describeReview(r: VersionReview): string[] {
   if (r.left.length) lines.push(leftLine(r.left));
   if (r.others.length) {
     const one = r.others.length === 1;
-    lines.push(`Doesn’t copy ${plural(r.others.length, 'other file', 'other files')} from it, which ${one ? 'stays as it is' : 'stay as they are'} now or as Builder generates ${one ? 'it' : 'them'}: ${r.others.join(', ')}`);
+    lines.push(`Doesn’t copy ${plural(r.others.length, 'other file', 'other files')} from it, which ${one ? 'stays as it is' : 'stay as they are'} now, or as Builder generates ${one ? 'it (removed if it no longer does)' : 'them (removed where it no longer does)'}: ${r.others.join(', ')}`);
   }
   return lines;
 }

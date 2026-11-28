@@ -4934,8 +4934,9 @@ export class ProjectSession extends EventEmitter {
       const is = now.get(path);
       const alias = is && !generatedNow.has(path) ? known.get(folded(path)) : undefined;
       const aliased = alias !== undefined && alias !== path && (await sameEntry(alias, path));
-      // Builder's own file under the disk's spelling, where the version has nothing by that spelling either.
-      if (aliased && !was) continue;
+      // Builder's own file under the disk's spelling: a document or a media file, which a restore puts back by its own
+      // spelling, or generated output where the version has nothing by this spelling either.
+      if (aliased && (!was || builders.has(alias))) continue;
       // Whether the file at this path now is Builder's: its generated output, or a file it knows by another spelling.
       const buildersNow = !!is && (generatedNow.has(path) || aliased);
       const byHandThen = !!was && !generatedThen.has(path);
