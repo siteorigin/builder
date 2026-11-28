@@ -1,7 +1,7 @@
 import './PostsPanel.css';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { ArrowLeft, ChevronDown, Copy, FileDown, FilePen, FileText, LayoutTemplate, Library, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, Copy, FileDown, FilePen, FileText, Globe, LayoutTemplate, Library, ListChecks, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
 import { api, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
@@ -9,7 +9,7 @@ import { ListPeek, Marked, fold, found, shortDate } from '../components/ListText
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, deleteAsksWhere, deleteFingerprint, deleteHolds, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, bulkDeletePlan, bulkStatusOps, bulkTermOps, pickRows, type TermChange, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, deleteAsksWhere, deleteFingerprint, deleteHolds, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
@@ -23,6 +23,7 @@ import type { CollectionKind, ProjectState } from '@shared/types';
 import { saveOpenPost, startOpenPost } from '../lib/post-draft';
 import { typedAhead, typedAheadSettled } from '../lib/typed-ahead';
 import { trackApply } from '../lib/pending';
+import { todayArticleDate } from '@shared/articles';
 
 /**
  * Save the post open in the writer before another takes its place. False, said in a notice, when its text could not
@@ -61,6 +62,10 @@ const titleCut = (row: HTMLElement) => {
   const t = row.querySelector<HTMLElement>('.post-title');
   return !!t && t.scrollHeight > t.clientHeight + 1;
 };
+
+const isMac = api.platform === 'darwin';
+/** The key that picks one more row with a click, or with Space from the keyboard. */
+const pickKey = (e: { metaKey: boolean; ctrlKey: boolean }) => (isMac ? e.metaKey : e.ctrlKey);
 
 /** Said when another entry is asked to open while one is still opening (#1394). */
 const OPENING_NOW = 'An entry is still opening. Try again once it has.';
@@ -184,6 +189,92 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
         </Field>
       )}
       {!stuck && <p className="posts-note">You can undo it.</p>}
+    </Modal>
+  );
+}
+
+/**
+ * The categories and tags of several picked posts (#1507): each term checked when every one of them is filed under it,
+ * part-checked when some are, and left as it is until changed. Apply files every one under the terms checked and takes
+ * every one out of those cleared, as one change.
+ */
+function BulkTermsDialog({ collectionId, ids, onApply, onClose }: { collectionId: string; ids: string[]; onApply: (changes: TermChange[]) => Promise<boolean>; onClose: () => void }) {
+  const snap = useStore((s) => s.snapshot);
+  const uid = useId();
+  const [want, setWant] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState(false);
+  const c = snap && Object.hasOwn(snap.state.collections, collectionId) ? snap.state.collections[collectionId] : undefined;
+  if (!c) return null;
+  const entries = ids.flatMap((id) => (Object.hasOwn(c.entries, id) ? [c.entries[id]] : []));
+  const n = entries.length;
+  const noun = entryNounLower(c);
+  const key = (tax: string, term: string) => `${tax}\u0000${term}`;
+  const filed = (tax: string, term: string) => entries.filter((e) => Array.isArray(e.terms?.[tax]) && e.terms[tax].includes(term)).length;
+  const groups = postTaxonomies(c).map((t) => ({ ...t, terms: termsOf(c, t.id).map((x) => ({ ...x, count: filed(t.id, x.id) })) }));
+  const changes: TermChange[] = groups.flatMap((g) =>
+    g.terms.flatMap((x) => {
+      const k = key(g.id, x.id);
+      if (!Object.hasOwn(want, k)) return [];
+      const on = want[k];
+      return (on && x.count === n) || (!on && x.count === 0) ? [] : [{ taxonomyId: g.id, termId: x.id, on }];
+    })
+  );
+  const apply = async () => {
+    if (!changes.length || busy) return;
+    setBusy(true);
+    const done = await onApply(changes);
+    setBusy(false);
+    if (done) onClose();
+  };
+  return (
+    <Modal
+      title={`${termsManagerTitle(c)} of ${n} ${n === 1 ? noun : pluralNoun(noun)}`}
+      onClose={onClose}
+      busy={busy}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={() => void apply()} disabled={busy || !changes.length}>
+            Apply
+          </button>
+        </>
+      }
+    >
+      <p className="posts-note">Checked: every one is filed under it. Part-checked: some are, and stay as they are unless you change it.</p>
+      <div className="posts-bulk-terms">
+        {groups.map((g) => (
+          <fieldset key={g.id} className="posts-bulk-group">
+            <legend>{g.label}</legend>
+            {g.terms.length === 0 && <p className="posts-note">None yet.</p>}
+            {g.terms.map((x) => {
+              const k = key(g.id, x.id);
+              const set = Object.hasOwn(want, k) ? want[k] : undefined;
+              const mixed = set === undefined && x.count > 0 && x.count < n;
+              const checked = set ?? x.count === n;
+              return (
+                <label key={x.id} className="posts-bulk-term" htmlFor={`${uid}-${g.id}-${x.id}`}>
+                  <input
+                    id={`${uid}-${g.id}-${x.id}`}
+                    type="checkbox"
+                    checked={checked}
+                    aria-checked={mixed ? 'mixed' : checked}
+                    ref={(el) => {
+                      if (el) el.indeterminate = mixed;
+                    }}
+                    disabled={busy}
+                    onChange={() => setWant((w) => ({ ...w, [k]: mixed ? true : !checked }))}
+                  />
+                  <span className="grow">{x.label}</span>
+                  <span className="posts-bulk-count">{mixed ? `${x.count} of ${n}` : ''}</span>
+                </label>
+              );
+            })}
+          </fieldset>
+        ))}
+      </div>
     </Modal>
   );
 }
@@ -332,6 +423,16 @@ export function PostsPanel() {
   /** A post's options, from its … button, a right-click or Shift+F10; `rowMenuFor` is the post it is open for. */
   const rowMenu = useMenu();
   const [rowMenuFor, setRowMenuFor] = useState<string | null>(null);
+  /**
+   * The posts picked with Shift or Cmd/Ctrl to change together (#1507), by ID; null while none has been, when the open
+   * post is the list's selection. `anchor` is where a Shift range starts: the row last clicked or picked on its own.
+   */
+  const [picked, setPicked] = useState<Set<string> | null>(null);
+  const anchor = useRef<string | null>(null);
+  /** The picked posts' categories and tags being changed, in a dialog. */
+  const [filing, setFiling] = useState<string[] | null>(null);
+  /** A change to the picked posts on its way: one at a time. */
+  const bulkBusy = useRef(false);
   /** The row keyboard focus last sat on, which keeps the list's one tab stop. */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -375,6 +476,19 @@ export function PostsPanel() {
     known.current = ids;
   });
   const rows = useMemo(() => (collection ? postRows(collection, query, sort, { status, category: categoryId }) : []), [collection, query, sort, status, categoryId]);
+  // A pick is of the posts shown: another collection or project starts again, and a post a filter or find hides (or
+  // one deleted, or undone away) is let go of, so nothing hidden is ever changed with the rest.
+  const pickScope = `${snap?.workspaceKey ?? ''}:${collection?.settings.id ?? ''}`;
+  useEffect(() => {
+    setPicked(null);
+    setFiling(null);
+    anchor.current = null;
+  }, [pickScope]);
+  useEffect(() => {
+    if (!picked?.size) return;
+    const shown = new Set(rows.map((r) => r.id));
+    if ([...picked].some((id) => !shown.has(id))) setPicked(new Set([...picked].filter((id) => shown.has(id))));
+  }, [rows, picked]);
   // When the open entry changes (from here, the SEO view, an import), its row is brought into view without taking
   // focus from the writer; scrolling the list by hand in between is left alone.
   // An entry opened while a filter hides its row lets go of just the filters that hide it, so the open entry is always
@@ -725,6 +839,177 @@ export function PostsPanel() {
     void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision, deleteFingerprint(now.state, { collectionId: collection.settings.id, entryId }));
   };
 
+  /** The picked posts shown, in the list's order: what the selection's actions change. */
+  const chosen = picked ? rows.filter((r) => picked.has(r.id)).map((r) => r.id) : [];
+  const openHere = post && collection && post.collectionId === collection.settings.id ? post.entryId : null;
+  /**
+   * Pick with Shift (the range from the anchor) or Cmd/Ctrl (one more, or one less), as in a file manager. The first
+   * pick starts from the open post, the list's selection until then. A pick is a choice too: an entry still opening
+   * from an earlier click gives way to it.
+   */
+  const pick = (id: string, how: 'range' | 'toggle') => {
+    if (readOnly) return;
+    ++navigation.current;
+    const shown = rows.map((r) => r.id);
+    const start = openHere && shown.includes(openHere) ? openHere : null;
+    const from = anchor.current && shown.includes(anchor.current) ? anchor.current : start;
+    const next = pickRows(shown, picked ?? new Set(start ? [start] : []), from, id, how);
+    if (how === 'toggle' || !from) anchor.current = id;
+    setPicked(next);
+  };
+  /** Every post the list shows now, as found and filtered. */
+  const pickAll = () => {
+    if (readOnly || !rows.length) return;
+    anchor.current = rows[0].id;
+    setPicked(new Set(rows.map((r) => r.id)));
+  };
+  const unpick = () => {
+    setPicked(null);
+    anchor.current = null;
+  };
+  /**
+   * The project to change the picked posts in, once the open post is saved when it is one of them (an Undo then brings
+   * back all of it); null when it could not be, or the list moved on to another collection or project meanwhile.
+   */
+  const ready = async (ids: string[]) => {
+    if (!collection || !ids.length) return null;
+    const collectionId = collection.settings.id;
+    const workspaceKey = getState().snapshot?.workspaceKey;
+    const p = getState().post;
+    if (p && p.collectionId === collectionId && ids.includes(p.entryId) && !(await openSaved())) return null;
+    const s = getState().snapshot;
+    if (!s || s.workspaceKey !== workspaceKey || !Object.hasOwn(s.state.collections, collectionId) || isReadOnlyCollection(s.state.collections[collectionId])) return null;
+    return { s, collectionId, workspaceKey };
+  };
+  /** Run a change to the picked posts, one at a time. */
+  const bulk = async (work: () => Promise<unknown>) => {
+    if (bulkBusy.current) return;
+    bulkBusy.current = true;
+    try {
+      await work();
+    } finally {
+      bulkBusy.current = false;
+    }
+  };
+  const many = (n: number) => `${n} ${plural(n)}`;
+  const undoOf = (r: { entryId?: string; revision: number; workspaceKey: string }) => (r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+  /** The shown project, still the one asked about. */
+  const sameProject = (workspaceKey: string | undefined) => {
+    const now = getState().snapshot;
+    return now && now.workspaceKey === workspaceKey ? now : null;
+  };
+
+  /**
+   * Publish the picked posts, or move them to drafts, as one change. Drafts dated after today are asked about first,
+   * as Publish asks of one (#1115); what is sent is checked to be what was asked about.
+   */
+  const bulkStatus = (ids: string[], draft: boolean) =>
+    bulk(async () => {
+      const at = await ready(ids);
+      if (!at) return;
+      const today = todayArticleDate();
+      let s = at.s;
+      let plan = bulkStatusOps(s.state, at.collectionId, ids, draft, today);
+      if (!plan.ops.length) return;
+      const n = plan.ops.length;
+      if (plan.future.length) {
+        const k = plan.future.length;
+        const ok = await confirmDialog({
+          title: `Publish ${many(n)}?`,
+          body: `${k === 1 ? `“${plan.future[0].title}” is` : `${k} of them are`} dated after today. Nothing holds ${k === 1 ? 'it' : 'them'} back until then: published now, ${k === 1 ? 'it is' : 'they are'} included in the next export.`,
+          confirmLabel: 'Publish now',
+          tone: 'neutral',
+          icon: 'warning',
+          subject: someOf(plan.future.map((f) => f.title)),
+          details: [{ kind: 'undo', text: 'You can undo it.' }]
+        });
+        if (!ok) return;
+        const now = sameProject(at.workspaceKey);
+        if (!now) return;
+        const again = bulkStatusOps(now.state, at.collectionId, ids, draft, today);
+        if (JSON.stringify(again) !== JSON.stringify(plan)) return void toast(`Those ${pluralNoun(noun)} changed meanwhile, so none was published. Publish them again to check them.`, 'error');
+        s = now;
+        plan = again;
+      }
+      const r = await commitOps(plan.ops, draft ? `Move ${many(n)} to drafts` : `Publish ${many(n)}`, undefined, s.revision);
+      if (!r?.ok) return;
+      toast(draft ? `Moved ${many(n)} to drafts: they come off the website at the next export.` : `Published ${many(n)}: they are on the website from the next export.`, 'success', undoOf(r));
+    });
+
+  /** File the picked posts under terms, or take them out of them, as one change. True once it is made (or needs none). */
+  const bulkTerms = async (ids: string[], changes: TermChange[]): Promise<boolean> => {
+    let done = false;
+    await bulk(async () => {
+      const at = await ready(ids);
+      if (!at) return;
+      const ops = bulkTermOps(at.s.state, at.collectionId, ids, changes);
+      if (!ops.length) return void (done = true);
+      const r = await commitOps(ops, `File ${many(ops.length)}`, undefined, at.s.revision);
+      if (!r?.ok) return;
+      done = true;
+      toast(`Changed the ${termsManagerTitle(state.collections[at.collectionId]).toLowerCase()} of ${many(ops.length)}.`, 'success', undoOf(r));
+    });
+    return done;
+  };
+
+  /**
+   * Delete the picked posts with one question and as one change (one Undo). Those linked to or named elsewhere ask what
+   * takes their place, so they stay, picked, to delete one at a time; the question says so. What is deleted is checked
+   * to be what was asked about.
+   */
+  const bulkDelete = (ids: string[]) =>
+    bulk(async () => {
+      const at = await ready(ids);
+      if (!at) return;
+      const plan = bulkDeletePlan(at.s.state, at.collectionId, ids);
+      const h = plan.held.length;
+      const heldSaid = `${h === 1 ? `“${plan.held[0].title}” is` : `${someOf(plan.held.map((x) => x.title))} are`} linked to or named elsewhere`;
+      if (!plan.free.length)
+        return void toast(`${heldSaid}, so ${h === 1 ? 'it asks' : 'each asks'} what takes ${h === 1 ? 'its' : 'their'} place. Delete ${h === 1 ? 'it' : 'them one at a time'} from ${h === 1 ? 'its' : 'their'} options.`, 'error');
+      const n = plan.free.length;
+      const ok = await confirmDialog({
+        title: `Delete ${many(n)}?`,
+        body: `The ${plural(n)} and everything ${n === 1 ? 'it holds is' : 'they hold are'} removed from the project.`,
+        confirmLabel: `Delete ${many(n)}`,
+        danger: true,
+        icon: 'delete',
+        subject: someOf(plan.free.map((f) => f.title)),
+        details: [
+          ...(h ? [{ kind: 'keep' as const, text: `${h === 1 ? 'One stays' : `${h} stay`}: ${heldSaid}. Delete ${h === 1 ? 'it' : 'each'} on its own to choose what takes its place.` }] : []),
+          { kind: 'undo', text: 'You can undo it.' }
+        ]
+      });
+      if (!ok) return;
+      const now = sameProject(at.workspaceKey);
+      if (!now) return;
+      const again = bulkDeletePlan(now.state, at.collectionId, ids);
+      if (JSON.stringify(again.free) !== JSON.stringify(plan.free)) return void toast(`What links to or names those ${pluralNoun(noun)} changed meanwhile, so none was deleted. Delete them again to check.`, 'error');
+      const r = await commitOps(again.ops, `Delete ${many(n)}`, undefined, now.revision);
+      if (!r?.ok) return;
+      // The ones that stay are still picked, to delete one at a time.
+      setPicked((was) => (was ? new Set(again.held.map((x) => x.id).filter((id) => was.has(id))) : was));
+      toast(`Deleted ${many(n)}`, 'info', undoOf(r));
+    });
+
+  /** What can be done with the picked posts, as items of a menu. */
+  const bulkItems = (ids: string[]): MenuItem[] => {
+    const n = ids.length;
+    const s = getState().snapshot?.state ?? state;
+    const drafts = collection ? bulkStatusOps(s, collection.settings.id, ids, false).ops.length : 0;
+    const published = collection ? bulkStatusOps(s, collection.settings.id, ids, true).ops.length : 0;
+    return [
+      { heading: `${many(n)} selected` },
+      { label: drafts && drafts < n ? `Publish ${drafts} ${drafts === 1 ? 'draft' : 'drafts'}` : 'Publish', icon: <Globe />, disabled: !drafts, description: drafts ? undefined : `Every one of them is published.`, onSelect: () => void bulkStatus(ids, false) },
+      { label: published && published < n ? `Move ${published} to drafts` : 'Move to drafts', icon: <FilePen />, disabled: !published, description: published ? undefined : 'Every one of them is a draft.', onSelect: () => void bulkStatus(ids, true) },
+      ...(groupings.length > 0 ? [{ label: `${termsManagerTitle(collection!)}…`, icon: <Tags />, description: 'File them under one, or take them out of it.', onSelect: () => setFiling(ids) }] : []),
+      { separator: true },
+      ...(n < rows.length ? [{ label: `Select all ${rows.length} shown`, icon: <ListChecks />, onSelect: pickAll }] : []),
+      { label: 'Clear selection', onSelect: unpick },
+      { separator: true },
+      { label: `Delete ${many(n)}…`, icon: <Trash2 />, danger: true, onSelect: () => void bulkDelete(ids) }
+    ];
+  };
+
   // The collection by its own name: a renamed blog is called what it was renamed to, everywhere.
   const heading = collection?.settings.name ?? 'Content';
   // Folded as the list finds; a query of accents alone folds to nothing and finds nothing to mark.
@@ -789,6 +1074,9 @@ export function PostsPanel() {
       ...POST_SORTS.map((s) => ({ label: s.label, checked: sort === s.id, onSelect: () => setSort(s.id) })),
       { separator: true },
       { label: 'Show full titles', checked: fullTitles, toggle: true, description: 'Every title whole, rather than in two lines.', onSelect: () => setFullTitles(!fullTitles) },
+      ...(!readOnly && rows.length > 1
+        ? [{ label: `Select all ${rows.length} shown`, icon: <ListChecks />, description: `To publish, unpublish, file or delete them together. Shift+click or ${isMac ? '⌘' : 'Ctrl+'}click picks some.`, onSelect: pickAll }]
+        : []),
       { separator: true },
       ...(groupings.length > 0 && !readOnly ? [{ label: `${termsManagerTitle(collection)}…`, icon: <Tags />, description: `Add, rename or delete ${termsManagerTitle(collection).toLowerCase()}.`, onSelect: () => setManaging(true) }] : []),
       ...(canImport && !readOnly
@@ -815,7 +1103,9 @@ export function PostsPanel() {
   /** A post's options, at its … button or where the pointer or keyboard asked for them. */
   const postMenu = (at: HTMLElement | { x: number; y: number; row: HTMLElement }, r: PostRow) => {
     const current = post?.entryId === r.id && post.collectionId === collection?.settings.id;
-    const items: MenuItem[] = [
+    // One of several picked: what is done to them all, as a file manager offers.
+    const several = !readOnly && chosen.length > 1 && chosen.includes(r.id);
+    const items: MenuItem[] = several ? bulkItems(chosen) : [
       { label: current ? 'Open (already open)' : `Open ${noun}`, disabled: current, onSelect: () => void open(r.id) },
       ...(readOnly
         ? []
@@ -826,8 +1116,9 @@ export function PostsPanel() {
           ])
     ];
     setRowMenuFor(r.id);
-    if (at instanceof HTMLElement) rowMenu.openAt(at, items, `${r.title} options`);
-    else rowMenu.open(at.x, at.y, items, `${r.title} options`, at.row);
+    const label = several ? `${many(chosen.length)} selected` : `${r.title} options`;
+    if (at instanceof HTMLElement) rowMenu.openAt(at, items, label);
+    else rowMenu.open(at.x, at.y, items, label, at.row);
   };
 
   // Type-ahead: printable keys jump to the next entry whose title starts with what was typed (as in Pages).
@@ -1032,6 +1323,7 @@ export function PostsPanel() {
       {connecting && <SourceDialog collectionId={connecting} onClose={() => setConnecting(null)} />}
       {managing && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
       {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
+      {filing && <BulkTermsDialog collectionId={collection.settings.id} ids={filing} onApply={(changes) => bulkTerms(filing, changes)} onClose={() => setFiling(null)} />}
       <div className="panel-body">
         {adding && !isReadOnlyCollection(formTarget) && (
           <div ref={formRef}>
@@ -1114,13 +1406,28 @@ export function PostsPanel() {
             {[(finding || categoryId) && `${rows.length} of ${all} ${plural(all)}`, sort !== 'newest' && `Sorted by ${POST_SORTS.find((s) => s.id === sort)!.label.toLowerCase()}`].filter(Boolean).join(' · ')}
           </p>
         )}
+        {!readOnly && chosen.length > 0 && (
+          <div className="posts-picked" role="group" aria-label={`${many(chosen.length)} selected`}>
+            <span className="posts-picked-count" aria-live="polite">
+              {chosen.length} selected
+            </span>
+            <span className="grow" />
+            <button className="btn btn-sm" {...rowMenu.triggerProps('bulk')} data-testid="posts-bulk-actions" onClick={(e) => (setRowMenuFor(null), rowMenu.openAt(e.currentTarget, bulkItems(chosen), `${many(chosen.length)} selected`))}>
+              Actions <ChevronDown aria-hidden="true" />
+            </button>
+            <button className="icon-btn sm" aria-label="Clear selection" title="Clear selection (Esc)" onClick={unpick}>
+              <X />
+            </button>
+          </div>
+        )}
         <div className="posts-list-wrap">
         <div
           id={`${uid}-list`}
           className={`list posts-list${finding ? ' finding' : ''}${fullTitles ? ' full-titles' : ''}`}
           role="listbox"
+          aria-multiselectable={readOnly ? undefined : true}
           aria-label={finding ? `${heading} matching “${query.trim()}”` : heading}
-          aria-description="Type a title to jump to it. Enter opens it; Shift+F10 opens its options."
+          aria-description={`Type a title to jump to it. Enter opens it; Shift+F10 opens its options.${readOnly ? '' : ` Shift+Up or Down picks a range, ${isMac ? '⌘' : 'Ctrl+'}Space picks one more, ${isMac ? '⌘' : 'Ctrl+'}A picks every one shown.`}`}
           ref={listRef}
           hidden={!rows.length}
           onFocus={(e) => {
@@ -1132,6 +1439,21 @@ export function PostsPanel() {
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPeek(null);
           }}
           onKeyDown={(e) => {
+            const t = e.target as HTMLElement;
+            const onRow = t.getAttribute('role') === 'option';
+            if (onRow && !readOnly && pickKey(e) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') return void (e.preventDefault(), pickAll());
+            if (onRow && !readOnly && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+              // Focus moves on, and the range runs from the anchor (the row it started on) to the row it reaches.
+              e.preventDefault();
+              const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')];
+              const i = els.indexOf(t);
+              const next = els[e.key === 'ArrowDown' ? Math.min(els.length - 1, i + 1) : Math.max(0, i - 1)];
+              if (!next) return;
+              if (!anchor.current || !rows.some((r) => r.id === anchor.current)) anchor.current = t.dataset.post ?? null;
+              next.focus();
+              pick(next.dataset.post!, 'range');
+              return;
+            }
             if (!typeAhead(e)) rovingKeys(e, 'option', { follow: false });
           }}
         >
@@ -1140,7 +1462,8 @@ export function PostsPanel() {
             const date = dated && r.date ? shortDate(r.date, language) : null;
             // The row's name says the date with its year, which the row itself leaves out for this year's.
             const status = [r.draft && 'draft, left out of the website', dated && r.date && shortDate(r.date, language, { withYear: true })].filter(Boolean).join(', ');
-            const cls = ['list-item', 'post-row', r.draft && 'draft', current && 'selected', rowMenu.isOpen && rowMenuFor === r.id && 'menu-open'].filter(Boolean).join(' ');
+            const isPicked = !!picked?.has(r.id);
+            const cls = ['list-item', 'post-row', r.draft && 'draft', current && 'selected', isPicked && 'picked', rowMenu.isOpen && rowMenuFor === r.id && 'menu-open'].filter(Boolean).join(' ');
             const why = reason(r);
             const meta = r.draft || !!date;
             // On a dated row the … sits at the end of the Draft and date line, so the title keeps the row's whole width;
@@ -1169,16 +1492,32 @@ export function PostsPanel() {
                 className={cls}
                 role="option"
                 data-post={r.id}
-                aria-selected={current}
+                // Picked rows are the selection once one is picked; until then the open entry is.
+                aria-selected={picked ? isPicked : current}
+                aria-current={current || undefined}
                 aria-label={status ? `${r.title}, ${status}` : r.title}
                 aria-description={[why?.text, r.route].filter(Boolean).join('. ') || undefined}
                 aria-keyshortcuts="Shift+F10"
                 tabIndex={r.id === tabStop ? 0 : -1}
                 title={[r.title, r.route].filter(Boolean).join('\n')}
-                onClick={() => void open(r.id)}
+                // Shift's click picks rows, never the page's text between them.
+                onMouseDown={(e) => !readOnly && e.shiftKey && e.preventDefault()}
+                onClick={(e) => {
+                  if (!readOnly && (e.shiftKey || pickKey(e))) {
+                    e.currentTarget.focus({ preventScroll: true });
+                    return pick(r.id, e.shiftKey ? 'range' : 'toggle');
+                  }
+                  // A plain click opens the entry, the selection again, and the start of a later range.
+                  unpick();
+                  anchor.current = r.id;
+                  void open(r.id);
+                }}
                 onKeyDown={(e) => {
                   if (e.target !== e.currentTarget) return;
-                  if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), void open(r.id));
+                  if (e.key === ' ' && !readOnly && pickKey(e)) (e.preventDefault(), pick(r.id, 'toggle'));
+                  else if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), unpick(), (anchor.current = r.id), void open(r.id));
+                  // Escape lets go of the picked posts first.
+                  else if (e.key === 'Escape' && picked) (e.stopPropagation(), unpick());
                   // Escape puts away a card that shows (the row cut short); a find's whole titles show none, so it leaves the find.
                   else if (e.key === 'Escape' && peek && titleCut(e.currentTarget)) (e.stopPropagation(), setPeek(null));
                   else if (e.key === 'Escape' && finding) {
@@ -1199,7 +1538,7 @@ export function PostsPanel() {
                 }}
               >
                 <span className="post-glyph" aria-hidden="true">
-                  {RowGlyph(r)}
+                  {isPicked ? <Check /> : RowGlyph(r)}
                 </span>
                 <span className="post-text">
                   <span className="post-title">

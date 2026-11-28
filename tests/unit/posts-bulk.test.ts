@@ -92,6 +92,16 @@ describe('filing several posts', () => {
     const after = run(s, ...ops);
     expect(entry(after, 'en_a').terms).toMatchObject({ categories: ['news'], tags: ['clay'] });
   });
+  it('never files a post under more terms of a grouping than an entry can hold', () => {
+    let s = blog();
+    const many = Array.from({ length: 50 }, (_, i) => `t${i}`);
+    s = run(s, ...many.map((id) => ({ type: 'collection.createTerm' as const, collectionId: 'posts', taxonomyId: 'tags', label: `Tag ${id}`, termId: id })), { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'One more', termId: 'extra' });
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { tags: many } });
+    expect(bulkTermOps(s, 'posts', ['en_a', 'en_b'], [{ taxonomyId: 'tags', termId: 'extra', on: true }])).toEqual([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_b', terms: { tags: ['extra'] } }]);
+    // In place of one taken out, it fits.
+    const swap = bulkTermOps(s, 'posts', ['en_a'], [{ taxonomyId: 'tags', termId: 'extra', on: true }, { taxonomyId: 'tags', termId: 't0', on: false }]);
+    expect(run(s, ...swap).collections.posts.entries.en_a.terms?.tags).toEqual([...many.slice(1), 'extra']);
+  });
   it('changes nothing for a term or grouping the collection does not have', () => {
     expect(bulkTermOps(blog(), 'posts', ['en_a'], [{ taxonomyId: 'categories', termId: 'nope', on: true }])).toEqual([]);
     expect(bulkTermOps(blog(), 'posts', ['en_a'], [{ taxonomyId: 'nope', termId: 'news', on: true }])).toEqual([]);

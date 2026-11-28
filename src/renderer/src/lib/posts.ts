@@ -406,6 +406,9 @@ export function bulkStatusOps(state: ProjectState, collectionId: string, ids: re
   };
 }
 
+/** The most terms of one grouping an entry can be filed under (the operation's limit). */
+export const MAX_ENTRY_TERMS = 50;
+
 /** A term of one of a collection's groupings to file the picked entries under (`on`), or take them out of. */
 export interface TermChange {
   taxonomyId: string;
@@ -437,7 +440,9 @@ export function bulkTermOps(state: ProjectState, collectionId: string, ids: read
       const filed: unknown = e.terms && Object.hasOwn(e.terms, tax) ? e.terms[tax] : undefined;
       const had = Array.isArray(filed) ? filed.filter((x): x is string => typeof x === 'string') : [];
       let ids = [...new Set(had.filter((x) => Object.hasOwn(terms, x)))];
-      for (const x of real) if (x.taxonomyId === tax) ids = x.on ? (ids.includes(x.termId) ? ids : [...ids, x.termId]) : ids.filter((id) => id !== x.termId);
+      // Taken out first, so a term added in place of one taken out fits; one past the most an entry can hold is not added.
+      for (const x of real) if (x.taxonomyId === tax && !x.on) ids = ids.filter((id) => id !== x.termId);
+      for (const x of real) if (x.taxonomyId === tax && x.on && !ids.includes(x.termId) && ids.length < MAX_ENTRY_TERMS) ids = [...ids, x.termId];
       if (ids.length !== had.length || ids.some((id, i) => id !== had[i])) next[tax] = ids;
     }
     return Object.keys(next).length ? [{ type: 'entry.update', collectionId, entryId: e.id, terms: next }] : [];
