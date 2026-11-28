@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProjectSnapshot, RunStatus } from '@shared/api';
@@ -9,8 +9,11 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { written } from '../../src/main/project/save-error';
 import { saveStatusAnnouncement as saveAnnouncement } from '../../src/renderer/src/lib/announce';
 import { heldPrompt } from '../../src/renderer/src/lib/held';
+import { draftCount, settle } from '../../src/renderer/src/lib/pending';
+import { denyAccess } from './deny-access';
 
 /**
  * The "Stop AI and apply my edit" handoff end to end: the renderer store, talking through a stand-in for
@@ -79,6 +82,7 @@ interface Held {
   currentText?: string | null;
   note?: string;
   waitsForEnd?: boolean;
+  save?: 'failed' | 'unfinished' | 'blocked';
 }
 interface StoreState {
   snapshot: ProjectSnapshot | null;
@@ -88,7 +92,7 @@ interface StoreState {
   runMode: 'ask' | 'edit' | null;
   runSaveable: boolean;
   pendingSave: number;
-  toasts: Array<{ action?: { label: string } }>;
+  toasts: Array<{ text: string; kind: string; action?: { label: string } }>;
   renameOffer: { opening: string; pageId: string; from: string; to: string; revision: number } | null;
 }
 interface StoreModule {
@@ -97,7 +101,7 @@ interface StoreModule {
   applyHeld(id: number, opts?: { replace?: boolean; stopRunId?: string }): Promise<void>;
   saveHeldNow(id: number): Promise<void>;
   discardHeld(id: number): void;
-  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean }): void;
+  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean; refused?: () => void }): void;
   holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts?: { text?: string | null; seq?: number }): { id: number | null } | null;
   applyAiEvent(e: AiEvent): void;
   aiActivity(): number;
@@ -140,11 +144,13 @@ beforeAll(async () => {
           applyCalls++;
           const meanwhile = beforeApply;
           beforeApply = null;
-          if (meanwhile) return Promise.resolve(meanwhile()).then(() => current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' }));
+          // As the controller answers it (Controller.apply): a save that could not be written is a refusal that says so.
+          const save = () => written(current!.session, current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' }));
+          if (meanwhile) return Promise.resolve(meanwhile()).then(save);
           if (opts?.opening !== undefined && opts.opening !== `${current!.dir}#1`) return Promise.resolve({ ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'That project is no longer open.' } });
           // As the controller does: the AI owns the project from the moment it starts.
           if (current!.orch.editing) return Promise.resolve({ ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is making changes.' } });
-          return current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' });
+          return save();
         },
         // As the controller does (Controller.saveWhileAsking): admitted by the request, then saved into its checkpoint too.
         saveWhileAsking: async (batch: { operations: EditOperation[] }, opts: { runId: string; base: unknown[]; label?: string; opening?: string }) => {
@@ -154,7 +160,7 @@ beforeAll(async () => {
           let saved: { summary: string; operations: EditOperation[]; before: ProjectState; after: ProjectState } | null = null;
           try {
             const before = current!.session.state;
-            const r = await current!.session.apply({ operations: batch.operations }, { label: opts.label ?? 'Edit', source: 'user', asking: { runId: opts.runId, base: opts.base } });
+            const r = await written(current!.session, current!.session.apply({ operations: batch.operations }, { label: opts.label ?? 'Edit', source: 'user', asking: { runId: opts.runId, base: opts.base } }));
             if (r.ok) saved = { summary: opts.label ?? 'Edit', operations: batch.operations, before, after: current!.session.state };
             return r;
           } finally {
@@ -1133,5 +1139,299 @@ describe('a field changed somewhere else while it was typed (#82)', () => {
     expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', text: 'Typed in the inspector' });
     expect(held.note).toMatch(/changed outside SiteOrigin Builder/);
     expect(session.state.pages[home].seo.description).not.toBe('Typed in the inspector');
+  });
+});
+
+describe('a typed edit the project folder cannot be written for (#1435)', () => {
+  const description = (pageId: string, value: string): EditOperation => ({ type: 'page.update', pageId, description: value });
+  const pagesDir = (dir: string) => join(dir, 'siteorigin', 'pages');
+  const pageFile = (dir: string, pageId: string) => join(pagesDir(dir), `${pageId}.json`);
+  const onDisk = (dir: string, pageId: string) => JSON.parse(readFileSync(pageFile(dir, pageId), 'utf8')) as { title: string; seo: Record<string, unknown> };
+  const lastError = () => store.getState().toasts.filter((t) => t.kind === 'error').at(-1)?.text ?? '';
+  /** Nothing of the system's own words: Electron's prefix, the error code, the temporary file or the whole path. */
+  const plain = (text: string, dir: string) => {
+    expect(text).not.toMatch(/remote method|EACCES|EPERM|\.tmp|permission denied/i);
+    expect(text).not.toContain(dir);
+  };
+  /** The bridge's apply, as the editor's preload has it, swapped for `apply` until the returned function puts it back. */
+  function bridgeApply(apply: (fallback: (...a: unknown[]) => Promise<unknown>, ...a: unknown[]) => Promise<unknown>) {
+    const bridge = (globalThis as unknown as { window: { builder: { project: { apply: (...a: unknown[]) => Promise<unknown> } } } }).window.builder.project;
+    const was = bridge.apply;
+    bridge.apply = (...a: unknown[]) => apply(was, ...a);
+    return () => (bridge.apply = was);
+  }
+  /** The next time the session puts a change's journal in place, `fail` runs in its place, once. */
+  function failJournal(session: ProjectSession, fail: (beforeReplace: () => Promise<boolean>) => Promise<void>) {
+    const s = session as unknown as { placeJournal: (j: unknown, beforeReplace: () => Promise<boolean>) => Promise<void> };
+    const placeJournal = s.placeJournal.bind(session);
+    s.placeJournal = (_j, beforeReplace) => {
+      s.placeJournal = placeJournal;
+      return fail(beforeReplace);
+    };
+  }
+  /** As Node reports a file in the project's own folder that could not be made or moved into place. */
+  const denied = (dir: string, code: string, syscall: string, extra: object = {}) => Object.assign(new Error(`${code}: operation not permitted, ${syscall} '${join(dir, '.siteorigin', '.0123456789ab.tmp')}'`), { code, syscall, path: join(dir, '.siteorigin', '.0123456789ab.tmp'), ...extra });
+
+  it('says which folder could not be written, keeps the typed text to copy, and finishes the save once the project is reopened', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const about = session.state.site.pageOrder.find((id) => id !== home)!;
+    const before = onDisk(dir, home).seo.description;
+    const base = store.getState().snapshot;
+    const allow = denyAccess(pagesDir(dir), 'write');
+    // Leaving as the save is on its way hears that leaving loses nothing of it: reopening finishes it. The field it was
+    // typed in keeps nothing of it either, so leaving finds no draft there.
+    let settled: ReturnType<typeof settle>;
+    let refused = 0;
+    try {
+      let committing: Promise<unknown> = Promise.resolve();
+      store.commitDraft(base, () => (committing = store.applyOps([description(home, 'A description I spent ages on')], 'Change description')), 'A description I spent ages on', { refused: () => refused++ });
+      settled = settle({ leaving: true, blur: () => undefined, wait: (ms) => new Promise((r) => setTimeout(r, ms)) });
+      await committing;
+    } finally {
+      allow();
+    }
+    const { problems, finish } = await settled;
+    finish();
+    expect(problems).toEqual([]);
+    expect(refused).toBe(0);
+    expect(onDisk(dir, home).seo.description).toBe(before);
+    // Its journal is on disk, so reopening finishes it: the toast says so, in plain words, and names the folder.
+    expect(session.saveFailure).toMatchObject({ kind: 'unfinished', label: 'Change description' });
+    expect(lastError()).toBe('That change is not saved yet: the folder “siteorigin/pages” cannot be written to. Check that you can save files there, then close and reopen the project to finish saving it.');
+    plain(lastError(), dir);
+    // The typed text is kept to copy, never only put back. It is not sent again from here: main refuses every save until
+    // the project is reopened, which finishes this one.
+    const [held] = store.getState().heldEdits;
+    expect(store.getState().heldEdits).toHaveLength(1);
+    expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', save: 'unfinished', text: 'A description I spent ages on', note: lastError() });
+    expect(heldPrompt(held, false)).toEqual({ message: lastError(), actions: ['copy', 'dismiss'] });
+    const sent = applyCalls;
+    await store.applyHeld(held.id);
+    expect(applyCalls).toBe(sent);
+    expect(store.getState().heldEdits[0]).toMatchObject({ id: held.id, phase: 'failed', save: 'unfinished' });
+    // Leaving loses nothing of it, so leaving does not say it would.
+    expect(draftCount()).toBe(0);
+
+    // Typed after it: refused, kept to copy, and said to need making again, never to be finished by reopening.
+    const later = store.getState().snapshot;
+    await typeAndCommit(description(about, 'Typed after it'), 'Change description', 'Typed after it', later);
+    const after = store.getState().heldEdits.find((h) => h.text === 'Typed after it')!;
+    expect(after).toMatchObject({ phase: 'failed', cause: 'elsewhere', save: 'blocked' });
+    expect(heldPrompt(after, false)).toEqual({
+      message: 'Not saved: An earlier save did not finish, so nothing more is saved until the project is closed and reopened. Copy your text before you close it, then make this change again.',
+      actions: ['copy', 'discard']
+    });
+    await store.applyHeld(after.id);
+    expect(applyCalls).toBe(sent + 1);
+    // Leaving would lose that one: leaving says so.
+    expect(draftCount()).toBe(1);
+
+    // Close and reopen: the save finishes, and the page holds the typed text; the one typed after it is not there.
+    await session.close();
+    current = null;
+    const reopened = await ProjectSession.open(dir, 'test');
+    try {
+      expect(reopened.state.pages[home].seo.description).toBe('A description I spent ages on');
+      expect(onDisk(dir, home).seo.description).toBe('A description I spent ages on');
+      expect(reopened.saveFailure).toBeNull();
+      expect(reopened.state.pages[about].seo.description).not.toBe('Typed after it');
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it('keeps the typed text to try again when nothing of the save was written, and saves it once the folder can be written', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // The journal itself cannot be made: nothing of the change reaches the project.
+    failJournal(session, () => Promise.reject(denied(dir, 'EACCES', 'open')));
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(session.saveFailure?.kind).toBe('failed');
+    expect(lastError()).toBe('That change could not be saved: the folder “.siteorigin” cannot be written to. Check that you can save files there, then try again.');
+    plain(lastError(), dir);
+    const [held] = store.getState().heldEdits;
+    expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', save: 'failed', text: 'Typed in the inspector' });
+    expect(heldPrompt(held, false)).toEqual({ message: lastError(), actions: ['retry', 'copy', 'discard'] });
+    // Try again, once the folder can be written: saved, and the row goes.
+    await store.applyHeld(held.id);
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(onDisk(dir, home).seo.description).toBe('Typed in the inspector');
+    expect(session.saveFailure).toBeNull();
+  });
+
+  it('says reopening finishes a held edit whose second try did not finish either', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    failJournal(session, () => Promise.reject(denied(dir, 'EACCES', 'open')));
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    const [held] = store.getState().heldEdits;
+    expect(held.save).toBe('failed');
+    const allow = denyAccess(pagesDir(dir), 'write');
+    try {
+      await store.applyHeld(held.id);
+    } finally {
+      allow();
+    }
+    expect(store.getState().heldEdits[0]).toMatchObject({ id: held.id, phase: 'failed', save: 'unfinished' });
+    expect(heldPrompt(store.getState().heldEdits[0], false).actions).toEqual(['copy', 'dismiss']);
+    expect(store.getState().heldEdits[0].note).toMatch(/^That change is not saved yet: the folder “siteorigin\/pages” cannot be written to\./);
+  });
+
+  it('never says reopening finishes a save whose journal did not take its place', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // The journal was written beside its place but could not be moved there: nothing of the change is on disk, and yet
+    // nothing more is saved until the project is reopened.
+    // What is in the journal's place already names the revision this save makes, and is still not its journal.
+    failJournal(session, async (beforeReplace) => {
+      writeFileSync(join(dir, '.siteorigin', 'journal.json'), JSON.stringify({ revision: session.revision + 1 }));
+      await beforeReplace();
+      throw denied(dir, 'EPERM', 'rename', { dest: join(dir, '.siteorigin', 'journal.json') });
+    });
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    rmSync(join(dir, '.siteorigin', 'journal.json'));
+    expect(lastError()).toBe('That change could not be saved: the folder “.siteorigin” cannot be written to. Check that you can save files there, then close and reopen the project, and make the change again.');
+    plain(lastError(), dir);
+    // The save indicator names no change for reopening to finish.
+    expect(session.saveFailure).toEqual({ kind: 'unfinished', message: expect.any(String) });
+    const [held] = store.getState().heldEdits;
+    expect(held).toMatchObject({ phase: 'failed', save: 'blocked', text: 'Typed in the inspector' });
+    expect(heldPrompt(held, false).actions).toEqual(['copy', 'discard']);
+    expect(draftCount()).toBe(1);
+    const sent = applyCalls;
+    await store.applyHeld(held.id);
+    expect(applyCalls).toBe(sent);
+  });
+
+  it('never takes an older journal put in this one’s place for this save’s journal', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // The journal takes its place, and something else (a sync of the folder, say) puts an older one there before the
+    // page can be written.
+    const s = session as unknown as { placeJournal: (j: unknown, beforeReplace: () => Promise<boolean>) => Promise<void> };
+    const placeJournal = s.placeJournal.bind(session);
+    s.placeJournal = async (j, beforeReplace) => {
+      s.placeJournal = placeJournal;
+      await placeJournal(j, beforeReplace);
+      writeFileSync(join(dir, '.siteorigin', 'journal.json'), JSON.stringify({ schemaVersion: 1, writes: [], deletes: [], revision: session.revision }));
+    };
+    const allow = denyAccess(pagesDir(dir), 'write');
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      allow();
+    }
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'failed', save: 'blocked', text: 'Typed in the inspector' });
+    rmSync(join(dir, '.siteorigin', 'journal.json'));
+  });
+
+  it('never takes something else in the journal’s place for this save’s journal', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // A folder where the journal goes: the journal cannot be moved there, and what is there names no save.
+    mkdirSync(join(dir, '.siteorigin', 'journal.json'));
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(session.saveFailure?.kind).toBe('unfinished');
+    expect(lastError()).toMatch(/^That change could not be saved: the folder “\.siteorigin” .*close and reopen the project, and make the change again\.$/);
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'failed', save: 'blocked', text: 'Typed in the inspector' });
+    rmSync(join(dir, '.siteorigin', 'journal.json'), { recursive: true });
+  });
+
+  it('holds nothing for a change whose documents landed, and says what is left unfinished', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    const s = session as unknown as { publishGenerated: (...a: unknown[]) => Promise<string[]> };
+    const publishGenerated = s.publishGenerated.bind(session);
+    s.publishGenerated = async () => {
+      s.publishGenerated = publishGenerated;
+      throw Object.assign(new Error(`EACCES: permission denied, open '${join(dir, 'src', 'routes', '.0123456789ab.tmp')}'`), { code: 'EACCES', syscall: 'open', path: join(dir, 'src', 'routes', '.0123456789ab.tmp') });
+    };
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(onDisk(dir, home).seo.description).toBe('Typed in the inspector');
+    expect(lastError()).toBe('That change is saved, but saving did not finish: the folder “src/routes” cannot be written to. Check that you can save files there, then close and reopen the project to finish.');
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(session.saveFailure?.kind).toBe('unfinished');
+  });
+
+  it('keeps an edit checked after the AI ran, whose save did not finish, to copy, and loses nothing by leaving', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    const allow = denyAccess(pagesDir(dir), 'write');
+    let settled: ReturnType<typeof settle>;
+    try {
+      // Typed while the AI ran: held, checked and then saved, as the AI has finished.
+      const committing = typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base, true);
+      settled = settle({ leaving: true, blur: () => undefined, wait: (ms) => new Promise((r) => setTimeout(r, ms)) });
+      await committing;
+      await until(() => store.getState().heldEdits[0]?.phase === 'failed', 'the held edit to fail');
+    } finally {
+      allow();
+    }
+    const { problems, finish } = await settled;
+    finish();
+    expect(problems).toEqual([]);
+    expect(store.getState().heldEdits[0]).toMatchObject({ save: 'unfinished', text: 'Typed in the inspector' });
+  });
+
+  it('keeps a typed edit stopped part way by a file changed outside the app to copy, as reopening finishes it', async () => {
+    const { session } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    const message = 'A file was changed outside SiteOrigin Builder while this change was being saved, so the save did not finish. Close and reopen the project to finish it: Project health then shows the file in conflict.';
+    const restore = bridgeApply(() => Promise.resolve({ ok: false, revision: session.revision, error: { code: 'CONFLICT', message, recoverable: false, details: { save: 'unfinished' } } }));
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      restore();
+    }
+    const [held] = store.getState().heldEdits;
+    expect(held).toMatchObject({ phase: 'failed', save: 'unfinished', note: message });
+    expect(heldPrompt(held, false).actions).toEqual(['copy', 'dismiss']);
+    expect(draftCount()).toBe(0);
+  });
+
+  it('keeps the typed text, in plain words, when main does not answer with what became of the save', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // As Electron rejects an invoke whose handler threw: the handler's error behind its own prefix.
+    const restore = bridgeApply(() => Promise.reject(new Error("Error invoking remote method 'project:apply': Error: The editor lost its connection")));
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      restore();
+    }
+    expect(lastError()).toBe('That change could not be saved: The editor lost its connection');
+    plain(lastError(), dir);
+    const [held] = store.getState().heldEdits;
+    expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', text: 'Typed in the inspector' });
+    expect(held.save).toBeUndefined();
+    expect(heldPrompt(held, false).actions).toEqual(['retry', 'copy', 'discard']);
+  });
+
+  it('reports a failed save of a field committed again since as that later commit does', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    failJournal(session, () => Promise.reject(denied(dir, 'EACCES', 'open')));
+    // The first commit fails while the second, of the same field, waits behind it; the second is saved. A save (or a
+    // leave) waiting on both hears nothing could not be saved.
+    const first = typeAndCommit(description(home, 'First'), 'Change description', 'First', base);
+    const second = typeAndCommit(description(home, 'Second'), 'Change description', 'Second', base);
+    const settled = settle({ blur: () => undefined, wait: (ms) => new Promise((r) => setTimeout(r, ms)) });
+    await Promise.all([first, second]);
+    const { problems, finish } = await settled;
+    finish();
+    expect(problems).toEqual([]);
+    expect(store.getState().heldEdits.filter((h) => h.text === 'First')).toEqual([]);
+    expect(onDisk(dir, home).seo.description).toBe('Second');
   });
 });

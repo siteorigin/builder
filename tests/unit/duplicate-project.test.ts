@@ -335,7 +335,9 @@ describe('a duplicated project (#176)', () => {
         throw new Error('ENOSPC: no space left on device');
       });
     failNext();
-    await expect(c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).rejects.toThrow(/ENOSPC/);
+    // The editor hears that its change was not saved, as a refusal (#1435).
+    const unsaved = { ok: false, error: { code: 'SAVE_FAILED', message: expect.stringMatching(/^That change could not be saved: /), recoverable: true, details: { save: 'failed' } } };
+    expect(await c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).toMatchObject(unsaved);
     const lost = { ok: false, field: 'form', message: expect.stringMatching(/^A change could not be saved, so the copy would leave it out/) };
     expect(await c.duplicate(opts)).toMatchObject(lost);
     expect(readdirSync(sites)).toEqual(['storefront']);
@@ -345,7 +347,7 @@ describe('a duplicated project (#176)', () => {
     failNext();
     const failing = c.apply({ operations: [{ type: 'site.update', name: 'Lost again' }] });
     const copying = c.duplicate(opts);
-    await expect(failing).rejects.toThrow(/ENOSPC/);
+    expect(await failing).toMatchObject(unsaved);
     expect(await copying).toMatchObject(lost);
     expect(readdirSync(sites)).toEqual(['storefront']);
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'Kept name' }] })).ok).toBe(true);

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
@@ -35,6 +35,7 @@ import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } from './asset-files';
 import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
 import type { MissingAssetFiles } from '@shared/api';
+import type { WriteFailure } from './save-error';
 import { HISTORY_LIMIT } from '@shared/api';
 import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
@@ -349,7 +350,11 @@ async function searchFile(abs: string, tokens: string[]): Promise<Set<string>> {
   }
   return found;
 }
-const UNSETTLED = 'A save did not finish. Close and reopen the project to recover it.';
+const UNSETTLED = 'An earlier save did not finish, so nothing more is saved until the project is closed and reopened.';
+/** A change stopped part way by a file saved outside the app: this change, not an earlier one, waits on reopening. */
+const STOPPED_PART_WAY = 'A file was changed outside SiteOrigin Builder while this change was being saved, so the save did not finish. Close and reopen the project to finish it: Project health then shows the file in conflict.';
+/** The same, stopped before anything of it was written, with its journal gone but its folder not confirmed: reopening finishes nothing of it. */
+const STOPPED_UNSAVED = 'A file was changed outside SiteOrigin Builder while this change was being saved, so it was not saved, and nothing more is saved until the project is closed and reopened.';
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 /** Why a project whose folder went while it was open is read-only. */
 const FOLDER_GONE: ReadOnlyInfo = {
@@ -894,6 +899,12 @@ export class ProjectSession extends EventEmitter {
   }
   /** The last save that failed with nothing of it written, until a later save succeeds. */
   private failedSave: { label: string; message: string } | null = null;
+  /** What became of each save that failed, by the error it threw: told apart as it failed, so a later one never says
+   *  another's fate (see writeFailure). */
+  private writeFailures = new WeakMap<object, WriteFailure>();
+  /** The save being written put its own journal in place (its rename succeeded): only that journal is one reopening
+   *  finishes for it, never a file that was there already. */
+  private journalInPlace = false;
   /** Named versions of the site, kept apart from history until the author deletes them (issue 260). */
   private versions: VersionStore;
 
@@ -2007,7 +2018,10 @@ export class ProjectSession extends EventEmitter {
    * read, unless part of the change was already on disk, which only reopening the project can finish.
    */
   private diskConflict(e: DiskConflictError): NonNullable<ApplyResult['error']> {
-    return this.unsettled ? { code: 'CONFLICT', message: UNSETTLED, recoverable: false } : { code: 'CONFLICT', message: e.message, recoverable: true };
+    // Its journal could not be confirmed gone, so nothing more is saved; yet there is none for reopening to finish.
+    if (this.unsettled && this.writeFailure(e) === 'blocked') return { code: 'CONFLICT', message: STOPPED_UNSAVED, recoverable: false, details: { save: 'blocked' } };
+    // Its journal is on disk: reopening finishes it, so the editor keeps the typed text only to copy (#1435).
+    return this.unsettled ? { code: 'CONFLICT', message: STOPPED_PART_WAY, recoverable: false, ...(this.writeFailure(e) === 'unfinished' ? { details: { save: 'unfinished' } } : {}) } : { code: 'CONFLICT', message: e.message, recoverable: true };
   }
 
   /** Before/after blobs for every document that differs between two document maps. */
@@ -2032,6 +2046,10 @@ export class ProjectSession extends EventEmitter {
   /** Roll forward an interrupted publication: every intended write is stored as a blob before any file is replaced. */
   private async recoverJournal() {
     const j = await readIfExists(this.local('journal.json'));
+    // One that is there but cannot be read is never taken for none: the next save would replace the only copy of what
+    // it was saving (#1435).
+    if (j === null && (await fs.lstat(this.local('journal.json')).then(() => true, () => false)))
+      throw new Error('This project has an interrupted save that could not be read. Check that you can read and write the files in its .siteorigin folder, then open it again.');
     if (!j) return;
     const keepAside = async (why: string) => {
       await atomicWrite(this.local('recovery', `journal-${Date.now()}.json`), j);
@@ -2365,7 +2383,13 @@ export class ProjectSession extends EventEmitter {
     } catch (e) {
       if (e instanceof GuardRefusal) throw e;
       if (!(e instanceof DiskConflictError) || this.unsettled) {
-        this.failedSave = { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
+        // What became of it (#1435): nothing of it written; its documents in place, with only the rest of the save left
+        // for reopening to finish; its journal on disk, which reopening finishes; or its journal never put in place (its
+        // rename failed), so reopening finishes nothing of it, although nothing more is saved until then.
+        const kind: WriteFailure = !this.unsettled ? 'failed' : this.state === next ? 'landed' : this.journalInPlace && this.journalOf(this.revision + 1) ? 'unfinished' : 'blocked';
+        // The save indicator names the change reopening finishes, and so none that it does not.
+        this.failedSave = kind === 'blocked' ? null : { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
+        if (e && typeof e === 'object') this.writeFailures.set(e, kind);
         this.emit('save-failed');
       }
       throw e;
@@ -2373,6 +2397,7 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async writeState(next: ProjectState, opts: PersistOptions): Promise<SessionEvent> {
+    this.journalInPlace = false;
     // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
     frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
@@ -2610,7 +2635,7 @@ export class ProjectSession extends EventEmitter {
   private async placeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace: () => Promise<boolean>) {
     const [journal] = await stageWrites([{ path: this.local('journal.json'), data: toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal) }]);
     try {
-      await journal.replace(beforeReplace);
+      if (await journal.replace(beforeReplace)) this.journalInPlace = true;
       await syncStaged([journal]);
     } finally {
       await journal.discard();
@@ -3176,7 +3201,9 @@ export class ProjectSession extends EventEmitter {
     if (this.pending.size) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts in Project health before making more changes.', recoverable: false } };
     // A new save would replace the journal the failed update left.
     if (this.migrationFailed) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'This project could not be updated to the current format. Close and reopen it.', recoverable: false } };
-    if (this.unsettled) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: UNSETTLED, recoverable: false } };
+    // Nothing of this change is written, and reopening the project finishes only the earlier save: the editor keeps the
+    // typed text to make again (#1435).
+    if (this.unsettled) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: UNSETTLED, recoverable: false, details: { save: 'blocked' } } };
     return null;
   }
 
@@ -3270,6 +3297,24 @@ export class ProjectSession extends EventEmitter {
   get saveUnfinished(): boolean {
     return this.unsettled;
   }
+
+  /**
+   * Whether `e` is what a save this session tried to write threw, and if so what became of that save (see WriteFailure).
+   * Null for any other error.
+   */
+  writeFailure(e: unknown): WriteFailure | null {
+    return e && typeof e === 'object' ? (this.writeFailures.get(e) ?? null) : null;
+  }
+
+  /** Whether the journal on disk still names the revision a save making `revision` gave it: not one put in its place since. */
+  private journalOf(revision: number): boolean {
+    try {
+      return (JSON.parse(readFileSync(this.local('journal.json'), 'utf8')) as { revision?: unknown } | null)?.revision === revision;
+    } catch {
+      return false;
+    }
+  }
+
 
   /** A save that failed, for the editor's save indicator: an unfinished one until reopening, a failed one until a later save succeeds. */
   get saveFailure(): SaveFailure | null {

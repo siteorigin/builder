@@ -1145,9 +1145,10 @@ export interface EditBatch {
 /**
  * Every code a change or an AI tool result can fail with (specification §13.3). BUSY: the project is held by another
  * writer for now. ONE_CHANGE_PER_TURN: a second change in one model step, skipped. UPDATE_HELD: a theme component update
- * this project cannot take yet.
+ * this project cannot take yet. SAVE_FAILED: the editor's change could not be written to the project's folder (its
+ * `details.save` says whether reopening the project finishes it); an AI run's save that fails ends the run instead.
  */
-export const TOOL_ERROR_CODES = ['INVALID_ARGUMENT', 'STALE_REVISION', 'SCOPE_MISMATCH', 'PATH_DENIED', 'VALIDATION_FAILED', 'CONFLICT', 'CANCELLED', 'BUSY', 'ONE_CHANGE_PER_TURN', 'UPDATE_HELD'] as const;
+export const TOOL_ERROR_CODES = ['INVALID_ARGUMENT', 'STALE_REVISION', 'SCOPE_MISMATCH', 'PATH_DENIED', 'VALIDATION_FAILED', 'CONFLICT', 'CANCELLED', 'BUSY', 'ONE_CHANGE_PER_TURN', 'UPDATE_HELD', 'SAVE_FAILED'] as const;
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 
 /** Why a change or a tool call failed. `recoverable`: a corrected or later call can still succeed in this run. */

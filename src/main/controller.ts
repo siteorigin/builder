@@ -34,6 +34,7 @@ import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
+import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
@@ -2866,7 +2867,7 @@ export class Controller {
       return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A source’s settings are saved from Connect external source, which tests them first.', recoverable: true } };
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
-    return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
+    return written(session, session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed }));
   }
 
   /**
@@ -2890,8 +2891,10 @@ export class Controller {
       if (this.session !== session || this.closing) return closed;
       const label = typeof opts.label === 'string' && opts.label ? opts.label : (batch.label ?? 'Edit');
       const before = session.state;
-      const r = await session.apply({ operations: batch.operations }, { label, source: 'user', codeAllowed, asking: { runId, base } });
-      if (r.ok) saved = { summary: heldSummary(before, batch.operations, label), operations: batch.operations, before, after: session.state };
+      const r = await written(session, session.apply({ operations: batch.operations }, { label, source: 'user', codeAllowed, asking: { runId, base } }));
+      // Saved, or its documents in place with only the rest of the save left: the request hears of the edit either way.
+      const landed = r.ok || (r.error?.code === 'SAVE_FAILED' && (r.error.details as { save?: unknown } | undefined)?.save === 'landed');
+      if (landed) saved = { summary: heldSummary(before, batch.operations, label), operations: batch.operations, before, after: session.state };
       return r;
     } finally {
       admitted.done(saved);
