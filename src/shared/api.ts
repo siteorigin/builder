@@ -468,6 +468,13 @@ export interface LocalWorkspaceState {
   chatMode?: 'edit' | 'ask';
   /** The starter's sample contact details the author chose to keep, which the export no longer reviews. */
   keptSamples?: string[];
+  /**
+   * The sample content Project health names that the author chose to keep as it is, each at its own place with its own
+   * value (engine/sample-content.ts, keptSampleKey).
+   */
+  keptSampleContent?: string[];
+  /** What the Component showcase placed to show its designs' defaults and photos, which Project health never names. */
+  sampleFixtures?: string[];
   /** The element last selected on each page, by page ID, so a page opened again resumes there (lib/page-place). */
   pagePlaces?: Record<string, ElementRef>;
   /** A new Business site's Get started list (shared/first-steps): what the starter made, and how far the author is. */

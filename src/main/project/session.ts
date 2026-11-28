@@ -31,6 +31,7 @@ import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, dependentsOf, filledSlots, removalWithPlacements } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, stopsExportOnly, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
+import { withoutKeptSamples } from '@engine/sample-content';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } from './asset-files';
 import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
@@ -4000,11 +4001,23 @@ export class ProjectSession extends EventEmitter {
     return true;
   }
 
-  /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
+  /** The sample content the author kept as it is, and the Component showcase's own placements (see withoutKeptSamples). */
+  private keptSamples: { kept: ReadonlySet<string>; fixtures: ReadonlySet<string> } = { kept: new Set(), fixtures: new Set() };
+
+  /** What this opening's workspace state says of sample content: kept as it is, and placed by the showcase on purpose. */
+  keepSamples(kept: readonly string[] | undefined, fixtures: readonly string[] | undefined) {
+    const strings = (v: readonly unknown[] | undefined) => new Set((Array.isArray(v) ? v : []).filter((x): x is string => typeof x === 'string'));
+    this.keptSamples = { kept: strings(kept), fixtures: strings(fixtures) };
+  }
+
+  /**
+   * Document problems, without the sample content the author kept as it is. File conflicts are reported separately
+   * (`conflicts`), with their actions, never twice.
+   */
   diagnostics(): Diagnostic[] {
     try {
       const missing = this.missingCode();
-      const problems = this.problemsOf(this.state);
+      const problems = withoutKeptSamples(this.problemsOf(this.state), this.keptSamples.kept, this.keptSamples.fixtures);
       return missing.length ? [...missing, ...problems] : problems;
     } catch (e) {
       // A project from a newer version may not follow this version's shapes; it is open read-only anyway.

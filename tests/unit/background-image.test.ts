@@ -17,6 +17,7 @@ import { applyOperations, assetUsages } from '@engine/apply';
 import { EngineError, codeTakesOverrides } from '@engine/tree';
 import { imageUses } from '@engine/image-uses';
 import { validateState } from '@engine/validate';
+import { isSampleFinding } from '@engine/sample-content';
 import { defFile, generateComponentsCss, generateProject, generateSiteCss, nodeClass, pageNodeClass, variantClass } from '@generator/index';
 import { fileVar } from '@generator/background';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
@@ -440,10 +441,12 @@ describe('a stored background image, checked on load', () => {
     const band = home(s).nodes.n_band;
     band.styles = { base: { backgroundImage: { assetId: 'a_hero', scrim: 'rgba(0, 0, 0, 0.5)' } } };
     const clean = validateState(s);
-    expect(clean.filter((d) => d.nodeId === 'n_band')).toEqual([]);
+    // A starter photo as a background is still sample content (#1640), named once at its element; nothing else is wrong.
+    expect(clean.filter((d) => d.nodeId === 'n_band' && !isSampleFinding(d))).toEqual([]);
+    expect(clean.filter((d) => d.nodeId === 'n_band' && isSampleFinding(d)).map((d) => d.code)).toEqual(['SAMPLE_STARTER_PHOTO']);
     s.assets.assets.a_odd = { ...structuredClone(OTHER), id: 'a_odd', name: 'Odd file', mime: 'font/woff2' };
     band.styles = { base: { backgroundImage: { assetId: 'a_gone' } }, phone: { backgroundImage: { assetId: 'a_font' } }, tablet: { backgroundImage: { assetId: 'a_hero', url: 'x' } as never }, desktop: { backgroundImage: { assetId: 'a_odd' } } };
-    const found = validateState(s).filter((d) => d.nodeId === 'n_band');
+    const found = validateState(s).filter((d) => d.nodeId === 'n_band' && !isSampleFinding(d));
     expect(found.map((d) => [d.code, d.site]).sort()).toEqual([
       ['ASSET_MISSING', 'n_band|own|base|backgroundImage'],
       ['ASSET_NOT_IMAGE', 'n_band|own|desktop|backgroundImage'],

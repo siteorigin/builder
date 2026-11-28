@@ -29,6 +29,8 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
   writeFileSync(paths, 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";\n');
   const navigation = join(dir, 'app-navigation.js');
   writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {};\n');
+  const state = join(dir, 'app-state.js');
+  writeFileSync(state, `${PAGE_STATE}\n`);
   for (const [path, source] of files) {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
@@ -40,12 +42,19 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
         .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
         .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
         .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+        .replace(/(["'])\$app\/state\1/g, JSON.stringify(state))
     );
   }
   const Page = (await import(/* @vite-ignore */ join(dir, `${route}.js`))).default as Component<Record<string, unknown>>;
   const out = render(Page, { props: {} });
   return styles ? out.head + out.body : out.body;
 }
+
+/**
+ * `$app/state`: the page the router is on, the site's home unless a test names another page with
+ * `globalThis.soTestPagePath` (set in the page, for a browser bundle).
+ */
+const PAGE_STATE = "export const page = { get url() { return new URL(globalThis.soTestPagePath ?? '/', 'https://site.test/'); }, get route() { return { id: '/' }; } };";
 
 /** SvelteKit's navigation hooks and snapshots in a page that never navigates: they are never called. */
 const NO_NAVIGATION = 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {}; export const snapshot = () => {};';
@@ -59,7 +68,8 @@ export async function bundle(clean: Map<string, string>, dev: Map<string, string
     ...[...clean].map(([p, src]) => [`clean/${p}`, src] as [string, string]),
     ...[...dev].map(([p, src]) => [`dev/${p}`, src] as [string, string]),
     ['app/paths.js', 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";'],
-    ['app/navigation.js', navigation]
+    ['app/navigation.js', navigation],
+    ['app/state.js', PAGE_STATE]
   ]);
   const entry = [
     "import { hydrate, mount, unmount } from 'svelte';",
@@ -79,7 +89,7 @@ export async function bundle(clean: Map<string, string>, dev: Map<string, string
         enforce: 'pre',
         resolveId(id, importer) {
           if (id === '\0entry' || id.startsWith(GEN)) return id;
-          if (id === '$app/paths' || id === '$app/navigation') return GEN + id.slice(1) + '.js';
+          if (id === '$app/paths' || id === '$app/navigation' || id === '$app/state') return GEN + id.slice(1) + '.js';
           if (importer?.startsWith(GEN) && id.startsWith('.')) {
             const path = posix.join(posix.dirname(importer.slice(GEN.length)), id);
             if (files.has(path)) return GEN + path;

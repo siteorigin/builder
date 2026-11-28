@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { OwnerRef, ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
 import { isReusabilityWarning } from '@engine/reusability';
+import { isSampleFinding } from '@engine/sample-content';
 import { allTrees, instancesOf, subtreeIds } from '@engine/tree';
 import { routeOwners, siteEntries, isDraftEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
@@ -428,7 +429,9 @@ export async function runValidateProject(a: ValidateArgs, host: ValidationHost):
   const narrowed = isNarrowed(scope);
   const kept = narrowed ? all.filter((d) => inNarrowing(state, scope, d)) : all;
   const errorList = kept.filter((d) => d.severity === 'error');
-  const warningList = kept.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d));
+  // Sample content still to replace comes after every other warning, so it never crowds them out of the list.
+  const warned = kept.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d));
+  const warningList = [...warned.filter((d) => !isSampleFinding(d)), ...warned.filter(isSampleFinding)];
   const reusableList = kept.filter((d) => isReusabilityWarning(d) && d.owner?.kind === 'component');
   const routesAll = profile === 'project' ? routeInventory(state) : null;
   const routesKept = routesAll && narrowed ? routesAll.filter((r) => r.pageId !== undefined && scope.pageIds.includes(r.pageId)) : routesAll;
