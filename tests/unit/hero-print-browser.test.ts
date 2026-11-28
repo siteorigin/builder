@@ -50,8 +50,9 @@ describe.skipIf(!browserInstalled)("the split hero's printed layout", () => {
     const sheet = Math.round((at.grid + at.hero) / 2);
     expect(at.heading).toBeLessThan(sheet);
     await page.addStyleTag({ content: `html { columns: ${SHEET_WIDTH}px; column-gap: 0; column-fill: auto; height: ${sheet}px; }` });
-    const heading = await page.evaluate<{ left: number; bottom: number }>(`document.querySelector('.hero h1').getBoundingClientRect().toJSON()`);
-    // The first column is the first sheet: the heading sits on it, not one sheet along.
+    const heading = await page.evaluate<{ left: number; bottom: number; width: number; height: number }>(`document.querySelector('.hero h1').getBoundingClientRect().toJSON()`);
+    // The first column is the first sheet: the heading prints on it, not one sheet along.
+    expect(heading.width * heading.height).toBeGreaterThan(0);
     expect(heading.left).toBeLessThan(SHEET_WIDTH);
     expect(heading.bottom).toBeLessThanOrEqual(sheet);
   });
@@ -65,6 +66,7 @@ describe.skipIf(!browserInstalled)("the split hero's printed layout", () => {
     expect(await display()).toBe('grid');
     await p.setViewportSize({ width: SHEET_WIDTH, height: 1032 });
     expect(await display()).toBe('flex');
+    expect(await p.evaluate<string>(`getComputedStyle(document.querySelector('.hero__grid')).flexDirection`)).toBe('column');
     await p.close();
   });
 });
