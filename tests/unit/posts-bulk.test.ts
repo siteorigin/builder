@@ -64,7 +64,7 @@ describe('publishing or unpublishing several posts', () => {
 describe('filing several posts', () => {
   it('adds a term to those without it and keeps their other terms', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { categories: ['events'] } }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_b', terms: { categories: ['news'] } });
-    const ops = bulkTermOps(s, 'posts', ['en_a', 'en_b', 'en_c'], 'categories', 'news', true);
+    const ops = bulkTermOps(s, 'posts', ['en_a', 'en_b', 'en_c'], [{ taxonomyId: 'categories', termId: 'news', on: true }]);
     expect(ops.map((o) => (o as { entryId: string }).entryId)).toEqual(['en_a', 'en_c']);
     const after = run(s, ...ops);
     expect(entry(after, 'en_a').terms?.categories).toEqual(['events', 'news']);
@@ -74,13 +74,27 @@ describe('filing several posts', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { categories: ['events', 'news'] } });
     // As a hand-edited file can leave it: a term gone from the grouping still listed on the post.
     s.collections.posts.entries.en_a.terms = { categories: ['events', 'old', 'news'] };
-    const ops = bulkTermOps(s, 'posts', ['en_a', 'en_b'], 'categories', 'news', false);
+    const ops = bulkTermOps(s, 'posts', ['en_a', 'en_b'], [{ taxonomyId: 'categories', termId: 'news', on: false }]);
     expect(ops).toEqual([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { categories: ['events'] } }]);
     expect(entry(run(s, ...ops), 'en_a').terms?.categories).toEqual(['events']);
   });
+  it('makes every change to a post in one update, across its groupings', () => {
+    const s = run(blog(), { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Clay', termId: 'clay' }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { categories: ['events'] } });
+    const ops = bulkTermOps(s, 'posts', ['en_a', 'en_b'], [
+      { taxonomyId: 'categories', termId: 'news', on: true },
+      { taxonomyId: 'categories', termId: 'events', on: false },
+      { taxonomyId: 'tags', termId: 'clay', on: true }
+    ]);
+    expect(ops).toEqual([
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', terms: { categories: ['news'], tags: ['clay'] } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_b', terms: { categories: ['news'], tags: ['clay'] } }
+    ]);
+    const after = run(s, ...ops);
+    expect(entry(after, 'en_a').terms).toMatchObject({ categories: ['news'], tags: ['clay'] });
+  });
   it('changes nothing for a term or grouping the collection does not have', () => {
-    expect(bulkTermOps(blog(), 'posts', ['en_a'], 'categories', 'nope', true)).toEqual([]);
-    expect(bulkTermOps(blog(), 'posts', ['en_a'], 'nope', 'news', true)).toEqual([]);
+    expect(bulkTermOps(blog(), 'posts', ['en_a'], [{ taxonomyId: 'categories', termId: 'nope', on: true }])).toEqual([]);
+    expect(bulkTermOps(blog(), 'posts', ['en_a'], [{ taxonomyId: 'nope', termId: 'news', on: true }])).toEqual([]);
   });
 });
 

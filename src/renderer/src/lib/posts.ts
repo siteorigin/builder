@@ -406,22 +406,41 @@ export function bulkStatusOps(state: ProjectState, collectionId: string, ids: re
   };
 }
 
+/** A term of one of a collection's groupings to file the picked entries under (`on`), or take them out of. */
+export interface TermChange {
+  taxonomyId: string;
+  termId: string;
+  on: boolean;
+}
+
 /**
- * Filing the picked entries under a term of a grouping, or taking them out of it, as one change: only those it
- * changes. Each keeps its other terms of that grouping; one gone from the grouping (deleted, undone away) is dropped,
- * since the engine refuses a list naming it.
+ * Filing the picked entries under terms of the collection's groupings, or taking them out of them, as one change: one
+ * update for each entry it changes, with every change to it. Each keeps its other terms; one gone from its grouping
+ * (deleted, undone away) is dropped, since the engine refuses a list naming it. Terms the collection does not have
+ * change nothing.
  */
-export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], taxonomyId: string, termId: string, on: boolean): EditOperation[] {
+export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], changes: readonly TermChange[]): EditOperation[] {
   const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
-  const t = c?.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, taxonomyId) ? c.settings.taxonomies[taxonomyId] : undefined;
-  const terms = t?.terms && typeof t.terms === 'object' ? t.terms : undefined;
-  if (!terms || !Object.hasOwn(terms, termId)) return [];
+  const termsIn = (tax: string) => {
+    const t = c?.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, tax) ? c.settings.taxonomies[tax] : undefined;
+    return t?.terms && typeof t.terms === 'object' ? t.terms : undefined;
+  };
+  const real = changes.filter((x) => {
+    const terms = termsIn(x.taxonomyId);
+    return !!terms && Object.hasOwn(terms, x.termId);
+  });
+  const taxonomies = [...new Set(real.map((x) => x.taxonomyId))];
   return pickedEntries(state, collectionId, ids).flatMap((e): EditOperation[] => {
-    const filed: unknown = e.terms && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : undefined;
-    const had = Array.isArray(filed) ? filed.filter((x): x is string => typeof x === 'string') : [];
-    if (had.includes(termId) === on) return [];
-    const kept = [...new Set(had.filter((x) => x !== termId && Object.hasOwn(terms, x)))];
-    return [{ type: 'entry.update', collectionId, entryId: e.id, terms: { [taxonomyId]: on ? [...kept, termId] : kept } }];
+    const next: Record<string, string[]> = {};
+    for (const tax of taxonomies) {
+      const terms = termsIn(tax)!;
+      const filed: unknown = e.terms && Object.hasOwn(e.terms, tax) ? e.terms[tax] : undefined;
+      const had = Array.isArray(filed) ? filed.filter((x): x is string => typeof x === 'string') : [];
+      let ids = [...new Set(had.filter((x) => Object.hasOwn(terms, x)))];
+      for (const x of real) if (x.taxonomyId === tax) ids = x.on ? (ids.includes(x.termId) ? ids : [...ids, x.termId]) : ids.filter((id) => id !== x.termId);
+      if (ids.length !== had.length || ids.some((id, i) => id !== had[i])) next[tax] = ids;
+    }
+    return Object.keys(next).length ? [{ type: 'entry.update', collectionId, entryId: e.id, terms: next }] : [];
   });
 }
 
