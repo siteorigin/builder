@@ -347,6 +347,50 @@ describe('the library through the app (#372)', () => {
     await a.close();
   });
 
+  it('names a project font the component uses at export, and again on import where the project lacks it (#1418)', async () => {
+    env.userData = tmp('so-lib-userdata-');
+    await updateSettings({ developerMode: true });
+    const shoreline = (id: string) => ({
+      type: 'asset.add' as const,
+      asset: { id, name: 'Shoreline Display', file: `static/assets/shoreline-${id.replace(/_/g, "-")}-1a2b3c4d.woff2`, mime: 'font/woff2', bytes: 1000, hash: `hash-${id}`, kind: 'font' as const, createdAt: '2026-01-01T00:00:00.000Z', font: { family: 'Shoreline Display', weight: '400', style: 'normal' as const } }
+    });
+    const source = `<h3 class="title">Shore window</h3>\n\n<style>\n  .title { font-family: 'Shoreline Display', Menlo, monospace; }\n</style>\n`;
+    const made = applyOperations(blank('Studio A'), [shoreline('a_font'), { type: 'component.createCode', name: 'Shore title', source }]);
+    const id = made.results[1].definitionId as string;
+    const a = await opened(await projectFolder(made.state));
+    const file = join(tmp('so-lib-export-'), 'shore.socomponent.json');
+    const exported = await a.exportComponent(id, file);
+    expect(exported).toMatchObject({ ok: true, notes: ['The font “Shoreline Display” stays with this project. Send the font file too, to add in Assets → Fonts wherever it is imported.'] });
+    expect(JSON.parse(readFileSync(file, 'utf8')).fonts).toEqual(['Shoreline Display']);
+    expect((await a.saveComponentToLibrary(id, a.openingKey!)).notes).toEqual(exported.notes);
+    await a.close();
+
+    // A project without the font is told, by name, how to bring it back: imported or inserted from the library.
+    const missing = '“Shore title” was made with the font “Shoreline Display”, which this project doesn’t have. Add the font file in Assets → Fonts to use it here.';
+    const b = await opened(await projectFolder(blank('Studio B')));
+    expect(await b.importComponent(file)).toMatchObject({ ok: true, name: 'Shore title', notes: [missing] });
+    const saved = (await b.savedComponents(b.openingKey!)).find((c) => c.name === 'Shore title')!;
+    const s = b.session!;
+    // Its code is asked about, and let in.
+    env.answers = [1];
+    expect(await b.insertSavedComponent(saved.id, saved.digest, { owner: home(s), parentId: null }, b.openingKey!, s.revision)).toMatchObject({ ok: true, notes: [missing] });
+    await b.close();
+
+    // One that has it, in another case, is told nothing, while its file is there; with the file gone, it is told.
+    const withFont = applyOperations(blank('Studio C'), [{ ...shoreline('c_font'), asset: { ...shoreline('c_font').asset, font: { family: 'shoreline display', weight: '700', style: 'normal' as const } } }]);
+    const cDir = await projectFolder(withFont.state);
+    const fontFile = join(cDir, withFont.state.assets.assets.c_font.file);
+    mkdirSync(join(fontFile, '..'), { recursive: true });
+    writeFileSync(fontFile, 'wOF2');
+    const c = await opened(cDir);
+    const landed = await c.importComponent(file);
+    expect(landed.ok).toBe(true);
+    expect(landed.notes).toBeUndefined();
+    rmSync(fontFile);
+    expect(await c.importComponent(file)).toMatchObject({ ok: true, notes: [missing] });
+    await c.close();
+  });
+
   it('saves in one project and inserts in another, asking before any code comes in, whatever was saved', async () => {
     env.userData = tmp('so-lib-userdata-');
     await updateSettings({ developerMode: true });
