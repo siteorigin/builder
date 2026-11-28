@@ -149,8 +149,9 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'fontFamily', label: 'Font', group: 'typography', kind: 'font', tokenGroup: 'font' },
   { id: 'fontSize', label: 'Size', group: 'typography', kind: 'length', placeholder: '1rem' },
   { id: 'fontWeight', label: 'Weight', group: 'typography', kind: 'enum', options: [
-    { value: '300', label: 'Light' }, { value: '400', label: 'Regular' }, { value: '500', label: 'Medium' },
-    { value: '600', label: 'Semibold' }, { value: '700', label: 'Bold' }, { value: '800', label: 'Extra bold' }
+    { value: '100', label: 'Thin' }, { value: '200', label: 'Extra light' }, { value: '300', label: 'Light' },
+    { value: '400', label: 'Regular' }, { value: '500', label: 'Medium' }, { value: '600', label: 'Semibold' },
+    { value: '700', label: 'Bold' }, { value: '800', label: 'Extra bold' }, { value: '900', label: 'Black' }
   ] },
   { id: 'fontStyle', label: 'Style', group: 'typography', kind: 'enum', advanced: true, options: [
     { value: 'normal', label: 'Normal' }, { value: 'italic', label: 'Italic' }
