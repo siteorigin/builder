@@ -7,7 +7,7 @@ import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
 import type { SourceToolHost } from './source-tools';
 import type { ProjectState } from '@shared/types';
-import { POSTS_COLLECTION_ID } from '@shared/collections';
+import { isSyncedCollection, POSTS_COLLECTION_ID } from '@shared/collections';
 import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
@@ -407,15 +407,21 @@ Answer in a few plain sentences, without headings.`;
 Answer in a few plain sentences, without headings. The site is ${JSON.stringify(state.site.name)}.`;
 }
 
+/** The project's blog, the ready-made "posts" collection, if it has one. */
+const blogOf = (state: ProjectState) => (Object.hasOwn(state.collections ?? {}, POSTS_COLLECTION_ID) ? state.collections[POSTS_COLLECTION_ID] : undefined);
+
 /**
  * Where the author writes a blog post themselves (#1423): in the blog, the ready-made "posts" collection under Content,
- * never as pages made with the Article starter, which no Posts workspace, category or feed reaches.
+ * never as pages made with the Article starter, which no Posts workspace, category or feed reaches. The steps are said
+ * in words: an answer with arrows and no located field is sent back as made-up Inspector labels.
  */
 function blogWhere(state: ProjectState): string {
   const never = 'never as pages made with the Article starter';
-  return Object.hasOwn(state.collections ?? {}, POSTS_COLLECTION_ID)
-    ? `\n- A blog post is an entry of the site's blog: the author writes one in Content (in the left rail) → Posts → New post, ${never}.`
-    : `\n- The site has no blog yet: the author starts one in Content (in the left rail) → Blog posts (Add a collection… there when it already lists one), then writes each post with New post, ${never}.`;
+  const blog = blogOf(state);
+  if (!blog) return `\n- The site has no blog yet: the author starts one by opening Content in the left rail and choosing Blog posts (with Add a collection… once it lists another), then writes each post with New post, ${never}. Say these steps in words, without arrows.`;
+  const name = JSON.stringify(blog.settings.name?.trim() || 'Posts');
+  if (isSyncedCollection(blog.settings)) return `\n- The site's blog, ${name}, is synced from an external source: its posts are written there and arrive with the next sync, ${never}.`;
+  return `\n- A blog post is an entry of the site's blog: the author writes one by opening Content in the left rail, then ${name} and New ${(blog.settings.singularName?.trim() || 'post').toLowerCase()}, ${never}. Say these steps in words, without arrows.`;
 }
 
 /**
@@ -639,9 +645,12 @@ function layoutGuidance(run: RunTools): string {
  * A run that cannot make the blog or write its posts asks to widen first; a small site run not asked for one hears nothing.
  */
 function blogGuidance(state: ProjectState, run: RunTools): string {
-  const has = Object.hasOwn(state.collections ?? {}, POSTS_COLLECTION_ID);
+  const blog = blogOf(state);
+  const has = !!blog;
   const offered = (name: string) => run.tools.some((t) => t.name === name);
   const never = 'never pages (no /blog/ page, no dated article pages for its posts)';
+  // A blog synced from an external source is written there: no tool here writes it, and widening makes none.
+  if (blog && isSyncedCollection(blog.settings)) return `\n- The blog, the "posts" collection, is synced from an external source (readOnly), so its posts are written there, ${never}: say so rather than writing one here.`;
   if (has && offered('upsert_collection_entry')) return `\n- A blog post is an entry of the blog, the "posts" collection, ${never}: write each one with upsert_collection_entry.`;
   if (!has && offered('define_collection'))
     return `\n- A blog, or posts for one, is the ready-made "posts" collection, ${never}: define_collection { action: "create", collectionId: "posts" } with nothing else makes it, with its index at /blog/, categories, tags and the RSS feed (when a page already has /blog/, ask the user first). Then write each post with upsert_collection_entry, and link to the blog with { "type": "collection", "target": "posts" }.`;

@@ -39,6 +39,14 @@ const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) 
 
 const blank = () => structuredClone(createStarterState('blank' as StarterId, 'Clay Studio', false));
 const withPosts = (s: ProjectState) => applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' } as EditOperation]).state;
+/** A blog synced from an external source: read-only here. */
+const synced = (s: ProjectState) => {
+  const out = structuredClone(withPosts(s));
+  out.collections.posts.settings.sourceId = 'src_wp';
+  return out;
+};
+/** The one instruction line about where a blog post is written, from a question's instructions. */
+const blogLine = (system: string) => system.split('\n').find((l) => /\bblog\b/i.test(l) && /Content|external source/.test(l)) ?? '';
 
 const dirs: string[] = [];
 const sessions: ProjectSession[] = [];
@@ -76,8 +84,8 @@ const toolText = (req: CanonicalModelRequest, name: string) => {
 
 describe('a request for a blog (#1423)', () => {
   it('counts as a request for a collection, so a small model is offered the tool that makes the blog', () => {
-    for (const text of [REQUEST, 'Start a blog', 'Add two blog posts about glazes', 'Write three posts for the news section']) expect(asksForCollection(text), text).toBe(true);
-    for (const text of ['Make the hero teal', 'Add our post office box to the footer', 'Add a postcode field to the contact form']) expect(asksForCollection(text), text).toBe(false);
+    for (const text of [REQUEST, 'Start a blog', 'Add two blog posts about glazes', 'Write three posts for the news section', 'Write a post about kiln firing', 'Publish the drafts posts']) expect(asksForCollection(text), text).toBe(true);
+    for (const text of ['Make the hero teal', 'Add our post office box to the footer', 'Add a postcode field to the contact form', 'Add a page about cedar fence posts', 'Write a postcard offer on Home']) expect(asksForCollection(text), text).toBe(false);
     const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 8000 };
     const tools = (collectionRequest: boolean) => toolsForRun({ state: blank(), selection: null, capabilities: small, codeEnabled: false, definitionOps: false, collectionRequest }).tools.map((t) => t.name);
     expect(tools(asksForCollection(REQUEST))).toContain('define_collection');
@@ -142,11 +150,36 @@ describe('a request for a blog (#1423)', () => {
     ['a grammar-constrained model', 'constrained-json' as const]
   ])('has %s answer a question with where the author writes a blog post', async (_, toolCalling) => {
     const question = 'Where do I go to write a new blog post myself?';
-    const none = (await run(blank(), question, { mode: 'ask' }, { toolCalling })).adapter.requests[0].system;
-    expect(none).toMatch(/^[^\n]*no blog yet[^\n]*Content[^\n]*Blog posts[^\n]*$/im);
-    const some = (await run(withPosts(blank()), question, { mode: 'ask' }, { toolCalling })).adapter.requests[0].system;
-    expect(some).toMatch(/^[^\n]*blog post[^\n]*Content[^\n]*New post[^\n]*$/im);
-    expect(some).not.toMatch(/no blog yet/);
-    for (const text of [none, some]) expect(text).toMatch(/never[^\n]*(Article starter|pages)/i);
+    // Answered in words, the steps are the answer: an arrowed path with no located field is sent back as made-up labels.
+    const answer = 'Open Content in the left rail, choose Posts, then New post.';
+    const asked = async (start: ProjectState) => (await run(start, question, { mode: 'ask' }, { toolCalling, turns: [() => [{ type: 'done', stopReason: 'end', text: answer, toolCalls: [] }]] })).adapter.requests;
+    const none = await asked(blank());
+    expect(blogLine(none[0].system)).toMatch(/no blog yet[^\n]*Content[^\n]*Blog posts/);
+    const named = withPosts(blank());
+    named.collections.posts.settings.name = 'Journal';
+    named.collections.posts.settings.singularName = 'Entry';
+    const some = await asked(named);
+    expect(blogLine(some[0].system)).toMatch(/blog post[^\n]*Content[^\n]*"Journal"[^\n]*New entry/);
+    expect(some[0].system).not.toMatch(/no blog yet/);
+    for (const reqs of [none, some]) {
+      expect(blogLine(reqs[0].system)).toMatch(/never[^\n]*Article starter/);
+      expect(blogLine(reqs[0].system)).not.toMatch(/→|->/);
+      expect(reqs, 'answered without being sent back').toHaveLength(1);
+    }
+    // A synced blog is written at its source: no New post button points the author there.
+    const away = blogLine((await asked(synced(blank())))[0].system);
+    expect(away).toMatch(/synced from an external source/);
+    expect(away).not.toMatch(/New post/);
+  });
+
+  it.each([
+    ['the whole site', 'site' as const],
+    ['one page', 'page' as const]
+  ])('says a synced blog is written at its source, on %s, rather than writing or asking to widen', async (_, scope) => {
+    const { adapter } = await run(synced(blank()), REQUEST, { scope });
+    const system = adapter.requests[0].system;
+    expect(system).toMatch(/^[^\n]*"posts"[^\n]*synced from an external source[^\n]*never[^\n]*pages[^\n]*$/im);
+    expect(system).not.toMatch(/^[^\n]*"posts"[^\n]*widenScope[^\n]*$/im);
+    expect(system).not.toMatch(/write each one with upsert_collection_entry/);
   });
 });

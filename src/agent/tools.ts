@@ -491,11 +491,13 @@ export function asksForSource(text: string, state?: ProjectState): boolean {
 
 /**
  * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
- * offered the tools for: in so many words, by asking for a blog or its posts (the ready-made "posts" collection, #1423),
- * or by naming one of the project's collections (its ID, its name or what one entry is called, "Add a Role field to Team").
+ * offered the tools for: in so many words, by asking for a blog or to write its posts (the ready-made "posts" collection,
+ * #1423; a post office or fence posts are no blog), or by naming one of the project's collections (its ID, its name or
+ * what one entry is called, "Add a Role field to Team").
  */
 export function asksForCollection(text: string, state?: ProjectState): boolean {
-  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging|posts)\b/i.test(text)) return true;
+  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging)\b/i.test(text)) return true;
+  if (/\b(?:write|draft|publish)\s+(?:\S+\s+){0,3}?posts?\b/i.test(text)) return true;
   const fold = (s: string) => s.normalize('NFKC').toLowerCase();
   const words = fold(text);
   const named = (n: unknown) => {
