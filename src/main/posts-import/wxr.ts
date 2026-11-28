@@ -104,8 +104,12 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
 
   const base = (childText(channel, 'wp:base_blog_url') || childText(channel, 'link')).trim();
   let siteOrigin: string | undefined;
+  let siteKey: string | undefined;
   try {
-    siteOrigin = base ? new URL(base).origin : undefined;
+    const url = base ? new URL(base) : undefined;
+    siteOrigin = url?.origin;
+    // A site installed under a path is a site of its own: two installations on one host never share post IDs.
+    if (url && /^https?:$/.test(url.protocol)) siteKey = `${url.origin}${url.pathname.replace(/\/+$/, '')}`.slice(0, 400);
   } catch {
     siteOrigin = undefined;
   }
@@ -256,6 +260,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     }
     add({
       key,
+      ...postIdOf(item),
       from: title,
       title,
       slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)),
@@ -285,7 +290,13 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   }
   if (unpublished.length) out.push(`${unpublished.length} ${unpublished.length === 1 ? 'post' : 'posts'}${namesOf(unpublished)} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
-  return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
+  return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), ...(siteKey ? { siteKey } : {}), posts, media: media.items, skipped: out };
+}
+
+/** The post's ID on its site, when the export gives a real one. */
+function postIdOf(item: XmlElement): { postId?: string } {
+  const id = childText(item, 'wp:post_id').trim();
+  return /^\d{1,20}$/.test(id) ? { postId: id } : {};
 }
 
 /** An attachment WordPress counts as an image: by its type when the export says, else by its file's extension. */
@@ -301,7 +312,7 @@ function isImageAttachment(item: XmlElement): boolean {
 /** A post whose text could not be read: imported with its details and no text, the reason in its notes. */
 function failedPost(item: XmlElement, key: string, why: string): SourcePost {
   const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
-  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
+  return { key, ...postIdOf(item), unread: true, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
 }
 
 function decodeSlug(s: string): string {

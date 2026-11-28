@@ -911,6 +911,10 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>, sync?: 
   if (route !== undefined) claimOwnAddresses(state, new Map([[route.toLowerCase(), id]]));
   applyEntryFields(state, c, entry, { ...op, slug: undefined });
   if (op.redirectFrom !== undefined) keepOldAddress(state, c, entry, op.redirectFrom);
+  if (op.imported !== undefined) {
+    if (entryImportProblem(op.imported)) fail(`“${title}”: where it was imported from is not a WordPress site and post ID.`);
+    entry.imported = { site: op.imported.site, postId: op.imported.postId };
+  }
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder.push(id);
   return entryResult(c, entry);
 }
@@ -1103,6 +1107,7 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
         out.push({ severity: 'warning', code: 'ENTRY_TEXT_HIDDEN', message: `${what} has text of its own, which entries of ${s.name} do not show. Clear it, or turn entry text back on.`, owner: eo, site: 'body' });
       const sourceProblem = e.source !== undefined ? entrySourceProblem(e.source) : null;
       if (sourceProblem) out.push({ severity: 'warning', code: 'ENTRY_SOURCE_INVALID', message: `${what}: ${sourceProblem}`, owner: eo, site: 'source' });
+      if (e.imported !== undefined && entryImportProblem(e.imported)) out.push({ severity: 'warning', code: 'ENTRY_SOURCE_INVALID', message: `${what}: where it was imported from is damaged, so importing from that site again brings it as a new post.`, owner: eo, site: 'imported' });
       if (!isArticleDate(e.publishedAt)) out.push({ severity: 'warning', code: 'ENTRY_DATE_INVALID', message: `${what}: its publication date is not a calendar date written YYYY-MM-DD.`, owner: eo });
       if (e.updatedAt !== undefined && !isArticleDate(e.updatedAt)) out.push({ severity: 'warning', code: 'ENTRY_DATE_INVALID', message: `${what}: its revision date is not a calendar date written YYYY-MM-DD.`, owner: eo, site: 'updatedAt' });
       if (e.featuredImage !== undefined) {
@@ -1291,6 +1296,12 @@ function referenceProblems(state: ProjectState, f: ReferenceFieldSchema, v: unkn
 const isArticleBlock = (b: unknown) => !!b && typeof b === 'object' && ((b as { type?: unknown }).type === 'h2' || isImageBlock(b as RichText[number]));
 
 /** What is wrong with where a synced entry came from, as a hand edit leaves it, or null. */
+/** Whether a stored or given WordPress origin is not a site's address and a post ID. */
+function entryImportProblem(imported: unknown): boolean {
+  const i = (imported && typeof imported === 'object' ? imported : {}) as Record<string, unknown>;
+  return typeof i.site !== 'string' || !i.site || i.site.length > 400 || typeof i.postId !== 'string' || !/^\d{1,20}$/.test(i.postId);
+}
+
 function entrySourceProblem(source: unknown): string | null {
   const src = (source && typeof source === 'object' ? source : {}) as Record<string, unknown>;
   const text = (k: string) => typeof src[k] === 'string' && (src[k] as string).trim() !== '';

@@ -1542,6 +1542,14 @@ export interface EntryDoc {
   body: RichText;
   /** Where it was synced from, for an entry written by a sync. Detaching its collection clears it: the entry is local. */
   source?: EntrySource;
+  /** The WordPress post it was imported from, so importing a later export of that site knows it again (#1519). */
+  imported?: EntryImport;
+}
+
+/** A WordPress post an entry was imported from: the site's address (as its export names it) and the post's ID there. */
+export interface EntryImport {
+  site: string;
+  postId: string;
 }
 
 /** A collection in memory: its settings and its entries, each stored in a file of its own. */

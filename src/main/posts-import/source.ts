@@ -19,6 +19,10 @@ export const POST_LINK_PREFIX = 'post:';
 export interface SourcePost {
   /** Unique within the import: `wp:<post ID>` or `md:<file>`. */
   key: string;
+  /** Its ID on the WordPress site, when the export gives one: what a later import of that site knows it by. */
+  postId?: string;
+  /** Its text could not be read, so it arrives with none: never put over a post already imported. */
+  unread?: boolean;
   /** Where it came from, as the report names it: its file, or its title in the export. */
   from: string;
   title: string;
@@ -63,6 +67,8 @@ export interface ParsedSource {
   realRoot: string;
   /** The old site's address, when the export says. */
   site?: string;
+  /** The old site as its posts' IDs belong to it (its address with its installation's path), when the export says. */
+  siteKey?: string;
   posts: SourcePost[];
   media: SourceMedia[];
   /** What was not imported at all, in plain words ("3 pages: only posts are imported"). */

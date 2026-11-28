@@ -1003,6 +1003,9 @@ export interface PostImportPreviewPost {
   wantedSlug?: string;
   /** The old address kept working for it. */
   redirectFrom?: string;
+  /** It was imported before (#1519): skipped, or updated in place. `unread`: its text could not be read, so it is only ever skipped. */
+  existing?: boolean;
+  unread?: boolean;
   pictures: number;
   categories: string[];
   tags: string[];
@@ -1021,6 +1024,8 @@ export interface PostImportPreview {
   site?: string;
   collection: { name: string; route: string; create: boolean };
   posts: PostImportPreviewPost[];
+  /** How many of the posts are already in the project. The other counts are those of importing with them skipped. */
+  existing: number;
   /** Pictures found, to be added to the library. */
   pictures: number;
   /** Pictures the posts show that are not in the chosen folder, with why. */
@@ -1034,7 +1039,12 @@ export interface PostImportPreview {
   skipped: string[];
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
+  /** With posts already in the project: what updating them as well brings (`posts` of them), and what stops that. */
+  update?: { posts: number; pictures: number; missing: Array<{ post: string; ref: string; problem: string }>; newTerms: { categories: string[]; tags: string[] }; problems: string[] };
 }
+
+/** What importing does with posts already in the project: leaves them as they are, or updates each from the source. */
+export type PostImportExisting = 'skip' | 'update';
 
 /** A review of posts to import, or why there is none. Neither: the chooser was closed. */
 export type PostImportReviewResult = { ok: true; preview: PostImportPreview } | { ok: false; message?: string };
@@ -1042,7 +1052,10 @@ export type PostImportReviewResult = { ok: true; preview: PostImportPreview } | 
 /** Posts imported (see commitPostImport), with the history entry that undoes them. */
 export interface PostImportResult {
   ok: boolean;
+  /** New posts made. */
   imported?: number;
+  /** Posts already in the project updated from the source. */
+  updated?: number;
   /** The history entry that undoes the import. */
   entryId?: string;
   revision?: number;
@@ -1433,7 +1446,7 @@ export interface BuilderApi {
      */
     reviewPostImport(kind: PostImportKind, opening: string): Promise<PostImportReviewResult>;
     /** Import the posts of review `id`, as one change, while the project is still as it was reviewed. */
-    commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult>;
+    commitPostImport(id: string, opening: string, addToNavigation: boolean, existing?: PostImportExisting): Promise<PostImportResult>;
     /** Forget review `id`: nothing of it is imported. */
     cancelPostImport(id: string): Promise<void>;
     /**
