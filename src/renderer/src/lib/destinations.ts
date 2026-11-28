@@ -3,6 +3,7 @@ import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@sha
 import { publicUrl } from '@shared/public-url';
 import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@shared/form-contract';
 import { websiteTrees } from '@engine/validate';
+import { findEntry } from '@shared/collections';
 import { publishedState } from '@generator/index';
 import { treeFor } from './model';
 import { requiredSite } from '@engine/required';
@@ -33,6 +34,20 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
   if (d.code === 'PROP_REQUIRED_EMPTY' && d.owner && d.nodeId && d.site && ['page', 'shell', 'template', 'component'].includes(d.owner.kind)) {
     const at = requiredSite(d.site, d.owner as OwnerRef, d.nodeId);
     return at ? { kind: 'prop', owner: d.owner as OwnerRef, nodeId: d.nodeId, ...at } : null;
+  }
+  // A link to a draft, or an image with no picture, in a collection's layout or a published entry's text: the layout
+  // (on the entry whose page shows the link), the index, or the entry in the writer. On a page or a shared part, the
+  // row shows the element itself.
+  if ((d.code === 'LINK_TO_DRAFT' || d.code === 'IMAGE_UNFILLED') && d.owner) {
+    const { kind, id } = d.owner;
+    if (kind === 'entry') {
+      const found = d.code === 'LINK_TO_DRAFT' ? findEntry(state, id) : undefined;
+      return found ? { kind: 'entry', collectionId: found.collection.settings.id, entryId: id, field: 'body' } : null;
+    }
+    if ((kind === 'template' || kind === 'archive') && d.nodeId) {
+      return { kind: 'element', owner: { kind, id }, nodeId: d.nodeId, ...(kind === 'template' && d.entryId ? { entryId: d.entryId } : {}) };
+    }
+    return null;
   }
   const setting = Object.hasOwn(FORM_SETTINGS, d.code) ? FORM_SETTINGS[d.code] : null;
   if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'archive', 'component'].includes(d.owner.kind)) return null;
@@ -87,11 +102,11 @@ export function destinationLabel(dest: EditorDestination): string {
     case 'form':
       return 'Go to form';
     case 'site':
-      return { name: 'Go to Site name', description: 'Go to Default description', baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', logo: 'Go to logo', sameAs: 'Go to profiles', llmsTxt: 'Go to AI agents', webmcp: 'Go to WebMCP', crawlerPolicy: 'Go to Crawlers', redirects: 'Go to Redirects' }[dest.field];
+      return { name: 'Go to Site name', description: 'Go to Default description', baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', publisherUrl: 'Go to publisher’s web address', logo: 'Go to logo', sameAs: 'Go to profiles', llmsTxt: 'Go to AI agents', webmcp: 'Go to WebMCP', crawlerPolicy: 'Go to Crawlers', redirects: 'Go to Redirects' }[dest.field];
     case 'pageSeo':
-      return dest.field === 'structuredData' ? 'Go to Structured data' : dest.field === 'pageTitle' ? 'Go to page title' : 'Go to Search & sharing';
+      return dest.field === 'structuredData' ? 'Go to Structured data' : dest.field === 'pageTitle' ? 'Go to page title' : dest.field === 'canonical' ? 'Go to canonical URL' : 'Go to Search & sharing';
     case 'entry':
-      return dest.field === 'body' && dest.picture ? 'Go to picture' : 'Open post';
+      return dest.field === 'body' && dest.picture ? 'Go to picture' : dest.field === 'canonical' ? 'Go to canonical URL' : 'Open post';
     case 'element':
       return 'Show on page';
     case 'prop':

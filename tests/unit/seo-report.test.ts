@@ -12,7 +12,7 @@ import { FINDINGS_PER_PART } from '@agent/seo-report';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTarget } from '@agent/selection';
 import { runSeoAudit } from '@engine/seo-audit';
-import { copy, run, seoSite } from './fixtures/seo-site';
+import { copy, run, auditSite } from './fixtures/seo-site';
 
 const MAX_RESULT_CHARS = 24000;
 
@@ -29,7 +29,7 @@ async function audit(s: ProjectState, args: Record<string, unknown> = {}, revisi
 
 describe('audit_seo', () => {
   it('reports a well set-up site as clean, with the links between its pages', async () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const { ok, content } = await audit(state);
     expect(ok).toBe(true);
     expect(content).toMatchObject({ revision: 7, scope: {}, total: 0, counts: { error: 0, warning: 0, info: 0 }, byPillar: {}, findings: [] });
@@ -45,7 +45,7 @@ describe('audit_seo', () => {
   });
 
   it('lists findings most serious first, counted whole, each with where it is fixed and why its code matters', async () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     // No public URL (a site-wide warning), a Services title Home already has (a warning on each) and a short one (info).
     const s = run(state, { type: 'site.update', baseUrl: '' }, { type: 'page.update', pageId: services, seoTitle: 'Riverside Studio · Pottery classes and handmade work', description: `Weekly wheel classes, private lessons and commissions. ${'More words about the classes. '.repeat(6)}` }, { type: 'page.update', pageId: state.site.homePageId, description: 'Too short.' });
     const all = runSeoAudit(s);
@@ -68,7 +68,7 @@ describe('audit_seo', () => {
   });
 
   it('narrows to one page, by its ID or its route, leaving the site-wide findings and the other page’s out', async () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const s = run(state, { type: 'site.update', baseUrl: '' }, { type: 'page.update', pageId: services, seoTitle: 'Riverside Studio · Pottery classes and handmade work' });
     const byId = await audit(s, { pageId: services });
     const byRoute = await audit(s, { pageId: 'services' });
@@ -83,7 +83,7 @@ describe('audit_seo', () => {
   });
 
   it('narrows to one pillar, alone or with a page, and says so when it has nothing', async () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     // A content finding on Home too, which a narrower scope leaves out.
     const s = run(state, { type: 'site.update', baseUrl: '', favicon: null }, { type: 'page.update', pageId: services, seoTitle: 'Short' }, { type: 'page.update', pageId: home, description: 'Too short.' });
     const technical = await audit(s, { pillar: 'technical' });
@@ -103,7 +103,7 @@ describe('audit_seo', () => {
   });
 
   it('says which pages, shared parts and entries link to one page, and counts a header only that page shows as none', async () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     // A site of pages alone, where only Services shows the header with its link to Services.
     const s = copy(state);
     s.collections = {};
@@ -122,7 +122,7 @@ describe('audit_seo', () => {
   });
 
   it('flags orphan pages in the whole site’s overview, and counts a link from another page into and out of each', async () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = run(
       state,
       { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', starter: 'intro' },
@@ -151,7 +151,7 @@ describe('audit_seo', () => {
   });
 
   it('has nothing to audit on a draft, and refuses a page the project does not have', async () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const s = run(state, { type: 'page.create', pageId: 'pg_draft', title: 'Coming soon', route: '/soon/' }, { type: 'page.update', pageId: 'pg_draft', draft: true });
     const draft = await audit(s, { pageId: 'pg_draft' });
     expect(draft).toMatchObject({ ok: true, content: { scope: { pageId: 'pg_draft' }, published: false, total: 0 } });
@@ -163,7 +163,7 @@ describe('audit_seo', () => {
   });
 
   it('reads a project with a page too damaged to read, and never reports on that page', async () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const s = copy(state);
     (s.pages as Record<string, unknown>).pg_broken = null;
     (s.pages as Record<string, unknown>).pg_lost = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_lost', route: undefined };
@@ -175,7 +175,7 @@ describe('audit_seo', () => {
   });
 
   it('fits a large site into parts that each fit a result whole, with every finding in exactly one part', async () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     let s = state;
     const words = (i: number) => `Página ${i} “${'ü'.repeat(200)}” \\ ${'"quoted" '.repeat(20)}`;
     // Pages with the same long title and description: each repeats the others, runs long, and nothing links to it.
@@ -225,7 +225,7 @@ describe('audit_seo', () => {
   });
 
   it('leaves out an ID too long to show rather than the rest of the report', async () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = copy(state);
     // A hand-edited file: a "Read more" link whose node ID alone is longer than a result, and a page whose ID is too.
     const longNode = `n_${'x'.repeat(30000)}`;
@@ -294,7 +294,7 @@ describe('audit_seo', () => {
 
 describe('projectSummary search settings', () => {
   it('says whether the site has its sharing image and icon, and which of its own settings each page has', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const s = run(
       state,
       { type: 'page.create', pageId: 'pg_plain', title: 'Plain', route: '/plain/' },
@@ -313,7 +313,7 @@ describe('projectSummary search settings', () => {
   });
 
   it('counts only what is really there, and reads a search setting as the website does', () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = copy(state);
     // Blank text and a value that is not text are no title or description; any value kept from search keeps it out.
     s.pages[home].seo = { title: '   ', description: 42 as never, noindex: 'yes' as never, searchHidden: 1 as never };
@@ -335,7 +335,7 @@ describe('projectSummary search settings', () => {
   });
 
   it('stays the same size however long a page’s own title and description are', () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const short = JSON.stringify(projectSummary(state, 3)).length;
     const long = run(state, { type: 'page.update', pageId: home, seoTitle: 'T'.repeat(2000), description: 'D'.repeat(5000) });
     expect(JSON.stringify(projectSummary(long, 3)).length).toBe(short);

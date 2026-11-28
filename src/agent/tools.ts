@@ -14,6 +14,8 @@ import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
 import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutGlance, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
+import { AUDIT_PERFORMANCE_ARGS, performanceReport } from './performance-report';
+import type { PerformanceStatus } from '@shared/performance';
 import { getTree, findParent, displayName, instancesOf, subtreeIds } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
@@ -125,6 +127,7 @@ export const TOOL_ARGS = {
   }),
   validate_project: VALIDATE_ARGS,
   audit_seo: AUDIT_SEO_ARGS,
+  audit_performance: AUDIT_PERFORMANCE_ARGS,
   request_clarification: z.object({
     question: z.string().min(1).max(300),
     choices: z.array(z.string().max(80)).max(4).optional(),
@@ -206,6 +209,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   validate_project: VALIDATE_DESCRIPTION,
   audit_seo:
     'Audit how well the website can be found, shared and understood by search engines, link previews and AI agents, from the saved project (it changes and measures nothing): its public URL, search settings, browser titles and descriptions (missing, repeated, too short or long), sharing image and icon, link wording, pages no other page links to, and the pictures and headings in collection entries. Returns findings most serious first, each with its code, pillar, whether an edit of yours can fix it (aiFixable) and where it is fixed (fix), why it matters (reason, an index into reasons), counts by severity and pillar, and the internal links: how many links lead into and out of each published page, with orphans that nothing else links to. pageId (an ID or route) narrows it to one page: its own findings, and which pages, shared header or footer, or entries link to it. pillar keeps one kind of finding. A long report comes in parts: call again with offset set to nextOffset, or linkOffset set to links.nextLinkOffset, and after a change to the site start again from the first part.',
+  audit_performance:
+    "How fast each published page loads, as the last website export measured a first visit (it measures nothing itself): bytes of HTML, scripts, styles, fonts and images against budgets, whether the largest picture on the first screen is preloaded, pictures whose sizes or file is wider or narrower than their space, and the host's caching of hashed files. Findings carry measured numbers, the file and its assetId. route (page ID or route) gives one page's files and findings. Only the user can export: when nothing is measured, or the site changed since, ask them to. More: offset=nextOffset.",
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four concrete answers in choices, never “Other”; the user can type their own. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   locate_field:
@@ -254,6 +259,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: VALIDATE_BRIEF,
   audit_seo: 'SEO and AI-readiness findings, worst first, and each page’s links in and out. pageId (ID or route) or pillar narrows it. More: offset=nextOffset, linkOffset=nextLinkOffset.',
+  audit_performance: 'What the last website export measured of each page’s first visit: bytes by kind against budgets, hero preload, picture sizing, caching. route narrows it to one page. Only the user can export. More: offset=nextOffset.',
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
@@ -522,7 +528,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_
  * preview the editor already runs (inspect_layout), finding a field, and a plain question to the author. Nothing that
  * changes the site.
  */
-export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
+export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'audit_performance', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
 /** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
 const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_project_brief', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
@@ -694,7 +700,11 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * has no room left for them).
  */
 export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean }): RunTools {
-  const run = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
+  const all = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
+  // The export's measurements are the author's: never a collaborator's to read. A small window keeps its room for the
+  // edit itself unless the request is about speed (as Project health's Improve with AI is).
+  const dropped = opts.delegated || (all.focused && all.mode !== 'ask' && !opts.performanceRequest);
+  const run = dropped ? { ...all, tools: all.tools.filter((t) => t.name !== 'audit_performance') } : all;
   if (!run.focused || !run.tools.some((t) => t.name === 'validate_project')) return run;
   const schema = z.toJSONSchema(z.object({ profile: VALIDATE_ARGS.shape.profile.unwrap().extract(['schema', 'component']).optional() }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete schema.$schema;
@@ -766,6 +776,10 @@ function runTools(opts: {
   collectionRequest?: boolean;
   /** The request asks about an external source (see asksForSource): a small site run is offered the source tools. */
   sourceRequest?: boolean;
+  /** The request asks about the website's speed (see asksForPerformance): a small run is offered audit_performance. */
+  performanceRequest?: boolean;
+  /** The run is a live-session collaborator's (#769): it reads nothing of the author's own exports. */
+  delegated?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
@@ -955,6 +969,9 @@ export function findPageToOpen(state: ProjectState, ref: string): { ok: true; pa
  * A whole managed component in one call (#359). It needs a run that may change the whole site (a rebuild moves every
  * placement), and no Developer mode: a managed design is not code.
  */
+/** Whether a request typed into the chat asks about how fast the website loads, which a small run then gets audit_performance for. */
+export const asksForPerformance = (text: string): boolean => /\b(?:speed|faster|slow(?:er)?|performance|load(?:s|ing)?|page weight|heavy|bundles?|preload(?:s|ed|ing)?|lcp|cach(?:e|es|ed|ing)|lighthouse|web vitals)\b/i.test(text);
+
 /** Whether a request typed into the chat asks for a component, which a small site run then builds whole. */
 export const asksForComponent = (text: string): boolean => /\b(?:components?|reusable|re-usable)\b/i.test(text);
 
@@ -1107,6 +1124,8 @@ export interface ToolHost {
   changedPageIds?(): string[];
   /** Problems with the project's files on disk, such as image files missing from the project folder, looked for again. */
   fileDiagnostics?(): Promise<Diagnostic[]>;
+  /** What the last website export measured of each page's first visit (#1488), and whether the project changed since. */
+  performance?(): PerformanceStatus | null;
   /** Aborted when the run is stopped. */
   signal?: AbortSignal;
   /** The project's external sources as the source tools read and test them (#680), ended with the run. */
@@ -1599,6 +1618,10 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       return runValidateProject(args as z.infer<typeof VALIDATE_ARGS>, host);
     case 'audit_seo': {
       const report = seoReport(state, host.revision(), args as z.infer<typeof AUDIT_SEO_ARGS>, MAX_RESULT_CHARS - 200);
+      return report.ok ? { ok: true, content: report.content } : toolError('INVALID_ARGUMENT', report.message);
+    }
+    case 'audit_performance': {
+      const report = performanceReport(state, host.revision(), host.performance?.() ?? null, args as z.infer<typeof AUDIT_PERFORMANCE_ARGS>, MAX_RESULT_CHARS - 200);
       return report.ok ? { ok: true, content: report.content } : toolError('INVALID_ARGUMENT', report.message);
     }
     case 'locate_field': {
