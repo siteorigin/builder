@@ -36,8 +36,8 @@ export async function findMissingAssetFiles(projectDir: string, assets: Record<s
     if ((a?.kind !== 'image' && a?.kind !== 'document' && a?.kind !== 'font') || typeof a.file !== 'string') continue;
     const original = !(await present(a.file));
     const variants: string[] = [];
-    // Only an image has smaller copies, and only an image's can be made again.
-    if (a.kind === 'image') for (const v of a.variants ?? []) if (typeof v?.file === 'string' && !(await present(v.file))) variants.push(v.file);
+    // A font has no smaller copies: one listed (assets.json edited by hand) is nothing a font could be missing.
+    if (a.kind !== 'font') for (const v of a.variants ?? []) if (typeof v?.file === 'string' && !(await present(v.file))) variants.push(v.file);
     if (original || variants.length) out.push({ assetId: a.id, original, variants });
   }
   return out;
