@@ -772,6 +772,14 @@ async function compileDesigns(defs: ComponentDefinition[], files: Map<string, st
   return null;
 }
 
+/** A code component's file edited outside the app and not loaded: where, and what the editor is told (#1533). */
+interface RefusedSource {
+  path: string;
+  message: string;
+  /** Its code is fine, but waits on another component's edited code with errors. */
+  held?: true;
+}
+
 export class ProjectSession extends EventEmitter {
   private current!: ProjectState;
   /**
@@ -862,7 +870,7 @@ export class ProjectSession extends EventEmitter {
    * refusal as the editor shows it. The project keeps the version that last loaded; the file keeps the edit. Worked out
    * again by every read that gets as far as the code (#1533), and held only in memory.
    */
-  private refusedSources = new Map<string, { path: string; message: string }>();
+  private refusedSources = new Map<string, RefusedSource>();
   /**
    * For each canonical document in conflict that an AI request's rollback left, the version that request tried to save:
    * the stored blob that holds it (null = it removed the file), and its text once read. The reference is kept even
@@ -6130,28 +6138,39 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
-   * The code components of `next` whose source differs from the project's and has errors, which a reload refuses, and
-   * those kept as the standing refusals. Told (`refused-sources`) when they change, though no revision does.
+   * The code components of `next` whose source differs from the project's and has errors, which a reload refuses, kept
+   * as the standing refusals with those whose edited code is fine but waits on them (`held`): the read loads all of its
+   * files or none. Told (`refused-sources`) when they change, though no revision does.
    */
-  private async refusedSourcesOf(next: ProjectState): Promise<Map<string, { path: string; message: string }>> {
-    const refused = new Map<string, { path: string; message: string }>();
+  private async refusedSourcesOf(next: ProjectState): Promise<Map<string, RefusedSource>> {
+    const refused = new Map<string, RefusedSource>();
+    const fine: ComponentDefinition[] = [];
     for (const def of Object.values(next.components)) {
       if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
       const bad = (await checkSvelteSource(def.source ?? '')).find((p) => p.severity === 'error');
-      if (!bad) continue;
+      if (!bad) {
+        fine.push(def);
+        continue;
+      }
       const path = defFile(def);
       const where = bad.line ? `${path}, line ${bad.line}` : path;
       refused.set(def.id, { path, message: `The edited code for "${def.name}" has problems, so it was not loaded (${where}): ${bad.message}` });
     }
+    const standing = new Map(refused);
+    if (refused.size)
+      for (const def of fine) standing.set(def.id, { path: defFile(def), message: `The edited code for "${def.name}" (${defFile(def)}) loads once the other edited code is fixed.`, held: true });
     const before = JSON.stringify([...this.refusedSources]);
-    this.refusedSources = refused;
-    if (JSON.stringify([...refused]) !== before) this.emit('refused-sources');
+    this.refusedSources = standing;
+    if (JSON.stringify([...standing]) !== before) this.emit('refused-sources');
     return refused;
   }
 
-  /** The outside edits of code components refused for their errors, as Project health and the source editor show them. */
+  /**
+   * The outside edits of code components refused for their errors (and those held back with them, as warnings), as
+   * Project health and the source editor show them.
+   */
   refusedSourceDiagnostics(): Diagnostic[] {
-    return [...this.refusedSources].map(([id, r]) => ({ severity: 'error', code: EXTERNAL_SOURCE_REFUSED, message: r.message, owner: { kind: 'component', id }, site: r.path }));
+    return [...this.refusedSources].map(([id, r]) => ({ severity: r.held ? 'warning' : 'error', code: EXTERNAL_SOURCE_REFUSED, message: r.message, owner: { kind: 'component', id }, site: r.path }));
   }
 
   /** Read-only inspection follows the owner's edits without writing anything. */

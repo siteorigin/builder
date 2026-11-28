@@ -504,10 +504,13 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     tell(ids.First.path, ids.Second.path, page(home));
     await vi.waitFor(() => expect(refusals().map((d) => d.owner?.id).sort()).toEqual([ids.First.id, ids.Second.id].sort()), { timeout: 5000, interval: 20 });
     expect(session.state.pages[home].title).not.toBe('Retitled in another editor');
-    // First is fixed: only Second is refused now, and nothing loads yet.
+    expect(refusals().every((d) => d.severity === 'error')).toBe(true);
+    // First is fixed: only Second is refused now, and nothing loads yet, so First is told it waits on it.
     writeFileSync(join(dir, ids.First.path), '<p>First, fixed</p>\n');
     tell(ids.First.path);
-    await vi.waitFor(() => expect(refusals().map((d) => d.owner?.id)).toEqual([ids.Second.id]), { timeout: 5000, interval: 20 });
+    const severities = () => Object.fromEntries(refusals().map((d) => [d.owner?.id, d.severity]));
+    await vi.waitFor(() => expect(severities()).toEqual({ [ids.First.id]: 'warning', [ids.Second.id]: 'error' }), { timeout: 5000, interval: 20 });
+    expect(refusals().find((d) => d.owner?.id === ids.First.id)?.message).toBe(`The edited code for "First" (${ids.First.path}) loads once the other edited code is fixed.`);
     expect(session.state.components[ids.First.id].source).toBe(ids.First.source);
     // Second is fixed too: the whole batch loads as one outside change, and nothing is refused.
     writeFileSync(join(dir, ids.Second.path), '<p>Second, fixed</p>\n');

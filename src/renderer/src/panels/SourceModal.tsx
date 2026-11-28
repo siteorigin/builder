@@ -662,7 +662,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
           <div className="scope-note danger source-stale" role="alert">
             <CircleAlert aria-hidden="true" />
             <span className="grow">
-              <strong>The file on disk has an edit that was not loaded.</strong> This is the last version that loaded{dirty ? ', and your edits are based on it' : ''}. {refused.message}
+              <strong>{refused.severity === 'error' ? 'The file on disk has an edit that was not loaded.' : 'The file on disk has an edit that is waiting to load.'}</strong> This is the last version that loaded{dirty ? ', and your edits are based on it' : ''}. {refused.message}
             </span>
             {projectDir && refused.site && (
               <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${projectDir}/${refused.site}`)}>

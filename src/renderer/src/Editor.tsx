@@ -599,7 +599,7 @@ export function Editor() {
   }, [recovery]);
   // An outside edit of a code component refused for its errors is told as it happens, once, and its notice goes when
   // the file is put right (#1533). Project health and the component's source editor keep saying so meanwhile.
-  const refusedSources = useStore((s) => (s.snapshot?.diagnostics ?? []).filter((d) => d.code === EXTERNAL_SOURCE_REFUSED).map((d) => d.message).join('\n'));
+  const refusedSources = useStore((s) => (s.snapshot?.diagnostics ?? []).filter((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.severity === 'error').map((d) => d.message).join('\n'));
   const refusalToasts = useRef(new Map<string, number>());
   useEffect(() => {
     const now = new Set(refusedSources ? refusedSources.split('\n') : []);
