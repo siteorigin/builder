@@ -147,8 +147,8 @@ describe('syntax-tree code checks', () => {
   it('finds every npm package a component imports, however it imports it (#1480)', async () => {
     const src = `<script>\n\timport 'leaflet/dist/leaflet.css';\n\timport { z } from 'zod';\n\timport { fade } from 'svelte/transition';\n\timport Card from './Card.svelte';\n\texport { thing } from '@scope/kit/sub';\n\texport * from 'three';\n\tconst lazy = () => import('chart.js/auto');\n</script>\n<p>{import('not-code')}</p>\n<style>\n\t@import 'maplibre-gl/dist/maplibre-gl.css';\n\t@import url("@fontsource/inter");\n</style>\n`;
     expect((await importedPackages(src)).sort()).toEqual(['@fontsource/inter', '@scope/kit', 'chart.js', 'leaflet', 'maplibre-gl', 'not-code', 'three', 'zod']);
-    // A stylesheet's imports, however written, and none it has commented out.
-    expect(await importedPackages(`<p>x</p>\n<style>\n\t@import url(swiper/swiper.css);\n\t/* @import 'unused-theme/a.css'; */\n</style>\n`)).toEqual(['swiper']);
+    // A stylesheet's imports, however written, and none it has commented out or only names in a declaration.
+    expect(await importedPackages(`<p>x</p>\n<style>\n\t@import url(swiper/swiper.css);\n\t/* @import 'unused-theme/a.css'; */\n\t@import/**/"maplibre-gl/dist/maplibre-gl.css";\n\tp::before { content: "@import 'quoted-only/a.css'"; }\n</style>\n`)).toEqual(['swiper', 'maplibre-gl']);
     // Prose and dynamic names are no imports.
     expect(await importedPackages(`<script>\n\tconst name = 'zod';\n\tconst m = () => import(name);\n</script>\n<p>We import from 'everywhere'.</p>\n`)).toEqual([]);
     // A draft the compiler can't read still says which packages it uses, so the assistant never "fixes" one away.
@@ -156,6 +156,8 @@ describe('syntax-tree code checks', () => {
     // Read once through, however its comments run on.
     const started = performance.now();
     expect(await importedPackages(`<script>\n\timport ${'/* a */ ( '.repeat(20000)}/* never closed\n</script>\n<p>{x</p>`)).toEqual([]);
+    expect(await importedPackages(`<script>\n\timport ${'// '.repeat(5000)}x\n</script>\n<p>{x</p>`)).toEqual([]);
+    expect(await importedPackages(`<script>\n\timport // a note\n\t\t'leaflet';\n\tlet x = ;\n</script>\n`)).toEqual(['leaflet']);
     expect(performance.now() - started).toBeLessThan(2000);
     // Through the project components it imports, and theirs, it uses theirs too.
     const DIR = 'src/lib/siteorigin/custom';

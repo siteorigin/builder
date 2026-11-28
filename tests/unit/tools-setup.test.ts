@@ -200,8 +200,8 @@ describe('a development build, with no tools shipped', () => {
       install0(dir);
       writeFileSync(join(dir, 'package.json'), readFileSync(join(dir, 'package.json'), 'utf8').replace('"private": true', '"private": true, "dependencies": { "zod": "4.1.0" }'));
     };
-    await install();
-    expect(existsSync(marker())).toBe(true);
+    await expect(install()).rejects.toThrow(/changed while the website tools were being set up/);
+    expect(existsSync(marker())).toBe(false);
     expect(await dependenciesReady(project)).toBe(false);
     // Unchanged, they are set up.
     npm.install = install0;

@@ -72,7 +72,7 @@ import { LibraryImageReader } from './project/library-image';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, resolvePackageFiles, stageDependencies, starterTools, type PackageFiles, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
-import { declaredVersion, listPackages, packageFailure, packageRequest } from './runtime/packages';
+import { declaredVersion, listPackages, packageFailure, packageRequest, placeOf } from './runtime/packages';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -178,8 +178,11 @@ const PACKAGES_CLOSED = 'The project was closed before its packages could be cha
 const packageInUse = (name: string, users: string[]): string =>
   `“${name}” is still imported by ${users.length === 1 ? `the code component “${users[0]}”` : `${users.length} code components (${users.slice(0, 3).map((u) => `“${u}”`).join(', ')}${users.length > 3 ? ', …' : ''})`}. Remove the import from ${users.length === 1 ? 'it' : 'them'} first.`;
 
+/** A file's text, or null when there is none; one that is there but can't be read throws. */
+const readStrict = (path: string): Promise<string | null> => fs.readFile(path, 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+
 /** A project's own npm settings, or null when it has none; settings that are there but can't be read throw. */
-const readNpmrc = (dir: string): Promise<string | null> => fs.readFile(join(dir, '.npmrc'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+const readNpmrc = (dir: string): Promise<string | null> => readStrict(join(dir, '.npmrc'));
 
 /**
  * Put a project's new package files in place together (#1480): both written out in full and flushed first, then the
@@ -209,8 +212,10 @@ async function writePackageFiles(dir: string, files: PackageFiles, before: Confi
       return true;
     }
     try {
-      // Only the lock this wrote goes back: one written meanwhile by someone else is theirs.
-      if ((await readIfExists(lockPath)) === files['package-lock.json']) await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json']));
+      // Only the lock this wrote goes back, checked right before it does: one written meanwhile by someone else is theirs.
+      const ours = async () => (await readStrict(lockPath)) === files['package-lock.json'];
+      if (before['package-lock.json'] !== null) await atomicWrite(lockPath, before['package-lock.json'], { beforeReplace: ours });
+      else if (await ours()) await fs.rm(lockPath, { force: true });
     } catch (e) {
       throw new Error(`package-lock.json no longer matches package.json, and the old one couldn’t be put back (${(e as Error).message}). Reinstall the website tools once package.json is as you want it.`);
     }
@@ -2728,6 +2733,8 @@ export class Controller {
     // npm says it succeeded: what it wrote must say so too (an `.npmrc` of the author's can tell it to change nothing).
     const declared = declaredVersion(files['package.json'], req.name);
     if ((req.verb === 'remove') !== (declared === null)) return { ok: false, message: `npm didn’t change the project’s package files for “${req.name}”, so nothing was changed. Check the project’s npm settings (.npmrc).` };
+    // An update keeps the package where package.json had it (npm settings can move one: `save-prod` turns a peer into a dependency).
+    if (req.verb === 'update' && placeOf(files['package.json'], req.name) !== placeOf(before['package.json'], req.name)) return { ok: false, message: `npm would move “${req.name}” to another part of package.json (the project’s npm settings ask for that), so nothing was changed. Check the project’s .npmrc.` };
     if (files['package.json'] === before['package.json'] && files['package-lock.json'] === before['package-lock.json']) return { ok: true, message: `The project already has that version of “${req.name}”.` };
     await this.stopPreview();
     // Set in the write, which TypeScript does not follow into.

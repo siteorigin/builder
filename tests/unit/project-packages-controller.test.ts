@@ -274,6 +274,30 @@ describe('changing the project’s npm packages (#1480)', () => {
     expect(read('package.json')).toBe(before);
   });
 
+  it('refuses an update npm settings would move to another part of package.json', async () => {
+    const { c, dir, opening, read } = await opened();
+    const pkg = JSON.parse(read('package.json'));
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ ...pkg, peerDependencies: { three: '0.170.0' }, peerDependenciesMeta: { three: { optional: true } } }, null, 2)}\n`);
+    // Trusted as the author would trust it on reopening.
+    const { createHash } = await import('node:crypto');
+    const config = ['package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js'].map((f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : ''));
+    settings.trusted.set(dir, createHash('sha256').update(config.join('\n--\n')).digest('hex'));
+    const before = read('package.json');
+    // `save-prod` in the author's npm settings: the optional peer becomes a dependency.
+    npm.answer = (files) => {
+      const next = JSON.parse(files['package.json']);
+      delete next.peerDependencies;
+      delete next.peerDependenciesMeta;
+      next.dependencies = { three: '0.171.0' };
+      return { 'package.json': JSON.stringify(next), 'package-lock.json': files['package-lock.json'] };
+    };
+    expect((await c.changeProjectPackage({ add: 'three@latest' }, opening)).message).toMatch(/npm would move “three” to another part of package\.json/);
+    // Kept optional, it is updated.
+    npm.answer = (files) => ({ 'package.json': files['package.json'].replace('"three": "0.170.0"', '"three": "0.171.0"'), 'package-lock.json': files['package-lock.json'] });
+    expect(await c.changeProjectPackage({ add: 'three@latest' }, opening)).toEqual({ ok: true, message: 'Updated “three” 0.171.0.' });
+    expect(read('package.json')).toBe(before.replace('"three": "0.170.0"', '"three": "0.171.0"'));
+  });
+
   it('stops the preview at the trust check when the build settings change while the tools are set up for a new package', async () => {
     const { c, dir, opening } = await opened();
     npm.answer = addZod;

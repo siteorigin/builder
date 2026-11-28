@@ -63,6 +63,23 @@ export function declaredVersion(packageJson: string | null, name: string): strin
   return typeof wanted === 'string' ? wanted : null;
 }
 
+/**
+ * Where `packageJson` keeps `name`: its section, and whether a peer is optional (`peerDependencies?`), or null when it
+ * does not declare it. An update leaves this as it was.
+ */
+export function placeOf(packageJson: string | null, name: string): string | null {
+  const section = sectionOf(sections(packageJson), name);
+  if (!section) return null;
+  let optional = false;
+  try {
+    const meta = (JSON.parse(packageJson ?? '') as { peerDependenciesMeta?: Record<string, { optional?: unknown } | undefined> }).peerDependenciesMeta;
+    optional = section === 'peerDependencies' && !!meta && typeof meta === 'object' && Object.hasOwn(meta, name) && meta[name]?.optional === true;
+  } catch {
+    /* unread, as sections() has it */
+  }
+  return optional ? `${section}?` : section;
+}
+
 /** What npm is asked to do for one change to a project's packages, or why the change is refused. */
 export type PackageRequest =
   | { ok: true; verb: 'add' | 'update' | 'remove'; name: string; command: 'install' | 'uninstall'; options: string[]; spec: string }
