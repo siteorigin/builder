@@ -241,19 +241,23 @@ function whereText(keys: Key[], schemes: PaletteScheme[]): string {
  */
 export function bodyPaints(css: string): boolean {
   // Read in one pass (rulesOf), so no stylesheet a theme can ship slows validation down.
-  const rules = rulesOf(css).filter((r) => /\bbody\b/i.test(r.selector));
-  // One rule, for the body alone, outside any at-rule: another (in a media query, say) may paint it otherwise.
+  const all = rulesOf(css);
+  const rules = all.filter((r) => /\bbody\b/i.test(r.selector));
+  // One rule, for the body alone, outside any at-rule: another (in a media query, say) may paint it otherwise. A rule
+  // nested in it closes just before it, and may too; so may a quoted value, which this reading does not take apart.
   if (rules.length !== 1 || rules[0].depth !== 0 || rules[0].selector.trim().toLowerCase() !== 'body') return false;
+  const at = all.indexOf(rules[0]);
+  if ((at > 0 && all[at - 1].depth > 0) || /["']/.test(rules[0].body)) return false;
   let background: string | undefined;
   let color: string | undefined;
   for (const d of rules[0].body.split(';')) {
     const colon = d.indexOf(':');
     if (colon < 0) continue;
     const prop = d.slice(0, colon).trim().toLowerCase();
-    const value = d.slice(colon + 1).replace(/\s+/g, '').toLowerCase();
+    const value = d.slice(colon + 1).replace(/\s+/g, '');
     if (prop !== 'background' && prop !== 'background-color' && prop !== 'color') continue;
     // An important declaration wins wherever it is written: not read.
-    if (value.includes('!important')) return false;
+    if (/!important/i.test(value)) return false;
     if (prop === 'color') color = value;
     else background = value;
   }

@@ -292,6 +292,9 @@ describe('the check as Project health runs it', () => {
     expect(bodyPaints('body { color: var(--so-color-text); }')).toBe(false);
     expect(bodyPaints('@media screen { body { background: var(--so-color-background); color: var(--so-color-text); } }')).toBe(false);
     expect(bodyPaints('body { background: #000 !important; background: var(--so-color-background); color: var(--so-color-text); }')).toBe(false);
+    expect(bodyPaints('body { background: var(--so-color-background); color: var(--so-color-text); @media (prefers-color-scheme: dark) { background: #000; } }')).toBe(false);
+    expect(bodyPaints('body { background: var(--so-color-BACKGROUND); color: var(--so-color-text); }')).toBe(false);
+    expect(bodyPaints('body { --label: "x; background: var(--so-color-background)"; background: #000; color: var(--so-color-text); }')).toBe(false);
     // Read in one pass: a long stylesheet with no braces at its end is quick.
     const started = performance.now();
     expect(bodyPaints(`${ok}${'@layer a, b, c;'.repeat(40_000)}`)).toBe(true);
