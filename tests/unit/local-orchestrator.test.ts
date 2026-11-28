@@ -928,9 +928,12 @@ describe('what a constrained local run sends first (#364)', () => {
     expect('customCode' in context, label).toBe(code || label.startsWith('ask'));
   };
   it.each(Object.entries(BUDGETS))('sends the %s run the tools, grammar and context it needs, in their compact form', sendsWhatItNeeds);
-  it.each(Object.entries(BUDGETS).filter(([label]) => label === 'section'))('keeps the %s run within its budget', keepsWithinBudget);
-  // Release gap: the release's sections and their properties make these runs' constrained first request (counted in bytes) larger than the budgets set on the 39-section copy: the site and page runs by about 6.5 KB, the part run by about 900 bytes, the ask runs by about 120.
-  it.fails.each(Object.entries(BUDGETS).filter(([label]) => label !== 'section'))('keeps the %s run within its budget', keepsWithinBudget);
+  // A part of a release section is offered the text its code shows there (#1416), as a managed part is, and no longer
+  // the image tools a style tool listed first brought along: its run is back within budget.
+  const withinBudget = new Set(['section', 'part']);
+  it.each(Object.entries(BUDGETS).filter(([label]) => withinBudget.has(label)))('keeps the %s run within its budget', keepsWithinBudget);
+  // Release gap: the release's sections and their properties make these runs' constrained first request (counted in bytes) larger than the budgets set on the 39-section copy: the site and page runs by about 6.5 KB, the ask runs by about 120.
+  it.fails.each(Object.entries(BUDGETS).filter(([label]) => !withinBudget.has(label)))('keeps the %s run within its budget', keepsWithinBudget);
 
   it('makes the same change from a constrained reply as from a native call', async () => {
     const results: unknown[] = [];

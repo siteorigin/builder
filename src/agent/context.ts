@@ -24,6 +24,7 @@ import { ownVisitorTextFor } from '@shared/visitor-text';
 import { normalizeRoute } from '@shared/routes';
 import { seoText } from '@shared/seo';
 import { themeUpdateNote, themeUpdatesSummary } from './theme-update';
+import { codePartReach, type CodePartTexts } from './scope';
 import type { Diagnostic } from '@engine/validate';
 import { directDependencies } from '@engine/definitions';
 import { showsPart, SHELL_PARTS } from '@shared/page-shell';
@@ -1049,8 +1050,11 @@ export function readField(state: ProjectState, ref: FieldRef): { ok: true; conte
   };
 }
 
-/** `operations: false`: the run edits through the selection's own tools, so the note names only those. */
-export function describeSelection(state: ProjectState, ref: ElementRef | null, opts: { operations?: boolean } = {}): Record<string, unknown> | null {
+/**
+ * `operations: false`: the run edits through the selection's own tools, so the note names only those. `texts`: for a
+ * part of a code component, the text its code shows there, as the run's authority read it (scope.ts codePartReach).
+ */
+export function describeSelection(state: ProjectState, ref: ElementRef | null, opts: { operations?: boolean; texts?: CodePartTexts } = {}): Record<string, unknown> | null {
   if (!ref) return null;
   const tree: NodeTree | undefined =
     ref.owner.kind === 'page' ? state.pages[ref.owner.id] : ref.owner.kind === 'shell' ? state.site.shell[ref.owner.id as 'header' | 'footer'] : state.components[ref.owner.id]?.tree;
@@ -1094,6 +1098,10 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
   // What a newer theme version of the selected component adds, and whether this project can take it.
   const update = themeUpdateNote(state, def);
+  // The text a code component's part shows, which is all of the placement's content it may change.
+  const codeReach = def && !def.tree && ref.instancePath.length === 1 ? codePartReach(def, { partId: ref.partId, itemId: selectedItem }, opts.texts, inst) : null;
+  // A property shown in a part repeated per item shows in every item: not the selected item's to change.
+  const codeTexts = codeReach ? [...(selectedItem !== undefined && codeReach.repeated ? [] : codeReach.props), ...[...codeReach.itemFields].flatMap(([list, fields]) => [...fields].map((f) => `${list}.${f}`))] : [];
   return {
     owner: ref.owner,
     instanceNodeId: instId,
@@ -1133,7 +1141,9 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
             ref.instancePath.length > 1
               ? 'Nothing on its own: this part is inside another component placed here. Any change needs the user to approve a wider change first.'
               : !def.tree
-                ? 'Only this part\'s own styles: a code component cannot say what its parts show. Anything else needs the user to approve a wider change first.'
+                ? codeTexts.length
+                  ? `Only this part: the text it shows (${codeTexts.join(', ')}${selectedItem !== undefined && codeReach!.itemFields.size ? `, for the selected item "${selectedItem}"` : ''}) and its own styles. Anything else in the component (other parts, its variants${selectedItem !== undefined ? ', other items' : ''}) needs the user to approve a wider change first.`
+                  : 'Only this part\'s own styles: its code marks no text inside it that only it shows. Anything else needs the user to approve a wider change first.'
                 : `Only this part: the content it shows${selectedItem !== undefined ? ` for the selected item "${selectedItem}"` : ''} and its own styles. Anything else in the component (other parts, its variants${selectedItem !== undefined ? ', other items' : ''}) needs the user to approve a wider change first.`
         }
       : {})

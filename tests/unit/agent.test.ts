@@ -3742,6 +3742,83 @@ describe('part scope rules (#132)', () => {
   });
 });
 
+describe('a code component part reaches the text its code marks inside it (#1416)', () => {
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const homeId = (s: ProjectState) => s.site.homePageId;
+  /** A Foundation section placed first on the home page, as the author places one. */
+  const place = async (session: ProjectSession, componentId: string, props: Record<string, unknown> = {}) => {
+    const r = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: homeId(session.state) }, parentId: null, index: 0, componentId, props }] }, { label: 'Insert', source: 'user' });
+    expect(r.ok).toBe(true);
+    return (r.results![0] as { nodeId: string }).nodeId;
+  };
+  const partSelection = (s: ProjectState, nodeId: string, partId: string, label: string): Partial<ChatContext> => ({
+    selection: { owner: { kind: 'page', id: homeId(s) }, instancePath: [nodeId], nodeId: s.components[(s.pages[homeId(s)].nodes[nodeId] as InstanceNode).definitionId].parts[partId].nodeId, partId },
+    selectionLabel: label
+  });
+  const propOf = (s: ProjectState, nodeId: string, prop: string) => (s.pages[homeId(s)].nodes[nodeId] as InstanceNode).props[prop];
+
+  it('changes a button label inside the selected Actions of a Centered hero without asking to widen', async () => {
+    let session!: ProjectSession;
+    let heroId = '';
+    const env = await setup([
+      () => [call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(session.state) }, nodeId: heroId, prop: 'secondaryLabel', value: 'Read our story' }] })],
+      () => finish('Changed the button.')
+    ]);
+    session = env.session;
+    heroId = await place(session, 'hero.centered', { primaryLabel: 'Book a call', secondaryLabel: 'Meet Lerato' });
+    expect(session.state.components[(session.state.pages[homeId(session.state)].nodes[heroId] as InstanceNode).definitionId].kind).toBe('code');
+    const { result } = await env.run('change this to say Read our story', partSelection(session.state, heroId, 'actions', 'Actions in Centered hero'));
+    expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: true });
+    expect(propOf(session.state, heroId, 'secondaryLabel')).toBe('Read our story');
+    expect(result?.status).toBe('completed');
+    // The selection tools offer the labels the part shows, and nothing it does not.
+    const tool = env.adapter.requests[0].tools.find((t) => t.name === 'update_selected_props');
+    const offered = Object.keys((tool?.parameters as { properties: { props: { properties: Record<string, unknown> } } } | undefined)?.properties.props.properties ?? {});
+    expect(offered).toEqual(expect.arrayContaining(['primaryLabel', 'secondaryLabel']));
+    expect(offered).not.toContain('heading');
+    // Only that label changed, and nothing was asked.
+    expect(propOf(session.state, heroId, 'primaryLabel')).toBe('Book a call');
+    const turn = [...env.events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message;
+    expect(turn?.questions ?? []).toEqual([]);
+    // The model is told what the part shows.
+    const context = JSON.stringify(env.adapter.requests[0].items);
+    expect(context).toContain('the text it shows (primaryLabel, secondaryLabel)');
+  });
+
+  it('refuses text outside the selected part, telling the model why and the author in plain words', async () => {
+    let session!: ProjectSession;
+    let heroId = '';
+    const env = await setup([
+      () => [call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(session.state) }, nodeId: heroId, prop: 'heading', value: 'Changed' }] })],
+      () => finish('That needs a wider change.')
+    ]);
+    session = env.session;
+    heroId = await place(session, 'hero.centered');
+    await env.run('change the heading', partSelection(session.state, heroId, 'actions', 'Actions in Centered hero'));
+    const refused = resultOf(env.adapter.requests[1]);
+    expect(refused.error).toMatchObject({ code: 'SCOPE_MISMATCH' });
+    expect(refused.error.message).toMatch(/instance\.setProp changes more of Actions in Centered hero than the selected part.*request_wider_scope/);
+    expect(refused.error).not.toHaveProperty('author');
+    const step = [...env.events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities?.find((a) => a.tool === 'apply_operations');
+    expect(step).toMatchObject({ status: 'error', detail: 'This would change more than the selection, so nothing was changed.' });
+  });
+
+  it('changes a button label inside the selected Panel of a Call to action', async () => {
+    let session!: ProjectSession;
+    let ctaId = '';
+    const env = await setup([
+      () => [call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(session.state) }, nodeId: ctaId, prop: 'primaryLabel', value: 'Email us' }] })],
+      () => finish('Changed the button.')
+    ]);
+    session = env.session;
+    ctaId = await place(session, 'cta.banner', { primaryLabel: 'Get in touch' });
+    const { result } = await env.run('make this button say Email us', partSelection(session.state, ctaId, 'panel', 'Panel in Call to action'));
+    expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: true });
+    expect(propOf(session.state, ctaId, 'primaryLabel')).toBe('Email us');
+    expect(result?.status).toBe('completed');
+  });
+});
+
 describe('components that are not reusable yet (#363)', () => {
   const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
   const lastSaid = (req: CanonicalModelRequest) => (req.items.at(-1) as { text?: string }).text ?? '';
