@@ -1,17 +1,17 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, PanelBottom, PanelTop, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
+import { codeModeOff, turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest, openThread, openRunThread, replaceThread } from '../store';
-import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
-import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
+import { afterSendMessage, draftFor, imagesFor, lastSentText, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
+import { importIntoChat, importPastedIntoChat, isFileDrag, pastedImageFiles, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-model';
 import { modelPickerRows, type LocalListing, type ModelPickerRow } from '../lib/modelPicker';
-import { chatContextFor, composerScope, editScope, layoutName, requestTarget, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
+import { chatContextFor, codeDesign, composerScope, editScope, layoutName, requestTarget, retryView, targetOf } from '../lib/chatTarget';
 import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { AI_IMAGE_PRIVACY } from '../lib/ai-privacy';
@@ -1159,18 +1159,16 @@ export function Chat() {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
     if (getState().settingsSaving) return false;
-    // A post open in the Posts workspace, the page its preview went on to, or a collection layout open on the canvas
-    // (#679) is a target of its own.
-    const ownTarget = context ? !!context.post || !!context.template : !!scope.post || !!scope.template || shownPost?.kind === 'page' || !!seoPage;
     // Image files dropped on the composer are still being added: an edit started now would miss them, and would hold the
     // project while their records are saved (#679). Continue and Try again wait for them too.
     // A question asked now would go without them too; only one put back with its own images (Try again) need not wait.
-    if (dropping && !(context && context.mode === 'ask')) return (toast('The dropped images are still being added. Send once they show under your message.', 'info'), false);
-    // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
-    // it. A question changes nothing, so it is still asked. The writer with no post open covers the studio too, and its
-    // edit goes to the whole site (#1424), never to the design under it.
-    const code = !context && !askMode && !ownTarget && !scope.empty ? uneditableDesign(st, definitionMode) : null;
-    if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
+    if (dropping && !(context && context.mode === 'ask')) return (toast('The images are still being added. Send once they show under your message.', 'info'), false);
+    // A code component open in Component Studio is edited through its source, which only Developer mode lets the AI
+    // change (#1410): without it the draft stays, and says how. A question changes nothing, so it is still asked.
+    // Continue and Try again send the context they were written with, which is checked the same way.
+    const about = context ? (context.mode !== 'ask' ? context.component : undefined) : askMode ? undefined : scope.component;
+    const code = about ? codeDesign(st, about.id) : null;
+    if (code && !getState().settings?.developerMode) return (toast(codeModeOff(code.name), 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
     // would reach the page under the view, so it waits for one (#700). The draft stays. One from the writer with no
     // post open goes to the whole site instead (#1424, lib/chatTarget editScope).
@@ -1916,7 +1914,36 @@ export function Chat() {
             readOnly={!conversation}
             // Each keystroke timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
             onChange={perfOn ? (e) => perfWork('chat.keystroke', () => typed(e.target)) : (e) => typed(e.target)}
+            // An image pasted here (a screenshot, a copied picture) is imported into Assets and attached, as a dropped
+            // one is (#1410). Text pastes as it always has.
+            onPaste={(e) => {
+              const files = pastedImageFiles(e.clipboardData);
+              if (!files.length || !conversation) return;
+              e.preventDefault();
+              if (asking) return void toast('Answer the question first. Images can go with your next message.', 'info');
+              setDroppingCount((n) => n + 1);
+              void importPastedIntoChat(files, conversation.id)
+                .then(({ ids, to }) => ids.length && to === getState().conversation?.id && (document.activeElement === document.body || document.activeElement === taRef.current) && focusComposer())
+                .finally(() => setDroppingCount((n) => Math.max(0, n - 1)));
+            }}
             onKeyDown={(e) => {
+              // ArrowUp in an empty box brings back the last message sent in this conversation, to edit and send again
+              // (#1410). Its images and target stay as the composer has them now.
+              if (e.key === 'ArrowUp' && !asking && conversation && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !isImeComposing(e) && e.currentTarget.value === '') {
+                const last = lastSentText(conversation.messages);
+                if (last === null) return;
+                e.preventDefault();
+                answeredAt.current = 0;
+                setChatDraft(conversation.id, last);
+                // The caret goes to the end of what came back, once the box shows it.
+                requestAnimationFrame(() => {
+                  const ta = taRef.current;
+                  if (!ta || ta.value !== last) return;
+                  ta.setSelectionRange(ta.value.length, ta.value.length);
+                  sizeToFit(ta);
+                });
+                return;
+              }
               const sendOnEnter = getState().settings?.ai.sendOnEnter ?? true;
               if (e.key === 'Enter' && !isImeComposing(e) && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
                 e.preventDefault();

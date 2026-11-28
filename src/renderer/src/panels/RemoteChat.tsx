@@ -6,6 +6,7 @@ import { sharedSelection } from '../lib/live-session';
 import { admittedRemote, isRemoteShell } from '../lib/remote-session';
 import { refLabel } from '../lib/model';
 import { isImeComposing } from '../lib/ime';
+import { pastedImageFiles } from '../lib/chatDrafts';
 import { registerUnsent } from '../lib/pending';
 import { refKey } from '@shared/types';
 import './RemoteChat.css';
@@ -137,6 +138,12 @@ export function RemoteChat() {
             // What the request is about is the one shown as it was written, whatever is selected by the time it is sent.
             if (!pinned) pin(target);
             setText(e.target.value);
+          }}
+          // A guest's request carries words only: an image pasted here says so, rather than vanishing (#1410).
+          onPaste={(e) => {
+            if (!pastedImageFiles(e.clipboardData).length) return;
+            e.preventDefault();
+            toast('Only the host can attach images to an AI request. Describe the image in words instead.', 'info');
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {

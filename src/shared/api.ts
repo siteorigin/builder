@@ -633,6 +633,9 @@ export type ChatEditScope = 'selection' | 'page' | 'site';
 
 export const CHAT_EDIT_SCOPES: readonly ChatEditScope[] = ['selection', 'page', 'site'];
 
+/** Why an edit of a code component is not sent: its source changes only with Developer mode (#1410). */
+export const codeModeOff = (name: string): string => `The AI can change ${name}’s code only with Developer mode on. Turn it on in Settings, or edit its code yourself.`;
+
 export interface ChatContext {
   pageId: string;
   pageTitle: string;
@@ -1462,6 +1465,13 @@ export interface BuilderApi {
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
     importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
+    /**
+     * Write images pasted with no file of their own (a screenshot on the clipboard) where importAssets can read them
+     * (#1410): PNG, JPEG, GIF, WebP or AVIF, at most four. Release the batch once the import is done with its paths.
+     */
+    stagePastedImages(files: Array<{ type: string; bytes: Uint8Array }>): Promise<{ ok: true; batch: string; paths: string[] } | { ok: false; message: string }>;
+    /** Remove what stagePastedImages wrote for one paste. */
+    releasePastedImages(batch: string): Promise<void>;
     /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.

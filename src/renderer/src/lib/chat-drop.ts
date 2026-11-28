@@ -9,7 +9,7 @@ import { assetArrived, reviewImport } from './import-review';
 import { attachImages, droppedImagesNote } from './chatDrafts';
 import { plural } from './storage';
 
-export { isFileDrag } from './chatDrafts';
+export { isFileDrag, pastedImageFiles } from './chatDrafts';
 
 /**
  * Each drop still being imported, and the conversation whose unsent message it is for: that message's, wherever it
@@ -39,6 +39,47 @@ export async function importIntoChat(paths: string[], conversationId: string): P
     return { ids, to: drop.to };
   } finally {
     pending.delete(drop);
+  }
+}
+
+/**
+ * Images pasted into the composer (#1410), attached as dropped ones are. A copied file is imported from where it is;
+ * a picture with no file of its own (a screenshot) is written where the importer reads it first, and removed once the
+ * import is done. Nothing is imported when the project was closed or opened again while the pictures were read.
+ */
+export async function importPastedIntoChat(files: File[], conversationId: string): Promise<{ ids: string[]; to: string | null }> {
+  const drop = { to: conversationId as string | null };
+  pending.add(drop);
+  const opening = getState().snapshot?.workspaceKey;
+  const here = () => !!opening && getState().snapshot?.workspaceKey === opening;
+  let batch: string | null = null;
+  try {
+    const found = files.map((f) => api.pathForFile(f) || null);
+    const pathless = files.filter((_, i) => !found[i]);
+    let staged: string[] = [];
+    if (pathless.length) {
+      const pictures = await Promise.all(pathless.map(async (f) => ({ type: f.type, bytes: new Uint8Array(await f.arrayBuffer()) })));
+      if (!here()) return { ids: [], to: drop.to };
+      const r = await api.project.stagePastedImages(pictures).catch((e: Error) => ({ ok: false as const, message: `The pasted image couldn’t be added: ${e.message}` }));
+      if (!r.ok) {
+        if (here()) toast(r.message, 'error');
+        return { ids: [], to: drop.to };
+      }
+      batch = r.batch;
+      staged = r.paths;
+    }
+    if (!here()) return { ids: [], to: drop.to };
+    // In the order pasted: each copied file where it is, each picture where it was written.
+    let next = 0;
+    const paths = found.map((p) => p ?? staged[next++]).filter((p): p is string => !!p);
+    const ids = await attachDropped(paths, () => drop.to);
+    return { ids, to: drop.to };
+  } catch (e) {
+    toast(`The pasted image couldn’t be added: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    return { ids: [], to: drop.to };
+  } finally {
+    pending.delete(drop);
+    if (batch) void api.project.releasePastedImages(batch).catch(() => undefined);
   }
 }
 

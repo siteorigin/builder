@@ -4,7 +4,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
-import { editableDesign, layoutName, postTitle, requestComponentId } from './chatTarget';
+import { layoutName, postTitle, requestComponentId, targetableDesign } from './chatTarget';
 import { keepTemplateValid } from './template-view';
 import { postAt } from './posts';
 import { canCarryOn, resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
@@ -184,7 +184,7 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   if (ctx.post !== undefined || ctx.template !== undefined) {
     if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
   } else if (componentId) {
-    if (!editableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };
+    if (!targetableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };
     // The page only showed it, so another one does as well.
     if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
   } else if (!pageOk) return { error: `${ctx.pageTitle || 'That page'} is no longer in the site. ${choose}` };

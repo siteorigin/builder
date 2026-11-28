@@ -86,17 +86,17 @@ const ENTRY = [
 ].join('\n');
 
 /**
- * The preload bridge: every call answers a promise of nothing, but for what Chat asks the local server, and the perf
- * bridge keeps what the editor sends it.
+ * The preload bridge: every call answers a promise of nothing, but for what Chat asks the local server (and a pasted
+ * picture's file path, which a screenshot has none of), and the perf bridge keeps what the editor sends it.
  */
 const BRIDGE = `
   window.perfRecords = [];
   window.calls = [];
   window.builderPerf = { send: (record) => window.perfRecords.push(record) };
-  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS}, 'ai.newConversation': { id: 'c_new', title: 'New conversation', createdAt: '2026-11-24T00:00:00.000Z', messages: [] } };
+  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS}, 'ai.newConversation': { id: 'c_new', title: 'New conversation', createdAt: '2026-11-24T00:00:00.000Z', messages: [] }, 'project.stagePastedImages': { ok: true, batch: 'b1', paths: ['/tmp/paste/Pasted image.png'] } };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
-    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
+    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : path === 'pathForFile' ? '' : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
   });
   window.builder = any('');
 `;
@@ -368,5 +368,53 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await box.pressSequentially('The Services page');
     expect(await box.inputValue()).toBe('The Services page');
     expect((await renders()) - before).toBe(0);
+  });
+  it('brings back the last message sent with ArrowUp in an empty box, and nothing over text being written (#1410)', async () => {
+    await page.evaluate('so.done()');
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    await box.click();
+    await box.press('ArrowUp');
+    expect(await box.inputValue()).toBe('And the last one?');
+    expect(await page.evaluate<string>('so.draft()')).toBe('And the last one?');
+    // The caret is at the end, to go on writing.
+    await page.waitForFunction(`document.activeElement?.selectionStart === ${'And the last one?'.length}`);
+    // With text in the box, ArrowUp only moves the caret.
+    await box.fill('Draft');
+    await box.press('ArrowUp');
+    expect(await box.inputValue()).toBe('Draft');
+    // Nothing is sent by it.
+    expect(await page.evaluate<number>("so.calls('ai.send').length")).toBe(0);
+  });
+
+  it('imports an image pasted into the box, and leaves text to paste as text (#1410)', async () => {
+    await page.evaluate('so.done()');
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    await box.click();
+    // A paste as the clipboard gives it: a picture, words, or both. Says whether the box kept it from pasting natively.
+    const paste = (withImage: boolean, text = '') =>
+      page.evaluate<boolean>(`(() => {
+        const data = new DataTransfer();
+        if (${withImage}) data.items.add(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', { type: 'image/png' }));
+        if (${JSON.stringify(text)}) data.setData('text/plain', ${JSON.stringify(text)});
+        const e = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+        document.querySelector('.composer textarea').dispatchEvent(e);
+        return e.defaultPrevented;
+      })()`);
+    expect(await paste(false, 'Just words')).toBe(false);
+    expect(await paste(true, 'Words beside a picture of them')).toBe(false);
+    expect(await page.evaluate<number>("so.calls('project.stagePastedImages').length")).toBe(0);
+    expect(await paste(true)).toBe(true);
+    await page.waitForFunction("so.calls('project.releasePastedImages').length > 0");
+    // Each call's arguments: the pictures, by type and bytes.
+    const staged = await page.evaluate<Array<[Array<{ type: string; bytes: Record<string, number> }>]>>("so.calls('project.stagePastedImages')");
+    expect(staged).toHaveLength(1);
+    expect(staged[0][0].map((f) => f.type)).toEqual(['image/png']);
+    expect(Object.values(staged[0][0][0].bytes)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    // The written picture goes through the import review as a dropped one does, and is removed after.
+    expect(await page.evaluate("so.calls('project.reviewImport')")).toEqual([[['/tmp/paste/Pasted image.png'], 'image']]);
+    expect(await page.evaluate("so.calls('project.releasePastedImages')")).toEqual([['b1']]);
+    // Released only once the review has read it.
+    const order = await page.evaluate<string[]>("window.calls.map((c) => c[0]).filter((p) => p.startsWith('project.'))");
+    expect(order.indexOf('project.releasePastedImages')).toBeGreaterThan(order.indexOf('project.reviewImport'));
   });
 });
