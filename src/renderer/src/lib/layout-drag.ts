@@ -45,7 +45,10 @@ const LONGHAND_CSS: Record<GapAxis, string> = { x: 'column-gap', y: 'row-gap' };
 export interface Gutter {
   axis: GapAxis;
   index: number;
+  /** Where its handle sits: the whole gutter, or the longest stretch of it that `pieces` lists. */
   rect: FrameRect;
+  /** A grid gutter that items spanning across it interrupt: the stretches of it that show between them. */
+  pieces?: FrameRect[];
 }
 
 /** The most gutters of one axis that get a handle. */
@@ -77,11 +80,43 @@ export function columnBoxes(layout: FrameLayout, edges: BoxEdges, rtl: boolean):
   return cols.map((t) => ({ x: t.from, y: c.y, width: t.size, height: rows }));
 }
 
+/** How far a box reaches into a track, along the track's axis. */
+type Track = { from: number; size: number };
+const reach = (lo: number, hi: number, t: Track) => Math.min(hi, t.from + t.size) - Math.max(lo, t.from);
+
+/**
+ * A grid gutter as it shows: the stretch from `from` to `to` along it, less where an item covers part of the gap
+ * between tracks `a` and `b` (one spanning them, however it is aligned in its area, or one overflowing into it) or,
+ * with no gap, reaches into the tracks on both sides. Each item takes out its own extent along the gutter, and what is left only
+ * where it passes a track of the other axis (`along`, when known): a stretch no longer than the crossing of two
+ * gutters is part of the other gutter. Null where no item spans it.
+ */
+function openStretches(items: FrameRect[], axis: GapAxis, a: Track, b: Track, from: number, to: number, along: Track[] | null): Array<[number, number]> | null {
+  const cuts = items
+    .filter((r) => {
+      const [lo, hi] = axis === 'x' ? [r.x, r.x + r.width] : [r.y, r.y + r.height];
+      const gap = { from: Math.min(a.from + a.size, b.from + b.size), size: Math.max(a.from, b.from) - Math.min(a.from + a.size, b.from + b.size) };
+      return reach(lo, hi, gap) > 0.5 || (reach(lo, hi, a) > 0.5 && reach(lo, hi, b) > 0.5);
+    })
+    .map((r): [number, number] => (axis === 'x' ? [r.y, r.y + r.height] : [r.x, r.x + r.width]))
+    .sort((p, q) => p[0] - q[0]);
+  if (!cuts.length) return null;
+  const out: Array<[number, number]> = [];
+  let at = from;
+  for (const [lo, hi] of cuts) {
+    if (lo - at > 0.5) out.push([at, Math.min(lo, to)]);
+    at = Math.max(at, hi);
+    if (at >= to) break;
+  }
+  if (to - at > 0.5) out.push([at, to]);
+  return out.filter(([lo, hi]) => hi - lo > 0.5 && (!along || along.some((t) => reach(lo, hi, t) > 0.5)));
+}
+
 /**
  * The gutters a gap handle can sit in: in a stack, between each item and the next one along the same line (never
- * from the end of one line to the start of the next); in a grid, between its columns and between its rows. None for
- * a stack that spreads its spare room between its items, where a gap may not show, nor for a gap the page could not
- * say the size of.
+ * from the end of one line to the start of the next); in a grid, between its columns and between its rows, broken
+ * where an item spans across one (a gutter an item covers all along has none). None for a stack that spreads its
+ * spare room between its items, where a gap may not show, nor for a gap the page could not say the size of.
  */
 export function gutters(layout: FrameLayout, edges: BoxEdges, rtl: boolean): Gutter[] {
   const out: Gutter[] = [];
@@ -124,12 +159,23 @@ export function gutters(layout: FrameLayout, edges: BoxEdges, rtl: boolean): Gut
   const rows = trackSpans(layout.rows, layout.rowGap, c.y, c.y + c.height, layout.packedRows, false);
   const colsAcross = cols ? { from: Math.min(...cols.map((t) => t.from)), to: Math.max(...cols.map((t) => t.from + t.size)) } : { from: c.x, to: c.x + c.width };
   const rowsDown = rows ? { from: rows[0].from, to: rows[rows.length - 1].from + rows[rows.length - 1].size } : { from: c.y, to: c.y + c.height };
+  // A grid's gutters keep their track's number, so a column divider's handle edits the columns either side of it.
+  const place = (axis: GapAxis, index: number, a: Track, b: Track, at: number, size: number) => {
+    if (index >= MAX_GUTTERS) return;
+    const span = axis === 'x' ? rowsDown : colsAcross;
+    const stretches = openStretches(layout.items, axis, a, b, span.from, span.to, axis === 'x' ? rows : cols);
+    const rect = ([lo, hi]: [number, number]): FrameRect => (axis === 'x' ? { x: at, y: lo, width: size, height: hi - lo } : { x: lo, y: at, width: hi - lo, height: size });
+    if (!stretches) return void out.push({ axis, index, rect: rect([span.from, span.to]) });
+    if (!stretches.length) return;
+    const pieces = stretches.map(rect);
+    const longest = pieces.reduce((best, p) => ((axis === 'x' ? p.height > best.height : p.width > best.width) ? p : best));
+    out.push({ axis, index, rect: longest, pieces });
+  };
   cols?.slice(0, -1).forEach((t, i) => {
     const after = cols[i + 1];
-    const x = rtl ? after.from + after.size : t.from + t.size;
-    push('x', { x, y: rowsDown.from, width: layout.columnGap!, height: rowsDown.to - rowsDown.from });
+    place('x', i, t, after, rtl ? after.from + after.size : t.from + t.size, layout.columnGap!);
   });
-  rows?.slice(0, -1).forEach((t) => push('y', { x: colsAcross.from, y: t.from + t.size, width: colsAcross.to - colsAcross.from, height: layout.rowGap! }));
+  rows?.slice(0, -1).forEach((t, i) => place('y', i, t, rows[i + 1], t.from + t.size, layout.rowGap!));
   return out;
 }
 

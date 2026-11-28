@@ -838,6 +838,9 @@ function layoutReport(el) {
     const packed = (v) => /^((un)?safe )?(normal|stretch|start|flex-start)$/.test(v) || (v === 'left' && s.direction !== 'rtl') || (v === 'right' && s.direction === 'rtl');
     out.packedCols = packed(s.justifyContent);
     out.packedRows = packed(s.alignContent);
+    // Its items, which break the gutters they span across.
+    const kids = open ? flowChildren(el, LAYOUT_ITEMS) : null;
+    out.items = kids ? kids.map(rectOf).filter(Boolean) : [];
   }
   const parent = layoutParent(el);
   const ps = parent && getComputedStyle(parent);
