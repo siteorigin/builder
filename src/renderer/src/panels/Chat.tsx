@@ -1156,8 +1156,9 @@ export function Chat() {
     // A question asked now would go without them too; only one put back with its own images (Try again) need not wait.
     if (dropping && !(context && context.mode === 'ask')) return (toast('The dropped images are still being added. Send once they show under your message.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
-    // it. A question changes nothing, so it is still asked.
-    const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
+    // it. A question changes nothing, so it is still asked. The writer with no post open covers the studio too, and its
+    // edit goes to the whole site (#1424), never to the design under it.
+    const code = !context && !askMode && !ownTarget && !scope.empty ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
     // would reach the page under the view, so it waits for one (#700). The draft stays. One from the writer with no
