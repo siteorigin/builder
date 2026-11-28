@@ -222,7 +222,7 @@ step('the page switcher stays open across a change of toolbar layout');
 await toolbar.locator('.project-title').click();
 const pages = win.getByRole('menu', { name });
 await pages.waitFor();
-l = await size(1280, 720);
+l = await size(1400, 720);
 assert.equal(l.tier, 'full');
 assert.ok(await pages.isVisible(), 'the page switcher menu is still open');
 await win.keyboard.press('Escape');
@@ -230,7 +230,7 @@ await pages.waitFor({ state: 'detached' });
 
 step('the full toolbar comes back in a wider window');
 assert.equal(l.tier, 'full');
-assertToolbarFits(l, '1280px');
+assertToolbarFits(l, '1400px');
 assert.equal(await button('Edit').innerText(), 'Edit', 'the Edit label is back');
 assert.equal(await button('Preview').innerText(), 'Preview', 'the Preview label is back');
 assert.ok((await toolbar.locator('.zoom-btn').isVisible()) && (await button('Settings').isVisible()), 'Zoom and Settings are back in the toolbar');

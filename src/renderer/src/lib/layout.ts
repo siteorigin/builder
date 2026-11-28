@@ -67,19 +67,29 @@ export function resizePanel(side: PanelSide, requested: number, windowWidth: num
 
 /**
  * How much of the toolbar shows, by window width. 'full' has everything. 'compact' drops the Edit and
- * Preview labels (the icons keep their names) and lets the project and page names shorten. 'overflow' also
- * moves Zoom and Settings into a More menu. The thresholds are for macOS, whose traffic lights take 70px of
- * the toolbar; elsewhere that room is free, so each step comes 70px later. The full toolbar needs about
- * 1180px on macOS; at the 1100px minimum the compact one leaves the names and a "File conflict" notice
- * about 470px.
+ * Preview labels (the icons keep their names), lets the project and page names shorten, and turns Leave
+ * session into its icon. 'overflow' also moves Zoom and Settings into a More menu. The thresholds are for
+ * macOS, whose traffic lights take 70px of the toolbar. Elsewhere that room is free: the compact toolbar
+ * comes 70px later, and the full one 30px later, since its start column keeps a floor 30px narrower there
+ * (Toolbar.css). The full toolbar needs about 1330px on macOS, with Notes counting open notes and Preview
+ * colors for a website with a dark palette.
+ *
+ * A live session widens the toolbar's end (#1342): a host's Share pill says how long is left, who is in and
+ * who waits (about 1445px in all), and a guest has Notes, the session pill ("Collaborator · 2h 00m left") and
+ * Leave session in place of Share and Export (about 1505px), so each gets the full toolbar only once that fits.
+ * The compact toolbar fits all three at the 1100px minimum, with the names shortened.
  */
 export type ToolbarTier = 'full' | 'compact' | 'overflow';
-export const TOOLBAR_FULL_MIN = 1232;
+/** Whose toolbar it is: the author's own project, a project the author is hosting a live session of, or another computer's session this app is a guest in. */
+export type ToolbarSession = 'local' | 'hosting' | 'guest';
+export const TOOLBAR_FULL_MIN: Readonly<Record<ToolbarSession, number>> = { local: 1344, hosting: 1464, guest: 1528 };
 export const TOOLBAR_COMPACT_MIN = 1080;
 export const MAC_TRAFFIC_LIGHTS = 70;
-export function toolbarTier(windowWidth: number, mac: boolean): ToolbarTier {
-  const w = windowWidth + (mac ? 0 : MAC_TRAFFIC_LIGHTS);
-  return w >= TOOLBAR_FULL_MIN ? 'full' : w >= TOOLBAR_COMPACT_MIN ? 'compact' : 'overflow';
+/** How much narrower the full toolbar's start column is on macOS, net of the traffic lights it holds: 460px against 430px. */
+export const MAC_FULL_START_EXTRA = 30;
+export function toolbarTier(windowWidth: number, mac: boolean, session: ToolbarSession = 'local'): ToolbarTier {
+  if (windowWidth + (mac ? 0 : MAC_FULL_START_EXTRA) >= TOOLBAR_FULL_MIN[session]) return 'full';
+  return windowWidth + (mac ? 0 : MAC_TRAFFIC_LIGHTS) >= TOOLBAR_COMPACT_MIN ? 'compact' : 'overflow';
 }
 
 /** The widths the preview can be set to, by the width field and the frame's resize handles alike. */
