@@ -1180,25 +1180,41 @@ function cancelCorrection() {
 	correction = 0;
 }
 
+/** The window's own scrollTo back in its place, once nothing holds and no correction is to come. */
+function putBack() {
+	if (!holds.size && !correction && window.scrollTo === restore) window.scrollTo = native;
+}
+
 /**
- * The window's scrollTo while held. SvelteKit's scrollTo(x, y) is instant. After a stopped jump, where the page has
- * been put (by the last instant scroll asked for while held) is put back in the frame after, once the jump has taken
- * its last step. Any other call is the window's own, and so is every call once the holds have ended (from code that
- * kept this function).
+ * The window's scrollTo while held. SvelteKit's scrollTo(x, y) is instant. After a stopped jump, where the last
+ * instant scroll put the page is put back in the frame after, once the jump has taken its last step; this stays in
+ * the window's place until then, so a scroll asked for in the meantime, held or not, is the one kept (a smooth one
+ * goes its own way). Every other call is the window's own, as is every call once nothing holds and no frame is to
+ * come (from code that kept this function).
  */
 function restore(...args) {
+	const pending = correction !== 0;
 	cancelCorrection();
-	if (!holds.size) return native.apply(window, args);
-	const [x, y] = args;
-	const numeric = args.length >= 2 && Number.isFinite(Number(x)) && Number.isFinite(Number(y));
-	if (numeric) native.call(window, { left: Number(x), top: Number(y), behavior: 'instant' });
+	const held = holds.size > 0;
+	if (!held && !pending) {
+		putBack();
+		return native.apply(window, args);
+	}
+	const left0 = args.length >= 2 ? Number(args[0]) : NaN;
+	const top0 = args.length >= 2 ? Number(args[1]) : NaN;
+	const numeric = Number.isFinite(left0) && Number.isFinite(top0);
+	const behavior = !numeric && typeof args[0] === 'object' ? args[0]?.behavior : undefined;
+	if (held && numeric) native.call(window, { left: left0, top: top0, behavior: 'instant' });
 	else native.apply(window, args);
-	if (!stopped || (!numeric && args[0]?.behavior === 'smooth')) return;
+	// Held, only a smooth scroll asked for is smooth; after the holds, only an instant one is instant.
+	const instant = held ? behavior !== 'smooth' : behavior === 'instant';
+	if (!stopped || !instant) return putBack();
 	const left = scrollX;
 	const top = scrollY;
 	correction = requestAnimationFrame(() => {
 		correction = 0;
 		if (scrollX !== left || scrollY !== top) native.call(window, { left, top, behavior: 'instant' });
+		putBack();
 	});
 }
 
@@ -1222,7 +1238,7 @@ function hold() {
 
 function unhold() {
 	holds.clear();
-	if (window.scrollTo === restore) window.scrollTo = native;
+	putBack();
 	const style = document.documentElement.style;
 	if (kept[0]) style.setProperty('scroll-behavior', kept[0], kept[1]);
 	else style.removeProperty('scroll-behavior');
@@ -1235,15 +1251,15 @@ function briefly() {
 
 export function keepHistoryScroll() {
 	// To another page: held from just before the page is put in place until the navigation has settled, or until
-	// the next Back or Forward (a navigation another onNavigate callback ended early never settles).
+	// the next navigation or Back or Forward (one another onNavigate callback ended early never settles).
 	let navigating = null;
 	const settle = () => {
 		navigating?.();
 		navigating = null;
 	};
 	onNavigate((navigation) => {
-		if (navigation?.type !== 'popstate' || !navigation.complete) return;
 		settle();
+		if (navigation?.type !== 'popstate' || !navigation.complete) return;
 		const release = hold();
 		const done = () => {
 			release();
@@ -1279,7 +1295,7 @@ export function keepHistoryScroll() {
 			window.removeEventListener('scrollend', ended);
 			cancelCorrection();
 			settle();
-			if (holds.size) unhold();
+			unhold();
 		};
 	});
 }

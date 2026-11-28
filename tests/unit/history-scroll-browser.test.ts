@@ -53,6 +53,7 @@ document.addEventListener('click', (event) => {
     return;
   }
   event.preventDefault();
+  for (const fn of window.onNavigates) fn({ type: 'link', complete: Promise.resolve() });
   history.pushState({ [KEY]: { historyIndex: ++index } }, '', a.href);
   draw();
   scrollTo({ top: 0, behavior: 'instant' });
@@ -300,6 +301,34 @@ describe.skipIf(!browserInstalled)('Back and Forward on a smoothly scrolling sit
     })`);
     await page.waitForFunction('window.restores.length > 0');
     expect(await frames()).toEqual([330, 330, 330, 330]);
+  });
+
+  it('lets a scroll asked for just after Back’s hold has ended win too', async () => {
+    await page.evaluate(`addEventListener('popstate', (event) => event.state && setTimeout(() => scrollTo({ top: 330, behavior: 'instant' }), 0))`);
+    await page.evaluate(`new Promise((resolve) => {
+      const on = () => {
+        if (scrollY < 1500) return;
+        removeEventListener('scroll', on);
+        resolve();
+        history.back();
+      };
+      addEventListener('scroll', on);
+      document.getElementById('to-section').click();
+    })`);
+    await page.waitForFunction('window.restores.length > 0');
+    expect(await frames()).toEqual([330, 330, 330, 330]);
+    expect(await page.evaluate<boolean>('window.scrollTo.toString().includes("[native code]")')).toBe(true);
+  });
+
+  it('ends a hold for a Back to another page that never settles at the next navigation', async () => {
+    await page.evaluate("document.getElementById('to-other').click()");
+    await page.evaluate('history.back()');
+    await page.waitForFunction('typeof window.release === "function"');
+    await page.evaluate(`window.release('strand')`);
+    await page.evaluate('new Promise((r) => setTimeout(r, 50))');
+    expect(await inlineStyle()).toBe('scroll-behavior: auto !important;');
+    await page.evaluate("document.getElementById('to-other').click()");
+    expect(await inlineStyle()).toBe('');
   });
 
   it('ends a hold for a Back to another page that never settles at the next Back or Forward', async () => {
