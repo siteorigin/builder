@@ -31,7 +31,7 @@ Definition of done for a change: typecheck green, unit tests covering the change
 - Exported sites must stay free of Builder lock-in: editor instrumentation lives only in `.siteorigin/cache/dev`, never in `src/`.
 - Temporary output goes in `.tmp/` (gitignored), never the repo root.
 
-**The `design-review` label** routes an issue to `/design-review` (an expensive scored visual loop) instead of `/work`. Use it only when a surface's layout or composition is an open question worth iterating on, never for logic bugs, small CSS fixes, copy or wiring.
+**The `design-review` label** routes an issue to `/design-review` (an expensive scored visual loop) instead of `/work`. Use it only when the job is taking a surface that works and making it look, work or interact better, so that the answer is an open design question worth iterating on. Never use it for something one agent can fix against a clear acceptance check: logic bugs, overflow or clipping with a known expected result, small CSS fixes, copy, i18n, or wiring a missing indicator or control.
 
 ## Audit and issue screenshots (R2)
 
