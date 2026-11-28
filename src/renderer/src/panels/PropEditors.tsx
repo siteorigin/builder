@@ -812,9 +812,19 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
   const asset = named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  // The value as it is now, for work that finishes later (an import).
+  // What this editor last sent, and the value it was shown with then. Until the value shown moves on from that one,
+  // the next change builds on what was sent, not on what is shown: leaving the description for the Decorative switch
+  // (or Remove) saves it, and the switch's change is made before that save comes back from the project (#1393).
+  const sent = useRef<{ value: ImageValue; from: ImageValue } | null>(null);
+  if (sent.current && !sameImage(sent.current.from, v)) sent.current = null;
+  // The value as it is now, for work that finishes later (an import) and for each change made from here.
   const latest = useRef(v);
-  latest.current = v;
+  latest.current = sent.current?.value ?? v;
+  const emit = (next: ImageValue) => {
+    sent.current = { value: next, from: v };
+    latest.current = next;
+    onChange(next);
+  };
   // A description carried over from the previous image may no longer be true; say so until it is checked or edited.
   const [, redraw] = useState(0);
   const project = snapshot?.workspaceKey;
@@ -836,10 +846,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     const cur = latest.current;
     if (id === cur.assetId) return;
     // A picture with no description to carry over: only the choice is written.
-    if (picture) return onChange({ assetId: id, alt: '' });
+    if (picture) return emit({ assetId: id, alt: '' });
     const next = chosen(cur, id, suggestion);
     setCarried(next.carried, next.value);
-    onChange(next.value);
+    emit(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
   const [over, setOver] = useState(false);
@@ -1021,7 +1031,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
                 onClick={() => {
                   if (!picture) setCarried(false);
                   removedAt.current = Date.now();
-                  onChange({ assetId: null, alt: v.alt, decorative: v.decorative });
+                  emit({ assetId: null, alt: latest.current.alt, decorative: latest.current.decorative });
                 }}
               >
                 {picture ? picture.back : 'Remove'}
@@ -1081,7 +1091,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             limit={TEXT_LIMITS.imageAlt}
             keep={home ? `${home.key}|alt` : undefined}
             keepWhile={home?.alive}
-            onCommit={(alt) => (setCarried(false), onChange({ ...v, alt }))}
+            onCommit={(alt) => (setCarried(false), emit({ ...latest.current, alt }))}
           />
         </Field>
       )}
@@ -1097,10 +1107,12 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
           It still fits
         </button>
       )}
-      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
+      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => emit({ ...latest.current, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
     </div>
   );
 }
+
+const sameImage = (a: ImageValue, b: ImageValue) => a.assetId === b.assetId && a.alt === b.alt && !!a.decorative === !!b.decorative;
 
 /** An image's name as the library shows it (with its ID when another image has the same name). */
 const labels = (state: ProjectState, id: string) => {
