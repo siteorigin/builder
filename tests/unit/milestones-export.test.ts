@@ -283,4 +283,27 @@ describe('the milestone of an export (#1156)', () => {
     expect((await c.exportSourceTo(join(temp('out'), 'source'))).ok).toBe(true);
     expect(listed(c)).toEqual(['Exported source project', 'Approved']);
   });
+
+  it('exports a project whose tests hold another repository, and whose test run left a report meanwhile (#1484)', async () => {
+    git.enabled = true;
+    const dir = await project('Bookshop', 'Approved');
+    mkdirSync(join(dir, 'tests/fixtures/repo'), { recursive: true });
+    writeFileSync(join(dir, 'tests/api.test.js'), '// a test\n');
+    // A fixture checkout, which no snapshot reads, though the export copies it.
+    writeFileSync(join(dir, 'tests/fixtures/repo/.git'), 'gitdir: ../../../.git/modules/repo\n');
+    writeFileSync(join(dir, 'tests/fixtures/repo/index.js'), '// theirs\n');
+    const c = await open(dir);
+    const capture = ProjectSession.prototype.captureExported;
+    vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {
+      const captured = await capture.call(this, name);
+      mkdirSync(join(dir, 'tests/playwright-report'), { recursive: true });
+      writeFileSync(join(dir, 'tests/playwright-report/index.html'), '<p>report</p>\n');
+      return captured;
+    });
+    const dest = join(temp('out'), 'source');
+    const r = await c.exportSourceTo(dest);
+    expect(r.ok ? 'ok' : r.message).toBe('ok');
+    expect(readFileSync(join(dest, 'tests/api.test.js'), 'utf8')).toBe('// a test\n');
+    expect(listed(c)).toEqual(['Exported source project', 'Approved']);
+  });
 });

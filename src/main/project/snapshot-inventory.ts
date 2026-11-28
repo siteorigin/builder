@@ -38,7 +38,7 @@ import { isMissing, stampOf, statTrusted } from './stable-read';
 export type SnapshotExclusion =
   /** Not a plain relative path inside the project. */
   | 'unsafe-path'
-  /** A repository (`.git`, a folder or a worktree's file) or the editor's own state (`.siteorigin/`), at any depth. */
+  /** A repository (`.git`, a folder or a worktree's file, `.gitmodules`) or the editor's own state (`.siteorigin/`), at any depth. */
   | 'local-state'
   /** Installed tools, build and test output: `node_modules/`, `.svelte-kit/`, Vite's and Wrangler's caches, `build/`, a test run's reports. */
   | 'cache'
@@ -66,21 +66,27 @@ const ROOT_FILES = new Set(SNAPSHOT_ROOT_FILES);
 /**
  * The developer's own setup files at the project's top a snapshot holds too (#1484), as an editable export does:
  * TypeScript's (`tsconfig.json`, `tsconfig.node.json`), a host's (`wrangler.toml`, `netlify.toml`), and any tool's
- * `<name>.config.<js|ts|…|json>` (`eslint.config.js`, `vitest.config.ts`, `playwright.config.ts`). Spelled exactly.
+ * `<name>.config.<js|ts|…|json>`, named for a setup or not (`eslint.config.js`, `vitest.config.ts`,
+ * `playwright.config.e2e.ts`), but the copy Vite writes of its own beside it while it runs (`vite.config.ts.timestamp-…`).
+ * Spelled exactly.
  */
 const DEVELOPER_ROOT_FILES = new Set(['wrangler.toml', 'wrangler.json', 'wrangler.jsonc', 'netlify.toml']);
-const DEVELOPER_ROOT_FILE = /^(tsconfig(\.[\w-]+)*\.json|[\w.-]+\.config\.(js|ts|mjs|cjs|mts|cts|json))$/;
+const DEVELOPER_ROOT_FILE = /^(tsconfig(\.[\w-]+)*\.json|[\w.-]+\.config(\.(?!timestamp-)[\w-]+)*\.(js|ts|mjs|cjs|mts|cts|json))$/;
 /** The folder of the project's own tests, held at any depth (#1484). */
 const TESTS = 'tests';
-/** What a test run writes into the tests' folder: its reports and coverage, held as a cache is. Folded. */
-const TEST_OUTPUT = new Set(['playwright-report', 'test-results', 'blob-report', 'coverage']);
+/** What a test run writes into the tests' folder, held as a cache is: its reports at any depth, its coverage at the top. Folded. */
+const TEST_OUTPUT = new Set(['playwright-report', 'test-results', 'blob-report']);
+const TEST_COVERAGE = 'coverage';
 /** The folders at the project's top a snapshot looks in. */
 const ROOT_FOLDERS = new Set(['src', 'static', 'siteorigin', 'scripts', TESTS]);
 /** The generator's record of what it wrote, beside the canonical documents. */
 export const GENERATED_MANIFEST = 'siteorigin/generated-manifest.json';
 /** The sync script an exported project with external sources carries (SYNC_SCRIPT in export.ts). */
 export const SNAPSHOT_SYNC_SCRIPT = 'scripts/sync-sources.mjs';
-const LOCAL_STATE = new Set(['.git', '.siteorigin']);
+/** `.gitmodules` among them: Git reads one as its own settings, so no version can hold one (checkTreePath). */
+const LOCAL_STATE = new Set(['.git', '.gitmodules', '.siteorigin']);
+/** A folder a test tool keeps a signed-in browser's cookies and storage in (Playwright's `.auth`): private wherever it is. */
+const SIGNED_IN = '.auth';
 /** Wrangler's local state (#1126) among them: its local databases and bundles hold what `.dev.vars` gave them. */
 const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp', '.wrangler']);
 const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
@@ -113,7 +119,7 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
   const p = fold(part);
   if (LOCAL_STATE.has(p)) return 'local-state';
   if (CACHES.has(p) || (i === 0 && p === 'build')) return 'cache';
-  return isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
+  return p === SIGNED_IN || isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
 }
 
 /** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */
@@ -188,9 +194,9 @@ export function developerOnly(rel: string): boolean {
   return parts[0] === TESTS;
 }
 
-/** Whether a path under tests/ is in a folder a test run writes its reports into (TEST_OUTPUT). The folder's own path included. */
+/** Whether the folder at `parts` is, or is in, one a test run writes its reports or coverage into under tests/ (TEST_OUTPUT). */
 function testOutput(parts: readonly string[]): boolean {
-  return parts[0] === TESTS && parts.some((p, i) => i > 0 && TEST_OUTPUT.has(fold(p)));
+  return parts[0] === TESTS && parts.some((p, i) => i > 0 && (TEST_OUTPUT.has(fold(p)) || (i === 1 && fold(p) === TEST_COVERAGE)));
 }
 
 /**

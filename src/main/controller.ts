@@ -44,7 +44,7 @@ import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRe
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
 import { createRemoteCredentialStore, REMOTE_CREDENTIALS_FILE, RemoteCredentialError, type CredentialOwner, type RemoteCredentialStore } from './remote/credentials';
 import { httpsGitTransport, type RemotePushTransport } from './remote/transport';
-import { SNAPSHOT_ROOT_FILES, snapshotPlace } from './project/snapshot-inventory';
+import { listSnapshotFiles, SNAPSHOT_ROOT_FILES } from './project/snapshot-inventory';
 import { commitPublication, credentialProblem, projectPublication, publishedTree, treeOid, type PreparedPublication, type Projection, type PublicationStatus } from './publication';
 import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
@@ -143,10 +143,9 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
     const bytes = await read(join(dest, rel));
     if (bytes ? sha(bytes) !== hash : !existsSync(join(dir, rel))) return false;
   }
-  // The project's top and its tests (#1484): the folders a snapshot takes that the fingerprint doesn't cover.
-  const tests = (await listFiles(join(dest, 'tests'))).map((f) => `tests/${f.split(sep).join('/')}`);
-  const added = [...(await fs.readdir(dest, { withFileTypes: true })).filter((e) => e.isFile()).map((e) => e.name), ...tests];
-  for (const rel of added) if (!covered(rel) && !files.has(rel) && !docs.has(rel) && snapshotPlace(rel).kind === 'tree') return false;
+  // Chosen from the copy as a snapshot chooses (never into a nested repository, nor through a link): its setup files
+  // and tests (#1484), which the fingerprint doesn't cover.
+  for (const { path: rel } of await listSnapshotFiles(dest)) if (!covered(rel) && !files.has(rel) && !docs.has(rel)) return false;
   return true;
 }
 

@@ -110,13 +110,17 @@ describe('which files a snapshot holds', () => {
       'tsconfig.json',
       'tsconfig.node.json',
       'tsconfig.app.json',
+      'tsconfig.web.prod.json',
       'wrangler.toml',
       'wrangler.json',
       'wrangler.jsonc',
       'netlify.toml',
       'vitest.config.ts',
       'vitest.config.mts',
+      'vitest.config.unit.ts',
       'playwright.config.ts',
+      'playwright.config.e2e.ts',
+      'tool.config.cts',
       'eslint.config.js',
       'eslint.config.mjs',
       'postcss.config.cjs',
@@ -127,6 +131,8 @@ describe('which files a snapshot holds', () => {
       'tests/e2e/home.spec.ts',
       'tests/fixtures/sample.json',
       'tests/fixtures/coverage.json',
+      // A fixture's folder may be named like coverage: only the tests' own is a test run's.
+      'tests/fixtures/coverage/expected.json',
       'tests/coverage',
       'tests/.gitkeep'
     ];
@@ -134,8 +140,10 @@ describe('which files a snapshot holds', () => {
       expect(snapshotPlace(p), p).toEqual({ kind: 'tree' });
       expect(developerOnly(p), p).toBe(true);
     }
+    // A folder named like a test run's output is one only under tests/.
+    for (const p of ['src/coverage/index.html', 'static/test-results/x.png', 'static/coverage/badge.svg']) expect(snapshotPlace(p), p).toEqual({ kind: 'tree' });
     // The starter's own files and the site's are the site's, which a publication carries.
-    for (const p of ['package.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'src/routes/+page.svelte', 'src/lib/api.test.js', 'static/robots.txt', SNAPSHOT_SYNC_SCRIPT, 'siteorigin/site.json']) expect(developerOnly(p), p).toBe(false);
+    for (const p of ['notes.txt', 'package.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'src/routes/+page.svelte', 'src/lib/api.test.js', 'static/robots.txt', SNAPSHOT_SYNC_SCRIPT, 'siteorigin/site.json']) expect(developerOnly(p), p).toBe(false);
   });
 
   it('keeps external sources’ settings and converters apart, as attachments, and nothing else of their folder', () => {
@@ -182,10 +190,15 @@ describe('which files a snapshot holds', () => {
         'tests/fixtures/api-keys.json',
         'src/.envrc',
         'tests/.envrc',
-        'api-keys.config.json'
+        'tests/.envrc.local',
+        'api-keys.config.json',
+        // A test tool's signed-in browser state.
+        'tests/.auth/user.json',
+        'src/.auth/state.json'
       ],
       // `ſ` is a long s, which APFS takes for an s; HFS+ ignores a zero-width non-joiner.
-      'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', 'src/lib/.g\u200Cit/config'],
+      // Git reads a `.gitmodules` as its settings, wherever it is (a test's fixture of a repository).
+      'local-state': ['.gitmodules', 'tests/fixtures/source/.gitmodules', 'src/lib/.GitModules', '.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', 'src/lib/.g\u200Cit/config'],
       cache: [
         'node_modules/svelte/package.json',
         'src/node_modules/x.js',
@@ -201,7 +214,8 @@ describe('which files a snapshot holds', () => {
         'tests/playwright-report/index.html',
         'tests/e2e/test-results/home/trace.zip',
         'tests/Coverage/lcov.info',
-        'tests/blob-report/report.zip'
+        'tests/blob-report/report.zip',
+        'tests/unit/playwright-report/index.html'
       ],
       clutter: ['static/.DS_Store', 'static/assets/Thumbs.db', 'src/desktop.ini', 'static/._photo.jpg', 'siteorigin/.a1b2c3.tmp', 'static/upload.TMP'],
       'unsafe-path': [
@@ -217,7 +231,7 @@ describe('which files a snapshot holds', () => {
         'static/'
       ],
       source: ['siteorigin/sources/cms/secrets.json'],
-      outside: ['notes.txt', 'tsconfig', 'TSConfig.json', 'tsconfig.json.bak', 'wrangler.yaml', 'Wrangler.toml', 'netlify.yml', 'eslint.config.yaml', 'vitest.config.ts.orig', '.config.js', 'config.js', 'Tests/api.test.js', 'test/api.test.js', 'Package.json', 'scripts/deploy.sh', 'scripts/sync-sources.mjs.bak', 'scripts/old/sync-sources.mjs', 'siteorigin/notes.txt', 'siteorigin/site.json~', 'siteorigin/pages/home.json.bak', 'docs/readme.md', 'SRC/app.html']
+      outside: ['notes.txt', 'tsconfig', 'TSConfig.json', 'tsconfig.json.bak', 'wrangler.yaml', 'Wrangler.toml', 'netlify.yml', 'eslint.config.yaml', 'vitest.config.ts.orig', '.config.js', 'config.js', 'vite.config.ts.timestamp-1732780000000-1a2b3c.mjs', 'vite.config.js.timestamp-1732780000000.mjs', 'tools/vitest.config.ts', 'src.config/x.js', 'Tests/api.test.js', 'test/api.test.js', 'Package.json', 'scripts/deploy.sh', 'scripts/sync-sources.mjs.bak', 'scripts/old/sync-sources.mjs', 'siteorigin/notes.txt', 'siteorigin/site.json~', 'siteorigin/pages/home.json.bak', 'docs/readme.md', 'SRC/app.html']
     };
     for (const [reason, list] of Object.entries(cases)) for (const p of list) expect(snapshotPlace(p), p).toEqual({ kind: 'excluded', reason });
     // Only spellings a disk takes for the same name: fullwidth letters are other letters, and a fullwidth slash is no slash.
@@ -302,8 +316,17 @@ describe('capturing a project', () => {
     const root = smallProject();
     const kept = ['tsconfig.json', 'wrangler.toml', 'wrangler.jsonc', 'netlify.toml', 'searchsocket.config.ts', 'vitest.config.ts', 'playwright.config.ts', 'eslint.config.js', 'tests/api.test.js', 'tests/e2e/home.spec.ts', 'tests/fixtures/nested/sample.json'];
     for (const rel of kept) write(root, rel, `// ${rel}\n`);
-    for (const rel of ['tests/.env.local', 'tests/fixtures/client.pem', 'tests/.envrc', '.envrc', '.wrangler/state/d1/db.sqlite', 'tests/.Wrangler/state/db.sqlite', 'tests/node_modules/x/index.js', 'tests/playwright-report/index.html', 'tests/test-results/home/trace.zip', 'tests/coverage/lcov.info', 'tsconfig.tsbuildinfo', 'wrangler.yaml']) write(root, rel, 'TOKEN=secret');
+    // A repository a test uses as its fixture is another repository's work; a lone `.gitmodules` no version can hold.
+    write(root, 'tests/fixtures/repo/.git', 'gitdir: ../../../.git/modules/repo');
+    write(root, 'tests/fixtures/repo/index.js', 'theirs');
+    for (const rel of ['tests/fixtures/source/.gitmodules', 'tests/.auth/user.json', 'tests/.envrc.local', 'tests/.env.local', 'tests/fixtures/client.pem', 'tests/.envrc', '.envrc', '.wrangler/state/d1/db.sqlite', 'tests/.Wrangler/state/db.sqlite', 'tests/node_modules/x/index.js', 'tests/playwright-report/index.html', 'tests/test-results/home/trace.zip', 'tests/coverage/lcov.info', 'tsconfig.tsbuildinfo', 'wrangler.yaml']) write(root, rel, 'TOKEN=secret');
+    const readdir = vi.spyOn(fsp, 'readdir');
     const inventory = await captureSnapshotInventory(root, { settleMs: 0 });
+    const looked = readdir.mock.calls.map(([dir]) => String(dir));
+    readdir.mockRestore();
+    expect(looked).toContain(join(root, 'tests/fixtures/nested'));
+    // A test run's reports are never even looked in.
+    expect(looked.filter((dir) => /playwright-report|test-results|coverage|\.wrangler|\.auth/.test(dir))).toEqual([]);
     const tree = inventory.tree.map((f) => f.path);
     expect(tree).toEqual(['package-lock.json', 'package.json', 'siteorigin.project.json', GENERATED_MANIFEST, 'siteorigin/pages/home.json', 'siteorigin/site.json', 'src/routes/+page.svelte', 'static/assets/photo-1234abcd.jpg', ...kept].sort());
     for (const f of inventory.tree) expect((await f.read()).equals(readFileSync(join(root, f.path))), f.path).toBe(true);

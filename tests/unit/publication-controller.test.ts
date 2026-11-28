@@ -390,8 +390,8 @@ describe('preparing a publication', { timeout: 30_000 }, () => {
     expect(await projectPublication(stale, state)).toEqual({ ok: false, message: 'The project changed on disk while the publication was being prepared. Prepare the publication again in a moment.', warnings: [] });
   });
 
-  it('carries none of the developer’s own setup files or tests, which a saved version holds (#1484)', async () => {
-    const { projectPublication } = await import('../../src/main/publication');
+  it('carries none of the developer’s own setup files or tests, which a snapshot holds (#1484)', async () => {
+    const { projectPublication, publicationFiles } = await import('../../src/main/publication');
     const { readState } = await import('../../src/main/project/documents');
     const { leaveOutDrafts: published } = await import('../../src/main/export');
     const dir = await project();
@@ -408,6 +408,11 @@ describe('preparing a publication', { timeout: 30_000 }, () => {
       await published(copy, state);
       return copy;
     };
+    // Listed from a copy nothing has pruned yet, they are still none of the publication's files.
+    const listed = await publicationFiles(await staged());
+    const unpruned = listed.ok ? listed.files.map((f) => f.path) : [];
+    expect(unpruned).toContain('package.json');
+    for (const rel of developers) expect(unpruned, rel).not.toContain(rel);
     const copy = await staged();
     const projected = await projectPublication(copy, state);
     expect(projected.ok).toBe(true);
