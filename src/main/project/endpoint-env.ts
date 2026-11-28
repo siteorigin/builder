@@ -102,6 +102,11 @@ export async function changeEndpointVariable(dir: string, change: EnvChange, fen
     const wrote = await fence(async () => {
       const [namesText, declarations] = await Promise.all([readPlain(dir, ENV_NAMES_FILE, 64 * 1024), readPlain(dir, ENV_DECLARATIONS_FILE, 256 * 1024)]);
       const names = readEnvNames(namesText);
+      // Refused whole before anything is written: a value .env has no room for declares nothing either.
+      if (typeof change.value === 'string' && Buffer.byteLength(setDotenv((await readPlain(dir, LOCAL_ENV_FILE, MAX_DOTENV_BYTES)) ?? '', change.name, change.value)) > MAX_DOTENV_BYTES) {
+        refused = `.env would be larger than ${MAX_DOTENV_BYTES / 1024 / 1024} MB: remove a variable you no longer need first.`;
+        return;
+      }
       if (change.declare !== undefined) {
         const has = names.includes(change.name);
         if (change.declare && !has && names.length >= MAX_ENV_NAMES) {

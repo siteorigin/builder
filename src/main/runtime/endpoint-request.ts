@@ -18,7 +18,7 @@ export const ENDPOINT_REQUEST_LIMITS = { timeoutMs: 30_000, maxResponseBytes: 10
  * First parts of an address that are Vite's or the project's own files and folders, which the dev server would serve
  * from the project folder, never the site's: the tester asks none of them, however the part is spelled or escaped.
  */
-const PROJECT_ENTRIES = new Set(['node_modules', 'src', 'siteorigin', 'siteorigin.project.json', 'package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'jsconfig.json', 'tsconfig.json', 'static', 'scripts', 'tests', 'build', 'readme.md', 'notice.md', 'vercel.json', 'netlify.toml', 'wrangler.toml']);
+const PROJECT_ENTRIES = new Set(['node_modules', 'src', 'siteorigin', 'siteorigin.project.json', 'package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'jsconfig.json', 'tsconfig.json']);
 function notSite(path: string): boolean {
   let first: string;
   try {

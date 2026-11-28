@@ -31,6 +31,8 @@ describe('what a test request may be', () => {
     const ok = (path: string) => endpointRequestProblem({ method: 'GET', path });
     expect(ok('/api/search?q=chairs')).toBeNull();
     expect(ok('/')).toBeNull();
+    // An endpoint of the developer's own may have any address a page could.
+    for (const p of ['/build/status', '/static/x', '/tests/run', '/scripts/x']) expect(ok(p), p).toBeNull();
     for (const p of ['api/search', '//evil.example/x', '/@fs/etc/passwd', '/@vite/client', '/node_modules/x', '/src/lib/x.js', '/%73rc/lib/x.js', '/SRC/lib/x.js', '/.svelte-kit/generated/x', '/.env', '/package.json', '/siteorigin/site.json', '/vite.config.js', '/__open-in-editor?file=x', '/a/../b', 'http://127.0.0.1/x', '/x#y', '/a b'])
       expect(ok(p), p).not.toBeNull();
   });

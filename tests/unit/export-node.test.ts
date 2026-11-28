@@ -124,13 +124,17 @@ afterEach(async () => {
 });
 
 /** A business site, built as `target`, open in a controller whose page checks fetch each page and the endpoint. */
-async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean; draft?: boolean } = {}) {
+async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean; draft?: boolean; lock?: string } = {}) {
   const dir = temp('project');
   let state = createStarterState('business', 'Harbour Lane', false);
   if (opts.base) state.site.baseUrl = `https://harbour.example${opts.base}`;
   state = applyOperations(state, [{ type: 'site.update', deployTarget: target, ...(opts.vercel ? { redirectHost: 'vercel' as const } : {}) }, ...(opts.vercel ? [{ type: 'redirect.add' as const, from: '/old/', to: '/contact/' }] : [])]).state;
   if (opts.draft) state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_staff001', title: 'Staff', route: '/staff/' }, { type: 'page.update', pageId: 'pg_staff001', draft: true }]).state;
   await (await ProjectSession.create(dir, state)).close();
+  if (opts.lock) {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'harbour', type: 'module', dependencies: { secretpkg: '1.0.0' } }));
+    writeFileSync(join(dir, 'package-lock.json'), opts.lock);
+  }
   if (opts.endpoint) {
     mkdirSync(join(dir, 'src/routes/api/hello'), { recursive: true });
     writeFileSync(join(dir, 'src/routes/api/hello/+server.js'), `import { json } from '@sveltejs/kit';\nexport const GET = () => json({ hello: 'world' });\n`);
@@ -205,6 +209,23 @@ describe('a website built as a Node.js server', () => {
     expect(r.message).toContain('_app/immutable/assets/pkg.abc.jpg');
     expect(r.message).toContain('Node.js server');
     expect(existsSync(dest)).toBe(false);
+  });
+});
+
+describe('what a Node.js server goes out with', () => {
+  it('its lockfile, when its server code imports packages, but never one naming an address with a token in it', async () => {
+    const clean = JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/secretpkg': { resolved: 'https://registry.npmjs.org/secretpkg/-/secretpkg-1.0.0.tgz' } } });
+    const ok = await site('node', { lock: clean });
+    const dest = join(temp('out'), 'server');
+    expect(await ok.c.buildStaticTo(dest)).toMatchObject({ ok: true });
+    expect(readFileSync(join(dest, 'package-lock.json'), 'utf8')).toBe(clean);
+    expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('npm ci --omit=dev');
+    for (const ctl of controllers.splice(0)) await ctl.close();
+    const leaky = await site('node', { lock: JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/secretpkg': { resolved: 'https://ci:npm_abcdefghijklmnop@registry.example.com/secretpkg-1.0.0.tgz' } } }) });
+    const stopped = join(temp('out'), 'server');
+    const r = await leaky.c.buildStaticTo(stopped);
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining('password or token') });
+    expect(existsSync(stopped)).toBe(false);
   });
 });
 

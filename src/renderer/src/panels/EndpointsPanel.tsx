@@ -203,6 +203,8 @@ function EndpointTester({ opening, route, methods, previewReady }: { opening: st
   const sent = useRef(0);
   // Another endpoint chosen: its route is what is tested next.
   useEffect(() => {
+    // A request still under way is for the endpoint left behind: it is called off.
+    if (sent.current) void api.project.stopEndpointRequest().catch(() => undefined);
     sent.current++;
     setPath(testPath(route));
     setAnswer(null);
@@ -249,7 +251,7 @@ function EndpointTester({ opening, route, methods, previewReady }: { opening: st
       <div className="ep-send">
         {!previewReady && <span className="faint">The preview is starting…</span>}
         {sending ? (
-          <button type="button" className="btn btn-sm" onClick={() => void api.project.stopEndpointRequest()}>
+          <button type="button" className="btn btn-sm" onClick={() => void api.project.stopEndpointRequest().catch(() => undefined)}>
             Stop
           </button>
         ) : (

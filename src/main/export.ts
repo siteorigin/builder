@@ -261,9 +261,10 @@ export function inProjectSource(root: string, p: string): boolean {
   }
 }
 
-/** Whether a path's parts lead into SvelteKit's generated environment modules (`…/generated/dev/env/…`). */
+/** Whether a path's parts are SvelteKit's generated environment modules with values in them (`…/generated/dev/env/config.js`). */
 function inGeneratedEnv(parts: string[]): boolean {
-  return parts.some((part, i) => part.toLowerCase() === 'generated' && /^(dev|build)$/i.test(parts[i + 1] ?? '') && parts[i + 2]?.toLowerCase() === 'env');
+  // Only what holds values: env/config.js and env/private/, never anything else a project keeps in such a folder.
+  return parts.some((part, i) => part.toLowerCase() === 'generated' && /^(dev|build)$/i.test(parts[i + 1] ?? '') && parts[i + 2]?.toLowerCase() === 'env' && ((parts[i + 3]?.toLowerCase() === 'config.js' && parts.length === i + 4) || (parts[i + 3]?.toLowerCase() === 'private' && parts.length > i + 4)));
 }
 
 /** Whether a path in `root` is part of its source by its name alone (inProjectSource, without looking at what it is). */
@@ -2178,7 +2179,7 @@ const NODE_ENGINES = { node: '>=22.17.0' };
  * What a website built as a Node.js server says about itself, beside its server (writeNodeServerFiles): how to start
  * it, where it listens, and what it reads from its environment. `dependencies`: it lists packages to install first.
  */
-export function nodeServerReadme(name: string, dependencies = false): string {
+export function nodeServerReadme(name: string, dependencies: false | 'locked' | 'unlocked' = false): string {
   return `# ${name}
 
 This folder is the website built as a Node.js server by [SiteOrigin Builder](https://siteorigin.com/) with SvelteKit's [adapter-node](https://svelte.dev/docs/kit/adapter-node). Its pages are prerendered; the server sends them, the site's files, and the answers of its own API endpoints.
@@ -2188,7 +2189,7 @@ This folder is the website built as a Node.js server by [SiteOrigin Builder](htt
 Run it on any host with Node.js 22.17 or newer:
 
 \`\`\`sh
-${dependencies ? 'npm ci --omit=dev   # the packages its server code imports, as the build used them\n' : ''}${NODE_START_COMMAND}
+${dependencies === 'locked' ? 'npm ci --omit=dev   # the packages its server code imports, as the build used them\n' : dependencies ? 'npm install --omit=dev   # the packages its server code imports\n' : ''}${NODE_START_COMMAND}
 \`\`\`
 
 It listens on port 3000 unless \`PORT\` names another, and on every address unless \`HOST\` names one (\`HOST=127.0.0.1\`).
@@ -2232,7 +2233,7 @@ export async function writeNodeServerFiles(out: string, live: ProjectState, proj
   };
   await fs.writeFile(join(out, 'package.json'), JSON.stringify(manifest, null, '\t') + '\n');
   if (lock !== null) await fs.writeFile(join(out, 'package-lock.json'), lock);
-  await fs.writeFile(join(out, 'README.md'), nodeServerReadme(live.site.name, !!deps));
+  await fs.writeFile(join(out, 'README.md'), nodeServerReadme(live.site.name, deps ? (lock !== null ? 'locked' : 'unlocked') : false));
 }
 
 /**

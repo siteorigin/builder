@@ -106,7 +106,8 @@ describe('what a Node.js server goes out with', () => {
     await writeNodeServerFiles(out, starter(), project);
     expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toEqual({ name: 'harbour', version: '1.2.0', private: true, type: 'module', scripts: { start: 'node index.js' }, engines: { node: '>=22.17.0' }, dependencies: { nanoid: '^5.0.0' }, devDependencies: { vite: '8.3.8' } });
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
-    expect(readme).toContain('npm ci --omit=dev');
+    // No lockfile to install from exactly.
+    expect(readme).toContain('npm install --omit=dev');
     expect(readme).toContain('node index.js');
     expect(readme).toContain('ORIGIN');
     expect(nodeServerReadme('Harbour Lane')).not.toContain('npm ci');
@@ -130,6 +131,13 @@ describe('what a Node.js server goes out with', () => {
     writeFileSync(join(bare, 'package-lock.json'), lock);
     await writeNodeServerFiles(join(bare, 'build'), starter(), bare);
     expect(existsSync(join(bare, 'build', 'package-lock.json'))).toBe(false);
+    // Packages but no lockfile to install them from: npm ci cannot, npm install can.
+    const unlocked = temp();
+    mkdirSync(join(unlocked, 'build'));
+    writeFileSync(join(unlocked, 'package.json'), JSON.stringify({ name: 'x', dependencies: { nanoid: '^5.0.0' } }));
+    await writeNodeServerFiles(join(unlocked, 'build'), starter(), unlocked);
+    expect(readFileSync(join(unlocked, 'build', 'README.md'), 'utf8')).toContain('npm install --omit=dev');
+    expect(readFileSync(join(unlocked, 'build', 'README.md'), 'utf8')).not.toContain('npm ci');
   });
 
   it('nothing rewritten in its build, whose files the server has measured: what would be is listed instead', async () => {

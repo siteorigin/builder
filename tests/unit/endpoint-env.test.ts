@@ -133,6 +133,9 @@ describe('the project’s environment', () => {
     const dir = temp();
     for (let i = 0; i < 127; i++) expect((await changeEndpointVariable(dir, { name: `K${i}`, value: 'v'.repeat(8192) }, open)).ok, `K${i}`).toBe(true);
     expect(await changeEndpointVariable(dir, { name: 'ONE_MORE', value: 'v'.repeat(8192) }, open)).toMatchObject({ ok: false, message: expect.stringContaining('larger than') });
+    // Refused whole: not declared either.
+    expect(await changeEndpointVariable(dir, { name: 'ONE_MORE', declare: true, value: 'v'.repeat(8192) }, open)).toMatchObject({ ok: false });
+    expect(existsSync(join(dir, ENV_NAMES_FILE))).toBe(false);
     expect((await readEndpointEnvironment(dir)).variables.length).toBe(127);
   });
 
@@ -160,7 +163,7 @@ describe('the project’s environment', () => {
 
   it('leaves SvelteKit’s generated environment out of a copy of the project, wherever its output folder is', async () => {
     const dir = temp();
-    for (const f of ['kit-cache/generated/dev/env/config.js', 'kit-cache/generated/dev/env/private/server.js', 'kit-cache/generated/client/app.js', 'src/routes/+page.svelte']) {
+    for (const f of ['kit-cache/generated/dev/env/config.js', 'kit-cache/generated/dev/env/private/server.js', 'kit-cache/generated/client/app.js', 'src/routes/+page.svelte', 'src/lib/generated/build/env/schema.js']) {
       mkdirSync(join(dir, f, '..'), { recursive: true });
       writeFileSync(join(dir, f), 'x');
     }
@@ -170,6 +173,8 @@ describe('the project’s environment', () => {
     expect(existsSync(join(copy, 'kit-cache/generated/dev/env/private/server.js'))).toBe(false);
     expect(existsSync(join(copy, 'kit-cache/generated/client/app.js'))).toBe(true);
     expect(existsSync(join(copy, 'src/routes/+page.svelte'))).toBe(true);
+    // A file of the developer's own in a folder named like it is theirs.
+    expect(existsSync(join(copy, 'src/lib/generated/build/env/schema.js'))).toBe(true);
   });
 
   it('keeps .env and its temporary copies out of exports, saved versions and the preview, while the declarations go with the project', async () => {

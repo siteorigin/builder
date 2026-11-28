@@ -5625,8 +5625,16 @@ export class Controller {
       if (opened.unchecked) warn(opened.unchecked);
     }
     if (node) await keepTools();
-    // A Node.js server goes out ready to start: the package file that runs it, and how.
-    if (node) await writeNodeServerFiles(out, live, project);
+    // A Node.js server goes out ready to start: the package file that runs it, and how. A lockfile that goes with it
+    // (its server code imports packages) is checked as a published one is, for an address with a token in it.
+    if (node) {
+      await writeNodeServerFiles(out, live, project);
+      const lock = join(out, 'package-lock.json');
+      if (existsSync(lock)) {
+        const leak = await credentialProblem([{ path: 'package-lock.json', read: () => fs.readFile(lock) }], []);
+        if (leak) return { ok: false, message: `The Node.js server would go out with the project’s package-lock.json, which names a package address with a password or token in it. Install that package from an address without one, then export again.`, warnings: warnings() };
+      }
+    }
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
