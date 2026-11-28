@@ -712,7 +712,12 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (t.dark === undefined) return undefined;
     let unknown = false;
     const css = mapVars(normalizeColorText(t.dark), byVar, (ref) => {
-      const to = tokenIds.get(ref) ?? (how === 'land' ? tokenFor(ref, t.label) : !tokens.has(ref) && here.has(ref) ? ref : undefined);
+      // Looking decides nothing, so knows only a style this site has under its own name: one the package doesn't
+      // describe, or a theme style this site's theme has too (see tokenFor).
+      const pkgStyle = tokens.get(ref);
+      const as = here.get(ref);
+      const kept = as && (!pkgStyle || (!pkgStyle.custom && as.group === pkgStyle.group)) ? ref : undefined;
+      const to = tokenIds.get(ref) ?? (how === 'land' ? tokenFor(ref, t.label) : kept);
       if (to === undefined) unknown = true;
       return to;
     });
@@ -746,14 +751,15 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   /**
    * The style of this site's own that stands for the package's `t` with `value` (and `dark`), among `base` and the
    * numbered names after it: one that looks the same in both palettes. On a site with one palette, one that looks the
-   * same in light will do, keeping its own dark colour, which is said after the import. A style of the site's own in the
-   * package never stands in for another of them, nor takes one this import made that has yet to get its dark colour.
+   * same in light will do (one that also does in dark first), keeping its own dark colour, which is said after the
+   * import. A package style never takes the name of another style the package brings, a style of the site's own in it
+   * never one another package style took, and none one this import made that has yet to get its dark colour.
    */
   const lookalike = (base: string, t: PackageToken, value: unknown, dark: string | null | undefined): string | undefined => {
     const taken = new Set(tokenIds.values());
     let light: string | undefined;
     for (const at of numbered(base)) {
-      if (darkToLand.has(at) || (t.custom && at !== t.id && (tokens.has(at) || taken.has(at)))) continue;
+      if (darkToLand.has(at) || (at !== t.id && tokens.has(at)) || (t.custom && at !== t.id && taken.has(at))) continue;
       if (!same(here.get(at), t.group, value)) continue;
       if (t.group !== 'color' || sameDark(at, value, dark)) return at;
       light ??= at;
@@ -833,7 +839,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     } else {
       const value = relinked(t!.group === 'text' && linkOf(t!.value) ? t!.resolved : t!.value, t!.group, t!.label);
       // The same style here under its name, or under a numbered one an earlier import of it took.
-      const match = existing ? lookalike(id, t!, value, darkCss(t!, 'look')) : undefined;
+      const match = lookalike(id, t!, value, darkCss(t!, 'look'));
       if (match) to = match;
       else {
         // Free here: it keeps its name, which was kept for it. Taken by a different style: the next free name.

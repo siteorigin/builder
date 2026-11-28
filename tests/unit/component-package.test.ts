@@ -547,7 +547,41 @@ describe('component packages: export and import (#371)', () => {
     ok(await importInto(yellow, gap));
     ok(await importInto(yellow, gap));
     expect(yellow.state.tokens.custom.map((t) => t.id)).toEqual([sea, 'color.custom-sea-3']);
-    await Promise.all([src.s.close(), dest.close(), single.close(), red.close(), yellow.close()]);
+
+    // A theme colour stands in as a style of the site's own, never under the name of another style the package brings.
+    const lagoons = variant((p) => {
+      for (const d of p.definitions) Object.assign(d, JSON.parse(JSON.stringify(d).replaceAll(`"${sea}"`, '"color.custom-wave"')));
+      p.tokens.push(
+        { id: 'color.lagoon', group: 'color', label: 'Lagoon', custom: false, value: '#123456', resolved: '#123456' },
+        { id: 'color.custom-lagoon-3', group: 'color', label: 'Lagoon 3', custom: true, value: '#123456', resolved: '#123456' },
+        { id: 'color.custom-wave', group: 'color', label: 'Wave', custom: true, value: 'color-mix(in srgb, var(--so-color-lagoon) 50%, var(--so-color-custom-lagoon-3))', resolved: '#123456' }
+      );
+    });
+    const lagoon = await blank('Lagoon');
+    const own3 = ok(await lagoon.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Lagoon 3', value: '#123456' }] }, { label: 'Add' })).results![0].tokenId;
+    expect(own3).toBe('color.custom-lagoon-3');
+    ok(await importInto(lagoon, lagoons));
+    expect(lagoon.state.tokens.custom.map((t) => [t.id, t.value])).toEqual([
+      ['color.custom-lagoon-3', '#123456'],
+      ['color.custom-lagoon', '#123456'],
+      ['color.custom-wave', 'color-mix(in srgb, var(--so-color-custom-lagoon) 50%, var(--so-color-custom-lagoon-3))']
+    ]);
+    await Promise.all([src.s.close(), dest.close(), single.close(), red.close(), yellow.close(), lagoon.close()]);
+  });
+
+  it('reuses an earlier import’s colour whose dark colour mixes in a theme colour this site has too (#1441)', async () => {
+    const src = await darkSea();
+    ok(await src.s.apply({ operations: [{ type: 'token.set', tokenId: src.token, scheme: 'dark', value: 'color-mix(in srgb, var(--so-color-brand) 50%, white)' }] }, { label: 'Dark' }));
+    const { path } = await exportTo(src.s, src.rootId);
+    const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
+    expect(pkg.tokens.find((t) => t.id === src.token)!.dark).toBe('color-mix(in srgb, var(--so-color-brand) 50%, white)');
+    expect(pkg.tokens.some((t) => t.id === 'color.brand')).toBe(true);
+    const dest = await darkSite('Brand mix');
+    ok(await importInto(dest, path));
+    ok(await importInto(dest, path));
+    expect(dest.state.tokens.custom.map((t) => t.id)).toEqual(['color.custom-sea']);
+    expect(dest.state.tokens.darkOverrides?.['color.custom-sea']).toBe('color-mix(in srgb, var(--so-color-brand) 50%, white)');
+    await Promise.all([src.s.close(), dest.close()]);
   });
 
   it('carries a site style a design uses only at part strength, and keeps the strength where the style is renamed (#353)', async () => {
