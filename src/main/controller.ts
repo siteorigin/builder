@@ -77,6 +77,7 @@ import { ComponentThumbs, writeThumb, writeThumbReads, type CaptureResult } from
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
+import { unservableLocation, unservableProject } from './project-location';
 import { waitForPreviewPage } from '../runtime/preview-ready';
 import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
@@ -996,6 +997,10 @@ export class Controller {
     if (themeProblem) return { ok: false, message: themeProblem };
     const { folder, fallback } = projectFolder(name);
     let dir = join(opts.parentDir, folder);
+    // A folder whose path the preview cannot run under (#1366) is refused before anything is made there: judged where
+    // the project would really be, so an empty folder of its name that links elsewhere is judged by where it leads.
+    const unservable = unservableLocation(dir);
+    if (unservable) return { ok: false, message: unservable };
     // Told the same way whenever the folder turns out to be taken. A name with nothing a folder can keep ("🌸🌸") always
     // leads to the same folder, so then the name is what to change, and the message says how.
     const taken = () =>
@@ -1335,6 +1340,9 @@ export class Controller {
     // Resolved first: a link or shortcut chosen as the folder must not lead into the open project (whose preview runs).
     const parent = canonicalDir(r.filePaths[0]);
     if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
+    // Nothing is unpacked where the preview could not run (#1366).
+    const unservable = unservableLocation(parent);
+    if (unservable) return { ok: false, message: unservable };
     // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
     const slug = slugify(name) || 'website';
     // The dialog names the folder it will be in, a number added already when a folder by its name is there.
@@ -1773,6 +1781,8 @@ export class Controller {
     session.once('lock-lost', () => void this.dropEarly(session));
     const mine = async () => this.early === early && (await session.stillOwner()) && this.early === early;
     early.started = (async () => {
+      // No preview can run from this folder (#1366): the start says why, with no server forked.
+      if (unservableProject(dir)) return;
       if (!(await isTrusted(dir, await configHash(dir)))) return;
       if (this.early !== early || !(await dependenciesReady(dir)) || !(await mine())) return;
       // One started for this folder by an earlier opening and stopped since has exited first.
@@ -1861,6 +1871,9 @@ export class Controller {
       return;
     }
     const ready = await dependenciesReady(session.dir);
+    // A project in a folder the preview cannot run from (#1366) still gets its tools (an export copies them), but a
+    // setup that fails there says what would stop the preview anyway, not that the tools need reinstalling.
+    const unservableHere = session.readOnly ? null : unservableProject(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
     // Found set up; tools that are not are looked at once the install below has ended, and until then are being set up.
@@ -1880,7 +1893,7 @@ export class Controller {
       } catch (e) {
         // Taken over by another app or closed: a restart already queued previews it from a copy instead.
         if (abort.signal.aborted) return;
-        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        this.status(unservableHere ? { state: 'unavailable', message: unservableHere } : { state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         this.broadcast();
         return;
       } finally {
@@ -1900,6 +1913,15 @@ export class Controller {
     // Decided with no wait before the fork: a takeover after this point stops the worker and queues a staged restart.
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
+    // Judged where it would run, after the tools are set up (an export copies them): a project in a folder whose path
+    // the preview cannot run under is told how to move it, not offered a reinstall of tools that are fine (#1366).
+    const unservable = unservableProject(stage ?? session.dir);
+    if (unservable) {
+      if (stage) await removePreviewStage(stage).catch(() => undefined);
+      await this.dropEarly(session);
+      if (this.session === session) this.status({ state: 'unavailable', message: unservable });
+      return;
+    }
     // A save landing files since the server was judged usable (usableEarly) is waited for, so what it changed is known.
     if (usable && !stage) while (usable.holding > 0) await new Promise<void>((wake) => usable.idle.push(wake));
     if (this.session !== session) return;
@@ -2754,6 +2776,9 @@ export class Controller {
     // name answers, as for any other.
     const original = existsSync(dest) && canonicalDir(dest) === s.dir;
     if (!original && isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
+    // Judged by where the copy goes, not the project's own folder: a copy made elsewhere is the way out of one (#1366).
+    const unservable = unservableLocation(opts.parentDir);
+    if (unservable) return { ok: false, field: 'location', message: unservable };
     // A folder by the copy's name: another name answers it as well as another folder does.
     const taken = { ok: false as const, field: 'name' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
     // A change the project does not hold yet would be left out of the copy without a word (#1373): no folder is made.
@@ -4379,7 +4404,7 @@ export class Controller {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session!;
-    const bad = this.badExportTarget(s, dest, format);
+    const bad = this.badExportTarget(s, dest, format) ?? (format === 'folder' ? unservableLocation(dest) : null);
     if (bad) return { ok: false, message: bad, warnings: [] };
     // Images just added carry the copies being made of them (#979).
     await this.copiesMade();
