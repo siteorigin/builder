@@ -291,6 +291,9 @@
   /* The secondary text gives way first, all of it down to its floor, before the chip's name loses even the fraction of
      a pixel that would turn "No essay open" into "No essay op…" (as the toolbar's place does, Toolbar.css). */
   .composer .scope-where { flex: 0 1000000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
+  /* A long name (an entry's title) is the part that gives way when the suffix says what the scope is ("this post"). */
+  .composer .scope-chip.keep-where > .ellipsis:not(.scope-where) { flex: 0 1000000 auto; }
+  .composer .scope-chip.keep-where .scope-where { flex: 0 1 auto; }
   .composer .scope-where::before { content: '·'; margin-right: 5px; }
   .composer .scope-chip.def .scope-where { color: inherit; }
   .composer .chip.scope-chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
@@ -419,7 +422,9 @@
   .menu[aria-label='Conversations'] { width: 300px; }
   .menu[aria-label='Conversations'] .menu-item:is([role='menuitemradio'], :has(.hint)) { height: auto; min-height: 30px; padding-top: 6px; padding-bottom: 6px; align-items: flex-start; line-height: 18px; }
   .menu[aria-label='Conversations'] .menu-item[role='menuitemradio'] .check { height: 18px; display: grid; place-items: center; }
-  .menu[aria-label='Conversations'] .menu-item .grow { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+  .menu[aria-label='Conversations'] .menu-item .grow:not(.menu-text) { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+  /* A row with a reason under its label (a disabled Clear history) keeps the menu's own two-line layout. */
+  .menu[aria-label='Conversations'] .menu-item .menu-text { display: flex; }
   .menu[aria-label='Conversations'] .menu-item .hint { flex: none; }
 
 

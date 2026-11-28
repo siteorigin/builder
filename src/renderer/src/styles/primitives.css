@@ -101,9 +101,25 @@
   .field-located { border-radius: var(--r-sm); animation: field-located 2.4s ease-out 1; }
   @keyframes field-located { 0%, 60% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
   @media (prefers-reduced-motion: reduce) { .field-located { animation: none; box-shadow: 0 0 0 2px var(--accent); } }
-  .field > label, .field-label { font-size: 12px; font-weight: 500; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+  :is(.field, .field-head) > label, .field-label { font-size: 12px; font-weight: 500; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
   .field-hint { font-size: 12px; color: var(--text-3); }
   .field-hint .field-warning { display: block; color: var(--amber); font-weight: 600; }
+  /* A label with its info button beside it (see InfoTip): the button follows the label's words, extras go right. */
+  .field-head { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .field-head > :is(label, .field-label) { flex: 0 1 auto; min-width: 0; }
+  .field-head > .field-extra { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  /* Quiet until wanted: the glyph is the hint colour, the hit area 20px, and it takes no height from the label row. */
+  .info-tip { position: relative; flex: none; display: inline-grid; place-items: center; vertical-align: middle; width: 20px; height: 20px; margin: -3px 0; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer; }
+  .info-tip svg { width: 13px; height: 13px; }
+  /* A 24px target (WCAG 2.5.8) without a 24px glyph or a taller label row. */
+  .info-tip::before { content: ''; position: absolute; inset: -2px; border-radius: 50%; }
+  .info-tip:hover, .info-tip[aria-expanded='true'] { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .info-bubble { position: fixed; top: 0; left: 0; z-index: var(--z-popover); width: max-content; max-width: min(264px, calc(100vw - 16px)); padding: 8px 10px; border-radius: var(--r-sm); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; animation: fade-in 100ms ease-out; }
+  @media (prefers-reduced-motion: reduce) { .info-bubble { animation: none; } }
+  /* An invisible strip over the gap to the button, so a pointer on its way into the bubble never leaves both (WCAG 1.4.13). */
+  .info-bubble::after { content: ''; position: absolute; left: 0; right: 0; height: 10px; }
+  .info-bubble[data-side='above']::after { top: 100%; }
+  .info-bubble[data-side='below']::after { bottom: 100%; }
   /* An error is never colour alone: it starts with the alert glyph (hung in the gutter, so wrapped lines and
      inline children such as links flow as normal text) and its control takes a red edge. */
   .field-error { position: relative; padding-left: 18px; font-size: 12px; line-height: 1.4; color: var(--red); overflow-wrap: anywhere; }
@@ -402,11 +418,13 @@
   :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
   :where(:root[data-appearance='dark']) :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--bg); }
 
-  .overlay-backdrop { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: grid; place-items: start center; padding-top: 11vh; animation: fade-in 140ms; }
+  .overlay-backdrop { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: grid; align-items: safe center; justify-items: center; box-sizing: border-box; padding: 32px 0 max(32px, var(--toast-band, 0px)); animation: fade-in 140ms; }
+  /* The command palette is a launcher, not a dialog: it stays near the top, where the eye already is. */
+  .overlay-backdrop.light { place-items: start center; padding: 11vh 0 0; }
   /* A visible notice keeps its own band at the bottom (--toast-band, measured by Toasts in ui.tsx: the stack's
      height plus clearance; at most three notices show): the dialog stops short of it, so no notice covers a dialog
      control (WCAG 2.4.11), while always keeping room for its title, some body and its footer. */
-  .modal { width: min(560px, calc(100vw - 48px)); max-height: max(240px, calc(89vh - max(32px, var(--toast-band, 0px)))); display: flex; flex-direction: column; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; overflow: hidden; outline: none; }
+  .modal { width: min(560px, calc(100vw - 48px)); max-height: max(240px, calc(100vh - 32px - max(32px, var(--toast-band, 0px)))); display: flex; flex-direction: column; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; overflow: hidden; outline: none; }
   .modal.wide { width: min(860px, calc(100vw - 48px)); }
   .modal-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px; }
   .modal-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
@@ -569,6 +587,13 @@
   .switch-row > label { display: block; cursor: default; }
   .switch-row .switch-row-title { display: block; font-weight: 400; color: var(--text); }
   .switch-row .field-hint { display: block; }
+  .switch-row-text { min-width: 0; }
+  /* Inline, so the info button follows the title's last word even when the title wraps. */
+  /* No line break between the title's last word and the button: the title wraps inside itself, the pair stays together. */
+  .switch-row-head { display: block; white-space: nowrap; }
+  .switch-row-head > .switch-row-title { display: inline; white-space: normal; font-weight: 400; color: var(--text); cursor: default; }
+  .switch-row-head > .info-tip { margin-left: 2px; vertical-align: -3px; }
+  .switch-row-text > label { display: block; cursor: default; }
   .switch-row .switch { margin-top: 1px; }
   .code-view { margin: 0; padding: 14px 16px; height: 60vh; overflow: auto; background: var(--panel-2); border-radius: var(--r-md); border: 1px solid var(--border); font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre; tab-size: 2; user-select: text; color: var(--text); }
   textarea.code-view { width: 100%; resize: none; outline: none; }

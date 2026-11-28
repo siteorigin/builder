@@ -77,7 +77,7 @@ import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, claimRefusals, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { isRequiredRefusal } from '@shared/required';
-import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { DraftInput, Field, FieldHome, InfoTip, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -1130,6 +1130,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const styledPart = partStyled;
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
+  // Whether the Component section has anything to offer beyond its name and use count.
+  const componentActions = def.kind === 'managed' || canMakeUnique || canDuplicate(def, dev) || dev;
   // An entrance lands on the design's root element, which only a design built in the editor places.
   const entrance = entranceCapable(state, def);
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
@@ -1441,11 +1443,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           />
         </Section>
       )}
-      <Section title="Component" id="component" defaultOpen={false} level={LEVEL} scope={shell ? undefined : `Used ${uses === 1 ? 'once' : `${uses} times`}`}>
-        <p className="insp-note muted">
-          {def.description ? `${def.description} ` : ''}
-          <span className="faint">{def.owner === 'project' ? (def.kind === 'code' ? 'A code component in this project.' : 'Made in this project.') : 'From the site’s theme.'}</span>
-        </p>
+      {/* Only when there is something to do with the component; what it is, on demand beside the section's name. */}
+      {componentActions && (
+      <Section title="Component" id="component" defaultOpen={false} level={LEVEL} scope={shell ? undefined : `Used ${uses === 1 ? 'once' : `${uses} times`}`} actions={def.description ? <InfoTip label={def.name}>{def.description}</InfoTip> : undefined}>
         <div className="action-grid">
           {def.kind === 'managed' && (
             <button className="btn btn-sm" onClick={editEverywhere}>
@@ -1474,12 +1474,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
         </div>
       </Section>
+      )}
       <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL} scope={[node.anchor && `#${node.anchor}`, entrance && appearSummary(node, designAppear(state, def))].filter(Boolean).join(' · ') || undefined}>
-        <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
+        <Field label="Layer name">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], editLabel(state, 'Rename', here, v.trim() ? `to ${v.trim()}` : undefined))} />
         </Field>
         {(anchorCapable(state, def) || !!node.anchor) && (
-          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell && noun === 'section' ? 'part of every page that shows it' : noun}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
+          <Field label="Anchor ID" info={`Lets links jump straight to this ${shell && noun === 'section' ? 'part of every page that shows it' : noun}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], forLabel(state, v.trim() ? 'Set anchor' : 'Clear anchor', here))} />
           </Field>
         )}
@@ -1505,7 +1506,7 @@ function GroupSwitch({ owner, node }: { owner: OwnerRef; node: ElementNode }) {
     <SwitchRow
       checked={node.interactionGroup === true}
       label="Interaction group"
-      hint="Hovering it, or focus anywhere inside it, shows the Group hover and Group focus styles of the elements inside it. A group inside it is a group of its own: what that one holds follows it instead."
+      info="Hovering it, or focus anywhere inside it, shows the Group hover and Group focus styles of the elements inside it. A group inside it is a group of its own: what that one holds follows it instead."
       onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'interactionGroup', value: v }], v ? 'Make interaction group' : 'Turn off interaction group')}
     />
   );
@@ -3088,13 +3089,8 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
       {/* One line under the field: why there is no Link button when there isn't one, else what linking does. */}
       <Field
         label="Translations"
-        hint={
-          !candidates.length || sameAll
-            ? (sameAll ?? (peers.length ? 'Every other page is already one of its translations.' : 'No other pages yet. Duplicate this page, give the copy its language, then link it here.'))
-            : peers.length
-              ? 'Search engines learn these are the same page. To let visitors switch, link to the other version from the page.'
-              : 'The same page in another language, so search engines show each visitor theirs.'
-        }
+        hint={!candidates.length ? (peers.length ? 'Every other page is already linked' : 'No other pages yet') : sameAll ? (peers.length ? 'No more translations to link' : 'No page in another language yet') : undefined}
+        info={`The same page in another language, so search engines show each visitor theirs. ${!candidates.length && !peers.length ? 'Duplicate this page, give the copy its language, then link it here.' : (sameAll ?? 'To let visitors switch, link to the other version from the page.')}`}
       >
         {peers.length > 0 && (
           <ul className="insp-translations" aria-label="Translations of this page">
@@ -3179,10 +3175,11 @@ function PageLanguageField({ page, state }: { page: PageDoc; state: ProjectState
       label="Page language"
       error={error}
       hint={
-        <>
-          <strong className="insp-lang-name">{shown}</strong>
-          {own ? '. Clear it to use the site language.' : ', the site language. Type another, such as French or en-GB, if this page is written in it.'}
-        </>
+        own ? (
+          <>
+            <strong className="insp-lang-name">{shown}</strong> · clear for the site language
+          </>
+        ) : undefined
       }
     >
       <DraftInput
@@ -3248,34 +3245,23 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
         checked={!!article}
         onChange={(v) => upd(v ? { articleDate: todayArticleDate() } : { article: false }, v ? 'Make page an article' : 'Make article an ordinary page')}
         label="Dated article"
-        hint={
-          article
-            ? 'Turning this off removes its date, byline and excerpt.'
-            : 'For news and announcements: give the page a date, byline and excerpt, and News lists show it automatically.'
-        }
+        hint={article ? 'Turning off clears article details' : undefined}
+        info="For news and announcements: the page gets a date, byline and excerpt, and News lists show it."
       />
       {article && (
         <>
           <ArticleDateField date={article.date} upd={upd} />
-          <Field label="Byline" hint="Optional. Shown as written.">
+          <Field label="Byline">
             <DraftInput limit={TEXT_LIMITS.byline} keep={`page:${page.id}:byline`} keepWhile={articleAlive(page.id)} placeholder="By Ana Ruiz" value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
           </Field>
-          <Field label="Excerpt" hint="A sentence or two for News lists and the Article header, under the title.">
-            <DraftInput multiline limit={TEXT_LIMITS.excerpt} keep={`page:${page.id}:excerpt`} keepWhile={articleAlive(page.id)} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
+          <Field label="Excerpt">
+            <DraftInput multiline placeholder="For News lists and the article header" limit={TEXT_LIMITS.excerpt} keep={`page:${page.id}:excerpt`} keepWhile={articleAlive(page.id)} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
           </Field>
           <SwitchRow
             checked={article.hidden !== true}
             onChange={(v) => upd({ newsHidden: !v }, v ? 'Show article in news lists' : 'Hide article from news lists')}
             label={draft ? 'Include in News lists once published' : 'Include in News lists'}
-            hint={
-              article.hidden === true
-                ? draft
-                  ? 'Left out of every News list, even after the page is published.'
-                  : 'Left out of every News list. The page itself is still exported.'
-                : draft
-                  ? 'Drafts stay out of News lists until the page is published.'
-                  : 'Each News list shows as many as its limit allows.'
-            }
+            hint={article.hidden === true && !draft ? 'The page itself is still exported' : undefined}
           />
         </>
       )}
@@ -3297,10 +3283,8 @@ function ArticleDateField({ date, upd }: { date: string; upd: (patch: Record<str
       label="Article date"
       hint={
         restored ? (
-          <span role="status">That date was incomplete, so it is unchanged: still {formatArticleDate(date, 'en')}.</span>
-        ) : (
-          'News lists show the newest dates first.'
-        )
+          <span role="status">Incomplete date · still {formatArticleDate(date, 'en')}</span>
+        ) : undefined
       }
     >
       <DraftInput
@@ -3372,13 +3356,13 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
     }))
   ];
   return (
-    <Field label="Inside" controlId={controlId} hint="Its link in the header menu stays where it is.">
+    <Field label="Inside" controlId={controlId} info="Moves the page’s address inside the page you choose. Its link in the header menu stays where it is.">
       <button
         id={controlId}
         type="button"
         className="select insp-inside"
         aria-label={`Inside page: ${current}`}
-        aria-describedby={`${controlId}-note`}
+        aria-describedby={`${controlId}-info`}
         {...menu.triggerProps()}
         onClick={(e) => menu.openAt(e.currentTarget, items, `Move ${page.title} inside`)}
       >
@@ -3397,6 +3381,14 @@ function languageName(code: string): string {
   } catch {
     return code;
   }
+}
+
+/** What a change of address also does, when it does more than move the page: one line under the field, or nothing. */
+function addressNote(published: boolean, inside: number): string | undefined {
+  const parts = [published ? 'Old address still works' : '', inside ? `moves ${inside === 1 ? '1 page' : `${inside} pages`} inside` : ''].filter(Boolean);
+  if (!parts.length) return undefined;
+  const line = parts.join(' · ');
+  return line.charAt(0).toUpperCase() + line.slice(1);
 }
 
 /** Which shared parts a page shows, for its closed section's heading. */
@@ -3458,11 +3450,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           >
             <strong>Previewing.</strong> Page settings stay editable.
           </Scope>
-        ) : (
-          <Scope tone="local" icon={<MousePointerClick />}>
-            Page settings. Select anything on the page to edit it.
-          </Scope>
-        )}
+        ) : null}
       </Header>
       <Section title="Page" id="page-basic" level={LEVEL} scope={!isHome && draft ? 'Draft' : undefined}>
         {/* Reached by name from a finding about the title (openEditorDestination). */}
@@ -3485,10 +3473,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <Field
           label="Address"
           error={isHome ? null : addressError}
-          hint={
-            isHome
-              ? 'The home page is always at /.'
-              : `Change it and links on this site follow${wasPublishedFor(state, page.route, page.id) ? ', and the old address keeps working' : ''}.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} too.` : ''}`}
+          hint={isHome ? 'The home page is always at /' : addressNote(wasPublishedFor(state, page.route, page.id), inside.length)}
+          info={isHome ? undefined : 'Change it and links on this site follow. The page keeps its place in the header menu.'}
         >
           {isHome ? (
             <input className="input" value="/" readOnly aria-label="Page address" />
@@ -3515,11 +3501,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             checked={draft}
             onChange={(v) => upd({ draft: v }, v ? 'Keep page as draft' : 'Publish page')}
             label="Keep as draft"
-            hint={
-              draft
-                ? 'Left out when the website is exported. You can still edit and preview it.'
-                : 'Included when the website is exported.'
-            }
+            hint={draft ? 'Left out of the export' : undefined}
           />
         )}
       </Section>
@@ -3527,12 +3509,9 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       <ArticleSettings page={page} draft={draft} upd={upd} />
       <PageLanguage page={page} state={state} />
       <Section title="Header & footer" id="page-shell" level={LEVEL} defaultOpen={false} scope={shellSummary(showsPart(page, 'header'), showsPart(page, 'footer'))}>
-        <div className="insp-shell" role="group" aria-label="Shared header and footer" aria-describedby={`page-shell-note-${page.id}`}>
+        <div className="insp-shell" role="group" aria-label="Shared header and footer on this page">
           <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
           <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
-          <p className="insp-note field-hint" id={`page-shell-note-${page.id}`}>
-            For this page only. Editing the header or footer changes every page that shows it.
-          </p>
         </div>
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
@@ -3558,7 +3537,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </span>
         <span className="grow">
           <strong>Site styles</strong>
-          <span>Colors, fonts and spacing for every page</span>
+          <span>Colors, fonts and spacing</span>
         </span>
         <ChevronRight aria-hidden="true" className="chev" />
       </button>

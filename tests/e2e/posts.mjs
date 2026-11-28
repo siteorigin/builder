@@ -484,13 +484,13 @@ assert.equal(await seoBox.getByRole('tab').count(), 0, 'the writer shows no prev
 assert.equal(await seoBox.locator('.serp, .share-card').count(), 0);
 assert.equal(await seoBox.getByRole('button', { name: 'Optimize with AI' }).count(), 1, 'Optimize with AI is still beside the settings');
 assert.equal(await seoBox.getByRole('button', { name: 'Optimize with AI' }).isEnabled(), true);
-await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default title: \d+ characters · likely cut short on computers and phones$/, 'the title meter measures the default title'));
-assert.match(await postMeter('description').innerText(), /^From the fallback:/, 'the description meter measures the excerpt it falls back to');
+await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default · \d+ characters · too long$/, 'the title meter measures the default title'));
+assert.match(await postMeter('description').innerText(), /^Default ·/, 'the description meter measures the excerpt it falls back to');
 await postTitleBox.fill('Raku notes');
-await eventually(async () => assert.equal(await postMeter('title').innerText(), '10 characters · short: 15 to 60 reads best', 'the meter follows the title as it is typed'));
+await eventually(async () => assert.equal(await postMeter('title').innerText(), '10 characters · aim for 15–60', 'the meter follows the title as it is typed'));
 assert.equal(savedSeo().title, undefined, 'nothing is saved while it is typed');
 await postTitleBox.press('Escape');
-await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default ·/, 'Escape puts the default back'));
 // An address that is not one stays in the writer, with its note: the view, which would show the saved address, waits.
 await postCanonical.fill('journal.example/raku');
 // Pressed without taking focus from the field (as a click that takes none would): the button leaves it itself, and

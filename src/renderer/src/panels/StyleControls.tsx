@@ -11,7 +11,7 @@ import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorChip, ColorPick, opacityWords } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
-import { DraftInput } from '../components/ui';
+import { DraftInput, InfoTip } from '../components/ui';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { selectedRatio, setState, setViewport, useOverlay, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
@@ -23,6 +23,8 @@ const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
 const SCOPE_LABEL: Record<ResponsiveScope, string> = { base: 'All sizes', phone: 'Phone', tablet: 'Tablet', desktop: 'Desktop' };
 const SIZE_ICON: Record<Size, typeof Monitor> = { phone: Smartphone, tablet: Tablet, desktop: Monitor };
 const SIZE_RANGE: Record<Size, string> = { phone: 'narrower than 768px', tablet: '768 to 1023px wide', desktop: '1024px and wider' };
+/** How the sizes add up, behind the info button beside Edit styles for. */
+const SCOPE_INFO = 'All sizes sets a style everywhere. A size given its own value keeps it, so Phone, Tablet and Desktop change only their own widths.';
 /** Where a label in the shared list would repeat its own group heading. */
 const LABELS: Record<string, string> = { layout: 'Arrange', fontSize: 'Text size' };
 const labelOf = (p: StylePropDef) => LABELS[p.id] ?? p.label;
@@ -165,9 +167,12 @@ export function ScopePicker({ styles, children }: { styles?: ResponsiveStyles; c
   return (
     <div className="style-scope" ref={ref}>
       <div className="style-scope-head">
-        <div className="style-scope-label" id={labelId}>
-          Edit styles for
-        </div>
+        <span className="style-scope-name">
+          <span className="style-scope-label" id={labelId}>
+            Edit styles for
+          </span>
+          <InfoTip label="Edit styles for">{SCOPE_INFO}</InfoTip>
+        </span>
         <span className="style-scope-now" id={nowId} title={`The canvas is showing the ${preview} size`}>
           <PreviewIcon aria-hidden="true" />
           {SCOPE_LABEL[preview]} preview
@@ -196,20 +201,21 @@ export function ScopePicker({ styles, children }: { styles?: ResponsiveStyles; c
           );
         })}
       </div>
-      <p className="style-scope-note" id={noteId}>
-        {scope === 'base' ? (
-          'Changes apply at every size, except where a size has its own value.'
-        ) : (
-          <>
-            <strong>{SCOPE_LABEL[scope]} only</strong>, {SIZE_RANGE[scope]}. Other sizes keep their values.
-          </>
-        )}
-      </p>
+      {/* All sizes needs no line of its own; one size says which widths it covers. The rule is behind the info button. */}
+      {scope === 'base' ? (
+        <span id={noteId} hidden>
+          {SCOPE_INFO}
+        </span>
+      ) : (
+        <p className="style-scope-note" id={noteId}>
+          <strong>{SCOPE_LABEL[scope]} only</strong> · {SIZE_RANGE[scope]}
+        </p>
+      )}
       {mismatch && (
         <p className={`style-scope-preview${hidden ? ' hides' : ''}`} id={previewId}>
           {hidden ? <EyeOff aria-hidden="true" /> : <ScopeIcon aria-hidden="true" />}
           <span>
-            {hidden ? `Changes for ${scope} don’t show in the ${preview} preview.` : `To change ${preview} alone,`}{' '}
+            {hidden ? `${SCOPE_LABEL[scope]} edits hidden here ·` : `To change ${preview} alone ·`}{' '}
             {hidden ? (
               <button type="button" className="style-scope-link" onClick={() => {
                   setViewport(VIEWPORT_PRESETS[scope as Size]);

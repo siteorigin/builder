@@ -23,6 +23,7 @@ import { ShareControl } from './SharePopover';
 import { RemoteSessionControl } from './RemoteSession';
 import { NotesControl } from './NotesPopover';
 import { confirmLeaveLive, isRemoteShell } from '../lib/remote-session';
+import { shownLive } from '../lib/live-host';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -94,8 +95,11 @@ export function Toolbar() {
   }, [covered]);
   const isMac = api.platform === 'darwin';
   // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
-  // so the page switcher, Undo, Redo, the panel toggles and Export always fit.
-  const tier = toolbarTier(useWindowWidth(), isMac);
+  // so the page switcher, Undo, Redo, the panel toggles and Export (or, for a guest, Leave session) always fit.
+  // A live session's wider controls take the labels sooner (#1342). Any session at all counts, starting and
+  // ending too, so the toolbar keeps one tier through a session rather than changing as its pill does.
+  const hosting = useStore((s) => shownLive(s).phase !== 'idle');
+  const tier = toolbarTier(useWindowWidth(), isMac, remoteShell ? 'guest' : hosting ? 'hosting' : 'local');
   // A tier change swaps Zoom and Settings for More (or back). A menu open from one of them closes, and a
   // keyboard user on the control that left (or in its menu) lands on the one that took its place: at once,
   // or as soon as that menu has closed, before the menu's own focus return looks for somewhere to go.

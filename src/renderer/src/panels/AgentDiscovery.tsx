@@ -42,28 +42,23 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
   const preview = useMemo(() => (settings.llmsTxt ? generateLlmsTxt(state, typed === null ? undefined : { summary: typed }) : null), [state, typed, settings.llmsTxt]);
   const own = typeof site.llmsSummary === 'string' ? site.llmsSummary : '';
   const described = typeof site.description === 'string' && site.description.trim() !== '';
-  const summaryHint: ReactNode = (typed ?? own).trim()
-    ? described
-      ? 'The index opens with it. Clear it to use the site’s description.'
-      : 'The index opens with it. Clear it to leave the summary out.'
-    : described
-      ? 'Using the site’s description, shown in the field. Write your own to say something else.'
-      : 'Optional: one or two sentences the index opens with.';
+  // One line for what the index opens with now; how to change that is behind the field's info button.
+  const summaryHint: ReactNode = (typed ?? own).trim() ? undefined : described ? 'Using the site description' : undefined;
   return (
     <>
-      <p className="agents-intro">Files and features the website offers AI tools. They cover only the pages and posts search engines may list.</p>
       <div className={`agents-feature${settings.llmsTxt ? ' on' : ''}`}>
         <SwitchRow
           id="site-llms-txt"
           checked={settings.llmsTxt}
           onChange={(v) => onChange({ llmsTxt: v })}
           label={<Named name="Page index for AI tools" tech={LLMS_TXT_FILE} />}
-          hint={settings.llmsTxt ? 'Lists the pages and posts, each with its description.' : 'Lists the pages and posts. Turn it on to write its summary and see the file.'}
+          infoLabel="Page index for AI tools"
+          info={settings.llmsTxt ? 'Lists the pages and posts search engines may list, each with its description.' : 'Lists the pages and posts search engines may list. Turn it on to write its summary and see the file.'}
         />
         {preview !== null && (
           <div className="agents-sub">
             <Field label="Index summary" hint={summaryHint}>
-              <DraftInput multiline rows={2} limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={own} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
+              <DraftInput multiline rows={2} limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={own} placeholder={described ? (site.description as string) : 'One or two sentences the index opens with'} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
             </Field>
             <div className="agents-file">
               <div className="agents-file-head">
@@ -79,7 +74,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
                     <pre className="code-view agents-preview" tabIndex={0} aria-label={`${LLMS_TXT_FILE} as the website writes it`} data-testid="llms-txt-preview">
                       {preview}
                     </pre>
-                    {!publicUrl(site) && <div className="field-hint">Its links are relative to the website’s folder until the site has a public URL (Site details).</div>}
+                    {!publicUrl(site) && <div className="field-hint">Relative links until the site has a public URL</div>}
                   </>
                 )}
               </div>
@@ -92,21 +87,24 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         checked={settings.llmsFull}
         onChange={(v) => onChange({ llmsFull: v })}
         label={<Named name="All page text in one file" tech={LLMS_FULL_FILE} />}
-        hint="Every page and post as Markdown, for tools that read the whole site."
+        infoLabel="All page text in one file"
+        info="Every page and post search engines may list, as Markdown, for tools that read the whole site."
       />
       <SwitchRow
         id="site-markdown-mirrors"
         checked={settings.markdownMirrors}
         onChange={(v) => onChange({ markdownMirrors: v })}
         label={<Named name="Text copy of each page" tech={MARKDOWN_MIRROR_FILE} />}
-        hint="Markdown beside each page, without the header and footer, linked from it."
+        infoLabel="Text copy of each page"
+        info="Markdown beside each page search engines may list, without the header and footer, linked from it."
       />
       <SwitchRow
         id="site-webmcp"
         checked={webMcpOn(site)}
         onChange={(v) => onChange({ webmcp: v })}
         label={<Named name="Forms and search for browser assistants" tech="WebMCP" />}
-        hint="An assistant in the visitor’s browser can search the site and fill in a contact or signup form for the visitor to check and send."
+        infoLabel="Forms and search for browser assistants"
+        info="An assistant in the visitor’s browser can search the site and fill in a contact or signup form for the visitor to check and send."
       />
     </>
   );

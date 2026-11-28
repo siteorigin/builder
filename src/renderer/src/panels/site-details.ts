@@ -79,9 +79,11 @@ const runs = (dir: TextDirection) => (dir === 'rtl' ? 'right to left' : 'left to
 export function directionHint(site: Pick<SiteDoc, 'language' | 'direction'>, shown?: Pick<PageDoc, 'title' | 'language'> | null): string {
   const language = siteLanguage(site);
   const explicit = site.direction === 'ltr' || site.direction === 'rtl';
-  const own = explicit ? 'Pages in another language keep that language’s direction.' : `${namedLanguage(language) ?? language} reads ${runs(languageDirection(language))}.`;
+  // One line, and only the direction worth knowing: left to right goes without saying for a left-to-right site. The
+  // page open in another language comes first, since it is the one the author is looking at.
+  const own = explicit ? 'Other-language pages keep their direction' : languageDirection(language) === 'rtl' ? `${namedLanguage(language) ?? language} · right to left` : '';
   if (!shown) return own;
   const page = pageLanguage(site, shown);
   if (sameLanguage(page, language)) return own;
-  return `${own} “${shown.title}” is in ${namedLanguage(page) ?? page} and reads ${runs(pageDirection(site, shown))}.`;
+  return `“${shown.title}” (${namedLanguage(page) ?? page}) reads ${runs(pageDirection(site, shown))}`;
 }

@@ -210,20 +210,36 @@ export function videoPlayerSvelte(instrument = false): string {
 {/if}
 
 <style>
-	/* A 16:9 frame as wide as its column: the player fills it on every screen size. */
+	/* A 16:9 frame as wide as its column: the player fills it on every screen size. Until then it grows taller when
+	   a long title or large text needs it, so the button's words are never cut off. */
 	.so-video {
 		position: relative;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		width: 100%;
-		aspect-ratio: 16 / 9;
-		/* The hosts' players need this much height for their controls on the narrowest phones. */
+		/* A grid or flex row around it never stretches it. */
+		align-self: start;
 		min-height: 200px;
 		overflow: hidden;
 		border-radius: var(--so-radius-lg, 0);
 		background: #111214;
 		color: #ffffff;
 	}
-	.so-video iframe,
-	.so-video__play {
+	/* While its button shows, a short flex column never squeezes it. */
+	.so-video:has(> .so-video__play) {
+		min-height: min-content;
+	}
+	/* Holds the frame's shape in the one cell it shares with the button, which may be taller. */
+	.so-video::before {
+		content: '';
+		grid-area: 1 / 1;
+		align-self: start;
+		width: 100%;
+		aspect-ratio: 16 / 9;
+		/* The hosts' players need this much height for their controls on the narrowest phones. */
+		min-height: 200px;
+	}
+	.so-video iframe {
 		position: absolute;
 		inset: 0;
 		width: 100%;
@@ -231,6 +247,11 @@ export function videoPlayerSvelte(instrument = false): string {
 		border: 0;
 	}
 	.so-video__play {
+		grid-area: 1 / 1;
+		width: 100%;
+		min-width: 0;
+		border: 0;
+		overflow-wrap: anywhere;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -244,6 +265,9 @@ export function videoPlayerSvelte(instrument = false): string {
 		cursor: pointer;
 	}
 	.so-video__icon {
+		/* Stays a circle in the narrowest column, whatever the site's rule for pictures. */
+		flex: none;
+		max-width: none;
 		width: 4rem;
 		height: 4rem;
 		margin-block-end: 0.4rem;
@@ -263,7 +287,6 @@ export function videoPlayerSvelte(instrument = false): string {
 	}
 	.so-video__title {
 		max-width: 40ch;
-		overflow-wrap: anywhere;
 	}
 	.so-video__note {
 		font-size: 0.875em;
@@ -272,16 +295,16 @@ export function videoPlayerSvelte(instrument = false): string {
     instrument
       ? `
 	.so-video--empty {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 1.5rem;
 		background: #f4f4f5;
 		color: #3f3f46;
 		border: 2px dashed #d97706;
 	}
 	.so-video__message {
-		max-width: 46ch;
+		grid-area: 1 / 1;
+		place-self: center;
+		padding: 1.5rem;
+		max-width: calc(46ch + 3rem);
+		overflow-wrap: anywhere;
 		text-align: center;
 	}`
       : ''

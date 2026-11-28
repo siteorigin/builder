@@ -34,10 +34,10 @@ export type PaletteMood = (typeof PALETTE_MOODS)[number];
 
 /** How each mood is named and described, to an author and to the AI alike. */
 export const PALETTE_MOOD_INFO: Record<PaletteMood, { label: string; description: string; brief: string }> = {
-  neutral: { label: 'Neutral', description: 'Near-white backgrounds with a hint of the brand hue.', brief: 'near-white' },
-  tinted: { label: 'Tinted', description: 'Backgrounds, lines and text tinted with the brand hue.', brief: 'brand-tinted' },
-  warm: { label: 'Warm', description: 'Cream and warm-stone backgrounds that sit with any brand.', brief: 'cream' },
-  'high-contrast': { label: 'High contrast', description: 'White backgrounds, near-black text and stronger lines.', brief: 'white, near-black text' }
+  neutral: { label: 'Neutral', description: 'Near-white with a hint of the brand hue', brief: 'near-white' },
+  tinted: { label: 'Tinted', description: 'Tinted with the brand hue throughout', brief: 'brand-tinted' },
+  warm: { label: 'Warm', description: 'Cream and warm-stone backgrounds', brief: 'cream' },
+  'high-contrast': { label: 'High contrast', description: 'White, near-black text, firmer lines', brief: 'white, near-black text' }
 };
 
 /** The colour roles a palette sets, where the theme has them. */

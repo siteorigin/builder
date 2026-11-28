@@ -82,13 +82,18 @@ export function splitHref(href: string): { path: string; query: string; section:
 
 /** A link to the imported post `post`: its query goes with it, and what it can't carry is named. */
 export function postLink(post: string, href: string, query: string, section: string, newTab: boolean, notes: LinkNotes): LinkValue {
+  return entryLink(`${POST_LINK_PREFIX}${post}`, href, query, section, newTab, notes);
+}
+
+/** A link to the entry `target` (an imported post's, or one already in the project), as postLink makes one. */
+export function entryLink(target: string, href: string, query: string, section: string, newTab: boolean, notes: LinkNotes): LinkValue {
   let kept = linkQuery(query);
   if (kept.length > MAX_LINK_QUERY) {
     kept = '';
     notes.add(href, 'goes to its post without its query, which is too long to keep.');
   }
   if (section) notes.add(href, `opens its post at the top: an imported post has no section “${shownHref(section)}” to go to.`);
-  return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...(kept ? { query: kept } : {}), ...(newTab ? { newTab: true } : {}) };
+  return { type: 'entry', target, ...(kept ? { query: kept } : {}), ...(newTab ? { newTab: true } : {}) };
 }
 
 /**

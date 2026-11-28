@@ -48,7 +48,7 @@ export function CanonicalUrlField({
     const c = checkCanonicalUrl(draft);
     typedTo.current?.(d && c.ok ? c.url : undefined);
   }, []);
-  const hint = `Only if the same content is also at another address: enter the one search engines should list. Leave empty to use this ${what}’s own address.`;
+  const info = 'If this content is also at another address, enter the one search engines should list.';
   // What is wrong with the saved value describes the field only while it shows that value.
   const stored = !problem && value && !dirty ? canonicalProblem(value) : null;
   const error = problem && (
@@ -58,8 +58,8 @@ export function CanonicalUrlField({
     </span>
   );
   return (
-    <Field label="Canonical URL" hint={stored ? `${stored.message} The ${what}’s own address is used until it is corrected.` : hint} error={error}>
-      <DraftInput id={id} keep={keep} keepWhile={keepWhile} value={value} placeholder={ownUrl ?? undefined} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
+    <Field label="Canonical URL" hint={stored ? `${stored.message} The ${what}’s own address is used until it is corrected.` : undefined} info={info} error={error}>
+      <DraftInput id={id} keep={keep} keepWhile={keepWhile} value={value} placeholder={ownUrl ?? `This ${what}’s own address`} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
     </Field>
   );
 }
@@ -69,15 +69,15 @@ export function CanonicalUrlField({
  * one left empty or half typed reads the same to it, so either is refused and the saved date stays. Clearing it is the
  * button's alone, so no text the control holds when it goes (a held edit replayed later) can remove the date.
  */
-export function RevisionDateField({ id: explicitId, label, hint, value, onSet, onClear, refuse = () => false }: { id?: string; label: string; hint: string; value: string | undefined; onSet: (date: string) => unknown; onClear: () => unknown; refuse?: () => unknown }) {
+export function RevisionDateField({ id: explicitId, label, hint, info, value, onSet, onClear, refuse = () => false }: { id?: string; label: string; hint?: string; info?: string; value: string | undefined; onSet: (date: string) => unknown; onClear: () => unknown; refuse?: () => unknown }) {
   const generated = useId();
   const id = explicitId ?? generated;
   const locked = useLockedFields();
   return (
-    <Field label={label} hint={hint} controlId={id}>
+    <Field label={label} hint={hint} info={info} controlId={id}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {/* Empty, the browser draws its yyyy/mm/dd mask in the text's own ink: it takes a placeholder's, so it never reads as a date. */}
-        <DraftInput id={id} type="date" className={value ? 'input' : 'input date-empty'} aria-describedby={`${id}-note`} value={value ?? ''} onCommit={(v) => (isArticleDate(v) ? (v !== value ? onSet(v) : undefined) : v || value ? refuse() : undefined)} />
+        <DraftInput id={id} type="date" className={value ? 'input' : 'input date-empty'} aria-describedby={[hint ? `${id}-note` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined} value={value ?? ''} onCommit={(v) => (isArticleDate(v) ? (v !== value ? onSet(v) : undefined) : v || value ? refuse() : undefined)} />
         {value && !locked && (
           <button type="button" className="link-btn" aria-label={`Clear ${label.toLowerCase()}`} onClick={() => void onClear()}>
             Clear

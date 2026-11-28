@@ -214,6 +214,93 @@ describe.skipIf(!browserInstalled)('the video player in a browser', () => {
     }
   });
 
+  it('keeps Play, the title and the host’s name inside the frame, however long the title or large the text (issue #1449)', async () => {
+    const long = [
+      'From the ferry plaza to the accessible entrance, lift, information desk, reading room and hearing loop',
+      'Préparer une visite sans marches depuis la place du ferry, choisir une salle de lecture calme et demander une boucle magnétique à l’accueil.'
+    ];
+    const cases = [
+      ...long.map((title) => ({ title, text: 16 })),
+      { title: 'A short tour of the reading room', text: 32 },
+      { title: 'L’entrée et la salle de lecture', text: 32 }
+    ];
+    for (const url of [`https://youtu.be/${YT}`, 'https://vimeo.com/76979871']) {
+      for (const { title, text } of cases) {
+        const { page, site } = await open('clean', { url, title });
+        try {
+          // The visitor's own text size, which rem and the page's inherited text both follow, with Foundation's line height.
+          await site.addStyleTag({ content: `html { font-size: ${text}px; line-height: 1.625 } body { margin: 0 }` });
+          for (const width of [320, 390]) {
+            await page.setViewportSize({ width, height: 900 });
+            await settle(site);
+            const clipped = await site.evaluate(`(() => {
+              const frame = document.querySelector('.so-video').getBoundingClientRect();
+              return [...document.querySelectorAll('.so-video__play > *')].filter((part) => {
+                const range = document.createRange();
+                range.selectNodeContents(part);
+                const rects = part.tagName === 'SPAN' ? [...range.getClientRects()] : [part.getBoundingClientRect()];
+                return rects.some((r) => r.top < frame.top - 0.5 || r.bottom > frame.bottom + 0.5 || r.left < frame.left - 0.5 || r.right > frame.right + 0.5);
+              }).map((part) => part.getAttribute('class'));
+            })()`);
+            expect(clipped, `${url} at ${width}px, ${text}px text: ${title}`).toEqual([]);
+            for (const part of ['label', 'title', 'note']) expect((await site.locator(`.so-video__${part}`).boundingBox())!.height).toBeGreaterThan(0);
+            // The whole frame is still the button.
+            expect(await site.locator('.so-video__play').boundingBox()).toEqual(await site.locator('.so-video').boundingBox());
+          }
+        } finally {
+          await page.close();
+        }
+      }
+    }
+  });
+
+  it('grows in a narrow, short flex column rather than cut off its words, and returns to its shape to play (issue #1449)', async () => {
+    const { page, site } = await open('clean', { url: `https://youtu.be/${YT}`, title: `Tour-${'readingroom'.repeat(20)}` });
+    try {
+      // With Foundation's rule for pictures, which must not squash the play circle.
+      await site.addStyleTag({ content: '#app { display: flex; flex-direction: column; width: 220px; height: 200px } svg { max-width: 100% }' });
+      const player = site.locator('.so-video');
+      const button = site.locator('.so-video__play');
+      expect((await player.boundingBox())!.height).toBeGreaterThan(200);
+      expect(await button.boundingBox()).toEqual(await player.boundingBox());
+      await site.addStyleTag({ content: '.so-video { max-width: 90px }' });
+      const icon = (await site.locator('.so-video__icon').boundingBox())!;
+      expect(icon.width).toBe(icon.height);
+      expect(icon.width).toBeGreaterThanOrEqual(64);
+      await site.evaluate('document.head.lastElementChild.remove()');
+      // Nothing spills out of the button, down or sideways.
+      expect(await site.evaluate(`(() => { const el = document.querySelector('.so-video__play'); return el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth; })()`)).toBe(true);
+      await button.click();
+      await expect.poll(() => frames(site)).toBe(1);
+      expect((await player.boundingBox())!.height).toBe(200);
+      expect(await site.locator('iframe').boundingBox()).toEqual(await player.boundingBox());
+      // A site's own cap on the height still holds for the player.
+      await site.addStyleTag({ content: '#app { width: 800px; height: auto } #app > * { max-height: 240px }' });
+      expect((await player.boundingBox())!.height).toBe(240);
+      expect(await site.locator('iframe').boundingBox()).toEqual(await player.boundingBox());
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('in the editor, keeps the whole empty note inside its box on a narrow phone with large text', async () => {
+    const { page, site } = await open('dev', { url: 'https://example.com/tour.mp4' });
+    try {
+      await page.setViewportSize({ width: 320, height: 900 });
+      await site.addStyleTag({ content: 'html { font-size: 32px; line-height: 1.625 } body, p { margin: 0 }' });
+      await settle(site);
+      const box = (await site.locator('.so-video--empty').boundingBox())!;
+      const note = (await site.locator('.so-video__message').boundingBox())!;
+      expect(note.y).toBeGreaterThanOrEqual(box.y);
+      expect(note.y + note.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
+      expect(note.x + note.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+      // The note shares the frame's one cell: the box is only as tall as the taller of the two.
+      expect(Math.abs(box.height - 4 - Math.max(200, note.height))).toBeLessThan(1); // 4: its dashed border
+    } finally {
+      await page.close();
+    }
+  });
+
   it('never plays an address the visitor did not press Play for, even one played before', async () => {
     const { page, site, hosts } = await open('clean', { url: `https://youtu.be/${YT}`, title: 'Tour' });
     try {

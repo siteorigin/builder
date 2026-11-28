@@ -11,7 +11,7 @@ import { applyOps } from '../store';
 
 /** What each host choice writes beside the website, as the select's hint says it. */
 const HOST_HINTS: Record<RedirectHost, string> = {
-  cloudflare: 'Writes _redirects as Cloudflare Pages reads it. Other hosts still send visitors on from each old address’s own page.',
+  cloudflare: 'Sends old addresses on with a permanent (301) redirect, written to _redirects as Cloudflare Pages reads it. Other hosts still send visitors on from each old address’s own page.',
   netlify: 'Writes _redirects as Netlify reads it, with each rule forced past the old address’s page.',
   vercel: 'Writes vercel.json beside the website, and _redirects for Cloudflare Pages.'
 };
@@ -135,7 +135,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
       }}
     >
       {draft.from === null && (
-        <Field label="Old address" error={error?.field === 'from' ? error.message : undefined} hint="An address of this site that visitors and search engines still arrive at.">
+        <Field label="Old address" error={error?.field === 'from' ? error.message : undefined}>
           <input id={`${uid}-from`} className="input" value={draft.typed} placeholder="/old-services/" autoFocus onChange={(e) => (setError(null), setDraft({ ...draft, typed: e.target.value }))} />
         </Field>
       )}
@@ -160,7 +160,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </div>
       </div>
       {draft.kind === 'page' && (
-        <Field label="Page" hint="It follows the page wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
+        <Field label="Page" info="It follows the page wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
           <select id={`${uid}-page`} className="select" value={draft.pageId} onChange={(e) => (setError(null), setDraft({ ...draft, pageId: e.target.value }))}>
             {!pages.some((p) => p.id === draft.pageId) && (
               <option value={draft.pageId} disabled>
@@ -176,7 +176,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </Field>
       )}
       {draft.kind === 'post' && (
-        <Field label="Post" hint="It follows the post wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
+        <Field label="Post" info="It follows the post wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
           <select id={`${uid}-post`} className="select" value={draft.entryId} onChange={(e) => (setError(null), setDraft({ ...draft, entryId: e.target.value }))}>
             {!posts.some((p) => p.entry.id === draft.entryId) && (
               <option value={draft.entryId} disabled>
@@ -192,7 +192,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </Field>
       )}
       {draft.kind === 'path' && (
-        <Field label="Address" error={error?.field === 'to' ? error.message : undefined} hint="Another address of this site, such as /blog/: whatever is there.">
+        <Field label="Address" error={error?.field === 'to' ? error.message : undefined}>
           <input id={`${uid}-path`} className="input" value={draft.to} placeholder="/blog/" onChange={(e) => (setError(null), setDraft({ ...draft, to: e.target.value }))} />
         </Field>
       )}
@@ -209,8 +209,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
 
   return (
     <div ref={root} className="so-redirects-fields">
-      <p className="field-hint">Old addresses that send visitors and search engines on with a permanent redirect (HTTP 301). Moving a page or a post keeps its old address here; add your own for addresses from an earlier website.</p>
-      <Field label="Published on" hint={HOST_HINTS[host]}>
+      <Field label="Published on" info={HOST_HINTS[host]}>
         <select id="site-redirect-host" className="select" value={host} onChange={(e) => void applyOps([{ type: 'site.update', redirectHost: e.target.value as RedirectHost }], 'Update site settings')}>
           {(['cloudflare', 'netlify', 'vercel'] as const).map((h) => (
             <option key={h} value={h}>
@@ -235,9 +234,9 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
                   </div>
                   <div className="so-redirect-meta faint">
                     {r.custom ? 'Added by you' : 'Recorded when it moved'}
-                    {where.draft ? ' · Draft: left out of the website until it is published' : ''}
-                    {held ? ` · The draft “${held.title}” has this address and takes it over once it is published` : ''}
+                    {where.draft ? ' · to a draft, not exported yet' : ''}
                   </div>
+                  {held && <div className="so-redirect-meta faint">Draft “{held.title}” takes it over once published</div>}
                   {/* A problem leads with its glyph, in its tone: never the card's colour alone. */}
                   {found.map((d, i) =>
                     d.severity === 'error' ? (
@@ -268,7 +267,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
           })}
         </ul>
       ) : (
-        <p className="field-hint">No redirects yet.</p>
+        <p className="field-hint">No redirects yet · moving a page adds one</p>
       )}
       {draft?.from === null ? (
         form

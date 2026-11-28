@@ -1877,6 +1877,8 @@ export function InsertPanel() {
   const libraryWho = (it: Item) =>
     [it.code ? 'code component' : 'component', it.variant ? `${it.variant.axis.toLowerCase()} option of ${it.name}` : '', it.copyOf ? `copy of ${it.copyOf}` : '', it.themeCopy ? `copy of the theme's ${it.themeCopy} section` : ''].filter(Boolean).join(', ');
   // Basic elements, and the column layouts offered near the top of the panel: a Grid with its columns ready to fill.
+  // The layouts' names ("Asymmetric split", "Sidebar + main") are phrases too long for half the default panel, so they
+  // list one to a row and read as one even set; the single words of the basic elements keep two columns.
   const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) => (
     <section className="insert-group" data-kind="element" data-group={group} aria-labelledby={`${id}-${group}`}>
       <h4 className="insert-head" id={`${id}-${group}`}>
@@ -1885,8 +1887,8 @@ export function InsertPanel() {
       <TileGrid
         items={list}
         labelledBy={`${id}-${group}`}
-        className={`compact${narrow ? ' list' : ''}`}
-        cols={narrow ? 1 : 2}
+        className={`compact${narrow || group === 'columns' ? ' list' : ''}`}
+        cols={narrow || group === 'columns' ? 1 : 2}
         render={(it) => (
           <button className={`insert-tile basic${justAdded(it) ? ' just-added' : ''}`} {...tileProps(it)}>
             {iconFor(it)}

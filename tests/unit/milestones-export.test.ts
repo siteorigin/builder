@@ -3,7 +3,7 @@
  * has never had one, saved once it is open and never again on reopening (a duplicate gets one of its own), and the
  * version an export was staged from, listed under the export's name only once the export is delivered.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -253,12 +253,21 @@ describe('the milestone of an export (#1156)', () => {
   it.each<[string, (dir: string) => void]>([
     ['replaced', (dir) => writeFileSync(join(dir, 'README.md'), '# Changed meanwhile\n')],
     ['removed', (dir) => rmSync(join(dir, 'README.md'))],
-    ['added', (dir) => writeFileSync(join(dir, 'NOTICE.md'), 'Added meanwhile\n')]
+    ['added', (dir) => writeFileSync(join(dir, 'NOTICE.md'), 'Added meanwhile\n')],
+    // The developer's own setup files and tests, which a snapshot holds too (#1484).
+    ['replaced (tsconfig.json)', (dir) => writeFileSync(join(dir, 'tsconfig.json'), '{"changed":true}\n')],
+    ['added (wrangler.toml)', (dir) => writeFileSync(join(dir, 'wrangler.toml'), 'name = "bookshop"\n')],
+    ['replaced (a test)', (dir) => writeFileSync(join(dir, 'tests/api.test.js'), '// changed meanwhile\n')],
+    ['removed (a test)', (dir) => rmSync(join(dir, 'tests/api.test.js'))],
+    ['added (a test)', (dir) => writeFileSync(join(dir, 'tests/e2e/new.spec.js'), '// added meanwhile\n')]
   ])('stops a source export whose setup file was %s while its milestone was saved', async (_, change) => {
     git.enabled = true;
     const dir = await project('Bookshop', 'Approved');
-    // The README a new project is made with.
+    // The README a new project is made with, and setup files and tests of the developer's own.
     writeFileSync(join(dir, 'README.md'), '# Bookshop\n');
+    writeFileSync(join(dir, 'tsconfig.json'), '{}\n');
+    mkdirSync(join(dir, 'tests/e2e'), { recursive: true });
+    writeFileSync(join(dir, 'tests/api.test.js'), '// a test\n');
     const c = await open(dir);
     const capture = ProjectSession.prototype.captureExported;
     vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {
@@ -272,6 +281,35 @@ describe('the milestone of an export (#1156)', () => {
     expect(listed(c)).toEqual(['Approved']);
     // Left alone, the same export goes through.
     expect((await c.exportSourceTo(join(temp('out'), 'source'))).ok).toBe(true);
+    expect(listed(c)).toEqual(['Exported source project', 'Approved']);
+  });
+
+  it('exports a project whose tests hold another repository, and whose test run left a report meanwhile (#1484)', async () => {
+    git.enabled = true;
+    const dir = await project('Bookshop', 'Approved');
+    mkdirSync(join(dir, 'tests/fixtures/repo'), { recursive: true });
+    writeFileSync(join(dir, 'tests/api.test.js'), '// a test\n');
+    // A fixture checkout, which no snapshot reads, though the export copies it.
+    writeFileSync(join(dir, 'tests/fixtures/repo/.git'), 'gitdir: ../../../.git/modules/repo\n');
+    writeFileSync(join(dir, 'tests/fixtures/repo/index.js'), '// theirs\n');
+    // One whose marker is a link, which the export's copy leaves out.
+    if (process.platform !== 'win32') {
+      mkdirSync(join(dir, 'tests/fixtures/linked'), { recursive: true });
+      symlinkSync(join(dir, 'tests/fixtures/repo/.git'), join(dir, 'tests/fixtures/linked/.git'));
+      writeFileSync(join(dir, 'tests/fixtures/linked/index.js'), '// theirs too\n');
+    }
+    const c = await open(dir);
+    const capture = ProjectSession.prototype.captureExported;
+    vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {
+      const captured = await capture.call(this, name);
+      mkdirSync(join(dir, 'tests/playwright-report'), { recursive: true });
+      writeFileSync(join(dir, 'tests/playwright-report/index.html'), '<p>report</p>\n');
+      return captured;
+    });
+    const dest = join(temp('out'), 'source');
+    const r = await c.exportSourceTo(dest);
+    expect(r.ok ? 'ok' : r.message).toBe('ok');
+    expect(readFileSync(join(dest, 'tests/api.test.js'), 'utf8')).toBe('// a test\n');
     expect(listed(c)).toEqual(['Exported source project', 'Approved']);
   });
 });

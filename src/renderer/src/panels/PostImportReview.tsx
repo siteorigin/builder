@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileDown, TriangleAlert } from 'lucide-react';
-import type { PostImportKind, PostImportPreview, PostImportPreviewPost, PostImportResult } from '@shared/api';
+import type { PostImportExisting, PostImportKind, PostImportPreview, PostImportPreviewPost, PostImportResult } from '@shared/api';
 import { formatArticleDate } from '@shared/articles';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { headerMenu } from '@engine/tree';
@@ -135,6 +135,20 @@ function PlainPosts({ posts, language }: { posts: PostImportPreviewPost[]; langu
   );
 }
 
+/** What importing does, in a few words: "Import 3 posts", "Update 2 posts", "Import 3 posts and update 2". */
+function importLabel(made: number, updated: number): string {
+  const make = made ? `Import ${plural(made, 'post', 'posts')}` : '';
+  if (!updated) return make;
+  return make ? `${make} and update ${updated.toLocaleString()}` : `Update ${plural(updated, 'post', 'posts')}`;
+}
+
+/** What an import did, for its notice: "Imported 3 posts.", "Updated 2 posts.", "Imported 3 posts and updated 2." */
+function importedLabel(made: number, updated: number): string {
+  const make = made || !updated ? `Imported ${plural(made, 'post', 'posts')}` : '';
+  if (!updated) return `${make}.`;
+  return make ? `${make} and updated ${updated.toLocaleString()}.` : `Updated ${plural(updated, 'post', 'posts')}.`;
+}
+
 /** Old-site addresses this few are listed open; more fold behind their count. */
 const OLD_LINKS_SHOWN = 5;
 
@@ -186,6 +200,8 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
   const [done, setDone] = useState<PostImportResult | null>(null);
   const [own] = useState(() => getState().modal);
   const resultRef = useRef<HTMLParagraphElement>(null);
+  // Posts imported before are skipped unless the author chooses to update them from the source (#1519).
+  const [existing, setExisting] = useState<PostImportExisting>('skip');
   // The Import button that had focus is gone once the result shows: focus goes to what the result says.
   useEffect(() => {
     if (done) resultRef.current?.focus();
@@ -212,13 +228,23 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       close();
     }
   });
-  const n = preview.posts.length;
-  const drafts = preview.posts.filter((p) => p.draft).length;
-  const blocked = preview.problems.length > 0;
+  const fresh = preview.posts.filter((p) => !p.existing);
+  const already = preview.posts.filter((p) => p.existing);
+  const updating = existing === 'update' && preview.update ? preview.update : null;
+  // What the chosen way of importing brings: the new posts, and the posts already here when they are updated.
+  const chosen = updating ?? preview;
+  const n = fresh.length;
+  const updates = updating?.posts ?? 0;
+  const drafts = fresh.filter((p) => p.draft).length;
+  const problems = chosen.problems;
+  const blocked = problems.length > 0;
+  // Every post is already here, and they are skipped: importing would do nothing.
+  const nothing = !blocked && !n && !updates;
   // A few missing pictures are listed open, since each is a loss to check; many fold behind their count.
+  const missing = chosen.missing;
   const missingList = (
     <ul className="import-names single">
-      {preview.missing.map((m, i) => (
+      {missing.map((m, i) => (
         <li key={i}>
           <b>{m.post}</b> · {m.ref.split('/').pop() || m.ref}: {m.problem}.<span className="import-review-ref">{m.ref}</span>
         </li>
@@ -229,7 +255,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
     setBusy(true);
     let r: PostImportResult;
     try {
-      r = await api.project.commitPostImport(preview.id, opening, offersMenu && toMenu);
+      r = await api.project.commitPostImport(preview.id, opening, offersMenu && toMenu, existing);
     } catch {
       r = { ok: false, message: 'The posts could not be imported: the project could not be saved. Check that there is space on the disk, then try again.' };
     } finally {
@@ -248,7 +274,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
     // with what to do about it above its text.
     if (r.firstEntryId && (await flushOpenPost()) && getState().snapshot?.workspaceKey === opening)
       setState({ post: { collectionId: POSTS_COLLECTION_ID, entryId: r.firstEntryId }, postView: 'write', postReveal: null });
-    if (!r.notes?.length) toast([`Imported ${plural(r.imported ?? n, 'post', 'posts')}.`, menuSaid(r.addedToNavigation)].filter(Boolean).join(' '), 'info', r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined);
+    if (!r.notes?.length) toast([importedLabel(r.imported ?? n, r.updated ?? 0), menuSaid(r.addedToNavigation)].filter(Boolean).join(' '), 'info', r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined);
   };
 
   if (done) {
@@ -256,7 +282,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
     const notes = done.notes ?? [];
     return (
       <Modal
-        title={`Imported ${plural(done.imported ?? n, 'post', 'posts')}`}
+        title={importedLabel(done.imported ?? n, done.updated ?? 0).slice(0, -1)}
         icon={<TriangleAlert className="import-review-warn" />}
         onClose={close}
         wide
@@ -282,8 +308,8 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       >
         <p className="import-result-lead" ref={resultRef} tabIndex={-1}>
           The posts are in, but {plural(notes.length, 'picture', 'pictures')} could not be added
-          {preview.missing.length > 0 ? `, and ${preview.missing.length.toLocaleString()} more ${preview.missing.length === 1 ? 'was' : 'were'} already missing from the chosen folder` : ''}, so{' '}
-          {notes.length + preview.missing.length === 1 ? 'its post shows without it' : 'their posts show without them'}.
+          {missing.length > 0 ? `, and ${missing.length.toLocaleString()} more ${missing.length === 1 ? 'was' : 'were'} already missing from the chosen folder` : ''}, so{' '}
+          {notes.length + missing.length === 1 ? 'its post shows without it' : 'their posts show without them'}.
         </p>
         {done.addedToNavigation !== undefined && <p className="import-result-steps">{menuSaid(done.addedToNavigation)}</p>}
         <p className="import-result-steps">
@@ -307,10 +333,10 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             ))}
           </ul>
         </section>
-        {preview.missing.length > 0 && (
+        {missing.length > 0 && (
           // What the review already said would be left out stays on the list of what to put back.
           <section className="import-review-group" aria-labelledby="post-import-left-out">
-            <ReviewHeading id="post-import-left-out">{plural(preview.missing.length, 'picture', 'pictures')} left out, as the review said</ReviewHeading>
+            <ReviewHeading id="post-import-left-out">{plural(missing.length, 'picture', 'pictures')} left out, as the review said</ReviewHeading>
             {missingList}
           </section>
         )}
@@ -319,12 +345,22 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
   }
 
   const where = preview.collection.create ? `${preview.collection.name}, a new collection at ${preview.collection.route}` : `${preview.collection.name} at ${preview.collection.route}`;
-  const toCheck = preview.posts.filter(needsCheck);
-  const routine = preview.posts.filter((p) => !needsCheck(p));
-  const newTerms = [preview.newTerms.categories.length ? `${preview.newTerms.categories.length === 1 ? 'Category' : 'Categories'}: ${preview.newTerms.categories.join(', ')}` : '', preview.newTerms.tags.length ? `${preview.newTerms.tags.length === 1 ? 'Tag' : 'Tags'}: ${preview.newTerms.tags.join(', ')}` : ''].filter(Boolean);
+  const toCheck = fresh.filter(needsCheck);
+  const routine = fresh.filter((p) => !needsCheck(p));
+  const newTerms = [chosen.newTerms.categories.length ? `${chosen.newTerms.categories.length === 1 ? 'Category' : 'Categories'}: ${chosen.newTerms.categories.join(', ')}` : '', chosen.newTerms.tags.length ? `${chosen.newTerms.tags.length === 1 ? 'Tag' : 'Tags'}: ${chosen.newTerms.tags.join(', ')}` : ''].filter(Boolean);
   // Reasons naming many items keep the summary to their counts; every name is in the list under it.
   const skippedLong = preview.skipped.join(' ').length > 240;
-  const missingLabel = `${plural(preview.missing.length, 'picture', 'pictures')} ${blocked ? 'would be' : 'will be'} left out`;
+  const missingLabel = `${plural(missing.length, 'picture', 'pictures')} ${blocked ? 'would be' : 'will be'} left out`;
+  const unread = already.filter((p) => p.unread).length;
+  const here = `${plural(already.length, 'post is', 'posts are')} already in the project`;
+  const leftAs = (k: number) => `left as ${k === 1 ? 'it is' : 'they are'}`;
+  const alreadyLabel = !updating
+    ? `${here}, so ${already.length === 1 ? 'it' : 'they'} will be ${leftAs(already.length)}`
+    : !unread
+      ? `${here}, so ${already.length === 1 ? 'it' : 'they'} will be updated from the export`
+      : `${here}: ${updates.toLocaleString()} will be updated from the export, and ${unread.toLocaleString()} whose text could not be read will be ${leftAs(unread)}`;
+  // Updating a post puts what reading it changed over the one already here: those are shown in full.
+  const updatedToCheck = updating ? already.filter((p) => !p.unread && needsCheck(p)) : [];
   const posts = (
     <>
       {toCheck.length > 0 && (
@@ -339,7 +375,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       )}
       {routine.length > 0 &&
         (() => {
-          const label = `${plural(routine.length, toCheck.length ? 'other post comes' : 'post comes', toCheck.length ? 'other posts come' : 'posts come')} in as ${routine.length === 1 ? 'it is' : 'they are'}`;
+          const label = `${plural(routine.length, toCheck.length ? 'other new post comes' : already.length ? 'new post comes' : 'post comes', toCheck.length ? 'other new posts come' : already.length ? 'new posts come' : 'posts come')} in as ${routine.length === 1 ? 'it is' : 'they are'}`;
           const list = <PlainPosts posts={routine} language={language} />;
           return routine.length > ROUTINE_SHOWN ? (
             <ReviewDisclosure className="import-review-group" summary={label} testId="post-import-routine">
@@ -352,17 +388,29 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             </section>
           );
         })()}
+      {already.length > 0 && (
+        <ReviewDisclosure className="import-review-group" summary={here} testId="post-import-existing">
+          {updatedToCheck.length > 0 && (
+            <ul className="import-review">
+              {updatedToCheck.map((p, i) => (
+                <PostRow key={i} p={p} language={language} />
+              ))}
+            </ul>
+          )}
+          <PlainPosts posts={already.filter((p) => !updatedToCheck.includes(p))} language={language} />
+        </ReviewDisclosure>
+      )}
     </>
   );
   return (
     <Modal
-      title={blocked ? 'These posts can’t be imported' : `Import ${plural(n, 'post', 'posts')}`}
+      title={blocked ? 'These posts can’t be imported' : nothing ? (already.length === 1 ? 'This post is already in the project' : 'These posts are already in the project') : importLabel(n, updates)}
       icon={blocked ? <TriangleAlert className="import-review-icon-blocked" /> : <FileDown />}
       onClose={cancel}
       busy={busy}
       wide
       footer={
-        blocked ? (
+        blocked || nothing ? (
           <button className="btn" onClick={cancel}>
             Close
           </button>
@@ -372,15 +420,16 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
               Cancel
             </button>
             <button className="btn btn-primary" data-testid="post-import-confirm" onClick={() => void run()} disabled={busy}>
-              {busy ? 'Importing…' : `Import ${plural(n, 'post', 'posts')}`}
+              {busy ? 'Importing…' : importLabel(n, updates)}
             </button>
           </>
         )
       }
     >
       {blocked && (
-        <div className="post-import-problems" data-testid="post-import-problems" tabIndex={-1} data-autofocus>
-          {preview.problems.map((p, i) => (
+        // Announced when choosing to update the posts already here is what stops the import.
+        <div className="post-import-problems" data-testid="post-import-problems" tabIndex={-1} data-autofocus role="alert">
+          {problems.map((p, i) => (
             <p key={i} className="scope-note danger">
               <TriangleAlert aria-hidden="true" />
               <span>{p}</span>
@@ -391,15 +440,29 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
       <ReviewSummary
         focusFirst={!blocked}
         rows={[
-          ['Posts', [plural(n - drafts, 'published', 'published'), drafts ? plural(drafts, 'draft', 'drafts') : ''].filter(Boolean).join(' · ')],
-          (preview.pictures > 0 || preview.missing.length > 0) && [
+          [already.length ? 'New posts' : 'Posts', !n ? 'None' : [plural(n - drafts, 'published', 'published'), drafts ? plural(drafts, 'draft', 'drafts') : ''].filter(Boolean).join(' · ')],
+          already.length > 0 && [
+            'Already here',
+            <>
+              <span data-testid="post-import-existing-count">{alreadyLabel}.</span>
+              <span className="post-import-existing" role="radiogroup" aria-label="What to do with the posts already in the project">
+                <label>
+                  <input type="radio" name={`post-import-existing-${preview.id}`} checked={existing === 'skip'} disabled={busy} onChange={() => setExisting('skip')} /> Skip them
+                </label>
+                <label>
+                  <input type="radio" name={`post-import-existing-${preview.id}`} checked={existing === 'update'} disabled={busy} onChange={() => setExisting('update')} data-testid="post-import-update" /> Update them from the export
+                </label>
+              </span>
+            </>
+          ],
+          (chosen.pictures > 0 || missing.length > 0) && [
             'Pictures',
             <>
-              {preview.pictures ? `${preview.pictures.toLocaleString()} found` : 'None found'}
-              {preview.missing.length > 0 && (
+              {chosen.pictures ? `${chosen.pictures.toLocaleString()} found` : 'None found'}
+              {missing.length > 0 && (
                 <>
                   {' · '}
-                  <span className="import-summary-loss">{preview.missing.length.toLocaleString()} missing</span>
+                  <span className="import-summary-loss">{missing.length.toLocaleString()} missing</span>
                 </>
               )}
             </>
@@ -436,15 +499,15 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           newTerms.length > 0 && ['New categories and tags', newTerms.join(' · ')]
         ]}
       >
-        {blocked ? 'Nothing has been imported.' : 'Nothing changes until you import, and you can undo the import in one step.'}
+        {blocked || nothing ? 'Nothing has been imported.' : 'Nothing changes until you import, and you can undo the import in one step.'}
       </ReviewSummary>
       {!blocked && offersMenu && (
         <label className="post-import-menu">
           <input type="checkbox" checked={toMenu} disabled={busy} onChange={(e) => setToMenu(e.target.checked)} onKeyDown={(e) => enterToggles(e, () => setToMenu(!toMenu))} /> Add a Blog link to the header menu
         </label>
       )}
-      {preview.missing.length > 0 &&
-        (preview.missing.length <= 3 ? (
+      {missing.length > 0 &&
+        (missing.length <= 3 ? (
           <section className="import-review-group post-import-missing" aria-labelledby="post-import-missing">
             <ReviewHeading id="post-import-missing">
               <TriangleAlert className="import-review-warn" aria-hidden="true" /> {missingLabel}
@@ -456,7 +519,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             {missingList}
           </ReviewDisclosure>
         ))}
-      {preview.oldSiteLinks.length > 0 && <OldSiteLinks links={preview.oldSiteLinks} site={preview.site} />}
+      {chosen.oldSiteLinks.length > 0 && <OldSiteLinks links={chosen.oldSiteLinks} site={preview.site} />}
       {skippedLong && (
         <ReviewDisclosure className="import-review-group" summary="What is not imported, item by item">
           <ul className="import-names single">
@@ -467,7 +530,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
         </ReviewDisclosure>
       )}
       {blocked ? (
-        <ReviewDisclosure className="import-review-group" summary={`The ${plural(n, 'post', 'posts')} it would import`}>
+        <ReviewDisclosure className="import-review-group" summary={`The ${plural(preview.posts.length, 'post', 'posts')} it would import`}>
           {posts}
         </ReviewDisclosure>
       ) : (

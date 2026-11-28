@@ -12,8 +12,8 @@ import { XmlError, childElement, childElements, childText, parseXml, textOf, typ
 import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
-import { linkNotes, pageLink, postLink, reportNotes } from './notes';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type KnownPosts, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { entryLink, linkNotes, pageLink, postLink, reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
 /** The longest title, name or label read: the plan shortens what it keeps, and says so. */
@@ -111,7 +111,7 @@ async function exportText(realRoot: string, file: string, label: string): Promis
  * The posts of WordPress export `file`. With `emit`, posts are handed to it in batches as they are read
  * (POSTS_PER_BATCH at a time, in order), and the source returned holds only those read after the last batch.
  */
-export async function readWordPress(file: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
+export async function readWordPress(file: string, pages: RichPages, emit?: (posts: SourcePost[]) => void, known?: KnownPosts): Promise<ParsedSource> {
   const root = dirname(file);
   const realRoot = await fs.realpath(root);
   const label = basename(file);
@@ -127,8 +127,12 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
 
   const base = (childText(channel, 'wp:base_blog_url') || childText(channel, 'link')).trim();
   let siteOrigin: string | undefined;
+  let siteKey: string | undefined;
   try {
-    siteOrigin = base ? new URL(base).origin : undefined;
+    const url = base ? new URL(base) : undefined;
+    siteOrigin = url?.origin;
+    // A site installed under a path is a site of its own: two installations on one host never share post IDs.
+    if (url && /^https?:$/.test(url.protocol)) siteKey = `${url.origin}${url.pathname.replace(/\/+$/, '')}`.slice(0, 400);
   } catch {
     siteOrigin = undefined;
   }
@@ -168,6 +172,17 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   // WordPress shows a post's attached pictures by menu order, then by ID.
   const attachedIds = new Map([...attachedTo].map(([parent, list]) => [parent, list.sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)).map((a) => a.id)]));
 
+  // The posts imported before from this site, for links to those the export leaves out.
+  const earlierIds = siteKey && known && Object.hasOwn(known.ids, siteKey) ? known.ids[siteKey] : undefined;
+  const earlierPath = (path: string) => {
+    const at = known && Object.hasOwn(known.paths, path) ? known.paths[path] : undefined;
+    return at && at.site === siteKey ? at.entryId : undefined;
+  };
+  // Within the site's own installation: another one on the same host has posts of its own.
+  const home = siteKey ? new URL(siteKey).pathname.replace(/\/+$/, '') : '';
+  const inSite = (url: URL) => url.protocol !== 'relative:' && `${url.pathname.replace(/\/+$/, '')}/`.startsWith(`${home}/`);
+  // A post by its ID is linked at the site's own root (`/?p=12`, `/index.php?p=12`), never under another installation's.
+  const atHome = (url: URL) => [`${home}/`, `${home}/index.php`].includes(url.pathname);
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
   const byId = new Map<string, string>();
@@ -249,6 +264,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       // The ID has done its work once the post is found; the rest of the query goes on to its new address.
       const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(`&${pair}`).has(selector)).join('&')}`;
       if (post) return postLink(post, t, query, section, newTab, links);
+      // A post this export leaves out that the project already has: its entry, its query going with it as a post's does.
+      const earlier = !inSite(url) ? undefined : p !== null ? (atHome(url) && earlierIds && Object.hasOwn(earlierIds, p) ? earlierIds[p] : undefined) : selected ? undefined : earlierPath(sitePath(url.pathname).toLowerCase());
+      if (earlier) return entryLink(earlier, t, query, section, newTab, links);
       // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
       const page = selected ? null : pageLink(sitePath(url.pathname), t, url.search, section, pages, newTab, links);
       if (page) return page;
@@ -283,6 +301,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     add({
       key,
+      ...postIdOf(item),
       from: title,
       title,
       slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)),
@@ -297,7 +316,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       categories: terms(item, 'category'),
       tags: terms(item, 'post_tag'),
       body,
-      ...(thumbUrl ? { featured: media.key(thumbUrl) } : {}),
+      ...(thumbUrl ? { featured: media.key(thumbUrl) } : thumbId ? { featuredLost: true } : {}),
       ...(oldPath ? { oldPath } : {}),
       notes
     });
@@ -312,7 +331,13 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   }
   if (unpublished.length) out.push(`${unpublished.length} ${unpublished.length === 1 ? 'post' : 'posts'}${namesOf(unpublished)} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
-  return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
+  return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), ...(siteKey ? { siteKey } : {}), posts, media: media.items, skipped: out };
+}
+
+/** The post's ID on its site, when the export gives a real one. */
+function postIdOf(item: XmlElement): { postId?: string } {
+  const id = childText(item, 'wp:post_id').trim();
+  return /^\d{1,20}$/.test(id) ? { postId: id } : {};
 }
 
 /** An attachment WordPress counts as an image: by its type when the export says, else by its file's extension. */
@@ -345,7 +370,7 @@ function oldPathOf(linkUrl: string, siteOrigin: string | undefined): string | un
  */
 function failedPost(item: XmlElement, key: string, why: string, oldPath: string | undefined): SourcePost {
   const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
-  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`], ...(oldPath ? { oldPath } : {}) };
+  return { key, ...postIdOf(item), unread: true, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`], ...(oldPath ? { oldPath } : {}) };
 }
 
 function decodeSlug(s: string): string {

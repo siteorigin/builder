@@ -120,7 +120,9 @@ for (const [name, platform, ratio] of [['X', 'x', 2], ['WhatsApp', 'messages', 1
 const siteDescription = (await snapshot()).state.site.description;
 assert.ok(siteDescription, 'the starter site has a description');
 assert.deepEqual(await cardText(), { host: 'No public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }, 'the preview shows the page’s title and the site’s description');
-assert.match(await section().innerText(), /This page’s own choice/, 'it says the image is this page’s own');
+// The picker shows the page's own image itself: no line under it, and its explanation is behind the info button.
+assert.equal(await section().locator('.seo-image-status > span').count(), 0, 'nothing under the picker says whose image it is: it shows it');
+assert.match(await section().locator('[data-seo-field="socialImage"] [id$="-info"]').first().textContent(), /on this page’s card in page lists/, 'its explanation says where the image shows');
 assert.equal(await picker().getByLabel('Image description').count(), 0, 'a sharing image has no description to write');
 assert.equal(await picker().getByRole('switch', { name: 'Decorative image' }).count(), 0, 'and is never decorative');
 assert.match(await sharePreview().innerText(), /no usable public URL/, 'it says the image address needs a public URL');
@@ -188,7 +190,7 @@ await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 await openPage('Home');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table', 'Home shows the site’s image'));
 assert.match(await picker().innerText(), /The site’s sharing image\./, 'it says whose image it is');
-assert.match(await section().innerText(), /has no image of its own, so a shared link shows the site’s sharing image/);
+assert.equal(await section().locator('.seo-image-status > span').innerText(), 'Using the site’s sharing image', 'one line says the page follows the site’s image');
 assert.equal(pageFile(home).seo.socialImage, undefined, 'Home stores no image of its own');
 assert.equal(await back().count(), 0, 'there is nothing to clear on a page that follows the site');
 assert.equal(await chooser().innerText(), 'Choose image…');
@@ -202,7 +204,7 @@ await openPage('Kitchens');
 assert.equal(await imageName().innerText(), 'Kitchen');
 await loaded(cardImage(), /kitchen/);
 assert.equal(await back().innerText(), 'Use the site’s image', 'Kitchens can return to the site’s image');
-assert.match(await section().innerText(), /Pages without their own image show the site’s sharing image, Studio table\./);
+assert.equal(await section().locator('.seo-image-status .link-btn').innerText(), 'Change site image', 'the site’s image is a link away from a page with its own');
 assert.equal(await sharePreview().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
 
 step('replacing a page’s own photo with another from the library');
