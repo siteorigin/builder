@@ -367,3 +367,76 @@ export function deleteFingerprint(state: ProjectState, ref: PostRef): string {
   const refs = entryReferenceUses(state, ref.entryId).map((r) => `${r.collection.settings.id}:${r.entry.id}:${r.field}`);
   return JSON.stringify([links.sort(), addresses.sort(), refs.sort()]);
 }
+
+/**
+ * The rows a click picks in the list (#1507), as in a file manager: Shift picks every row from the anchor to the one
+ * clicked, in the order the list shows them, in place of what was picked; Cmd/Ctrl adds the row or takes it out. An
+ * anchor no longer shown starts the range at the row clicked.
+ */
+export function pickRows(shown: readonly string[], picked: ReadonlySet<string>, anchor: string | null, id: string, how: 'range' | 'toggle'): Set<string> {
+  if (how === 'toggle') {
+    const next = new Set(picked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  }
+  const from = anchor === null ? -1 : shown.indexOf(anchor);
+  const to = shown.indexOf(id);
+  if (to < 0) return new Set(picked);
+  const [a, b] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
+  return new Set(shown.slice(a, b + 1));
+}
+
+/** The picked entries still in the collection, in the order the list shows them. */
+function pickedEntries(state: ProjectState, collectionId: string, ids: readonly string[]): EntryDoc[] {
+  const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
+  if (!c) return [];
+  return [...new Set(ids)].flatMap((id) => (Object.hasOwn(c.entries, id) && c.entries[id] && typeof c.entries[id] === 'object' ? [c.entries[id]] : []));
+}
+
+/**
+ * Publishing the picked entries, or moving them to drafts, as one change: only those not already so. `future` names
+ * the drafts dated after `today`, which Publish asks about first (#1115).
+ */
+export function bulkStatusOps(state: ProjectState, collectionId: string, ids: readonly string[], draft: boolean, today = ''): { ops: EditOperation[]; future: string[] } {
+  const changing = pickedEntries(state, collectionId, ids).filter((e) => (e.draft !== false) !== draft);
+  return {
+    ops: changing.map((e) => ({ type: 'entry.update', collectionId, entryId: e.id, draft })),
+    future: draft ? [] : changing.filter((e) => isFutureDay(e.publishedAt, today)).map((e) => e.title)
+  };
+}
+
+/**
+ * Filing the picked entries under a term of a grouping, or taking them out of it, as one change: only those it
+ * changes. Each keeps its other terms of that grouping; one gone from the grouping (deleted, undone away) is dropped,
+ * since the engine refuses a list naming it.
+ */
+export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], taxonomyId: string, termId: string, on: boolean): EditOperation[] {
+  const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
+  const t = c?.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, taxonomyId) ? c.settings.taxonomies[taxonomyId] : undefined;
+  const terms = t?.terms && typeof t.terms === 'object' ? t.terms : undefined;
+  if (!terms || !Object.hasOwn(terms, termId)) return [];
+  return pickedEntries(state, collectionId, ids).flatMap((e): EditOperation[] => {
+    const filed: unknown = e.terms && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : undefined;
+    const had = Array.isArray(filed) ? filed.filter((x): x is string => typeof x === 'string') : [];
+    if (had.includes(termId) === on) return [];
+    const kept = [...new Set(had.filter((x) => x !== termId && Object.hasOwn(terms, x)))];
+    return [{ type: 'entry.update', collectionId, entryId: e.id, terms: { [taxonomyId]: on ? [...kept, termId] : kept } }];
+  });
+}
+
+/**
+ * Deleting the picked entries as one change (#1507): those nothing links to or names, and with no old address kept
+ * working, go at once. The rest (`held`, by title) ask what takes their place, so they are left for the author to
+ * delete one at a time, where that is asked. `checked` is what each was confirmed against (deleteFingerprint).
+ */
+export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: readonly string[]): { ops: EditOperation[]; free: Array<{ id: string; title: string; checked: string }>; held: string[] } {
+  const free: Array<{ id: string; title: string; checked: string }> = [];
+  const held: string[] = [];
+  for (const e of pickedEntries(state, collectionId, ids)) {
+    const ref = { collectionId, entryId: e.id };
+    if (deleteAsksWhere(state, ref)) held.push(e.title);
+    else free.push({ id: e.id, title: e.title, checked: deleteFingerprint(state, ref) });
+  }
+  return { ops: free.map((f) => ({ type: 'entry.remove', collectionId, entryId: f.id })), free, held };
+}
