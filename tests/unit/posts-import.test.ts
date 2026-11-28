@@ -336,10 +336,27 @@ describe('planning an import', () => {
     expect(skip.media).toEqual([]);
     expect(skip.taxonomies).toBeNull();
     expect(planOperations(skip, new Map())).toEqual([]);
+    // Both ways of importing are ones the engine takes.
+    checkPlan(first, skip);
+    expect(skip.problems).toEqual([]);
+    const update = selectPlan(plan, 'update');
+    checkPlan(first, update);
+    expect(update.problems).toEqual([]);
     const preview = postImportPreview('r2', plan);
     expect(preview).toMatchObject({ existing: 3, pictures: 0, missing: [], newTerms: { categories: [], tags: [] }, redirects: 0, redirectsLost: 0, problems: [] });
     expect(preview.posts.map((p) => p.existing)).toEqual([true, true, true]);
     expect(preview.update).toMatchObject({ pictures: 3, problems: [] });
+  });
+
+  it('never puts a post whose text could not be read over the one already here', async () => {
+    const dir = wordpressFolder();
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
+    const source = await readWordPress(join(dir, 'export.xml'), {});
+    Object.assign(source.posts[0], { unread: true, body: [] });
+    const plan = planPostImport(first, source, '2026-11-24');
+    expect(plan.posts[0].existing).toEqual({ draft: false, unread: true });
+    expect(plan.posts[0].notes).toContain('Its text could not be read this time, so updating leaves the post already here as it is.');
+    expect(selectPlan(plan, 'update').posts.map((p) => p.title)).toEqual(['Spring menu', 'Summer plans']);
   });
 
   it('recognises a post by its kept old address when the entry does not say where it came from', async () => {
