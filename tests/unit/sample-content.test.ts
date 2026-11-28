@@ -314,6 +314,20 @@ describe('the Business starter’s copy and photos', () => {
     expect(placeOf(portrait)).toMatchObject({ kind: 'prop', prop: 'people', field: 'portrait' });
   });
 
+  it('takes a section’s own defaults for the design’s, and a project the starter did not make for the author’s', () => {
+    // A Contact section's "Contact" eyebrow, or a hero's "Get in touch", is the same words as the starter's, but not its copy.
+    for (const s of [business(), createStarterState('blank', 'Test Studio', false)]) {
+      const before = samples(s, 'SAMPLE_STARTER_COPY').length;
+      let next = s;
+      for (const componentId of ['contact.details', 'cta.banner', 'hero.centered']) next = run(next, { type: 'node.insert', owner: home(next), parentId: null, componentId });
+      expect(samples(next, 'SAMPLE_STARTER_COPY')).toHaveLength(before);
+    }
+    // Nor anything at all in a project the starter did not make, though its words are the starter's.
+    const blank = createStarterState('blank', 'Test Studio', false);
+    const placed = run(blank, { type: 'node.insert', owner: home(blank), parentId: null, componentId: 'hero.split', props: { heading: 'Calm, considered spaces for everyday life' } } as EditOperation);
+    expect(samples(placed, 'SAMPLE_STARTER_COPY')).toEqual([]);
+  });
+
   it('still knows the starter’s copy once its section changes design', () => {
     const s = business();
     const hero = samples(s, 'SAMPLE_STARTER_COPY').find((d) => d.message.includes('“Calm, considered spaces for everyday life”'))!;
@@ -377,8 +391,13 @@ describe('the Business starter’s copy and photos', () => {
     };
     for (const value of ['Call +1 (555) 0134 today', '12 Harbor Lane,Millbrook']) expect(of(starting(value)), value).toEqual([]);
     expect(of(starting('myhello@example.com'))).toHaveLength(1);
-    // Only on the pages and the shared header and footer, which the export reviews: in a collection's layout, which it
-    // does not, the sample email is named here.
+    // Only on the pages, and the shared header and footer a page shows, which the export reviews: in a footer only
+    // other pages show (a collection's index, say), or a collection's layout, which it does not, the email is named here.
+    const footer = (st: ProjectState) => sampleContentDiagnostics(st, st, [{ owner: { kind: 'shell', id: 'footer' }, tree: st.pages[st.site.homePageId], label: 'Footer' }], freshKeeper(st)).filter((d) => (placeOf(d) as { prop?: string }).prop === 'email');
+    expect(footer(own)).toEqual([]);
+    const hidden = structuredClone(own);
+    for (const pg of Object.values(hidden.pages)) pg.showFooter = false;
+    expect(footer(hidden)).toHaveLength(1);
     const page = own.pages[own.site.homePageId];
     const inLayout = sampleContentDiagnostics(own, own, [{ owner: { kind: 'template', id: 'notes' }, tree: page, label: 'Notes layout' }], freshKeeper(own));
     expect(inLayout.filter((d) => (placeOf(d) as { prop?: string }).prop === 'email').map((d) => d.message)).toEqual([

@@ -8,7 +8,7 @@
  * state), and fields only code reads, whose markup decides, are left out. The sample contact details and images not
  * chosen yet are reviewed elsewhere, so none of these names them.
  */
-import type { NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { hiddenInTree, renderedContentKnown, renderedTables, treeParents, type RenderedContent } from '@generator/checks';
 import { teaserFields } from '@shared/page-teasers';
@@ -19,6 +19,7 @@ import { holdsSampleContact } from '@shared/sample-contact';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { stableHash } from '@shared/ids';
 import { allTrees } from './tree';
+import { showsPart } from '@shared/page-shell';
 import { isBackgroundPath } from './image-uses';
 import type { Diagnostic } from './validate';
 import type { CheckedTree, Keeper } from './validation-cache';
@@ -114,12 +115,13 @@ const own = <T>(map: Record<string, T> | undefined, k: string | undefined): T | 
 const NAME = 'Starter-Site-Name-9d41';
 
 /**
- * The starter's copy, by the property it is written in (`property|field`), each value as stableJson writes it: by
- * property, not section, so the words still count as the starter's once their section changes design (a swap carries
- * them over) or is made unique.
+ * The starter's copy, each value as stableJson writes it: by the section and property it is written in
+ * (`component|property|field`), and by the property alone (`property|field`), which still knows the words once their
+ * section changes design (a swap carries them over).
  */
 interface CopyLookup {
   fields: Map<string, string[]>;
+  byProp: Map<string, string[]>;
   descriptions: string[];
 }
 
@@ -134,26 +136,41 @@ function starterCopy(): CopyLookup | null {
   try {
     const made = businessStarterCopy(NAME);
     const fields = new Map<string, string[]>();
-    const add = (key: string, v: unknown) => {
+    const byProp = new Map<string, string[]>();
+    const add = (componentId: string, key: string, v: unknown) => {
       if (!wordsOf(v).trim() || wordsOf(v).trim() === NAME) return;
-      const list = fields.get(key) ?? [];
-      list.push(stableJson(v));
-      fields.set(key, list);
+      for (const [map, k] of [
+        [fields, `${componentId}|${key}`],
+        [byProp, key]
+      ] as const)
+        map.set(k, [...(map.get(k) ?? []), stableJson(v)]);
     };
     for (const { componentId, props } of made.placed)
       for (const [prop, v] of Object.entries(props)) {
         if (OWN_VALUES[componentId]?.includes(prop)) continue;
         // A list's items, field by field, and a value's own words.
         if (Array.isArray(v) && v.every((it) => it && typeof it === 'object' && typeof (it as { id?: unknown }).id === 'string'))
-          for (const it of v as Array<Record<string, unknown>>) for (const [field, x] of Object.entries(it)) field !== 'id' && add(`${prop}|${field}`, x);
-        else add(`${prop}|`, v);
+          for (const it of v as Array<Record<string, unknown>>) for (const [field, x] of Object.entries(it)) field !== 'id' && add(componentId, `${prop}|${field}`, x);
+        else add(componentId, `${prop}|`, v);
       }
-    lookup = { fields, descriptions: made.descriptions.map(stableJson) };
+    lookup = { fields, byProp, descriptions: made.descriptions.map(stableJson) };
   } catch {
     // Its theme not loaded yet, say: read again next time.
     return null;
   }
   return lookup;
+}
+
+/**
+ * Whether a placement's value is the starter's copy: written in that section's property, or in that property of
+ * another section the placement's was changed from. A value that is the placement's own design default is that design's
+ * to mark (a Contact section's "Contact" eyebrow is no Page introduction's), unless the starter wrote it into that very
+ * section.
+ */
+function starterWrote(copy: CopyLookup | null, contract: string, key: string, v: unknown, designDefaults: readonly unknown[], names: readonly string[]): boolean {
+  if (!copy) return false;
+  if (isStarterCopy(copy.fields.get(`${contract}|${key}`), v, names)) return true;
+  return isStarterCopy(copy.byProp.get(key), v, names) && !designDefaults.some((d) => same(d, v));
 }
 
 /** Whether a value is one the starter wrote, with the site's name as one of `names`. */
@@ -186,6 +203,16 @@ function tableShown(v: unknown): { shape: unknown; words: string[] } | null {
   return { shape: { head, cells }, words: [...head, ...cells.flat()] };
 }
 
+/**
+ * The component contract a definition places, through every copy of it (Make unique keeps a theme section's
+ * properties under a project ID of its own): what the starter's copy is looked up by.
+ */
+function contractOf(state: ProjectState, def: ComponentDefinition): string {
+  let d: ComponentDefinition | undefined = def;
+  for (let guard = 0; d && d.owner !== 'theme' && d.provenance?.forkedFrom && guard < 20; guard++) d = own(state.components, d.provenance.forkedFrom);
+  return d?.owner === 'theme' ? d.componentId : (def.provenance?.componentId ?? def.componentId);
+}
+
 /** One list item a placement shows, with the fields of it the page shows. */
 interface ShownRow {
   nodeId: string;
@@ -211,13 +238,14 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
   const placed = (nodeId: string) => {
     const n = own(tree.nodes, nodeId);
     const def = n?.kind === 'instance' ? own(live.components, n.definitionId) : undefined;
-    return n?.kind === 'instance' && def && n.props && typeof n.props === 'object' ? { n, def } : null;
+    return n?.kind === 'instance' && def && n.props && typeof n.props === 'object' ? { n, def, contract: contractOf(live, def) } : null;
   };
   const stored = (n: { props: Record<string, unknown> }, schema: PropSchema, prop: string): unknown => (Object.hasOwn(n.props, prop) ? n.props[prop] : (schema as { default?: unknown }).default);
   const { content, known } = renderedContentKnown(live, tree);
   const rows = new Map<string, ShownRow>();
-  // The export reviews the sample contact details on the pages and the shared header and footer: there, not again here.
-  const reviewed = owner.kind === 'page' || owner.kind === 'shell';
+  // The export reviews the sample contact details on the pages, and in the shared header and footer a page shows: there,
+  // not again here.
+  const reviewed = owner.kind === 'page' || (owner.kind === 'shell' && live.site.pageOrder.some((id) => Object.hasOwn(live.pages, id) && showsPart(live.pages[id], owner.id as 'header' | 'footer')));
 
   for (const c of content) {
     if (c.kind !== 'text' || c.computed) continue;
@@ -251,12 +279,12 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     if (!f || (f.type !== 'string' && f.type !== 'richtext')) continue;
     const at: SamplePlace = { kind: 'prop', nodeId: c.nodeId, prop, ...(field !== undefined ? { field } : {}) };
     const name = field === undefined ? where : `${where} → ${f.label}`;
-    if (isStarterCopy(copy?.fields.get(`${prop}|${field ?? ''}`), c.value, names)) {
+    // An object's field starts as the object's own default gives it, or else as the field's.
+    const expected = field === undefined ? f.default : schema.type === 'object' && Object.hasOwn(schema.default ?? {}, field) ? schema.default[field] : f.default;
+    if (starterWrote(copy, p.contract, `${prop}|${field ?? ''}`, c.value, [expected], names)) {
       found('SAMPLE_STARTER_COPY', `${name} still shows sample text, ${quoted(words)}. Write your own, or keep it as it is.`, c.nodeId, at, c.value);
       continue;
     }
-    // An object's field starts as the object's own default gives it, or else as the field's.
-    const expected = field === undefined ? f.default : schema.type === 'object' && Object.hasOwn(schema.default ?? {}, field) ? schema.default[field] : f.default;
     if (f.sampleDefault && same(c.value, expected)) found('SAMPLE_DEFAULT', `${name} still shows the sample text its design starts with, ${quoted(words)}. Write your own, or keep it as it is.`, c.nodeId, at, c.value);
   }
 
@@ -296,7 +324,9 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     // The item's name (its title field), or else its first words, leads.
     const lead = row.fields.find((f) => f.field === schema.titleField) ?? row.fields[0];
     const at = (field: string): SamplePlace => ({ kind: 'prop', nodeId: row.nodeId, prop: row.prop, itemId: row.itemId, field });
-    const starter = new Set(row.fields.filter((f) => isStarterCopy(copy?.fields.get(`${row.prop}|${f.field}`), f.value, names)));
+    // A field's design defaults: what a new item holds, and what the items the list starts with hold.
+    const defaults = (field: string) => [own(schema.fields, field)?.default, ...(Array.isArray(schema.default) ? schema.default.map((it) => own(it as Record<string, unknown>, field)) : [])];
+    const starter = new Set(row.fields.filter((f) => starterWrote(copy, p.contract, `${row.prop}|${f.field}`, f.value, defaults(f.field), names)));
     if (!starter.size && schema.sampleDefault && seededRows(row.nodeId, row.prop, schema, list).has(row.itemId)) {
       found('SAMPLE_DEFAULT', `${item} is still one of the sample items its design starts with, ${quoted(lead.words)}. Write your own, remove it, or keep it as it is.`, row.nodeId, at(lead.field), list[index]);
       continue;
@@ -390,9 +420,11 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
  * cannot read is skipped: this is advice, and never a reason Project health cannot open.
  */
 export function sampleContentDiagnostics(state: ProjectState, live: ProjectState, trees: ReadonlyArray<{ owner: OwnerRef; tree: NodeTree; label: string }>, keep: Keeper): Diagnostic[] {
-  const copy = starterCopy();
-  // The name the Business starter wrote its copy with: a sentence naming the site any other way is the author's.
-  const names = typeof state.manifest.starterSiteName === 'string' && state.manifest.starterSiteName.trim() ? [state.manifest.starterSiteName] : [];
+  // Only a site the Business starter made holds its copy; in any other, the same words are the author's own. The name
+  // it wrote its copy with: a sentence naming the site any other way is the author's too.
+  const made = typeof state.manifest.starterSiteName === 'string' && state.manifest.starterSiteName.trim() ? state.manifest.starterSiteName : null;
+  const copy = made ? starterCopy() : null;
+  const names = made ? [made] : [];
   const photos = starterPhotos(live);
   const out: Diagnostic[] = [];
   for (const t of trees) {
