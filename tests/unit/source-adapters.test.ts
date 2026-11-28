@@ -8,7 +8,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runSync } from '../../src/main/sources/run';
-import { ADAPTERS } from '../../src/main/sources/adapters';
+import { ADAPTERS, wordpressView } from '../../src/main/sources/adapters';
 import { contentfulRichText, markdownRichText, type LinkRead } from '../../src/main/sources/richtext';
 import type { SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import { graphqlReadProblem, sourceDocProblem, sourceSecretNames } from '@shared/sources';
@@ -455,6 +455,28 @@ describe('Sanity, Strapi and WordPress sources', () => {
     // A full page with no count of pages beside it may not be the last.
     const uncounted = await server((_req, res) => send(res, Array.from({ length: 100 }, (_, i) => ({ id: i + 1, title: { rendered: `P${i}` } }))));
     expect(await run({ adapter: 'wordpress', config: { url: uncounted.origin } })).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
+  it('WordPress: a post is dated by its site’s own day, never moved across midnight by GMT (#1428)', async () => {
+    const posts = [
+      // UTC+2: just after local midnight is the evening before in GMT.
+      { id: 1, title: { rendered: 'East' }, date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' },
+      // UTC−8: a local evening is the next morning in GMT.
+      { id: 2, title: { rendered: 'West' }, date: '2026-11-25T21:30:00', date_gmt: '2026-11-26T05:30:00', modified: '2026-11-25T22:00:00', modified_gmt: '2026-11-26T06:00:00' },
+      // A post that gives only its GMT time is still dated.
+      { id: 3, title: { rendered: 'Only GMT' }, date_gmt: '2026-11-20T09:00:00' }
+    ];
+    const api = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    expect(reply.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-25', '2026-11-26'],
+      ['2026-11-25', '2026-11-25'],
+      ['2026-11-20', undefined]
+    ]);
+    // The view keeps what WordPress sent under its own names, so a mapping can choose the GMT time and the sample shows both.
+    expect(wordpressView(posts[0])).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
   });
 
   it('WordPress: a post’s relative links go where they went on its own page (#1426)', async () => {

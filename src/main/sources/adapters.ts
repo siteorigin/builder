@@ -438,8 +438,12 @@ export function wordpressView(p: unknown): Record<string, unknown> {
     id: typeof o.id === 'number' ? String(o.id) : o.id,
     slug: o.slug,
     link: o.link,
-    date: o.date_gmt ?? o.date,
-    modified: o.modified_gmt ?? o.modified,
+    // The day as the site wrote it, in its own time zone (as an export's post_date is read): a GMT time can fall on
+    // another day. Both of WordPress's times stay under their own names, so a mapping can choose the GMT one.
+    date: o.date ?? o.date_gmt,
+    modified: o.modified ?? o.modified_gmt,
+    ...(o.date_gmt !== undefined ? { date_gmt: o.date_gmt } : {}),
+    ...(o.modified_gmt !== undefined ? { modified_gmt: o.modified_gmt } : {}),
     draft: o.status !== undefined && o.status !== 'publish',
     // As WordPress renders them: an entry's title and excerpt are read as text once, as any source's are (mapping.ts).
     title: rendered('title') ?? '',
