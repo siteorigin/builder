@@ -324,6 +324,7 @@ describe('checking what is typed', () => {
     // Each rule stays exact: closing one sibling leaves the other open.
     const one = robots(policy(rootSite(), { preset: 'custom', disallowPaths: [first] }))!;
     expect(mayFetch(one, 'Googlebot', encodeURI(second.slice(0, -1)))).toBe(true);
+    expect(mayFetch(one, 'Googlebot', `${encodeURI(first.slice(0, -1))}below/`)).toBe(true);
   });
 
   it('says what it counts when a path is too long', () => {
@@ -331,6 +332,8 @@ describe('checking what is typed', () => {
     expect(checkCrawlerPath(`/${'a'.repeat(1600)}`)).toMatchObject({ ok: false, message: expect.stringMatching(/at most 1600 characters as robots\.txt writes it.*percent-encoded.*This one takes 1601\./) });
     // 178 typed characters, 1,603 as written.
     expect(checkCrawlerPath(`/${'あ'.repeat(178)}`)).toMatchObject({ ok: false, message: expect.stringContaining('This one takes 1603.') });
+    // Counted as written, not as typed: “%61” is written “a”.
+    expect(checkCrawlerPath(`/%61${'a'.repeat(1599)}`)).toMatchObject({ ok: false, message: expect.stringContaining('This one takes 1601.') });
   });
 
   it('keeps robots.txt inside what crawlers read, never cutting a policy an edit saved', () => {
@@ -341,8 +344,9 @@ describe('checking what is typed', () => {
     const saved = policy(state, { preset: 'custom', overrides: { Googlebot: 'allow' }, disallowPaths: Array.from({ length: 64 }, (_, i) => longest(i)) });
     expect(crawlerRules(saved.site).paths).toHaveLength(64);
     expect(Buffer.byteLength(robots(saved)!)).toBeLessThan(500 * 1024);
-    // A hand edit past that is cut to fit, the pattern closing the whole site kept.
-    const flooded = { ...saved, site: { ...saved.site, crawlerPolicy: { preset: 'custom' as const, overrides: { Googlebot: 'allow' as const }, disallowPaths: [...Array.from({ length: 256 }, (_, i) => longest(i)), '/*'] } } };
+    // A hand edit past that is cut to fit, the pattern closing the whole site kept, with room for every crawler named.
+    const named = Object.fromEntries(Array.from({ length: 255 }, (_, i) => [`${String.fromCharCode(97 + Math.floor(i / 26), 97 + (i % 26))}${'x'.repeat(126)}`, i % 2 ? ('allow' as const) : ('disallow' as const)]));
+    const flooded = { ...saved, site: { ...saved.site, crawlerPolicy: { preset: 'custom' as const, overrides: { ...named, Googlebot: 'allow' as const }, disallowPaths: [...Array.from({ length: 256 }, (_, i) => longest(i)), '/*'] } } };
     const kept = crawlerRules(flooded.site).paths;
     expect(kept).toContain('/*');
     expect(kept.length).toBeGreaterThanOrEqual(64);
