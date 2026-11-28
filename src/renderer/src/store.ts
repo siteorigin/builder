@@ -404,6 +404,8 @@ export interface State {
   chatFocus: ChatFocusRequest | null;
   /** Sample contact details the author chose to publish as they are, so the export stops reviewing them. */
   keptSamples: string[];
+  /** Sample content Project health named that the author chose to keep as it is (LocalWorkspaceState.keptSampleContent). */
+  keptSampleContent: string[];
   /** This project's Get started list (shared/first-steps), or null for a project that has none. */
   firstSteps: FirstStepsRecord | null;
   /** A field to bring into view and focus once its component shows in the Inspector ("Open in inspector"). */
@@ -557,6 +559,7 @@ const live = create<State>((set) => ({
   chatMode: 'edit',
   chatFocus: null,
   keptSamples: [],
+  keptSampleContent: [],
   firstSteps: null,
   inspectorFocus: null,
   heldEdits: [],

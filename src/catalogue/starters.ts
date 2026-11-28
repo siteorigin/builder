@@ -84,11 +84,38 @@ function emptyState(name: string, themeId?: string): ProjectState {
   };
 }
 
+/** While the Business starter's copy is read (businessStarterCopy), each placement's values as the starter gives them. */
+let noting: ((componentId: string, props: Record<string, unknown>) => void) | null = null;
+
 function inst(state: ProjectState, componentId: string, props: Record<string, unknown> = {}, variant?: string): InstanceNode {
   const defId = installComponent(state, componentId);
   const def = state.components[defId];
   const stored = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, Object.hasOwn(def.properties, k) ? canonicalRich(def.properties[k], v) : v]));
+  noting?.(def.componentId, stored);
   return makeInstance(def, stored, variant);
+}
+
+/** What the Business starter writes on its pages and in its shared header and footer (see businessStarterCopy). */
+export interface StarterCopy {
+  /** Each placement's own values, as the starter gives them (a section's defaults are its design's, not the starter's). */
+  placed: Array<{ componentId: string; props: Record<string, unknown> }>;
+  /** The site's description and its pages' search descriptions. */
+  descriptions: string[];
+}
+
+/**
+ * The Business starter's sample copy, written for a site called `siteName`: what Project health names while a published
+ * page still shows it (engine/sample-content.ts). Made by the starter itself, so the copy is never written twice.
+ */
+export function businessStarterCopy(siteName: string): StarterCopy {
+  const placed: StarterCopy['placed'] = [];
+  noting = (componentId, props) => void placed.push({ componentId, props });
+  try {
+    const s = createStarterState('business', siteName, false);
+    return { placed, descriptions: [s.site.description, ...Object.values(s.pages).map((p) => p.seo.description ?? '')].filter((d) => !!d) };
+  } finally {
+    noting = null;
+  }
 }
 
 function tree(node: InstanceNode): NodeTree {
@@ -181,6 +208,8 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
     return s;
   }
 
+  // The name its sample text was written with, so the text is still known as the starter's once the site is renamed.
+  s.manifest.starterSiteName = siteName;
   s.site.description = `${siteName} is an independent interior design studio creating calm, practical homes and small workplaces.`;
   const homeNodes: GraphNode[] = [
     inst(s, 'hero.split', {

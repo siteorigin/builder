@@ -1,0 +1,324 @@
+/**
+ * Sample content in Project health (#1640): a placed component's sample-marked defaults, a basic element's first words,
+ * and the Business starter's copy and photos, while the published site still shows them; each leads to its field or
+ * element, and keeping one as it is quiets that value at that place alone.
+ */
+import { describe, expect, it } from 'vitest';
+import type { AssetRecord, ComponentDefinition, InstanceNode, ListItem, OwnerRef, ProjectState, TableProp } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { P, item, prop } from '@catalogue/dsl';
+import { STARTER_ASSETS, createStarterState } from '@catalogue/starters';
+import { applyOperations } from '@engine/apply';
+import { installComponent, makeInstance } from '@engine/install';
+import { validateState, type Diagnostic } from '@engine/validate';
+import { keptSampleKey, sampleFixtures, samplePlace, withoutKeptSamples } from '@engine/sample-content';
+import { SAMPLE_CONTACT } from '@shared/sample-contact';
+import { ELEMENT_STUBS } from '@shared/element-stubs';
+import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
+import { projectDesign } from './fixtures/packs';
+
+const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
+const home = (s: ProjectState): OwnerRef => ({ kind: 'page', id: s.site.homePageId });
+const samples = (s: ProjectState, code?: string) => validateState(s).filter((d) => d.code.startsWith('SAMPLE_') && (!code || d.code === code));
+const placeOf = (d: Diagnostic) => samplePlace(d);
+const none = { type: 'none' as const, target: '' };
+
+/** Five sample plans a list starts with, and what a newly added plan's name starts as. */
+const PLANS = ['Starter', 'Studio', 'Team', 'Agency', 'Enterprise'].map((name, i) => ({ id: `item-${i + 1}`, name, blurb: `${name} plan blurb.` }));
+
+/** A design of the project's own whose every kind of copy starts as sample content, as a theme would mark it. */
+function sampleDesign(s: ProjectState): ComponentDefinition {
+  return projectDesign(s, {
+    componentId: 'project.samples',
+    name: 'Samples',
+    properties: {
+      heading: P.sample(P.str('Heading', 'Gardens planted to last')),
+      note: P.str('Note', 'Ready to publish'),
+      intro: P.sample(P.rich('Intro', ['We plan, plant and **care** for gardens.'])),
+      subtitle: P.sample(P.str('Subtitle', 'An optional line')),
+      email: P.sample(P.str('Email', SAMPLE_CONTACT.email)),
+      action: P.object('Action', { label: P.sample(P.str('Label', 'Book a visit')), link: P.link('Link') }),
+      plans: P.sample(P.list('Plans', 'Plan', { name: P.sample(P.str('Name', 'New plan')), blurb: P.str('Blurb', '') }, PLANS, { titleField: 'name' })),
+      ctaLabel: P.sample(P.str('Button label', 'Talk to us')),
+      ctaLink: P.link('Button link')
+    },
+    parts: { root: { nodeId: 'root', label: 'Section' } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section' }, [
+        b.text('heading', 'h2', prop('heading'), { name: 'Heading' }),
+        b.text('note', 'p', prop('note'), { name: 'Note' }),
+        b.rich('intro', prop('intro'), { name: 'Intro' }),
+        b.text('subtitle', 'p', prop('subtitle'), { name: 'Subtitle', when: prop('subtitle') }),
+        b.text('email', 'p', prop('email'), { name: 'Email' }),
+        b.text('action', 'p', { $prop: 'action', field: 'label' }, { name: 'Action' }),
+        b.el('list', 'ul', { name: 'Plans' }, [b.repeat('plan-items', 'plans', [b.el('plan', 'li', { name: 'Plan' }, [b.text('plan-name', 'h3', item('name'), { name: 'Name' }), b.text('plan-blurb', 'p', item('blurb'), { name: 'Blurb' })])])]),
+        b.link('cta', prop('ctaLink'), prop('ctaLabel'), 'primary', { name: 'Button' })
+      ])
+  });
+}
+
+/** A blank site with the sample design placed on Home. */
+function withSamples(): { s: ProjectState; def: ComponentDefinition; node: InstanceNode } {
+  const s = createStarterState('blank', 'Garden Co', false);
+  const def = sampleDesign(s);
+  const node = makeInstance(def);
+  s.pages[s.site.homePageId].nodes[node.id] = node;
+  s.pages[s.site.homePageId].rootIds.push(node.id);
+  return { s, def, node };
+}
+
+/** Set a placement's values, one property at a time, as the Inspector does. */
+const setProps = (s: ProjectState, nodeId: string, props: Record<string, unknown>, owner: OwnerRef = home(s)): ProjectState =>
+  run(s, ...Object.entries(props).map(([prop, value]): EditOperation => ({ type: 'instance.setProp', owner, nodeId, prop, value })));
+const setContent = (s: ProjectState, nodeId: string, field: 'text' | 'link', value: unknown): ProjectState => run(s, { type: 'node.setContent', owner: home(s), nodeId, field, value });
+
+describe('a placed component’s sample defaults', () => {
+  it('names each marked default the page shows, and leads to its field', () => {
+    const { s, node } = withSamples();
+    const found = samples(s, 'SAMPLE_DEFAULT');
+    const at = found.map((d) => placeOf(d));
+    // The heading, rich text, the optional subtitle (shown while it has words), an object's field and each of the five
+    // plans; not the unmarked note, the sample email (the export reviews it), or the button that goes nowhere (the site
+    // leaves it out).
+    expect(at.filter((p) => p?.kind === 'prop' && !('itemId' in p && p.itemId)).map((p) => (p as { prop: string; field?: string }).field ?? (p as { prop: string }).prop)).toEqual(['heading', 'intro', 'subtitle', 'label']);
+    const rows = found.filter((d) => (placeOf(d) as { itemId?: string }).itemId);
+    expect(rows).toHaveLength(5);
+    expect(rows[0].message).toBe('Home: Plan 1 of Samples’ Plans is still one of the sample items its design starts with, “Starter”. Write your own, remove it, or keep it as it is.');
+    expect(found[0].message).toBe('Home: Samples’ Heading still shows the sample text its design starts with, “Gardens planted to last”. Write your own, or keep it as it is.');
+    expect(found.every((d) => d.severity === 'warning' && d.owner?.kind === 'page' && d.nodeId === node.id)).toBe(true);
+    // Each leads to its field: a row to its title field.
+    const plans = node.props.plans as ListItem[];
+    expect(destinationForDiagnostic(s, found[0])).toEqual({ kind: 'prop', owner: home(s), nodeId: node.id, prop: 'heading' });
+    expect(destinationForDiagnostic(s, found[3])).toEqual({ kind: 'prop', owner: home(s), nodeId: node.id, prop: 'action', field: 'label' });
+    expect(destinationForDiagnostic(s, rows[0])).toEqual({ kind: 'prop', owner: home(s), nodeId: node.id, prop: 'plans', itemId: plans[0].id, field: 'name' });
+  });
+
+  it('stops naming a value once it is written over, and only the plans left as they started', () => {
+    const { s, node } = withSamples();
+    const plans = structuredClone(node.props.plans as ListItem[]);
+    plans[1] = { ...plans[1], name: 'Small garden', blurb: 'For courtyards.' };
+    plans[3] = { ...plans[3], blurb: 'Our own words.' };
+    const edited = setProps(s, node.id, { heading: 'Our gardens', intro: ['Our own words.'], action: { label: 'Visit us', link: none }, plans });
+    const found = samples(edited, 'SAMPLE_DEFAULT');
+    // Only the subtitle is left of the values; three plans as they started, the two edited (one only in its blurb) the author's.
+    expect(found.filter((d) => !(placeOf(d) as { itemId?: string }).itemId).map((d) => (placeOf(d) as { prop: string }).prop)).toEqual(['subtitle']);
+    expect(found.filter((d) => (placeOf(d) as { itemId?: string }).itemId).map((d) => (placeOf(d) as { itemId?: string }).itemId)).toEqual([plans[0].id, plans[2].id, plans[4].id]);
+  });
+
+  it('names a newly added item’s sample field until it is written, and a sample item copied twice once', () => {
+    const { s, node } = withSamples();
+    const added = applyOperations(s, [{ type: 'instance.listInsert', owner: home(s), nodeId: node.id, prop: 'plans', item: { blurb: 'Ours.' } }]);
+    const id = added.results[0].itemId as string;
+    const field = samples(added.state).filter((d) => (placeOf(d) as { itemId?: string }).itemId === id);
+    expect(field.map((d) => d.message)).toEqual(['Home: Plan 6 of Samples’ Plans still shows the sample Name a new item starts with, “New plan”. Write your own, or keep it as it is.']);
+    expect(placeOf(field[0])).toMatchObject({ kind: 'prop', prop: 'plans', itemId: id, field: 'name' });
+    // The same sample plan twice: one of them is the sample, the other a copy of it.
+    const plans = structuredClone(node.props.plans as ListItem[]);
+    const doubled = setProps(s, node.id, { plans: [...plans, { ...plans[0], id: 'i_copy' }] });
+    expect(samples(doubled, 'SAMPLE_DEFAULT').filter((d) => (placeOf(d) as { itemId?: string }).itemId)).toHaveLength(5);
+  });
+
+  it('reads a placement that leaves a value to its design’s default', () => {
+    const { s, node } = withSamples();
+    delete node.props.heading;
+    delete node.props.plans;
+    const found = samples(s, 'SAMPLE_DEFAULT');
+    expect(found.some((d) => (placeOf(d) as { prop?: string }).prop === 'heading')).toBe(true);
+    // The design's own items, by their own IDs.
+    expect(found.filter((d) => (placeOf(d) as { itemId?: string }).itemId).map((d) => (placeOf(d) as { itemId: string }).itemId)).toEqual(PLANS.map((p) => p.id));
+  });
+
+  it('says nothing of a draft page, a cleared value, a button with nowhere to go, or a list its collection fills', () => {
+    const { s, node } = withSamples();
+    // A draft page is not on the website.
+    const draft = createStarterState('blank', 'Garden Co', false);
+    const other = run(draft, { type: 'page.create', pageId: 'pg_draft', title: 'Draft', route: '/draft/', draft: true } as EditOperation);
+    const def = sampleDesign(other);
+    const placed = makeInstance(def);
+    other.pages.pg_draft.nodes[placed.id] = placed;
+    other.pages.pg_draft.rootIds.push(placed.id);
+    expect(samples(other)).toEqual([]);
+    // Cleared, it shows nothing.
+    expect(samples(setProps(s, node.id, { heading: '' })).some((d) => (placeOf(d) as { prop?: string }).prop === 'heading')).toBe(false);
+    // Linked, the button shows its sample label.
+    const linked = setProps(s, node.id, { ctaLink: { type: 'page', target: s.site.homePageId } });
+    expect(samples(linked).some((d) => (placeOf(d) as { prop?: string }).prop === 'ctaLabel')).toBe(true);
+  });
+
+  it('says nothing of a list its collection fills', () => {
+    let s = createStarterState('business', 'Riverside Studio', false);
+    s = run(
+      s,
+      { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false }, fields: { role: { type: 'string', label: 'Role' } } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false, values: { role: 'Architect' } }
+    );
+    const team = Object.values(s.pages).flatMap((p) => Object.values(p.nodes).map((n) => ({ p, n }))).find(({ n }) => n.kind === 'instance' && s.components[n.definitionId].componentId === 'team.grid')!;
+    const owner: OwnerRef = { kind: 'page', id: team.p.id };
+    const before = samples(s).filter((d) => d.nodeId === team.n.id);
+    expect(before.length).toBeGreaterThan(0);
+    s = run(s, { type: 'instance.setListSource', owner, nodeId: team.n.id, prop: 'people', source: { query: { collectionId: 'team' }, fields: { name: 'title', role: 'field.role' } } } as EditOperation);
+    expect(samples(s).filter((d) => d.nodeId === team.n.id && (placeOf(d) as { prop?: string }).prop === 'people')).toEqual([]);
+  });
+
+  it('names a table its design starts with until one cell changes, and marked text a Foundation section shows', () => {
+    const s = createStarterState('blank', 'Garden Co', false);
+    const def = s.components[installComponent(s, 'data.table')];
+    def.properties.table = { ...(def.properties.table as TableProp), sampleDefault: true };
+    const hero = s.components[installComponent(s, 'hero.split')];
+    hero.properties.heading = { ...hero.properties.heading, sampleDefault: true } as typeof hero.properties.heading;
+    const table = makeInstance(def);
+    const placed = makeInstance(hero);
+    for (const n of [table, placed]) (s.pages[s.site.homePageId].nodes[n.id] = n), s.pages[s.site.homePageId].rootIds.push(n.id);
+    const found = samples(s, 'SAMPLE_DEFAULT');
+    expect(found.map((d) => [d.nodeId, (placeOf(d) as { prop: string }).prop])).toEqual([
+      [placed.id, 'heading'],
+      [table.id, 'table']
+    ]);
+    expect(found[1].message).toMatch(/still holds the sample rows and columns its design starts with/);
+    const value = structuredClone((def.properties.table as TableProp).default);
+    value.rows[0].cells[value.columns[0].id] = 'Our own';
+    expect(samples(setProps(s, table.id, { table: value }), 'SAMPLE_DEFAULT').map((d) => d.nodeId)).toEqual([placed.id]);
+  });
+});
+
+describe('basic elements’ first words', () => {
+  const SECTION = 'n_section01';
+  const start = () => {
+    const s = createStarterState('blank', 'Garden Co', false);
+    return run(s, { type: 'node.insert', newNodeId: SECTION, owner: home(s), parentId: null, componentId: 'layout.section' });
+  };
+  const insert = (s: ProjectState, op: Partial<Extract<EditOperation, { type: 'node.insert' }>>) => {
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: SECTION, slot: 'content', ...op } as EditOperation]);
+    return { s: r.state, id: r.results[0].nodeId as string };
+  };
+
+  it('names a heading, paragraph, rich text, badge, caption and linked button still saying what they were added with', () => {
+    let s = start();
+    for (const primitive of ['heading', 'paragraph', 'richtext', 'badge', 'figure', 'button'] as const) s = insert(s, { primitive }).s;
+    const button = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'link')!;
+    // Unlinked, the site leaves the button out.
+    expect(samples(s, 'SAMPLE_ELEMENT_STUB').map((d) => d.message.replace(/^Home: /, '').split(' still')[0])).toEqual(['a heading', 'a paragraph', 'a text block', 'a badge', 'a caption']);
+    s = setContent(s, button.id, 'link', { type: 'page', target: s.site.homePageId });
+    const found = samples(s, 'SAMPLE_ELEMENT_STUB');
+    expect(found).toHaveLength(6);
+    expect(found[5].message).toBe(`Home: a button still says “${ELEMENT_STUBS.button}”, the words it was added with. Write your own, or keep it as it is.`);
+    // The badge's and figure's words are their text, which the row leads to.
+    const badge = found[3];
+    expect(s.pages[s.site.homePageId].nodes[badge.nodeId!]).toMatchObject({ kind: 'text', text: 'New', name: 'Label' });
+    expect(destinationForDiagnostic(s, badge)).toEqual({ kind: 'element', owner: home(s), nodeId: badge.nodeId });
+  });
+
+  it('stops naming one once its words change, and keeps one badge without quieting another', () => {
+    let s = start();
+    const a = insert(s, { primitive: 'heading' });
+    s = a.s;
+    s = setContent(s, a.id, 'text', 'Our gardens');
+    expect(samples(s)).toEqual([]);
+    s = insert(s, { primitive: 'badge' }).s;
+    s = insert(s, { primitive: 'badge' }).s;
+    const both = samples(s);
+    expect(both).toHaveLength(2);
+    // A badge that says "New" on purpose is kept; the second still says it was never written.
+    const kept = new Set([keptSampleKey(both[0])]);
+    expect(withoutKeptSamples(validateState(s), kept, new Set()).filter((d) => d.code.startsWith('SAMPLE_'))).toEqual([both[1]]);
+    // A word anywhere else, typed by the author, is no stub.
+    expect(samples(insert(s, { primitive: 'paragraph', text: 'New' }).s)).toHaveLength(2);
+  });
+});
+
+/** The Business starter with its sample photos in the library, as a new project made with them has. */
+function business(name = 'Test Studio'): ProjectState {
+  const s = createStarterState('business', name, true);
+  for (const a of STARTER_ASSETS) s.assets.assets[a.id] = { id: a.id, name: a.name, kind: 'image', file: `static/assets/${a.source}`, mime: 'image/jpeg', width: 1600, height: 1067, bytes: 1000 } as unknown as AssetRecord;
+  return s;
+}
+
+describe('the Business starter’s copy and photos', () => {
+  it('names the copy and photos a new project still shows, each leading to its field', () => {
+    const s = business();
+    const copy = samples(s, 'SAMPLE_STARTER_COPY');
+    const photos = samples(s, 'SAMPLE_STARTER_PHOTO');
+    expect(copy.map((d) => d.message)).toContain('Home: Split hero’s Heading is still the Business starter’s sample text, “Calm, considered spaces for everyday life”. Write your own, or keep it as it is.');
+    // Copy the starter gives a section even where it is the section's own default, a team member's name, and the footer's tagline.
+    expect(copy.some((d) => /Eyebrow is still the Business starter’s sample text, “Interior design studio”/.test(d.message))).toBe(true);
+    expect(copy.some((d) => /Person 1 of Team’s People is still the Business starter’s sample, “Hannah Wells”/.test(d.message))).toBe(true);
+    expect(copy.some((d) => d.message.startsWith('Footer: Footer’s Tagline'))).toBe(true);
+    // Not the site's own name, its menus or its copyright line.
+    expect(copy.filter((d) => ['siteName', 'links', 'copyright'].includes((placeOf(d) as { prop?: string }).prop ?? ''))).toEqual([]);
+    // The site's description and each page's search description.
+    expect(copy.filter((d) => placeOf(d)?.kind === 'site' || placeOf(d)?.kind === 'pageSeo').map((d) => placeOf(d))).toEqual([
+      { kind: 'site', field: 'description' },
+      ...s.site.pageOrder.map((pageId) => ({ kind: 'pageSeo', pageId, field: 'description' }))
+    ]);
+    expect(destinationForDiagnostic(s, copy.find((d) => placeOf(d)?.kind === 'site')!)).toEqual({ kind: 'site', field: 'description' });
+    // Every photo it places: the hero's, the studio's, the gallery's three and the team's three portraits.
+    expect(photos.map((d) => d.message.match(/starter photo “([^”]+)”/)![1]).sort()).toEqual(STARTER_ASSETS.map((a) => a.name).sort());
+    const hero = photos.find((d) => d.message.includes('“Hero interior”'))!;
+    expect(hero.message).toBe('Home: Split hero’s Image still shows the starter photo “Hero interior”. Replace it with a picture of your own, or keep it as it is.');
+    const portrait = photos.find((d) => d.message.includes('“Portrait 1”'))!;
+    expect(placeOf(portrait)).toMatchObject({ kind: 'prop', prop: 'people', field: 'portrait' });
+  });
+
+  it('stops naming a photo replaced on the page, though the photo stays in Assets, and one given a file of the author’s', () => {
+    let s = business();
+    const hero = samples(s, 'SAMPLE_STARTER_PHOTO').find((d) => d.message.includes('“Hero interior”'))!;
+    s.assets.assets.a_own = { ...s.assets.assets.a_hero, id: 'a_own', name: 'Our shop', file: 'static/assets/own.jpg', originalName: 'own.jpg' } as AssetRecord;
+    s = setPropsAt(s, hero, { image: { assetId: 'a_own', alt: 'Our shop' } });
+    expect(Object.hasOwn(s.assets.assets, 'a_hero')).toBe(true);
+    const left = samples(s, 'SAMPLE_STARTER_PHOTO');
+    expect(left.some((d) => d.message.includes('“Hero interior”'))).toBe(false);
+    expect(left).toHaveLength(STARTER_ASSETS.length - 1);
+    // The studio photo given another file, from the author's disk, under the same ID.
+    s.assets.assets.a_studio = { ...s.assets.assets.a_studio, originalName: 'studio-own.jpg' } as AssetRecord;
+    expect(samples(s, 'SAMPLE_STARTER_PHOTO').some((d) => d.message.includes('“Studio table”'))).toBe(false);
+    // Unused, the photos in the library say nothing; a sharing image that is one does.
+    s.site.socialImage = 'a_kitchen';
+    expect(samples(s, 'SAMPLE_STARTER_PHOTO').filter((d) => placeOf(d)?.kind === 'site').map((d) => d.message)).toEqual(['The site’s sharing image is still the starter photo “Kitchen”. Choose a picture of your own in Site details, or keep it as it is.']);
+  });
+
+  it('still knows the copy that names the site after the site is renamed, and stops once it is written over', () => {
+    let s = business('Alder Studio');
+    s = run(s, { type: 'site.update', name: 'Birch & Co' });
+    // A duplicated project names its copy afresh: the starter's name still reads the sentences written with it.
+    s.manifest.name = 'Birch & Co';
+    const about = s.site.pageOrder[1];
+    expect(samples(s, 'SAMPLE_STARTER_COPY').some((d) => placeOf(d)?.kind === 'pageSeo' && (placeOf(d) as { pageId: string }).pageId === about)).toBe(true);
+    expect(samples(s).some((d) => /“Alder Studio designs homes/.test(d.message))).toBe(true);
+    // The starter's sentence with the new name is still the starter's; words of the author's own are not, and "Contact
+    // anything." is never the starter's "Contact Alder Studio.".
+    const contact = s.site.pageOrder[2];
+    s = run(s, { type: 'page.update', pageId: about, description: 'Meet the team behind Birch & Co.' });
+    expect(samples(s, 'SAMPLE_STARTER_COPY').some((d) => placeOf(d)?.kind === 'pageSeo' && (placeOf(d) as { pageId: string }).pageId === about)).toBe(true);
+    s = run(s, { type: 'page.update', pageId: about, description: 'The people who plan your garden.' }, { type: 'page.update', pageId: contact, description: 'Contact us today.' });
+    const pages = samples(s, 'SAMPLE_STARTER_COPY').flatMap((d) => (placeOf(d)?.kind === 'pageSeo' ? [(placeOf(d) as { pageId: string }).pageId] : []));
+    expect(pages).toEqual([s.site.homePageId]);
+  });
+
+  it('never names a sample contact detail, which the export reviews', () => {
+    const s = business();
+    expect(samples(s).some((d) => [SAMPLE_CONTACT.email, SAMPLE_CONTACT.phone, SAMPLE_CONTACT.address].some((v) => d.message.includes(v)))).toBe(false);
+  });
+});
+
+/** Change a placement's values where a finding names it. */
+function setPropsAt(s: ProjectState, d: Diagnostic, props: Record<string, unknown>): ProjectState {
+  return setProps(s, d.nodeId!, props, d.owner as OwnerRef);
+}
+
+describe('the Component showcase', () => {
+  it('names none of what it placed on purpose, and what the author adds to it', () => {
+    const s = business();
+    const showcase = createStarterState('showcase', 'Showcase', false);
+    const fixtures = new Set(sampleFixtures(showcase));
+    const def = sampleDesign(showcase);
+    const shown = validateState(showcase);
+    expect(withoutKeptSamples(shown, new Set(), fixtures).filter((d) => d.code.startsWith('SAMPLE_'))).toEqual([]);
+    const added = makeInstance(def);
+    showcase.pages[showcase.site.homePageId].nodes[added.id] = added;
+    showcase.pages[showcase.site.homePageId].rootIds.push(added.id);
+    const after = withoutKeptSamples(validateState(showcase), new Set(), fixtures).filter((d) => d.code.startsWith('SAMPLE_'));
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((d) => d.nodeId === added.id)).toBe(true);
+    void s;
+  });
+});

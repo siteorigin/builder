@@ -18,3 +18,13 @@ export const SAMPLE_CONTACT_VALUES: Array<{ kind: SampleContactKind; value: stri
   { kind: 'phone', value: SAMPLE_CONTACT.phone, label: 'Sample phone number' },
   { kind: 'address', value: SAMPLE_CONTACT.address, label: 'Sample street address' }
 ];
+
+/**
+ * Whether words hold one of the sample details, as written (any case; the telephone number in any spacing): what the
+ * export's review of sample contact details already names, so no other check names it again.
+ */
+export function holdsSampleContact(text: string): boolean {
+  const lower = text.toLowerCase();
+  if (lower.includes(SAMPLE_CONTACT.email) || lower.replace(/\s+/g, ' ').includes(SAMPLE_CONTACT.address.toLowerCase())) return true;
+  return text.replace(/[^\d+]/g, '').includes(SAMPLE_CONTACT.phoneDial.replace(/^\+/, ''));
+}

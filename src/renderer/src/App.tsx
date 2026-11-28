@@ -360,6 +360,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     // A choice to change the whole site was made for the last project, never for this one.
     chatContextEnabled: { page: true, scope: 'selection' },
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
+    keptSampleContent: Array.isArray(local.keptSampleContent) ? local.keptSampleContent.filter((v): v is string => typeof v === 'string') : [],
     firstSteps: readFirstSteps(local.firstSteps),
     conversation: null,
     pagePlaces,

@@ -39,6 +39,7 @@ import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
+import { ELEMENT_STUBS } from '@shared/element-stubs';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { patchIdentity } from '@shared/site-identity';
@@ -1632,18 +1633,18 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
     case 'grid':
       return [{ id, kind: 'element', tag: 'div', children: [], styles: { base: { layout: 'grid', columns: 1, gap: space('space.lg') }, desktop: { columns: 3 } } }];
     case 'heading':
-      return [{ id, kind: 'text', tag: 'h2', text: text ?? 'New heading', styles: { base: { textStyle: space('text.h2') } } }];
+      return [{ id, kind: 'text', tag: 'h2', text: text ?? ELEMENT_STUBS.heading, styles: { base: { textStyle: space('text.h2') } } }];
     case 'paragraph':
-      return [{ id, kind: 'text', tag: 'p', text: text ?? 'Write something here.', styles: { base: { textStyle: space('text.body') } } }];
+      return [{ id, kind: 'text', tag: 'p', text: text ?? ELEMENT_STUBS.paragraph, styles: { base: { textStyle: space('text.body') } } }];
     case 'richtext':
-      return [{ id, kind: 'text', tag: 'div', rich: true, text: normalizeRichText(text ?? 'Write something here.', state, 'Rich text'), styles: { base: { textStyle: space('text.body') } } }];
+      return [{ id, kind: 'text', tag: 'div', rich: true, text: normalizeRichText(text ?? ELEMENT_STUBS.paragraph, state, 'Rich text'), styles: { base: { textStyle: space('text.body') } } }];
     case 'slot':
     case 'repeat':
       fail(`A ${kind} needs a component definition and "bind".`);
     case 'image':
       return [{ id, kind: 'image', image: { assetId: null, alt: '' }, styles: { base: { radius: space('radius.md') } } }];
     case 'button':
-      return [{ id, kind: 'link', link: { type: 'none', target: '' }, label: text ?? 'Button', appearance: 'primary' }];
+      return [{ id, kind: 'link', link: { type: 'none', target: '' }, label: text ?? ELEMENT_STUBS.button, appearance: 'primary' }];
     case 'icon':
       return [{ id, kind: 'icon', icon: 'sparkles', styles: { base: { color: space('color.brand'), fontSize: '1.5rem' } } }];
     case 'divider': {
@@ -1657,7 +1658,7 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
     case 'badge': {
       // A pill that sits in a line of text as well as above a heading: inline, as wide as its label.
       const icon = startIcon(start.icon);
-      const label: GraphNode = { id: newId('n'), kind: 'text', tag: 'span', text: text ?? 'New', name: 'Label', styles: { base: declared({ textStyle: space('text.eyebrow') }) } };
+      const label: GraphNode = { id: newId('n'), kind: 'text', tag: 'span', text: text ?? ELEMENT_STUBS.badge, name: 'Label', styles: { base: declared({ textStyle: space('text.eyebrow') }) } };
       const lead: GraphNode[] = icon ? [{ id: newId('n'), kind: 'icon', icon, styles: { base: { fontSize: '1em' } } }] : [];
       const styles = {
         base: declared({
@@ -1680,7 +1681,7 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
       const image: GraphNode = { id: newId('n'), kind: 'image', image: { assetId: null, alt: '' }, styles: { base: declared({ radius: space('radius.md') }) } };
       // An empty caption leaves it out; one can be added (or removed) later like any text.
       const caption: GraphNode[] =
-        text === '' ? [] : [{ id: newId('n'), kind: 'text', tag: 'figcaption', name: 'Caption', text: text ?? 'Add a caption.', styles: { base: declared({ textStyle: space('text.small'), color: space('color.muted') }) } }];
+        text === '' ? [] : [{ id: newId('n'), kind: 'text', tag: 'figcaption', name: 'Caption', text: text ?? ELEMENT_STUBS.caption, styles: { base: declared({ textStyle: space('text.small'), color: space('color.muted') }) } }];
       const children = [image.id, ...caption.map((n) => n.id)];
       return [{ id, kind: 'element', tag: 'figure', name: 'Figure', children, styles: { base: declared({ layout: 'stack', gap: space('space.xs') }) } }, image, ...caption];
     }
