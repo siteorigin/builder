@@ -73,7 +73,7 @@ async function renderSite(s: ProjectState, opts: { instrument?: boolean } = {}):
   writeFileSync(paths, 'export const resolve = (p) => "/studio" + p; export const asset = (p) => "/studio/" + p; export const base = "/studio";\n');
   // Navigation callbacks never run while rendering on the server.
   const navigation = join(dir, 'app-navigation.js');
-  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const snapshot = () => {};\n');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {}; export const snapshot = () => {};\n');
   const state = join(dir, 'app-state.js');
   writeFileSync(state, 'export const page = { url: new URL("https://example.com/studio/"), status: 200, error: null, params: {}, data: {}, route: { id: "/" } };\n');
   for (const [path, source] of generateProject(s, opts)) {
