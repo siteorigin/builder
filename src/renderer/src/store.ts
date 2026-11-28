@@ -11,7 +11,7 @@ import { seoSubjectKey } from './lib/seo-view';
 import { panelAfterSeo, rememberPanelBeforeSeo } from './lib/workspace';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
-import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
+import { attachImage, chatStatePatch, draftFor, keepAnswer, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, sendTyped, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { sendHeldPicks } from './lib/pick-gate';
@@ -385,6 +385,8 @@ export interface State {
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
   chatImages: ChatImages;
+  /** The answer being typed to the waiting question (by its run and question), so leaving the project can keep it. */
+  chatAnswer: { key: string; text: string };
   /**
    * A request another part of the editor asked the chat to send (Create component's Build with AI). `held` once it
    * waits for the author to send it from the chat, or while it is being sent.
@@ -548,6 +550,7 @@ const live = create<State>((set) => ({
   runSaveable: false,
   chatDrafts: {},
   chatImages: {},
+  chatAnswer: { key: '', text: '' },
   chatRequest: null,
   chatContextEnabled: { page: true, scope: 'selection' },
   chatMode: 'edit',
@@ -954,6 +957,16 @@ export function setChatDraft(conversationId: string | null | undefined, text: st
   const drafts = getState().chatDrafts;
   const next = withDraft(drafts, conversationId, text);
   if (next !== drafts) setState({ chatDrafts: next });
+}
+
+/**
+ * An answer typed to a waiting question and not sent becomes the open conversation's unsent message when the project
+ * is left: the request stops and the question comes back as not answered, so this is where it can be recovered (#1471).
+ */
+export function keepUnsentAnswer() {
+  const s = getState();
+  if (!s.conversation || !s.chatAnswer.text.trim()) return;
+  setState({ chatDrafts: keepAnswer(s.chatDrafts, s.conversation.id, s.chatAnswer.text), chatAnswer: { key: '', text: '' } });
 }
 
 /** The images attached to the open conversation's unsent message. */

@@ -1,5 +1,5 @@
 import { leavingEnded, retainRefused, savesInFlight, settle, type Settled } from './pending';
-import { api, confirmDialog, copyTextAction, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
+import { api, confirmDialog, copyTextAction, editRunStatus, getConfirm, getState, keepUnsentAnswer, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
 import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -49,6 +49,7 @@ function holdEditing() {
 }
 /** Leaving was agreed: the project closes next. A long timeout ends the hold in case it never does. */
 function leaveAgreed() {
+  keepUnsentAnswer();
   if (holdTimer) clearTimeout(holdTimer);
   holdTimer = setTimeout(() => setState({ leaving: false }), 60000);
 }

@@ -500,7 +500,9 @@ export function Chat() {
   // piece of a reply that streams while the box is empty.
   const replayWanted = configured && provider?.id === 'local' && !asking && !!draft.trim();
   const replayed = useMemo(() => (replayWanted ? replayedWords(conversation?.messages ?? []) : []), [replayWanted, conversation?.messages]);
-  const [answerBox, setAnswerBox] = useState({ key: '', text: '' });
+  const answerBox = useStore((s) => s.chatAnswer);
+  const setAnswerBox = (next: { key: string; text: string } | ((b: { key: string; text: string }) => { key: string; text: string })) =>
+    setState({ chatAnswer: typeof next === 'function' ? next(getState().chatAnswer) : next });
   const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
   const composerText = asking ? answerText : draft;
   const answering = useRef<string | null>(null);
