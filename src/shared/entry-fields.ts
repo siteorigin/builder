@@ -20,11 +20,13 @@
  *   `publishedAt` is; a number is written as the site's language writes it and a choice shows its option's label,
  *   while a condition, a placed section's number or choice, and a sort read the value stored; a reference field shows
  *   the titles of the entries it names, separated by commas, and a condition reads their IDs.
+ * - `field.<name>.links`: a reference field's titles as rich text, each a link to the entry's page while it has one
+ *   (a published entry of a collection with entry pages), the others as text: what the ready-made layout shows.
  *
  * A collection whose entries have no text of their own (`hasBody: false`) has no `body` or `readingTime`.
  */
 import type { Collection, CollectionFieldSchema, EntryDoc, ImageValue, LinkValue, PropSchema, ProjectState, ReferenceFieldSchema, RichText } from './types';
-import { collectionHasBody } from './collections';
+import { collectionHasBody, hasDetailPages } from './collections';
 import { libraryAlt } from './asset-alt';
 import { formatArticleDate, isArticleDate } from './articles';
 import { siteLanguage } from './languages';
@@ -103,6 +105,29 @@ function fieldAsProp(f: CollectionFieldSchema): PropSchema {
   return f;
 }
 
+/** The suffix of a reference field's linked form: `field.<name>.links`. */
+const LINKS = '.links';
+
+/** The linked form of a reference field, as rich text. */
+const linksOf = (f: ReferenceFieldSchema): PropSchema => ({ type: 'richtext', label: `${typeof f.label === 'string' ? f.label : ''} (links)`, default: [], ...(f.description ? { description: f.description } : {}) });
+
+/**
+ * The name of the custom field a binding reads, its linked form included (`field.crew.links` reads `crew`), or
+ * undefined for a binding that reads none.
+ */
+export function customFieldName(field: string): string | undefined {
+  if (typeof field !== 'string' || !field.startsWith('field.')) return undefined;
+  const name = field.slice(6);
+  return name.endsWith(LINKS) ? name.slice(0, -LINKS.length) : name;
+}
+
+/** The reference field whose linked form a `field.<name>.links` binding reads, as the collection declares it. */
+function linkedReference(collection: Pick<Collection, 'settings'>, field: string): ReferenceFieldSchema | undefined {
+  if (!field.startsWith('field.') || !field.endsWith(LINKS)) return undefined;
+  const f = own(collection.settings.fields, field.slice(6, -LINKS.length));
+  return f && typeof f === 'object' && f.type === 'reference' ? f : undefined;
+}
+
 /** Whether a built-in field is one the collection's entries have: all of them, but the text's for entries without text. */
 const hasBuiltIn = (collection: Pick<Collection, 'settings'>, field: string) => Object.hasOwn(BUILT_IN, field) && (!BODY_FIELDS.has(field) || collectionHasBody(collection.settings));
 
@@ -114,7 +139,11 @@ export function entryFieldSchemas(collection: Pick<Collection, 'settings'>): Rec
   const out: Record<string, PropSchema> = {};
   for (const name of ENTRY_FIELD_NAMES) if (hasBuiltIn(collection, name)) out[name] = BUILT_IN[name];
   for (const [id, t] of Object.entries(collection.settings.taxonomies ?? {})) out[`terms.${id}`] = text(typeof t?.label === 'string' ? t.label : id);
-  for (const [name, f] of Object.entries(collection.settings.fields ?? {})) if (f && typeof f === 'object') out[`field.${name}`] = fieldAsProp(f);
+  for (const [name, f] of Object.entries(collection.settings.fields ?? {})) {
+    if (!f || typeof f !== 'object') continue;
+    out[`field.${name}`] = fieldAsProp(f);
+    if (f.type === 'reference') out[`field.${name}${LINKS}`] = linksOf(f);
+  }
   return out;
 }
 
@@ -127,6 +156,8 @@ export function entryFieldSchema(collection: Pick<Collection, 'settings'>, field
     return t ? text(typeof t.label === 'string' ? t.label : field.slice(6)) : undefined;
   }
   if (field.startsWith('field.')) {
+    const linked = linkedReference(collection, field);
+    if (linked) return linksOf(linked);
     const f = customField(collection, field);
     return f ? fieldAsProp(f) : undefined;
   }
@@ -234,15 +265,43 @@ function neighbourLabel(wording: string, neighbour: EntryDoc | undefined): strin
  * neither.
  */
 function referenceValue(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, value: unknown, form: EntryValueForm): unknown {
-  const target = own(state.collections, schema.collection);
-  // An ID its collection has no entry for here (one removed, or a draft the published site leaves out) names nothing,
-  // so a condition on the field does not show a row whose names are all gone.
-  const ids = (Array.isArray(value) ? value : [value]).filter((id): id is string => typeof id === 'string' && id !== '' && !!own(target?.entries, id));
+  const ids = namedIds(state, schema, value);
   if (form === 'raw') return schema.multiple ? ids : (ids[0] ?? '');
-  return ids
-    .map((id) => str(own(target?.entries, id)?.title))
-    .filter(Boolean)
+  return named(state, schema, ids)
+    .map((e) => e.title)
     .join(', ');
+}
+
+/**
+ * The IDs a reference field's value names that its collection has an entry for here. One removed, or a draft the
+ * published site leaves out, names nothing, so a condition on the field does not show a row whose names are all gone.
+ */
+function namedIds(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, value: unknown): string[] {
+  const target = own(state.collections, schema.collection);
+  return (Array.isArray(value) ? value : [value]).filter((id): id is string => typeof id === 'string' && id !== '' && !!own(target?.entries, id));
+}
+
+/** The entries `ids` name in a reference field's collection, in its order, each with its title; one without a title is left out. */
+function named(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, ids: string[]): Array<{ entry: EntryDoc; title: string }> {
+  const target = own(state.collections, schema.collection);
+  return ids.flatMap((id) => {
+    const entry = own(target?.entries, id);
+    const title = str(entry?.title);
+    return entry && title ? [{ entry, title }] : [];
+  });
+}
+
+/**
+ * A reference field's titles as one paragraph of rich text, separated by commas: each a link to the entry's page while
+ * it has one, the title alone for a record of a data-only collection or a draft (which no published page links to).
+ */
+function linkedReferenceValue(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, value: unknown): RichText {
+  const paged = hasDetailPages(own(state.collections, schema.collection)?.settings);
+  const spans = named(state, schema, namedIds(state, schema, value)).flatMap(({ entry, title }, i) => [
+    ...(i ? [{ text: ', ' }] : []),
+    paged && !entry.draft ? { text: title, link: { type: 'entry', target: entry.id } as LinkValue } : { text: title }
+  ]);
+  return spans.length ? [{ type: 'p', spans }] : [];
 }
 
 /**
@@ -299,6 +358,9 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
   }
   if (field.startsWith('terms.')) return own(collection.settings.taxonomies, field.slice(6)) ? termLabels(collection, entry, field.slice(6)) : undefined;
   if (field.startsWith('field.')) {
+    const linked = linkedReference(collection, field);
+    // As a reference reads, an entry chooses what it names, whatever a damaged default says.
+    if (linked) return linkedReferenceValue(state, linked, own(entry.values, field.slice(6, -LINKS.length)));
     const name = field.slice(6);
     const schema = own(collection.settings.fields, name);
     if (!schema) return undefined;
