@@ -78,11 +78,16 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     expect(packageRequest({ add: 'zod@latest' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact', '--save-prod'], spec: 'zod@latest' });
     expect(packageRequest({ add: 'chartist@1.1.0' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact', '--save-dev'], spec: 'chartist@1.1.0' });
     expect(packageRequest({ remove: 'chartist' }, pkg)).toEqual({ ok: true, verb: 'remove', name: 'chartist', command: 'uninstall', options: [], spec: 'chartist' });
+    // An optional one stays optional, a peer stays a peer, and an optional peer stays both.
+    const more = pkgWith({ optionalDependencies: { fsevents: '2.3.3' }, peerDependencies: { leaflet: '1.9.4', three: '0.170.0' }, peerDependenciesMeta: { three: { optional: true } } });
+    expect(packageRequest({ add: 'fsevents@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-optional'] });
+    expect(packageRequest({ add: 'leaflet@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-peer'] });
+    expect(packageRequest({ add: 'three@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-peer', '--save-optional'] });
   });
 
   it('refuses anything but a registry package, the website’s own tools, and removing one the project does not have', () => {
     const pkg = pkgWith({ dependencies: { zod: '4.1.0' } });
-    for (const add of ['github:sveltejs/svelte', 'file:../secrets', '../x', '/etc', 'https://example.com/x.tgz', 'zod@npm:evil@1', 'git+ssh://git@github.com/a/b.git', 'a b', '@scope', 'node:fs', '-g', `${'a'.repeat(300)}`])
+    for (const add of ['demo@ .', 'demo@ ./x', 'github:sveltejs/svelte', 'file:../secrets', '../x', '/etc', 'https://example.com/x.tgz', 'zod@npm:evil@1', 'git+ssh://git@github.com/a/b.git', 'a b', '@scope', 'node:fs', '-g', `${'a'.repeat(300)}`])
       expect(packageRequest({ add }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/isn’t a package from npm/) });
     for (const blank of ['', '   ']) expect(packageRequest({ add: blank }, pkg)).toEqual({ ok: false, message: 'Type the name of a package, such as zod or zod@4.1.0.' });
     for (const name of ['svelte', 'vite', '@sveltejs/kit']) {
@@ -106,24 +111,27 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     expect(fail('ENOTFOUND')).toBe('The npm registry couldn’t be reached (ENOTFOUND). Check the internet connection, then try again.');
     expect(fail('ERESOLVE', 'Installing dependencies failed (exit 1). npm error peer svelte@4')).toBe('“zod” doesn’t fit with the project’s other packages: npm error peer svelte@4');
     expect(fail(undefined)).toBe('npm couldn’t add “zod”: npm error something');
+    const remove = packageRequest({ remove: 'zod' }, pkgWith({ dependencies: { zod: '4.1.0' } })) as Extract<ReturnType<typeof packageRequest>, { ok: true }>;
+    expect(packageFailure(remove, Object.assign(new Error('Installing dependencies failed (exit 1). npm error EACCES'), { code: 'EACCES' }))).toBe('npm couldn’t remove “zod”: npm error EACCES');
   });
 });
 
 describe('the Packages list (#1480)', () => {
   it('lists every package the project declares, its own first, with the version set up in its tools', async () => {
     const dir = join(root, 'project');
-    const pkg = pkgWith({ dependencies: { zod: '4.1.0', '@scope/charts': '^2.0.0' }, peerDependencies: { leaflet: '1.9.4' } });
+    const pkg = pkgWith({ dependencies: { zod: '4.1.0', '@scope/charts': '^2.0.0' }, optionalDependencies: { fsevents: '2.3.3' }, peerDependencies: { leaflet: '1.9.4' } });
     mkdirSync(join(dir, 'node_modules', '@scope', 'charts'), { recursive: true });
     writeFileSync(join(dir, 'node_modules', '@scope', 'charts', 'package.json'), JSON.stringify({ version: '2.3.1' }));
     mkdirSync(join(dir, 'node_modules', 'svelte'), { recursive: true });
     writeFileSync(join(dir, 'node_modules', 'svelte', 'package.json'), JSON.stringify({ version: '5.59.1' }));
     const list = await listPackages(dir, pkg);
-    expect(list.slice(0, 3)).toEqual([
+    expect(list.slice(0, 4)).toEqual([
       { name: '@scope/charts', wanted: '^2.0.0', section: 'dependencies', installed: '2.3.1', tool: false },
+      { name: 'fsevents', wanted: '2.3.3', section: 'optionalDependencies', installed: null, tool: false },
       { name: 'leaflet', wanted: '1.9.4', section: 'peerDependencies', installed: null, tool: false },
       { name: 'zod', wanted: '4.1.0', section: 'dependencies', installed: null, tool: false }
     ]);
-    expect(list.slice(3).map((p) => [p.name, p.tool, p.installed])).toEqual([
+    expect(list.slice(4).map((p) => [p.name, p.tool, p.installed])).toEqual([
       ['@sveltejs/adapter-static', true, null],
       ['@sveltejs/kit', true, null],
       ['@sveltejs/vite-plugin-svelte', true, null],
@@ -154,7 +162,11 @@ describe('working a change out away from the project (#1480)', () => {
     expect(existsSync(run.cwd)).toBe(false);
     const args = run.args.slice(1);
     expect(args[0]).toBe('install');
-    for (const flag of ['--package-lock-only', '--prefer-offline', '--ignore-scripts', '--install-strategy=hoisted', '--save-exact', '--save-prod']) expect(args).toContain(flag);
+    // The same settings as the install that follows (so its lock is the one `npm ci` installs), the change saved and
+    // made for real whatever the author's npm settings say, and what the registry has now.
+    for (const flag of ['--package-lock-only', '--prefer-online', '--save=true', '--dry-run=false', '--ignore-scripts', '--install-strategy=hoisted', '--include=dev', '--include=optional', '--include=peer', `--os=${process.platform}`, `--cpu=${process.arch}`, '--save-exact', '--save-prod'])
+      expect(args).toContain(flag);
+    expect(args).not.toContain('--prefer-offline');
     // The package is given last, after `--`, so nothing in it is ever read as a setting.
     expect(args.slice(-2)).toEqual(['--', 'zod@4.1.0']);
     expect(args.indexOf('--save-prod')).toBeLessThan(args.indexOf('--'));
@@ -165,6 +177,20 @@ describe('working a change out away from the project (#1480)', () => {
     const failed = await resolvePackageFiles(files(), 'install', [], 'zodd').catch((e: Error & { code?: string }) => e);
     expect(failed).toMatchObject({ code: 'E404' });
     expect(existsSync(npm.runs[0].cwd)).toBe(false);
+  });
+
+  it('needs nothing new from the registry to remove a package', async () => {
+    npm.write = () => undefined;
+    await resolvePackageFiles(files(), 'uninstall', [], 'zod');
+    expect(npm.runs[0].args.slice(1)).toEqual(expect.arrayContaining(['uninstall', '--prefer-offline', '--save=true']));
+    expect(npm.runs[0].args).not.toContain('--prefer-online');
+  });
+
+  it('starts no npm once already stopped', async () => {
+    const abort = new AbortController();
+    abort.abort();
+    expect(await resolvePackageFiles(files(), 'install', [], 'zod', abort.signal).catch((e: Error) => e)).toMatchObject({ message: 'Canceled' });
+    expect(npm.runs).toEqual([]);
   });
 
   it('stops npm when asked to', async () => {

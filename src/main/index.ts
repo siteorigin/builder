@@ -30,7 +30,7 @@ import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
-import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, importedPackages, projectTokenVars } from './codecheck';
+import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, packagesUsed, projectTokenVars } from './codecheck';
 import { designCalled } from '@generator/index';
 import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -1065,9 +1065,9 @@ function registerIpc() {
     fixAbort?.abort();
     const abort = (fixAbort = new AbortController());
     try {
-      // The assistant's policy allows no npm package (#1480): a fix of code that uses one could only pass by dropping
-      // it, so the developer fixes it instead.
-      const used = await importedPackages(String(source));
+      // The assistant's policy allows no npm package (#1480): a fix of code that uses one, itself or through a project
+      // component it imports, could only pass by dropping it, so the developer fixes it instead.
+      const used = await packagesUsed(String(source), controller.session ? componentSources(controller.session.state.components) : undefined);
       if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Canceled' };
       if (used.length) return { ok: false, message: `The assistant can’t fix code that imports npm packages (${used.map((n) => `“${n}”`).join(', ')}), so fix these problems by hand.` };
       const ad = await orchestratorAdapter(abort.signal);

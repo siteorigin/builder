@@ -39,7 +39,9 @@ const npm = vi.hoisted(() => ({
   fail: null as null | (Error & { code?: string }),
   hold: null as null | Promise<void>,
   aborted: 0,
-  installs: 0
+  installs: 0,
+  /** Runs while the tools are being set up, as the author can edit files meanwhile. */
+  duringInstall: null as null | ((dir: string) => void)
 }));
 vi.mock('../../src/main/runtime/manager', async () => {
   const { existsSync, mkdirSync, writeFileSync } = await import('node:fs');
@@ -51,6 +53,7 @@ vi.mock('../../src/main/runtime/manager', async () => {
     dependenciesReady: async (dir: string) => existsSync(marker(dir)),
     prepareDependencies: async (dir: string) => {
       npm.installs++;
+      npm.duringInstall?.(dir);
       mkdirSync(join(dir, '.siteorigin', 'cache'), { recursive: true });
       writeFileSync(marker(dir), '{}');
     },
@@ -118,7 +121,7 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
   settings.trusted.clear();
   Object.assign(settings, { developerMode: true, trusts: 0 });
-  Object.assign(npm, { runs: [], answer: null, fail: null, hold: null, aborted: 0, installs: 0 });
+  Object.assign(npm, { runs: [], answer: null, fail: null, hold: null, aborted: 0, installs: 0, duringInstall: null });
 });
 
 const until = async (what: () => boolean) => {
@@ -229,6 +232,72 @@ describe('changing the project’s npm packages (#1480)', () => {
     expect(settings.trusts).toBe(trusts);
   });
 
+  for (const [what, file] of [
+    ['package.json', 'package.json'],
+    ['the npm settings', '.npmrc']
+  ] as const)
+    it(`writes nothing over ${what} edited outside the app while npm works the change out`, async () => {
+      const { c, dir, opening, read } = await opened();
+      npm.answer = addZod;
+      let release = () => {};
+      npm.hold = new Promise<void>((r) => (release = r));
+      const changing = c.changeProjectPackage({ add: 'zod@4.1.0' }, opening);
+      await until(() => npm.runs.length === 1);
+      const edited = file === 'package.json' ? read('package.json').replace('"private": true', '"private": true, "description": "mine"') : 'registry=https://registry.example.com/\n';
+      writeFileSync(join(dir, file), edited);
+      const lock = read('package-lock.json');
+      release();
+      expect((await changing).message).toMatch(/changed while the package was being worked out/);
+      expect(read(file)).toBe(edited);
+      expect(read('package-lock.json')).toBe(lock);
+    });
+
+  it('refuses a change npm reports done but did not make, and one Developer mode was turned off for meanwhile', async () => {
+    const { c, opening, read } = await opened();
+    const before = read('package.json');
+    // npm settings of the author's own (save=false) leave the files as they were, and npm still succeeds.
+    npm.answer = (files) => files;
+    expect(await c.changeProjectPackage({ add: 'zod' }, opening)).toEqual({ ok: false, message: 'npm didn’t change the project’s package files for “zod”, so nothing was changed. Check the project’s npm settings (.npmrc).' });
+    npm.answer = addZod;
+    let release = () => {};
+    npm.hold = new Promise<void>((r) => (release = r));
+    const changing = c.changeProjectPackage({ add: 'zod@4.1.0' }, opening);
+    await until(() => npm.runs.length === 2);
+    settings.developerMode = false;
+    release();
+    expect((await changing).message).toBe('Developer mode was turned off, so the project’s packages were not changed.');
+    expect(read('package.json')).toBe(before);
+  });
+
+  it('stops the preview at the trust check when the build settings change while the tools are set up for a new package', async () => {
+    const { c, dir, opening } = await opened();
+    npm.answer = addZod;
+    npm.duringInstall = (d) => writeFileSync(join(d, 'vite.config.js'), 'export default { plugins: [] };\n');
+    expect((await c.changeProjectPackage({ add: 'zod@4.1.0' }, opening)).ok).toBe(true);
+    expect(c.snapshot()?.runtime).toMatchObject({ state: 'error', message: expect.stringMatching(/build settings changed outside SiteOrigin Builder/) });
+    expect(existsSync(join(dir, 'vite.config.js'))).toBe(true);
+  });
+
+  it('refuses a removal when code importing the package is saved while npm works it out', async () => {
+    const { c, opening, read } = await opened();
+    npm.answer = addZod;
+    expect((await c.changeProjectPackage({ add: 'zod@4.1.0' }, opening)).ok).toBe(true);
+    npm.answer = (files) => {
+      const pkg = JSON.parse(files['package.json']);
+      delete pkg.dependencies;
+      return { 'package.json': `${JSON.stringify(pkg, null, 2)}\n`, 'package-lock.json': files['package-lock.json'] };
+    };
+    let release = () => {};
+    npm.hold = new Promise<void>((r) => (release = r));
+    const removing = c.changeProjectPackage({ remove: 'zod' }, opening);
+    await until(() => npm.runs.length === 2);
+    const source = `<script>\n\timport { z } from 'zod';\n</script>\n\n<p>{String(z)}</p>\n`;
+    expect(await c.session!.apply({ operations: [{ type: 'component.createCode', name: 'Late', source }] }, { label: 'Create Late', codeAllowed: true })).toMatchObject({ ok: true });
+    release();
+    expect(await removing).toEqual({ ok: false, message: '“zod” is still imported by the code component “Late”. Remove the import from it first.' });
+    expect(JSON.parse(read('package.json')).dependencies).toEqual({ zod: '4.1.0' });
+  });
+
   it('refuses to remove a package a code component imports, naming it, and removes it once nothing does', async () => {
     const { c, opening, read } = await opened();
     npm.answer = addZod;
@@ -265,6 +334,11 @@ describe('changing the project’s npm packages (#1480)', () => {
     expect(npm.aborted).toBe(1);
     release();
     expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(before);
+    expect(await c.changeProjectPackage({ add: 'zod' }, opening)).toEqual({ ok: false, message: 'The project was closed before its packages could be changed.' });
+    // Opened again, it is another opening: a change asked in the one before changes nothing.
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready');
+    expect(c.snapshot()!.workspaceKey).not.toBe(opening);
     expect(await c.changeProjectPackage({ add: 'zod' }, opening)).toEqual({ ok: false, message: 'The project was closed before its packages could be changed.' });
     expect(npm.runs).toHaveLength(1);
   });

@@ -75,16 +75,18 @@ export const themeTokenVars = (tokens: ReadonlyArray<{ id: string; group: string
 /** The CSS variables a project's theme and own tokens define, for CheckOptions.tokens. */
 export const projectTokenVars = (state: ProjectState): Set<string> => themeTokenVars(effectiveTokens(state), getTheme(state.site.themeId).baseCss);
 
-/** An npm package name: `zod`, `chart.js`, `@scope/name`, and the capitals of an old one (`JSONStream`). */
-const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
+/** An npm package name: `zod`, `chart.js`, `@scope/name`, `@scope/_name`, and the capitals of an old one (`JSONStream`). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/(?!\.)[a-z0-9._~-]+|[a-z0-9][a-z0-9._~-]*)$/i;
 
 /**
  * The package a bare import names (`zod` for `zod`, `searchsocket` for `searchsocket/svelte`, `@scope/name` for
- * `@scope/name/sub`), or null when the import is no plain import of a package: a path, an alias (`#lib`, `$app`), a URL
- * or a Node.js builtin (`node:fs`), or a package path that climbs out of the package (`zod/../x`).
+ * `@scope/name/sub`, whatever query Vite is given: `zod?raw`), or null when the import is no plain import of a package:
+ * a path, an alias (`#lib`, `$app`), a URL or a Node.js builtin (`node:fs`), or a package path that climbs out of the
+ * package (`zod/../x`).
  */
 export function packageOf(spec: string): string | null {
-  const parts = spec.split('/');
+  const cut = spec.search(/[?#]/);
+  const parts = (cut < 0 ? spec : spec.slice(0, cut)).split('/');
   const n = spec.startsWith('@') ? 2 : 1;
   const name = parts.slice(0, n).join('/');
   if (parts.length < n || !PACKAGE_NAME.test(name)) return null;
@@ -269,6 +271,43 @@ interface Reach {
  * read is looked through as text, so a broken draft still says which packages it uses.
  */
 export async function importedPackages(source: string): Promise<string[]> {
+  return packagesIn(await importSpecs(source));
+}
+
+/**
+ * The npm packages a component's code uses (importedPackages), with those of every project component it imports, and
+ * theirs in turn, as `resolve` (componentSources) has their code.
+ */
+export async function packagesUsed(source: string, resolve?: (path: string) => string | null | undefined): Promise<string[]> {
+  const found = new Set<string>();
+  const seen = new Set<string>();
+  const visit = async (code: string) => {
+    const specs = await importSpecs(code);
+    for (const name of packagesIn(specs)) found.add(name);
+    for (const spec of specs) {
+      const p = resolveSpec(withoutQuery(spec));
+      const file = p && inLib(p) ? moduleFiles(p).find((f) => typeof resolve?.(f) === 'string') : undefined;
+      if (!file || seen.has(file)) continue;
+      seen.add(file);
+      await visit(resolve!(file)!);
+    }
+  };
+  await visit(source);
+  return [...found];
+}
+
+/** The packages that import specifiers name (packageOf), each once; Svelte is no package here. */
+const packagesIn = (specs: string[]): string[] => [...new Set(specs.filter((s) => s !== 'svelte' && !s.startsWith('svelte/')).flatMap((s) => packageOf(s) ?? []))];
+
+/** A comment, wherever the grammar lets one go between the words of an import. */
+const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*`;
+/** An import of the code's (`from '…'`, `import '…'`, `import('…')`), as text, for code the compiler can't read. */
+const IMPORT_TEXT = new RegExp(String.raw`\b(?:from|import)${GAP}\(?${GAP}(['"])([^'"\n]+)\1`, 'g');
+/** A stylesheet's `@import '…'` or `@import url('…')`, which Vite resolves as it resolves the code's imports. */
+const CSS_IMPORT = /@import\s+(?:url\(\s*)?(['"])([^'"\n]+)\1/g;
+
+/** Every module a component's code and styles import, by the specifier written. */
+async function importSpecs(source: string): Promise<string[]> {
   const specs: string[] = [];
   const { parse } = await import('svelte/compiler');
   try {
@@ -284,11 +323,13 @@ export async function importedPackages(source: string): Promise<string[]> {
       for (const [k, v] of Object.entries(node)) if (k !== 'parent' && v && typeof v === 'object') walk(v);
     };
     walk([ast.instance, ast.module, ast.fragment]);
+    const css = (ast.css as { content?: { styles?: string } } | null)?.content?.styles ?? '';
+    for (const m of css.matchAll(CSS_IMPORT)) specs.push(m[2]);
   } catch {
-    for (const m of source.matchAll(/\b(?:from|import)\s*\(?\s*(['"])([^'"\n]+)\1/g)) specs.push(m[2]);
+    for (const m of source.matchAll(IMPORT_TEXT)) specs.push(m[2]);
+    for (const m of source.matchAll(CSS_IMPORT)) specs.push(m[2]);
   }
-  const names = specs.filter((spec) => spec !== 'svelte' && !spec.startsWith('svelte/')).map(packageOf);
-  return [...new Set(names.filter((n): n is string => n !== null))];
+  return specs;
 }
 
 export async function checkSvelteSource(source: string, opts: CheckOptions = {}): Promise<CodeProblem[]> {

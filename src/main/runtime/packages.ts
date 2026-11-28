@@ -78,6 +78,30 @@ interface ParsedSpec {
 
 const EXAMPLE = 'such as zod or zod@4.1.0';
 
+/** `spec` as npm reads it, when it names a package from the registry by a valid name (a version, range or tag), else null. */
+function registrySpec(spec: string): ParsedSpec | null {
+  if (spec.length > 256) return null;
+  let parsed: ParsedSpec;
+  try {
+    parsed = npmModule<(spec: string) => ParsedSpec>('npm-package-arg')(spec);
+  } catch {
+    return null;
+  }
+  const name = parsed.name ?? '';
+  if (!['range', 'version', 'tag'].includes(parsed.type) || !name || packageOf(name) !== name) return null;
+  return npmModule<(n: string) => { validForOldPackages: boolean }>('validate-npm-package-name')(name).validForOldPackages ? parsed : null;
+}
+
+/** Whether `packageJson` marks its peer `name` optional (peerDependenciesMeta). */
+function isOptionalPeer(packageJson: string | null, name: string): boolean {
+  try {
+    const meta = (JSON.parse(packageJson ?? '') as { peerDependenciesMeta?: Record<string, { optional?: unknown }> }).peerDependenciesMeta;
+    return !!meta && typeof meta === 'object' && Object.hasOwn(meta, name) && meta[name]?.optional === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * What npm is asked to do for `change` (from the editor, so checked as it comes) to the packages `packageJson`
  * declares: install a registry package, by name with an optional version, range or tag, keeping one the project has
@@ -90,20 +114,19 @@ export function packageRequest(change: unknown, packageJson: string | null): Pac
   if (typeof c.add === 'string') {
     const raw = c.add.trim();
     if (!raw) return { ok: false, message: `Type the name of a package, ${EXAMPLE}.` };
-    let parsed: ParsedSpec;
-    try {
-      parsed = raw.length <= 256 ? npmModule<(spec: string) => ParsedSpec>('npm-package-arg')(raw) : { type: 'too-long', rawSpec: '' };
-    } catch {
-      parsed = { type: 'invalid', rawSpec: '' };
-    }
-    const name = parsed.name ?? '';
-    const valid = !!name && packageOf(name) === name && npmModule<(n: string) => { validForOldPackages: boolean }>('validate-npm-package-name')(name).validForOldPackages;
-    if (!['range', 'version', 'tag'].includes(parsed.type) || !valid) return { ok: false, message: `“${raw}” isn’t a package from npm. Type a package’s name, with a version if you like, ${EXAMPLE}.` };
+    const parsed = registrySpec(raw);
+    const version = parsed?.rawSpec.trim() ?? '';
+    const spec = parsed?.name ? (version && version !== '*' ? `${parsed.name}@${version}` : parsed.name) : '';
+    // What npm is given is checked as npm will read it, not only as it was typed (`demo@ .` would be `demo@.`, a folder).
+    const given = spec ? registrySpec(spec) : null;
+    if (!parsed?.name || given?.name !== parsed.name) return { ok: false, message: `“${raw}” isn’t a package from npm. Type a package’s name, with a version if you like, ${EXAMPLE}.` };
+    const name = parsed.name;
     const refused = own(name);
     if (refused) return { ok: false, message: refused };
     const section = sectionOf(deps, name);
-    const version = parsed.rawSpec.trim();
-    return { ok: true, verb: section ? 'update' : 'add', name, command: 'install', options: ['--save-exact', SAVE_FLAG[section ?? 'dependencies']], spec: version && version !== '*' ? `${name}@${version}` : name };
+    // An optional peer stays optional: npm saves `--save-peer` alone as a required one.
+    const optionalPeer = section === 'peerDependencies' && isOptionalPeer(packageJson, name);
+    return { ok: true, verb: section ? 'update' : 'add', name, command: 'install', options: ['--save-exact', SAVE_FLAG[section ?? 'dependencies'], ...(optionalPeer ? ['--save-optional'] : [])], spec };
   }
   if (typeof c.remove === 'string') {
     const name = c.remove;

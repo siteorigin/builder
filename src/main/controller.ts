@@ -178,28 +178,45 @@ const PACKAGES_CLOSED = 'The project was closed before its packages could be cha
 const packageInUse = (name: string, users: string[]): string =>
   `“${name}” is still imported by ${users.length === 1 ? `the code component “${users[0]}”` : `${users.length} code components (${users.slice(0, 3).map((u) => `“${u}”`).join(', ')}${users.length > 3 ? ', …' : ''})`}. Remove the import from ${users.length === 1 ? 'it' : 'them'} first.`;
 
+/** A project's own npm settings, or null when it has none; settings that are there but can't be read throw. */
+const readNpmrc = (dir: string): Promise<string | null> => fs.readFile(join(dir, '.npmrc'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+
 /**
- * Put a project's new package files in place together (#1480): both written out in full first, then the lock and the
- * manifest renamed over the old ones. When the second rename fails, the old lock goes back, so the pair never disagree.
+ * Put a project's new package files in place together (#1480): both written out in full and flushed first, then the
+ * lock and the manifest renamed over the old ones. `ready` is asked right before the first rename, and may refuse
+ * (nothing is replaced); package.json must still be as it was right before the second, or the old lock goes back, so
+ * the pair never disagree and an edit made meanwhile outside the app is never written over. Says whether they landed.
  */
-async function writePackageFiles(dir: string, files: PackageFiles, before: ConfigFiles): Promise<void> {
+async function writePackageFiles(dir: string, files: PackageFiles, before: ConfigFiles, ready: () => Promise<boolean>): Promise<boolean> {
   const lockPath = join(dir, 'package-lock.json');
+  const pkgPath = join(dir, 'package.json');
   const [lock, pkg] = await stageWrites([
     { path: lockPath, data: files['package-lock.json'] },
-    { path: join(dir, 'package.json'), data: files['package.json'] }
+    { path: pkgPath, data: files['package.json'] }
   ]);
   try {
-    await lock.replace();
+    if (!(await lock.replace(ready))) return false;
+    let landed = false;
+    let failure: unknown = null;
     try {
-      await pkg.replace();
+      landed = await pkg.replace(async () => (await readIfExists(pkgPath)) === before['package.json']);
     } catch (e) {
-      await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json'])).catch(() => undefined);
-      throw e;
+      failure = e;
     }
+    if (landed) {
+      await syncStaged([lock, pkg]);
+      return true;
+    }
+    try {
+      await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json']));
+    } catch (e) {
+      throw new Error(`package-lock.json no longer matches package.json, and the old one couldn’t be put back (${(e as Error).message}). Reinstall the website tools once package.json is as you want it.`);
+    }
+    if (failure) throw failure;
+    return false;
   } finally {
     await Promise.all([lock.discard(), pkg.discard()]);
   }
-  await syncStaged([lock, pkg]);
 }
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
 
@@ -1970,6 +1987,11 @@ export class Controller {
         done();
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
+      // Setting the tools up takes a while: the configuration the preview is about to run must still be the one trusted.
+      if (!(await isTrusted(session.dir, await configHash(session.dir)))) {
+        if (this.session === session) this.status({ state: 'error', message: TRUST_CHANGED });
+        return;
+      }
     }
     // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again: cleared while
     // the project is this app's to write, ahead of the last look at the lock below, so nothing waits after it.
@@ -2656,62 +2678,94 @@ export class Controller {
 
   private async changePackageNow(s: ProjectSession, opening: string, change: unknown): Promise<{ ok: boolean; message?: string }> {
     const closed = { ok: false, message: PACKAGES_CLOSED };
+    // Registered before anything is waited for: a close or takeover from here on stops npm (prepareAbort), as it stops
+    // an install, and one that came while something was read is seen before npm starts.
+    const abort = new AbortController();
+    this.prepareAbort = abort;
     const gone = () => this.session !== s || this.workspaceKey !== opening || !!this.closing;
-    if (gone()) return closed;
-    const locked = await this.packagesLocked(s);
-    if (locked) return { ok: false, message: locked };
-    const before = await readConfig(s.dir);
-    // What npm starts from is what was trusted, byte for byte.
-    if (!(await isTrusted(s.dir, hashConfig(before)))) return { ok: false, message: TRUST_CHANGED };
-    const req = packageRequest(change, before['package.json']);
-    if (!req.ok) return req;
-    const users = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
-    if (users.length) return { ok: false, message: packageInUse(req.name, users) };
-    if (before['package.json'] === null) return { ok: false, message: 'The project has no package.json, so it has no packages to change.' };
-    // Closing the project or losing it to another app stops npm (prepareAbort), as it stops an install.
-    const abort = (this.prepareAbort = new AbortController());
+    const stopped = () => (gone() ? closed : abort.signal.aborted ? { ok: false, message: s.readOnly?.reason ?? READ_ONLY } : null);
+    let req: Extract<ReturnType<typeof packageRequest>, { ok: true }>;
+    let before: ConfigFiles;
+    let npmrc: string | null;
     let files: PackageFiles;
     try {
-      const npmrc = await readIfExists(join(s.dir, '.npmrc')).catch(() => null);
-      files = await resolvePackageFiles({ 'package.json': before['package.json'], 'package-lock.json': before['package-lock.json'] ?? '', '.npmrc': npmrc }, req.command, req.options, req.spec, abort.signal);
-    } catch (e) {
       if (gone()) return closed;
-      return { ok: false, message: abort.signal.aborted ? (s.readOnly?.reason ?? READ_ONLY) : packageFailure(req, e) };
+      const locked = await this.packagesLocked(s);
+      if (locked) return stopped() ?? { ok: false, message: locked };
+      before = await readConfig(s.dir);
+      // What npm starts from is what was trusted, byte for byte.
+      if (!(await isTrusted(s.dir, hashConfig(before)))) return stopped() ?? { ok: false, message: TRUST_CHANGED };
+      const asked = packageRequest(change, before['package.json']);
+      if (!asked.ok) return asked;
+      req = asked;
+      const users = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
+      if (users.length) return stopped() ?? { ok: false, message: packageInUse(req.name, users) };
+      if (before['package.json'] === null) return { ok: false, message: 'The project has no package.json, so it has no packages to change.' };
+      // The project's own npm settings (its registry) decide what npm finds: settings it can't read are never taken for none.
+      try {
+        npmrc = await readNpmrc(s.dir);
+      } catch (e) {
+        return { ok: false, message: `The project’s npm settings (.npmrc) can’t be read: ${(e as Error).message}` };
+      }
+      const halt = stopped();
+      if (halt) return halt;
+      try {
+        files = await resolvePackageFiles({ 'package.json': before['package.json'], 'package-lock.json': before['package-lock.json'] ?? '', '.npmrc': npmrc }, req.command, req.options, req.spec, abort.signal);
+      } catch (e) {
+        return stopped() ?? { ok: false, message: packageFailure(req, e) };
+      }
     } finally {
       if (this.prepareAbort === abort) this.prepareAbort = null;
     }
-    if (gone()) return closed;
+    const halt = stopped();
+    if (halt) return halt;
+    // npm says it succeeded: what it wrote must say so too (an `.npmrc` of the author's can tell it to change nothing).
+    const declared = declaredVersion(files['package.json'], req.name);
+    if ((req.verb === 'remove') !== (declared === null)) return { ok: false, message: `npm didn’t change the project’s package files for “${req.name}”, so nothing was changed. Check the project’s npm settings (.npmrc).` };
     if (files['package.json'] === before['package.json'] && files['package-lock.json'] === before['package-lock.json']) return { ok: true, message: `The project already has that version of “${req.name}”.` };
     await this.stopPreview();
     // Set in the write, which TypeScript does not follow into.
     let result = null as { ok: boolean; message?: string } | null;
-    const done = this.changingTools();
+    let done: (() => void) | null = null;
     try {
       const wrote = await this.writeFence(s)(async () => {
         if (gone()) return void (result = closed);
-        const now = await readConfig(s.dir);
-        if (CONFIG_FILES.some((f) => now[f] !== before[f])) return void (result = { ok: false, message: 'The project’s build settings changed while the package was being worked out, so nothing was changed. Try again.' });
+        // Settings changed meanwhile: what was asked with Developer mode on lands only while it still is.
+        if (!(await loadSettings()).settings.developerMode) return void (result = { ok: false, message: 'Developer mode was turned off, so the project’s packages were not changed.' });
         const using = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
         if (using.length) return void (result = { ok: false, message: packageInUse(req.name, using) });
-        // The tools are no longer the ones set up for the files (#1395): the marker that says they are goes first.
-        await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
-        await writePackageFiles(s.dir, files, before);
-        await trust(s.dir, hashConfig({ ...before, ...files }));
+        const changedMeanwhile = { ok: false, message: 'The project’s build settings changed while the package was being worked out, so nothing was changed. Try again.' };
+        // The website tools are changing from here: a website build copying them meanwhile is called off (toolsWork).
+        done = this.changingTools();
+        // Right before the files are replaced, the build settings and npm settings are still what npm started from, and
+        // the marker that says the tools are set up for them goes (#1395).
+        const ready = async () => {
+          const now = await readConfig(s.dir);
+          if (CONFIG_FILES.some((f) => now[f] !== before[f]) || (await readNpmrc(s.dir).catch(() => undefined)) !== npmrc) return false;
+          await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+          return true;
+        };
+        if (!(await writePackageFiles(s.dir, files, before, ready))) return void (result = changedMeanwhile);
         // Set up again for the new files, not missing, until the preview has looked at them once more.
         this.toolsLooked.delete(s);
+        try {
+          // Trusted as written, with the rest of the build settings as they were trusted.
+          await trust(s.dir, hashConfig({ ...before, ...files }));
+        } catch (e) {
+          return void (result = { ok: false, message: `The package files changed, but they couldn’t be marked as trusted (${(e as Error).message}). Close and reopen the project to review and trust them.` });
+        }
         result = { ok: true };
       });
       if (!wrote) result ??= gone() ? closed : { ok: false, message: s.readOnly?.reason ?? READ_ONLY };
     } catch (e) {
       result = { ok: false, message: `The project’s package files couldn’t be written: ${friendlyError((e as Error).message)}` };
     } finally {
-      done();
+      (done as (() => void) | null)?.();
     }
     // The preview starts again either way: on the new files, setting the website tools up for them first, or as it was.
     if (!gone()) await this.startRuntimeNow();
     if (!result?.ok) return result ?? closed;
-    const version = declaredVersion(files['package.json'], req.name);
-    const what = req.verb === 'remove' ? `Removed “${req.name}”.` : `${req.verb === 'add' ? 'Added' : 'Updated'} “${req.name}”${version ? ` ${version}` : ''}.`;
+    const what = req.verb === 'remove' ? `Removed “${req.name}”.` : `${req.verb === 'add' ? 'Added' : 'Updated'} “${req.name}” ${declared}.`;
     if (gone()) return { ok: true, message: what };
     return (await dependenciesReady(s.dir)) ? { ok: true, message: what } : { ok: true, message: `${what} The website tools couldn’t be set up for it yet: Project health says why.` };
   }

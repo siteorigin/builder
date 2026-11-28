@@ -1349,7 +1349,10 @@ export function HealthModal() {
  */
 function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boolean }) {
   const [list, setList] = useState<ProjectPackages | null>(null);
+  // Why the list couldn't be read: never shown as a project with no packages.
+  const [unread, setUnread] = useState<string | null>(null);
   const [spec, setSpec] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
   // What is being changed now, as the group says it: one change at a time.
   const [working, setWorking] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -1359,25 +1362,39 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
   const load = () => {
     const ask = ++asked.current;
     void api.project.packages().then(
-      (r) => ask === asked.current && setList(r),
-      () => ask === asked.current && setList({ packages: [], locked: 'The project’s packages couldn’t be read.' })
+      (r) => {
+        if (ask !== asked.current) return;
+        setList(r);
+        setUnread(null);
+      },
+      (e: Error) => {
+        if (ask !== asked.current) return;
+        setList(null);
+        setUnread(`The project’s packages couldn’t be read: ${e.message || String(e)}`);
+      }
     );
   };
   // Read again as the tools finish being set up, so the versions shown are the ones the preview runs.
   useEffect(load, [opening, runtimeState]);
-  const change = async (c: PackageChange, doing: string) => {
+  /** Make a change; `typed` when it is what was typed to add, which goes once it is made. */
+  const change = async (c: PackageChange, doing: string, typed = false) => {
     if (working) return;
     setWorking(doing);
     setResult(null);
     try {
       const r = await api.project.changePackage(c, opening);
       setResult({ ok: r.ok, message: r.message ?? (r.ok ? 'Done.' : 'Nothing was changed.') });
-      if (r.ok && 'add' in c) setSpec('');
+      if (r.ok && typed) setSpec('');
     } catch (e) {
       setResult({ ok: false, message: (e as Error).message || String(e) });
     } finally {
       setWorking(null);
       load();
+      // A removed package's row goes with the button that removed it: focus moves to adding one, never to nowhere.
+      requestAnimationFrame(() => {
+        const at = document.activeElement;
+        if (!at || at === document.body || !at.isConnected) inputRef.current?.focus();
+      });
     }
   };
   const own = list?.packages.filter((p) => !p.tool) ?? [];
@@ -1408,6 +1425,11 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
           <strong>{p.name}</strong> {p.installed ?? <span className="health-hint">{p.wanted ? `${p.wanted}, not set up yet` : 'Not set up yet'}</span>}
         </HealthRow>
       ))}
+      {unread && (
+        <HealthRow tone="danger" icon={<CircleAlert />}>
+          {unread}
+        </HealthRow>
+      )}
       {list && !own.length && (
         <HealthRow tone="quiet" icon={<Package />}>
           No packages yet. Add one to import it in a code component.
@@ -1420,14 +1442,14 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
             className="health-text packages-add"
             onSubmit={(e) => {
               e.preventDefault();
-              if (spec.trim()) void change({ add: spec.trim() }, `Adding “${spec.trim()}”…`);
+              if (spec.trim()) void change({ add: spec.trim() }, `Adding “${spec.trim()}”…`, true);
             }}
           >
             <label className="field-label" htmlFor={inputId}>
               Add a package
             </label>
             <span className="packages-add-row">
-              <input id={inputId} className="input sm mono" value={spec} placeholder="zod or zod@4.1.0" spellCheck={false} autoCapitalize="off" autoComplete="off" onChange={(e) => setSpec(e.target.value)} />
+              <input ref={inputRef} id={inputId} className="input sm mono" value={spec} placeholder="zod or zod@4.1.0" spellCheck={false} autoCapitalize="off" autoComplete="off" onChange={(e) => setSpec(e.target.value)} />
               <button type="submit" className="btn btn-sm" aria-disabled={held || !spec.trim() || undefined}>
                 Add
               </button>
@@ -1436,7 +1458,7 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
         </li>
       )}
       <li className="sr-only" role="status">
-        {working ? `${working} This can take a minute.` : result?.message}
+        {working ? `${working} This can take a minute.` : (result?.message ?? unread)}
       </li>
       {(working || result) && (
         <HealthRow tone={!working && result && !result.ok ? 'danger' : 'quiet'} icon={working ? <Spinner decorative /> : result?.ok ? <Check /> : <CircleAlert />}>

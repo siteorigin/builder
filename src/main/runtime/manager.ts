@@ -165,8 +165,11 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   // pass for set up, so the marker that says they are goes first, and comes back only once they are (#1395).
   await stillMine();
   await fs.rm(join(dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+  // `npm ci` installs the lock as it was when it began and never writes the package files: they are marked set up as
+  // they were then, so files changed while it ran (#1480) are never taken for set up. Without a lock, npm writes one.
+  const began = existsSync(join(dir, 'package-lock.json')) ? await lockHash(dir) : null;
   await installTools(dir, onLine, signal, stillMine);
-  await markTools(dir, stillMine);
+  await markTools(dir, stillMine, began);
 }
 
 /** Throws `Canceled` when `signal` has been aborted or `mayWrite` says no. */
@@ -251,10 +254,13 @@ async function installTools(dir: string, onLine: (line: string) => void, signal:
   }
 }
 
-/** The marker that `dir`'s tools are set up for its lock (dependenciesReady), written once `stillMine` agrees. */
-async function markTools(dir: string, stillMine: () => Promise<void>): Promise<void> {
+/**
+ * The marker that `dir`'s tools are set up for its lock (dependenciesReady), written once `stillMine` agrees: for the
+ * package files that hashed to `hash` when given, else for them as they are now.
+ */
+async function markTools(dir: string, stillMine: () => Promise<void>, hash: string | null = null): Promise<void> {
   const marking = perf.span('tools.marker');
-  const hash = await lockHash(dir);
+  hash ??= await lockHash(dir);
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
   await stillMine();
   await writeMarker(dir, hash);
@@ -288,7 +294,10 @@ export async function resolvePackageFiles(files: ProjectPackageFiles, command: '
       if (typeof text === 'string') await fs.writeFile(join(dir, name), text);
     }
     const cache = await seedCache();
-    await runNpm([...npmArgs(command, cache), '--package-lock-only', '--prefer-offline', ...options, '--', spec], dir, () => undefined, signal);
+    // An install asks the registry what is there now (`zod@latest` is the latest), where a removal needs nothing new.
+    // Whatever the author's own npm settings say, the change is saved and made for real.
+    const fresh = command === 'install' ? '--prefer-online' : '--prefer-offline';
+    await runNpm([...npmArgs(command, cache), '--package-lock-only', fresh, '--save=true', '--dry-run=false', ...options, '--', spec], dir, () => undefined, signal);
     const [pkg, lock] = await Promise.all(['package.json', 'package-lock.json'].map((f) => fs.readFile(join(dir, f), 'utf8')));
     return { 'package.json': pkg, 'package-lock.json': lock };
   } finally {

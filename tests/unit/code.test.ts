@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkSvelteSource, declaredPackages, importedPackages, type CheckOptions } from '../../src/main/codecheck';
+import { checkSvelteSource, declaredPackages, importedPackages, packagesUsed, type CheckOptions } from '../../src/main/codecheck';
 import { fixComponentSource } from '@agent/fixer';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 
@@ -110,8 +110,10 @@ describe('syntax-tree code checks', () => {
     );
     const imp = (spec: string) => `<script>\n\timport * as X from '${spec}';\n</script>\n<p>{String(X)}</p>\n`;
     const check = async (spec: string, opts: CheckOptions = {}) => (await checkSvelteSource(imp(spec), { packages, ...opts })).filter((p) => p.severity === 'error');
-    // Declared packages, their subpath exports and scoped names, as Vite resolves them.
-    for (const spec of ['zod', 'searchsocket/svelte', '@scope/charts', '@scope/charts/dist/style.css', 'svelte/transition']) expect(await check(spec)).toEqual([]);
+    // Declared packages, their subpath exports and scoped names, as Vite resolves them, with whatever query Vite is given.
+    for (const spec of ['zod', 'searchsocket/svelte', '@scope/charts', '@scope/charts/dist/style.css', 'svelte/transition', 'zod?raw', '@scope/charts?url', 'searchsocket/svelte?raw']) expect(await check(spec)).toEqual([]);
+    // As the editor and a save check them, with the project's files: a package is no project file to look for.
+    expect(await check('searchsocket/svelte', { modules: () => false })).toEqual([]);
     // Without the project's packages (or with them, for one it does not declare), the import is refused and says where to add it.
     expect((await checkSvelteSource(imp('zod'))).filter((p) => p.severity === 'error')[0].message).toBe('"zod" is not a package this project has. Add it under Packages in Project health, then import it.');
     expect((await check('canvas-confetti'))[0]).toMatchObject({ line: 2, message: '"canvas-confetti" is not a package this project has. Add it under Packages in Project health, then import it.' });
@@ -137,18 +139,26 @@ describe('syntax-tree code checks', () => {
   it('reads the packages a package.json declares (#1480)', () => {
     const declared = declaredPackages(JSON.stringify({ dependencies: { a: '1' }, devDependencies: { b: '1', '@s/v': '7' }, optionalDependencies: { c: '1' }, peerDependencies: { d: '1' }, bundleDependencies: ['e'], overrides: { f: '1' } }));
     expect([...declared].sort()).toEqual(['@s/v', 'a', 'b', 'c', 'd']);
-    // A name npm would never install is no package to import.
-    expect([...declaredPackages(JSON.stringify({ dependencies: { '../x': '1', '@s': '1', 'ok.js': '1', JSONStream: '1' } }))]).toEqual(['ok.js', 'JSONStream']);
+    // A name npm would never install is no package to import; one with dots, dashes and underscores is.
+    expect([...declaredPackages(JSON.stringify({ dependencies: { '../x': '1', '@s': '1', '@s/.x': '1', _x: '1', 'ok.js': '1', JSONStream: '1', lodash_es: '1', '@s/_widget': '1' } }))]).toEqual(['ok.js', 'JSONStream', 'lodash_es', '@s/_widget']);
     for (const text of [null, '', 'not json', '[]', '{"dependencies": ["a"]}', '{"dependencies": null}']) expect(declaredPackages(text).size).toBe(0);
   });
 
   it('finds every npm package a component imports, however it imports it (#1480)', async () => {
-    const src = `<script>\n\timport 'leaflet/dist/leaflet.css';\n\timport { z } from 'zod';\n\timport { fade } from 'svelte/transition';\n\timport Card from './Card.svelte';\n\texport { thing } from '@scope/kit/sub';\n\tconst lazy = () => import('chart.js/auto');\n</script>\n<p>{import('not-code')}</p>\n`;
-    expect((await importedPackages(src)).sort()).toEqual(['@scope/kit', 'chart.js', 'leaflet', 'not-code', 'zod']);
+    const src = `<script>\n\timport 'leaflet/dist/leaflet.css';\n\timport { z } from 'zod';\n\timport { fade } from 'svelte/transition';\n\timport Card from './Card.svelte';\n\texport { thing } from '@scope/kit/sub';\n\texport * from 'three';\n\tconst lazy = () => import('chart.js/auto');\n</script>\n<p>{import('not-code')}</p>\n<style>\n\t@import 'maplibre-gl/dist/maplibre-gl.css';\n\t@import url("@fontsource/inter");\n</style>\n`;
+    expect((await importedPackages(src)).sort()).toEqual(['@fontsource/inter', '@scope/kit', 'chart.js', 'leaflet', 'maplibre-gl', 'not-code', 'three', 'zod']);
     // Prose and dynamic names are no imports.
     expect(await importedPackages(`<script>\n\tconst name = 'zod';\n\tconst m = () => import(name);\n</script>\n<p>We import from 'everywhere'.</p>\n`)).toEqual([]);
     // A draft the compiler can't read still says which packages it uses, so the assistant never "fixes" one away.
-    expect(await importedPackages(`<script>\n\timport { z } from 'zod';\n\tlet x = ;\n</script>\n<p>{x</p>`)).toEqual(['zod']);
+    expect(await importedPackages(`<script>\n\timport { z } from 'zod';\n\timport /* setup */ 'leaflet';\n\tlet x = ;\n</script>\n<p>{x</p>`)).toEqual(['zod', 'leaflet']);
+    // Through the project components it imports, and theirs, it uses theirs too.
+    const DIR = 'src/lib/siteorigin/custom';
+    const sources: Record<string, string> = {
+      [`${DIR}/Chart.svelte`]: `<script>\n\timport Axis from '#lib/siteorigin/custom/Axis.svelte';\n</script>\n<Axis />\n`,
+      [`${DIR}/Axis.svelte`]: `<script>\n\timport * as d3 from 'd3';\n\timport Chart from './Chart.svelte';\n</script>\n<p>{String(d3)}</p>\n`
+    };
+    expect(await packagesUsed(`<script>\n\timport Chart from './Chart.svelte';\n</script>\n<Chart />\n`, (p) => sources[p])).toEqual(['d3']);
+    expect(await packagesUsed(`<script>\n\timport Chart from './Chart.svelte';\n</script>\n<Chart />\n`)).toEqual([]);
   });
 
   it('refuses a relative or #lib import of a file the project does not have (#1479)', async () => {
