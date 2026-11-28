@@ -483,6 +483,9 @@ export type DuplicateProjectResult = { ok: true; dir: string; name: string } | {
  */
 export type TrustRequest = { dir: string; name: string; reason: 'new' | 'changed' | 'unpacked' };
 
+/** A project beside a chosen folder that is not one (the project it is inside, or the one it holds), which Open project offers to open instead (#1433). */
+export type NearbyProject = { dir: string; name: string };
+
 /**
  * A project ZIP file being unpacked: into a new folder in `dir`, named `folder` unless that name is taken (then a
  * number follows it), with `done` of its `total` files written so far.
@@ -775,6 +778,11 @@ export interface ChatMessage {
      * API key (`key`). Either way the same request can be sent again once it is.
      */
     repair?: 'settings' | 'key';
+    /**
+     * What the request still needs that only the user can turn on: `developer-mode`, when the AI answered that what was
+     * asked needs custom code while Developer mode was off. The turn offers Settings at that switch (#1329).
+     */
+    needs?: 'developer-mode';
     /**
      * Code the run wrote that the project does not keep, each version kept in the project's recovery folder (spec
      * 14.3): a source patch the checks refused (`rejected`), or one that landed in a run that was then undone because it
@@ -1380,9 +1388,10 @@ export interface BuilderApi {
     /**
      * Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and
      * Linux). `replaces` is a missing recent entry's folder: once the chosen project opens, the entry is dropped if it
-     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first.
+     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first. A chosen folder
+     * that is not a project comes back with `nearby` when a project beside it is the one most likely meant (#1433).
      */
-    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest }>;
+    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject }>;
     /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
     cancelOpen(): Promise<void>;
     trustAndOpen(dir: string, opts?: { replaces?: string }): Promise<{ ok: boolean; message?: string }>;
