@@ -59,13 +59,17 @@ export const CONNECT_LIST_ARGS = z
       .optional()
       .describe('A placed section: which entry field fills each item field. Every field an item needs must be filled; others show their default.'),
     disconnect: z.boolean().optional().describe('A placed section: show its own items again, as it kept them.'),
-    archivePage: z.boolean().optional().describe("A collection loop in a collection's index layout: repeat the entries of the index page shown (its share of the index or of one category, page by page) instead of a query.")
+    archivePage: z.boolean().optional().describe("A collection loop in a collection's index layout: repeat the entries of the index page shown (its share of the index or of one category, page by page) instead of a query."),
+    browse: z
+      .boolean()
+      .optional()
+      .describe("true lets visitors search, filter and sort the entries this list shows (only those: the query still decides which), with the controls the collection's browse setting offers (define_collection browse). false stops it; left out keeps what the list has. Not with archivePage, whose index browses by the collection's setting.")
   })
   .strict();
 export type ConnectListArgs = z.infer<typeof CONNECT_LIST_ARGS>;
 
 export const CONNECT_LIST_DESCRIPTION =
-  "Show a collection's entries on the site: connect a placed section's list property to a collection (each entry one item, its fields mapped to the item's), or change which entries a collection loop repeats. query chooses the entries: filters, sort and how many. disconnect: true shows the section's own items again. Drafts never show.";
+  "Show a collection's entries on the site: connect a placed section's list property to a collection (each entry one item, its fields mapped to the item's), or change which entries a collection loop repeats. query chooses the entries: filters, sort and how many. browse: true lets visitors search, filter and sort those entries on the site. disconnect: true shows the section's own items again. Drafts never show.";
 export const CONNECT_LIST_BRIEF = "A section's list from a collection (prop and fields map entry fields to item fields), or a collection loop's entries (query only).";
 
 const schemaOf = (args: z.ZodType): JsonSchema & { properties: Record<string, unknown> } => {
@@ -105,7 +109,7 @@ export async function runConnectList(args: ConnectListArgs, host: ToolHost, call
     if (!args.prop) issues.push({ field: 'prop', message: `${displayName(state, node)} is a placed section: name the list property to connect` });
     if (args.archivePage) issues.push({ field: 'archivePage', message: "only a collection loop in a collection's index layout repeats the index page's entries" });
     if (args.disconnect) {
-      if (args.query || args.fields) issues.push({ field: 'disconnect', message: 'disconnect takes no query or fields' });
+      if (args.query || args.fields || args.browse !== undefined) issues.push({ field: 'disconnect', message: 'disconnect takes no query, fields or browse' });
       if (issues.length) return fieldError(issues, 'Nothing was applied.');
       op = { type: 'instance.setListSource', owner: args.owner as OwnerRef, nodeId: node.id, prop: args.prop!, source: null };
     } else {
@@ -116,15 +120,19 @@ export async function runConnectList(args: ConnectListArgs, host: ToolHost, call
         else fields[f.itemField] = f.entryField;
       }
       if (issues.length) return fieldError(issues, 'Nothing was applied.');
-      op = { type: 'instance.setListSource', owner: args.owner as OwnerRef, nodeId: node.id, prop: args.prop!, source: { query: args.query as Record<string, unknown>, fields } };
+      // Browsing stays as the list has it unless the call says otherwise.
+      const browse = args.browse ?? (args.prop !== undefined && node.listSources?.[args.prop]?.browse === true);
+      op = { type: 'instance.setListSource', owner: args.owner as OwnerRef, nodeId: node.id, prop: args.prop!, source: { query: args.query as Record<string, unknown>, fields, ...(browse ? { browse: true as const } : {}) } };
     }
   } else if (node.kind === 'repeat' && isCollectionLoop(node)) {
     if (args.prop !== undefined || args.fields !== undefined) issues.push({ field: args.prop !== undefined ? 'prop' : 'fields', message: `${displayName(state, node)} is a collection loop: its elements show the entry's fields themselves, so send only query` });
     if (args.disconnect) issues.push({ field: 'disconnect', message: 'a collection loop always repeats entries: remove it, or change its query' });
     if (args.archivePage && args.query) issues.push({ field: 'archivePage', message: 'a loop repeats the index page\'s entries or a query\'s, not both' });
     if (!args.query && !args.archivePage) issues.push({ field: 'query', message: 'say which entries the loop repeats' });
+    if (args.archivePage && args.browse) issues.push({ field: 'browse', message: "a loop over the index page's entries browses with the index, by the collection's browse setting (define_collection)" });
     if (issues.length) return fieldError(issues, 'Nothing was applied.');
-    op = { type: 'node.setRepeatSource', owner: args.owner as OwnerRef, nodeId: node.id, source: args.archivePage ? { $archive: true } : { $query: args.query as Record<string, unknown> } };
+    const browse = !args.archivePage && (args.browse ?? (node.list as { browse?: unknown }).browse === true);
+    op = { type: 'node.setRepeatSource', owner: args.owner as OwnerRef, nodeId: node.id, source: args.archivePage ? { $archive: true } : { $query: args.query as Record<string, unknown>, ...(browse ? { browse: true as const } : {}) } };
   } else {
     return fieldError([{ field: 'nodeId', message: `${displayName(state, node)} is neither a placed section with a list nor a collection loop` }], 'Nothing was applied.');
   }

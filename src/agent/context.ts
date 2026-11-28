@@ -1,5 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { storedBrowse } from '@shared/collection-browse';
+import { archiveLoopIds } from '@generator/collection-browse';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { searchService } from '@shared/site-search';
@@ -325,9 +326,9 @@ export function collectionsSummary(state: ProjectState) {
         published: entries.filter((e) => e?.draft === false).length,
         ...(fields.length ? { fields } : {}),
         taxonomies,
-        // What visitors can do on its index (define_collection's browse replaces it whole), and whether the index's own
-        // design keeps it from showing.
-        ...(s && storedBrowse(s) ? { browse: storedBrowse(s), ...(s.archiveTemplate ? { browseOff: 'the index has its own design' } : {}) } : {})
+        // What visitors can do on its index and in the listings that browse it (define_collection's browse replaces it
+        // whole), and whether the index's own design keeps it from the index: one with no loop over the page's entries.
+        ...(s && storedBrowse(s) ? { browse: storedBrowse(s), ...(s.archiveTemplate && !archiveLoopIds(s.archiveTemplate).length ? { browseOff: "the index's own design has no loop over the page's entries" } : {}) } : {})
       };
     });
 }

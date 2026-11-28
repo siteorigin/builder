@@ -130,6 +130,8 @@ export function connectionProblem(state: ProjectState, owner: OwnerRef, node: In
   // A list that fills itself (posts, pages) shows the collection instead while connected.
   if (schema?.type !== 'list') return `connects "${prop.slice(0, 60)}" to a collection, but ${def.name} has no list of that name.`;
   if (isBinding(own(node.props, prop))) return `connects “${schema.label}” to a collection while it is passed down from the design around it. Unbind it first.`;
+  const browse = raw && typeof raw === 'object' ? (raw as { browse?: unknown }).browse : undefined;
+  if (browse !== undefined && browse !== true) return `connects “${schema.label}” with visitor browsing that is not on: leave it out to turn it off.`;
   const connection = normalizeConnection(raw);
   if (!connection) return `connects “${schema.label}” to a collection in a form that cannot be read: a query, and which entry field fills each item field.`;
   const query = queryProblem(state, owner, connection.query);
@@ -183,8 +185,11 @@ export function loopCollection(state: ProjectState, owner: OwnerRef, loop: Pick<
 export function loopProblem(state: ProjectState, owner: OwnerRef, tree: NodeTree, node: RepeatNode, parentsOf?: Map<string, GraphNode>): string | null {
   const list = node.list as Record<string, unknown>;
   if (Object.hasOwn(list, '$archive')) {
+    if (owner.kind === 'archive' && list.$archive === true && Object.hasOwn(list, 'browse') && Object.keys(list).length === 2)
+      return "has visitor browsing of its own, but it repeats the index page's entries, which visitors browse by the collection's browse setting. Leave it out.";
     if (owner.kind !== 'archive' || list.$archive !== true || Object.keys(list).length !== 1) return "repeats the entries of the archive page it is on, which only a collection's archive layout has.";
-  } else if (Object.keys(list).length !== 1) return 'repeats a collection by a query together with something else; repeat one of them.';
+  } else if (Object.keys(list).some((k) => k !== '$query' && k !== 'browse')) return 'repeats a collection by a query together with something else; repeat one of them.';
+  else if (Object.hasOwn(list, 'browse') && list.browse !== true) return 'has visitor browsing that is not on: leave it out to turn it off.';
   else {
     const problem = queryProblem(state, owner, list.$query);
     if (problem) return problem;
@@ -380,7 +385,7 @@ export function formDestinationProblems(state: ProjectState): SourceProblem[] {
 // ---------------------------------------------------------------------------
 
 /** instance.setListSource: connect a placed section's list property to a collection, or disconnect it (`null`). */
-export function instanceSetListSource(state: ProjectState, tree: NodeTree, op: { owner: OwnerRef; nodeId: string; prop: string; source: { query: Record<string, unknown>; fields: Record<string, string> } | null }): Record<string, never> {
+export function instanceSetListSource(state: ProjectState, tree: NodeTree, op: { owner: OwnerRef; nodeId: string; prop: string; source: { query: Record<string, unknown>; fields: Record<string, string>; browse?: true } | null }): Record<string, never> {
   const node = getNode(tree, op.nodeId);
   if (node.kind !== 'instance') fail(`${displayName(state, node)} is not a placed section, so it has no list to connect.`);
   if (op.source === null) {
@@ -413,10 +418,13 @@ export function loopNode(state: ProjectState, owner: OwnerRef, source: { query?:
 }
 
 /** node.setRepeatSource: which entries a collection loop repeats. Its rows' elements keep what they show. */
-export function nodeSetRepeatSource(state: ProjectState, tree: NodeTree, op: { owner: OwnerRef; nodeId: string; source: { $query: Record<string, unknown> } | { $archive: true } }): Record<string, never> {
+export function nodeSetRepeatSource(state: ProjectState, tree: NodeTree, op: { owner: OwnerRef; nodeId: string; source: { $query: Record<string, unknown>; browse?: true } | { $archive: true } }): Record<string, never> {
   const node = getNode(tree, op.nodeId);
   if (node.kind !== 'repeat' || !isCollectionLoop(node)) fail(`${displayName(state, node)} is not a collection loop. A component's list repeats one of its properties.`);
-  const list = '$archive' in op.source ? ({ $archive: true } as const) : { $query: normalizeCollectionQuery(op.source.$query) ?? fail('That query cannot be read: name its collection, and give each filter a field, an operator and a value.') };
+  const list =
+    '$archive' in op.source
+      ? ({ $archive: true } as const)
+      : { $query: normalizeCollectionQuery(op.source.$query) ?? fail('That query cannot be read: name its collection, and give each filter a field, an operator and a value.'), ...(op.source.browse === true ? { browse: true as const } : {}) };
   const was = node.list;
   node.list = list;
   const problem = loopProblem(state, op.owner, tree, node);

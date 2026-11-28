@@ -3,6 +3,8 @@
      The Inspector's field rhythm. Filters are sentences in one box: the field on a line of its own, then its test, value
      and remove button, with "and" between filters. The entry fields each item shows are label-left, select-right rows. */
   .cq-source { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  /* Visitor browsing of a list, and what the collection lets visitors use while it is on. */
+  .cq-browse { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
   .cq { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
   .cq-connected > .cq { padding: 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 

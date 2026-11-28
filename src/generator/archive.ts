@@ -10,7 +10,7 @@ import type { ArchivePage } from '@shared/archives';
 import { archivePages, archiveTerms, archiveWords, fillWords as fill, sameTerm } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
 import { archivePageSize } from '@shared/collections';
-import { BROWSE_COMPONENT_FILE, browseControls, browseIndexFile, browsesIndex } from './collection-browse';
+import { BROWSE_COMPONENT_FILE, browseControls, browseIndexFile, browsesIndex, controlsAct } from './collection-browse';
 import { siteLanguage } from '@shared/languages';
 import { routeDir } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
@@ -125,7 +125,14 @@ export function generateArchive(state: ProjectState, collectionId: string, route
 
   // The first page of the index leads with its newest entry, shown large; every other page is a grid of cards.
   const ids = here.entryIds.filter((id) => Object.hasOwn(collection.entries, id));
-  const layout = hasArchiveLayout(collection.settings) ? emitArchiveLayout(state, collectionId, ids, file, opts) : null;
+  // The first page of the index, with something to list, gives visitors the collection's search, filters and sorting
+  // when it offers them (only with a control that does something: a filter whose grouping has lost its last term
+  // offers none). Until a visitor uses one, the page shows what is written below.
+  const controls = !here.term && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId) ? browseControls(state, collectionId) : undefined;
+  const browsing = controlsAct(controls);
+  const load = js(relImport(file, `${RUNTIME_DIR}/${browseIndexFile(collectionId)}`));
+  const browseOpen = `<SoBrowse controls={${js(controls)}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`;
+  const layout = hasArchiveLayout(collection.settings) ? emitArchiveLayout(state, collectionId, ids, file, opts, browsing ? { matches: 'so_matches' } : undefined) : null;
   const lead = !layout && !here.term && here.page === 1 && ids.length ? ids[0] : undefined;
   const rest = layout ? [] : lead ? ids.slice(1) : ids;
   const body: string[] = [];
@@ -159,23 +166,11 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     );
   }
 
-  // The first page of the index, with something to list, gives visitors the collection's search, filters and sorting
-  // when it offers them: until a visitor uses one, the page shows what is written above.
-  const controls = !layout && !here.term && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId) ? browseControls(state, collectionId) : undefined;
-  // Only with a control that does something: a filter whose grouping has lost its last term offers none.
-  const browsing = !!controls && (controls.search || controls.filters.length > 0 || controls.sorts.length > 0);
-  if (browsing) {
+  // With the ready-made cards, the cards that match take the place of the page's own.
+  if (browsing && !layout) {
     for (const part of ['grid', 'card', 'image', 'category', 'categoryLink', 'meta', 'excerpt'] as const) uses.add(part);
     const content = body.splice(0).map((b) => b.replace(/^/gm, '\t'));
-    const load = js(relImport(file, `${RUNTIME_DIR}/${browseIndexFile(collectionId)}`));
-    body.push(
-      [
-        `\t\t<SoBrowse controls={${js(controls)}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`,
-        browseResults(),
-        ...content,
-        `\t\t</SoBrowse>`
-      ].join('\n')
-    );
+    body.push([`\t\t${browseOpen}`, browseResults(), ...content, `\t\t</SoBrowse>`].join('\n'));
   }
 
   // What it says when it is found or shared, as a page does: its title and description, its sharing tags, its own
@@ -206,10 +201,37 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   ].filter(Boolean);
   const header = `\t\t<header class="so-archive__header">\n${intro.join('\n')}\n\t\t</header>`;
   // With a layout of its own: the heading, the layout's sections at the page's full width, then the page links.
+  const section = (inner: string) => `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${inner}\n\t</div>\n</section>`;
   const sections = layout
-    ? [`<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n\t</div>\n</section>`, layout.markup, body.length ? `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${body.join('\n')}\n\t</div>\n</section>` : ''].filter(Boolean).join('\n')
-    : `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n${body.join('\n')}\n\t</div>\n</section>`;
+    ? browsing
+      ? designedBrowse(browseOpen, section(`${header}\n\t\t{@render so_bar()}`), layout.markup, body.length ? section(body.join('\n')) : '', section(`\t\t<div class="so-browse__more-row">{@render so_more()}</div>`).replace('<section class="so-archive">', '<section class="so-archive so-browse__more-band">'))
+      : [section(header), layout.markup, body.length ? section(body.join('\n')) : ''].filter(Boolean).join('\n')
+    : section(`${header}\n${body.join('\n')}`);
   return HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) + `<script>\n${script}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` + `${sections}\n\n${archiveStyle(uses)}`;
+}
+
+/**
+ * An index's own design as visitors browse it: the heading with the controls below it (`top`, which places them as
+ * `so_bar`), then the layout's sections, always shown, their loops over the page's entries showing the entries that
+ * match once a visitor uses a control (see emitArchiveLayout), and below them the page links until then (`pages`),
+ * and after that, while more match than show, the button that shows more (`more`, which places it as `so_more`).
+ */
+function designedBrowse(open: string, top: string, markup: string, pages: string, more: string): string {
+  const tab = (t: string) => t.replace(/^/gm, '\t\t');
+  return [
+    open,
+    `\t{#snippet frame(so_bar)}`,
+    tab(top),
+    `\t{/snippet}`,
+    `\t{#snippet content(so_matches, so_more)}`,
+    tab(markup),
+    `\t\t{#if so_more}`,
+    tab(more).replace(/^/gm, '\t'),
+    ...(pages ? [`\t\t{:else if !so_matches}`, tab(pages).replace(/^/gm, '\t')] : []),
+    `\t\t{/if}`,
+    `\t{/snippet}`,
+    `</SoBrowse>`
+  ].join('\n');
 }
 
 /**

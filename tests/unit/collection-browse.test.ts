@@ -134,8 +134,12 @@ describe('the browse setting', () => {
     const s = homes({ search: true, filters: ['terms.region'] });
     expect(collectionsSummary(s).find((c) => c.id === 'homes')).toMatchObject({ browse: { search: true, filters: ['terms.region'] } });
     expect(collectionsSummary(s).find((c) => c.id === 'homes')).not.toHaveProperty('browseOff');
+    // A design of its own browses in its loop over the page's entries (#1730); one with no such loop keeps it off.
     const designed = run(s, { type: 'collection.update', collectionId: 'homes', archiveTemplate: 'start' } as EditOperation);
-    expect(collectionsSummary(designed).find((c) => c.id === 'homes')).toMatchObject({ browseOff: 'the index has its own design' });
+    expect(collectionsSummary(designed).find((c) => c.id === 'homes')).not.toHaveProperty('browseOff');
+    const layout = designed.collections.homes.settings.archiveTemplate!;
+    for (const n of Object.values(layout.nodes)) if (n.kind === 'repeat') delete layout.nodes[n.id];
+    expect(collectionsSummary(designed).find((c) => c.id === 'homes')).toMatchObject({ browseOff: "the index's own design has no loop over the page's entries" });
     expect(collectionsSummary(homes()).find((c) => c.id === 'homes')).not.toHaveProperty('browse');
   });
 
@@ -321,11 +325,15 @@ describe('the index page', () => {
     expect(generateProject(s).get(archiveFile('/homes/'))).not.toContain('SoBrowse');
   });
 
-  it('has no controls and no browse files without the setting, or with a design of its own', () => {
+  it('has no controls and no browse files without the setting, or with a design of its own that lists no page entries', () => {
     const plain = generateProject(homes());
     expect(plain.get(archiveFile('/homes/'))).not.toContain('SoBrowse');
     expect([...plain.keys()].some((f) => f.includes('collection-browse') || f.includes(BROWSE_COMPONENT_FILE) || f.includes('/collections/'))).toBe(false);
     const designed = run(homes(FULL), { type: 'collection.update', collectionId: 'homes', archiveTemplate: 'start' } as EditOperation);
+    const layout = designed.collections.homes.settings.archiveTemplate!;
+    const loop = Object.values(layout.nodes).find((n) => n.kind === 'repeat')!;
+    for (const n of Object.values(layout.nodes)) if (n.kind === 'element') n.children = n.children.filter((c) => c !== loop.id);
+    delete layout.nodes[loop.id];
     const files = generateProject(designed);
     expect(files.get(archiveFile('/homes/'))).not.toContain('SoBrowse');
     expect(files.has(`${RUNTIME_DIR}/${BROWSE_HELPER_FILE}`)).toBe(false);

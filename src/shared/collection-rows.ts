@@ -135,14 +135,16 @@ export function connectedItems(state: Pick<ProjectState, 'site' | 'assets' | 'co
 /** A connection read into its canonical form, or null when it is none: a query that is no query, or a map that is not text to text. */
 export function normalizeConnection(raw: unknown): ListConnection | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const { query, fields } = raw as { query?: unknown; fields?: unknown };
+  const { query, fields, browse } = raw as { query?: unknown; fields?: unknown; browse?: unknown };
   const q = normalizeCollectionQuery(query);
   if (!q || !fields || typeof fields !== 'object' || Array.isArray(fields)) return null;
+  // Visitor browsing is on or left out: anything else is damage.
+  if (browse !== undefined && browse !== true) return null;
   const map: Record<string, string> = {};
   for (const k of Object.keys(fields).sort()) {
     const v = (fields as Record<string, unknown>)[k];
     if (typeof v !== 'string') return null;
     if (v) map[k] = v;
   }
-  return { query: q, fields: map };
+  return { query: q, fields: map, ...(browse === true ? { browse: true as const } : {}) };
 }
