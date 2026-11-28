@@ -12,7 +12,7 @@ import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
-import { ENTRY_LINK_PREFIX, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
+import { ENTRY_LINK_PREFIX, entryTarget, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
 import { sha256Hex } from '@shared/sha256';
 import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
@@ -159,7 +159,7 @@ function linkShown(v: CollectionFieldValue, pages: ProjectState['pages']): strin
     case 'page':
       return `${Object.hasOwn(pages, l.target) ? pages[l.target].route : l.target}${anchor}`;
     case 'entry':
-      return anchor ? null : `${ENTRY_LINK_PREFIX}${l.target}`;
+      return anchor ? null : `${ENTRY_LINK_PREFIX}${l.target}${l.query ?? ''}`;
     case 'email':
       return `mailto:${l.target}`;
     case 'tel':
@@ -490,7 +490,7 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
       return typeof v === 'string' || Array.isArray(v) ? v : wrong('send its text as Markdown');
     case 'link':
       if (typeof v !== 'string') return wrong('send an address: "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"');
-      return v.trim().startsWith(ENTRY_LINK_PREFIX) ? { type: 'entry', target: v.trim().slice(ENTRY_LINK_PREFIX.length) } : v.trim();
+      return v.trim().startsWith(ENTRY_LINK_PREFIX) ? { type: 'entry', ...entryTarget(v.trim().slice(ENTRY_LINK_PREFIX.length)) } : v.trim();
     case 'image': {
       if (typeof v !== 'string') return wrong("send a library image's assetId (\"\" for none)");
       const id = v.trim();

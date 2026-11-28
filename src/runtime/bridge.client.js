@@ -6,6 +6,20 @@ const sessionId = window.name || '';
 const parentWin = window.parent;
 let mode = 'edit';
 let revision = 0;
+/** The attribute of a code placement's note that it threw while the page rendered (RENDER_ERROR_ATTR in the generator). */
+const RENDER_ERROR_ATTR = 'data-so-render-error';
+/**
+ * The notes on the page already reported (see reportRenderErrors), by file and message: the revision last reported
+ * for each. Kept for one navigation at a time.
+ */
+const renderErrorsSent = new Map();
+let renderErrorsAt = '';
+/** The most notes reported for one page: a list whose every item throws its own message says enough by then. */
+const RENDER_ERRORS_MAX = 50;
+/** A note an isolated component preview said with its `ready` (see reportRenderErrors). */
+const RENDER_ERRORS_TOLD = 'ready';
+let renderErrorsReady = false;
+let renderErrorsQueued = false;
 /**
  * The editor measures this page in a frame of its own (a page check, a component preview), named so from its first
  * load and through any reload (MEASURING_SESSION_PREFIX in the editor): it never speaks for the canvas, so it
@@ -108,6 +122,8 @@ function reloadMissingPage() {
   }
   const status = performance.getEntriesByType('navigation')[0]?.responseStatus;
   if (!asked || asked.path !== location.pathname || (status !== 404 && status !== 500) || !(asked.tries < MISSING_RELOADS)) return false;
+  // The page is there, with a code component that threw while it rendered (#1526): loading it again shows the same.
+  if (document.querySelector(`[${RENDER_ERROR_ATTR}]`) && !document.querySelector('.so-not-found')) return false;
   try {
     sessionStorage.setItem(ASKED_KEY, JSON.stringify({ path: asked.path, tries: asked.tries + 1 }));
   } catch {
@@ -3315,11 +3331,15 @@ function commitEdit(detached = false) {
   // to turn into its stored form; plain text as its words.
   const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: (moved ? editing.typed.text : el.innerText).replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
-  // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
-  if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
+  // Too much to send: put the text back and say why, rather than lose the edit on the way. Anything less goes to the
+  // editor, which holds it to its field's own limit and offers back text the field refuses (#1447).
+  if ((rich && !payload.rich) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
+    // Measured before the saved text is put back. Rich text whose structure could not be copied is too intricate,
+    // not too long: the editor says which.
+    const length = (rich ? (left.innerText ?? '') : payload.text).length;
     if (!moved) el.innerHTML = original;
     endEdit();
-    return send('textCancel', { desc, editId, reason: 'too-large' });
+    return send('textCancel', { desc, editId, reason: 'too-large', length, ...(rich && !payload.rich ? { structure: true } : {}) });
   }
   // A row the page gave another item without writing over what was typed (that item's words are the same as the
   // ones it showed) still shows the typing: it shows the words the page last wrote there again.
@@ -5811,6 +5831,8 @@ new MutationObserver(() => {
   if (revealDirty || selected || pendingScroll || emptySpace || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
+  // A code placement that threw shows its note: the editor hears of it (#1526).
+  if (renderErrorsSent.size || document.querySelector(`[${RENDER_ERROR_ATTR}]`)) queueRenderErrors();
   // A text marker changing in place is watched too: the row being typed in may now show another list item.
 }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: [TEXT_ATTR] });
 /**
@@ -5835,6 +5857,63 @@ window.addEventListener('unhandledrejection', (e) => {
   reportError(String(e.reason), e.reason && e.reason.stack);
 });
 
+/**
+ * Code placements that threw while the page rendered, on the server or here (#1526): each shows a note in its place,
+ * naming its file and the error (see renderErrorBoundary in the generator), which SvelteKit's own error handling never
+ * raises as an error of the window. Each note is reported as the page's error, once for the page it is on and again
+ * for each change the page shows while it is still there, so showing the change never reads as the page working.
+ * See renderErrorsSent.
+ */
+function reportRenderErrors() {
+  renderErrorsQueued = false;
+  if (renderErrorsAt !== navigationId) {
+    renderErrorsAt = navigationId;
+    renderErrorsSent.clear();
+  }
+  // An isolated component preview that said with its `ready` that its component did not get on the page (see
+  // previewEntry) has said the notes there then: they are not said again, and one that appears later is. One that
+  // said it was shown, then threw before the bridge ran, says its notes here.
+  const told = !!window.__siteoriginPreview && window.__siteoriginPreview.mounted === false && !renderErrorsReady;
+  renderErrorsReady = true;
+  /** The notes on the page now: one gone and back is a problem again. */
+  const shown = new Set();
+  for (const el of document.querySelectorAll(`[${RENDER_ERROR_ATTR}]`)) {
+    const message = (el.getAttribute(RENDER_ERROR_ATTR) || 'Something went wrong.').slice(0, 2000);
+    const file = el.getAttribute('data-so-error-file') || '';
+    const key = `${file}\n${message}`;
+    if (shown.has(key)) continue;
+    if (shown.size >= RENDER_ERRORS_MAX) break;
+    shown.add(key);
+    const last = renderErrorsSent.get(key);
+    if (last === revision || last === RENDER_ERRORS_TOLD) continue;
+    if (last === undefined) errors.push(message);
+    renderErrorsSent.set(key, told ? RENDER_ERRORS_TOLD : revision);
+    if (!told) reportError(message, undefined, file);
+  }
+  for (const key of [...renderErrorsSent.keys()]) if (!shown.has(key)) renderErrorsSent.delete(key);
+}
+/** Report the notes once the page has finished changing, however many changes arrive in a frame. */
+function queueRenderErrors() {
+  if (renderErrorsQueued) return;
+  renderErrorsQueued = true;
+  requestAnimationFrame(reportRenderErrors);
+}
+/**
+ * The page took a change: every placement still showing its note renders again, from its code as it is now. A failed
+ * boundary stays failed until it is retried, so a component whose source was fixed (and nothing else on the page
+ * changed) would otherwise go on showing the note. One that still throws shows its note again before the change is
+ * acknowledged; the throw is not thrown here.
+ */
+function retryRenderErrors() {
+  for (const el of document.querySelectorAll(`[${RENDER_ERROR_ATTR}]`)) {
+    try {
+      if (typeof el.__soRetry === 'function') el.__soRetry();
+    } catch {
+      // The boundary went with its page: nothing to retry.
+    }
+  }
+}
+
 function reportNav() {
   nextNavigation();
   // What the page drew is of the page it was on: the editor draws its own (or none) before it goes.
@@ -5844,6 +5923,8 @@ function reportNav() {
   stopKeeping();
   stopShowing();
   send('navigated', { path: shownPath() });
+  // The page arrived at may have a code placement that threw: said after the editor hears where the page went.
+  queueRenderErrors();
   scheduleRects();
   // What a practice send says belongs to the page it started on.
   formEpoch++;
@@ -5883,12 +5964,17 @@ if (import.meta.hot) {
     const applied = data.revision;
     const batch = data.batch;
     revision = applied;
+    // A code placement that threw is tried again with the change (#1526).
+    retryRenderErrors();
     // The selection's boxes and spacing are reported again before the revision is acknowledged: an update of styles
     // alone changes no element the page watches, and the editor's handles go on what was reported last.
     scheduleRects();
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         settleDrafts();
+        // A placement still showing its note is reported for this change before the change is said to be shown, so
+        // the editor never takes the page as working with it.
+        reportRenderErrors();
         send('revisionApplied', { revision: applied });
         // The preview server waits for this before the editor replaces the files of the next save: the canvas's, not a
         // measuring frame's, which may take an update long before the canvas has.
@@ -5918,6 +6004,11 @@ style.textContent =
   // ground of its own so its words read on a dark section too.
   ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: #f8fafc; color: #475569; font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
   ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }' +
+  // A code component that threw while the page rendered (#1526): a note in its place, naming it and the error, on a
+  // light ground of its own so its words read on a dark section too. Preview leaves it out, as visitors would see the
+  // page without it.
+  ' html[data-so-editing] [data-so-render-error] { display: block; box-sizing: border-box; margin: 8px; padding: 12px 16px; border: 2px dashed #dc2626; border-radius: 8px; background: #fef2f2; color: #7f1d1d; font: 13px/1.4 system-ui, -apple-system, sans-serif; text-align: start; overflow-wrap: anywhere; }' +
+  ' html[data-so-editing] [data-so-render-error] strong { font-weight: 600; }' +
   // An empty list of images (a Gallery or Carousel with none chosen yet): the same box, where the images will go, on a
   // light ground of its own so its words read on a dark section too.
   ' html[data-so-editing] [data-so-list-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; box-sizing: border-box; min-height: 160px; padding: 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: #f8fafc; color: #475569; font: 14px/1.4 system-ui, -apple-system, sans-serif; text-align: center; }' +
@@ -6021,7 +6112,11 @@ function inkBounds() {
   if (left < 0) return null;
   return box && { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
 }
-if (!reloadMissingPage()) send('ready', { path: shownPath(), title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
+if (!reloadMissingPage()) {
+  send('ready', { path: shownPath(), title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
+  // A code placement that threw while the page was rendered on the server is the page's problem from the start.
+  reportRenderErrors();
+}
 reportHistory();
 reportTextFocus();
 reportForms();

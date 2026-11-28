@@ -85,7 +85,7 @@ import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/rout
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
 import { sha256Hex } from '@shared/sha256';
-import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
+import { NOT_FOUND_ENGLISH, NOT_FOUND_ROUTE, notFoundCopy, notFoundEnglish } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
 import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
@@ -94,7 +94,7 @@ import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@share
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, linkQuery, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
@@ -366,7 +366,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
-      href = entryRoute(found.collection, found.entry)!;
+      href = entryRoute(found.collection, found.entry)! + (typeof link.query === 'string' && link.query.startsWith('?') ? linkQuery(link.query) : '');
       break;
     }
     case 'collection': {
@@ -3674,7 +3674,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
     // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
     const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${renderErrorBoundary(ctx, def, indentBlock(markup), `${p}\t`)}\n${p}</div>`;
   }
   return markup;
 }
@@ -3801,6 +3801,36 @@ function editingState(ctx: EmitCtx): string {
  * comment before and after them. One native element already starts and ends on nodes of its own, so it is left
  * as it is. Editor variants only: the exported site is never hot-updated and stays free of it.
  */
+/** The editor's preview: the attribute that marks a code placement which threw while it rendered (see renderErrorBoundary). */
+export const RENDER_ERROR_ATTR = 'data-so-render-error';
+
+/**
+ * The editor's preview: a code placement that throws while it renders (on the server or in the browser) shows a note
+ * in its place, naming its file and the error, and the rest of the page goes on showing (#1526). Without it the throw
+ * reaches SvelteKit's own boundary and the whole page becomes the site's error page, which the editor never hears
+ * of. The bridge reports each note as the page's problem, and retries the component once the page takes a change, so a
+ * fixed component comes back. The message is the one the preview's error hooks keep (`soRenderError`: see
+ * generateServerHook and the dev plugin); the website has neither the note nor the hooks.
+ */
+function renderErrorBoundary(ctx: EmitCtx, def: ComponentDefinition, markup: string, p: string): string {
+  ctx.snippets = (ctx.snippets ?? 0) + 1;
+  const snippet = `${RENDER_ERROR_SNIPPET}_${ctx.snippets}`;
+  const message = `so_failure?.soRenderError || so_failure?.message || 'Something went wrong.'`;
+  const note =
+    `${p}\t<div ${RENDER_ERROR_ATTR}={${message}} data-so-error-file=${attrJs(defFile(def))} data-so-editor-only {@attach (el) => { el.__soRetry = so_retry; }}>` +
+    `<strong>{${js(`${def.name || 'This component'} couldn’t be shown`)}}</strong> <span>{${message}}</span></div>`;
+  // Declared beside the boundary under a name of the editor's own, one per placement in the file (Svelte lifts a
+  // snippet that uses nothing of the component's to the file), never as `failed` inside it, where it would stand in
+  // for a design's own property of that name in the placement's values.
+  return `${p}{#snippet ${snippet}(so_failure, so_retry)}\n${note}\n${p}{/snippet}\n${p}<svelte:boundary failed={${snippet}}>\n${indentBlock(markup)}\n${p}</svelte:boundary>`;
+}
+
+/** The header a live session guest's preview requests carry: LIVE_GUEST_HEADER in src/runtime/policy.ts (Node only). */
+const GUEST_HEADER = 'x-siteorigin-live-guest';
+
+/** The snippet a code placement's boundary shows when it throws (see renderErrorBoundary). */
+const RENDER_ERROR_SNIPPET = 'so_render_failed';
+
 function hotBoundary(markup: string, roots: number): string {
   if (roots === 1 && /^<[a-z][a-z0-9-]*[\s/>]/.test(markup.trimStart())) return markup;
   return `{#key 'siteorigin'}\n${markup}\n{/key}`;
@@ -5052,6 +5082,9 @@ export const ERROR_PAGE_FILE = 'src/routes/+error.svelte';
 export function generateNotFound(state: ProjectState): string {
   const { heading, message, linkLabel } = notFoundCopy(state.site);
   const title = `${heading} · ${state.site.name}`;
+  // Built-in English is marked on a span of its own, so its block still lines up the way the page runs.
+  const english = notFoundEnglish(state.site);
+  const phrase = (text: string, isEnglish: boolean) => (isEnglish ? `<span lang="${NOT_FOUND_ENGLISH.lang}" dir="${NOT_FOUND_ENGLISH.dir}">{${js(text)}}</span>` : `{${js(text)}}`);
   // The sections the header and footer link to "on this page": the build sends those links to the page that has
   // each (see generateServerHook), and these targets keep the page buildable for a project with a hook of its own.
   const targets = Object.keys(notFoundSections(state))
@@ -5070,9 +5103,9 @@ export function generateNotFound(state: ProjectState): string {
 
 <section class="so-not-found">
 	<div class="so-container so-not-found__inner">${targets}
-		<h1 class="so-not-found__heading">{${js(heading)}}</h1>
-		<p class="so-not-found__message">{${js(message)}}</p>
-		<a class="so-btn so-btn--primary" href={resolve('/')}>{${js(linkLabel)}}</a>
+		<h1 class="so-not-found__heading">${phrase(heading, english.heading)}</h1>
+		<p class="so-not-found__message">${phrase(message, english.message)}</p>
+		<a class="so-btn so-btn--primary" href={resolve('/')}>${phrase(linkLabel, english.linkLabel)}</a>
 	</div>
 </section>
 
@@ -5176,7 +5209,21 @@ export const SERVER_HOOK_FILE = 'src/hooks.server.js';
  * instead, and its dir when that language runs the other way from the site's. The hook carries its own list of languages, so it never depends on another generated file for them. A
  * site in one language has the not-found part alone.
  */
-export function generateServerHook(state: ProjectState): string {
+export function generateServerHook(state: ProjectState, instrument = false): string {
+  // The editor's preview only: an error a page meets while it renders keeps its own message beside SvelteKit's
+  // "Internal Error", for the note a code placement shows in its place and the editor's page problem (#1526). A live
+  // session's guest is given SvelteKit's own words.
+  const handleError = instrument
+    ? `
+/** The editor's preview only: what went wrong while a page rendered, for the editor to say. */
+export function handleError({ error, event, kind }) {
+	// A guest of a live session is shown the site, not what went wrong on the host's machine. A page the server fetches
+	// for another while rendering it is sent without the guest's mark, so says nothing either.
+	if (kind !== 'unknown' || event?.isSubRequest || event?.request?.headers?.has(${js(GUEST_HEADER)})) return;
+	return { soRenderError: String((error && error.message) || error).slice(0, 2000) };
+}
+`
+    : '';
   const sections = `/** Sections the shared header and footer link to "on this page", with the page that has each. */
 const SECTIONS = ${js(notFoundSections(state))};
 `;
@@ -5193,7 +5240,7 @@ export function handle({ event, resolve }) {
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
 	return resolve(event, { transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
 }
-`;
+${handleError}`;
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. Makes 404.html, the
 // not-found page, work at any missing address, and gives each page's <html lang> the language the page is written
 // in, and its dir the way that language runs: pages not listed in LANGUAGES are in the site's language, and pages not
@@ -5248,7 +5295,7 @@ export function handle({ event, resolve }) {
 		}
 	});
 }
-`;
+${handleError}`;
 }
 
 /** Served path of the generated favicon used until a favicon image is chosen. */
@@ -5455,7 +5502,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, NOT_FOUND_ROUTE_SVELTE);
   files.set(ERROR_PAGE_FILE, ERROR_PAGE_SVELTE);
   files.set(`${NOT_FOUND_DIR}/+page.js`, NOT_FOUND_PAGE_JS);
-  files.set(SERVER_HOOK_FILE, file('hooks.server.js', generateServerHook));
+  files.set(SERVER_HOOK_FILE, file(`hooks.server.js${mode}`, (s) => generateServerHook(s, !!opts.instrument)));
   files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
   if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', (s) => generateFaviconSvg(s)));
   // The web app manifest; the PNG icons it names are pictures the editor renders (siteIconSet).

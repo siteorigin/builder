@@ -61,6 +61,7 @@ const { applyOperations, assetUsages } = await import('@engine/apply');
 const { createStarterState, STARTER_ASSETS } = await import('@catalogue/starters');
 const { validateOperation } = await import('@shared/ops');
 const { sha } = await import('../../src/main/project/fsutil');
+const { altChecks } = await import('../../src/renderer/src/lib/alt-review');
 type AssetRecord = import('@shared/types').AssetRecord;
 type ProjectState = import('@shared/types').ProjectState;
 
@@ -458,7 +459,7 @@ describe('giving a library image a new file', () => {
   const relink = { type: 'asset.relink' as const, assetId: 'a_pic', file: 'static/assets/new-22222222.webp', mime: 'image/webp', bytes: 20, hash: 'new', width: 300, height: 200 };
   const named = { ...relink, originalName: 'new_pic.webp' };
 
-  it('keeps the image, its details and every use with its alt text, and replaces the file details as a whole', () => {
+  it('keeps the image, its details and every use with its alt text, and replaces the file details (and the old picture’s suggested alt text) as a whole', () => {
     let s = createStarterState('blank', 'Relink', false);
     s = applyOperations(s, [{ type: 'asset.add', asset: record() }]).state;
     const c = applyOperations(s, [{ type: 'component.createCode', name: 'Pic', source: '<p>x</p>\n', properties: { photo: { type: 'image', label: 'Photo' } } }]);
@@ -468,7 +469,7 @@ describe('giving a library image a new file', () => {
     // The old file's name never stands for a file that came without one.
     expect(withCopies.originalName).toBeUndefined();
     const after = applyOperations(s, [named]).state;
-    expect(after.assets.assets.a_pic).toEqual({ originalName: 'new_pic.webp',  id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio' });
+    expect(after.assets.assets.a_pic).toEqual({ originalName: 'new_pic.webp',  id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio' });
     expect(JSON.stringify(after.pages)).toContain('{"assetId":"a_pic","alt":"The studio at dusk"}');
     expect(assetUsages(after).a_pic).toBe(1);
     const svg = applyOperations(s, [{ ...relink, file: 'static/assets/new-22222222.svg', mime: 'image/svg+xml', width: undefined, height: undefined }]).state.assets.assets.a_pic;
@@ -583,11 +584,17 @@ describe('a project whose picture was moved out of its folder', () => {
     // A different picture becomes this image's file, everywhere it is used.
     const replacement = sourceFile('new-nook.png', await picture('png', 900, 600, { r: 40, g: 160, b: 90 }));
     const r = await c.locateAsset('a_reading', replacement);
-    expect(r).toEqual({ ok: true, message: 'new-nook.png now shows wherever Reading nook is used.' });
+    expect(r).toMatchObject({ ok: true, message: 'new-nook.png now shows wherever Reading nook is used.', entryId: expect.any(String), revision: s.revision });
+    expect(c.snapshot()!.history.entries.find((e) => e.id === r.entryId)).toMatchObject({ applied: true });
     const relinked = s.state.assets.assets.a_reading;
     expect(relinked.originalName).toBe('new-nook.png');
-    expect(relinked).toMatchObject({ id: 'a_reading', name: 'Reading nook', altSuggestion: nook.altSuggestion, mime: 'image/png', width: 900 });
+    expect(relinked).toMatchObject({ id: 'a_reading', name: 'Reading nook', mime: 'image/png', width: 900 });
+    // The suggestion described the old picture (#1385): it goes, and every use keeps its alt text, listed to check.
+    expect(relinked.altSuggestion).toBeUndefined();
     expect(JSON.stringify(s.state.pages).match(/"assetId":"a_reading","alt":"[^"]*"/g)).toEqual(alts);
+    expect(r.altReview?.length).toBeGreaterThan(0);
+    expect(r.altReview?.length).toBe(altChecks(s.state, 'a_reading', r.altReview!).length);
+    expect(r.altReview!.every((x) => (x.reason === 'custom' ? !!x.alt.trim() : !x.alt.trim()))).toBe(true);
     await until(() => !c.snapshot()!.missingAssets.length, 'the relinked image to be found');
     expect(c.snapshot()!.diagnostics.some((d) => d.code === 'ASSET_FILE_MISSING')).toBe(false);
 
@@ -599,6 +606,7 @@ describe('a project whose picture was moved out of its folder', () => {
     // Putting the original back (located under any name) restores it in place, with no change to the project.
     const revision = s.revision;
     const r2 = await c.locateAsset('a_reading', join(outside, nook.file.split('/').pop()!));
+    // The same picture is no new one to describe: nothing to check.
     expect(r2).toEqual({ ok: true, message: 'Reading nook is back in the project folder.' });
     expect(s.revision).toBe(revision);
     expect(c.snapshot()!.missingAssets).toEqual([]);

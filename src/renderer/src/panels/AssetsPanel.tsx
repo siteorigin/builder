@@ -4,7 +4,7 @@ import { ArrowLeft, Check, ChevronRight, Component, FileDown, FilePlus, FileSear
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
-import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
+import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type Toast, type UndoTarget } from '../store';
 import { Disclosure, DisclosureMark, Field, DraftInput, Segmented, Spinner, Tabs, openSection } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isValidFontAsset } from '@shared/fonts';
@@ -791,8 +791,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       cancelAnimationFrame(frame);
     };
   }, []);
+  // The review is of the image's own new file (Locate file), rather than of another image replacing it.
+  const relinked = altReview?.withId === altReview?.assetId;
   // Undone, the replacement has nothing to check; redone, the same uses are listed again.
-  const altToCheck = useMemo(() => (snap && sel && altReview?.assetId === sel.id && undoAvailable(altReview.undo, snap) ? altChecks(snap.state, altReview.withId, altReview.review) : []), [snap, sel, altReview]);
+  // A new file's review waits for the snapshot that has it: before, the uses still match, but show nothing new yet.
+  const altToCheck = useMemo(() => (snap && sel && altReview?.assetId === sel.id && undoAvailable(altReview.undo, snap) && (!relinked || snap.revision >= altReview.undo.revision) ? altChecks(snap.state, altReview.withId, altReview.review) : []), [snap, sel, altReview, relinked]);
   if (!snap) return null;
   const usage = snap.assetUsage;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -1032,18 +1035,35 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     }
   };
   /** Locate a missing file, or make missing copies again, and say how it went. */
-  const fixFiles = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
+  const fixFiles = async (run: () => Promise<{ ok: boolean; message?: string; action?: Toast['action'] }>) => {
     if (fixing) return;
     setFixing(true);
     try {
-      const r = await run().catch((e: Error) => ({ ok: false, message: e.message }));
-      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+      const r: { ok: boolean; message?: string; action?: Toast['action'] } = await run().catch((e: Error) => ({ ok: false, message: e.message }));
+      if (r.message) toast(r.message, r.ok ? 'info' : 'error', r.action);
       // The repair buttons go once the files are back: focus stays in the image's details.
       if (r.ok) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     } finally {
       setFixing(false);
     }
   };
+  /**
+   * Locate a missing original. A different picture becomes the image's file in one step that can be undone, and every
+   * use keeps its alt text: those written for the old picture, and any left empty, are listed to check (#1385).
+   */
+  const locateFile = (a: AssetRecord) =>
+    fixFiles(async () => {
+      const workspaceKey = getState().snapshot?.workspaceKey;
+      const r = await api.project.locateAsset(a.id);
+      if (!r.ok || !r.entryId || r.revision === undefined || !workspaceKey || getState().snapshot?.workspaceKey !== workspaceKey) return r;
+      const undo = { entryId: r.entryId, workspaceKey, revision: r.revision };
+      const review = r.altReview ?? [];
+      const check = review.length > 0 && selectedNow.current === a.id;
+      // With nothing to check, a review still open from replacing this image stays.
+      if (check) setAltReview({ assetId: a.id, withId: a.id, undo, review });
+      const more = check ? ` Check the alt text in ${review.length === 1 ? 'one place' : `${review.length} places`} below.` : '';
+      return { ...r, message: `${r.message ?? ''}${more}`, action: undoAction(undo) };
+    });
   const removeOne = async (a: AssetRecord) => {
     const i = shown.findIndex((x) => x.id === a.id);
     const next = shown[i + 1] ?? shown[i - 1];
@@ -1662,11 +1682,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <div>
               {hurt === 'all' ? (
                 <span>
-                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
+                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back{used ? ' (another picture chosen there shows in every place)' : ''}, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : hurt === 'original' ? (
                 <span>
-                  <b>{copies ? 'Original and some smaller copies missing.' : 'Original missing.'}</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} ${copies ? 'its other smaller copies, though some screen sizes may show nothing,' : 'its smaller copies,'} but you can’t export the site while it uses this image.` : `${copies ? 'Some smaller copies' : 'Its smaller copies'} are still here, but the original is the file the website is built from.`} Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
+                  <b>{copies ? 'Original and some smaller copies missing.' : 'Original missing.'}</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} ${copies ? 'its other smaller copies, though some screen sizes may show nothing,' : 'its smaller copies,'} but you can’t export the site while it uses this image.` : `${copies ? 'Some smaller copies' : 'Its smaller copies'} are still here, but the original is the file the website is built from.`} Locate the file to bring it back{used ? ' (another picture chosen there shows in every place)' : ''}, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : (
                 <span>
@@ -1676,7 +1696,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               <div className="asset-missing-actions">
                 {gone.original ? (
                   <>
-                    <button className="btn btn-sm btn-primary" disabled={fixing} onClick={() => void fixFiles(() => api.project.locateAsset(sel.id))}>
+                    <button className="btn btn-sm btn-primary" disabled={fixing} onClick={() => void locateFile(sel)}>
                       <FileSearch /> Locate file…
                     </button>
                     {used > 0 && (
@@ -1699,7 +1719,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <TriangleAlert aria-hidden="true" />
             <div>
               <span>
-                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {altToCheck.length === 1 ? 'It now shows' : 'They now show'} <b>{nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)}</b>, but {altToCheck.length === 1 ? 'its' : 'their'} alt text was written for this image, or is empty.
+                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {altToCheck.length === 1 ? 'It now shows' : 'They now show'}{' '}
+                {/* Located with a different picture, the image itself has a new file. */}
+                {relinked ? 'the new file' : <b>{nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)}</b>}, but {altToCheck.length === 1 ? 'its' : 'their'} alt text was written for {relinked ? 'the old picture' : 'this image'}, or is empty.
               </span>
               <ul>
                 {altToCheck.map((c, i) => {
@@ -1728,7 +1750,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                           {c.definitionId && <span className="asset-use-hint">Part of the theme: its alt text can’t be changed here</span>}
                         </span>
                       )}
-                      <span className="asset-alt-text" id={why}>{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text'}</span>
+                      <span className="asset-alt-text" id={why}>{c.reason === 'custom' ? `${relinked ? 'Carried over' : 'Kept its own'}: “${c.alt}”` : 'No alt text'}</span>
                     </li>
                   );
                 })}
