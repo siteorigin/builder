@@ -904,21 +904,17 @@ export function Chat() {
   // the collection the Content list shows.
   const listedNow = listedCollection(st, listed, openPostRef);
   const openNoun = scope.post ? entryNounLower(st.collections[scope.post.collectionId]) : entryNounLower(listedNow);
-  // With none open, what to do first, said on the chip beside the message field and by the send guard: open one from the
-  // collection shown (a synced one's entries are never started here), or, before the first collection, add one.
+  // With none open, a change goes to the whole site (#1424): the chip says nothing is open, and its title how to change
+  // one entry alone (open one from the collection shown; a synced one's entries are never changed here).
   const emptyChip = listedNow ? `No ${openNoun} open` : 'Nothing open';
-  const emptyStep = nothingOpenStep(listedNow);
-  const emptyGuard = !listedNow
-    ? 'Nothing open: add a collection in the Content list and its first entry, then send again with that entry open.'
-    : isReadOnlyCollection(listedNow)
-      ? `${listedNow.settings.name} is synced: its entries are changed at their source, not here.`
-      : `${emptyChip}: ${emptyStep}, then send again. The change is made to the one open in the writer.`;
+  const emptyTitle = listedNow && !isReadOnlyCollection(listedNow) ? `Whole site · ${emptyChip}. To change one ${openNoun} alone, ${nothingOpenStep(listedNow)} first` : `Whole site · ${emptyChip}`;
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
       [{ value: 'page' as const, label: `This ${openNoun}`, description: askMode ? `The ${openNoun} you have open` : 'Its words and details', icon: <Pencil />, title: askMode ? `The ${openNoun} “${scope.post.title}”` : `Only the ${openNoun} “${scope.post.title}”`, chip: scope.post.title, where: `this ${openNoun}` }]
     : scope.empty
-    ? // The writer with no post open shows no page: a change waits for a post, and a question reads the site.
-      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: emptyChip, description: listedNow && isReadOnlyCollection(listedNow) ? `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)}` : `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)} to ask for a change`, icon: <Pencil />, title: listedNow && isReadOnlyCollection(listedNow) ? `${emptyChip}: ${emptyStep}` : `${emptyChip}: ${emptyStep} to ask for a change`, chip: emptyChip, where: emptyStep }]
+    ? // The writer with no post open shows no page: a change reaches the whole site, never the page out of sight under
+      // the writer (#895, #1424), and a question reads the site.
+      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, styles and collections', icon: <Globe />, title: emptyTitle, chip: 'Whole site', where: emptyChip.toLowerCase() }]
     : scope.template
     ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
       [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
@@ -936,7 +932,7 @@ export function Chat() {
           ...(askMode ? [] : [{ value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, and styles', icon: <Globe />, title: `Whole site · from ${page.title}`, chip: 'Whole site', where: `from ${page.title}` }])
         ]
       : [];
-  const scopeValue: ChatEditScope = scope.empty ? 'page' : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
+  const scopeValue: ChatEditScope = scope.empty ? (askMode ? 'page' : 'site') : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
   const found = scopeOptions.find((o) => o.value === scopeValue) ?? scopeOptions[0] ?? null;
   // A selection in the shared header or footer reaches every page, so the chip says so in words, not only in green.
   const shell = !component && found?.value === 'selection' && scope.selection?.owner.kind === 'shell' ? (scope.selection.owner.id === 'footer' ? 'shared footer' : 'shared header') : null;
@@ -1164,10 +1160,9 @@ export function Chat() {
     const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
-    // would reach the page under the view, so it waits for one (#700), as one from the writer with no post open does
-    // (#895). The draft stays.
-    if (!context && changeWithoutDocument(workspace, workspace === 'seo' ? !!seoChosen : !!scope.post, askMode))
-      return (toast(workspace === 'seo' ? 'Choose a page or post in the SEO list first: the change is made to the one chosen there.' : emptyGuard, 'info'), false);
+    // would reach the page under the view, so it waits for one (#700). The draft stays. One from the writer with no
+    // post open goes to the whole site instead (#1424, lib/chatTarget editScope).
+    if (!context && changeWithoutDocument(workspace, !!seoChosen, askMode)) return (toast('Choose a page or post in the SEO list first: the change is made to the one chosen there.', 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
