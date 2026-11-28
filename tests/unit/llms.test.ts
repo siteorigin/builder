@@ -284,6 +284,16 @@ describe('Markdown copies', () => {
     expect(full.indexOf(contact.trimEnd())).toBeGreaterThan(full.indexOf(about.trimEnd()));
   });
 
+  it('writes the same words for a publication, whose sections carry no editor markers (#1351)', async () => {
+    const { withoutCodeMarkers } = await import('../../src/main/codecheck');
+    const s = run(createStarterState('business', 'Harbor Studio', false), { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true });
+    const published = structuredClone(s);
+    for (const def of Object.values(published.components)) if (def.kind === 'code' && typeof def.source === 'string') def.source = await withoutCodeMarkers(def.source);
+    const home = files(s).get('static/index.html.md')!;
+    expect(home).toContain('Calm, considered spaces for everyday life');
+    expect(files(published).get('static/index.html.md')).toBe(home);
+  });
+
   it('leaves out a part of a Foundation section hidden at every size, for every item or for one', () => {
     const site = designedSite();
     const owner = { kind: 'page' as const, id: site.home };
