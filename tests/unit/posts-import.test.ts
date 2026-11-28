@@ -574,7 +574,8 @@ describe('planning an import', () => {
     expect(plan.media.map((m) => m.ref)).toEqual(['images/oven.png', 'snow.jpg']);
     // The published open day links to a post that arrives as a draft: the review says so.
     expect(plan.posts[0].notes).toContain('It links to “Winter hours”, which arrives as a draft: publish that post, or change the link, before the website is exported.');
-    expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
+    // Project health says so too, as the one problem the import leaves: the website export stops on it.
+    expect(validateState(after).filter((d) => d.severity === 'error').map((d) => d.code)).toEqual(['LINK_TO_DRAFT']);
   });
 });
 

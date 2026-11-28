@@ -5,13 +5,14 @@ import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } fr
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
 import { BUILD_FAILED_UNPLACED, type Diagnostic, type ExportFormat, type ExportNote, type ExportResult, type RecentExport } from '@shared/api';
-import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
+import { api, editRunStatus, getState, keepSamples, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout, showArchiveLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
 import { settleEdits } from '../lib/leave';
 import { afterEditsSettle } from '../lib/pending';
-import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
+import type { SampleContactGroup, SampleIdentityField } from '../lib/find-content';
+import { sampleGroups, sampleWhere } from '../lib/sample-review';
 import { openContentMatch } from './FindReplace';
 import { websiteFormNotes, websiteFormProblems, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
@@ -155,19 +156,9 @@ function PageLists({ published, drafts }: { published: PageDoc[]; drafts: PageDo
   );
 }
 
-/** "Contact", "Contact and the shared footer": where a sample detail is, by page or shared part, in reading order. */
-function placesOf(fields: ContentField[]): string {
-  const names = [...new Set(fields.map((f) => (f.owner.kind === 'shell' ? `the shared ${f.owner.id}` : f.where)))];
-  return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
-/** Remember the sample details the author keeps on purpose (or, with `keep` false, review again), for this project. */
-function keepSamples(values: string[], keep: boolean) {
-  const was = getState().keptSamples;
-  const next = keep ? [...new Set([...was, ...values])] : was.filter((v) => !values.includes(v));
-  setState({ keptSamples: next });
-  saveLocal({ keptSamples: next });
-}
+/** Where the site's publisher's contact details are set: Site settings, under Published by. */
+const IDENTITY = { kind: 'site', field: 'identity' } as const;
+const IDENTITY_NAMES: Record<SampleIdentityField, string> = { email: 'Email', telephone: 'Telephone', address: 'Address' };
 
 /**
  * What keeps visitors from reaching the author, in one box: each form on the website that visitors cannot send (in
@@ -270,7 +261,7 @@ function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { 
                             <span id={nameId}>
                               <strong>{g.value}</strong>{' '}
                               <span className="export-review-where">
-                                · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}.
+                                · {sampleWhere(g)}.
                               </span>
                             </span>{' '}
                             {/* Beside the places it reveals, so the row stays one decision wide. */}
@@ -280,9 +271,17 @@ function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { 
                             </button>
                           </div>
                           <div className="export-review-actions">
-                            <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
-                              Replace everywhere…
-                            </button>
+                            {/* Site settings' Published by is changed there, not by Find and Replace. */}
+                            {g.matches.length > 0 && (
+                              <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
+                                {g.identity ? 'Replace on pages…' : 'Replace everywhere…'}
+                              </button>
+                            )}
+                            {g.identity && (
+                              <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => openEditorDestination(IDENTITY)}>
+                                {destinationLabel(IDENTITY)}
+                              </button>
+                            )}
                             {/* A read-only project keeps nothing, and exports nothing either. */}
                             <button className="btn btn-sm btn-ghost export-review-keep" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle(() => keepAt(row)))}>
                               Keep it
@@ -303,6 +302,14 @@ function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { 
                               </li>
                             );
                           })}
+                          {g.identity && (
+                            <li key="identity">
+                              <span className="grow">Site settings › Published by › {IDENTITY_NAMES[g.identity]}</span>
+                              <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open Site settings › Published by › ${IDENTITY_NAMES[g.identity]}`} onClick={() => openEditorDestination(IDENTITY)}>
+                                Open
+                              </button>
+                            </li>
+                          )}
                         </ul>
                       </li>
                     );
@@ -417,7 +424,7 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
  */
 function listedFixes(state: ProjectState, kept: readonly string[], diagnostics: readonly Diagnostic[]): string[] {
   const notes = healthNotesOf(state, diagnostics);
-  return dialogFixes({ samples: sampleContactMatches(state).flatMap((g) => (kept.includes(g.value) ? [] : [g.value])), seo: notes.seo, other: notes.otherDue });
+  return dialogFixes({ samples: sampleGroups(state).flatMap((g) => (kept.includes(g.value) ? [] : [g.value])), seo: notes.seo, other: notes.otherDue });
 }
 
 /** What Project health lists beside what the dialog shows itself, counted once each (healthNotes). */
@@ -461,7 +468,7 @@ export function ExportModal() {
   // (#1395); the editable project needs none. Only that: a preview still starting has its tools ready. (A read-only
   // project is preparing a copy to preview, and exports nothing anyway.)
   const toolsSettingUp = useStore((s) => s.runtime.state === 'preparing') && !readOnly;
-  const samples = useMemo(() => (state ? sampleContactMatches(state) : []), [state]);
+  const samples = useMemo(() => (state ? sampleGroups(state) : []), [state]);
   const samplesToReview = samples.filter((g) => !keptValues.includes(g.value));
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
   // The website's contact forms visitors cannot send, as the website export would name them, and where to fix each.
