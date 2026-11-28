@@ -8,13 +8,24 @@ import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
 import { RenderFailure } from './components/RenderFailure';
 import { CatalogueFailed, NoThemes } from './components/StartupFailure';
+import { WindowChrome } from './components/WindowMenuButton';
+import { markWindowChrome } from './lib/window-chrome';
 
 // Every module the editor's script imports up front has been evaluated (src/shared/perf.ts).
 perfMark('launch.scriptEvaluated');
 
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
+// Every screen keeps the window's own chrome free from its first paint (#1355).
+markWindowChrome();
 const root = createRoot(document.getElementById('root')!);
+// The application menu's button off macOS (#1355), in a root of its own after the screens': whatever the screen (a
+// failure too) the menu is a click away, a dialog never makes it inert, and its place in the window is never part of
+// the top bar's drag region, which the later of two overlapping regions decides.
+const chrome = document.createElement('div');
+chrome.className = 'window-chrome';
+document.getElementById('root')!.after(chrome);
+createRoot(chrome).render(<WindowChrome />);
 // Welcome needs no theme, so it shows while the main process verifies the theme packs. The catalogue is registered
 // before anything reads it: a project opens only once the packs are verified, and the editor waits for it (App.tsx).
 // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.

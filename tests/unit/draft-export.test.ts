@@ -57,6 +57,7 @@ const { createStarterState } = await import('@catalogue/starters');
 const { editedGeneratedFile, isGeneratedReadme } = await import('../../src/main/export');
 const { applyOperations } = await import('@engine/apply');
 const { findTheme, listThemes, registerPacks } = await import('@catalogue/index');
+const { SITE_HANDLE_USAGE } = await import('@generator/index');
 const { setSiteIconRenderer, siteIconTiming, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
 const { renderSiteIcons } = await import('../../src/main/project/image-variants');
 const { sha } = await import('../../src/main/project/fsutil');
@@ -758,4 +759,29 @@ describe('exporting a project whose entries would decide where a contact form se
     expect((await c.exportSourceTo(handoff)).ok).toBe(true);
     expect((await c.buildStaticTo(site)).ok).toBe(true);
   }, 30_000);
+});
+
+describe('exporting a project with a server hook of its own (#1482)', () => {
+  it('exports a site with a page in another language, keeping the hook and the site’s for it to run, and notes one that leaves it out', async () => {
+    const dir = temp('project');
+    const base = createStarterState('business', 'Bookshop', false);
+    const about = Object.values(base.pages).find((p) => p.title === 'About')!.id;
+    await (await ProjectSession.create(dir, applyOperations(base, [{ type: 'page.update', pageId: about, language: 'fr' }]).state)).close();
+    // As README.md says: a hook of the project's own that runs the site's, in place of the generated one.
+    writeFileSync(join(dir, 'src/hooks.server.ts'), `${SITE_HANDLE_USAGE.replace('yourHandle', 'mine')}\n\nfunction mine({ event, resolve }) {\n\treturn resolve(event);\n}\n`);
+    rmSync(join(dir, 'src/hooks.server.js'));
+    const c = await open(dir);
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings.filter((w) => /server hook/.test(w))).toEqual([]);
+    expect(readFileSync(join(source.path!, 'src/hooks.server.ts'), 'utf8')).toContain('export const handle = sequence(siteoriginHandle, mine);');
+    expect(existsSync(join(source.path!, 'src/hooks.server.js'))).toBe(false);
+    expect(readFileSync(join(source.path!, 'src/lib/siteorigin/runtime/handle.server.js'), 'utf8')).toContain('"/about": "fr"');
+    expect((await c.buildStaticTo(join(temp('out'), 'site'))).ok).toBe(true);
+    // A hook that leaves the site's out still exports, with a note saying what a build of it would lack.
+    writeFileSync(join(dir, 'src/hooks.server.ts'), 'export const handle = ({ event, resolve }) => resolve(event);\n');
+    const left = await c.exportSourceTo(join(temp('out'), 'handoff-2'));
+    expect(left.ok).toBe(true);
+    expect(left.warnings).toContainEqual(expect.stringMatching(/^The project's own server hook, src\/hooks\.server\.ts, takes the place of the generated one and does not name siteoriginHandle\. .*Server hook in README\.md shows\.$/));
+  });
 });

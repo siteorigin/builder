@@ -4,8 +4,11 @@
  * described picture, a decorative one and headings in order, and a publisher (#586): an organization, named by the
  * site, with a profile that confirms it. The audit finds nothing on it; each test changes one thing to see one finding.
  * `identity: false` leaves the publisher unsaid, as every project was before #586.
+ *
+ * Its public URL is on example.com, which the audit reports as a placeholder (#1635), and nothing links to its posts:
+ * `auditSite` is the same site as the audit wants it, published at a real address with a Journal link in the header.
  */
-import type { AssetRecord, PageDoc, ProjectState, RichText } from '@shared/types';
+import type { AssetRecord, InstanceNode, PageDoc, ProjectState, RichText } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -38,13 +41,16 @@ export const POST_BODY: RichText = [
 
 export const SEO_SITE_PROFILE = 'https://www.wikidata.org/wiki/Q123456';
 
-export function seoSite({ identity = true }: { identity?: boolean } = {}) {
+/** The public URL `auditSite` is published at: a host of its own, not a reserved example one. */
+export const AUDIT_SITE_URL = 'https://riverside-pottery.co.za/studio';
+
+export function seoSite({ identity = true, audit = false }: { identity?: boolean; audit?: boolean } = {}) {
   let s = createStarterState('blank', 'Riverside Studio', false);
   for (const a of [image('img_icon', { width: 512, height: 512 }), image('img_share', { altSuggestion: 'The studio from the river' }), image('img_bowls'), image('img_texture')]) s.assets.assets[a.id] = a;
   const home = s.site.homePageId;
   s = run(
     s,
-    { type: 'site.update', baseUrl: 'https://example.com/studio', language: 'en', description: 'A pottery studio by the river, with classes for beginners and a shop of handmade work.', favicon: 'img_icon', socialImage: 'img_share' },
+    { type: 'site.update', baseUrl: audit ? AUDIT_SITE_URL : 'https://example.com/studio', language: 'en', description: 'A pottery studio by the river, with classes for beginners and a shop of handmade work.', favicon: 'img_icon', socialImage: 'img_share' },
     { type: 'page.update', pageId: home, seoTitle: 'Riverside Studio · Pottery classes and handmade work', description: 'Pottery classes for beginners and a shop of handmade bowls, cups and plates, by the river in town.' },
     { type: 'page.create', pageId: 'pg_services', title: 'Services', route: '/services/', addToNavigation: true },
     { type: 'page.update', pageId: 'pg_services', seoTitle: 'Classes and commissions · Riverside Studio', description: 'Weekly wheel classes, private lessons and commissioned tableware made to order in the studio.' },
@@ -52,9 +58,16 @@ export function seoSite({ identity = true }: { identity?: boolean } = {}) {
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring pottery classes', publishedAt: '2027-03-02', draft: false, excerpt: 'Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing.', body: POST_BODY }
   );
   if (identity) s = run(s, { type: 'site.update', identity: { kind: 'Organization', sameAs: [SEO_SITE_PROFILE] } });
+  if (audit) {
+    const header = Object.values(s.site.shell.header.nodes).find((n): n is InstanceNode => n.kind === 'instance')!;
+    (header.props.links as unknown[]).push({ id: 'i_journal', label: 'Journal', link: { type: 'collection', target: 'posts' } });
+  }
   const page = (id: string) => s.pages[id] as PageDoc;
   return { state: s, home, services: 'pg_services', entry: 'en_spring', page };
 }
+
+/** The SEO fixture as the audit finds nothing on it (#1635): see seoSite. */
+export const auditSite = (opts: { identity?: boolean } = {}) => seoSite({ ...opts, audit: true });
 
 /** A deep copy to change by hand, as a document edited outside the app would be. */
 export const copy = (s: ProjectState): ProjectState => structuredClone(s);

@@ -42,6 +42,7 @@ import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { isLanguageCode, siteDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { carrySiteName, siteNameNote, siteNameText } from '@shared/site-name';
+import { publisherDetailNotes, type BusinessDetail } from '@engine/business-details';
 import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
 import './SiteStyles.css';
 
@@ -639,6 +640,9 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
   const unusable = 'The website leaves it out until it is corrected.';
   // Keyed by the project's opening: text one project refused never shows in the next.
   const key = (field: string) => `identity-${field}-${workspaceKey}`;
+  // Where the sections, links and footer show each contact detail, which change with it (#1368).
+  const shown = publisherDetailNotes(state);
+  const shownAt = (detail: BusinessDetail) => shown[detail];
   return (
     <div className="ss-group sd-group" role="group" aria-labelledby={`${uid}-identity`}>
       <div className="ss-group-label" id={`${uid}-identity`}>
@@ -688,11 +692,11 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
         onCommit={(v) => commitChecked(checkProfiles(v), (sameAs) => onPatch({ sameAs }))}
       />
       <CheckedField key={key('x')} id="site-identity-x" label="X handle" value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTwitterHandle(v), (handle) => onPatch({ twitterSite: handle || null }))} />
-      <Field label="Address">
+      <Field label="Address" info={shownAt('address')}>
         <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} quietCount onCommit={(v) => onPatch({ address: v.trim() || null })} />
       </Field>
-      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code" placeholder="+27 21 555 0134" value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
-      <CheckedField key={key('email')} id="site-identity-email" label="Email" value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
+      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code" info={shownAt('telephone')} placeholder="+27 21 555 0134" value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
+      <CheckedField key={key('email')} id="site-identity-email" label="Email" info={shownAt('email')} value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
       {kind === 'LocalBusiness' && (
         <>
           <CheckedField
@@ -700,7 +704,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
             id="site-identity-hours"
             label="Opening hours"
             hint="One period per line, 24-hour clock"
-            info="Days then hours, such as Mo-Fr 09:00-17:00 or Sa 10:00-14:00."
+            info={['Days then hours, such as Mo-Fr 09:00-17:00 or Sa 10:00-14:00.', shownAt('openingHours')].filter(Boolean).join(' ')}
             placeholder="Mo-Fr 09:00-17:00"
             value={linesOf(identity.openingHours)}
             multiline

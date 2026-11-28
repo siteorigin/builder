@@ -217,7 +217,8 @@ describe('collections', () => {
     const linked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['[Hours](/blog/winter-hours/)'] }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Opening hours', slug: 'opening-hours' });
     expect(linked.collections.posts.entries.en_winter).toMatchObject({ id: 'en_winter', slug: 'opening-hours' });
     expect(JSON.stringify(linked.collections.posts.entries.en_spring.body)).toContain('{"type":"entry","target":"en_winter"}');
-    expect(validateState(linked).filter((d) => d.severity === 'error')).toEqual([]);
+    // The entry it now names is a draft: the only problem is the one the website export stops on.
+    expect(validateState(linked).filter((d) => d.severity === 'error').map((d) => [d.code, d.owner])).toEqual([['LINK_TO_DRAFT', { kind: 'entry', id: 'en_spring' }]]);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_nope', title: 'X' }])).toThrow(/no entry "en_nope"/);
   });
 

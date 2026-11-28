@@ -23,7 +23,7 @@ import { drafts } from '@engine/draft';
 import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@shared/icons';
-import { diagnosticKey, validateState } from '@engine/validate';
+import { diagnosticKey, validateState, type Diagnostic } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 import { turnState } from '@shared/turns';
@@ -36,6 +36,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { runSeoAudit } from '@engine/seo-audit';
 import { findingHandoff } from '../../src/renderer/src/lib/seoHandoff';
 import { managedStarter } from './fixtures/agent-designs';
+import { pagePerformance, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PageSample, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -87,6 +88,8 @@ interface SetupOptions {
   managed?: string[];
   /** A change to the project before the session opens it. */
   prepare?: (s: ProjectState) => void;
+  /** What the last website export measured, as the main process keeps it (#1488). */
+  performance?: () => PerformanceStatus | null;
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
@@ -105,7 +108,8 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
     compileAll: opts.compileAll ? () => opts.compileAll!(session) : async () => [],
     inspectLayout: opts.inspectLayout ?? (async () => ({ issues: [] })),
     onBusyChange: (b) => (busy = b),
-    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {})
+    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {}),
+    ...(opts.performance ? { performance: opts.performance } : {})
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   const run = async (text: string, extra: Partial<ChatContext> = {}) => {
@@ -591,7 +595,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'audit_performance', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -929,6 +933,34 @@ describe('read-only questions (#203)', () => {
     sessionRef = session;
     const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
     expect(result?.checks).toEqual([{ status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' }]);
+  });
+
+  it('reads what the last export measured of the site and of one page, in a question and an edit, and says when nothing is measured (#1488)', async () => {
+    for (const mode of ['ask', 'edit'] as const) {
+      let status: PerformanceStatus | null = null;
+      let measure = () => {};
+      // Measured once the first call has said there is nothing yet, as an export the author ran meanwhile would be.
+      const turns: Turn[] = [() => [call('p0', 'audit_performance', {})], () => (measure(), [call('p1', 'audit_performance', {})]), () => [call('p2', 'audit_performance', { route: '/about/' })], () => finish('Here is what was measured.')];
+      const { session, run, adapter, events } = await setup(turns, { performance: () => status });
+      const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!;
+      const sample: PageSample = { complete: true, resources: [{ url: '/about/', kind: 'html', bytes: 2048, preloaded: false, own: true }, { url: '/assets/hero.jpg', kind: 'images', bytes: 300_000, preloaded: false, own: true }], images: [], lcp: { kind: 'image', url: '/assets/hero.jpg', from: 'browser' } };
+      const asked = session.revision;
+      const report: PerformanceReport = { measuredAt: '2026-11-28T10:00:00.000Z', revision: asked, viewport: PERFORMANCE_VIEWPORT, budgets: { ...PERFORMANCE_BUDGETS }, pages: [pagePerformance('/about/', about.title, sample)], cache: { host: 'cloudflare', file: null, path: '/_app/immutable/x.js', value: null, status: 'none' }, findings: [] };
+      measure = () => void (status = { report, stale: true });
+      const { result } = await run('Why is my site slow?', mode === 'ask' ? { mode: 'ask' } : {});
+      expect(result?.status, mode).toBe('no-changes');
+      expect(adapter.requests[0].tools.map((t) => t.name), mode).toContain('audit_performance');
+      const none = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+      expect(none, mode).toMatchObject({ status: 'not_measured' });
+      const site = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+      expect(site, mode).toMatchObject({ revision: asked, measuredRevision: asked, stale: true, scope: 'site', pages: 1, rows: [{ route: '/about/', hero: { url: '/assets/hero.jpg', preloaded: false } }] });
+      const page = JSON.parse((adapter.requests[3].items.at(-1) as { content: string }).content);
+      expect(page.scope, mode).toEqual({ route: '/about/' });
+      expect(page.findings.map((f: { code: string }) => f.code), mode).toContain('PERF_HERO_NOT_PRELOADED');
+      const activities = [...events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities ?? [];
+      expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Reading site performance', 'Reading the performance of /about/']));
+      expect(session.revision, mode).toBe(asked);
+    }
   });
 });
 
@@ -2249,6 +2281,21 @@ describe('run budget, parallel calls and validation', () => {
     expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
     expect(result?.validation.join(' ')).toMatch(/build without errors/);
     expect(result?.canUndo).toBe(true);
+  });
+
+  it('makes a linked page a draft as asked, with no repair of the links to it: only the website export stops on them (#1633)', async () => {
+    let session: ProjectSession;
+    const about = () => Object.values(session.state.pages).find((p) => p.title === 'About')!;
+    const env = await setup([() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about().id, draft: true }] })], () => finish('About is a draft now.')]);
+    session = env.session;
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT')).toEqual([]);
+    const { result } = await env.run('Keep the About page as a draft for now');
+    expect(result?.status).toBe('completed');
+    // The site's links to it are listed in Project health, and the run left them and the draft as asked.
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT').length).toBeGreaterThan(0);
+    expect(about().draft).toBe(true);
+    expect(env.adapter.requests).toHaveLength(2);
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(false);
   });
 
   it('treats an error with the same message as one already there, but somewhere else, as new (#132)', async () => {
@@ -4935,6 +4982,8 @@ describe('the project brief as standing context (#519)', () => {
 });
 
 describe('the project diagnostics in the editor context (#757)', () => {
+  /** What the editor context lists: problems and warnings, but images waiting for the author's pictures (#1633). */
+  const inContext = (d: Diagnostic) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED';
   const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.find((i) => (i as { kind?: string }).kind === 'user') as { text: string }).text)![1]);
   const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
   /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
@@ -4960,7 +5009,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
       // The other page comes first in the validator's own order.
       env.session.state = { ...env.session.state, site: { ...env.session.state.site, pageOrder: [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)] } };
       seed(env.session, [other, home]);
-      const expected = env.session.diagnostics().filter((d) => d.severity !== 'info');
+      const expected = env.session.diagnostics().filter(inContext);
       expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
       expect(expected.filter((d) => d.severity === 'warning').length).toBeGreaterThanOrEqual(2);
       const { result } = await env.run('Tidy up the footer', pageCtx(home, 'Home', mode === 'ask' ? { mode: 'ask' } : { scope: 'page' }));
@@ -5011,7 +5060,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
 
   it('leaves the section out of a project without problems', async () => {
     const env = await setup([() => finish('Done.')]);
-    expect(env.session.diagnostics().filter((d) => d.severity !== 'info')).toEqual([]);
+    expect(env.session.diagnostics().filter(inContext)).toEqual([]);
     await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'page' }));
     expect(editorContext(env.adapter.requests[0])).not.toHaveProperty('diagnostics');
   });
@@ -5021,7 +5070,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const env = await setup([() => finish('Done.')], { capabilities: { contextWindowTokens: 40_000 } });
     const pages = pagesOf(env.session);
     seed(env.session, pages, 10);
-    const all = env.session.diagnostics().filter((d) => d.severity !== 'info');
+    const all = env.session.diagnostics().filter(inContext);
     const totals = { errors: all.filter((d) => d.severity === 'error').length, warnings: all.filter((d) => d.severity === 'warning').length };
     await env.run('Tidy up the footer', pageCtx(pages[0], 'Home', { scope: 'site' }));
     const listed = editorContext(env.adapter.requests[0]).diagnostics;
