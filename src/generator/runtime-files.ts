@@ -248,7 +248,7 @@ export const ACTION_SVELTE = `<script>
 			return;
 		}
 		const measure = () => {
-			captionScrolls = caption.scrollHeight > caption.clientHeight + 1;
+			captionScrolls = caption.scrollHeight > caption.clientHeight;
 		};
 		measure();
 		const observer = new ResizeObserver(measure);
@@ -277,6 +277,8 @@ export const ACTION_SVELTE = `<script>
 	}
 
 	function go(step) {
+		// A focused caption goes away with a photo that has none: focus moves to Close first, so the arrow keys keep working.
+		if (caption && document.activeElement === caption && !slides[(index + step + slides.length) % slides.length].caption) dialog?.querySelector('.so-viewer__close')?.focus();
 		index = (index + step + slides.length) % slides.length;
 	}
 
