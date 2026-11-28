@@ -139,7 +139,7 @@ export function App() {
         // Notices (an error stays until dismissed) belong to the project that closed.
         // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
         // An open from Welcome still on its way ends here too: its project closed before it could show.
-        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatAnswer: { key: '', text: '' }, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatAnswer: { key: '', text: '' }, chatSiteGrants: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -359,6 +359,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
     // A choice to change the whole site was made for the last project, never for this one.
     chatContextEnabled: { page: true, scope: 'selection' },
+    chatSiteGrants: {},
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     firstSteps: readFirstSteps(local.firstSteps),
     conversation: null,

@@ -865,6 +865,14 @@ export interface FormRoutingPrompt {
   }>;
 }
 
+/** Plain affirmative answers that grant a scope-widening question (or the app's own) when typed instead of clicked. */
+export const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+/** Whether an answer to a scope-widening question allows it: its first choice, or a plain typed yes. */
+export function grantsWider(q: Pick<ChatQuestion, 'widen' | 'choices'> | null | undefined, answer: unknown): boolean {
+  return !!q?.widen && typeof answer === 'string' && (answer === q.choices?.[0] || TYPED_YES.test(answer));
+}
+
 /** A turn's questions in order, including one stored by an earlier version as `question`. */
 export function turnQuestions(m: Pick<ChatMessage, 'questions' | 'question'>): ChatQuestion[] {
   if (Array.isArray(m.questions)) return m.questions;

@@ -395,6 +395,11 @@ export interface State {
   chatRequest: { id: string; text: string; context: ChatContext; workspaceKey: string; held?: boolean } | null;
   /** What the next message is about: the open page (or Home), and how far an edit may reach (see chatTarget.editScope). */
   chatContextEnabled: { page: boolean; scope: ChatEditScope };
+  /**
+   * The open project's conversations in which the author allowed the AI to change the whole site, by conversation ID
+   * (#1412): their later edits start from the whole site (chatTarget.grantedScope) until the page is chosen by hand.
+   */
+  chatSiteGrants: Record<string, true>;
   /** What the next message is: a change for the AI to make, or a read-only question. */
   chatMode: ChatMode;
   /**
@@ -554,6 +559,7 @@ const live = create<State>((set) => ({
   chatAnswer: { key: '', text: '' },
   chatRequest: null,
   chatContextEnabled: { page: true, scope: 'selection' },
+  chatSiteGrants: {},
   chatMode: 'edit',
   chatFocus: null,
   keptSamples: [],
