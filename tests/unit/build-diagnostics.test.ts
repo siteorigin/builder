@@ -12,6 +12,15 @@ describe('serializeBuildError', () => {
     expect(errorChain(info).map((e) => e.message)).toEqual(['Prerendering failed', 'Unexpected token']);
   });
 
+  it('reads the first of the errors a bundler gathers as the cause (#1479)', () => {
+    const inner = Object.assign(new Error('module_removed_lib\n`$lib` has been removed. Use `#lib` instead.\nhttps://svelte.dev/e/kit/module_removed_lib'), { name: 'SvelteKit error', id: '/p/src/lib/siteorigin/custom/Hours.svelte' });
+    const info = serializeBuildError(Object.assign(new Error('Build failed with 1 error:'), { errors: [inner, new Error('second')] }));
+    expect(info.cause).toMatchObject({ name: 'SvelteKit error', id: '/p/src/lib/siteorigin/custom/Hours.svelte' });
+    expect(info.cause!.cause).toBeUndefined();
+    // A cause of its own comes first.
+    expect(serializeBuildError(Object.assign(new Error('outer'), { cause: new Error('own'), errors: [inner] })).cause!.message).toBe('own');
+  });
+
   it('survives a cause that points back at the error', () => {
     const a: Error & { cause?: unknown } = new Error('a');
     const b = new Error('b', { cause: a });

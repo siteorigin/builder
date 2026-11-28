@@ -26,7 +26,7 @@ export async function prepareCodeForSave(source: string, onStatus: (s: string | 
   const provider = getState().providers.find((p) => p.id === getState().settings?.ai.provider);
   if (provider?.configured) {
     onStatus(`Found ${check.errors.length} problem${check.errors.length === 1 ? '' : 's'}. Fixing automatically…`);
-    const fix = await api.ai.fixCode(source);
+    const fix = await api.ai.fixCode(source, manifest?.definitionId);
     onStatus(null);
     // Closing the editor cancels the fix; nothing is saved for a request the user walked away from.
     if (fix.cancelled || !alive()) return { ok: false, problems: [] };

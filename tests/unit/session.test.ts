@@ -507,6 +507,18 @@ describe('project session', () => {
     expect(has('src/lib/vektor-calcs.js')).toBe(false);
     expect(has('src/lib/siteorigin/runtime/Image.svelte')).toBe(true);
     expect(has('src/lib/siteorigin/runtime/SoImage.svelte')).toBe(false);
+    // A file the app wrote is there only while it still writes it; one of the project's own stays wherever it is.
+    writeFileSync(join(dir, 'src/lib/siteorigin/runtime/format.js'), 'export const f = 1;\n');
+    expect(s.draftModules('<p>x</p>\n')('src/lib/siteorigin/runtime/format.js')).toBe(true);
+    // A component's code the app wrote is gone with the component, though the file is still on disk until the save.
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Gone', source: '<p>gone</p>\n' }] }, { label: 'x' });
+    const gone = s.state.components[made.results![0].definitionId as string];
+    expect(existsSync(join(dir, gone.sourcePath!))).toBe(true);
+    const { [gone.id]: _gone, ...rest } = s.state.components;
+    expect(s.projectModules(s.state)(gone.sourcePath!)).toBe(true);
+    expect(s.projectModules({ ...s.state, components: rest })(gone.sourcePath!)).toBe(false);
+    // A new component's stand-in is no file to import.
+    expect(s.draftModules('<p>x</p>\n')('src/lib/siteorigin/custom/.draft-check.svelte')).toBe(false);
     // The search helper is written once a component searches, so a draft that is the first to search finds it.
     expect(has('src/lib/siteorigin/runtime/site-search.js')).toBe(false);
     expect(s.draftModules(`<script>\n\timport { search } from '../runtime/site-search.js';\n</script>\n<p>{search}</p>\n`)('src/lib/siteorigin/runtime/site-search.js')).toBe(true);

@@ -977,7 +977,7 @@ function registerIpc() {
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
-  handle('ai:fixCode', async (source: string) => {
+  handle('ai:fixCode', async (source: string, definitionId?: unknown) => {
     if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     // One fix at a time; closing the code editor cancels it (ai:cancelFix). The controller is registered
     // before anything is awaited so a cancel can never miss it.
@@ -990,7 +990,7 @@ function registerIpc() {
       // The repaired code is written by the assistant, so it must pass the assistant's stricter policy, and so
       // must the project components it imports.
       const session = controller.session;
-      const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: session ? componentSources(session.state.components) : undefined, ...(session ? { tokens: projectTokenVars(session.state), modules: session.draftModules(src) } : {}) });
+      const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: session ? componentSources(session.state.components) : undefined, ...(session ? { tokens: projectTokenVars(session.state), modules: session.draftModules(src, typeof definitionId === 'string' ? definitionId : undefined) } : {}) });
       return await fixComponentSource(ad.adapter, ad.model, String(source), check, abort.signal);
     } finally {
       if (fixAbort === abort) fixAbort = null;

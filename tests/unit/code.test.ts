@@ -113,9 +113,15 @@ describe('syntax-tree code checks', () => {
     // A query after the alias is still a query on the file it names: `#lib` itself is no fragment.
     expect(await check('#lib/vektor-calc.js?raw')).toEqual([]);
     expect((await check('#lib/missing.js?raw'))[0].message).toMatch(/"#lib\/missing\.js\?raw", which is not a file in this project/);
+    // What Vite finds for a path is there too: TypeScript behind a `.js` name, a folder's index, JSON without its extension.
+    const vite = new Set(['src/lib/siteorigin/custom/calc.ts', 'src/lib/util/index.ts', 'src/lib/data.json', 'src/lib/index.ts']);
+    const viteCheck = async (spec: string) => (await checkSvelteSource(`<script>\n\timport X from '${spec}';\n</script>\n<X />\n`, { modules: (p) => vite.has(p) })).filter((p) => p.severity === 'error');
+    for (const spec of ['./calc.js', './calc', '#lib/util', '#lib/data', '#lib']) expect(await viteCheck(spec)).toEqual([]);
+    expect((await viteCheck('./calc.mjs')).length).toBe(1);
     // The removed spelling is refused whether or not the file is there.
     expect((await check('$lib/vektor-calc.js'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib/vektor-calc.js" instead.');
-    expect((await check('$lib?raw')).length).toBe(1);
+    expect((await check('$lib?raw'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib?raw" instead.');
+    expect((await check('$lib'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib" instead.');
   });
 
   it('holds strict code importing a component through #lib to the policy of that component (#1479)', async () => {

@@ -121,7 +121,11 @@ export function serializeBuildError(value: unknown, seen: Set<object> = new Set(
   }
   const frame = str(read(value, 'frame'), ERROR_LIMITS.frame);
   if (frame) info.frame = frame;
-  const cause = read(value, 'cause');
+  // A bundler's "Build failed with 1 error" holds what went wrong in `errors`, not `cause`: the first of them is read
+  // as its cause, with the module and place it names.
+  const errors = read(value, 'errors');
+  const first = Array.isArray(errors) ? read(errors, '0') : undefined;
+  const cause = read(value, 'cause') ?? (first !== null && typeof first === 'object' ? first : undefined);
   if (cause !== undefined && cause !== null && !(typeof cause === 'object' && seen.has(cause)) && depth + 1 < ERROR_LIMITS.depth) info.cause = serializeBuildError(cause, seen, depth + 1);
   return info;
 }

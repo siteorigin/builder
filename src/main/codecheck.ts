@@ -45,6 +45,18 @@ const withoutQuery = (spec: string): string => {
   return cut < 0 ? spec : spec.slice(0, from + cut);
 };
 
+/** The extensions Vite tries after a path without one, and in a folder's index, as the site's build resolves them. */
+const MODULE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json', '.svelte'];
+/** TypeScript's sources for a `.js` name (`./calc.js` is `calc.ts`), which Vite finds too. */
+const TS_FOR_JS: Record<string, string[]> = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.jsx': ['.tsx'] };
+
+/** The files an import of the project path `p` may be, any of which the build would load. */
+function moduleFiles(p: string): string[] {
+  const ext = posix.extname(p);
+  const stem = p.slice(0, p.length - ext.length);
+  return [p, ...MODULE_EXTENSIONS.map((e) => p + e), ...MODULE_EXTENSIONS.map((e) => `${p}/index${e}`), ...(TS_FOR_JS[ext] ?? []).map((e) => stem + e)];
+}
+
 /** The authored source saved at each project path, so the strict check can follow imports between components. */
 export function componentSources(components: Record<string, ComponentDefinition>): (path: string) => string | undefined {
   const byPath = new Map<string, string>();
@@ -267,7 +279,7 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     // `..` would carry the path elsewhere names no file the other checks looked at.
     const p = resolveSpec(withoutQuery(spec));
     if (p && resolveSpec(spec)?.split(/[?#]/)[0] !== p) return !!opts.modules;
-    return !!p && !!opts.modules && !['', '.js', '.ts', '.svelte', '/index.js'].some((ext) => opts.modules!(`${p}${ext}`));
+    return !!p && !!opts.modules && !moduleFiles(p).some((f) => opts.modules!(f));
   };
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
