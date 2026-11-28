@@ -14,6 +14,7 @@ import { templateOwner } from '../lib/template-view';
 import { ownerLabel } from '../lib/model';
 import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
+import { useToolbarChrome } from '../lib/window-chrome';
 import { closeProject } from '../lib/leave';
 import { runPhase, saveFailureNotice, settledState } from '../lib/savestate';
 import { listedCollection, postShown } from '../lib/posts';
@@ -103,7 +104,8 @@ export function Toolbar() {
   // fit. A live session's wider controls take the labels sooner (#1342). Any session at all counts, starting and
   // ending too, so the toolbar keeps one tier through a session rather than changing as its pill does.
   const hosting = useStore((s) => shownLive(s).phase !== 'idle');
-  const tier = toolbarTier(useWindowWidth(), isMac, remoteShell ? 'guest' : hosting ? 'hosting' : 'local');
+  // The window's own chrome (the traffic lights, or the menu button and caption buttons) takes its room first (#1355).
+  const tier = toolbarTier(useWindowWidth(), useToolbarChrome(), remoteShell ? 'guest' : hosting ? 'hosting' : 'local');
   // A tier change swaps Zoom and Settings for More (or back). A menu open from one of them closes, and a
   // keyboard user on the control that left (or in its menu) lands on the one that took its place: at once,
   // or as soon as that menu has closed, before the menu's own focus return looks for somewhere to go.

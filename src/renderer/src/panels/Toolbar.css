@@ -3,6 +3,12 @@
      top) and their 1px edges draw crisp on a 1x display rather than smeared across two rows. */
   .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; min-height: var(--toolbar-h); padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: var(--z-chrome); }
   .toolbar.mac .toolbar-start { padding-left: 70px; }
+  /* Off macOS the menu button takes the bar's start, and on Windows the caption buttons its end (WindowMenuButton.tsx,
+     lib/window-chrome.ts): the bar keeps both free, on every row it wraps onto too. */
+  .toolbar:not(.mac) { padding-left: calc(10px + var(--chrome-start, 0px)); padding-right: calc(10px + var(--chrome-end, 0px)); }
+  /* The caption buttons keep their height as the editor zooms out, so the bar is never shorter than they are and nothing
+     below it runs under them (env(): the overlay's height in this page's pixels, on Windows only). */
+  .toolbar:not(.mac) { min-height: max(var(--toolbar-h), env(titlebar-area-height, 0px)); }
   /* The centre group is centred on the window when there is room (from about 1400px on macOS). Narrower, the start
      column (identity and save state) keeps a floor and borrows from the empty space on the right instead. The tracks
      never depend on what the start column holds, so a status changing length never moves the centre group. */

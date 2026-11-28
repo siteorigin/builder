@@ -163,6 +163,12 @@ describe('installing', () => {
       expect(await dialog.showOpenDialog(FOLDER)).toEqual({ canceled: false, filePaths: ['/x'] });
     }));
 
+  it('records the application menu asked to open instead of showing it (#1355)', () => {
+    const { d } = setup();
+    d.menuPopup({ x: 10, y: 40 });
+    expect(d.fixtures.events().entries.filter((e) => e.type === 'intent').map((e) => (e.type === 'intent' ? `${e.kind} ${e.target}` : ''))).toEqual(['popup-menu 10,40']);
+  });
+
   it('making fixtures alone touches nothing global', () => {
     const before = (globalThis as Record<symbol, unknown>)[DESKTOP_FIXTURES];
     createDesktopFixtures();
