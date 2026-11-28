@@ -104,7 +104,7 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     for (const add of ['demo@ .', 'demo@ ./x', 'github:sveltejs/svelte', 'file:../secrets', '../x', '/etc', 'https://example.com/x.tgz', 'zod@npm:evil@1', 'git+ssh://git@github.com/a/b.git', 'a b', '@scope', 'node:fs', '-g', `${'a'.repeat(300)}`])
       expect(packageRequest({ add }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/isn’t a package from npm/) });
     for (const blank of ['', '   ']) expect(packageRequest({ add: blank }, pkg)).toEqual({ ok: false, message: 'Type the name of a package, such as zod or zod@4.1.0.' });
-    for (const name of ['svelte', 'vite', '@sveltejs/kit', '@sveltejs/adapter-static', '@sveltejs/vite-plugin-svelte']) {
+    for (const name of ['svelte', 'vite', '@sveltejs/kit', '@sveltejs/adapter-static', '@sveltejs/adapter-node', '@sveltejs/vite-plugin-svelte']) {
       expect(packageRequest({ add: `${name}@latest` }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/one of the website’s own tools/) });
       expect(packageRequest({ remove: name }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/one of the website’s own tools/) });
     }
@@ -146,6 +146,7 @@ describe('the Packages list (#1480)', () => {
       { name: 'zod', wanted: '4.1.0', section: 'dependencies', installed: null, tool: false }
     ]);
     expect(list.slice(4).map((p) => [p.name, p.tool, p.installed])).toEqual([
+      ['@sveltejs/adapter-node', true, null],
       ['@sveltejs/adapter-static', true, null],
       ['@sveltejs/kit', true, null],
       ['@sveltejs/vite-plugin-svelte', true, null],
@@ -153,7 +154,7 @@ describe('the Packages list (#1480)', () => {
       ['vite', true, null]
     ]);
     expect(await listPackages(dir, 'not json')).toEqual([]);
-    expect(await listPackages(dir, pkgWith({ dependencies: { '../../etc': '1' } }))).toHaveLength(5);
+    expect(await listPackages(dir, pkgWith({ dependencies: { '../../etc': '1' } }))).toHaveLength(6);
     expect(declaredVersion(pkg, 'leaflet')).toBe('1.9.4');
     expect(declaredVersion(pkg, 'lodash')).toBeNull();
   });
