@@ -132,7 +132,8 @@ describe('the blank starter (#15)', () => {
     const s = createStarterState('blank', 'Kloof', false);
     const home = s.pages[s.site.homePageId];
     expect(home.rootIds).toEqual([]);
-    expect(validateState(s)).toEqual([]);
+    // The one thing to say of it: its Home page has nothing on it yet (#1550).
+    expect(validateState(s).map((d) => [d.code, d.owner])).toEqual([['PAGE_EMPTY', { kind: 'page', id: home.id }]]);
     const files = generateProject(s);
     // What visitors get: the pages and the shared layout (a component's own file may name its defaults).
     const shown = [...files].filter(([path]) => path.startsWith('src/routes/')).map(([, src]) => src).join('\n');

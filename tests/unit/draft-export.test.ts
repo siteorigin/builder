@@ -128,10 +128,17 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.state.pages.pg_winter01.draft).toBe(true);
   });
 
+  /** A site with nothing to say of it: a public URL, and a Home page with something on it. */
+  function cleanSite() {
+    const blank = createStarterState('blank', 'Bookshop', false);
+    const state = applyOperations(blank, [{ type: 'node.insert', owner: { kind: 'page', id: blank.site.homePageId }, componentId: 'intro.page', index: 0 }]).state;
+    state.site.baseUrl = 'https://books.example';
+    return state;
+  }
+
   it('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance beside the warnings', async () => {
     const dir = temp('project');
-    const state = createStarterState('blank', 'Bookshop', false);
-    state.site.baseUrl = 'https://books.example';
+    const state = cleanSite();
     await (await ProjectSession.create(dir, state)).close();
     const c = await open(dir);
     const r = await c.buildStaticTo(join(temp('out'), 'site'));
@@ -147,8 +154,7 @@ describe('exporting a project with a draft', () => {
 
   it('#884: the editable project’s export says private files were left out without counting it as a note', async () => {
     const dir = temp('project');
-    const state = createStarterState('blank', 'Bookshop', false);
-    state.site.baseUrl = 'https://books.example';
+    const state = cleanSite();
     await (await ProjectSession.create(dir, state)).close();
     const c = await open(dir);
     const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
