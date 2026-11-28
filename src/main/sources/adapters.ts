@@ -71,8 +71,9 @@ const UNREADABLE_LINK = 'the server sent a Link header that cannot be read, so i
 /**
  * The next page's address from the `Link` header of the page at `page` (`<…>; rel="next"`), or null when the header
  * shows there is none. It is read once from the start, link by link (RFC 8288), so nothing inside an address or a
- * quoted value is taken for a link or a parameter. A header that cannot be read fails: its next link may be in the
- * part that cannot, and a read that stops there would take the pages so far for all of them.
+ * quoted value is taken for a link or a parameter. The first next link read this far is followed. Short of one, a
+ * header that cannot be read fails: its next link may be in the part that cannot, and a read that stopped there would
+ * take the pages so far for all of them.
  */
 function linkNext(header: string | null, page: string): string | null {
   const h = header ?? '';
@@ -84,7 +85,14 @@ function linkNext(header: string | null, page: string): string | null {
     return m;
   };
   const unreadable = () => new AdapterError('invalid', UNREADABLE_LINK);
-  const isThisPage = (anchor: string) => URL.canParse(anchor, page) && new URL(anchor, page).href === new URL(page).href;
+  // The same address however it is escaped: `%7E` is `~`.
+  const spelled = (address: string) =>
+    new URL(address, page).href.replace(/%[0-9a-f]{2}/gi, (code) => {
+      const c = String.fromCharCode(parseInt(code.slice(1), 16));
+      return /[A-Za-z0-9._~-]/.test(c) ? c : code.toUpperCase();
+    });
+  const isThisPage = (anchor: string) => URL.canParse(anchor, page) && spelled(anchor) === spelled(page);
+  let unnamed = false;
   let elsewhere = false;
   for (;;) {
     take(/[\s,]*/y);
@@ -100,19 +108,24 @@ function linkNext(header: string | null, page: string): string | null {
       let value = '';
       if (take(/=\s*/y)) {
         // A quoted value ends at its first quote no backslash pairs with. Unquoted, servers send more than a token
-        // (`type=text/html`), which still ends where the link or parameter does; a relation must be exact.
+        // (`type=text/html`), which still ends where the link or parameter does. One that decides the next page (a
+        // relation, an anchor) must be exact.
         const quoted = take(/"((?:[^"\\]|\\.)*)"\s*/y);
         value = quoted ? quoted[1].replace(/\\(.)/g, '$1') : take(/([^;,"<>\s]*)\s*/y)![1];
-        if (!quoted && name === 'rel' && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]*$/.test(value)) throw unreadable();
+        if (!quoted && !params.has(name) && (name === 'rel' || name === 'anchor') && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]*$/.test(value)) throw unreadable();
       }
       if (!params.has(name)) params.set(name, value);
     }
     if (at < h.length && h[at] !== ',') throw unreadable();
-    if (!params.get('rel')?.toLowerCase().split(/\s+/).includes('next')) continue;
+    const relations = params.get('rel')?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
+    // Every link names its relation: one that names none may be the next.
+    if (!relations.length) unnamed = true;
+    if (!relations.includes('next')) continue;
     const anchor = params.get('anchor');
     if (anchor === undefined || isThisPage(anchor)) return link[1];
     elsewhere = true;
   }
+  if (unnamed) throw unreadable();
   // An anchor may name this page by another address (behind a proxy), so its next link is not proof there is none.
   if (elsewhere) throw new AdapterError('invalid', 'the only next link in the server’s Link header is anchored to another address, so its next page cannot be told');
   return null;
