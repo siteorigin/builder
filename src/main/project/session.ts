@@ -46,7 +46,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources, projectTokenVars } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -6020,6 +6020,11 @@ export class ProjectSession extends EventEmitter {
     perf.count('run.docsHashed');
     hashes?.set(path, { text, hash });
     return hash;
+  }
+
+  /** The text each part of a code component's code shows, by part, for an AI run limited to one part (#1416). */
+  codePartTexts(source: string): ReturnType<typeof codePartTexts> {
+    return codePartTexts(source);
   }
 
   /** Did the active run change anything? */

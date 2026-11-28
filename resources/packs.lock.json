@@ -3,11 +3,11 @@
 	"packs": {
 		"foundation": {
 			"version": "0.1.0",
-			"digest": "03ace17453ecac4ab431b139ef3afca8f68e2e0f2e8819d34545c595360c28ad"
+			"digest": "6a1ca1071d4664468a552798a0d8b8997ab68fd56aff8d5f2aeed3a196f04ee6"
 		},
 		"foundation-alt": {
 			"version": "0.1.0",
-			"digest": "ba5794e4518fa9816d9543806a43cf8a59fb4acc8804e7ee2c79be4c19daa30b"
+			"digest": "b22b7eb3fa1ae80d0359f8b7a0364a51ab58a4675ff5e0f303b0f1bfd1a8fb53"
 		}
 	}
 }

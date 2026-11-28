@@ -17,7 +17,7 @@ import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
 import { answered, applyFailure, toolError } from './result';
 import { repeatedPartList } from '@shared/item-styles';
-import { partReach, type PartReach } from './scope';
+import { codePartReach, partReach, type CodePartTexts, type PartReach } from './scope';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
 
 type ContentField = Extract<EditOperation, { type: 'node.setContent' }>['field'];
@@ -87,6 +87,8 @@ export interface SelectionTarget {
   itemId?: string;
   /** Inside a component nested in the placement: its parts cannot be addressed from the outer instance. */
   nested?: boolean;
+  /** A code component's part: the text its code shows there, as the run's authority read it (scope.ts codePartReach). */
+  texts?: CodePartTexts;
 }
 
 export function selectionTarget(ref: ElementRef | null | undefined): SelectionTarget | null {
@@ -157,13 +159,13 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
 }
 
 /**
- * What a part selected inside a placement shows, or null when the selection is the whole placement (or a code
- * component's, whose parts cannot say what they show). The run may change only that; see checkAuthority.
+ * What a part selected inside a placement shows, or null when the selection is the whole placement. The run may
+ * change only that; see checkAuthority.
  */
 function selectedPartReach(r: Resolved, target: SelectionTarget): PartReach | null {
   if (!target.partId || !r.def || !Object.hasOwn(r.def.parts, target.partId)) return null;
-  // A code component has no tree to say what its parts show: only the part's own styles.
-  if (!r.def.tree) return target.partId === 'root' ? null : partReach(r.def, '');
+  // A code component has no tree to say what its parts show: only the text its code marks inside the part.
+  if (!r.def.tree) return target.partId === 'root' ? null : codePartReach(r.def, target, target.texts, r.node);
   const nodeId = r.def.parts[target.partId].nodeId;
   return r.def.tree.rootIds[0] === nodeId ? null : partReach(r.def, nodeId);
 }

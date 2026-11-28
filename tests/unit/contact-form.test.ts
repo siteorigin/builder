@@ -382,6 +382,50 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   /** Under the pointer, read once an edge has had time to ease to whatever it turns to (a poll would take the first). */
   const settle = (page: Page) => page.waitForTimeout(400);
 
+  it('does not present the browser’s field messages as the page’s language or direction (#1525)', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: [...FIELDS, CHOICE] }, async ({ page, field, button, fetches }) => {
+      /**
+       * The page's direction, and each message: whether it is its control's own words (found as a screen reader
+       * does, by description), and whether its first line starts beside the icon, on the page's side of the row.
+       */
+      const shown = () =>
+        page.evaluate(`({
+          page: document.documentElement.lang + ' ' + getComputedStyle(document.body).direction,
+          messages: [...document.querySelectorAll('.so-form__error bdi')].map((el) => {
+            // The box each line of the words takes, read from the text itself.
+            const words = document.createRange();
+            words.selectNodeContents(el);
+            const lines = [...words.getClientRects()], row = el.parentElement.getBoundingClientRect();
+            // The rightmost edge of the first line on a right-to-left page, the leftmost on a left-to-right one.
+            const first = lines.filter((r) => Math.abs(r.top - lines[0].top) < 2);
+            const rtl = getComputedStyle(el.parentElement).direction === 'rtl';
+            return {
+              lang: el.getAttribute('lang'), direction: getComputedStyle(el).direction,
+              own: el.textContent === document.querySelector('[aria-describedby="' + el.closest('p').id + '"]').validationMessage,
+              wraps: lines.some((r) => r.top - lines[0].top > 2),
+              byIcon: Math.abs(rtl ? row.right - Math.max(...first.map((r) => r.right)) : Math.min(...first.map((r) => r.left)) - row.left) < 2
+            };
+          })
+        })`);
+      const each = (direction: string) => Array(4).fill({ lang: '', direction, own: true, wraps: true, byIcon: true });
+      // Narrow enough that a message wraps, where a line aligned by its own direction would leave the icon.
+      await page.addStyleTag({ content: '#app { width: 7rem }' });
+      // The words are the browser's own, in a language the page cannot know: English here, in an Arabic page.
+      await page.evaluate(`document.documentElement.lang = 'ar-MA'; document.documentElement.dir = 'rtl'`);
+      await button.click();
+      await expect.poll(shown).toEqual({ page: 'ar-MA rtl', messages: each('ltr') });
+      expect(await fetches()).toBe(0);
+      // And the other way about: an Arabic browser on an English page, each control with words of its own.
+      await page.evaluate(`
+        document.documentElement.lang = 'en'; document.documentElement.dir = 'ltr';
+        for (const proto of [HTMLInputElement.prototype, HTMLTextAreaElement.prototype])
+          Object.defineProperty(proto, 'validationMessage', { get() { return 'يرجى ملء هذا الحقل المطلوب قبل الإرسال: ' + this.name; } });
+      `);
+      await field('Name').press('Enter');
+      await expect.poll(shown).toEqual({ page: 'en ltr', messages: each('rtl') });
+    });
+  }, 20_000);
+
   it('draws what is wrong in one colour on either ground, with a heavier edge kept under the pointer, and a failed send says so in it', async () => {
     for (const tone of TONES)
       await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant_tone: tone }, async ({ page, field, button, nextPost, alert }) => {
