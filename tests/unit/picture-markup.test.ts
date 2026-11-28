@@ -349,6 +349,11 @@ describe('the hero’s preload', () => {
     // same section; nor for a code hero with no picture chosen.
     expect(preloads((await renderHome(codeHero('<Pic image={photo} eager sizes={size} />', { wrap: 'tree', after: true }))).head)).toEqual([]);
     expect(preloads((await renderHome(codeHero('<Pic image={photo} sizes="50vw" />', { slotted: true }))).head)).toEqual([]);
+    // A picture of its own, which the browser loads eagerly, before the section's next one.
+    expect(preloads((await renderHome(codeHero('<img src="/studio/x.jpg" alt="" />', { wrap: 'tree', after: true }))).head)).toEqual([]);
+    expect(preloads((await renderHome(codeHero('<!-- <img src="/studio/x.jpg" alt="" /> -->', { wrap: 'tree', after: true }))).head)).toHaveLength(1);
+    // A property destructured from something else before the component's own.
+    expect(preloads((await renderHome(codeHero('<Pic image={photo} eager />', { script: `let { photo, other } = { photo: null, other: 1 }\n\tlet { so_eager = false } = $props();` }))).head)).toEqual([]);
     expect(preloads((await renderHome(codeHero('<Pic image={photo} eager />', { asset: null }))).head)).toEqual([]);
   });
 

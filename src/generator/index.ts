@@ -4250,7 +4250,7 @@ function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: strin
     const image = shown ? resolveImage(value!, ctx.rctx) : null;
     // Code that may load a picture eagerly in a way the head cannot read (or a picture of its own, which browsers load
     // eagerly) ends the walk with none, rather than asking for a later picture than the one the page loads first.
-    if (!shown || !image?.src) return ((chosen || !prop) && /\beager\b/.test(source)) || /<(?:img|picture)\b/i.test(source);
+    if (!shown || !image?.src) return ((chosen || !prop) && /\beager\b/.test(source)) || /<(?:img|picture)\b/i.test(source.replace(/<!--[\s\S]*?-->/g, ''));
     hero = { image: shown.thumbnail ? thumbnailOf(image) : image, sizes: shown.sizes };
     return true;
   });

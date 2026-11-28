@@ -1997,8 +1997,9 @@ const PLAIN_IMAGE_ATTR = /^(?:image|eager|sizes|class|fallbackAlt|style|id|title
  * with or without a default) and never declares or assigns it otherwise.
  */
 function plainProp(script: string, name: string): boolean {
-  const props = script.match(/\blet\s*\{([\s\S]*?)\}\s*(?::\s*[\w$.]+(?:<[\w$.,\s]*>)?\s*)?=\s*\$props\(\s*\)/);
-  if (!props) return false;
+  // One statement: never a destructuring of something else before it.
+  const props = script.match(/\blet\s*\{([^;]*?)\}\s*(?::\s*[\w$.]+(?:<[\w$.,\s]*>)?\s*)?=\s*\$props\(\s*\)/);
+  if (!props || /\}\s*(?::\s*[\w$.]+\s*)?=(?![=>])/.test(props[1])) return false;
   const n = name.replace(/\$/g, '\\$');
   if (!new RegExp(`(?:^|,)\\s*${n}\\s*(?:=|,|$)`).test(props[1]) || new RegExp(`:\\s*${n}\\b`).test(props[1])) return false;
   const rest = script.slice(0, props.index) + script.slice(props.index! + props[0].length);
