@@ -195,8 +195,13 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   });
 
   it('says nothing of drafts when every old address works now (#1501)', async () => {
-    await mount(site, preview(true, { redirects: 3 }));
-    await page.getByText(/^3 keep working$/).waitFor();
+    await mount(site, preview(true, { redirects: 1 }));
+    await page.getByText(/^1 keeps working$/).waitFor();
+  });
+
+  it('says when no old address can be kept (#1501)', async () => {
+    await mount(site, preview(true, { redirectsLost: 2 }));
+    await page.getByText(/^None keep working · 2 can’t$/).waitFor();
   });
 
   it('is not offered for posts that can’t be imported', async () => {

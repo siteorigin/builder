@@ -575,6 +575,14 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const source = await readWordPress(wxr([item(1, { title: 'Big', link: 'https://old.example/2020/01/big/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, '<b></b>'.repeat(200_001))]), {});
     expect(source.posts[0]).toMatchObject({ title: 'Big', draft: true, draftReason: 'its text could not be read', oldPath: '/2020/01/big/' });
   });
+
+  it('gives a post with no link no old address, never the Home page’s (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Unlinked', link: ' ', 'wp:status': 'future', 'wp:post_date': '2030-01-02 00:00:00' }, '<p>Soon</p>'), item(2, { title: 'Bare', 'wp:status': 'draft' }, '<p>Later</p>')]), {});
+    expect(source.posts.map((p) => [p.title, p.oldPath])).toEqual([
+      ['Unlinked', undefined],
+      ['Bare', undefined]
+    ]);
+  });
   it('keeps a post a draft when it was private, password-protected or has no date', async () => {
     const source = await readWordPress(
       wxr([
@@ -901,6 +909,7 @@ describe('planning an import: limits, drafts and the review', () => {
       ['same-2', 'same', undefined]
     ]);
     const b = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same')!;
+    expect(b.draft).toBe(true);
     expect(after.site.redirects).toEqual([{ from: '/old-b/', entryId: b.id }]);
     const c = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same-2')!;
     expect(c.terms.categories).toEqual(['local-news']);
@@ -979,7 +988,7 @@ describe('planning an import: limits, drafts and the review', () => {
       [undefined, '/same/']
     ]);
     expect(plan.posts[1].notes.join(' ')).toMatch(/Its old address \(\/same\/\) can’t keep working, because another imported post had it too/);
-    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 0, redirectsLost: 2 });
+    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 0, redirectsPending: 0, redirectsLost: 2 });
   });
 
   it('says what it shortened', () => {

@@ -292,6 +292,8 @@ function isImageAttachment(item: XmlElement): boolean {
 
 /** The address a post's `<link>` gives it on the old site, when it is one of the site's own that can be kept. */
 function oldPathOf(linkUrl: string, siteOrigin: string | undefined): string | undefined {
+  // No link is no address: read against the site's own, it would be taken for the Home page's.
+  if (!linkUrl) return undefined;
   try {
     const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
     // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).

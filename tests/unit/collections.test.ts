@@ -687,6 +687,10 @@ describe('an imported post keeps its old address (#399)', () => {
     expect(publishedState(s).site.redirects ?? []).not.toContainEqual(expect.objectContaining({ entryId: 'en_import' }));
     const live = apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_import', draft: false }]).state;
     expect(publishedState(live).site.redirects).toContainEqual({ from: '/2019/03/winter-workshop/', entryId: 'en_import' });
+    // An entry created without saying is a draft, and keeps its old address the same way.
+    const untold = apply(blog(), [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_untold', title: 'Untold', redirectFrom: '/old/' } as EditOperation]).state;
+    expect(untold.collections.posts.entries.en_untold.draft).toBe(true);
+    expect(untold.site.redirects).toContainEqual({ from: '/old/', entryId: 'en_untold' });
   });
 
   it('is part of the batch: an entry created later cannot take the address it keeps', () => {
