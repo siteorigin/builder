@@ -16,6 +16,8 @@ import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
 import { draftLinksStop, formNameWarnings } from '../../src/main/export';
 import { withSupportedForm } from './fixtures/webmcp-designs';
 import { destinationForDiagnostic, noteState } from '../../src/renderer/src/lib/destinations';
+import { P, item } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const ARCHIVE: OwnerRef = { kind: 'archive', id: 'notes' };
@@ -72,6 +74,33 @@ describe('a link to a draft in a collection’s archive layout', () => {
     expect(publicationPlan(held).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([]);
     held.pages.pg_notes.draft = true;
     expect(publicationPlan(held).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([expect.objectContaining({ owner: ARCHIVE, nodeId: 'n_soonbanner', pageId: 'pg_soon' })]);
+  });
+
+  it('reads a list there connected to the current collection as the index lists it: an entry’s link to the draft', () => {
+    let s = run(notes(), { type: 'collection.update', collectionId: 'notes', fields: { more: { type: 'link', label: 'Read more' } } } as EditOperation);
+    s = structuredClone(s);
+    const def = projectDesign(s, {
+      componentId: 'project.notecards',
+      name: 'Note cards',
+      properties: { cards: P.list('Cards', 'Card', { title: P.str('Title', 'Card'), link: P.link('Link') }, [{ title: 'Sample' }]) },
+      parts: { root: { nodeId: 'root', label: 'Note cards' } },
+      build: (b) => b.el('root', 'section', { name: 'Note cards' }, [b.repeat('cards', 'cards', [b.link('card', item('link'), item('title'), 'secondary', { name: 'Card' })])])
+    });
+    s = run(
+      s,
+      { type: 'node.insert', newNodeId: 'n_notecards', owner: ARCHIVE, parentId: null, definitionId: def.id },
+      { type: 'instance.setListSource', owner: ARCHIVE, nodeId: 'n_notecards', prop: 'cards', source: { query: { collectionId: '$current' }, fields: { title: 'title', link: 'field.more' } } },
+      { type: 'entry.create', collectionId: 'notes', entryId: 'en_first', title: 'First note', publishedAt: '2026-01-01', draft: false, body: ['First.'], values: { more: { type: 'page', target: 'pg_soon' } } } as EditOperation
+    );
+    expect(publicationPlan(s).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([expect.objectContaining({ owner: ARCHIVE, nodeId: 'n_notecards', pageId: 'pg_soon', label: 'First note' })]);
+  });
+
+  it('says nothing for a layout damaged by hand, which the index shows as the ready-made cards', () => {
+    const s = structuredClone(withBanner(notes()));
+    delete (s.collections.notes.settings.archiveTemplate as { rootIds?: unknown }).rootIds;
+    expect(publicationPlan(s).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([]);
+    expect(websiteFormProblems(s).filter((d) => d.owner?.kind === 'archive')).toEqual([]);
+    expect(netlifyFormClashes(s)).toEqual(netlifyFormClashes(run(withBanner(notes()), { type: 'collection.update', collectionId: 'notes', archiveTemplate: null })));
   });
 
   it('says nothing while the collection shows no archive pages, or shows the ready-made cards', () => {
@@ -134,6 +163,13 @@ describe('a contact form visitors cannot send, in a collection’s archive layou
     const clash = formNameDiagnostics(s).find((d) => d.nodeId === 'n_noteform')!;
     expect(clash.message).toMatch(/^Notes archive layout: 2 contact forms send to the Netlify form “contact” \(the shared footer and the Notes archive layout\)/);
     expect(destinationForDiagnostic(s, clash)).toEqual({ kind: 'form', owner: ARCHIVE, nodeId: 'n_noteform', setting: 'formName' });
+    // With no index, a published entry's page shows the footer just the same.
+    const entryOnly = structuredClone(run(s, { type: 'entry.create', collectionId: 'notes', entryId: 'en_first', title: 'First note', publishedAt: '2026-01-01', draft: false, body: ['First.'] } as EditOperation));
+    entryOnly.collections.notes.settings.pages = { detail: true, archive: false };
+    for (const id of entryOnly.site.pageOrder) expect(entryOnly.pages[id].showFooter).toBe(false);
+    expect(formNameDiagnostics(entryOnly).map(at)).toEqual([]);
+    const withLayoutForm = withForm(entryOnly, LAYOUT, 'n_layoutform', { provider: 'netlify' });
+    expect(formNameDiagnostics(withLayoutForm).map(at).sort()).toEqual(['shell:footer:n_footerform', 'template:notes:n_layoutform']);
   });
 
   it('is left out while no archive page shows the layout', () => {
@@ -152,6 +188,8 @@ describe('contact forms in collection layouts that send to Netlify under one nam
     s = withForm(s, { kind: 'page', id: s.site.homePageId }, 'n_homeform', { provider: 'netlify' });
     const clash = netlifyFormClashes(s).find((c) => c.name === 'contact')!;
     expect(clash.forms.map(at)).toEqual(expect.arrayContaining([`page:${s.site.homePageId}:n_homeform`, 'archive:notes:n_noteform']));
+    // The layout's form counts once, however many archive pages show it.
+    expect(clash.forms.filter((f) => f.owner.kind === 'archive')).toHaveLength(1);
     expect(formNameDiagnostics(s).map(at)).toEqual(expect.arrayContaining([`page:${s.site.homePageId}:n_homeform`, 'archive:notes:n_noteform']));
     const warning = formNameWarnings(s).find((w) => w.includes('“contact”'))!;
     expect(warning).toContain('the Notes archive layout');

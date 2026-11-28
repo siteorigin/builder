@@ -6,6 +6,7 @@ import { isBinding, refKey } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
+import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, confirmDialog, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
@@ -1140,12 +1141,14 @@ export async function openArchiveLayout(collectionId: string) {
 }
 
 /**
- * Edit a collection's index layout on the canvas, as openArchiveLayout does, only while it has one: a destination (a
- * form, a link to a draft) leads to what is there and never starts a layout. False when it has none.
+ * Edit a collection's index layout on the canvas, as openArchiveLayout does, only while it has one and its index is
+ * shown: a destination (a form, a link to a draft) leads to what is there and never starts a layout. False otherwise.
  */
 export function showArchiveLayout(collectionId: string): boolean {
   const st = getState().snapshot?.state;
-  if (!st || !Object.hasOwn(st.collections ?? {}, collectionId) || !st.collections[collectionId].settings.archiveTemplate) return false;
+  // Shown on the collection's index: one whose archive pages are turned off has nowhere to show it (template-view.ts).
+  const settings = st && Object.hasOwn(st.collections ?? {}, collectionId) ? st.collections[collectionId].settings : undefined;
+  if (!settings?.archiveTemplate || !hasArchivePages(settings)) return false;
   enterArchiveLayout(collectionId);
   return true;
 }

@@ -232,12 +232,15 @@ export function effectiveProps(
   scope: Scope,
   pageId?: string,
   entry?: { collectionId: string; entryId: string },
-  listed?: (link: unknown) => boolean
+  listed?: (link: unknown) => boolean,
+  archive?: { collectionId: string }
 ): Record<string, unknown> {
   const props: Record<string, unknown> = {};
+  // An archive page's lists read its collection as `$current`, as the generator writes them (its entry feeds, none).
+  const place = entry ? { entry } : archive ? { archive: { collectionId: archive.collectionId, entryIds: [] } } : {};
   for (const [name, schema] of Object.entries(def.properties)) {
     // A list connected to a collection shows its entries, as the generator writes them, never its own items.
-    const connected = connectedListItems(state, def, n, name, entry ? { entry } : {});
+    const connected = connectedListItems(state, def, n, name, place);
     if (connected) {
       props[name] = connected;
       continue;
@@ -371,6 +374,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
   const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
   // An entry's page: its feeds default to its collection and leave it out, as the generator writes them.
   const entry = visit.entry ?? entryTrees.get(tree);
+  // A collection's archive layout: its lists connected to the current collection read that collection.
+  const archive = entry ? undefined : archiveTrees.get(tree);
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -469,7 +474,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
-        const props = effectiveProps(state, def, n, frame.scope, pageId, entry, visit.listed);
+        const props = effectiveProps(state, def, n, frame.scope, pageId, entry, visit.listed, archive);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
@@ -851,9 +856,15 @@ export function siteShowsCode(state: ProjectState, test: (def: ComponentDefiniti
 export function shownArchiveLayouts(state: ProjectState, archives = archivePages(state)): Array<{ collectionId: string; tree: NodeTree }> {
   return [...new Set(archives.map((p) => p.collectionId))].flatMap((collectionId) => {
     const settings = state.collections[collectionId]?.settings;
-    return settings && hasArchiveLayout(settings) ? [{ collectionId, tree: settings.archiveTemplate! }] : [];
+    if (!settings || !hasArchiveLayout(settings)) return [];
+    const tree = settings.archiveTemplate!;
+    if (!archiveTrees.has(tree)) archiveTrees.set(tree, { collectionId });
+    return [{ collectionId, tree }];
   });
 }
+
+/** The collection whose archive pages each archive layout read by these checks is, so its lists read it as theirs. */
+const archiveTrees = new WeakMap<NodeTree, { collectionId: string }>();
 
 /** Whether a tree places, anywhere and whatever its conditions, a component `picks` says yes to, or a design that does. */
 function treePlaces(state: ProjectState, tree: NodeTree | undefined, picks: (def: ComponentDefinition) => boolean): boolean {

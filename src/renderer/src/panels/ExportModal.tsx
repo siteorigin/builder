@@ -62,8 +62,8 @@ function openDraftLink(l: DraftLink) {
   if (!tree?.nodes[l.nodeId]) return toast('That link is no longer on the site.', 'info');
   // A link in a collection's layout is shown on one of its entries; one in its archive layout, on its index.
   if (owner.kind === 'template' || owner.kind === 'archive') {
-    if (owner.kind === 'archive') showArchiveLayout(owner.id);
-    else openLayout(owner.id, l.shownOn);
+    if (owner.kind === 'template') openLayout(owner.id, l.shownOn);
+    else if (!showArchiveLayout(owner.id)) return toast('That link is no longer on the site.', 'info');
     setState({ modal: null, selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true });
     setTimeout(() => openSection('content'), 50);
     return;
