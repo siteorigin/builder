@@ -621,7 +621,7 @@ describe('opening entries, sections and editor views, and saving versions, from 
   });
 
   it('says a version it saved was kept when the request fails after it', async () => {
-    const { session, run } = await setup([() => [call('v', 'save_version', { name: 'Kept' })], () => [{ type: 'error', code: 'server', message: 'The provider failed.' }]]);
+    const { session, run } = await setup([() => [call('v', 'save_version', { name: 'Kept' })], () => [{ type: 'error', code: 'unknown', message: 'The provider failed.' }]]);
     const { result } = await run('Save a version called Kept, then add a Services page');
     expect(result?.status).toBe('failed');
     expect(result?.versionsSaved).toEqual(['Kept']);
