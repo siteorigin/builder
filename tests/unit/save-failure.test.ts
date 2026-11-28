@@ -1,10 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   failedFolder,
   saveFailureMessage,
+  written,
+  type WriteFailure,
 } from "../../src/main/project/save-error";
 import { saveFailureNotice } from "../../src/renderer/src/lib/savestate";
 import {
@@ -97,13 +99,17 @@ describe("what the editor says about a change the project folder could not take 
     expect(failedFolder(new Error("no path"), project)).toBeNull();
   });
 
-  it("names a folder opened to flush it as itself", () => {
+  it("names a folder opened to flush it as itself, and a file there as its folder", () => {
     const dir = mkdtempSync(join(tmpdir(), "so-save-error-"));
     try {
       mkdirSync(join(dir, "static"));
+      writeFileSync(join(dir, "static", "robots.txt"), "");
       expect(failedFolder(fsError("EIO", join(dir, "static")), dir)).toBe(
         "static",
       );
+      expect(
+        failedFolder(fsError("EIO", join(dir, "static", "robots.txt")), dir),
+      ).toBe("static");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -121,6 +127,17 @@ describe("what the editor says about a change the project folder could not take 
     );
     expect(saveFailureMessage(fsError("EROFS", tmp), project, "failed")).toBe(
       "That change could not be saved: the folder “siteorigin/pages” is on a drive that cannot be written to. Move the project to a drive you can save to, then try again.",
+    );
+    expect(saveFailureMessage(fsError("EPERM", tmp), project, "failed")).toBe(
+      "That change could not be saved: the folder “siteorigin/pages” cannot be written to. Check that you can save files there, then try again.",
+    );
+    // Its documents are in place; only the rest of the save waits on reopening.
+    expect(saveFailureMessage(fsError("EACCES", tmp), project, "landed")).toBe(
+      "That change is saved, but saving did not finish: the folder “siteorigin/pages” cannot be written to. Check that you can save files there, then close and reopen the project to finish.",
+    );
+    // Nothing of it written, and nothing more saved until reopening, which does not save it.
+    expect(saveFailureMessage(fsError("EACCES", tmp), project, "blocked")).toBe(
+      "That change could not be saved: the folder “siteorigin/pages” cannot be written to. Check that you can save files there, then close and reopen the project, and make the change again.",
     );
     expect(saveFailureMessage(fsError("ENOSPC", tmp), project, "failed")).toBe(
       "That change could not be saved: there is not enough space on the disk. Free up some space, then try again.",
@@ -142,7 +159,12 @@ describe("what the editor says about a change the project folder could not take 
       "That change could not be saved: a folder it is saved in could not be written to. Check that you can save files there, then try again.",
     );
     for (const code of ["EACCES", "EPERM", "EROFS", "ENOSPC", "EIO"])
-      for (const kind of ["failed", "unfinished"] as const) {
+      for (const kind of [
+        "failed",
+        "unfinished",
+        "landed",
+        "blocked",
+      ] as const) {
         const text = saveFailureMessage(fsError(code, tmp), project, kind);
         expect(text).not.toContain(code);
         expect(text).not.toContain(".tmp");
@@ -158,5 +180,60 @@ describe("what the editor says about a change the project folder could not take 
     expect(saveFailureMessage(pin, project, "unfinished")).toBe(
       "That change is not saved yet: The theme “Harbour” is not installed. Close and reopen the project to finish saving it.",
     );
+  });
+});
+
+describe("the editor's change as main answers it (#1435)", () => {
+  const project = join(tmpdir(), "so-save-error-project");
+  const session = (kind: WriteFailure | null) => ({
+    dir: project,
+    revision: 7,
+    writeFailure: () => kind,
+  });
+  const tmp = join(project, "siteorigin", "pages", ".89cc97f77daa.tmp");
+  const eacces = () =>
+    Object.assign(new Error(`EACCES: permission denied, open '${tmp}'`), {
+      code: "EACCES",
+      path: tmp,
+    });
+
+  it("answers a save that could not be written with what became of it", async () => {
+    expect(
+      await written(session("unfinished"), Promise.reject(eacces())),
+    ).toEqual({
+      ok: false,
+      revision: 7,
+      error: {
+        code: "SAVE_FAILED",
+        message: expect.stringMatching(
+          /^That change is not saved yet: the folder “siteorigin\/pages”/,
+        ),
+        recoverable: false,
+        details: { save: "unfinished" },
+      },
+    });
+    expect(
+      (await written(session("failed"), Promise.reject(eacces()))).error,
+    ).toMatchObject({ recoverable: true, details: { save: "failed" } });
+  });
+
+  it("answers a file system failure that never reached the save as one that wrote nothing", async () => {
+    // The project's lock could not be checked, say: nothing of the change was written.
+    expect(
+      (await written(session(null), Promise.reject(eacces()))).error,
+    ).toMatchObject({
+      code: "SAVE_FAILED",
+      recoverable: true,
+      details: { save: "failed" },
+    });
+  });
+
+  it("throws any other error as it is, and passes an answer through", async () => {
+    const bug = new TypeError("x is not a function");
+    await expect(written(session(null), Promise.reject(bug))).rejects.toBe(
+      bug,
+    );
+    const ok = { ok: true, revision: 8 };
+    expect(await written(session(null), Promise.resolve(ok))).toBe(ok);
   });
 });

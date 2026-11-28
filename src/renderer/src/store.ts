@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState, SaveFailure } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -100,11 +100,12 @@ export interface HeldEdit {
   /** For a page rename: the labels to offer once it is saved (see renamePage). Discarding the edit drops them. */
   rename?: PendingRename;
   /**
-   * For "failed": its save could not be written to the project's folder (#1435). `failed`: nothing of it was written,
-   * so it can be tried again. `unfinished`: its journal is on disk and reopening the project finishes it, so it is never
-   * sent again from here (main refuses every save until then); the text is kept to copy.
+   * For "failed": its save did not reach the project's folder (#1435). `failed`: nothing of it was written, so it can be
+   * tried again. `unfinished`: its journal is on disk and reopening the project finishes it. `blocked`: nothing of it was
+   * written and nothing more is saved until the project is reopened, which does not save it: it is made again after.
+   * Neither of the last two is sent again from here (main refuses every save until then); the text is kept to copy.
    */
-  save?: SaveFailure['kind'];
+  save?: HeldSave;
   /**
    * Save now was refused (#1281): the AI request changed a field it writes, or made what it is for, so it waits for the
    * request to end, as an edit made while the AI works does. `note` says why.
@@ -1188,10 +1189,12 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // The field the edit was made in may say why itself (see claimRefusals).
       const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
       if (r.error?.code !== 'BUSY' && !claimed && !saidElsewhere(r.error)) toast(message, 'error');
-      // Not written to the project's folder: what was typed is kept, to copy (or try again), never only put back.
-      if (r.error?.code === 'SAVE_FAILED') keepUnwritten(typed, operations, label, message, saveKind(r.error.details));
+      // Not written to the project's folder: what was typed is kept, to copy (or try again), never only put back. One
+      // whose documents landed is on the page already.
+      const save = saveKind(r.error);
+      const kept = save && save !== 'landed' && typed?.base ? keepUnwritten(typed, operations, label, save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : message, save) : null;
       if (r.error?.code !== 'BUSY') typed?.refused?.();
-      landed({ ok: false, message });
+      landed(kept ?? { ok: false, message });
       return null;
     }
     landed({ ok: true });
@@ -1201,9 +1204,9 @@ export async function commitOps(operations: EditOperation[], label: string, coal
     const why = errorText(e);
     const message = `That change could not be saved${why ? `: ${why}` : '.'}`;
     toast(message, 'error');
-    keepUnwritten(typed, operations, label, message);
+    const kept = keepUnwritten(typed, operations, label, message);
     typed?.refused?.();
-    landed({ ok: false, message });
+    landed(kept.ok ? kept : { ok: false, message });
     return null;
   } finally {
     setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
@@ -1212,15 +1215,30 @@ export async function commitOps(operations: EditOperation[], label: string, coal
 
 const HELD_MESSAGE = 'An edit you made has not been saved yet.';
 
-/** What became of a save main could not write (see Controller.apply), from its refusal's details. */
-const saveKind = (details: unknown): SaveFailure['kind'] => ((details as { save?: unknown } | null)?.save === 'unfinished' ? 'unfinished' : 'failed');
+/** What became of a save of a held edit (see HeldEdit.save). */
+type HeldSave = 'failed' | 'unfinished' | 'blocked';
+/**
+ * What became of a save main could not write (Controller.apply), from its refusal's details, or of one main refused
+ * because an earlier save did not finish (`blocked`). `landed`: its documents are in place, so it is not held. Null for
+ * any other refusal.
+ */
+function saveKind(error: { code: string; details?: unknown } | undefined): HeldSave | 'landed' | null {
+  const save = (error?.details as { save?: unknown } | null | undefined)?.save;
+  if (error?.code === 'CONFLICT') return save === 'blocked' ? 'blocked' : null;
+  if (error?.code !== 'SAVE_FAILED') return null;
+  return save === 'unfinished' || save === 'landed' || save === 'blocked' ? save : 'failed';
+}
+/** Said beside an edit typed after a save that did not finish: reopening finishes that save, never this edit. */
+const BLOCKED_NOTE = 'Not saved: an earlier save did not finish, so nothing more is saved until the project is closed and reopened. Copy your text before you close it, then make this change again.';
 
 /**
  * Keep a typed edit whose save did not reach the project's folder as a held edit, with `note` saying why, so the text
  * can be copied (and tried again, unless the save is `unfinished`). Anything that is not a typed field edit is not kept.
  */
-function keepUnwritten(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string, note: string, save?: SaveFailure['kind']) {
-  if (typed?.base) holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, cause: 'elsewhere', phase: 'failed', note, rename: typed.rename, ...(save ? { save } : {}) });
+function keepUnwritten(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string, note: string, save?: HeldSave): ApplyOutcome {
+  const held = typed?.base ? holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, cause: 'elsewhere', phase: 'failed', note, rename: typed.rename, ...(save ? { save } : {}) }) : null;
+  // The author has committed the same field since: that commit says what became of the field, not this one.
+  return held && held.id === null ? { ok: true } : { ok: false, message: note };
 }
 
 /** The revision each field's latest typed save made, and the control it was typed in, by opening and field (see writeTyped). */
@@ -1309,6 +1327,8 @@ async function writeTyped(
       }
       continue;
     }
+    // Refused because an earlier save did not finish: kept to copy and make again once the project is reopened.
+    if (saveKind(r.error) === 'blocked') return hold({ phase: 'failed', note: BLOCKED_NOTE, save: 'blocked' });
     // Still refused (a file in conflict, one that cannot be read): kept, with why, so nothing typed is lost.
     return hold({ phase: 'failed', note: r.error?.message });
   }
@@ -1340,7 +1360,7 @@ export function holdEdit(
   base: ProjectSnapshot,
   operations: EditOperation[],
   label: string,
-  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string; rename?: PendingRename | null; save?: SaveFailure['kind'] } = {}
+  opts: { text?: string | null; seq?: number; cause?: HeldEdit['cause']; phase?: 'changed' | 'gone' | 'failed'; current?: unknown[]; note?: string; rename?: PendingRename | null; save?: HeldSave } = {}
 ): { id: number | null } | null {
   // A reply that arrives after its project closed has nothing to be held in.
   if (getState().snapshot?.workspaceKey !== base.workspaceKey) return { id: null };
@@ -1402,8 +1422,8 @@ export function discardHeld(id: number) {
  */
 export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId?: string } = {}): Promise<void> {
   const held = heldById(id);
-  // A save that did not finish is finished by reopening the project, which refuses every save until then.
-  if (!held || held.phase === 'applying' || held.save === 'unfinished' || (opts.replace && held.phase !== 'changed')) return;
+  // Main refuses every save until the project is reopened after one that did not finish.
+  if (!held || held.phase === 'applying' || held.save === 'unfinished' || held.save === 'blocked' || (opts.replace && held.phase !== 'changed')) return;
   const attempt = ++attemptSeq;
   const expected = opts.replace ? held.current! : held.base;
   patchHeld(id, { phase: 'applying', attempt, stopping: !!opts.stopRunId, writing: false, note: undefined, save: undefined });
@@ -1477,7 +1497,10 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
       return getState().snapshot?.aiBusy
         ? settle({ phase: 'waiting', note: 'The AI is working on another request.' })
         : settle({ phase: 'failed', note: 'The project is still locked by an AI request that did not end cleanly. Reopen the project, then try again.' }, outcome('held'));
-    if (r.error?.code === 'SAVE_FAILED') return settle({ phase: 'failed', note: r.error.message, save: saveKind(r.error.details) }, outcome('held'));
+    const save = saveKind(r.error);
+    // Its documents are in place: nothing is left to hold, though saving did not finish (the save indicator says so).
+    if (save === 'landed') return setState({ heldEdits: removeHeld(id) });
+    if (save) return settle({ phase: 'failed', note: save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : r.error!.message, save }, outcome('held'));
     return settle({ phase: 'failed', note: r.error?.message ?? 'That change could not be applied.' }, outcome('held'));
   }
 }
@@ -1515,9 +1538,11 @@ export async function saveHeldNow(id: number): Promise<void> {
     return;
   }
   setState({ pendingSave });
-  // Not written to the project's folder: kept, saying why, to try again (or, unfinished, to copy) like any edit whose
-  // save failed.
-  if (r.error?.code === 'SAVE_FAILED') return patchHeld(id, { phase: 'failed', attempt: undefined, writing: false, note: r.error.message, save: saveKind(r.error.details) });
+  // Not written to the project's folder, or refused until the project is reopened: kept, saying why, to try again (or
+  // to copy) like any edit whose save failed. One whose documents landed is saved.
+  const save = saveKind(r.error);
+  if (save === 'landed') return setState({ heldEdits: removeHeld(id) });
+  if (save) return patchHeld(id, { phase: 'failed', attempt: undefined, writing: false, note: save === 'blocked' && r.error?.code === 'CONFLICT' ? BLOCKED_NOTE : r.error!.message, save });
   // The request changed what the edit writes, or made what it is for: saved now, stopping the request would lose its
   // changes to it, so the edit waits for the request to end. Answered or stopped meanwhile, it just waits again.
   const why = ((r.error as { details?: unknown } | undefined)?.details as { held?: unknown } | undefined)?.held;
@@ -1986,9 +2011,10 @@ function catchUpConversation(id: string, opening: string | undefined) {
 }
 
 /** Mark or clear an uncommitted edit (a field, an inline rename, canvas text) so the toolbar says "Editing…". */
-// Held edits are unsaved work: saving or leaving the project says so, as it does for any open draft.
+// Held edits are unsaved work: saving or leaving the project says so, as it does for any open draft. One whose save did
+// not finish is not lost by leaving: reopening the project finishes it (#1435).
 useStore.subscribe((s, prev) => {
-  if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
+  if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.some((h) => h.save !== 'unfinished'));
 });
 
 // A hover, focus or pressed state is chosen for one element: selecting another, or another page or component, edits
