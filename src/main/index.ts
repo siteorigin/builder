@@ -815,7 +815,7 @@ function registerIpc() {
     const r = request && typeof request === 'object' ? (request as { routes?: unknown; widths?: unknown; id?: unknown }) : {};
     return controller.captureReviewEdition({ routes: r.routes, ...(r.widths === undefined ? {} : { widths: r.widths }), ...(r.id === undefined ? {} : { id: r.id }) });
   });
-  handle('project:stopReviewCapture', () => controller.stopReviewCapture());
+  handle('project:stopReviewCapture', (id: unknown) => controller.stopReviewCapture(id));
   handle('project:exportReviewSheet', (editionId: unknown) => controller.exportReviewSheet(editionId));
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:prepareComponentPreview', (spec: unknown) => controller.prepareComponentPreview(spec));

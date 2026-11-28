@@ -4564,8 +4564,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, 'folder');
     if (bad) return { ok: false, message: bad, warnings: [] };
-    // The review shows every copy of the images just added, as the website export does (#979).
-    await this.copiesMade();
+    // The review shows every copy of the images just added, as the website export does (#979); a review stopped while
+    // they are made waits no longer for them (#1413), and they go on being made all the same.
+    await Promise.race([this.copiesMade(), ...(signal ? [new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener('abort', () => resolve(), { once: true })))] : [])]);
     if (this.session !== s) return { ok: false, message: 'The project was closed before the review was built.', warnings: [] };
     if (signal?.aborted) return { ok: false, message: BUILD_CALLED_OFF, warnings: [] };
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true, ...(signal ? { signal } : {}) }));
@@ -4582,8 +4583,9 @@ export class Controller {
   private pageChecks = new Set<AbortController>();
   /** How long a website export spends opening its pages, at most (tests shorten it). */
   pageChecksMs = PAGE_CHECKS_MS;
-  /** The review edition being captured, called off when its project closes. */
+  /** The review edition being captured, called off when its project closes, and the ID it was asked with (#1413). */
   private reviewCapture: AbortController | null = null;
+  private reviewCaptureId = '';
 
   /**
    * Capture a review edition (#1133): build the site for review (stageReviewBuild), serve it over loopback, photograph
@@ -4611,6 +4613,8 @@ export class Controller {
     if (this.reviewCapture && !this.reviewCapture.signal.aborted) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
     const job = new AbortController();
     this.reviewCapture = job;
+    const id = typeof request.id === 'string' ? request.id.slice(0, 64) : '';
+    this.reviewCaptureId = id;
     const siteName = s.state.site.name;
     const closedMessage = 'The project was closed before the review edition was captured.';
     const gone = () => job.signal.aborted || this.session !== s;
@@ -4619,7 +4623,6 @@ export class Controller {
     const closed = (): ReviewEditionResult => (stopped() ? { ok: false, stopped: true, message: REVIEW_STOPPED } : { ok: false, message: closedMessage });
     // Where it has got to, for the dialog to say (#1413); only this capture's, while it is the one being captured, and
     // named with the ID it was asked with.
-    const id = typeof request.id === 'string' ? request.id.slice(0, 64) : '';
     const progress = (p: ReviewCaptureStep) => {
       if (this.reviewCapture === job && !gone()) this.send('review:progress', { id, ...p });
     };
@@ -4685,13 +4688,14 @@ export class Controller {
   }
 
   /**
-   * Stop the review edition being captured, if any, at the author's word (#1413): no more pages are pictured and
+   * Stop the review edition being captured with ID `id`, if it is the one being captured, at the author's word
+   * (#1413); never another (one an editor since reloaded left running, say). No more pages are pictured and
    * nothing of it is kept, so the editions captured before stay as they were. The website build has no stop of its
    * own: a capture stopped while it builds ends as soon as the build does. An edition already being put in place when
    * the word comes is kept whole, and its capture says so.
    */
-  stopReviewCapture() {
-    if (this.reviewCapture && !this.reviewCapture.signal.aborted) this.reviewCapture.abort(STOPPED);
+  stopReviewCapture(id?: unknown) {
+    if (this.reviewCapture && !this.reviewCapture.signal.aborted && (typeof id === 'string' ? id.slice(0, 64) : '') === this.reviewCaptureId) this.reviewCapture.abort(STOPPED);
   }
 
   /** The open project's review editions, newest first. */

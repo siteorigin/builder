@@ -14,6 +14,8 @@ export type ReviewBusy = 'capture' | 'save';
 /** What the work came to; `stopped` (the author stopped a capture) is said as news, neither a success nor a failure. */
 type Outcome = { ok: boolean; message: string; path?: string; editionId?: string; stopped?: boolean };
 
+const STOPPED_EARLY = 'The capture was stopped before it began. No edition was kept.';
+
 const WIDTHS_SAID = DEFAULT_REVIEW_WIDTHS.map((w) => `${w.label} · ${w.width} px`).join(' and ');
 
 /** When an edition was made: the time today, or the date and time on an earlier day. */
@@ -28,7 +30,7 @@ function madeAt(iso: string): string {
  * The pictures done count every one tried, taken or not: one a page could not give is said in the outcome.
  */
 export function captureStatus(p: ReviewCaptureStep | null, stopping: boolean): string {
-  if (stopping) return !p || p.phase === 'build' ? 'Stopping once the website is built…' : 'Stopping the capture…';
+  if (stopping) return p?.phase === 'build' ? 'Stopping once the website is built…' : 'Stopping the capture…';
   if (!p || p.phase === 'build') return 'Building the website…';
   if (p.phase === 'saving') return `Keeping the edition of ${p.total} ${p.total === 1 ? 'picture' : 'pictures'}…`;
   return `Picturing ${p.title || p.route} at ${p.label} · ${p.done} of ${p.total} done`;
@@ -59,6 +61,8 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
   // Where the capture running from here has got to, and whether the author asked it to stop (#1413).
   const [progress, setProgress] = useState<ReviewCaptureStep | null>(null);
   const [stopping, setStopping] = useState(false);
+  // Whether the capture can still be stopped: not once it has answered (its edition listed, say, while the list is read).
+  const [stoppable, setStoppable] = useState(false);
   // The ID the capture running from here was asked with: an event of an earlier one, arriving late, is not its.
   const capturing = useRef<string | null>(null);
   // Asked before the capture reached the main process (its edits still being saved): it is never asked for.
@@ -105,6 +109,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
     setOutcome(null);
     setProgress(null);
     setStopping(false);
+    setStoppable(true);
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     capturing.current = id;
     stopAsked.current = false;
@@ -114,15 +119,18 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
         async () => {
           const now = getState().snapshot;
           if (!now || now.workspaceKey !== opening) return null;
+          if (stopAsked.current) return { ok: false as const, stopped: true as const, message: STOPPED_EARLY };
           // The saved edits may have taken a chosen page away: nothing is captured that the list no longer shows.
           const live = reviewPages(publishedState(now.state));
           const lost = picked.find((r) => !live.some((p) => p.route === r));
           if (lost) return { ok: false as const, message: `The website no longer has a page at ${lost}. Check the pages to capture, then capture again.` };
-          if (stopAsked.current) return { ok: false as const, stopped: true as const, message: 'The capture was stopped before it began. No edition was kept.' };
           return await api.project.captureReviewEdition({ routes: picked, id });
         }
       );
       if (key.current !== opening) return;
+      setStoppable(false);
+      // Stopped while the edits were being saved: that is what is said, with what could not be saved.
+      if (!started.ok && stopAsked.current) return say({ ok: false, stopped: true, message: `${STOPPED_EARLY} A change isn’t saved yet. ${started.problems.join(' ')}` });
       if (!started.ok) return say({ ok: false, message: `The pages were not captured, because a change isn’t saved yet. ${started.problems.join(' ')}` });
       const r = started.value;
       if (!r) return;
@@ -136,15 +144,19 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
       capturing.current = null;
       setProgress(null);
       setStopping(false);
+      setStoppable(false);
       onBusy(null);
     }
   };
 
+  // Asked of the main process by this capture's ID, so a capture of another editor (one since reloaded) goes on. One
+  // whose edits are still being saved has not been asked for yet, and never will be (stopAsked).
   const stop = () => {
-    if (busy !== 'capture' || stopping) return;
+    const id = capturing.current;
+    if (busy !== 'capture' || !stoppable || stopping || !id) return;
     setStopping(true);
     stopAsked.current = true;
-    void api.project.stopReviewCapture().catch(() => setStopping(false));
+    void api.project.stopReviewCapture(id).catch(() => setStopping(false));
   };
 
   const save = async (id: string, button: HTMLButtonElement) => {
@@ -199,7 +211,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
               <button type="button" className="btn btn-sm" aria-disabled={anyBusy || blocked || !picked.length || undefined} onClick={() => void capture()}>
                 <Camera size={13} aria-hidden /> {picked.length > 1 ? `Capture ${picked.length} pages` : 'Capture page'}
               </button>
-              {busy === 'capture' && (
+              {busy === 'capture' && stoppable && (
                 <button type="button" className="btn btn-sm" aria-disabled={stopping || undefined} onClick={stop}>
                   <CircleStop size={13} aria-hidden /> Stop capture
                 </button>

@@ -1549,8 +1549,8 @@ export interface BuilderApi {
      * `id` (#1413).
      */
     captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }>; id?: string }): Promise<ReviewEditionResult>;
-    /** Stop the review edition being captured, if any (#1413): nothing of it is kept, and its capture answers `stopped`. */
-    stopReviewCapture(): Promise<void>;
+    /** Stop the review edition being captured with `id`, if it is still being captured (#1413): nothing of it is kept, and its capture answers `stopped`. */
+    stopReviewCapture(id: string): Promise<void>;
     /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */
     exportReviewSheet(editionId: string): Promise<ReviewSheetResult>;
     retryPreview(): Promise<void>;

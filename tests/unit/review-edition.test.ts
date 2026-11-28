@@ -323,9 +323,13 @@ describe('capturing a review edition', () => {
     c.reviewShoot = shoot;
     const sent: unknown[] = [];
     c.send = (channel: string, payload: unknown) => void (channel === 'review:progress' && sent.push(payload));
-    const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
+    const capturing = c.captureReviewEdition({ routes: ['/', '/about/'], id: 'capture-2' });
     await vi.waitFor(() => expect(asked.length).toBe(2), { timeout: 10000 });
+    // A word to stop another capture (one an editor since reloaded asked for) leaves this one going.
+    c.stopReviewCapture('capture-1');
     c.stopReviewCapture();
+    expect(await c.captureReviewEdition({ routes: ['/'] })).toEqual({ ok: false, message: 'A review edition is already being captured. Wait for it to finish.' });
+    c.stopReviewCapture('capture-2');
     // Another capture waits for the stopped one to end, rather than build beside it.
     expect(await c.captureReviewEdition({ routes: ['/'] })).toEqual({ ok: false, message: 'The review edition stopped a moment ago is still ending. Capture again in a moment.' });
     release();
@@ -337,7 +341,7 @@ describe('capturing a review edition', () => {
     expect((await c.reviewEditions()).map((m) => m.editionId)).toEqual([earlier.ok && earlier.edition.editionId]);
     expect(stagingLeft()).toEqual([]);
     // Stopping with nothing being captured does nothing, and the next capture is whole.
-    c.stopReviewCapture();
+    c.stopReviewCapture('capture-2');
     c.reviewShoot = fakeShooter().shoot;
     expect(await c.captureReviewEdition({ routes: ['/'] })).toMatchObject({ ok: true, message: 'Captured 2 pictures.' });
     expect((await c.reviewEditions()).length).toBe(2);
@@ -347,8 +351,8 @@ describe('capturing a review edition', () => {
     const { c, dir } = await bookshop();
     const { shoot, asked } = fakeShooter();
     c.reviewShoot = shoot;
-    const capturing = c.captureReviewEdition({ routes: ['/'] });
-    c.stopReviewCapture();
+    const capturing = c.captureReviewEdition({ routes: ['/'], id: 'early' });
+    c.stopReviewCapture('early');
     expect(await capturing).toMatchObject({ ok: false, stopped: true });
     expect(env.builds).toBe(0);
     expect(asked).toEqual([]);
@@ -356,11 +360,34 @@ describe('capturing a review edition', () => {
     expect(stagingLeft()).toEqual([]);
   });
 
+  it('launches no website build once stopped while the build is being prepared (#1413)', async () => {
+    const { c, dir } = await bookshop();
+    const { shoot, asked } = fakeShooter();
+    c.reviewShoot = shoot;
+    // Stopped as the build's tools are looked at, the last step before the build itself.
+    const ready = (c as unknown as { toolsUnready: (s: unknown) => Promise<string | null> }).toolsUnready.bind(c);
+    (c as unknown as { toolsUnready: (s: unknown) => Promise<string | null> }).toolsUnready = async (s) => {
+      c.stopReviewCapture('late');
+      return ready(s);
+    };
+    expect(await c.captureReviewEdition({ routes: ['/'], id: 'late' })).toMatchObject({ ok: false, stopped: true });
+    expect(env.builds).toBe(0);
+    expect(asked).toEqual([]);
+    expect(await listReviewEditions(dir)).toEqual([]);
+    expect(stagingLeft()).toEqual([]);
+  });
+
   it('says how far the capture has got: the build, each picture with those tried so far, then keeping it (#1413)', async () => {
-    const { c } = await bookshop();
+    const { c, dir } = await bookshop();
     c.reviewShoot = fakeShooter({ unavailable: { '/': [390] } }).shoot;
     const sent: unknown[] = [];
-    c.send = (channel: string, payload: unknown) => void (channel === 'review:progress' && sent.push(payload));
+    // Keeping it is said before the edition is in place.
+    let keptWhenSaving: string[] | null = null;
+    c.send = (channel: string, payload: unknown) => {
+      if (channel !== 'review:progress') return;
+      sent.push(payload);
+      if ((payload as { phase: string }).phase === 'saving') keptWhenSaving = filesIn(join(dir, REVIEWS_DIR));
+    };
     const r = await c.captureReviewEdition({ routes: ['/', '/about/'], id: 'capture-1' });
     expect(r.ok).toBe(true);
     const title = (route: string) => (r.ok ? r.edition.routes.find((p) => p.route === route)!.title : '');
@@ -372,6 +399,7 @@ describe('capturing a review edition', () => {
       { id: 'capture-1', phase: 'capture', done: 3, total: 4, route: '/about/', title: title('/about/'), label: 'Phone' },
       { id: 'capture-1', phase: 'saving', done: 4, total: 4 }
     ]);
+    expect(keptWhenSaving).toEqual([]);
   });
 
   it('says why when the build cannot be staged, rather than failing', async () => {

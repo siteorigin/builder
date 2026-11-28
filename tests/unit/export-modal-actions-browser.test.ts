@@ -66,7 +66,7 @@ const REVIEW_BRIDGE = `
     key === 'reviewEditions' ? async () => window.__editions
     : key === 'captureReviewEdition' ? (...a) => held('capture', a).then((r) => { if (r.ok) window.__editions = [r.edition, ...window.__editions]; return r; })
     : key === 'exportReviewSheet' ? (...a) => held('save', a)
-    : key === 'stopReviewCapture' ? async () => void window.__calls.push(['stop'])
+    : key === 'stopReviewCapture' ? async (...a) => void window.__calls.push(['stop', ...a])
     : any('project.' + String(key)) });
   const listeners = new Map();
   const on = (channel, cb) => {
@@ -441,7 +441,7 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.locator('.modal-foot > button', { hasText: 'Close' }).isDisabled()).toBe(true);
     const stop = page.getByRole('button', { name: 'Stop capture' });
     await stop.click();
-    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['stop']);
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['stop', id]);
     await expect.poll(() => hint.innerText()).toBe('Stopping the capture…');
     expect(await stop.getAttribute('aria-disabled')).toBe('true');
     // Asked once, however often it is pressed.
@@ -466,7 +466,9 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     await emit({ phase: 'saving', done: 4, total: 4 });
     expect(await hint.innerText()).toBe('Building the website…');
     await expect.poll(() => page.evaluate(`window.__calls.filter((c) => c[0] === 'capture').length`)).toBe(2);
-    expect(await page.evaluate(`window.__calls.at(-1)[1].id`)).not.toBe(id);
+    const second = await page.evaluate<string>(`window.__calls.at(-1)[1].id`);
+    expect(second).not.toBe(id);
+    await page.evaluate(`window.__emit('review:progress', ${JSON.stringify({ id: second, phase: 'build' })})`);
     await page.getByRole('button', { name: 'Stop capture' }).click();
     await expect.poll(() => hint.innerText()).toBe('Stopping once the website is built…');
   });
