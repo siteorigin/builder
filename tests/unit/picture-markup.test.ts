@@ -229,7 +229,7 @@ describe('the hero’s preload', () => {
    * as `Pic`), placed on the page itself, in a slot the page fills of the first section's design (`slot`), or in that
    * design's own tree (`tree`), which then hands it the page's `so_eager`. `after` puts another picture after it there.
    */
-  const codeHero = (markup: string, opts: { asset?: AssetRecord | null; wrap?: 'slot' | 'tree'; after?: boolean; script?: string } = {}) => {
+  const codeHero = (markup: string, opts: { asset?: AssetRecord | null; wrap?: 'slot' | 'tree'; after?: boolean; script?: string; imports?: string; ownFlag?: boolean; slotted?: boolean } = {}) => {
     const s = site(opts.asset === undefined ? picture('hero') : opts.asset);
     s.assets.assets.a_other = { ...picture('other'), id: 'a_other' };
     const script = opts.script ?? `let { photo = null, so_eager = false, open = false, size = '50vw', class: className = '' } = $props();`;
@@ -245,16 +245,19 @@ describe('the hero’s preload', () => {
       category: 'custom',
       tags: [],
       icon: 'component',
-      properties: { photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } },
+      // A property of its own named `so_eager` is the placement's to set: the page never hands it the flag.
+      properties: { photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } }, ...(opts.ownFlag ? { so_eager: { type: 'boolean', label: 'Eager', default: false } } : {}) },
       parts: { root: { nodeId: 'root', label: 'Root' } },
-      source: `<script>\n\timport Pic from '../runtime/Image.svelte';\n\timport { thumbnail } from '../runtime/util.js';\n\t${script}\n</script>\n\n<section class="code-hero">\n\t${markup}\n</section>\n`,
+      source: `<script>\n\timport Pic from '../runtime/Image.svelte';\n\t${opts.imports ?? "import { thumbnail } from '../runtime/util.js';"}\n\t${script}\n</script>\n\n<section class="code-hero">\n\t${markup}\n</section>\n`,
       sourcePath: 'src/lib/siteorigin/custom/CodeHero.svelte',
       provenance: { createdBy: 'user' },
       license: 'Project'
     } as unknown as (typeof s.components)[string];
     s.components[def.id] = def;
     const home = homeOf(s);
-    const code = { id: 'code', kind: 'instance', definitionId: def.id, props: { photo: { assetId: 'a_hero', alt: 'Ours' } } } as InstanceNode;
+    const code = { id: 'code', kind: 'instance', definitionId: def.id, props: { photo: { assetId: 'a_hero', alt: 'Ours' } }, ...(opts.slotted ? { slots: { body: ['inside'] } } : {}) } as InstanceNode;
+    // Content given to its slot, which its markup never shows.
+    if (opts.slotted) home.nodes.inside = { id: 'inside', kind: 'image', image: { assetId: 'a_other', alt: 'Inside' } };
     const other = { id: 'other', kind: 'image', image: { assetId: 'a_other', alt: 'Other' } } as (typeof home.nodes)[string];
     if (opts.wrap) {
       // The first section's own design: its content, then what the page puts in its slot.
@@ -315,6 +318,9 @@ describe('the hero’s preload', () => {
       // Sized as it renders, or changed by what is passed with it.
       '<Pic image={photo} eager sizes={size} />',
       '<Pic image={photo} eager sizes="{size}" />',
+      '<Pic image={photo} eager sizes />',
+      `<Pic image={photo} eager sizes='(width < 1024px) 100vw, "50vw"' />`,
+      '{#key photo}{@const photo = null}<Pic image={photo} eager />{/key}',
       '<Pic image={photo} eager loading="lazy" />',
       '<Pic {...{ image: photo }} eager />',
       "<Pic image={{ ...photo, ['sources']: [] }} eager />",
@@ -329,12 +335,20 @@ describe('the hero’s preload', () => {
     // A flag or a property the script makes something else.
     for (const script of [
       `let { photo = null, so_eager: given = false } = $props();\n\tconst so_eager = given && false;`,
-      `let { photo: given = null, so_eager = false } = $props();\n\tconst photo = null;`
+      `let { photo: given = null, so_eager = false } = $props();\n\tconst photo = null;`,
+      `let { photo = null, so_eager = false } = $props();\n\tphoto &&= null;`
     ]) {
       expect(preloads((await renderHome(codeHero('<Pic image={photo} eager={so_eager} />', { script }))).head), script).toEqual([]);
     }
-    // Nor anything after code the head cannot read in the same section; nor for a code hero with no picture chosen.
+    // A helper that only says it is the runtime's thumbnail; a flag the page never hands it, its own property instead.
+    expect(preloads((await renderHome(codeHero('<Pic image={thumbnail(photo)} eager />', { imports: "import { has as thumbnail } from '../runtime/util.js';" }))).head)).toEqual([]);
+    const own = await renderHome(codeHero('<Pic image={photo} eager={so_eager} />', { ownFlag: true }));
+    expect(codePicture(own.body).img.loading).toBe('lazy');
+    expect(preloads(own.head)).toEqual([]);
+    // Nor the content of its slots, which only its markup places; nor anything after code the head cannot read in the
+    // same section; nor for a code hero with no picture chosen.
     expect(preloads((await renderHome(codeHero('<Pic image={photo} eager sizes={size} />', { wrap: 'tree', after: true }))).head)).toEqual([]);
+    expect(preloads((await renderHome(codeHero('<Pic image={photo} sizes="50vw" />', { slotted: true }))).head)).toEqual([]);
     expect(preloads((await renderHome(codeHero('<Pic image={photo} eager />', { asset: null }))).head)).toEqual([]);
   });
 

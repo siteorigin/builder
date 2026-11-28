@@ -1986,6 +1986,9 @@ function tagAttrs(s: string, from: number): { attrs: Map<string, TagAttr>; end: 
   }
 }
 
+/** A `sizes` the head's preload writes as it is: widths and media conditions, nothing a page escapes or reads otherwise. */
+const SIZES_TEXT = /^(?=.*\S)[\w\s().,:%+-]+$/;
+
 /** The attributes the runtime image reads or passes on without changing which picture loads, or how: any other is declined. */
 const PLAIN_IMAGE_ATTR = /^(?:image|eager|sizes|class|fallbackAlt|style|id|title|(?:data|aria)-[\w-]+|class:[\w-]+)$/;
 
@@ -1994,12 +1997,12 @@ const PLAIN_IMAGE_ATTR = /^(?:image|eager|sizes|class|fallbackAlt|style|id|title
  * with or without a default) and never declares or assigns it otherwise.
  */
 function plainProp(script: string, name: string): boolean {
-  const props = script.match(/\blet\s*\{([\s\S]*?)\}\s*=\s*\$props\(\s*\)/);
+  const props = script.match(/\blet\s*\{([\s\S]*?)\}\s*(?::\s*[\w$.]+(?:<[\w$.,\s]*>)?\s*)?=\s*\$props\(\s*\)/);
   if (!props) return false;
   const n = name.replace(/\$/g, '\\$');
   if (!new RegExp(`(?:^|,)\\s*${n}\\s*(?:=|,|$)`).test(props[1]) || new RegExp(`:\\s*${n}\\b`).test(props[1])) return false;
   const rest = script.slice(0, props.index) + script.slice(props.index! + props[0].length);
-  return !new RegExp(`\\b(?:const|let|var|function|class)\\s+${n}\\b|(?<![\\w$.])${n}\\s*(?:[-+*/%&|^]|\\?\\?|\\*\\*|<<|>>>?)?=(?![=>])|(?<![\\w$.])${n}\\s*(?:\\+\\+|--)|(?:\\+\\+|--)\\s*${n}\\b`).test(rest);
+  return !new RegExp(`\\b(?:const|let|var|function|class)\\s+${n}\\b|(?<![\\w$.])${n}\\s*(?:[-+*/%&|^]|&&|\\|\\||\\?\\?|\\*\\*|<<|>>>?)?=(?![=>])|(?<![\\w$.])${n}\\s*(?:\\+\\+|--)|(?:\\+\\+|--)\\s*${n}\\b`).test(rest);
 }
 
 /**
@@ -2025,6 +2028,8 @@ export function eagerCodeImage(source: string, prop: string, flagged: boolean): 
   if (!plainProp(script, prop)) return null;
   // The markup alone, its scripts, styles and comments left out, read in order: expressions and tags whole.
   const markup = source.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<!--[\s\S]*?-->/g, '');
+  // A `{@const}` can name anything after the property.
+  if (/\{\s*@const\b/.test(markup)) return null;
   const blocks: string[] = [];
   const components: string[] = [];
   let found: { attrs: Map<string, TagAttr>; blocks: string[]; inside: boolean } | null = null;
@@ -2067,20 +2072,20 @@ export function eagerCodeImage(source: string, prop: string, flagged: boolean): 
   const { attrs } = found;
   if ([...attrs.keys()].some((k) => !PLAIN_IMAGE_ATTR.test(k))) return null;
   const image = attrs.get('image');
-  // A long expression is not worth reading branch by branch.
-  if (!image || !('expr' in image) || image.expr.length > 1000) return null;
+  // A long expression is not worth reading branch by branch, nor one with comments between its words.
+  if (!image || !('expr' in image) || image.expr.length > 1000 || /\/[*/]/.test(image.expr)) return null;
   const shown = outcomes(image.expr).map((o) => shownOf(o, prop));
   if (shown.some((x) => x === null) || new Set(shown).size !== 1) return null;
   const thumbnail = shown[0] === 'thumbnail';
   const fromRuntime = /^\s*import\s*\{[^}]*\bthumbnail\b[^}]*\}\s*from\s*(['"])[^'"\n]*\/runtime\/util\.js\1/m.test(script);
-  if (thumbnail && (!fromRuntime || /\bthumbnail\s+as\b|\b(?:const|let|var|function|class)\s+thumbnail\b/.test(script))) return null;
+  if (thumbnail && (!fromRuntime || /\bthumbnail\s+as\b|\bas\s+thumbnail\b|\b(?:const|let|var|function|class)\s+thumbnail\b/.test(script))) return null;
   const eager = attrs.get('eager');
   const loads = !!eager && ('bare' in eager || ('expr' in eager && (bare(eager.expr) === 'true' || (flagged && bare(eager.expr) === 'so_eager' && plainProp(script, 'so_eager')))));
   if (!loads) return null;
   const sizes = attrs.get('sizes');
   if (!sizes) return { thumbnail, sizes: '100vw' };
-  const literal = 'text' in sizes ? sizes.text : bare((sizes as { expr: string }).expr).match(/^(['"])([^'"\\]*)\1$/)?.[2];
-  return literal?.trim() ? { thumbnail, sizes: literal } : null;
+  // Written out as a plain list of widths and media conditions, which the head can write the same way.
+  return 'text' in sizes && SIZES_TEXT.test(sizes.text) ? { thumbnail, sizes: sizes.text } : null;
 }
 
 /** An expression without the parentheses around the whole of it (`(photo)` is `photo`). */
