@@ -397,6 +397,27 @@ describe('site search as the website runs it', () => {
     expect(marked(searchPages(decomposed, 'creme').results[0].title)).toEqual(['Crème']);
   });
 
+  it('tells Japanese kana apart by voicing marks, however they are spelled', async () => {
+    const { searchPages } = await runtime('export default [];');
+    const kaki = 'かき';
+    const kagi = 'かぎ';
+    const kagiDecomposed = 'かぎ';
+    const pages = [
+      { route: '/kaki/', title: kaki, text: '' },
+      { route: '/kagi/', title: kagi, text: '' }
+    ];
+    const routes = (q: string) => searchPages(pages, q).results.map((r) => r.route);
+    expect(routes(kagi)).toEqual(['/kagi/']);
+    expect(routes(kagiDecomposed)).toEqual(['/kagi/']);
+    expect(routes(kaki)).toEqual(['/kaki/']);
+    expect(marked(searchPages(pages, kagiDecomposed).results[0].title)).toEqual([kagi]);
+    const decomposed = [{ route: '/d/', title: kagiDecomposed, text: '' }];
+    expect(searchPages(decomposed, kagi).total).toBe(1);
+    expect(marked(searchPages(decomposed, kagi).results[0].title)).toEqual([kagiDecomposed]);
+    // Half-width katakana with a separate voicing mark matches the full-width letter.
+    expect(searchPages([{ route: '/h/', title: 'ﾊﾞ', text: '' }], 'バ').total).toBe(1);
+  });
+
   it('marks a word with its accents, every place it overlaps itself, and in text that expands when folded', async () => {
     const { searchPages } = await runtime('export default [];');
     const title = (t: string, q: string) => marked(searchPages([{ route: '/a/', title: t, text: '' }], q).results[0].title);
