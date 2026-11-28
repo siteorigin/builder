@@ -8,7 +8,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import sharp from 'sharp';
-import { chromium, type Browser, type CDPSession } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type CDPSession } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { StaticPreviews } from '../../src/main/static-preview';
 import { shootReviewPage, type CdpPage } from '../../src/main/review-shot';
@@ -59,6 +59,7 @@ beforeAll(async () => {
   put('bad-set/index.html', page('Bad set', '.hero{height:200px;background-image:image-set(url(/client/corrupt.png) 1x, url(/client/blue.png) 2x)}', '<div class="hero">Hero</div>'));
   put('über/index.html', page('Über', '', '<p>Über uns</p>'));
   put('broken/index.html', page('Broken', '', '<img src="/client/corrupt.png" width="40" height="40">'));
+  put('analytics/index.html', page('Analytics', '', '<p>Counted</p>').replace('</head>', '<script src="https://cdn.usefathom.com/script.js" data-site="ABCDEFGH" data-spa="auto" defer></script></head>'));
   put('lazy/index.html', page('Lazy', '', `${tall(3000)}<img id="late" loading="lazy" src="/client/blue.png" width="40" height="40" style="display:block">`));
   server = await previews.serve(root, '/client');
   if (browserInstalled) browser = await chromium.launch();
@@ -71,8 +72,9 @@ afterAll(async () => {
 });
 
 /** A fresh page and a DevTools session on it, as the app opens a fresh hidden window for each picture. */
-async function session(): Promise<{ cdp: CdpPage; close: () => Promise<void> }> {
+async function session(setup?: (context: BrowserContext) => Promise<void>): Promise<{ cdp: CdpPage; close: () => Promise<void> }> {
   const context = await browser.newContext({ viewport: null });
+  await setup?.(context);
   const p = await context.newPage();
   const s: CDPSession = await context.newCDPSession(p);
   const listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
@@ -87,8 +89,8 @@ async function session(): Promise<{ cdp: CdpPage; close: () => Promise<void> }> 
   };
 }
 
-async function shoot(path: string, width: number, opts: { timeoutMs?: number; fontMs?: number } = {}) {
-  const { cdp, close } = await session();
+async function shoot(path: string, width: number, opts: { timeoutMs?: number; fontMs?: number } = {}, setup?: (context: BrowserContext) => Promise<void>) {
+  const { cdp, close } = await session(setup);
   try {
     return await shootReviewPage(cdp, new URL(path, server).href, width, opts);
   } finally {
@@ -112,6 +114,12 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
     expect(await sharp(shot.png).metadata()).toMatchObject({ width: 1440, height: 2600 });
     expect(await pixel(shot.png, 700, 2590)).toEqual([255, 0, 0]);
     expect(await pixel(shot.png, 700, 10)).toEqual([255, 255, 255]);
+  });
+
+  it('pictures a page whose analytics script the window leaves out, as the app’s hidden window does (#1485)', async () => {
+    // The app's capture window cancels an integration's script (main/hidden-page), which Chromium reports as blocked.
+    const blocked = async (context: BrowserContext) => void (await context.route('https://cdn.usefathom.com/**', (route) => route.abort('blockedbyclient')));
+    expect(await shoot('analytics/', 800, {}, blocked)).toMatchObject({ ok: true });
   });
 
   it('lays the page out at a phone width', async () => {

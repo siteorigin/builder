@@ -118,8 +118,10 @@ describe('head code', () => {
   it('is written without its comments, so none can be taken for one of Svelte’s markers', () => {
     expect(headCodeWithoutComments(GA)).toBe(GA.replace('<!-- Google tag (gtag.js) -->\n', ''));
     expect(headCodeWithoutComments('<meta name="a" content="b">\n<!--1uha8ag-->\n<meta name="c" content="d">')).toBe('<meta name="a" content="b">\n<meta name="c" content="d">');
-    // A comment inside a script or style is the script's own.
+    // A comment inside a script or style is the script's own, as is every line of what it holds.
     expect(headCodeWithoutComments('<style>/* <!-- x --> */</style>')).toBe('<style>/* <!-- x --> */</style>');
+    const script = '<script>const text = `one\n\n\ntwo`;</script>';
+    expect(headCodeWithoutComments(script)).toBe(script);
   });
 });
 
@@ -154,7 +156,9 @@ const GOOD_CSS = [
   '.badge { background: url(https://example.org/offer!.png) }',
   '@keyframes k { entry 0%, exit 100% { opacity: 0 } 0% /* start */, 50% { opacity: .5 } }',
   'a::after { content: "one \\\r\ntwo" }',
-  'a { background: image-set("/a.png" 1x, url(https://x.example/b.png) 2x) }'
+  'a { background: image-set("/a.png" 1x, url(https://x.example/b.png) 2x) }',
+  'a { background: image-set("/a.avif" type("image/avif") 1x /* "x.png" */) }',
+  '[*|href] { fill: red } [data-x="a\\\r\nb"] { color: red }'
 ];
 
 describe('custom CSS', () => {
@@ -232,10 +236,27 @@ describe('custom CSS', () => {
       ['a:is(> b) { color: red }', /cannot start with/],
       ['a[data-x]b { color: red }', /type selector comes first/],
       ['a{}<!--', /HTML comment marks/],
-      ['x'.repeat(65537), /at most/]
+      ['x'.repeat(65537), /at most/],
+      // A comment that mentions url( hides nothing: the missed semicolon after it still stops PostCSS.
+      ['a { color: red /* url(x */ background: url(#logo) /* ) */; }', /is a “;” missing/],
+      ['a::after { content: "@important"; color: red; }', /@import/],
+      ['a { background: url(https://?x=y) }', /https:\/\//],
+      ['a { background: url(https://example.org/x/*/), url(images/logo.svg) }', /url\(images\/logo\.svg\)/],
+      ['@media screen {'.repeat(70) + '}'.repeat(70), /nest at most 64 deep/],
+      [':is('.repeat(70) + 'a' + ')'.repeat(70) + ' { color: red }', /nest at most 64 deep/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });
+  });
+
+  it('reads any input in time linear in its length, refusing a bad one at once', () => {
+    // Escapes that could be read two ways, then a bad end: an attribute name read by token, never by backtracking.
+    const started = performance.now();
+    expect(globalCssProblem(`[a${'\\31'.repeat(40)}!] { color: red }`)?.message).toMatch(/attribute selector/);
+    // The longest stylesheet kept, of many small rules.
+    const many = Array.from({ length: 2400 }, (_, i) => `.c${i} { color: red; margin: 0 }`).join('\n').slice(0, 65000);
+    expect(globalCssProblem(many.slice(0, many.lastIndexOf('}') + 1))).toBeNull();
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('refuses each stylesheet that stops lightningcss, the build’s minifier', () => {
@@ -330,6 +351,19 @@ describe('the AI', () => {
     expect(projectSummary(fresh(), 1).site).not.toHaveProperty('siteCode');
     const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as Record<string, unknown>;
     expect(read).toEqual({ ok: true, revision: 7, siteCode: { headCode: GA, globalCss: 'a { color: red }' } });
+  });
+
+  it('reads each piece whole only while both fit one result as written, and replaces no other', async () => {
+    // Two pieces under the limit by length, past it as JSON writes their line breaks.
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `/* ${i} */`).join('\n');
+    const head = `<style>${lines(1000)}</style>`;
+    const css = lines(1000);
+    expect(head.length < SITE_CODE_READ_MAX && css.length < SITE_CODE_READ_MAX).toBe(true);
+    const s = run(fresh(), { type: 'site.update', headCode: head, globalCss: css });
+    const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as unknown as { siteCode: Record<string, unknown> };
+    expect(typeof read.siteCode.headCode).toBe('object');
+    const replaced = (await executeTool('apply_operations', JSON.stringify({ expectedRevision: 7, operations: [{ type: 'site.update', headCode: '<meta name="a" content="b">' }] }), host(s), 'c2')).content as { error?: { message: string } };
+    expect(replaced.error?.message).toMatch(/^The site's head code is \d+ characters/);
   });
 
   it('never replaces code longer than it can read whole', async () => {

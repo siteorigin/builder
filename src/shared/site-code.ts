@@ -45,11 +45,15 @@ function checked(text: string, check: () => void): CodeProblem | null {
     return null;
   } catch (e) {
     if (e instanceof Refusal) return located(text, e.at, e.message);
+    // Past MAX_DEPTH a check refuses on its own; this is for a stack smaller than any check expects.
+    if (e instanceof RangeError) return located(text, 0, 'This code nests too deeply to read.');
     throw e;
   }
 }
 
 const WS = /[\t\n\f\r ]/;
+/** How deep blocks, and selectors inside :is() and the like, may nest in the site's CSS. */
+const MAX_DEPTH = 64;
 
 // ---------------------------------------------------------------------------
 // Head markup
@@ -131,12 +135,16 @@ export function headCodeWithoutComments(text: string): string {
   for (let i = 0; i < text.length; ) {
     if (text.startsWith('<!--', i)) {
       const end = readComment(text, i);
-      out += text.slice(from, i);
-      i = from = end;
+      // A comment on a line of its own goes with its line.
+      const lineStart = text.lastIndexOf('\n', i - 1) + 1;
+      const after = /^[\t ]*(?:\r?\n|$)/.exec(text.slice(end, end + 64));
+      const alone = lineStart >= from && /^[\t ]*$/.test(text.slice(lineStart, i)) && after;
+      out += text.slice(from, alone ? lineStart : i);
+      i = from = alone ? end + after[0].length : end;
     } else if (text[i] === '<' && /[a-zA-Z]/.test(text[i + 1] ?? '')) i = readElement(text, i).end;
     else i++;
   }
-  return (out + text.slice(from)).replace(/\n[\t ]*(?=\n)/g, '').trim();
+  return (out + text.slice(from)).trim();
 }
 
 /** Reads a comment at `i`, giving the index after it. A comment HTML reads as empty would end Svelte's {@html} early. */
@@ -152,11 +160,15 @@ function readComment(src: string, i: number): number {
   return end + 3;
 }
 
+/** An element's name, read where the reader is: HTML's tag name runs to white space, "/" or ">". */
+const TAG_NAME = /<([^\t\n\f\r />]*)/y;
+
 /** Reads an element at `i`: its start tag, and for a script or style its text and end tag. */
 function readElement(src: string, i: number): { end: number; name: string; raw: boolean } {
   const at = i;
   // HTML's tag name runs to white space, "/" or ">": "<meta.x>" is an element called "meta.x", which is no head's.
-  const name = /^<([^\t\n\f\r />]*)/.exec(src.slice(i))![1].toLowerCase();
+  TAG_NAME.lastIndex = i;
+  const name = TAG_NAME.exec(src)![1].toLowerCase();
   if (!HEAD_ELEMENTS.has(name)) throw new Refusal(elementRefusal(name), at);
   i += name.length + 1;
   const attrs = new Map<string, string>();
@@ -209,15 +221,15 @@ function readElement(src: string, i: number): { end: number; name: string; raw: 
   if (VOID.has(name)) return { end: i, name, raw: false };
   if (selfClosed) throw new Refusal(`<${name}/> does not close in HTML: write <${name}></${name}>.`, at);
   // The text of a script or style ends at its first end tag, whatever it is inside.
-  const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, 'i');
-  const rest = src.slice(i);
-  const m = close.exec(rest);
+  const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, 'gi');
+  close.lastIndex = i;
+  const m = close.exec(src);
   if (!m) throw new Refusal(`This <${name}> is never closed with </${name}>.`, at);
-  const body = rest.slice(0, m.index);
+  const body = src.slice(i, m.index);
   // In a script, "<!--" turns on HTML's old escaping, where a "</script>" may not end it after all.
   const escaped = name === 'script' ? body.indexOf('<!--') : -1;
   if (escaped >= 0) throw new Refusal('A script cannot hold “<!--”: where a string needs it, write it as “\\u003C!--”.', i + escaped);
-  i += m.index + name.length + 2;
+  i = m.index + name.length + 2;
   while (i < src.length && WS.test(src[i])) i++;
   if (src[i] !== '>') throw new Refusal(`</${name}> holds nothing but its name.`, i);
   return { end: i + 1, name, raw: true };
@@ -256,11 +268,16 @@ export function globalCssProblem(text: string): CodeProblem | null {
     const map = text.search(/\/\*\s*[#@]\s*source(?:Mapping)?URL\s*=/i);
     if (map >= 0) throw new Refusal('A source map comment cannot be in the site’s CSS: remove it.', map);
     // The build moves these to the top of the joined stylesheet wherever it finds them, even in a string or comment.
-    const hoisted = /@(import|charset|namespace)(?![-\w])/i.exec(text);
+    const hoisted = /@(import|charset|namespace)/i.exec(text);
     if (hoisted) throw new Refusal(HOISTED[hoisted[1].toLowerCase()], hoisted.index);
     new CssReader(text).stylesheet();
   });
 }
+
+// Read where the reader is (sticky), never from a copy of the rest of the text.
+const AT_NAME = /@(-?[a-zA-Z_][-a-zA-Z0-9_]*)/y;
+const CUSTOM_NAME = /--[-a-zA-Z0-9_\u00a0-\uffff]*/y;
+const PROPERTY_NAME = /-?(?:[a-zA-Z_\u00a0-\uffff]|\\.)(?:[-a-zA-Z0-9_\u00a0-\uffff]|\\.)*/y;
 
 class CssReader {
   i = 0;
@@ -359,8 +376,22 @@ class CssReader {
     this.items('rules', -1);
   }
 
+  /** How many blocks, or selector arguments, are open around where the reader is. */
+  depth = 0;
+
+  /** Opens one more level of nesting, refusing past MAX_DEPTH, so no stylesheet runs the check out of stack. */
+  deeper(at: number): void {
+    if (++this.depth > MAX_DEPTH) this.fail(`Blocks and selectors can nest at most ${MAX_DEPTH} deep.`, at);
+  }
+
   /** Reads the items of a block until its `}` (or, for the stylesheet itself, the end). */
   items(kind: Block, openAt: number): void {
+    this.deeper(Math.max(openAt, 0));
+    this.blockItems(kind, openAt);
+    this.depth--;
+  }
+
+  private blockItems(kind: Block, openAt: number): void {
     const s = this.src;
     for (;;) {
       this.space();
@@ -426,15 +457,15 @@ class CssReader {
   atRule(kind: Block): void {
     const s = this.src;
     const at = this.i;
-    const name = /^@(-?[a-zA-Z_][-a-zA-Z0-9_]*)/.exec(s.slice(at))?.[1]?.toLowerCase();
+    AT_NAME.lastIndex = at;
+    const name = AT_NAME.exec(s)?.[1]?.toLowerCase();
     if (!name) this.fail('An at-rule needs a name after its @.');
     if (s[at + name.length + 1] === '\\') this.fail('An at-rule’s name cannot hold an escape.');
     if (name === 'import') this.fail('@import is not supported here: add the stylesheet to the head code as <link rel="stylesheet" href="…">.');
     if (kind === 'keyframes') this.fail('Keyframes hold only from, to and percentages.');
     this.i = at + name.length + 1;
     const stop = this.scan('{;}');
-    const prelude = s.slice(this.i, stop);
-    urls(this, prelude, this.i);
+    checkAddresses(this, scanValue(s.slice(this.i, stop)).addresses, this.i);
     if (stop >= s.length) this.fail(`@${name} needs a “;” or a { block } after it.`, at);
     if (s[stop] === '}') {
       // A statement at-rule may end its block without a semicolon, as the last item of it; the block reads the brace.
@@ -451,7 +482,9 @@ class CssReader {
   declaration(custom: boolean): void {
     const s = this.src;
     const at = this.i;
-    const name = custom ? /^--[-a-zA-Z0-9_\u00a0-\uffff]*/.exec(s.slice(at))?.[0] : /^-?(?:[a-zA-Z_\u00a0-\uffff]|\\.)(?:[-a-zA-Z0-9_\u00a0-\uffff]|\\.)*/.exec(s.slice(at))?.[0];
+    const re = custom ? CUSTOM_NAME : PROPERTY_NAME;
+    re.lastIndex = at;
+    const name = re.exec(s)?.[0];
     if (!name) {
       const shown = s.slice(at, this.scan(':;{}')).trim().slice(0, 40);
       this.fail(`“${shown}” is not a property name.`, at);
@@ -463,129 +496,109 @@ class CssReader {
     const valueAt = this.i;
     const stop = this.scan(custom ? ';}' : ';}{', custom);
     if (s[stop] === '{') this.fail(`A value cannot hold “{”: is a “;” or “}” missing before it?`, stop);
-    const value = s.slice(valueAt, stop);
     // A colon in a value is where a semicolon went missing ("color: red background: blue"), which stops the build's
-    // PostCSS. Brackets and strings may hold one (a data: URL); a custom property's value may hold anything.
-    if (!custom) colonInValue(this, value, valueAt);
-    important(this, value, valueAt);
-    urls(this, value, valueAt);
+    // PostCSS; a custom property's value may hold anything.
+    checkValue(this, s.slice(valueAt, stop), valueAt, custom);
     this.i = stop;
     if (s[stop] === ';') this.i++;
     // The block's closing brace (or the end of the text) is the block's to read.
   }
 }
 
-/** Ranges of `text` outside strings and comments, for looking for tokens that can only be outside them. */
-function outsideStrings(text: string): Array<[number, number]> {
-  const out: Array<[number, number]> = [];
-  let from = 0;
+/** A value read once: its text with strings, comments, escapes and url() addresses blanked, and the addresses it names. */
+interface ScannedValue {
+  /** The value at its own length, only its own tokens left: what is left is never part of a string, comment or address. */
+  masked: string;
+  /** Each address the value names (a url() or an image-set() string), with where it starts. */
+  addresses: Array<{ target: string; at: number; set: boolean }>;
+}
+
+/** Reads a value as CSS tokenizes it: strings, comments and url() tokens first, so none of them hides another. */
+function scanValue(value: string): ScannedValue {
+  const out = value.split('');
+  const addresses: ScannedValue['addresses'] = [];
+  // The functions open around each point, innermost last ('' for plain parentheses).
+  const fns: string[] = [];
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) out[k] = ' ';
+  };
   let j = 0;
-  while (j < text.length) {
-    const c = text[j];
+  while (j < value.length) {
+    const c = value[j];
     if (c === '\\') {
+      blank(j, j + 2);
       j += 2;
       continue;
     }
+    if (value.startsWith('/*', j)) {
+      const end = value.indexOf('*/', j + 2);
+      const to = end < 0 ? value.length : end + 2;
+      blank(j, to);
+      j = to;
+      continue;
+    }
     if (c === '"' || c === "'") {
-      out.push([from, j]);
       let k = j + 1;
-      while (k < text.length && text[k] !== c) k += text[k] === '\\' ? 2 : 1;
-      j = from = k + 1;
+      while (k < value.length && value[k] !== c) k += value[k] === '\\' ? 2 : 1;
+      const inside = fns[fns.length - 1];
+      if (inside === 'url' || inside === 'image-set' || inside === '-webkit-image-set') addresses.push({ target: value.slice(j + 1, k), at: j, set: inside !== 'url' });
+      const to = Math.min(k + 1, value.length);
+      blank(j, to);
+      j = to;
       continue;
     }
-    if (text.startsWith('/*', j)) {
-      out.push([from, j]);
-      const end = text.indexOf('*/', j + 2);
-      j = from = end < 0 ? text.length : end + 2;
+    const fn = /[-a-zA-Z0-9_\\]/.test(value[j - 1] ?? '') ? null : /^(-?[a-zA-Z_][-a-zA-Z0-9_]*)\(/.exec(value.slice(j, j + 64));
+    if (fn) {
+      const name = fn[1].toLowerCase();
+      j += fn[0].length;
+      if (name === 'url') {
+        let k = j;
+        while (k < value.length && WS.test(value[k])) k++;
+        // An unquoted url() is one token to its ")", comment marks and all.
+        if (value[k] !== '"' && value[k] !== "'") {
+          const close = value.indexOf(')', k);
+          const to = close < 0 ? value.length : close;
+          addresses.push({ target: value.slice(k, to).trim(), at: j - 4, set: false });
+          blank(j, to);
+          j = close < 0 ? value.length : close + 1;
+          continue;
+        }
+      }
+      fns.push(name);
       continue;
     }
+    if (c === '(') fns.push('');
+    else if (c === ')') fns.pop();
     j++;
   }
-  out.push([from, text.length]);
-  return out;
+  return { masked: out.join(''), addresses };
 }
 
-/** A colon outside brackets, strings and comments in a value. */
-function colonInValue(r: CssReader, value: string, at: number): void {
-  // Only parentheses may hold one (PostCSS reads a colon in [grid-line] names as a missing semicolon too). The
-  // parentheses open where each stretch outside strings starts are carried from one stretch to the next.
-  const v = withoutUrls(value);
-  let depth = 0;
-  for (const [a, b] of outsideStrings(v)) {
-    for (let j = a; j < b; j++) {
-      const c = v[j];
-      if (c === '\\') j++;
-      else if (c === '(') depth++;
+/** A value's own tokens: a colon outside parentheses (PostCSS reads one in a [line] name as a missing semicolon too), a "!" other than an !important at its end, and each address. */
+function checkValue(r: CssReader, value: string, at: number, custom: boolean): void {
+  const { masked, addresses } = scanValue(value);
+  if (!custom) {
+    let depth = 0;
+    for (let j = 0; j < masked.length; j++) {
+      const c = masked[j];
+      if (c === '(') depth++;
       else if (c === ')') depth--;
       else if (c === ':' && depth <= 0) r.fail('A value cannot hold “:” here: is a “;” missing before it?', at + j);
     }
   }
+  const bang = masked.indexOf('!');
+  if (bang >= 0 && !/^\s*important\s*$/i.test(masked.slice(bang + 1))) r.fail('A “!” in a value can only be the !important at its end.', at + bang);
+  checkAddresses(r, addresses, at);
 }
 
-/** A value with what each unquoted url() holds blanked out, keeping its length: an address is never a value's own token. */
-const withoutUrls = (value: string) => value.replace(/((?:^|[^-a-zA-Z0-9_\\])url\(\s*)([^"'\s)][^)]*)\)/gi, (_, open: string, inner: string) => `${open}${' '.repeat(inner.length)})`);
-
-/** Each `!` in a value is the `!important` at its end: the website's build stops at any other. */
-function important(r: CssReader, value: string, at: number): void {
-  value = withoutUrls(value);
-  for (const [a, b] of outsideStrings(value)) {
-    const k = value.slice(a, b).indexOf('!');
-    if (k < 0) continue;
-    const rest = value.slice(a + k + 1).replace(/\/\*[\s\S]*?\*\//g, ' ');
-    if (!/^\s*important\s*$/i.test(rest)) r.fail('A “!” in a value can only be the !important at its end.', at + a + k);
-    return;
-  }
-}
-
-/** Each url() points somewhere every page can load it from. */
-function urls(r: CssReader, value: string, at: number): void {
-  const re = /(^|[^-a-zA-Z0-9_\\])url\(/gi;
-  for (const [a, b] of outsideStrings(value)) {
-    const part = value.slice(a, b);
-    re.lastIndex = 0;
-    for (let m = re.exec(part); m; m = re.exec(part)) {
-      const open = a + m.index + m[1].length + 4;
-      let j = open;
-      while (j < value.length && WS.test(value[j])) j++;
-      let target: string;
-      if (value[j] === '"' || value[j] === "'") {
-        const q = value[j];
-        const close = value.indexOf(q, j + 1);
-        target = value.slice(j + 1, close < 0 ? value.length : close);
-      } else {
-        const close = value.indexOf(')', j);
-        target = value.slice(j, close < 0 ? value.length : close).trim();
-      }
-      if (!usableUrl(target)) r.fail(`url(${target.slice(0, 60)}) ${URL_NEEDS}`, at + open - 4);
-    }
-  }
-  // An image-set() names its images as strings too, which the build reads as addresses.
-  const sets = /(^|[^-a-zA-Z0-9_\\])(?:-webkit-)?image-set\(/gi;
-  for (const [a, b] of outsideStrings(value)) {
-    const part = value.slice(a, b);
-    sets.lastIndex = 0;
-    for (let m = sets.exec(part); m; m = sets.exec(part)) {
-      const open = a + m.index + m[0].length;
-      let depth = 1;
-      let j = open;
-      for (; j < value.length && depth; j++) {
-        const c = value[j];
-        if (c === '"' || c === "'") {
-          let k = j + 1;
-          while (k < value.length && value[k] !== c) k += value[k] === '\\' ? 2 : 1;
-          const target = value.slice(j + 1, k);
-          if (!usableUrl(target)) r.fail(`“${target.slice(0, 60)}” in image-set() ${URL_NEEDS}`, at + j);
-          j = k;
-        } else if (c === '(') depth++;
-        else if (c === ')') depth--;
-      }
-    }
-  }
+/** Each address points somewhere every page can load it from. */
+function checkAddresses(r: CssReader, addresses: ScannedValue['addresses'], at: number): void {
+  for (const a of addresses) if (!usableUrl(a.target)) r.fail(a.set ? `“${a.target.slice(0, 60)}” in image-set() ${URL_NEEDS}` : `url(${a.target.slice(0, 60)}) ${URL_NEEDS}`, at + a.at);
 }
 
 const URL_NEEDS = 'needs a full https:// address, a data: URL or a path from the site’s root (/…): a relative path would break from pages at other addresses.';
 
-const usableUrl = (target: string) => /^(https:\/\/[^/\\\s]|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
+const usableUrl = (target: string) => /^(https:\/\/[^/\\\s?#]|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
 
 /** The offsets a @keyframes rule names: from, to, or percentages. */
 function keyframeSelectors(r: CssReader, prelude: string, at: number): void {
@@ -646,14 +659,7 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
   // What came last: nothing yet, a compound selector, or a combinator.
   let last: 'start' | 'compound' | 'combinator' = 'start';
   const fail = (message: string, k = j): never => r.fail(message, at + k);
-  const ident = (k: number): number => {
-    let e = k;
-    if (text[e] === '-') e++;
-    if (text[e] === '-') e++;
-    if (!(IDENT_START.test(text[e] ?? '') || text[e] === '\\' || (e > k + 1 && IDENT_CHAR.test(text[e] ?? '')))) return k;
-    while (e < text.length && (IDENT_CHAR.test(text[e]) || text[e] === '\\')) e = text[e] === '\\' ? escapeEnd(text, e) : e + 1;
-    return e;
-  };
+  const ident = (k: number): number => identEnd(text, k);
   /** Index after the bracket that opens at `k`, closing at its match. */
   const closing = (k: number): number => {
     const open = text[k];
@@ -724,7 +730,9 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
           const arg = text.slice(k + 1, end - 1);
           if (colons === 1 && SELECTOR_ARGS.has(name)) {
             if (!arg.trim()) fail(`:${name}() needs a selector in it.`, k);
+            r.deeper(at + k);
             selectorList(r, arg, at + k + 1, name === 'has');
+            r.depth--;
           }
           k = end;
         }
@@ -762,14 +770,54 @@ function escapeEnd(text: string, k: number): number {
   return WS.test(text[e] ?? '') ? e + 1 : e;
 }
 
-/** One CSS name, escapes and all, as a regular expression's source. */
-const NAME = String.raw`-?(?:[a-zA-Z_\u00a0-\uffff]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f0-9a-fA-F])(?:[-a-zA-Z0-9_\u00a0-\uffff]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f0-9a-fA-F])*`;
-const ATTRIBUTE = new RegExp(String.raw`^\s*${NAME}\s*(?:([~|^$*]?=)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|${NAME}|-?\d[-a-zA-Z0-9_]*)\s*([iIsS])?\s*)?$`);
+/** Index after the CSS name that starts at `k` (escapes and all), or `k` when none starts there. */
+function identEnd(text: string, k: number): number {
+  let e = k;
+  if (text[e] === '-') e++;
+  if (text[e] === '-') e++;
+  if (!(IDENT_START.test(text[e] ?? '') || (text[e] === '\\' && !/[\n\r\f]/.test(text[e + 1] ?? '\n')) || (e > k + 1 && IDENT_CHAR.test(text[e] ?? '')))) return k;
+  while (e < text.length && (IDENT_CHAR.test(text[e]) || (text[e] === '\\' && !/[\n\r\f]/.test(text[e + 1] ?? '\n')))) e = text[e] === '\\' ? escapeEnd(text, e) : e + 1;
+  return e;
+}
 
-/** An attribute selector's inside: a name, then optionally an operator and a value, then optionally i or s. */
+/**
+ * An attribute selector's inside: a name (with any namespace or *|), then optionally an operator and a value (a
+ * string, a name or a number), then optionally i or s. Read token by token, so no input takes long to refuse.
+ */
 function attribute(r: CssReader, inner: string, at: number): void {
-  const m = ATTRIBUTE.exec(inner);
-  if (!m) r.fail('This attribute selector is not one a browser reads: [name], [name="value"] or [name="value" i].', at);
+  const fail = (): never => r.fail('This attribute selector is not one a browser reads: [name], [name="value"] or [name="value" i].', at);
+  const space = (k: number) => {
+    while (k < inner.length && WS.test(inner[k])) k++;
+    return k;
+  };
+  let k = space(0);
+  const prefix = inner[k] === '*' ? k + 1 : identEnd(inner, k);
+  if (inner[prefix] === '|' && inner[prefix + 1] !== '=') k = prefix + 1;
+  const name = identEnd(inner, k);
+  if (name === k) fail();
+  k = space(name);
+  if (k < inner.length) {
+    const op = /^[~|^$*]?=/.exec(inner.slice(k, k + 2));
+    if (!op) fail();
+    k = space(k + op![0].length);
+    const q = inner[k];
+    if (q === '"' || q === "'") {
+      let e = k + 1;
+      while (e < inner.length && inner[e] !== q) {
+        if (inner[e] === '\\') e += inner[e + 1] === '\r' && inner[e + 2] === '\n' ? 3 : 2;
+        else if (/[\n\r\f]/.test(inner[e])) fail();
+        else e++;
+      }
+      if (e >= inner.length) fail();
+      k = e + 1;
+    } else {
+      const e = identEnd(inner, k);
+      k = e > k ? e : (/^-?\d[-a-zA-Z0-9_]*/.exec(inner.slice(k))?.[0].length ?? fail()) + k;
+    }
+    k = space(k);
+    if (/[iIsS]/.test(inner[k] ?? '') && (k + 1 === inner.length || WS.test(inner[k + 1]))) k = space(k + 1);
+    if (k < inner.length) fail();
+  }
 }
 
 // ---------------------------------------------------------------------------

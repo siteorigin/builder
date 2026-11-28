@@ -291,8 +291,13 @@ const NEVER_OFFERED = new Set<OperationType>([
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
 
-/** The most of each piece of the site's own code a run reads whole, and so may replace: both fit in one result. */
+/**
+ * The most of each piece of the site's own code a run reads whole, and so may replace, measured as the result writes it
+ * (JSON, where a line break or quote takes two characters): both pieces then fit in one result (MAX_RESULT_CHARS).
+ */
 export const SITE_CODE_READ_MAX = 10000;
+/** Whether a piece of the site's code is short enough for a run to read whole. */
+const readsWhole = (code: string) => JSON.stringify(code).length <= SITE_CODE_READ_MAX;
 const SITE_CODE_FIELDS = [
   ['headCode', 'head code'],
   ['globalCss', 'custom CSS']
@@ -306,7 +311,7 @@ function siteCodeRead(state: ProjectState): Record<string, unknown> {
   return Object.fromEntries(
     SITE_CODE_FIELDS.map(([key]) => {
       const v = hasCode(state.site[key]) ? state.site[key] : '';
-      return [key, v.length <= SITE_CODE_READ_MAX ? v : { characters: v.length, start: v.slice(0, 2000), note: 'Too long to replace here: the author changes it in Site settings > Custom code.' }];
+      return [key, readsWhole(v) ? v : { characters: v.length, start: v.slice(0, 2000), note: 'Too long to replace here: the author changes it in Site settings > Custom code.' }];
     })
   );
 }
@@ -317,7 +322,7 @@ function siteCodeUnread(state: ProjectState, ops: EditOperation[]): string | nul
     if (op.type !== 'site.update') continue;
     for (const [key, what] of SITE_CODE_FIELDS) {
       const saved = state.site[key];
-      if (op[key] !== undefined && hasCode(saved) && saved.length > SITE_CODE_READ_MAX) return `The site's ${what} is ${saved.length} characters, more than a run reads whole, so it is not replaced here. Ask the author to change it in Site settings > Custom code.`;
+      if (op[key] !== undefined && hasCode(saved) && !readsWhole(saved)) return `The site's ${what} is ${saved.length} characters, more than a run reads whole, so it is not replaced here. Ask the author to change it in Site settings > Custom code.`;
     }
   }
   return null;

@@ -196,8 +196,9 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
       case 'Network.loadingFailed': {
         const at = pending.get(id) ?? streams.get(id);
         if (!pending.delete(id) && !streams.delete(id)) return;
-        // A request the page called off itself (a responsive image it chose another size of) took nothing away.
-        if (p.canceled === true) break;
+        // A request the page called off itself (a responsive image it chose another size of) took nothing away, nor did
+        // one the window left out itself (an integration's script or a beacon, quietRequest in shared/integrations.ts).
+        if (p.canceled === true || String(p.errorText ?? '').startsWith('net::ERR_BLOCKED_BY_CLIENT')) break;
         const what = `${shortUrl(at ?? '', origin)} (${String(p.errorText ?? 'failed')})`;
         if (p.type === 'Document' && !document) documentFailed = what;
         else failed.push(what);
