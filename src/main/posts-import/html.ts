@@ -1,7 +1,10 @@
 /**
  * Reads a post's HTML (a WordPress post, or the HTML a Markdown file holds or becomes) into the element tree the
  * editor's rich text reader takes (see shared/richtext-tree.ts), keeping only prose: paragraphs, headings, quotes,
- * lists, links, bold and italic, and pictures. Anything active is never carried: scripts, styles, frames, objects,
+ * lists, links, bold and italic, and pictures. Formatting it has no form for becomes ordinary text, and is counted:
+ * code and preformatted text keep their lines, superscripts and subscripts are written with characters of their own
+ * so their digits never join the text before them (m², 10⁶, CO₂, or 10^-1.5), and struck-through text keeps its
+ * words. Anything active is never carried: scripts, styles, frames, objects,
  * forms and every attribute but a link's address and a picture's source and description. What was left out is
  * counted in a report the author reads before importing.
  *
@@ -28,9 +31,15 @@ export interface HtmlReport {
   shortcodes: string[];
   /** Links whose address could not be kept (a script, or an address on the old site that is not a post): their words stay. */
   droppedLinks: number;
+  /** Blocks of code or preformatted text kept as ordinary text, line by line. */
+  code: number;
+  /** Superscripts and subscripts written on the line (see raised). */
+  raised: number;
+  /** Struck-through passages kept as ordinary text. */
+  struck: number;
 }
 
-export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], droppedLinks: 0 });
+export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], droppedLinks: 0, code: 0, raised: 0, struck: 0 });
 
 /** A picture the HTML shows, as written. */
 export interface HtmlImage {
@@ -405,6 +414,33 @@ function embedAddress(el: HElement): string | null {
   return /^https?:\/\/[^\s<>"]+$/i.test(url) ? url : null;
 }
 
+/** The characters of their own that superscripts and subscripts have, for what they commonly hold. */
+const SUP: Record<string, string> = { ...digits('⁰¹²³⁴⁵⁶⁷⁸⁹'), '+': '⁺', '-': '⁻', '−': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', n: 'ⁿ', i: 'ⁱ' };
+const SUB: Record<string, string> = { ...digits('₀₁₂₃₄₅₆₇₈₉'), '+': '₊', '-': '₋', '−': '₋', '=': '₌', '(': '₍', ')': '₎' };
+function digits(forms: string): Record<string, string> {
+  return Object.fromEntries([...forms].map((c, d) => [String(d), c]));
+}
+
+function mapText(nodes: HNode[], map: Record<string, string>): HNode[] {
+  return nodes.map((n) => (typeof n === 'string' ? [...n].map((c) => map[c] ?? c).join('') : { ...n, children: mapText(n.children, map) }));
+}
+
+/**
+ * A superscript or subscript on the line, which post text has no form for. Written with characters of their own when
+ * it has them (m², CO₂, October¹), so its digits never join the number or word before it; otherwise a superscript
+ * holding a digit is marked with "^" and a subscript with "_" (10^-1.5). Letters alone, an ordinal's (19th), read as
+ * they are. What it holds (a footnote marker's link) is kept.
+ */
+function raised(node: HElement, convertKids: (nodes: HNode[]) => RichDomNode[], report: HtmlReport): RichDomNode[] {
+  const text = textOf(node);
+  if (!text.trim()) return [{ tag: 'span', children: convertKids(node.children) }];
+  report.raised++;
+  const map = node.tag === 'sup' ? SUP : SUB;
+  if ([...text].every((c) => /\s/.test(c) || Object.hasOwn(map, c))) return [{ tag: 'span', children: convertKids(mapText(node.children, map)) }];
+  const kids: RichDomNode[] = [{ tag: 'span', children: convertKids(node.children) }];
+  return /\d/.test(text) ? [node.tag === 'sup' ? '^' : '_', ...kids] : kids;
+}
+
 function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre = false): RichDomNode[] {
   const out: RichDomNode[] = [];
   let cells = 0;
@@ -414,7 +450,8 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       else node.split('\n').forEach((line, k) => (k && out.push({ tag: 'br', children: [] }), line && out.push(line)));
       continue;
     }
-    const kids = () => convert(node.children, opts, report, pre || node.tag === 'pre');
+    const convertKids = (children: HNode[]) => convert(children, opts, report, pre || node.tag === 'pre');
+    const kids = () => convertKids(node.children);
     const tag = node.tag;
     if (tag === 'img') {
       const key = opts.image({ src: node.attrs.src ?? '', alt: oneLine(node.attrs.alt ?? '') });
@@ -448,7 +485,14 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       // Cells of a row, one after another on its line.
       if (cells++) out.push(' · ');
       out.push({ tag: 'span', children: kids() });
-    } else if (tag === 'pre') out.push({ tag: 'div', children: kids() });
+    } else if (tag === 'pre') {
+      if (textOf(node).trim()) report.code++;
+      out.push({ tag: 'div', children: kids() });
+    } else if (tag === 'sup' || tag === 'sub') out.push(...raised(node, convertKids, report));
+    else if (tag === 's' || tag === 'strike' || tag === 'del') {
+      if (textOf(node).trim()) report.struck++;
+      out.push({ tag: 'span', children: kids() });
+    } else if (tag === 'ul' && /(?:^|\s)contains-task-list(?:\s|$)/.test(node.attrs.class ?? '')) out.push({ tag, check: true, children: kids() });
     else if (tag === 'hr') out.push({ tag: 'div', children: [] });
     else if (KEEP.has(tag)) out.push({ tag, children: kids() });
     else if (AS_BLOCK.has(tag) || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') out.push({ tag: 'div', children: kids() });

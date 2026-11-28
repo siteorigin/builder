@@ -3,7 +3,8 @@
  * or TOML between `+++` lines) and a Markdown body. The body becomes HTML here and is read by the same HTML reader a
  * WordPress post is, so raw HTML inside Markdown is cleaned by the same rules.
  *
- * Only the common subset is read: headings, paragraphs, quotes, lists, code, tables, links, pictures, bold and italic,
+ * Only the common subset is read: headings, paragraphs, quotes, lists (task lists among them), code, tables, links,
+ * pictures, bold, italic and strikethrough,
  * and in frontmatter plain values, quoted text, true/false, dates and lists of words. Anything else in frontmatter
  * (nested settings, anchors) is passed over; a value the import needs that it cannot read is reported.
  */
@@ -299,7 +300,10 @@ export function inlineHtml(input: string, refs: Refs, depth = 0, budget = { left
   return out.replace(/\u0001(\d+)\u0002/g, (_m, k: string) => kept[Number(k)]);
 }
 
-/** Bold and italic: `**` and `__` around words are bold, `*` and `_` italic. An underscore inside a word stays one. */
+/**
+ * Bold, italic and strikethrough: `**` and `__` around words are bold, `*` and `_` italic, and `~~` struck through. An
+ * underscore inside a word stays one.
+ */
 function emphasis(s: string): string {
   // Each mark is looked for within 1,000 characters of where it opens, so a paragraph of unclosed marks is read once.
   return s
@@ -308,7 +312,8 @@ function emphasis(s: string): string {
     .replace(/(?<![\w])__(?=\S)([^_]{0,1000}?\S)__(?![\w])/g, '<strong>$1</strong>')
     .replace(/\*(?=[^\s*])([^*]{0,1000}?[^\s*])\*/g, '<em>$1</em>')
     .replace(/\*(?=[^\s*])([^\s*])\*/g, '<em>$1</em>')
-    .replace(/(?<![\w])_(?=\S)([^_]{0,1000}?\S)_(?![\w])/g, '<em>$1</em>');
+    .replace(/(?<![\w])_(?=\S)([^_]{0,1000}?\S)_(?![\w])/g, '<em>$1</em>')
+    .replace(/~~([^\s~](?:[^~]{0,1000}?[^\s~])?)~~/g, '<del>$1</del>');
 }
 
 /** `[label](href "title")`, `[label][ref]`, `[label][]` or `[ref]` at `at` (its "["), with where it ends. */
@@ -440,7 +445,11 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
         } else break;
         i++;
       }
-      const tag = ordered ? 'ol' : 'ul';
+      // A list of tasks (`- [ ] task`, `- [x] done`) is a check list, as post text reads one; its markers go.
+      const TASK = /^\[[ xX]\](?:[ ]+|$)/;
+      const tasks = !ordered && items.every((it) => TASK.test(it.lines[0]));
+      if (tasks) for (const it of items) it.lines[0] = it.lines[0].replace(TASK, '');
+      const tag = ordered ? 'ol' : tasks ? 'ul class="contains-task-list"' : 'ul';
       const li = (it: ListItem) => {
         const inner = it.lines.join('\n').replace(/\n+$/, '');
         // An item of one paragraph holds its words; one with more holds blocks.
@@ -448,7 +457,7 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
         // The item's first paragraph is its own words, as a tight list shows them.
         return markdownToHtml(inner, depth + 1, refs, budget).replace(/^<p>([\s\S]*?)<\/p>(?=\n|$)/, '$1');
       };
-      out.push(`<${tag}>${items.map((it) => `<li>${li(it)}</li>`).join('')}</${tag}>`);
+      out.push(`<${tag}>${items.map((it) => `<li>${li(it)}</li>`).join('')}</${ordered ? 'ol' : 'ul'}>`);
       continue;
     }
     // A table: a row of cells, then a line of dashes.

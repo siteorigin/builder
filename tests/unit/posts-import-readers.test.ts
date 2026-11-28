@@ -7,6 +7,8 @@ import type { LinkValue } from '@shared/types';
 import { linkFromTarget } from '@shared/richtext';
 import { XmlError, childText, parseXml, textOf } from '../../src/main/posts-import/xml';
 import { autop, emptyReport, htmlToPlain, htmlToRichText, type ReadHtmlOptions } from '../../src/main/posts-import/html';
+import { reportNotes } from '../../src/main/posts-import/notes';
+import { markdownToHtml } from '../../src/main/posts-import/markdown';
 
 const images: string[] = [];
 const opts = (extra: Partial<ReadHtmlOptions> = {}): ReadHtmlOptions => ({
@@ -159,5 +161,56 @@ describe('the HTML reader', () => {
 
   it('reads plain text and entities', () => {
     expect(htmlToPlain('<p>Fish &amp; chips&nbsp;&mdash; <b>fresh</b></p><p>Daily</p>')).toBe('Fish & chips — fresh Daily');
+  });
+});
+
+describe('formatting post text has no form for (#1506)', () => {
+  const read = (html: string, extra: Partial<ReadHtmlOptions> = {}) => {
+    const report = emptyReport();
+    const blocks = htmlToRichText(html, opts(extra), report);
+    return { text: blocks.map((b) => ('spans' in b ? b.spans.map((s) => s.text).join('') : '')), report, notes: reportNotes(report), blocks };
+  };
+
+  it('keeps superscript and subscript digits apart from the text before them', () => {
+    expect(read('<p>1.2 × 10<sup>6</sup> cells, m<sup>2</sup>, CO<sub>2</sub>, H<sub>2</sub>O, October<sup>1</sup> and x<sup>n+1</sup>.</p>').text).toEqual([
+      '1.2 × 10⁶ cells, m², CO₂, H₂O, October¹ and xⁿ⁺¹.'
+    ]);
+    // No character of its own: a mark keeps the digits apart; letters alone (an ordinal) read as they are.
+    expect(read('<p>10<sup>-1.5</sup>, x<sub>i,2</sub>, the 19<sup>th</sup> century and <sup>[1]</sup></p>').text).toEqual(['10^-1.5, x_i,2, the 19th century and ^[1]']);
+  });
+
+  it('keeps a superscript’s link, as a footnote marker has', () => {
+    expect(read('<p>October<sup><a href="https://example.com/#fn1">1</a></sup></p>').blocks).toEqual([
+      { type: 'p', spans: [{ text: 'October' }, { text: '¹', link: { type: 'url', target: 'https://example.com/#fn1' } }] }
+    ]);
+  });
+
+  it('says in the review what became ordinary text: code, superscripts and subscripts, struck text', () => {
+    const { text, notes } = read(
+      '<p>Text with <u>underline</u>, <s>strike</s>, H<sub>2</sub>O and m<sup>2</sup>, and <mark>highlight</mark>.</p>\n<!-- wp:code -->\n<pre class="wp-block-code"><code>model &lt;- lmer(yield ~ treatment + (1|block), data = trials)</code></pre>\n<!-- /wp:code -->',
+      { autop: true }
+    );
+    expect(text).toEqual(['Text with underline, strike, H₂O and m², and highlight.', 'model <- lmer(yield ~ treatment + (1|block), data = trials)']);
+    expect(notes).toEqual([
+      'A block of code or preformatted text became ordinary text.',
+      '2 superscripts and subscripts became ordinary text on the line.',
+      'Kept a struck-through passage as ordinary text, no longer struck through.'
+    ]);
+    expect(read('<p><del>12%</del> 21%, <strike>a</strike> and <s></s></p><pre>a</pre><pre>b</pre><p><sup> </sup></p>').notes).toEqual([
+      '2 blocks of code or preformatted text became ordinary text.',
+      'Kept 2 struck-through passages as ordinary text, no longer struck through.'
+    ]);
+    expect(read('<p>Plain <strong>bold</strong> text.</p>').notes).toEqual([]);
+  });
+
+  it('reads Markdown strikethrough and task lists', () => {
+    const md = (s: string) => read(markdownToHtml(s));
+    const struck = md('A correction: ~~12%~~ 21%, `~~kept~~` and ~~ spaced ~~.');
+    expect(struck.text).toEqual(['A correction: 12% 21%, ~~kept~~ and ~~ spaced ~~.']);
+    expect(struck.notes).toEqual(['Kept a struck-through passage as ordinary text, no longer struck through.']);
+    expect(md('- [ ] task\n- [x] done\n- [X] **also**').blocks).toEqual([{ type: 'check', items: [[{ text: 'task' }], [{ text: 'done' }], [{ text: 'also', strong: true }]] }]);
+    // A list with only some task items keeps its markers as written.
+    expect(md('- [ ] task\n- plain').blocks).toEqual([{ type: 'ul', items: [[{ text: '[ ] task' }], [{ text: 'plain' }]] }]);
+    expect(md('```\nx\n```').notes).toEqual(['A block of code or preformatted text became ordinary text.']);
   });
 });

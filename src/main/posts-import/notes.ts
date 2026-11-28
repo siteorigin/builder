@@ -15,6 +15,9 @@ export function reportNotes(r: HtmlReport): string[] {
   if (r.forms) out.push(`Removed ${count(r.forms, 'form', 'forms')}.`);
   if (r.tables) out.push(`${cap(count(r.tables, 'table', 'tables'))} became plain lines of text.`);
   if (r.shortcodes.length) out.push(`Removed the shortcode${r.shortcodes.length === 1 ? '' : 's'} ${r.shortcodes.map((s) => `[${s}]`).join(', ')}.`);
+  if (r.code) out.push(`${cap(count(r.code, 'block of code or preformatted text', 'blocks of code or preformatted text'))} became ordinary text.`);
+  if (r.raised) out.push(`${cap(count(r.raised, 'superscript or subscript', 'superscripts and subscripts'))} became ordinary text on the line.`);
+  if (r.struck) out.push(`Kept ${count(r.struck, 'struck-through passage', 'struck-through passages')} as ordinary text, no longer struck through.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }
