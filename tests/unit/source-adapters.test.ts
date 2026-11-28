@@ -586,7 +586,7 @@ describe('what a source sends, checked as hard as what it is sent', () => {
 
   // A date there that cannot be read is said, by record and the format it takes, never published as the sync's day (#1498).
   it('refuses a source date it cannot read, where a missing one is left to the fallback', async () => {
-    const dates: Record<string, unknown> = { slashed: '18/11/2026', http: 'Wed, 18 Nov 2026 13:30:00 GMT', rolled: '2026-02-30', listed: ['2026-11-18'], trailing: '2026-11-18garbage', iso: '2026-11-18T13:30:00Z', local: '2026-11-18 13:30:00', blank: '  ', none: null };
+    const dates: Record<string, unknown> = { slashed: '18/11/2026', http: 'Wed, 18 Nov 2026 13:30:00 GMT', rolled: '2026-02-30', listed: ['2026-11-18'], trailing: '2026-11-18garbage', iso: '2026-11-18T13:30:00Z', local: '2026-11-18 13:30:00', lower: '2026-11-18t13:30:00z', day: '2026-11-18', blank: '  ', none: null };
     const api = await server((req, res) => send(res, [{ id: 1, title: 'A' }, { id: 2, title: 'B', timestamp: dates[req.url.pathname.slice(1)] }]));
     const at = (name: string, mapping: Partial<SyncRequest['mapping']> = { publishedAt: 'timestamp' }) => run({ adapter: 'rest', config: { url: `${api.origin}/${name}` }, mapping });
     for (const name of ['slashed', 'http', 'rolled', 'listed', 'trailing'])
@@ -597,8 +597,10 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(!shown.ok && shown.detail).not.toContain('18/11');
     const iso = await at('iso');
     expect(iso.ok && iso.records.map((r) => r.publishedAt)).toEqual([undefined, '2026-11-18']);
-    const local = await at('local');
-    expect(local.ok && local.records.map((r) => r.publishedAt)).toEqual([undefined, '2026-11-18']);
+    for (const name of ['local', 'lower', 'day']) {
+      const read = await at(name);
+      expect(read.ok && read.records.map((r) => r.publishedAt), name).toEqual([undefined, '2026-11-18']);
+    }
     for (const name of ['blank', 'none']) {
       const empty = await at(name);
       expect(empty.ok && empty.records.map((r) => r.publishedAt), name).toEqual([undefined, undefined]);

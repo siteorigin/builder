@@ -16,7 +16,7 @@ import type { FieldKinds, NormalizedRecord, SourceImageRef } from './protocol';
 export class MappingError extends Error {}
 
 /** A day, alone or followed by its time (`2026-11-18`, `2026-11-18T13:30:00Z`, `2026-11-18 13:30`). */
-const DAY = /^(\d{4}-\d{2}-\d{2})(?:$|[T ]\d{2}:\d{2})/;
+const DAY = /^(\d{4}-\d{2}-\d{2})(?:$|[Tt ]\d{2}:\d{2})/;
 
 /** Text as one line, cut to `max` characters at a word where it can be, and never inside a character. */
 export function oneLine(v: string, max: number): string {
