@@ -16,6 +16,8 @@ import { installComponent, makeInstance } from '@engine/install';
 import { validateState, type Diagnostic } from '@engine/validate';
 import { keptSampleKey, sampleContentDiagnostics, sampleFixtures, samplePlace, withoutKeptSamples } from '@engine/sample-content';
 import { freshKeeper } from '@engine/validation-cache';
+import { themeUpdates } from '@engine/theme-updates';
+import { definitionHash } from '@shared/migrations';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { ELEMENT_STUBS } from '@shared/element-stubs';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
@@ -194,24 +196,28 @@ describe('a placed component’s sample defaults', () => {
     expect(samples(s).map((d) => (placeOf(d) as { itemId?: string }).itemId)).toEqual([items[1].id, items[2].id]);
   });
 
-  it('names a table its design starts with until one cell changes, and marked text a Foundation section shows', () => {
+  it('names a table its design starts with until one cell changes, and the copy Foundation’s split hero marks', () => {
+    // As the release marks them (#1641): no test marks a Foundation default itself.
     const s = createStarterState('blank', 'Garden Co', false);
     const def = s.components[installComponent(s, 'data.table')];
-    def.properties.table = { ...(def.properties.table as TableProp), sampleDefault: true };
     const hero = s.components[installComponent(s, 'hero.split')];
-    hero.properties.heading = { ...hero.properties.heading, sampleDefault: true } as typeof hero.properties.heading;
     const table = makeInstance(def);
     const placed = makeInstance(hero);
     for (const n of [table, placed]) (s.pages[s.site.homePageId].nodes[n.id] = n), s.pages[s.site.homePageId].rootIds.push(n.id);
     const found = samples(s, 'SAMPLE_DEFAULT');
-    expect(found.map((d) => [d.nodeId, (placeOf(d) as { prop: string }).prop])).toEqual([
+    const at = (d: Diagnostic) => [d.nodeId, (placeOf(d) as { prop: string }).prop];
+    expect(found.map(at)).toEqual([
+      [table.id, 'heading'],
+      [table.id, 'caption'],
+      [placed.id, 'eyebrow'],
       [placed.id, 'heading'],
+      [placed.id, 'lead'],
       [table.id, 'table']
     ]);
-    expect(found[1].message).toMatch(/still holds the sample rows and columns its design starts with/);
+    expect(found[5].message).toMatch(/still holds the sample rows and columns its design starts with/);
     const value = structuredClone((def.properties.table as TableProp).default);
     value.rows[0].cells[value.columns[0].id] = 'Our own';
-    expect(samples(setProps(s, table.id, { table: value }), 'SAMPLE_DEFAULT').map((d) => d.nodeId)).toEqual([placed.id]);
+    expect(samples(setProps(s, table.id, { table: value }), 'SAMPLE_DEFAULT').map(at)).toEqual(found.slice(0, 5).map(at));
     // Made unique, the Table keeps its code, and its sample rows are still named.
     const unique = run(s, { type: 'component.makeUnique', owner: home(s), nodeId: table.id, name: 'Our table' });
     expect(samples(unique, 'SAMPLE_DEFAULT').map((d) => (placeOf(d) as { prop: string }).prop)).toContain('table');
@@ -219,6 +225,85 @@ describe('a placed component’s sample defaults', () => {
     const own = structuredClone(s);
     own.components[def.id] = { ...own.components[def.id], owner: 'project', componentId: 'project.hours', provenance: { createdBy: 'user' } };
     expect(samples(own, 'SAMPLE_DEFAULT').some((d) => (placeOf(d) as { prop: string }).prop === 'table')).toBe(false);
+  });
+});
+
+/** A blank site with these Foundation sections inserted on Home, as Insert places them, and each one's placement. */
+function withFoundation(...componentIds: string[]): { s: ProjectState; placed: Record<string, InstanceNode> } {
+  let s = createStarterState('blank', 'Garden Co', false);
+  s = run(s, ...componentIds.map((componentId): EditOperation => ({ type: 'node.insert', owner: home(s), parentId: null, componentId })));
+  const nodes = Object.values(s.pages[s.site.homePageId].nodes).filter((n): n is InstanceNode => n.kind === 'instance');
+  const placed = Object.fromEntries(componentIds.map((id) => [id, nodes.find((n) => s.components[n.definitionId]?.componentId === id)!]));
+  return { s, placed };
+}
+
+/** Each placement's sample-default findings, by the field each names (`prop`, or `prop.field` for an item's). */
+function namedFields(s: ProjectState, node: InstanceNode): string[] {
+  return samples(s, 'SAMPLE_DEFAULT')
+    .filter((d) => d.nodeId === node.id)
+    .map((d) => {
+      const at = placeOf(d) as { prop: string; field?: string };
+      return at.field ? `${at.prop}.${at.field}` : at.prop;
+    });
+}
+
+/** A definition as Foundation shipped it before it marked its sample defaults. */
+function unmarked<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(unmarked) as T;
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'sampleDefault').map(([k, v]) => [k, unmarked(v)])) as T;
+}
+
+describe('Foundation’s sample defaults, as its release marks them (#1641)', () => {
+  it('names the illustrative copy of testimonials, logos, a split hero and a table, and a new FAQ row', () => {
+    const { s, placed } = withFoundation('testimonials.grid', 'logos.strip', 'hero.split', 'data.table', 'faq.list');
+    // A sample row is named by its title field.
+    expect(namedFields(s, placed['testimonials.grid'])).toEqual(expect.arrayContaining(['heading', 'lead', 'items.name']));
+    expect(namedFields(s, placed['logos.strip'])).toEqual(expect.arrayContaining(['heading', 'logos.name']));
+    expect(namedFields(s, placed['hero.split'])).toEqual(['eyebrow', 'heading', 'lead']);
+    expect(namedFields(s, placed['data.table'])).toContain('table');
+    expect(samples(s, 'SAMPLE_DEFAULT').every((d) => d.severity === 'warning')).toBe(true);
+    // A row added to the FAQ starts as the release's stub question and answer, and is named until it is written.
+    const faq = placed['faq.list'];
+    const added = applyOperations(s, [{ type: 'instance.listInsert', owner: home(s), nodeId: faq.id, prop: 'items', item: {} }]);
+    const id = added.results[0].itemId as string;
+    const row = samples(added.state, 'SAMPLE_DEFAULT').filter((d) => d.nodeId === faq.id && (placeOf(d) as { itemId?: string }).itemId === id);
+    expect(row.map((d) => (placeOf(d) as { field?: string }).field).sort()).toEqual(['answer', 'question']);
+  });
+
+  it('names none of the reusable words of search, a contact form’s fields and button, or a feed', () => {
+    const { s, placed } = withFoundation('site.search', 'contact.form', 'content.news', 'blog.grid', 'blog.list', 'content.pages');
+    for (const id of ['site.search', 'content.news', 'blog.grid', 'blog.list', 'content.pages']) expect(namedFields(s, placed[id]), id).toEqual([]);
+    // The form's lead is the house business's; its standard fields and its submit label are the visitor's to read as they are.
+    expect(namedFields(s, placed['contact.form'])).toEqual(['lead']);
+  });
+
+  it('offers a project’s older, unmarked Foundation sections as Updates, which keep their content and single-item styles', () => {
+    const { s: placedState, placed } = withFoundation('pricing.plans', 'testimonials.grid');
+    const plans = placed['pricing.plans'];
+    const featured = (plans.props.plans as ListItem[])[1].id;
+    let s = run(
+      placedState,
+      { type: 'instance.setProp', owner: home(placedState), nodeId: plans.id, prop: 'heading', value: 'Garden care plans' },
+      { type: 'node.setStyle', owner: home(placedState), nodeId: plans.id, partId: 'plan', itemId: featured, scope: 'base', property: 'border', value: { token: 'border.strong' } }
+    );
+    const before = structuredClone(s.pages[s.site.homePageId].nodes);
+    // The project installed these before the release marked them: the lock names those older definitions.
+    const older = [plans.definitionId, placed['testimonials.grid'].definitionId];
+    for (const id of older) {
+      s.components[id] = unmarked(s.components[id]);
+      s.themeLock.components[id].hash = definitionHash(s.components[id]);
+    }
+    expect(samples(s, 'SAMPLE_DEFAULT').filter((d) => d.nodeId === plans.id || d.nodeId === placed['testimonials.grid'].id)).toEqual([]);
+    expect(themeUpdates(s).available.map((a) => a.id).sort()).toEqual([...older].sort());
+    s = run(s, { type: 'theme.refresh' });
+    expect(themeUpdates(s)).toEqual({ available: [], kept: [] });
+    expect(s.pages[s.site.homePageId].nodes).toEqual(before);
+    expect((s.pages[s.site.homePageId].nodes[plans.id] as InstanceNode).itemOverrides).toEqual({ plan: { list: 'plans', items: { [featured]: { base: { border: { token: 'border.strong' } } } } } });
+    // Now current, the sections name the sample copy left as it started, and not the heading written over.
+    expect(namedFields(s, plans)).not.toContain('heading');
+    expect(namedFields(s, plans)).toEqual(expect.arrayContaining(['lead', 'plans.name']));
+    expect(namedFields(s, placed['testimonials.grid'])).toEqual(expect.arrayContaining(['heading', 'items.name']));
   });
 });
 
