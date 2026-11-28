@@ -452,6 +452,8 @@ export interface LocalWorkspaceState {
   chatDrafts?: Record<string, string>;
   /** Library images attached to those unsent messages, by asset ID, keyed the same way. */
   chatImages?: Record<string, string[]>;
+  /** The AI conversations in which the author allowed the whole site, by ID (#1412): they keep it when reopened. */
+  chatSiteGrants?: Record<string, true>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
   chatConversation?: string;
   /** Whether the next AI message was set to be a read-only question, so an unsent question stays one. */
@@ -863,6 +865,14 @@ export interface FormRoutingPrompt {
     /** Something the rows cannot say: that code decides where it sends. */
     note?: string;
   }>;
+}
+
+/** Plain affirmative answers that grant a scope-widening question (or the app's own) when typed instead of clicked. */
+export const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+/** Whether an answer to a scope-widening question allows it: its first choice, or a plain typed yes. */
+export function grantsWider(q: Pick<ChatQuestion, 'widen' | 'choices'> | null | undefined, answer: unknown): boolean {
+  return !!q?.widen && typeof answer === 'string' && (answer === q.choices?.[0] || TYPED_YES.test(answer));
 }
 
 /** A turn's questions in order, including one stored by an earlier version as `question`. */

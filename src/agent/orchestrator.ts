@@ -2,7 +2,7 @@ import { installedFonts } from '@catalogue/fonts';
 import { cutAtWord, plainText, turnName } from './turn-name';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, codeModeOff, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type FormRoutingPrompt, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
+import { CHAT_EDIT_SCOPES, codeModeOff, turnQuestions, TYPED_YES, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type FormRoutingPrompt, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -80,8 +80,6 @@ const OVERLAPPING_TOOLS = new Set(['read_project', 'read_page', 'read_layout', '
 /** A message that only asks to carry on with the previous request, as the Continue button sends it. */
 const CONTINUE = /^\s*(please )?(continue|carry on|keep going|go on|resume|finish( it| the rest| up)?)( please)?[\s.!]*$/i;
 
-/** Plain affirmative answers that grant a scope-widening question when typed instead of clicked. */
-const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
 
 type RunUsage = TokenUsage & { turns: Array<TokenUsage | null> };
 
