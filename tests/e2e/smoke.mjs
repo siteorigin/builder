@@ -151,6 +151,16 @@ assert.ok((await win.evaluate(() => window.builder.projects.close())).ok, 'the p
 await win.waitForSelector('.welcome');
 await createProject(win, { name: 'Kloof Street Bakery', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 assert.notEqual((await win.evaluate(() => window.builder.project.snapshot()))?.dir, projectDir, 'the new project is the one open');
+step('a build run from the source keeps a trace of this launch alone, with each step of opening a project');
+{
+  const traceFile = join(WORK, 'userdata', 'logs', 'trace.log');
+  const traced = readFileSync(traceFile, 'utf8');
+  assert.equal(traced.match(/\[trace\] \+0ms trace: started$/gm)?.length, 1, 'the trace is this launch’s alone');
+  assert.ok(traced.includes(`open: asked to open ${projectDir}`), 'the open is traced');
+  assert.match(traced, /open: attached as .*, starting the preview/, 'so is the editor being given the project');
+  assert.match(traced, /preview: server in .*: ready at http:\/\/127\.0\.0\.1:\d+/, 'and its preview server becoming ready');
+  assert.match(traced, /editor canvas: outlined=false pending=false runtime=ready .* ready=true/, 'and the first page being ready to edit');
+}
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

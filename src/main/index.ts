@@ -24,7 +24,7 @@ import { createMenuPopups } from './app-menu-popup';
 import { opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
 import { captureMainErrors, createMainLog } from './main-log';
-import { startTrace, trace, traced } from './trace';
+import { clearTrace, startTrace, stopTrace, trace, traced, tracing } from './trace';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator, type RunDelegation } from '@agent/orchestrator';
@@ -721,6 +721,9 @@ function registerIpc() {
     // Reload and the developer tools come and go with Developer mode.
     if (s.developerMode !== developerModeOn) {
       developerModeOn = s.developerMode;
+      // A packaged build traces while Developer mode is on (a build run from the source always does).
+      if (logging && app.isPackaged && developerModeOn && !tracing()) beginTrace();
+      else if (logging && app.isPackaged && !developerModeOn) stopTrace();
       buildMenu();
     }
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
@@ -1642,11 +1645,20 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 const launchLine = () => `${app.name} ${buildVersion(app.getVersion(), BUILD)} on ${process.platform} ${process.arch}`;
 const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'main.log'), header: launchLine });
 const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
+/** The developer's trace of this launch (trace.ts), beside the log. */
+const TRACE_FILE = join(app.getPath('userData'), 'logs', 'trace.log');
+/** Trace this launch from now: in a build run from the source, or with Developer mode on (offersDeveloperItems). */
+function beginTrace() {
+  startTrace(TRACE_FILE);
+  trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
+}
 if (logging) {
   captureMainErrors(mainLog, { console, process });
   mainLog.write('start', launchLine());
-  startTrace(join(app.getPath('userData'), 'logs', 'trace.log'));
-  trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
+  // A developer's trace holds this launch alone (trace.ts): the last launch's goes now, whether or not this one traces.
+  // A build run from the source traces from here; a packaged one once its settings say Developer mode is on.
+  if (app.isPackaged) clearTrace(TRACE_FILE);
+  else beginTrace();
 }
 // Learning mode (#1566, learning.ts): on only when SITEORIGIN_LEARNING turns it on at launch, and never in an automated
 // run, so a test never writes a person's recordings.
@@ -1710,6 +1722,7 @@ app.whenReady().then(async () => {
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
+  if (logging && app.isPackaged && developerModeOn) beginTrace();
   // The About panel names this app and its version, not the Electron bundle a development build runs in, with the
   // build beside it (macOS shows `version` in brackets after the version).
   app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion(), version: buildLabel(BUILD) });

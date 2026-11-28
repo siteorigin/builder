@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { startTrace, stopTrace, trace } from '../../src/main/trace';
+import { clearTrace, startTrace, stopTrace, trace, tracing } from '../../src/main/trace';
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -32,16 +32,38 @@ describe('the app trace (logs/trace.log)', () => {
     expect(written[1]).toMatch(/^\S+Z \[trace\] \+\d+ms open: asked to open \/projects\/site$/);
   });
 
-  it('starts afresh on each launch, keeping only the launch before', () => {
+  it('holds one launch only: a new start removes the last trace and the part of it moved aside', () => {
     const dir = scratch();
     const file = join(dir, 'trace.log');
-    writeFileSync(`${file}.1`, 'two launches ago\n');
-    startTrace(file);
-    trace('open', 'first launch');
+    startTrace(file, { maxBytes: 300 });
+    for (let i = 0; i < 10; i++) trace('open', `first launch ${i}`, 'x'.repeat(40));
+    expect(existsSync(`${file}.1`)).toBe(true);
     startTrace(file);
     trace('open', 'second launch');
     expect(lines(file).slice(1).map((l) => l.replace(/^.*ms /, ''))).toEqual(['open: second launch']);
-    expect(lines(`${file}.1`).slice(1).map((l) => l.replace(/^.*ms /, ''))).toEqual(['open: first launch']);
+    expect(existsSync(`${file}.1`)).toBe(false);
+  });
+
+  it('clears the last launch\'s trace for a launch that does not trace', () => {
+    const dir = scratch();
+    const file = join(dir, 'trace.log');
+    writeFileSync(file, 'last launch\n');
+    writeFileSync(`${file}.1`, 'last launch, earlier\n');
+    clearTrace(file);
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(`${file}.1`)).toBe(false);
+    trace('open', 'not traced');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('stops writing once stopped', () => {
+    const file = join(scratch(), 'trace.log');
+    startTrace(file);
+    expect(tracing()).toBe(true);
+    stopTrace();
+    trace('open', 'after the stop');
+    expect(tracing()).toBe(false);
+    expect(lines(file)).toHaveLength(1);
   });
 
   it('moves the file aside past its size cap', () => {
