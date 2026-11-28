@@ -371,13 +371,14 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
   // The project's own fonts the components use stay behind (#1418): the package names them, so the project importing it
   // can say which it lacks, and the author is told to send the font files too.
   const stacks = [...carried.values()].flatMap((t) => (t.group === 'font' && typeof t.resolved === 'string' ? [t.resolved] : t.group === 'text' && isRecord(t.resolved) && typeof t.resolved.family === 'string' ? [t.resolved.family] : []));
-  // A family the project names with no file of its own (a component imported without its font, say) stays behind too.
-  const strays = [...fontStacksIn(defs), ...stacks].flatMap(fontFamilies).filter((f) => FONT_FAMILY_RE.test(f) && !siteHasFamily(state, f));
+  // A stack led by a family the project has no file for (a component imported without its font, say) needs it too:
+  // only the family meant to show, which is the one a project taking the package checks. The project's own come first.
+  const strays = [...fontStacksIn(defs), ...stacks].flatMap((stack) => fontFamilies(stack).slice(0, 1)).filter((f) => FONT_FAMILY_RE.test(f) && !siteHasFamily(state, f));
   const seen = new Set<string>();
   const fonts = [...familiesUsedBy(projectFontFamilies(state).map((f) => f.family), defs, stacks), ...strays]
     .filter((f) => !seen.has(f.toLowerCase()) && !!seen.add(f.toLowerCase()))
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .slice(0, MAX_PACKAGE_FONTS);
+    .slice(0, MAX_PACKAGE_FONTS)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   if (fonts.length) notes.push(`${fontNames(fonts)} ${fonts.length === 1 ? 'stays' : 'stay'} with this project. Send the font ${fonts.length === 1 ? 'file' : 'files'} too, to add in Assets → Fonts wherever it is imported.`);
   const pkg: ComponentPackage = {
     format: COMPONENT_PACKAGE_FORMAT,
