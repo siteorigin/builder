@@ -922,6 +922,9 @@ describe('source export helpers', () => {
       // The release the lock records, not the installed copy's: a newer copy installed since still opens it.
       const locked = { ...state, themeLock: { ...state.themeLock, theme: { ...state.themeLock.theme, version: '1.1.0' } } };
       expect(installedThemeRequirement(locked)?.version).toBe('1.1.0');
+      // Without a lock for it, the installed copy's own release.
+      expect(installedThemeRequirement({ site: state.site })?.version).toBe('1.2.0');
+      expect(installedThemeRequirement({ ...state, themeLock: { ...state.themeLock, theme: { id: 'other', version: '1.1.0' } } })?.version).toBe('1.2.0');
       // A later export rewrites it for the release then recorded, and after a switch back to a built-in theme, without it.
       await finishExportedSource(dest, locked, join(dest, 'missing.md'));
       expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('Harbour (`foundation-alt`) 1.1.0,');
@@ -939,6 +942,8 @@ describe('source export helpers', () => {
 
   it('#1477: a built-in theme needs nothing installed', () => {
     expect(installedThemeRequirement(createStarterState('blank', 'Plain', false))).toBeNull();
+    expect(installedThemeRequirement({ site: { themeId: 'foundation-alt' } })).toBeNull();
+    expect(installedThemeRequirement({ site: { themeId: 'not-installed' } })).toBeNull();
     expect(projectReadme('Plain')).not.toContain('## Editing in SiteOrigin Builder');
   });
 

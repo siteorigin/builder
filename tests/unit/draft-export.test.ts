@@ -54,7 +54,7 @@ vi.mock('../../src/main/runtime/stage', async (original) => ({ ...(await origina
 const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
-const { editedGeneratedFile } = await import('../../src/main/export');
+const { editedGeneratedFile, isGeneratedReadme } = await import('../../src/main/export');
 const { applyOperations } = await import('@engine/apply');
 const { findTheme, listThemes, registerPacks } = await import('@catalogue/index');
 const { setSiteIconRenderer, siteIconTiming, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
@@ -169,22 +169,31 @@ describe('exporting a project with a draft', () => {
     expect(zip).toMatchObject({ ok: true, message: 'Source project exported as a ZIP file. Private files such as .env, keys and credentials were left out.', warnings: [], notes: [] });
   });
 
-  it('#1477: the editable project’s export names the installed theme whoever edits it needs', async () => {
+  it('#1477: the editable project’s export names the installed theme whoever edits it needs, at the release it records', async () => {
     const packs = listThemes();
-    registerPacks([...packs.filter((p) => p.id !== 'foundation-alt'), { ...findTheme('foundation-alt')!, name: 'Harbour', version: '1.2.0', source: 'user', digest: 'd1' }]);
+    const harbour = (version: string, name: string) => ({ ...findTheme('foundation-alt')!, name, version, source: 'user' as const, digest: `d-${version}` });
+    registerPacks([...packs.filter((p) => p.id !== 'foundation-alt'), harbour('1.2.0', 'Harbour')]);
     try {
       const dir = temp('project');
       await (await ProjectSession.create(dir, applyOperations(cleanSite(), [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state)).close();
+      // A newer release installed since opens it, and its name, on one line, is the one shown; the release is the recorded one.
+      registerPacks([...packs.filter((p) => p.id !== 'foundation-alt'), harbour('1.3.0', 'Harbour\nStudio')]);
       const c = await open(dir);
-      const note = 'This project uses the installed theme Harbour (foundation-alt) 1.2.0. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of 1.2.0 or a newer release, and restart SiteOrigin Builder, or the project opens read-only: send them a copy of the theme pack with it.';
+      expect(c.snapshot()!.state.themeLock.theme).toMatchObject({ id: 'foundation-alt', version: '1.2.0' });
+      const note = 'This project uses the installed theme Harbour Studio (foundation-alt) 1.2.0. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of 1.2.0 or a newer release, and restart SiteOrigin Builder, or the project opens read-only: send them a copy of the theme pack with it.';
       const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
       expect(r.ok).toBe(true);
       expect(r.warnings).toContain(note);
+      expect(r.notes?.map((n) => n.message)).toContain(note);
       expect(c.snapshot()!.recentExports[0].notes?.map((n) => n.message)).toContain(note);
-      expect(readFileSync(join(r.path!, 'README.md'), 'utf8')).toContain('This project uses the installed theme Harbour (`foundation-alt`) 1.2.0,');
+      const readme = readFileSync(join(r.path!, 'README.md'), 'utf8');
+      expect(readme).toContain('This project uses the installed theme Harbour Studio (`foundation-alt`) 1.2.0,');
+      expect(isGeneratedReadme(readme)).toBe(true);
       // The website needs no theme to be published: its export says nothing of it.
       const site = await c.buildStaticTo(join(temp('out'), 'site'));
+      expect(site.ok).toBe(true);
       expect(site.warnings.join('\n')).not.toContain('Harbour');
+      await c.close();
     } finally {
       registerPacks(packs);
     }

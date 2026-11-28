@@ -101,7 +101,8 @@ export function installedThemeRequirement(state: { site: { themeId: string }; th
   const pack = findTheme(state.site.themeId);
   if (pack?.source !== 'user') return null;
   const lock = state.themeLock?.theme?.id === pack.id ? state.themeLock.theme : undefined;
-  return { id: pack.id, name: pack.name, version: lock?.version ?? pack.version };
+  // On one line, as the README's section reads it back (isGeneratedReadme).
+  return { id: pack.id, name: pack.name.replace(/\s+/g, ' ').trim(), version: lock?.version ?? pack.version };
 }
 
 /** What the author is told about the installed theme an editable export needs, once it is exported. */
