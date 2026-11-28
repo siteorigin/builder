@@ -1593,11 +1593,16 @@ export const toolbarMode = (s: { leftTab: string | null; mode: 'edit' | 'preview
 
 /**
  * Choose one of the toolbar's Mode options. SEO opens the SEO view on the document it last chose. Edit or Preview, from
- * the view, leaves it as every other way out does (the sidebar back on the panel it replaced), then sets the mode.
+ * the view, leaves it as every other way out does (the sidebar back on the panel it replaced), then sets the mode: the
+ * view first, so a post writer it gives back previews its post as Preview chosen there does.
  */
 export function chooseMode(choice: ToolbarMode) {
   if (choice === 'seo') return void openSeoView();
   leaveSeoView();
+  // The writer back in front with the mode already Preview (chosen on another panel) shows no preview yet: Preview is
+  // asked of it again from Edit, as the writer's own Preview asks it (Editor's post-preview subscriber).
+  const s = getState();
+  if (choice === 'preview' && s.mode === 'preview' && activeWorkspace(s) === 'write') setMode('edit');
   setMode(choice);
 }
 

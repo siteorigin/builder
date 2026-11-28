@@ -138,14 +138,16 @@ describe.skipIf(!browserInstalled)('Toolbar place name (#1110)', { timeout: 60_0
     const radio = (name: string) => mode.getByRole('radio', { name, exact: true });
     const checked = () => mode.locator('[aria-checked="true"]').getAttribute('aria-label');
     const leftTab = () => page.evaluate(() => (globalThis as unknown as { __store: { getState: () => { leftTab: string | null; mode: string } } }).__store.getState());
-    expect(await mode.getByRole('radio').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')))).toEqual(['Edit', 'Preview', 'SEO']);
+    const names = async () => Promise.all((await mode.getByRole('radio').all()).map((r) => r.getAttribute('aria-label')));
+    const focused = () => page.evaluate('document.activeElement?.getAttribute("aria-label")');
+    expect(await names()).toEqual(['Edit', 'Preview', 'SEO']);
     expect(await checked()).toBe('Edit');
     // The rail's SEO entry (or any other way in) and the toggle agree.
     await page.evaluate(() => (globalThis as unknown as { storeSet: (p: unknown) => void }).storeSet({ leftTab: 'seo' }));
     expect(await checked()).toBe('SEO');
     for (const name of ['Edit', 'Preview']) {
       expect(await radio(name).isDisabled(), `${name} leaves the view`).toBe(false);
-      expect(await radio(name).getAttribute('title')).not.toContain('covers the canvas');
+      expect(await radio(name).getAttribute('title'), `${name} keeps its own tooltip`).toMatch(new RegExp(`^${name}: `));
     }
     await radio('Preview').click();
     expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'preview' });
@@ -159,16 +161,23 @@ describe.skipIf(!browserInstalled)('Toolbar place name (#1110)', { timeout: 60_0
     await radio('Edit').focus();
     await page.keyboard.press('ArrowLeft');
     expect(await leftTab()).toMatchObject({ leftTab: 'seo' });
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('SEO');
+    expect(await focused()).toBe('SEO');
     await page.keyboard.press('ArrowRight');
     expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'edit' });
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Edit');
+    expect(await focused()).toBe('Edit');
+    await page.keyboard.press('ArrowRight');
+    expect(await leftTab()).toMatchObject({ leftTab: 'layers', mode: 'preview' });
+    expect(await focused()).toBe('Preview');
+    expect(await checked()).toBe('Preview');
+    await page.keyboard.press('ArrowRight');
+    expect(await leftTab()).toMatchObject({ leftTab: 'seo' });
+    expect(await focused()).toBe('SEO');
     // A guest in a live session has no SEO view, so no SEO option.
     await set({
       remote: { phase: 'admitted', joinId: 'j1', relayUrl: 'https://relay.test', roomId: 'r1', displayName: 'Guest', hostConnected: true, reconnecting: false, guestId: 'g1', role: 'collaborator', projectName: 'Host project', guestExpiresAt: null, sessionExpiresAt: null, relayClockOffsetMs: 0, hostRuntime: 'ready', previewRevision: 1, previewUrl: null, previewProblem: null, tooLarge: false, participants: [] },
       snapshot: { state, revision: 1, workspaceKey: 'remote:j1', conflicts: [], history: { canUndo: false, canRedo: false } }
     });
-    expect(await mode.getByRole('radio').count()).toBe(2);
+    expect(await names()).toEqual(['Edit', 'Preview']);
   });
 
   it('follows the collection being renamed, and goes back to the page when the collection is gone', async () => {

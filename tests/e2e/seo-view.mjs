@@ -802,8 +802,17 @@ await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await holder.isVisible(), false, 'Switch to preview leaves the view'));
 assert.equal(await modeButton('Preview').getAttribute('aria-checked'), 'true');
 assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true');
-await modeButton('Edit').click();
-await eventually(async () => assert.equal(await inspected.innerText(), sectionName));
+await modeButton('SEO').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await win.keyboard.press(`${MOD}+K`);
+await cmdk.waitFor();
+await win.keyboard.type('Switch to editing');
+await eventually(async () => assert.equal(await cmdk.getByRole('option', { name: /^Switch to editing/ }).getAttribute('aria-selected'), 'true'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'Switch to editing leaves the view'));
+assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true');
+assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true');
+await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'with Home’s section selected again'));
 
 step('the chosen document survives switching away and back, and another panel leaves the view too');
 await rail('seo').click();
@@ -851,9 +860,10 @@ const writingAtClick = await win.evaluate(() => {
 assert.equal(writingAtClick, true, 'Preview was chosen from the writer');
 await eventually(async () => assert.equal(await holder.isVisible(), true, 'the view is open'));
 await eventually(async () => assert.equal(await modeButton('SEO').getAttribute('aria-checked'), 'true', 'the view is the toggle’s choice'));
+await eventually(async () => assert.equal(await win.locator('.canvas-holder .canvas.edit-mode').count(), 1, 'the post’s preview never began, so the canvas under the view is in Edit again'));
 await rail('posts').click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
-assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true', 'the post’s preview never began, so Edit is the mode again');
+assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true', 'with Edit chosen');
 assert.equal(await modeButton('Preview').getAttribute('aria-checked'), 'false', 'with Preview ready to choose again');
 assert.equal(await modeButton('Preview').isDisabled(), false);
 
