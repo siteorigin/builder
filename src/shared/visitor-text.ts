@@ -38,6 +38,7 @@ export const VISITOR_TEXT_KEYS = [
   'formNotConnected',
   'formDuplicateNames',
   'formNoChoices',
+  'formChoose',
   'searchLandmark',
   'searchLabel',
   'searchButton',
@@ -143,7 +144,8 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'formUnconfirmed', label: 'Not known to be sent', hint: 'Announced when a visitor comes back with Back to a form they left while it was sending, and nothing says the message went: their answers are back in the form.' },
       { key: 'formNotConnected', label: 'Not connected', hint: 'Shown on a form that has no form service yet.' },
       { key: 'formDuplicateNames', label: 'Fields share a name', hint: 'Shown on a form with two fields of the same name.' },
-      { key: 'formNoChoices', label: 'Question without answers', hint: 'Shown on a form with a choice question that has no answers.' }
+      { key: 'formNoChoices', label: 'Question without answers', hint: 'Shown on a form with a choice question that has no answers.' },
+      { key: 'formChoose', label: 'Dropdown prompt', hint: 'What a dropdown shows until the visitor picks an answer, on a dropdown without a placeholder of its own.' }
     ]
   },
   {
@@ -272,6 +274,7 @@ const EN: VisitorText = {
   formNotConnected: 'This form is not connected to a form service yet, so it cannot be sent.',
   formDuplicateNames: 'Two fields of this form have the same name, so it cannot be sent.',
   formNoChoices: 'A question in this form has no answers to choose from yet, so it cannot be sent.',
+  formChoose: 'Choose an answer',
   searchLandmark: 'Site search',
   searchLabel: 'Search for',
   searchButton: 'Search',
@@ -363,6 +366,7 @@ const AR: VisitorText = {
   formNotConnected: 'هذا النموذج غير متصل بخدمة نماذج بعد، لذا لا يمكن إرساله.',
   formDuplicateNames: 'في هذا النموذج حقلان بالاسم نفسه، لذا لا يمكن إرساله.',
   formNoChoices: 'في هذا النموذج سؤال ليست له إجابات للاختيار منها بعد، لذا لا يمكن إرساله.',
+  formChoose: 'اختر إجابة',
   searchLandmark: 'البحث في الموقع',
   searchLabel: 'ابحث عن',
   searchButton: 'بحث',
@@ -454,6 +458,7 @@ const HE: VisitorText = {
   formNotConnected: 'הטופס הזה עדיין לא מחובר לשירות טפסים, ולכן אי אפשר לשלוח אותו.',
   formDuplicateNames: 'לשני שדות בטופס הזה יש אותו שם, ולכן אי אפשר לשלוח אותו.',
   formNoChoices: 'לשאלה בטופס הזה עדיין אין תשובות לבחירה, ולכן אי אפשר לשלוח אותו.',
+  formChoose: 'בחירת תשובה',
   searchLandmark: 'חיפוש באתר',
   searchLabel: 'חיפוש',
   searchButton: 'חיפוש',

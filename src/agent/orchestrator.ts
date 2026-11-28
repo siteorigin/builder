@@ -26,6 +26,7 @@ import { asksForCollection, asksForComponent, asksForHistory, asksForPerformance
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
 import { inTurns, MEASURE_AT_ONCE, PreviewCheck, slots } from './preview-check';
+import { isSampleFinding } from '@engine/sample-content';
 import { compactProjectSummary, describeSelection, layoutGlance, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
 import { authorityCheck, authorityLabel, canEditContracts, layoutLabel, liveEntry, liveLayout, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
@@ -2047,7 +2048,9 @@ export class Orchestrator {
     // list it): left out of what every request carries.
     const diagnostics = () =>
       diagnosticsContext(
-        [...startDiagnostics, ...startBuild].filter((d) => d.code !== 'IMAGE_UNFILLED'),
+        // Sample content still to replace is the author's to review in Project health, not a problem for every request
+        // to carry: validate_project lists it, after the rest.
+        [...startDiagnostics, ...startBuild].filter((d) => d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d)),
         diagnosticOrder,
         diagnosticsRoom,
         current.tools.some((t) => t.name === 'validate_project') ? 'validate_project shows them' : 'the author sees them in Project health',

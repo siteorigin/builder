@@ -37,6 +37,7 @@ import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { elementContrastDiagnostics } from './element-contrast';
+import { sampleContentDiagnostics } from './sample-content';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
 import { emptyHeadingDiagnostics, pageAccessibilityDiagnostics, paletteContrastDiagnostics } from './accessibility';
 import { codeProblemText, globalCssProblem, headCodeProblem, type CodeProblem } from '@shared/site-code';
@@ -718,6 +719,9 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   for (const d of elementContrastDiagnostics(state, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
+  // Sample content the website still shows, last: it is worth checking, and never wrong.
+  const live = publishedState(state);
+  append(rest, sampleContentDiagnostics(state, live, websiteTrees(live), keep));
   return [links, rest];
 }
 
