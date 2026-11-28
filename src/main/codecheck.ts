@@ -309,7 +309,7 @@ const IMPORT_TEXT = /\b(?:from|import)(?:\s|\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/|\/\
  * A stylesheet's `@import '…'`, `@import url('…')` or `@import url(…)` where a rule may start, which Vite resolves as it
  * resolves the code's (text in a declaration, `content: "@import …"`, is none).
  */
-const CSS_IMPORT = /(?:^|[;{}])\s*@import\s*(?:url\(\s*(['"]?)([^'"()\s]+)\1\s*\)|(['"])([^'"\n]+)\3)/g;
+const CSS_IMPORT = /(?:^|[;{}>])\s*@import\s*(?:url\(\s*(['"]?)([^'"()\s]+)\1\s*\)|(['"])([^'"\n]+)\3)/g;
 /** The imports of a stylesheet, each comment read as the space it is. */
 const cssImports = (css: string): string[] => [...css.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(CSS_IMPORT)].map((m) => m[2] ?? m[4]);
 

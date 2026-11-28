@@ -166,10 +166,11 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   await stillMine();
   await fs.rm(join(dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
   // `npm ci` never writes the package files: changed while it ran (#1480), they may not be the ones it installed, so
-  // the tools are marked set up only when they are as they were when it began. Without a lock, npm writes one.
+  // the tools are marked set up only when they are as they were when it began (otherwise the next start sets them up
+  // again, once the changed files are trusted). Without a lock, npm writes one.
   const began = existsSync(join(dir, 'package-lock.json')) ? await lockHash(dir) : null;
   await installTools(dir, onLine, signal, stillMine);
-  if (began !== null && (await lockHash(dir)) !== began) throw new Error('package.json or package-lock.json changed while the website tools were being set up, so they were not marked set up. Try again.');
+  if (began !== null && (await lockHash(dir)) !== began) return;
   await markTools(dir, stillMine, began);
 }
 

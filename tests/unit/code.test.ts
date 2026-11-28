@@ -157,7 +157,7 @@ describe('syntax-tree code checks', () => {
     const started = performance.now();
     expect(await importedPackages(`<script>\n\timport ${'/* a */ ( '.repeat(20000)}/* never closed\n</script>\n<p>{x</p>`)).toEqual([]);
     expect(await importedPackages(`<script>\n\timport ${'// '.repeat(5000)}x\n</script>\n<p>{x</p>`)).toEqual([]);
-    expect(await importedPackages(`<script>\n\timport // a note\n\t\t'leaflet';\n\tlet x = ;\n</script>\n`)).toEqual(['leaflet']);
+    expect(await importedPackages(`<script>\n\timport // a note\n\t\t'leaflet';\n\tlet x = ;\n</script>\n<style>/* note */ @import url(swiper/swiper.css);</style>\n`)).toEqual(['leaflet', 'swiper']);
     expect(performance.now() - started).toBeLessThan(2000);
     // Through the project components it imports, and theirs, it uses theirs too.
     const DIR = 'src/lib/siteorigin/custom';

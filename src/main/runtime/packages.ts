@@ -32,8 +32,10 @@ function sections(packageJson: string | null): Partial<Record<Section, Record<st
   return out;
 }
 
-/** The section of package.json that declares `name`, or null when none does. */
-const sectionOf = (deps: ReturnType<typeof sections>, name: string): Section | null => PACKAGE_SECTIONS.find((s) => !!deps[s] && Object.hasOwn(deps[s]!, name)) ?? null;
+/** Where npm counts a package named in several sections: an optional one is also listed as a dependency (npm's own order). */
+const SECTION_ORDER: readonly Section[] = ['devDependencies', 'optionalDependencies', 'dependencies', 'peerDependencies'];
+/** The section of package.json that declares `name`, as npm counts it, or null when none does. */
+const sectionOf = (deps: ReturnType<typeof sections>, name: string): Section | null => SECTION_ORDER.find((s) => !!deps[s] && Object.hasOwn(deps[s]!, name)) ?? null;
 
 /**
  * The packages `packageJson` (the project's in `dir`) declares, each with the version set up in its website tools, or

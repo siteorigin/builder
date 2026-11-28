@@ -53,7 +53,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 const { resolvePackageFiles } = await import('../../src/main/runtime/manager');
-const { STARTER_PACKAGES, declaredVersion, listPackages, packageFailure, packageRequest } = await import('../../src/main/runtime/packages');
+const { STARTER_PACKAGES, declaredVersion, listPackages, packageFailure, packageRequest, placeOf } = await import('../../src/main/runtime/packages');
 
 const starter = join(__dirname, '../../templates/sveltekit-brochure/files');
 const STARTER_PKG = readFileSync(join(starter, 'package.json'), 'utf8');
@@ -82,6 +82,10 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     // npm's own section options can't be combined (an optional peer has none of its own): none is given for an update.
     const more = pkgWith({ optionalDependencies: { fsevents: '2.3.3' }, peerDependencies: { leaflet: '1.9.4', three: '0.170.0' }, peerDependenciesMeta: { three: { optional: true } } });
     for (const name of ['fsevents', 'leaflet', 'three']) expect(packageRequest({ add: `${name}@latest` }, more)).toMatchObject({ verb: 'update', options: ['--save-exact'] });
+    // Optional, it is optional wherever else npm lists it too.
+    const both = pkgWith({ dependencies: { fsevents: '2.3.3' }, optionalDependencies: { fsevents: '2.3.3' } });
+    expect(placeOf(both, 'fsevents')).toBe('optionalDependencies');
+    expect(placeOf(pkgWith({ optionalDependencies: { fsevents: '2.3.4' } }), 'fsevents')).toBe('optionalDependencies');
   });
 
   it('keeps an optional peer optional, as the bundled npm saves an update told no section', () => {
