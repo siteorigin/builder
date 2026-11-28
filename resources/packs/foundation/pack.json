@@ -1441,7 +1441,7 @@
 				"label": {
 					"$entry": "nextEntry.label"
 				},
-				"appearance": "text",
+				"appearance": "link",
 				"when": {
 					"$entry": "nextEntry"
 				},

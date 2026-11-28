@@ -213,9 +213,9 @@ describe('entry fields', () => {
     expect(entryFieldValue({ state: s, collection: c, entry: c.entries.en_spring, neighbours: {} }, 'entryNavLabel')).toBe('');
   });
 
-  // Release gap: the release's article template gives Previous the link appearance and Next the text one, whose base CSS
-  // draws an arrow (.so-btn--text::after), so only Next has an arrow.
-  it.fails.each(['foundation', 'foundation-alt'])('makes the links to the posts beside one two links of one kind, with no theme arrow on one side only (%s)', (theme) => {
+  // Both take the link appearance: the text appearance's base CSS draws an arrow (.so-btn--text::after), which left Next
+  // alone with one and set it apart in weight and decoration.
+  it.each(['foundation', 'foundation-alt'])('makes the links to the posts beside one two links of one kind, with no theme arrow on one side only (%s)', (theme) => {
     const { prev, next } = between(theme);
     expect([prev.appearance, next.appearance]).toEqual(['link', 'link']);
   });
