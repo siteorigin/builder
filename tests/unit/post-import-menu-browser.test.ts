@@ -75,6 +75,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   newTerms: { categories: [], tags: [] },
   redirects: 0,
   redirectsPending: 0,
+  searchSettings: 0,
   skipped: [],
   oldSiteLinks: [],
   problems: [],
@@ -189,6 +190,18 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   it('says how many old addresses wait for their draft to be published (#1501)', async () => {
     await mount(site, preview(true, { redirects: 4, redirectsPending: 1, redirectsLost: 2 }));
     await page.getByText(/^3 keep working · 1 once its post is published · 2 can’t$/).waitFor();
+  });
+
+  it('counts the posts that bring their SEO plugin’s search settings, for a WordPress export only (#1514)', async () => {
+    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml', searchSettings: 300 }));
+    expect(await page.getByTestId('post-import-search-settings').textContent()).toBe('300 posts bring their own from the SEO plugin');
+    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml', searchSettings: 1 }));
+    await page.getByText(/^1 post brings its own from the SEO plugin$/).waitFor();
+    await mount(site, preview(true, { kind: 'wordpress', source: 'export.xml' }));
+    await page.getByText(/^None in the export: each post’s title and excerpt stand in$/).waitFor();
+    await mount(site, preview(true));
+    await page.getByTestId('post-import-confirm').waitFor();
+    expect(await page.getByTestId('post-import-search-settings').count()).toBe(0);
   });
 
   it('says when every old address waits for its draft (#1501)', async () => {

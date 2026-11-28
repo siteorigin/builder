@@ -18,7 +18,7 @@ import { applyOperations } from '@engine/apply';
 import { MAX_CAPTION, MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
 import { pageIds } from '@generator/checks';
 import { linkNotes, type LinkNotes } from './notes';
-import { POST_LINK_PREFIX, type KnownPosts, type ParsedSource, type SourceMedia, type SourcePost, type SourceTerm } from './source';
+import { POST_LINK_PREFIX, type KnownPosts, type ParsedSource, type SourceMedia, type SourcePost, type SourceSeo, type SourceTerm } from './source';
 import { redirectRecords } from '@shared/redirects';
 
 /** Groupings an import fills, with the labels a new one gets. */
@@ -66,6 +66,8 @@ export interface PlannedPost {
   existing?: { draft: boolean; unread?: true };
   /** Its featured picture was not found: an update leaves the entry's own as it is. */
   keepFeatured?: true;
+  /** The search settings a new entry is given, within the project's limits. */
+  seo?: SourceSeo;
   notes: string[];
 }
 
@@ -413,6 +415,14 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     const authorClip = p.author ? clip(p.author, 80) : undefined;
     if (authorClip?.cut) notes.push('Its author’s name was shortened to 80 characters.');
     const author = authorClip?.text;
+    let seo: SourceSeo | undefined;
+    if (p.seo) {
+      const seoTitle = p.seo.title ? clip(p.seo.title, TEXT_LIMITS.seoTitle) : undefined;
+      if (seoTitle?.cut) notes.push(`Its search title was shortened to ${TEXT_LIMITS.seoTitle} characters.`);
+      const description = p.seo.description ? clip(p.seo.description, TEXT_LIMITS.pageDescription) : undefined;
+      if (description?.cut) notes.push(`Its search description was shortened to ${TEXT_LIMITS.pageDescription} characters.`);
+      seo = { ...(seoTitle ? { title: seoTitle.text } : {}), ...(description ? { description: description.text } : {}), ...(p.seo.canonical ? { canonical: p.seo.canonical } : {}), ...(p.seo.noindex ? { noindex: true as const } : {}) };
+    }
     const { blocks: body, cut } = texts[i];
     notes.push(...texts[i].notes);
     // Only the pictures the entry shows are imported.
@@ -492,6 +502,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       ...(!was && p.postId && source.kind === 'wordpress' && source.siteKey ? { postId: p.postId } : {}),
       ...(was ? { existing: { draft: was.draft, ...(p.unread ? { unread: true as const } : {}) } } : {}),
       ...(keepFeatured ? { keepFeatured: true as const } : {}),
+      ...(seo && Object.keys(seo).length ? { seo } : {}),
       notes
     };
   });
@@ -731,6 +742,10 @@ export function planOperations(plan: PostImportPlan, assetIds: Map<string, strin
       ...(featured ? { featuredImage: featured } : {}),
       terms: p.terms,
       ...(p.linksEntries ? {} : { body: body(p) }),
+      ...(p.seo?.title ? { seoTitle: p.seo.title } : {}),
+      ...(p.seo?.description ? { description: p.seo.description } : {}),
+      ...(p.seo?.canonical ? { canonical: p.seo.canonical } : {}),
+      ...(p.seo?.noindex ? { noindex: true } : {}),
       ...(p.redirectFrom ? { redirectFrom: p.redirectFrom } : {}),
       ...(p.postId && plan.source.siteKey ? { imported: { site: plan.source.siteKey, postId: p.postId } } : {})
     } as EditOperation);

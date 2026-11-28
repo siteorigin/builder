@@ -1089,6 +1089,8 @@ export interface PostImportPreview {
   redirectsPending: number;
   /** Old addresses that can't keep working (each post's note says why). */
   redirectsLost?: number;
+  /** New posts that bring search settings of their own from the site's SEO plugin (a search title, description, canonical address or noindex). */
+  searchSettings: number;
   /** What is not imported at all. */
   skipped: string[];
   /**
