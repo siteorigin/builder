@@ -362,6 +362,56 @@ describe('website export assets', () => {
     expect(existsSync(join(dir, photo.file))).toBe(true);
   });
 
+  it("#1730: ships the pictures an index's own design browses, never a file a browsed listing's entries only name in a field", async () => {
+    let state = createStarterState('business', 'Test', false);
+    const photo = image('photo', 'static/assets/house-22222222.jpg', ['static/assets/house-22222222-480w.jpg', 'static/assets/house-22222222-480w.webp', 'static/assets/house-22222222-1000w.webp']);
+    const offer: AssetRecord = { id: 'offer', name: 'offer.pdf', file: 'static/assets/offer-33333333.pdf', mime: 'application/pdf', bytes: 1, hash: 'x', kind: 'document', createdAt: '' };
+    state.assets.assets.photo = photo;
+    state.assets.assets.offer = offer;
+    const homeOwner = { kind: 'page' as const, id: state.site.homePageId };
+    state = applyOperations(state, [
+      // One to a page of the index: the house with the picture is on its second page. Its note is only sorted by.
+      { type: 'collection.create', collectionId: 'homes', route: '/homes/', pageSize: 1, fields: { note: { type: 'string', label: 'Note' } }, browse: { sort: ['field.note'] } },
+      { type: 'entry.create', collectionId: 'homes', entryId: 'en_house', title: 'House', draft: false, publishedAt: '2026-01-01', featuredImage: 'photo', values: { note: 'See offer-33333333.pdf' } },
+      { type: 'entry.create', collectionId: 'homes', entryId: 'en_flat', title: 'Flat', draft: false, publishedAt: '2026-02-01', values: { note: 'Ask us' } },
+      { type: 'collection.update', collectionId: 'homes', archiveTemplate: 'start' }
+    ] as EditOperation[]).state;
+    // The design's loop shows each entry's picture.
+    const layout = state.collections.homes.settings.archiveTemplate!;
+    const card = Object.values(layout.nodes).find((n) => n.kind === 'repeat')!.children[0];
+    const placed = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'archive', id: 'homes' }, parentId: card, primitive: 'image' }] as EditOperation[]);
+    state = applyOperations(placed.state, [{ type: 'node.setBinding', owner: { kind: 'archive', id: 'homes' }, nodeId: placed.results[0].nodeId as string, field: 'image', binding: { $item: 'featuredImage' } }] as EditOperation[]).state;
+    // Home lists the houses' titles, which visitors sort by the note.
+    const box = applyOperations(state, [{ type: 'node.insert', owner: homeOwner, parentId: null, primitive: 'container' }] as EditOperation[]);
+    const loop = applyOperations(box.state, [{ type: 'node.insert', owner: homeOwner, parentId: box.results[0].nodeId as string, primitive: 'repeat', query: { collectionId: 'homes' } }] as EditOperation[]);
+    const loopId = loop.results[0].nodeId as string;
+    const title = applyOperations(loop.state, [{ type: 'node.insert', owner: homeOwner, parentId: loopId, primitive: 'heading', text: 'x' }] as EditOperation[]);
+    state = applyOperations(title.state, [
+      { type: 'node.setBinding', owner: homeOwner, nodeId: title.results[0].nodeId as string, field: 'text', binding: { $item: 'title' } },
+      { type: 'node.setRepeatSource', owner: homeOwner, nodeId: loopId, source: { $query: { collectionId: 'homes' }, browse: true } }
+    ] as EditOperation[]).state;
+    const files = generateProject(state);
+    const index = 'src/lib/siteorigin/runtime/collections/homes.js';
+    const home = 'src/routes/+page.svelte';
+    expect(files.get(index)).toContain('house-22222222-480w.webp');
+    expect(files.get(home)).toContain('offer-33333333.pdf');
+    const exported = async (only: string) => {
+      const dir = temp();
+      write(dir, only, files.get(only)!);
+      for (const f of [photo.file, ...(photo.variants ?? []).map((v) => v.file), offer.file]) write(dir, f, 'x');
+      await pruneWebsiteAssets(dir, state);
+      return (f: string) => existsSync(join(dir, f));
+    };
+    // The index's rows for its design keep the picture the second page shows, and its sorted note names nothing.
+    const alone = await exported(index);
+    expect(alone(photo.file)).toBe(true);
+    expect(alone('static/assets/house-22222222-480w.webp')).toBe(true);
+    expect(alone(offer.file)).toBe(false);
+    // What Home's controls read of each house names nothing either.
+    const page = await exported(home);
+    expect(page(offer.file)).toBe(false);
+  });
+
   it('lists every asset it left out, and says nothing when it left none out', () => {
     expect(omittedAssetsWarning([])).toBeUndefined();
     expect(omittedAssetsWarning([image('a', 'static/assets/a-aaaaaaaa.svg')])).toBe("Left out of the website because no page or code refers to it: a.svg. It stays in the project's assets.");
