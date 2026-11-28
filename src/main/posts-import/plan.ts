@@ -4,11 +4,13 @@
  * plan is shown to the author before anything changes, and turns into one batch of operations: one change in the
  * project's history, undone in one step.
  */
-import type { AssetRecord, CollectionTaxonomy, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
+import type { AssetRecord, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasCategoryArchives, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
+import { archiveRoute } from '@shared/archives';
+import { hasTerm, publishedEntries } from '@shared/entry-feed';
 import { todayArticleDate } from '@shared/articles';
-import { addressSlug, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
+import { addressSlug, normalizeRoute, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
 import { cleanBlocks, isImageBlock, isListBlock, spanRuns } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -68,6 +70,15 @@ export interface PostImportPlan {
   /** Pictures the posts show that were not found, with why, by post. */
   missing: Array<{ post: string; ref: string; problem: string }>;
   skipped: string[];
+  /**
+   * The old site's addresses the posts still link to, as they wrote them, each with how many posts link to it, most
+   * linked first: links the new site may replace once it is published there. `to` is where an old category archive's
+   * address sends visitors once the import keeps it working (archiveRedirects); `pending` while no published post is
+   * filed under that category, so its archive is not there yet.
+   */
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
+  /** The old site's category archive addresses the posts link to, kept working by sending visitors to the new archive. */
+  archiveRedirects: Array<{ from: string; to: string }>;
   /** What stops the import. Nothing is imported while there is one. */
   problems: string[];
 }
@@ -289,6 +300,38 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     problems.push(`The posts bring ${newTerms[tax].length + over[tax].size} new ${tax}, which would give the collection ${n}: it can have at most ${MAX_TERMS}.`);
   }
   if (!source.posts.length) problems.push(`${source.label} has no posts to import.`);
+
+  // The old site's addresses the posts still link to. Its category archives among them, for a category the import
+  // brings, are kept working by sending visitors to that category's new archive, as the posts' own old addresses are.
+  const oldSiteLinks = source.site ? linksToOldSite(posts, source.site) : [];
+  const archiveRedirects: PostImportPlan['archiveRedirects'] = [];
+  if (archived && (!existing || hasCategoryArchives(existing.settings))) {
+    // A category by its WordPress ID spelled as an address spells it, as the link's path is read.
+    const bySlug = new Map<string, SourceTerm>();
+    for (const p of source.posts) for (const t of p.categories) if (t.slug) bySlug.set(normalizeRoute(`/${t.slug}/`), t);
+    // The categories whose archive the website has once the import is in: one with a published post.
+    const listed = new Set(posts.flatMap((p) => (p.draft ? [] : (p.terms.categories ?? []))));
+    let filed: EntryDoc[] | undefined;
+    const live = (id: string) => listed.has(id) || (!!existing && (filed ??= publishedEntries(state, existing)).some((e) => hasTerm(e, 'categories', id)));
+    const kept = new Set((Array.isArray(state.site.redirects) ? state.site.redirects : []).flatMap((r) => (typeof r?.from === 'string' ? [lower(r.from)] : [])));
+    const sent = new Map<string, string>();
+    for (const row of oldSiteLinks) {
+      const old = oldCategoryAddress(row.url);
+      const term = old && bySlug.get(`/${old.slug}/`);
+      const id = term ? termId('categories', term) : null;
+      if (!old || !id) continue;
+      const k = lower(old.from);
+      if (!sent.has(k)) {
+        // Only an address nothing else holds: a page's, a post's (its own or an old one kept), a collection's, or one kept already.
+        if (validateRoute(old.from) || taken.has(k) || planned.has(k) || redirects.has(k) || kept.has(k) || underArchiveFolder(route, old.from) || archiveRouteOwner(state, old.from)) continue;
+        const to = archiveRoute(route, id, 1);
+        sent.set(k, to);
+        archiveRedirects.push({ from: old.from, to });
+      }
+      row.to = sent.get(k);
+      if (!live(id)) row.pending = true;
+    }
+  }
   const plan: PostImportPlan = {
     source: { kind: source.kind, label: source.label, ...(source.site ? { site: source.site } : {}) },
     collection: { id: POSTS_COLLECTION_ID, name, route, create: !existing },
@@ -299,10 +342,59 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     media: source.media.filter((m) => used.has(m.key)),
     missing,
     skipped,
+    oldSiteLinks,
+    archiveRedirects,
     problems
   };
   if (opts.check !== false) checkPlan(state, plan);
   return plan;
+}
+
+/** The links to `site` the posts' text still has, by address, each counted once per post that has it: most linked first. */
+function linksToOldSite(posts: PlannedPost[], site: string): PostImportPlan['oldSiteLinks'] {
+  const counts = new Map<string, number>();
+  for (const p of posts) {
+    const urls = new Set<string>();
+    for (const b of p.body)
+      for (const s of spanRuns(b).flat()) {
+        if (s.link?.type !== 'url') continue;
+        try {
+          if (new URL(s.link.target).origin === site) urls.add(s.link.target);
+        } catch {
+          // No address: nothing of the old site's.
+        }
+      }
+    for (const u of urls) counts.set(u, (counts.get(u) ?? 0) + 1);
+  }
+  return [...counts].map(([url, n]) => ({ url, posts: n })).sort((a, b) => b.posts - a.posts || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+}
+
+/**
+ * A WordPress category archive's address (`/category/soil-science/`, or `/category/farming/soil-science/` for a
+ * category under another), as a route, with the category's ID there (its last part: WordPress's IDs for categories
+ * are unique), or null for any other address. One with a query lists something else (a later page, a search).
+ */
+function oldCategoryAddress(url: string): { from: string; slug: string } | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.search) return null;
+  const from = normalizeRoute(u.pathname);
+  // Only an address the link asks for as it is kept: one spelled otherwise would be kept at an address it never asks for.
+  let typed = u.pathname;
+  try {
+    typed = decodeURIComponent(typed);
+  } catch {
+    return null;
+  }
+  if (`${typed.replace(/\/+$/, '')}/` !== from) return null;
+  const parts = from.slice(1, -1).split('/');
+  // A later page of an archive (`/category/news/page/2/`) is no category of its own.
+  if (parts.length < 2 || parts[0] !== 'category' || (parts.length >= 4 && parts[parts.length - 2] === 'page' && /^\d+$/.test(parts[parts.length - 1]))) return null;
+  return { from, slug: parts[parts.length - 1] };
 }
 
 /**
@@ -383,8 +475,9 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostI
 /**
  * The plan as one batch: the new library images first (`assets`, made from the pictures found), the collection and
  * its groupings, every entry (each keeping its old address), then the text of those that link to entries of the
- * import, once they all exist. `assetIds` maps each picture's key to its library image; one missing is left out.
- * With `addToNavigation`, a blog the import makes asks for its link in the header menu, as the starter card's does.
+ * import, once they all exist, and last the old category archive addresses kept working. `assetIds` maps each
+ * picture's key to its library image; one missing is left out. With `addToNavigation`, a blog the import makes asks
+ * for its link in the header menu, as the starter card's does.
  */
 export function planOperations(plan: PostImportPlan, assetIds: Map<string, string>, assets: AssetRecord[] = [], { addToNavigation = false }: { addToNavigation?: boolean } = {}): EditOperation[] {
   const ops: EditOperation[] = assets.map((asset) => ({ type: 'asset.add', asset }) as EditOperation);
@@ -416,5 +509,6 @@ export function planOperations(plan: PostImportPlan, assetIds: Map<string, strin
     } as EditOperation);
   }
   for (const p of plan.posts) if (p.linksEntries) ops.push({ type: 'entry.update', collectionId: c.id, entryId: p.entryId, body: body(p) } as EditOperation);
+  for (const r of plan.archiveRedirects) ops.push({ type: 'redirect.add', from: r.from, to: r.to } as EditOperation);
   return ops;
 }

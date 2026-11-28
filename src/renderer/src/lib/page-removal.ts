@@ -1,4 +1,5 @@
 import type { ProjectState } from '@shared/types';
+import { redirectRecords } from '@shared/redirects';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses, type PageLinkUse } from '@engine/page-links';
@@ -111,7 +112,7 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   if (replacementId === NEW_HOME) return pageId === state.site.homePageId && Object.hasOwn(state.pages, pageId) ? { operations: [{ type: 'page.remove', pageId, newHome: true }], lost: [] } : none;
   const review = reviewPageRemoval(state, pageId, replacementId);
   // A kept old address of the page needs a replacement to follow to, even when nothing else links to it.
-  if (!review.uses.length && pageId !== state.site.homePageId && !state.site.redirects?.some((r) => r.pageId === pageId)) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
+  if (!review.uses.length && pageId !== state.site.homePageId && !redirectRecords(state).some((r) => r.pageId === pageId)) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
   // Sections are the ones the replacement page still has once the menu's links and the cards are gone, as the engine finds them.
   const base = withoutMenuLinks(state, pageId, replacementId).view;

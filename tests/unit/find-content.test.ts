@@ -646,10 +646,11 @@ describe('the release’s own sections (#1341)', () => {
   });
 
   it('leaves out a button the site leaves out for having no destination, a card’s as well', () => {
-    const s = fresh();
-    const owner = { kind: 'page' as const, id: home(s).id };
-    const cta = instanceOf(s, 'cta.banner', home(s).id);
-    expect(cta.props.secondaryLabel).toBe('See our packages');
+    const starter = fresh();
+    const owner = { kind: 'page' as const, id: home(starter).id };
+    const cta = instanceOf(starter, 'cta.banner', home(starter).id);
+    // A text link with words and no destination yet (the starter's own banner has no words for one).
+    const s = applyOperations(starter, [{ type: 'instance.setProp', owner, nodeId: cta.id, prop: 'secondaryLabel', value: 'See our packages' }]).state;
     expect(findContent(s, 'See our packages')).toEqual([]);
     const linked = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: cta.id, prop: 'secondaryLink', value: { type: 'url', target: 'https://example.org/packages' } }]).state;
     expect(labels(linked, 'See our packages')).toEqual([['Text link label', undefined]]);

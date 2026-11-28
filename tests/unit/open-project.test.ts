@@ -185,6 +185,38 @@ describe('opening a project ZIP file (#263)', () => {
     expect((await c.open(join(parent, 'cafe'))).needsTrust).toEqual({ dir: join(parent, 'cafe'), name: 'Cafe', reason: 'new' });
   });
 
+  it('unpacks nothing into a folder whose path the preview cannot run under, saying which, and does into one it can (#1366)', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const hashed = join(parent, 'Client #47');
+    mkdirSync(hashed);
+    const events: unknown[] = [];
+    const win = { isDestroyed: () => false, webContents: { send: (channel: string, payload: unknown) => channel === 'projects:unpacking' && events.push(payload) } };
+    const c = new Controller(() => win as never);
+    chooseFolder(hashed);
+    expect(await c.open(zip)).toEqual({ ok: false, message: 'The preview can’t run from a folder whose path contains “#”, and “Client #47” does. Choose a folder with no “#” or “?” anywhere in its path, or rename that folder.' });
+    // One inside a folder with a “?”, and a link with a plain name that leads into the first.
+    const asked = join(parent, 'Client ?47', 'zips');
+    mkdirSync(asked, { recursive: true });
+    symlinkSync(hashed, join(parent, 'linked'));
+    for (const [where, folder, char] of [
+      [asked, 'Client ?47', '?'],
+      [join(parent, 'linked'), 'Client #47', '#']
+    ] as const) {
+      chooseFolder(where);
+      expect((await c.open(zip)).message).toBe(`The preview can’t run from a folder whose path contains “${char}”, and “${folder}” does. Choose a folder with no “#” or “?” anywhere in its path, or rename that folder.`);
+    }
+    expect(readdirSync(hashed)).toEqual([]);
+    expect(readdirSync(asked)).toEqual([]);
+    expect(events).toEqual([]);
+    // The same ZIP file into a folder with a “%” and spaces is unpacked and asks for trust.
+    const percent = join(parent, 'Client 47% & %20');
+    mkdirSync(percent);
+    chooseFolder(percent);
+    expect((await c.open(zip)).needsTrust?.dir).toBe(join(percent, 'cafe'));
+    expect(JSON.parse(readFileSync(join(percent, 'cafe', 'siteorigin.project.json'), 'utf8')).name).toBe('Cafe');
+  });
+
   it('opens the same ZIP file twice into two working copies, never overwriting the first', async () => {
     const zip = await editableZip();
     const parent = tmp('so-recipient-');

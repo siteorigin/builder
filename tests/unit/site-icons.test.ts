@@ -204,15 +204,15 @@ describe('the head of every page', () => {
   it('links the home-screen icon and the manifest beside the favicon, with the browser’s theme colour', () => {
     const layout = generateProject(fresh()).get('src/routes/+layout.svelte')!;
     const head = layout.slice(layout.indexOf('<svelte:head>'), layout.indexOf('</svelte:head>'));
-    expect(head).toContain('<link rel="icon" href={asset("favicon.svg")} type="image/svg+xml" />');
-    expect(head).toContain('<link rel="apple-touch-icon" sizes="180x180" href={asset("apple-touch-icon.png")} />');
-    expect(head).toContain('<link rel="manifest" href={asset("manifest.webmanifest")} />');
+    expect(head).toContain('<link rel="icon" href={headAsset("favicon.svg")} type="image/svg+xml" />');
+    expect(head).toContain('<link rel="apple-touch-icon" sizes="180x180" href={headAsset("apple-touch-icon.png")} />');
+    expect(head).toContain('<link rel="manifest" href={headAsset("manifest.webmanifest")} />');
     expect(head).toContain('<meta name="theme-color" content="#1f5a4c" />');
     expect(themeColorMeta(fresh())).toBe('<meta name="theme-color" content="#1f5a4c" />');
     expect(() => compile(layout, { filename: 'src/routes/+layout.svelte', generate: 'server' })).not.toThrow();
     // The editor's preview has them too.
     const dev = generateProject(fresh(), { instrument: true }).get('src/routes/+layout.svelte')!;
-    expect(dev).toContain('<link rel="manifest" href={asset("manifest.webmanifest")} />');
+    expect(dev).toContain('<link rel="manifest" href={headAsset("manifest.webmanifest")} />');
     expect(dev).toContain('<meta name="theme-color" content="#1f5a4c" />');
   });
 });

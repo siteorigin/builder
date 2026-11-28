@@ -7,6 +7,7 @@
  * ignore all of it. The form is never sent on an agent's say-so: the browser fills it in and the visitor sends it.
  */
 import type { ComponentDefinition, InstanceNode, SiteDoc } from './types';
+import { isFormDefinition } from './form-contract';
 
 /** The read-only tool a website that searches itself registers. No form takes its name. */
 export const WEBMCP_SEARCH_TOOL = 'search_site';
@@ -66,12 +67,12 @@ export function uniqueToolNames(names: readonly string[], taken: Iterable<string
 }
 
 /**
- * Whether a definition is the theme's contact form or a copy of it (whose provenance still names it), the forms a
- * placement can name as a tool. Whether its code takes the tool attributes is the generator's to tell
- * (generator/webmcp.ts).
+ * Whether a definition is one of the theme's forms (the Contact form or the Signup form) or a copy of one (whose
+ * provenance still names it), the forms a placement can name as a tool. Whether its code takes the tool attributes is
+ * the generator's to tell (generator/webmcp.ts).
  */
 export function isWebMcpForm(def: ComponentDefinition | undefined): def is ComponentDefinition {
-  return !!def && def.kind === 'code' && (def.componentId === 'contact.form' || def.provenance?.componentId === 'contact.form');
+  return !!def && def.kind === 'code' && isFormDefinition(def);
 }
 
 /** The most characters a placement's own tool name keeps, as typed. */

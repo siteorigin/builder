@@ -98,8 +98,11 @@ async function load(e: Entry, a: AssetRecord, at: string) {
   changed();
 }
 
-/** Bring the editor's fonts in line with the project: load new or changed files, drop the ones that went. */
-function sync(workspaceKey: string | null, assets: Record<string, AssetRecord> | undefined) {
+/**
+ * Bring the editor's fonts in line with the project: load new or changed files, drop the ones that went. A file
+ * missing from the project folder (`lost`) is dropped too, so it loads again once it is put back (#1425).
+ */
+function sync(workspaceKey: string | null, assets: Record<string, AssetRecord> | undefined, lost: ReadonlySet<string> = new Set()) {
   if (typeof document === 'undefined' || !document.fonts) return;
   let dirty = false;
   if (workspaceKey !== opening) {
@@ -109,7 +112,7 @@ function sync(workspaceKey: string | null, assets: Record<string, AssetRecord> |
     opening = workspaceKey;
   }
   const want = new Map<string, AssetRecord>();
-  if (workspaceKey) for (const [k, a] of Object.entries(assets ?? {})) if (a && a.id === k && isValidFontAsset(a)) want.set(k, a);
+  if (workspaceKey) for (const [k, a] of Object.entries(assets ?? {})) if (a && a.id === k && isValidFontAsset(a) && !lost.has(k)) want.set(k, a);
   for (const [id, e] of [...entries]) {
     const a = want.get(id);
     if (a && keyOf(a) === e.key) continue;
@@ -131,7 +134,7 @@ function sync(workspaceKey: string | null, assets: Record<string, AssetRecord> |
 export function startEditorFonts(): () => void {
   const read = () => {
     const s = useStore.getState().snapshot;
-    sync(s?.workspaceKey ?? null, s?.state.assets.assets);
+    sync(s?.workspaceKey ?? null, s?.state.assets.assets, new Set((s?.missingAssets ?? []).flatMap((m) => (m.original ? [m.assetId] : []))));
   };
   read();
   let last = useStore.getState().snapshot;

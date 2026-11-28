@@ -19,6 +19,7 @@ import {
   hasDetailPages,
   isCollectionId,
   isEntryId,
+  isEntryPath,
   isSyncedCollection,
   isTermId,
   pagesPrefix,
@@ -232,9 +233,12 @@ function keepsAddress(entryId: string, from: string, published: boolean, atStart
 /** "case-studies" → "Case studies". */
 const nameFromId = (id: string) => id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, ' ');
 
+/** The ready-made blog's name, which a header link to its index shows as "Blog". */
+export const POSTS_PRESET_NAME = 'Posts';
+
 /** The ready-made blog's settings, used for whatever a new "posts" collection is not given. */
 const POSTS_PRESET = {
-  name: 'Posts',
+  name: POSTS_PRESET_NAME,
   route: '/blog/',
   taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } }
 };
@@ -935,6 +939,15 @@ export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpRe
   return { collectionId: c.settings.id };
 }
 
+/**
+ * Whether an entry can take over from a removed one of `from`: one with a page of its own, which links and old addresses
+ * can send visitors to. Where reference fields name the removed entry, only another of its collection can take them, so
+ * while that collection's pages are off one without a page may.
+ */
+export function canReplaceEntry(from: Collection, to: { collection: Collection; entry: EntryDoc }, referenced: boolean): boolean {
+  return isEntryPath(to.collection, to.entry) || (referenced && to.collection === from && !hasDetailPages(from.settings));
+}
+
 export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, EntryAddress>, sync?: { collectionId: string }): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
@@ -944,7 +957,8 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
   if (custom) fail(`The old address ${custom.from} goes to “${entry.title}”, which its source no longer has. Point that address elsewhere in Site settings, under Redirects, before syncing.`);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
   if (op.replacementEntryId === entry.id) fail('The replacement must be a different entry.');
-  if (op.replacementEntryId !== undefined && !findEntry(state, op.replacementEntryId)) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);
+  const replacement = op.replacementEntryId !== undefined ? findEntry(state, op.replacementEntryId) : undefined;
+  if (op.replacementEntryId !== undefined && !replacement) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);
   if (op.replacementPageId !== undefined && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   const uses = entryLinkUses(state, entry.id);
   const refs = entryReferenceUses(state, entry.id);
@@ -961,6 +975,14 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     if (!Object.hasOwn(c.entries, op.replacementEntryId)) throw new EngineError('VALIDATION_FAILED', `${asked}, and only another entry of ${c.settings.name} can take its place. Choose one of those, or clear them first.`, { references: uses.length + n });
   }
   refuseSyncedHolders(state, [...uses, ...refs.map((r) => ({ owner: { kind: 'entry' as const, id: r.entry.id, collectionId: r.collection.settings.id }, where: `${r.entry.title} (${r.collection.settings.name})` }))], `“${entry.title}”`);
+  // The address it answers at now, when that was an old address of its own as the batch began (taken back during it):
+  // visitors' bookmarks to it go on to the replacement like the old addresses it still keeps.
+  const current = entryRoute(c, entry);
+  const start = current !== undefined ? atStart?.get(current.toLowerCase()) : undefined;
+  const reclaimed = start?.entryId === entry.id && start.old;
+  const handed = keptAddresses(state).filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
+  if (replacement && (uses.length || handed.length || reclaimed) && !canReplaceEntry(c, replacement, refs.length > 0))
+    fail(`“${replacement.entry.title}” has no page of its own, so links and old addresses can’t send visitors to it. Choose a page, or an entry with a page of its own.`);
   for (const { link } of uses) {
     link.type = to!.type;
     link.target = to!.target;
@@ -972,17 +994,11 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     if (Array.isArray(v)) holder.values[field] = [...new Set(v.map((id) => (id === entry.id ? op.replacementEntryId! : id)))] as string[];
     else holder.values[field] = op.replacementEntryId!;
   }
-  // The address it answers at now, when that was an old address of its own as the batch began (taken back during it):
-  // visitors' bookmarks to it go on to the replacement like the old addresses it still keeps.
-  const current = entryRoute(c, entry);
-  const start = current !== undefined ? atStart?.get(current.toLowerCase()) : undefined;
-  const reclaimed = start?.entryId === entry.id && start.old;
   delete c.entries[entry.id];
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder = c.settings.entryOrder.filter((id) => id !== entry.id);
   // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none.
   const heir: { entryId: string } | { pageId: string } | null = op.replacementEntryId !== undefined ? { entryId: op.replacementEntryId } : op.replacementPageId !== undefined ? { pageId: op.replacementPageId } : null;
   const kept = keptAddresses(state);
-  const handed = kept.filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
   if (handed.length || (reclaimed && heir)) {
     const rest = kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : heir ? [{ from: r.from, ...(r.custom ? { custom: true as const } : {}), ...heir }] : []));
     if (reclaimed && heir) {

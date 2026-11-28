@@ -106,7 +106,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         checked={webMcpOn(site)}
         onChange={(v) => onChange({ webmcp: v })}
         label={<Named name="Forms and search for browser assistants" tech="WebMCP" />}
-        hint="An assistant in the visitor’s browser can search the site and fill in a contact form for the visitor to check and send."
+        hint="An assistant in the visitor’s browser can search the site and fill in a contact or signup form for the visitor to check and send."
       />
     </>
   );
