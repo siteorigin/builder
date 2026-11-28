@@ -382,6 +382,31 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   /** Under the pointer, read once an edge has had time to ease to whatever it turns to (a poll would take the first). */
   const settle = (page: Page) => page.waitForTimeout(400);
 
+  it('does not present the browser’s field messages as the page’s language or direction (#1525)', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: [...FIELDS, CHOICE] }, async ({ page, field, button, fetches }) => {
+      /** Each message, with whether it is its control's own words (found as a screen reader does, by description). */
+      const shown = () =>
+        page.evaluate(`[...document.querySelectorAll('.so-form__error > span')].map((el) => ({
+          lang: el.getAttribute('lang'), dir: el.getAttribute('dir'), direction: getComputedStyle(el).direction,
+          own: el.textContent === document.querySelector('[aria-describedby="' + el.parentElement.id + '"]').validationMessage
+        }))`);
+      const each = (direction: string) => Array(4).fill({ lang: '', dir: 'auto', direction, own: true });
+      // The words are the browser's own, in a language the page cannot know: English here, in an Arabic page.
+      await page.evaluate(`document.documentElement.lang = 'ar-MA'; document.documentElement.dir = 'rtl'`);
+      await button.click();
+      await expect.poll(shown).toEqual(each('ltr'));
+      expect(await fetches()).toBe(0);
+      // And the other way about: an Arabic browser on an English page.
+      await page.evaluate(`
+        document.documentElement.lang = 'en'; document.documentElement.dir = 'ltr';
+        for (const proto of [HTMLInputElement.prototype, HTMLTextAreaElement.prototype])
+          Object.defineProperty(proto, 'validationMessage', { get: () => 'يرجى ملء هذا الحقل.' });
+      `);
+      await field('Name').press('Enter');
+      await expect.poll(shown).toEqual(each('rtl'));
+    });
+  }, 20_000);
+
   it('draws what is wrong in one colour on either ground, with a heavier edge kept under the pointer, and a failed send says so in it', async () => {
     for (const tone of TONES)
       await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant_tone: tone }, async ({ page, field, button, nextPost, alert }) => {
