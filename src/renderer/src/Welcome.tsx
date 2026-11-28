@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject, TrustRequest } from '@shared/api';
-import { api, errorText, getState, setState, toast, useStore, whenThemesReady } from './store';
+import { api, errorText, getState, restoreLayout, setState, toast, useStore, whenThemesReady } from './store';
 import { nearbyOffer } from './lib/nearby-project';
 import { Disclosure, openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
@@ -251,7 +251,9 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
     // starts with a chooser (Open project…, a folder, Find folder…) keeps Welcome until a project arrives.
     const recent = dir !== undefined && !opts ? recents?.find((r) => r.dir === dir && !r.missing) : undefined;
     const direct = recent ? { id: ++directOpens, name: recent.name } : null;
-    if (direct) setState({ openingProject: direct, openingSince: performance.now() });
+    // Drawn at the project's own panels and page, as its saved workspace has them (or the defaults, never the last
+    // project's), so its arrival moves nothing (#1758).
+    if (recent && direct) setState({ openingProject: direct, openingSince: performance.now(), ...restoreLayout(recent.layout ?? {}) });
     // Opened: the outline stays until the project's snapshot takes its place (App), whichever of the two arrives first.
     let opened = false;
     try {

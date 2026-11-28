@@ -1,11 +1,11 @@
 import { app } from 'electron';
 import { promises as fs, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
+import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject, SavedLayout } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
 import { BRIEF_FILE, storedBriefDescription } from '@shared/brief';
 import { APPLE_TOUCH_ICON } from '@shared/site-icons';
-import { atomicWrite } from './project/fsutil';
+import { atomicWrite, readIfExists } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
@@ -408,8 +408,8 @@ export async function recents(): Promise<RecentProject[]> {
       // Checked without blocking: a folder on a share that has stopped answering holds up this card, never every request.
       const missing = !(await fs.access(join(r.dir, MANIFEST)).then(() => true, () => false));
       // Read from the folder each time, so a card says what the project's brief says now, however it was changed.
-      const [description, icon] = missing ? ['', ''] : await Promise.all([briefDescription(r.dir), siteIcon(r.dir)]);
-      return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}), ...(icon ? { icon } : {}) };
+      const [description, icon, layout] = missing ? ['', '', null] : await Promise.all([briefDescription(r.dir), siteIcon(r.dir), savedLayout(r.dir)]);
+      return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}), ...(icon ? { icon } : {}), ...(layout ? { layout } : {}) };
     })
   );
 }
@@ -433,6 +433,40 @@ async function siteIcon(dir: string): Promise<string> {
     return `data:image/png;base64,${bytes.toString('base64')}`;
   } catch {
     return '';
+  }
+}
+
+/** What each of the layout's fields can be (shared/api LocalWorkspaceState): anything else is left out. */
+const LAYOUT_FIELDS: Record<keyof SavedLayout, (v: unknown) => boolean> = {
+  leftTab: (v) => typeof v === 'string',
+  leftWidth: (v) => typeof v === 'number',
+  rightWidth: (v) => typeof v === 'number',
+  viewport: (v) => typeof v === 'number',
+  zoom: (v) => typeof v === 'number' || v === 'fit'
+};
+
+/**
+ * Where the editor last drew the project in `dir`'s panels and page, from its workspace file, or null when it has none
+ * that can be read. The file is read just as opening the project reads it (controller openTrusted), whatever its size
+ * and wherever a link leads, so the outline drawn from the card and the editor that replaces it start from the same
+ * state, each checking the fields the same way (renderer store.ts restoreLayout). Only these fields are kept, each when
+ * it is of the right kind: nothing else in the file (unsent messages) reaches Welcome.
+ */
+async function savedLayout(dir: string): Promise<SavedLayout | null> {
+  try {
+    const file = join(dir, '.siteorigin', 'workspace.json');
+    // Only a file, where a link leads too: never a pipe or a device, which a read would wait on with every card.
+    if (!(await fs.stat(file)).isFile()) return null;
+    const saved: unknown = JSON.parse((await readIfExists(file)) ?? 'null');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null;
+    const layout: Record<string, unknown> = {};
+    for (const [key, fits] of Object.entries(LAYOUT_FIELDS)) {
+      const v = (saved as Record<string, unknown>)[key];
+      if (fits(v)) layout[key] = v;
+    }
+    return Object.keys(layout).length ? (layout as SavedLayout) : null;
+  } catch {
+    return null;
   }
 }
 

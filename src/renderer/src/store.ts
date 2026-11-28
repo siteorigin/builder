@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SavedLayout, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -13,7 +13,7 @@ import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { waitingQuestion } from './lib/chatQuestions';
 import { attachImage, chatStatePatch, draftFor, keepAnswer, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
-import { PANEL_DEFAULTS } from './lib/layout';
+import { PANEL_DEFAULTS, restorePanelWidth, restoreViewport, restoreZoom, type Zoom } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, sendTyped, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { sendHeldPicks } from './lib/pick-gate';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit, typedText, whereOf } from './lib/held';
@@ -40,12 +40,27 @@ export const transport = createTransport(() => window.builder);
 export const api = transport.api;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets' | 'seo';
+const LEFT_TABS: readonly LeftTab[] = ['pages', 'posts', 'layers', 'insert', 'assets', 'seo'];
 export type { PostRef };
 export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 /** Every view of the right panel, in the order the dock shows them: the AI first, as the view a new window opens on. */
 export const RIGHT_TABS: readonly RightTab[] = ['chat', 'inspect', 'styles', 'project'];
 /** The view remembered from an earlier opening, or the AI when there is none or it names a view this version does not have. */
 export const restoreRightTab = (saved: unknown): RightTab => RIGHT_TABS.find((t) => t === saved) ?? 'chat';
+/**
+ * The sidebar, the panel widths and the page's width and zoom a project opens with, from its saved workspace state (or
+ * the defaults). The project's arrival sets them (App openSnapshot), and so does a click on its recent card, from the
+ * same saved state, so the outline shown between is drawn where the editor will draw (#1758).
+ */
+export const restoreLayout = (saved: SavedLayout): { leftTab: LeftTab; leftWidth: number; rightWidth: number; viewport: number; zoom: Zoom } => ({
+  // A sidebar that was closed, or a view this version does not have (a hand-edited file), opens on Pages.
+  leftTab: LEFT_TABS.find((t) => t === saved.leftTab) ?? 'pages',
+  // Every project opens with its own panel widths (or the defaults), never the last project's.
+  leftWidth: restorePanelWidth('left', saved.leftWidth),
+  rightWidth: restorePanelWidth('right', saved.rightWidth),
+  viewport: restoreViewport(saved.viewport),
+  zoom: restoreZoom(saved.zoom)
+});
 export type Modal = null | { kind: 'settings'; tab?: string; provider?: ProviderId; focus?: 'developer-mode' } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'code-workspace'; file?: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'turn-into-slot'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'duplicate-component'; definitionId: string; workspaceKey?: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string } | { kind: 'removal-review'; opening: string; definitionId: string; slot?: string };
 
 export interface Rect {
