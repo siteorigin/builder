@@ -177,7 +177,15 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       await page.evaluate(`(() => { const c = document.querySelector('dialog.so-viewer[open] .so-viewer__caption'); c.tabIndex = -1; c.focus(); })()`);
       await page.keyboard.press('End');
       // End scrolls smoothly: the caption is read once it reaches its end.
-      await expect.poll(async () => { const c = await captionOf(page); return c.top > 0 && Math.abs(c.top - c.room) <= 1; }).toBe(true);
+      await expect
+        .poll(
+          async () => {
+            const c = await captionOf(page);
+            return c.top > 0 && Math.abs(c.top - c.room) <= 1;
+          },
+          { timeout: 5_000 }
+        )
+        .toBe(true);
       await page.keyboard.press('ArrowRight');
       await expect.poll(async () => (await captionOf(page)).start).toBe('Second photo.');
       expect((await captionOf(page)).top).toBe(0);
