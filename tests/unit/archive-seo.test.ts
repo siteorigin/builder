@@ -11,6 +11,7 @@ import { applyOperations } from '@engine/apply';
 import { generateProject, liveRedirects, publishedState } from '@generator/index';
 import { generateHostRedirects } from '@generator/host-redirects';
 import { validateState } from '@engine/validate';
+import { redirectSourceProblem } from '@shared/redirects';
 import { checkHeld, fieldKey, placeOf, readFields, shownField } from '../../src/renderer/src/lib/held';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -297,6 +298,20 @@ describe('a collection that moves (#1548)', () => {
     expect(run(s, { type: 'redirect.update', from: '/blog/', to: '/about/' }).site.redirects).toContainEqual({ from: '/blog/', to: '/about/' });
   });
 
+  it('leaves an old address as it is when its archive is off and sending it on would loop or leave it nowhere', () => {
+    const off = { detail: true, archive: false };
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' }, { type: 'redirect.add', from: '/notes/', to: '/blog/' });
+    // /notes/ already sends visitors to /blog/: /blog/ sent on to /notes/ would go round.
+    const looped = run(s, { type: 'collection.update', collectionId: 'posts', route: '/notes/', pages: off });
+    expect(looped.site.redirects).toContainEqual({ from: '/blog/', to: '/journal/', archiveOf: 'posts' });
+    // Back at /blog/ with the archive off, nothing answers there: the address is kept, and followed when it moves on.
+    s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/', pages: off });
+    expect(s.site.redirects).toContainEqual({ from: '/blog/', to: '/journal/', archiveOf: 'posts' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/notes/' });
+    expect(s.site.redirects).toContainEqual({ from: '/blog/', to: '/notes/', archiveOf: 'posts' });
+  });
+
   it('gives a collection made again under a removed one’s ID in the same batch none of its old addresses', () => {
     const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 1 });
     const t = run(
@@ -312,6 +327,9 @@ describe('a collection that moves (#1548)', () => {
     const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_draft', title: 'Draft', body: ['Soon.'] } as EditOperation, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
     expect(publishedState(s).site.redirects).toContainEqual({ from: '/blog/', to: '/journal/', archiveOf: 'posts' });
     expect(() => run(s, { type: 'redirect.add', from: '/a/b/c/d/e/f/g/h/', to: '/journal/' })).toThrow(/at most 7 levels/);
+    expect(run(s, { type: 'redirect.add', from: '/a/b/c/d/e/f/g/', to: '/journal/' }).site.redirects).toContainEqual({ from: '/a/b/c/d/e/f/g/', custom: true, to: '/journal/' });
+    expect(redirectSourceProblem(`/${Array.from({ length: 7 }, () => 'é'.repeat(50)).join('/')}/`)).toMatch(/too long/);
+    expect(redirectSourceProblem(`/${Array.from({ length: 7 }, () => 'a'.repeat(60)).join('/')}/`)).toBeNull();
   });
 
   it('keeps no old address for a page the moved archive no longer has, and none while the archive is turned off', () => {

@@ -287,7 +287,8 @@ const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/
  * to the same page at the new address, where the website has one. Only an address visitors had as the batch began
  * (`atStart`) is kept, not one the collection only passed through in it, and never one anything else holds now. The
  * old addresses an earlier move kept are sent straight to the new one too, so they never lead through each other;
- * one whose page is gone for now goes to where the page would be, and works again when it is back.
+ * one whose page is gone for now goes to where the page would be, and works again when it is back. While the archive
+ * is off, one is left as it is where sending it on would lead it back to itself or to something else's address.
  */
 function keepArchiveAddresses(state: ProjectState, collectionId: string, from: string, prefix: string, before: readonly ArchivePage[], atStart?: ArchivesAtStart) {
   const after = new Set(
@@ -296,12 +297,20 @@ function keepArchiveAddresses(state: ProjectState, collectionId: string, from: s
       .map((p) => p.route.toLowerCase())
   );
   const old = from.toLowerCase();
+  // With its archive off, an address is only sent on where nothing else has the new one, and none is taken back: the
+  // archive is not there to answer at it.
+  const archived = hasArchivePages(state.collections[collectionId].settings);
+  const held = archived ? undefined : routeIndex(state);
+  // Where an archive page's address puts it under the old address: what follows that, or null.
+  const restOf = (route: string) => (route.toLowerCase().startsWith(old) && ARCHIVE_REST.test(route.slice(old.length).toLowerCase()) ? route.slice(old.length) : null);
   const list = keptAddresses(state).flatMap((r): SiteRedirect[] => {
-    if (r?.archiveOf !== collectionId || typeof r.to !== 'string' || !r.to.toLowerCase().startsWith(old)) return [r];
-    const rest = r.to.slice(old.length);
-    if (!ARCHIVE_REST.test(rest.toLowerCase())) return [r];
+    if (r?.archiveOf !== collectionId || typeof r.to !== 'string') return [r];
+    // One leading to a page of the archive at the old address, or kept at one while the archive was off there.
+    const rest = restOf(r.to) ?? restOf(r.from);
+    if (rest === null) return [r];
     const to = `${prefix}${rest}`;
-    return to.toLowerCase() === r.from.toLowerCase() ? [] : [{ ...r, to }];
+    if (to.toLowerCase() === r.from.toLowerCase()) return archived ? [] : [r];
+    return held?.(to, { collectionId }) ? [r] : [{ ...r, to }];
   });
   const holder = routeIndex({ ...state, site: { ...state.site, redirects: list } });
   const visited = before.length ? atStart?.get() : undefined;

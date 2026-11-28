@@ -70,11 +70,16 @@ export function redirectSourceProblem(from: string): string | null {
   if (from === '/') return 'The Home page address cannot send visitors elsewhere.';
   // The website keeps a page at each one, in a folder per part of it: never more parts than an archive page has.
   if (from.slice(1, -1).split('/').length > MAX_SOURCE_DEPTH) return `An old address can be at most ${MAX_SOURCE_DEPTH} levels deep.`;
+  // Nor longer than a page's address can be, so its folder fits where file systems allow.
+  if (new TextEncoder().encode(from).length > MAX_SOURCE_BYTES) return 'An old address is too long. Choose a shorter one.';
   return redirectTargetProblem(from);
 }
 
 /** The most parts an old address has: a collection's at its deepest (three) and a category archive's later page under it (four more). */
 export const MAX_SOURCE_DEPTH = 7;
+
+/** The most bytes an old address has: more than any page's address (four parts of at most 120 bytes) or archive page's. */
+export const MAX_SOURCE_BYTES = 512;
 
 /** Where a redirect leads, followed to the end. */
 type Outcome =
