@@ -175,9 +175,12 @@ describe('links to a collection index', () => {
     const last = menuLinks(r.state).at(-1)!;
     expect(last).toMatchObject({ label: 'Journal', link: INDEX });
     expect(resolveLink(last.link, { state: r.state })).toEqual({ href: '/journal/' });
-    // Another collection is named as it is called, too.
-    const other = applyOperations(start, [{ type: 'collection.create', collectionId: 'case-studies', addToNavigation: true }]);
-    expect(menuLinks(other.state).at(-1)).toMatchObject({ label: other.state.collections['case-studies'].settings.name });
+    // A blog left with no name of its own (only spaces) still shows "Blog" rather than a blank link.
+    const blank = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: '   ', addToNavigation: true }]);
+    expect(menuLinks(blank.state).at(-1)).toMatchObject({ label: 'Blog', link: INDEX });
+    // Only the blog becomes "Blog": another collection called Posts keeps its name.
+    const other = applyOperations(start, [{ type: 'collection.create', collectionId: 'case-studies', name: 'Posts', addToNavigation: true }]);
+    expect(menuLinks(other.state).at(-1)).toMatchObject({ label: 'Posts', link: { type: 'collection', target: 'case-studies' } });
   });
 
   it('leaves a full menu as it is, and still starts the blog', () => {

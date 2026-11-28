@@ -232,9 +232,12 @@ function keepsAddress(entryId: string, from: string, published: boolean, atStart
 /** "case-studies" → "Case studies". */
 const nameFromId = (id: string) => id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, ' ');
 
+/** The ready-made blog's name, which a header link to its index shows as "Blog". */
+export const POSTS_PRESET_NAME = 'Posts';
+
 /** The ready-made blog's settings, used for whatever a new "posts" collection is not given. */
 const POSTS_PRESET = {
-  name: 'Posts',
+  name: POSTS_PRESET_NAME,
   route: '/blog/',
   taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } }
 };

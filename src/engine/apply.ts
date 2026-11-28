@@ -55,7 +55,7 @@ import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redir
 import { wasPublishedFor } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
-import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
+import { POSTS_PRESET_NAME, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -1101,7 +1101,7 @@ function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): 
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
   if (!Array.isArray(list) || (schema.max !== undefined && list.length >= schema.max)) return false;
   // A renamed blog ("Journal") keeps its own name in the menu (#1311).
-  const label = collectionId === POSTS_COLLECTION_ID && c.settings.name === 'Posts' ? 'Blog' : c.settings.name;
+  const label = collectionId === POSTS_COLLECTION_ID && (c.settings.name === POSTS_PRESET_NAME || !c.settings.name) ? 'Blog' : c.settings.name;
   // A top-level link, whatever a new row of a menu that groups links starts as.
   const top = schema.fields.sub?.type === 'boolean' ? { sub: false } : {};
   let item: ReturnType<typeof normalizeItem>;
