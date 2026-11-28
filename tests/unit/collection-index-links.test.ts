@@ -168,6 +168,18 @@ describe('links to a collection index', () => {
     expect(menuLinks(plain.state)).toHaveLength(before);
   });
 
+  it('names the link after a renamed blog instead of "Blog" (#1311)', () => {
+    const start = site();
+    const r = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', name: 'Journal', route: '/journal/', addToNavigation: true }]);
+    expect(r.results[0]).toMatchObject({ addedToNavigation: true });
+    const last = menuLinks(r.state).at(-1)!;
+    expect(last).toMatchObject({ label: 'Journal', link: INDEX });
+    expect(resolveLink(last.link, { state: r.state })).toEqual({ href: '/journal/' });
+    // Another collection is named as it is called, too.
+    const other = applyOperations(start, [{ type: 'collection.create', collectionId: 'case-studies', addToNavigation: true }]);
+    expect(menuLinks(other.state).at(-1)).toMatchObject({ label: other.state.collections['case-studies'].settings.name });
+  });
+
   it('leaves a full menu as it is, and still starts the blog', () => {
     const start = site();
     let s = start;

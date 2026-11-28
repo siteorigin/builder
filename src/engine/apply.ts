@@ -1088,7 +1088,7 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
 
 /**
  * Append a link to a collection's index to the shared header's navigation list, as a top-level link after the others,
- * named as the blog's is in a menu ("Blog") or else by the collection's name. False (and nothing changed) when there
+ * named by the collection's name, or "Blog" for the blog still under its ready-made name ("Posts"). False (and nothing changed) when there
  * is no such list, it is full, or the collection has no index for the link to go to.
  */
 function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): boolean {
@@ -1100,7 +1100,8 @@ function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): 
   if (isBinding(node.props.links) || (node.listSources && Object.hasOwn(node.listSources, 'links'))) return false;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
   if (!Array.isArray(list) || (schema.max !== undefined && list.length >= schema.max)) return false;
-  const label = collectionId === POSTS_COLLECTION_ID ? 'Blog' : c.settings.name;
+  // A renamed blog ("Journal") keeps its own name in the menu (#1311).
+  const label = collectionId === POSTS_COLLECTION_ID && c.settings.name === 'Posts' ? 'Blog' : c.settings.name;
   // A top-level link, whatever a new row of a menu that groups links starts as.
   const top = schema.fields.sub?.type === 'boolean' ? { sub: false } : {};
   let item: ReturnType<typeof normalizeItem>;
