@@ -19,7 +19,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
-import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool } from './brief-tools';
+import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool, withoutBriefAsks } from './brief-tools';
 import type { BriefWriteGrant } from '@shared/brief';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
@@ -3014,11 +3014,11 @@ export class Orchestrator {
             // A run may not call itself finished with requested pages left as stubs. It is told once.
             // A run limited to one page is held to that page.
             const limitedTo = authority.kind === 'page' ? authority.pageId : null;
-            // A change to the brief alone is no page work: a note about pages to build later never asks for them now.
-            const noted = briefOnly(executedOps);
-            const stubs = !noted && (authority.kind === 'site' || limitedTo) ? findStubPages(startState, session.state, requestText).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
+            // What the request asks of the brief is no page work: a note about pages to build later never asks for them now.
+            const pageRequest = briefAllowance ? withoutBriefAsks(requestText) : requestText;
+            const stubs = authority.kind === 'site' || limitedTo ? findStubPages(startState, session.state, pageRequest).filter((p) => !limitedTo || p.pageId === limitedTo) : [];
             const rejected = [...macros.drafts.keys()];
-            const absent = noted ? [] : missing();
+            const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
               resumeForNudge(completenessNudge(stubs, links.missing, current.tools.some((t) => t.name === 'upsert_page_with_sections'), rejected, absent, authority.kind === 'page' ? authority.label : undefined));
               continue outer;

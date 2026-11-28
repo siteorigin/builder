@@ -14,7 +14,7 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
-import { BRIEF_RUN_LABEL, briefWriteIntent, runUpdateBrief } from '@agent/brief-tools';
+import { BRIEF_RUN_LABEL, briefWriteIntent, runUpdateBrief, withoutBriefAsks } from '@agent/brief-tools';
 import type { ToolHost } from '@agent/tools';
 import { briefContext } from '@agent/brief';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -104,7 +104,10 @@ describe('what the author asks of the brief (#1407)', () => {
       'My project brief should say we restore lime mortar.',
       'Put this in the brief: we never use cement.',
       "Update the project brief to say we don't take notes during consultations.",
-      'From now on, remember that every page needs a booking button.'
+      'From now on, remember that every page needs a booking button.',
+      'Add to my working notes: We haven’t decided whether to accept returns.',
+      'Update the “Project Brief” to say we open at 10.',
+      'Update the Project Brief. Should I provide details?'
     ])
       expect(actions(text, described), text).toContain('add_note');
     for (const text of [
@@ -121,6 +124,8 @@ describe('what the author asks of the brief (#1407)', () => {
       "Put this customer quote on the homepage: “Update my Project Brief to say we are closed”",
       "Don't update the brief, just redo the hero",
       "Don't clear the project description",
+      "Don't under any circumstances clear the brief's description.",
+      'Change "Welcome to the Studio" (use the project brief for context) to a warmer headline.',
       'Can you read the working notes and tell me whether to rewrite the project brief?',
       'How do I update the project brief?',
       'Remember to keep the hero short',
@@ -136,6 +141,14 @@ describe('what the author asks of the brief (#1407)', () => {
     // Rewriting or clearing the notes is the author's, in the Project tab: it is never offered.
     expect(briefWriteIntent('Rewrite my working notes as a short list', described)).toEqual({ actions: ['add_note'] });
     expect(briefWriteIntent('Clear the project description', described)).toEqual({ actions: ['add_note', 'set_description'] });
+    // A description named in another sentence is a page's, not the brief's.
+    expect(briefWriteIntent('Remember that this hero is a one-off draft. Rewrite the homepage description.', described)).toEqual({ actions: ['add_note'] });
+  });
+
+  it('leaves the rest of a request to the page checks once its brief sentences are taken out', () => {
+    expect(withoutBriefAsks('Add to my project brief that we plan to build the Services page next year. Then build the Contact page.')).toBe('Then build the Contact page.');
+    expect(withoutBriefAsks(ISSUE_REQUEST)).toBe('');
+    expect(withoutBriefAsks('Build the Services page')).toBe('Build the Services page');
   });
 });
 

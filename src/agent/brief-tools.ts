@@ -41,7 +41,7 @@ const NAME = String.raw`(?:(?:my|our|the|this)\s+)?(?:project(?:['’]s)?\s+(?:b
 const VERBS = 'update|add|note|record|remember|save|put|include|append|change|edit|set|write|rewrite|replace|amend|mention|store|fill|clear|empty|wipe|remove|delete|fix|correct|revise|tweak|adjust|expand|extend|reword|overwrite|reset';
 const VERB = String.raw`\b(?:${VERBS})\b`;
 /** Words between a verb and the brief that make the brief what the change follows, not what it changes. */
-const GUIDED = 'using|from|with|per|follows?|following|based|match|matches|matching|fit|fits|suit|suits|reflect|reflects|like|reading|reads?|for|so|as';
+const GUIDED = 'using|use|from|with|per|follows?|following|based|match|matches|matching|fit|fits|suit|suits|reflect|reflects|like|reading|reads?|for|so|as';
 /**
  * A change asked of the brief itself: the verb close before its name ("update my Project Brief", "add to the working
  * notes"), what to add and then where ("add that we close in August to my brief"), or the brief and what it should say
@@ -50,38 +50,59 @@ const GUIDED = 'using|from|with|per|follows?|following|based|match|matches|match
  */
 const WRITES_BRIEF = new RegExp(
   [
-    `${VERB}\\s+(?:(?!(?:${GUIDED})\\b)\\S+\\s+){0,4}?\\b${NAME}`,
+    `${VERB}\\s+(?:(?![(\\["'“‘]*(?:${GUIDED})\\b)\\S+\\s+){0,4}?\\b${NAME}`,
     `${VERB}[^.?!\\n]{0,160}?(?<!\\b(?:according|due|true|close|refer|referring|stick|keep|faithful|similar|back|match|matches|fit|suit|reflect)\\s)\\b(?:to|in|into|on|under)\\s+${NAME}`,
     `\\b${NAME}[^.?!\\n]{0,20}?\\b(?:(?:to|should|must|needs?\\s+to)\\s+(?:say|note|include|mention|read|cover)|so\\s+(?:that\\s+)?it\\s+(?:says|notes|includes|mentions|reads|covers))\\b`
   ].join('|'),
   'i'
 );
+/** The description of the brief by name, not a page's or a section's. */
+const NAMES_DESCRIPTION = /\b(?:project(?:['’]s)?\s+description|brief['’]s\s+description|description\s+(?:in|of)\s+(?:my|our|the|this)\s+(?:project\s+)?brief)\b/i;
 /** Something to remember about the project, without naming the brief: asked to remember a fact ("remember that we…"),
  *  or to remember it for good, either way round. "Remember to keep the hero short" is about this request. */
 const REMEMBER = String.raw`\b(?:remember|keep\s+in\s+mind|make\s+a\s+note|take\s+note|note\s+down)\b`;
 const LASTING = String.raw`\b(?:(?:for|in|about|across)\s+(?:this|the|our|my)\s+(?:project|site|website)|from\s+now\s+on|going\s+forward|for\s+(?:the\s+)?future|for\s+next\s+time|for\s+later)\b`;
-const REMEMBERS = new RegExp(`${REMEMBER}[^.?!\\n]{0,120}?${LASTING}|${LASTING}[^.?!\\n]{0,40}?${REMEMBER}|(?:^|[.!?]\\s+)(?:please\\s+)?(?:also\\s+)?remember\\s+that\\b`, 'i');
-/** Asked not to change the brief, or asked how to, whether to, or what it says. */
-const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\s+(?:\\S+\\s+){0,2}?(?:${VERBS}|chang|touch)(?:s|d|ed|ing)?\\b[^.?!\\n]{0,40}?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
-const ASKS = /\b(?:(?:how|where)\s+(?:do|can|could|should|would)\s+(?:i|we)|whether|should\s+(?:i|we))\b/i;
-/** Quoted words are copy, not what the author asks: "Change the button to 'Clear working notes'". An apostrophe inside a
+const REMEMBERS = new RegExp(`${REMEMBER}[^.?!\\n]{0,120}?${LASTING}|${LASTING}[^.?!\\n]{0,40}?${REMEMBER}|^(?:please\\s+)?(?:also\\s+)?remember\\s+that\\b`, 'i');
+/** Asked not to change the brief (a "don't" before its name, however far), or not to remember. */
+const DECLINES = new RegExp(`\\b(?:don['’]?t|do\\s+not|never|without|no\\s+need\\s+to|instead\\s+of)\\b[^.?!\\n]*?${NAME}|\\b(?:don['’]?t|do\\s+not|never)\\s+(?:\\S+\\s+){0,1}?remember\\b`, 'i');
+/** Asked how to, or whether to: a question for the author, not a change. */
+const ASKS = /\b(?:(?:how|where)\s+(?:do|can|could|should|would)\s+(?:i|we)\b|(?:tell|ask|advise)\s+(?:\S+\s+){0,2}?(?:whether|if)\b|^should\s+(?:i|we)\b)/i;
+/** Quoted words are copy, not what the author asks ("Change the button to 'Clear working notes'"), and stand in the
+ *  sentence as one word. A quote of the brief's own name ("the “Project Brief”") is that name. An apostrophe inside a
  *  word (don't, the brief's) is no quote. */
-const QUOTED = /“[^”\n]*”|"[^"\n]*"|(^|[\s:(\[])'[^'\n]*'(?=$|[\s.,!?;:)\]])|(^|[\s:(\[])‘[^’\n]*’(?=$|[\s.,!?;:)\]])/g;
+const QUOTED = /“([^”\n]*)”|"([^"\n]*)"|(^|[\s:(\[])'([^'\n]*)'(?=$|[\s.,!?;:)\]])|(^|[\s:(\[])‘([^’\n]*)’(?=$|[\s.,!?;:)\]])/g;
+const BRIEF_NAME = new RegExp(`^\\s*${NAME}\\s*$`, 'i');
+const unquoted = (text: string) =>
+  text.replace(QUOTED, (_m, d1?: string, d2?: string, p3?: string, s3?: string, p4?: string, s4?: string) => {
+    const inner = d1 ?? d2 ?? s3 ?? s4 ?? '';
+    const lead = p3 ?? p4 ?? '';
+    return `${lead}${/^\s*(?:project\s+)?brief\s*$|^\s*working\s+notes?\s*$/i.test(inner) || BRIEF_NAME.test(inner) ? inner : 'QUOTE'}`;
+  });
+/** A message's sentences, each judged on its own: a "don't" or a question in one never reaches another. */
+const sentences = (text: string) => unquoted(text).split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter(Boolean);
+/** Whether one sentence asks for a change to the brief, and whether it names the description doing so. */
+function asks(sentence: string): { brief: boolean; description: boolean } {
+  if (DECLINES.test(sentence) || ASKS.test(sentence)) return { brief: false, description: false };
+  const named = WRITES_BRIEF.test(sentence);
+  return { brief: named || REMEMBERS.test(sentence), description: named && NAMES_DESCRIPTION.test(sentence) };
+}
 
 /**
- * What the author's own message lets a run change of the brief: nothing unless it asks, in so many words, to update
- * the brief (its description or working notes) or to remember something about the project. A note can always be added
- * then. The description is set when the message names it, or when the project has none yet (and only while it still
- * has none: `descriptionIfEmpty`).
+ * What the author's own message lets a run change of the brief: nothing unless one of its sentences asks, in so many
+ * words, to update the brief (its description or working notes) or to remember something about the project. A note
+ * can always be added then. The description is set when such a sentence names it, or when the project has none yet
+ * (and only while it still has none: `descriptionIfEmpty`).
  */
 export function briefWriteIntent(text: string, state?: Pick<ProjectState, 'brief'>): BriefWriteAllowance | null {
-  const own = (text ?? '').replace(QUOTED, '$1$2 ');
-  if (!own.trim() || DECLINES.test(own) || ASKS.test(own)) return null;
-  if (!WRITES_BRIEF.test(own) && !REMEMBERS.test(own)) return null;
-  if (/\bdescription\b/i.test(own)) return { actions: ['add_note', 'set_description'] };
+  const found = sentences(text ?? '').map(asks);
+  if (!found.some((f) => f.brief)) return null;
+  if (found.some((f) => f.description)) return { actions: ['add_note', 'set_description'] };
   if (!briefFilled(briefText(state?.brief, 'description'))) return { actions: ['add_note', 'set_description'], descriptionIfEmpty: true };
   return { actions: ['add_note'] };
 }
+
+/** The request without its sentences about the brief: what it asks of the website. */
+export const withoutBriefAsks = (text: string): string => sentences(text).filter((t) => !asks(t).brief).join(' ');
 
 /** The tool as a run with `actions` is offered it: only those actions. */
 export function updateBriefTool(actions: readonly BriefAction[], brief = UPDATE_BRIEF_BRIEF): ToolDefinition {
@@ -125,7 +146,7 @@ export async function runUpdateBrief(args: UpdateBriefArgs, host: ToolHost, call
     // After notes a request may read only the start of (a local model reads the least), the next request might never
     // see it: it goes first.
     if (kept.trim() && trimNotes(next, BRIEF_NOTES_CONSTRAINED_TOKENS).trimmed) {
-      next = `${sent}\n\n${base.replace(/^\s+/, '')}`;
+      next = `${sent}\n\n${base}`;
       placed = 'start';
     }
     if (next.length > TEXT_LIMITS.projectNotes)
