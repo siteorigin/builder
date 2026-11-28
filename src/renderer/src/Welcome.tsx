@@ -11,6 +11,8 @@ import { switchScheme, useEditorScheme } from './lib/appearance';
 import { perfMark, perfMarkOnce } from './lib/perf';
 import { loadEditor } from './lib/editor-module';
 import { peekEarlyRecents, takeEarlyRecents, type EarlyRecents } from './lib/early-recents';
+// A crop of the Business starter's own hero picture (resources/starter-assets/hero.jpg), for the first-run sketch.
+import starterRoom from './assets/starter-room.webp';
 import './Welcome.css';
 
 export function BrandMark() {
@@ -563,7 +565,6 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
         </footer>
       </aside>
       <main className={`welcome-main${sparse.current === 'one' || sparse.current === 'few' ? ` sparse ${sparse.current}` : ''}`}>
-        <AppearanceToggle disabled={!!opening} />
         <div className="sr-only" role="status">
           {openingNote}
         </div>
@@ -571,24 +572,25 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
           <section className="empty-state welcome-hero" aria-labelledby="welcome-hero-title">
             <div className="hero-copy">
               <h2 id="welcome-hero-title">Make your first website</h2>
-              <p className="hero-pitch">Start with a ready-made design and edit it right on the page, without code. Your site lives in a folder you own.</p>
-              <button className="btn btn-primary btn-lg" disabled={!!opening} onClick={() => setCreating(true)}>
+              <p className="hero-pitch">Start with a ready-made site and edit it right on the page. No code needed. The site is yours&nbsp;to&nbsp;keep.</p>
+              <button className="btn btn-primary btn-lg" disabled={!!opening} aria-keyshortcuts={keys.newProject.aria} onClick={() => setCreating(true)}>
                 <Plus /> New project
               </button>
             </div>
             <SiteSketch />
+            {/* A space after each title, so a screen reader does not run the title into the words after it. */}
             <ol className="first-steps">
               <li>
-                <b>Pick a starter</b>
-                Pages, sections and sample images, ready to change.
+                <b>Pick a starter</b>{' '}
+                Pages, sections and sample images, all in place.
               </li>
               <li>
-                <b>Click to edit</b>
-                Change text, images and colors right on the page.
+                <b>Click to edit</b>{' '}
+                Change any text, image or color by clicking it.
               </li>
               <li>
-                <b>Export anywhere</b>
-                Upload the finished folder to any web host.
+                <b>Export your site</b>{' '}
+                A folder of files you own, ready for any web host.
               </li>
             </ol>
           </section>
@@ -702,6 +704,8 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
             </div>
           </section>
         )}
+        {/* Drawn in the window's top right, but reached after the pane's content, so Tab comes to the page first. */}
+        <AppearanceToggle disabled={!!opening} />
       </main>
       {/* Drawn over the window, not inside Welcome: they go with it while the outline covers it, a project having
           arrived from them (or, from a card, before either could have been asked for). */}
@@ -714,15 +718,13 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
   );
 }
 
-/** The sketch's palette: the editor's sky and ink (tokens.css --sky-1, --sky-2, --ink), with a mid sky for leaves. */
-const SKETCH_COLORS = { tileTop: '#CDEBFF', tileBottom: '#86C5FF', ground: '#5FA6EA', ink: '#23304F' };
-
 /**
- * A website taking shape, drawn in the New project dialog's sketch vocabulary: a page in a window, its headline
- * selected the way the canvas selects things. Decorative; the copy beside it says the same in words.
+ * The site a first project starts as, in a window: the Business starter's home page on Foundation, with its own
+ * heading, picture and colours, and that heading selected and being typed in the way the canvas shows it, with the
+ * pointer that clicked it. The page is the user's website, so it keeps its own colours in both appearances; only the
+ * window around it follows the app. Decorative; the copy beside it says the same in words.
  */
 function SiteSketch() {
-  const mark = SKETCH_COLORS;
   return (
     <div className="hero-art" aria-hidden="true">
       <div className="sketch-window">
@@ -734,60 +736,26 @@ function SiteSketch() {
         </div>
         <div className="sketch-page">
           <div className="sketch-nav">
-            <span className="logo">Harbor Lane</span>
-            <span>Shop</span>
-            <span>Weddings</span>
-            <span>Visit</span>
+            <span className="logo">Harbor Lane Studio</span>
+            <span>Home</span>
+            <span>About</span>
+            <span>Contact</span>
+            <span className="sketch-cta">Book a call</span>
           </div>
           <div className="sketch-hero">
             <div className="sketch-copy">
               <div className="sketch-selected">
-                <span className="sketch-h1">Flowers for every season</span>
                 <span className="sketch-tag">Heading</span>
+                <span className="sketch-h1">
+                  Calm, considered spaces for everyday life<i className="sketch-caret" />
+                </span>
+                <svg className="sketch-pointer" viewBox="0 0 16 22">
+                  <path d="M1.5 1.5v16.2l4.1-4 2.7 6.3 3-1.3-2.7-6.2h5.9z" />
+                </svg>
               </div>
-              <span className="sketch-p">Bouquets made to order, delivered daily.</span>
-              <span className="sketch-cta">Order flowers</span>
+              <span className="sketch-p">Homes and small workplaces that feel good to live and work in.</span>
             </div>
-            <svg className="sketch-pic" viewBox="0 0 72 72">
-              <rect width="72" height="72" rx="6" fill="#fff" />
-              <circle cx="36" cy="30" r="22" fill={mark.tileTop} />
-              <path d="M36 66V34" stroke={mark.ink} strokeWidth="2" />
-              <path d="M36 52c-8-1-13-6-14-12 7 0 12 4 14 12zM36 47c6-1 11-5 12-11-6 0-11 4-12 11z" fill={mark.ground} stroke={mark.ink} strokeWidth="1.2" />
-              <g fill={mark.tileBottom} stroke={mark.ink} strokeWidth="1.2">
-                <circle cx="36" cy="16" r="6" />
-                <circle cx="45" cy="23" r="6" />
-                <circle cx="42" cy="33" r="6" />
-                <circle cx="30" cy="33" r="6" />
-                <circle cx="27" cy="23" r="6" />
-              </g>
-              <circle cx="36" cy="25" r="4.5" fill={mark.ink} />
-            </svg>
-          </div>
-          <div className="sketch-cards">
-            <span>
-              <svg viewBox="0 0 48 20">
-                <circle cx="18" cy="9" r="5" fill={mark.tileBottom} />
-                <circle cx="27" cy="7" r="5" fill={mark.ground} />
-                <circle cx="31" cy="13" r="4" fill={mark.tileBottom} />
-                <path d="M22 20l3-7 3 7" fill={mark.ink} />
-              </svg>
-              Bouquets
-            </span>
-            <span>
-              <svg viewBox="0 0 48 20">
-                <path d="M24 13c-5-1-8-5-8-10 5 1 8 5 8 10zM24 13c5-1 8-5 8-10-5 1-8 5-8 10z" fill={mark.ground} />
-                <path d="M18 13h12l-2 7h-8z" fill={mark.ink} />
-              </svg>
-              Plants
-            </span>
-            <span>
-              <svg viewBox="0 0 48 20">
-                <rect x="16" y="7" width="16" height="13" rx="1.5" fill={mark.tileBottom} />
-                <path d="M24 7v13M16 12h16" stroke={mark.ink} strokeWidth="2" />
-                <path d="M24 7c-3-5-8-3-6 0zM24 7c3-5 8-3 6 0z" fill={mark.ink} />
-              </svg>
-              Gifts
-            </span>
+            <img className="sketch-pic" src={starterRoom} alt="" decoding="async" />
           </div>
         </div>
       </div>
