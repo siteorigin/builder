@@ -9,7 +9,7 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText } from './html';
+import { decodeEntities, emptyReport, htmlToPlain, htmlToRichText } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
 import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
@@ -51,6 +51,48 @@ function statusDraft(status: string, password: string): { draft: boolean; reason
 }
 
 const metaValue = (item: XmlElement, key: string) => childElements(item, 'wp:postmeta').find((m) => childText(m, 'wp:meta_key') === key);
+
+interface Footnote {
+  id: string;
+  content: string;
+}
+
+/**
+ * A block-editor post's footnotes (WordPress 6.3 and later), which it keeps in its `footnotes` meta rather than its
+ * HTML: each note's ID and text, in order. Empty when it has none, or they can't be read.
+ */
+function footnotesOf(item: XmlElement): Footnote[] {
+  const m = metaValue(item, 'footnotes');
+  if (!m) return [];
+  let list: unknown;
+  try {
+    list = JSON.parse(childText(m, 'wp:meta_value'));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((f: unknown) => {
+    const { id, content } = (f && typeof f === 'object' ? f : {}) as Partial<Record<string, unknown>>;
+    return typeof id === 'string' && id && typeof content === 'string' ? [{ id, content }] : [];
+  });
+}
+
+/** Where WordPress shows a post's footnotes: its footnotes block. */
+const FOOTNOTES_BLOCK = /<!--\s*wp:footnotes\b(?:[^-]|-(?!->))*-->/i;
+
+/** The IDs a post's HTML gives its own places (`id="note1"`, `<a name="top">`): what its links within itself go to. */
+function ownIds(html: string): Set<string> {
+  return new Set([...html.matchAll(/\s(?:id|name)\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'<>]+))/gi)].map((m) => decodeEntities(m[1] ?? m[2] ?? m[3])));
+}
+
+/** A link's place within a page, as its ID: `#note%201` is the place `note 1`. */
+function fragmentId(hash: string): string {
+  try {
+    return decodeURIComponent(hash);
+  } catch {
+    return hash;
+  }
+}
 
 /** A path as a static site writes its addresses: decoded, with a slash at each end. */
 function sitePath(pathname: string): string {
@@ -180,8 +222,23 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     } catch {
       // The site's root, then.
     }
+    const content = childText(item, 'content:encoded');
+    const footnotes = footnotesOf(item);
+    const noteIds = new Set(footnotes.map((f) => f.id));
+    // The footnotes the text numbers: WordPress marks each with the note's ID.
+    const numbered = new Set([...content.matchAll(/\sdata-fn\s*=\s*["']([^"'<>]+)["']/gi)].map((m) => decodeEntities(m[1])));
+    // The places the post's own HTML gives an ID: an entry's text has no such places, so a link to one goes nowhere.
+    const own = ownIds(content);
+    let noteLinks = 0;
+    let inPost = 0;
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
+      if (t.startsWith('#') && t.length > 1) {
+        const id = fragmentId(t.slice(1));
+        // A note's number, or a link back from a note: its words stay.
+        if (noteIds.has(id) || numbered.has(id)) return noteLinks++, null;
+        if (own.has(id)) return inPost++, null;
+      }
       if (!t || /^(mailto|tel):/i.test(t) || t.startsWith('#')) return linkFromTarget(t, pages, newTab);
       let url: URL;
       try {
@@ -206,14 +263,22 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       oldSite++;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
-    const content = childText(item, 'content:encoded');
     // Classic posts are stored without paragraphs; block-editor posts have them.
     const blocks = content.includes('<!-- wp:');
     // A web address alone on a line of a classic post is one WordPress shows embedded.
-    const prose = blocks ? content : content.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
+    let html = content;
+    // The footnotes as a numbered list where the post shows them, or at its end when it numbers them but has no block.
+    const placed = footnotes.length && (FOOTNOTES_BLOCK.test(html) || footnotes.some((f) => numbered.has(f.id)));
+    if (placed) {
+      const list = `<ol>${footnotes.map((f) => `<li>${f.content}</li>`).join('')}</ol>`;
+      html = FOOTNOTES_BLOCK.test(html) ? html.replace(FOOTNOTES_BLOCK, () => list) : `${html}\n${list}`;
+    }
+    const prose = blocks ? html : html.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
     let body;
     try {
       body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true }, report);
+      // Said below in their own words, not as links whose address could not be kept.
+      report.droppedLinks -= noteLinks + inPost;
     } catch (e) {
       add(failedPost(item, key, (e as Error).message));
       continue;
@@ -226,6 +291,13 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     const linkUrl = childText(item, 'link').trim();
     const notes = reportNotes(report);
+    if (placed) {
+      const n = footnotes.length;
+      notes.push(n === 1 ? 'Its footnote is a numbered list at its end, and its number no longer links to it.' : `Its ${n} footnotes are a numbered list at its end, and their numbers no longer link to them.`);
+    }
+    const lost = [...numbered].filter((id) => !noteIds.has(id)).length;
+    if (lost) notes.push(lost === 1 ? 'The text of its footnote was not in the export: its number is left without a note.' : `The text of ${lost} of its footnotes was not in the export: their numbers are left without notes.`);
+    if (inPost) notes.push(`${inPost === 1 ? 'A link to a place in the post itself (a note number, say) is plain words now' : `${inPost} links to places in the post itself (its note numbers, say) are plain words now`}: an imported post can’t link within itself.`);
     if (oldSite) notes.push(`${oldSite === 1 ? 'A link still goes' : `${oldSite} links still go`} to the old site.`);
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;

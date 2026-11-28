@@ -449,6 +449,8 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       if (cells++) out.push(' · ');
       out.push({ tag: 'span', children: kids() });
     } else if (tag === 'pre') out.push({ tag: 'div', children: kids() });
+    // A block-editor footnote's number: the text has no superscript, so it reads "[1]" rather than running into the word.
+    else if (tag === 'sup' && Object.hasOwn(node.attrs, 'data-fn')) out.push({ tag: 'span', children: ['[', ...kids(), ']'] });
     else if (tag === 'hr') out.push({ tag: 'div', children: [] });
     else if (KEEP.has(tag)) out.push({ tag, children: kids() });
     else if (AS_BLOCK.has(tag) || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') out.push({ tag: 'div', children: kids() });

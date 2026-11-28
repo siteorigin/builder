@@ -538,6 +538,58 @@ const item = (id: number, fields: Record<string, string>, body = '') =>
     .map(([k, v]) => `<${k}><![CDATA[${v}]]></${k}>`)
     .join('')}<content:encoded><![CDATA[${body}]]></content:encoded>`;
 
+const meta = (key: string, value: string) => `<wp:postmeta><wp:meta_key>${key}</wp:meta_key><wp:meta_value><![CDATA[${value}]]></wp:meta_value></wp:postmeta>`;
+const published = { title: 'Nitrate', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' };
+const sectionLinks = (state: ProjectState) => validateState(state).filter((d) => d.code === 'LINK_SECTION_MISSING');
+
+describe('reading footnotes (#1505)', () => {
+  it('brings a block-editor post’s footnotes in from its meta as a numbered list, and its numbers stop linking to anchors it lost', async () => {
+    const body =
+      '<!-- wp:paragraph --><p>Nitrate leaching peaked in October<sup data-fn="fn-14-a" class="fn"><a href="#fn-14-a" id="fn-14-a-link">1</a></sup> and fell by spring<sup data-fn="fn-14-b" class="fn"><a href="#fn-14-b" id="fn-14-b-link">2</a></sup>.</p><!-- /wp:paragraph -->\n<!-- wp:footnotes /-->';
+    const notes = JSON.stringify([
+      { id: 'fn-14-a', content: 'Measured at 30 cm with <em>suction lysimeters</em>.' },
+      { id: 'fn-14-b', content: 'See <a href="https://journal.example/paper">the paper</a>.' }
+    ]);
+    const source = await readWordPress(wxr([item(14, published, body) + meta('footnotes', notes)]), {});
+    const [post] = source.posts;
+    expect(text(post.body)).toEqual(['Nitrate leaching peaked in October[1] and fell by spring[2].', 'Measured at 30 cm with suction lysimeters. | See the paper.']);
+    expect(post.body[1]).toMatchObject({ type: 'ol' });
+    // The numbers are words now: no link left to a place the post no longer has.
+    expect(JSON.stringify(post.body[0])).not.toContain('anchor');
+    // A link inside a note is kept.
+    expect(JSON.stringify(post.body[1])).toContain('https://journal.example/paper');
+    expect(post.notes).toEqual(['Its 2 footnotes are a numbered list at its end, and their numbers no longer link to them.']);
+    const { after } = commit(site(), source);
+    expect(sectionLinks(after)).toEqual([]);
+  });
+
+  it('puts the footnotes at the end when the post has no footnotes block, and says so when the export lost their text', async () => {
+    const marker = '<p>Peaked<sup data-fn="fn-1" class="fn"><a href="#fn-1" id="fn-1-link">1</a></sup>.</p>';
+    const kept = await readWordPress(wxr([item(1, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph -->`) + meta('footnotes', JSON.stringify([{ id: 'fn-1', content: 'A note.' }]))]), {});
+    expect(text(kept.posts[0].body)).toEqual(['Peaked[1].', 'A note.']);
+    for (const lost of ['', meta('footnotes', '[{"id":'), meta('footnotes', '[]')]) {
+      const source = await readWordPress(wxr([item(2, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph --><!-- wp:footnotes /-->`) + lost]), {});
+      const [post] = source.posts;
+      expect(text(post.body)).toEqual(['Peaked[1].']);
+      expect(post.notes).toEqual(['The text of its footnote was not in the export: its number is left without a note.']);
+      expect(sectionLinks(commit(site(), source).after)).toEqual([]);
+    }
+  });
+
+  it('keeps hand-written notes, and unlinks the numbers that went to places in the post itself', async () => {
+    const body = '<p>Yields rose<sup id="ref1"><a href="#note1">[1]</a></sup>. <a href="#contact">Write to us</a>.</p>\n\n<ol><li id="note1">From the 2019 survey. <a href="#ref1">↩</a></li></ol>';
+    const source = await readWordPress(wxr([item(3, published, body)]), {});
+    const [post] = source.posts;
+    expect(text(post.body)).toEqual(['Yields rose[1]. Write to us.', 'From the 2019 survey. ↩']);
+    const links = JSON.stringify(post.body);
+    expect(links).not.toContain('note1');
+    expect(links).not.toContain('ref1');
+    // A section the post never had (the site's own, perhaps) is still linked to.
+    expect(links).toContain('"target":"contact"');
+    expect(post.notes).toEqual(['2 links to places in the post itself (its note numbers, say) are plain words now: an imported post can’t link within itself.']);
+  });
+});
+
 describe('reading posts in batches', () => {
   it('hands a WordPress export’s posts over as it reads them: the same posts, in the same order, and the rest of the source the same', async () => {
     const file = wxr(Array.from({ length: 2 * POSTS_PER_BATCH + 20 }, (_, i) => item(i + 1, { title: `Post ${i}`, 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, `<p>Text ${i}</p>`)), '<item><wp:post_type>page</wp:post_type><title>About</title></item>');
