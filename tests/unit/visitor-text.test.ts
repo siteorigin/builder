@@ -572,7 +572,8 @@ describe('English wording on a page in French or Urdu, as the export prerenders 
       skip: tag(html, /<a class="so-skip-link"[^>]*>[^<]*<\/a>/),
       menu: tag(html, /<span class="so-visually-hidden"[^>]*>Menu<\/span>/),
       nav: nav.replace(/ class="[^"]*"/, ''),
-      name: nameId ? tag(html, new RegExp(`<span id="${nameId}"[^>]*>[^<]*</span>`)).replace(nameId, 'ID') : '',
+      // Svelte's scoping class, which it gives the element when its selectors could reach it, is no part of the wording.
+      name: nameId ? tag(html, new RegExp(`<span id="${nameId}"[^>]*>[^<]*</span>`)).replace(nameId, 'ID').replace(/ class="svelte-[a-z0-9]+"/, '') : '',
       submenu: tag(html, /<span class="so-visually-hidden">About[\s\S]*?submenu(<\/span>)+/)
     };
   };

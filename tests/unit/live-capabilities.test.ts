@@ -268,6 +268,11 @@ describe('checking a batch', () => {
     expect(checkEditBatch('collaborator', { operations: [...Array(LIVE_BATCH_MAX_COPIES).fill(copy), { type: 'page.duplicate', pageId: 'pg_home' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: LIVE_BATCH_MAX_COPIES } });
   });
 
+  it('keeps a draft duplicate to the host', () => {
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.duplicate', pageId: 'pg_about' }] })).toMatchObject({ ok: true });
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.duplicate', pageId: 'pg_about', draft: true }] })).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Only the host') } });
+  });
+
   it('lets a collaborator add a page, but not date it, keep it out of News, or make it a draft', () => {
     expect(checkEditBatch('collaborator', { operations: [{ type: 'page.create', title: 'Workshops', route: '/workshops/', starter: 'services', addToNavigation: true, byline: 'By Ana Ruiz', excerpt: 'Spring dates' }] })).toMatchObject({ ok: true });
     for (const field of [{ articleDate: '2026-01-01' }, { newsHidden: true }, { newsHidden: false }, { starter: 'article' }, { draft: true }, { draft: false }])

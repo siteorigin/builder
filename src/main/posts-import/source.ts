@@ -16,6 +16,15 @@ export interface SourceTerm {
 /** A link in a post's text to another post of the same import: its target is the other post's key. */
 export const POST_LINK_PREFIX = 'post:';
 
+/** A post's search settings as the source gave them (#1514): each one left out falls back as an entry's does. */
+export interface SourceSeo {
+  title?: string;
+  description?: string;
+  /** An absolute http(s) address, checked as an entry's is. */
+  canonical?: string;
+  noindex?: true;
+}
+
 export interface SourcePost {
   /** Unique within the import: `wp:<post ID>` or `md:<file>`. */
   key: string;
@@ -45,6 +54,8 @@ export interface SourcePost {
   featuredLost?: boolean;
   /** The address it had on the old site, when that was a path a static site can have. */
   oldPath?: string;
+  /** Its search settings, when the source gives any. */
+  seo?: SourceSeo;
   /** What reading it left out or changed, in plain words. */
   notes: string[];
 }

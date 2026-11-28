@@ -12,6 +12,7 @@ import type { AiEvent, ChatContext } from '@shared/api';
 import type { AssetRecord, ElementRef, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { TOOL_ERROR_CODES, type EditOperation } from '@shared/ops';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import type { PreviewControlResult } from '@shared/preview-control';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
 import { P, prop } from '@catalogue/dsl';
@@ -128,7 +129,15 @@ interface Case {
    * tool the success takes out of the next step's offer (the only update done, the scope widened) is still offered.
    */
   sameStep?: { fail?: (s: ProjectState, revision: number, ids: { note: string; design: string }) => unknown };
+  /** What the project needs first, done as the author would: a change in History for an Undo to take. */
+  seed?: (session: ProjectSession) => Promise<unknown>;
 }
+
+/** The author's own change, for step_history to undo. */
+const authorEdit = (session: ProjectSession) => session.apply({ operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Welcome' }] }, { label: 'Rename Home', source: 'user' });
+
+/** The editor's answer to set_preview, as its toolbar would give it at phone width. */
+const previewAnswer = async (): Promise<PreviewControlResult> => ({ now: { width: 390, preset: 'phone', scheme: 'system', mode: 'edit', darkPalette: false }, changed: ['viewport'], refused: [] });
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const rootAt = (s: ProjectState, i: number) => home(s).rootIds.at(i)!;
@@ -212,7 +221,9 @@ const CASES = {
   style_definition_element: { where: 'design', ok: () => ({ partId: 'root', scope: 'phone', styles: [{ property: 'paddingBlock', value: { token: 'space.lg' } }] }), fail: () => ({ partId: 'nothing', scope: 'base', styles: [{ property: 'gap', value: { token: 'space.lg' } }] }), code: 'VALIDATION_FAILED' },
   add_definition_variant: { where: 'design', ok: () => ({ axis: 'tone', option: 'bold', label: 'Bold' }), fail: () => ({ axis: 'tone', option: 'muted', label: 'Muted again' }), code: 'VALIDATION_FAILED' },
   insert_definition_node: { where: 'design', ok: () => ({ parentId: 'content', primitive: 'paragraph', text: 'Made by hand' }), fail: () => ({ parentId: 'heading', primitive: 'icon' }), code: 'VALIDATION_FAILED' },
-  remove_definition_node: { where: 'design', ok: () => ({ nodeId: 'secondary' }), fail: () => ({ nodeId: 'node_gone' }), code: 'VALIDATION_FAILED' }
+  remove_definition_node: { where: 'design', ok: () => ({ nodeId: 'secondary' }), fail: () => ({ nodeId: 'node_gone' }), code: 'VALIDATION_FAILED' },
+  set_preview: { where: 'ask', ok: () => ({ viewport: 'phone' }), fail: () => ({}), code: 'INVALID_ARGUMENT' },
+  step_history: { where: 'site', seed: authorEdit, ok: () => ({ direction: 'undo' }), fail: () => ({ direction: 'sideways' }), code: 'INVALID_ARGUMENT' }
 } satisfies Record<ToolName, Case>;
 
 /** A measured case, as the component preview reports one with nothing wrong. */
@@ -255,6 +266,12 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     inspectLayout: async () => ({ issues: [], images: { total: 0, loaded: 0, failed: 0, unverified: 0 } }),
     inspectComponent: async (steps) => steps.map(measured),
     ask: async (_q, choices) => choices[0] ?? 'Yes',
+    controlPreview: previewAnswer,
+    // As a run that has changed nothing steps History (the orchestrator's host holds the run it began).
+    stepHistory: async (direction, steps) => {
+      if (session.activeRun?.id !== 'run_envelope') await session.beginRun('run_envelope');
+      return session.stepHistoryForRun('run_envelope', direction, steps);
+    },
     macros: newMacroMemory(),
     selection: () => (sel ? { owner: sel.owner, nodeId: sel.nodeId } : null),
     definitionTarget: () => (where === 'design' ? { definitionId: design } : null),
@@ -291,6 +308,7 @@ describe('one result envelope for every tool (#744)', () => {
   it.each(Object.keys(CASES) as ToolName[])('%s: a direct call succeeds and fails in the envelope', async (name) => {
     const c: Case = CASES[name];
     const { session, ids } = await sessionFor();
+    await c.seed?.(session);
     const host = hostFor(session, c.where, ids.design);
     const before = session.revision;
     const ok = await executeTool(name, JSON.stringify(c.ok(session.state, session.revision, ids)), host, 'call_ok');
@@ -316,6 +334,7 @@ describe('one result envelope for every tool (#744)', () => {
   it.each(Object.keys(CASES) as ToolName[])('%s: a run sends its success and its failure to the model in the envelope', async (name) => {
     const c: Case = CASES[name];
     const { session, ids } = await sessionFor();
+    await c.seed?.(session);
     const results = new Map<string, Extract<CanonicalItem, { kind: 'tool_result' }>>();
     const seen = (req: CanonicalModelRequest) => req.items.forEach((i) => i.kind === 'tool_result' && results.set(i.callId, i));
     const offered: string[][] = [];
@@ -405,6 +424,7 @@ function runner(session: ProjectSession, turns: Array<(req: CanonicalModelReques
     codeEnabled: async () => true,
     onBusyChange: () => undefined,
     sources: () => sourcesOf(session),
+    controlPreview: previewAnswer,
     ...extra
   });
   const run = async (text: string, ctx: Partial<ChatContext> = {}) => {

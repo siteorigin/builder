@@ -9,11 +9,12 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
+import { decodeEntities, emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
 import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type KnownPosts, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { entryLink, linkNotes, pageLink, postLink, reportNotes } from './notes';
+import { wordpressSeo } from './wordpress-seo';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
 /** The longest title, name or label read: the plan shortens what it keeps, and says so. */
@@ -137,6 +138,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     siteOrigin = undefined;
   }
   const media = new MediaTable(root, realRoot, siteOrigin);
+  /** The site's name, as its SEO plugin fills it into a post's search title. */
+  // Plain text, as WordPress keeps it: never read as HTML.
+  const siteName = decodeEntities(childText(channel, 'title').slice(0, FIELD_CHARS), true).replace(/\s+/g, ' ').trim();
   const authors = new Map(childElements(channel, 'wp:author').map((a) => [childText(a, 'wp:author_login').trim(), childText(a, 'wp:author_display_name').trim()]));
   /** Each attachment the export lists, by its ID, and the IDs attached to each post, in WordPress's gallery order. */
   const attachments = new Map<string, HtmlImage>();
@@ -281,23 +285,25 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     // A web address alone on a line of a classic post is one WordPress shows embedded.
     const prose = blocks ? content : content.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
     const oldPath = oldPathOf(childText(item, 'link').trim(), siteOrigin);
+    const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
+    const search = wordpressSeo(item, title, siteName, ownLink, siteOrigin);
     let body;
     try {
       const postId = childText(item, 'wp:post_id').trim();
       const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
       body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery, wordpress: { footnotes: footnotesOf(item) } }, report);
     } catch (e) {
-      add(failedPost(item, key, (e as Error).message, oldPath));
+      const failed = failedPost(item, key, (e as Error).message, oldPath);
+      add({ ...failed, ...(search.seo ? { seo: search.seo } : {}), notes: [...failed.notes, ...search.notes] });
       continue;
     }
-    const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
     const thumb = metaValue(item, '_thumbnail_id');
     const thumbId = thumb ? childText(thumb, 'wp:meta_value').trim() : '';
     const thumbUrl = thumbId ? attachments.get(thumbId)?.src : undefined;
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
-    const notes = [...reportNotes(report), ...links.list()];
+    const notes = [...reportNotes(report), ...links.list(), ...search.notes];
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     add({
       key,
@@ -318,6 +324,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       body,
       ...(thumbUrl ? { featured: media.key(thumbUrl) } : thumbId ? { featuredLost: true } : {}),
       ...(oldPath ? { oldPath } : {}),
+      ...(search.seo ? { seo: search.seo } : {}),
       notes
     });
   }
