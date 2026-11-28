@@ -485,10 +485,20 @@ const browseIndexes = (state: ProjectState): ReadonlySet<string> => new Set(brow
 /**
  * A generated file without the declarations of what its browsed listings' controls read (generator/index.ts
  * browsedRows): the words and values of entries, which name no file and import nothing. The rows the listings show
- * stay, as the rest of the file.
+ * stay, as the rest of the file does, and so does a declaration of that name whose value is anything else (code of
+ * the author's).
  */
-const BROWSE_DATA_LINE = new RegExp(`^\\t${BROWSE_DATA_PREFIX}\\d+ = .*;$`, 'gm');
-const withoutBrowseData = (text: string): string => (text.includes(BROWSE_DATA_PREFIX) ? text.replace(BROWSE_DATA_LINE, '') : text);
+const BROWSE_DATA_LINE = new RegExp(`^\\t${BROWSE_DATA_PREFIX}\\d+ = (.*);$`, 'gm');
+/** Whether a declaration's value reads as the generator writes what a listing's controls read: rows of words and values. */
+const isBrowseData = (json: string): boolean => {
+  try {
+    const rows: unknown = JSON.parse(json);
+    return Array.isArray(rows) && rows.every((r) => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' && typeof (r as { i?: unknown }).i === 'number' && Object.keys(r).every((k) => k === 'id' || k === 'i' || k === 'text' || k === 'values'));
+  } catch {
+    return false;
+  }
+};
+const withoutBrowseData = (text: string): string => (text.includes(BROWSE_DATA_PREFIX) ? text.replace(BROWSE_DATA_LINE, (line, json: string) => (isBrowseData(json) ? '' : line)) : text);
 
 /**
  * What of a generated file names the files it loads, for finding the library files the website uses: all of it

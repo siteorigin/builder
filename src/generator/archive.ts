@@ -204,7 +204,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const section = (inner: string) => `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${inner}\n\t</div>\n</section>`;
   const sections = layout
     ? browsing
-      ? designedBrowse(browseOpen, section(`${header}\n\t\t{@render so_bar()}`), layout.markup, body.length ? section(body.join('\n')) : '', section(`\t\t<div class="so-browse__more-row">{@render so_more()}</div>`))
+      ? designedBrowse(browseOpen, section(`${header}\n\t\t{@render so_bar()}`), layout.markup, body.length ? section(body.join('\n')) : '', section(`\t\t<div class="so-browse__more-row">{@render so_more()}</div>`).replace('<section class="so-archive">', '<section class="so-archive so-browse__more-band">'))
       : [section(header), layout.markup, body.length ? section(body.join('\n')) : ''].filter(Boolean).join('\n')
     : section(`${header}\n${body.join('\n')}`);
   return HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) + `<script>\n${script}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` + `${sections}\n\n${archiveStyle(uses)}`;

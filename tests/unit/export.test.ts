@@ -407,9 +407,24 @@ describe('website export assets', () => {
     expect(alone(photo.file)).toBe(true);
     expect(alone('static/assets/house-22222222-480w.webp')).toBe(true);
     expect(alone(offer.file)).toBe(false);
-    // What Home's controls read of each house names nothing either.
+    // What Home's controls read of each house names nothing either, even past a line separator in its text.
     const page = await exported(home);
     expect(page(offer.file)).toBe(false);
+    const separated = structuredClone(state);
+    separated.collections.homes.entries.en_house.values.note = 'See\u2028offer-33333333.pdf';
+    const written = generateProject(separated).get(home)!;
+    expect(written).toContain('See\\u2028offer-33333333.pdf');
+    const sepDir = temp();
+    write(sepDir, home, written);
+    write(sepDir, offer.file, 'x');
+    await pruneWebsiteAssets(sepDir, separated);
+    expect(existsSync(join(sepDir, offer.file))).toBe(false);
+    // A declaration of that name in code of the author's is code, and the file it names ships.
+    const authored = temp();
+    write(authored, 'src/lib/menu.js', `export function menu() {\n\tconst so_browse_0 = '/assets/offer-33333333.pdf';\n\treturn so_browse_0;\n}\n`);
+    write(authored, offer.file, 'x');
+    await pruneWebsiteAssets(authored, state);
+    expect(existsSync(join(authored, offer.file))).toBe(true);
   });
 
   it('lists every asset it left out, and says nothing when it left none out', () => {

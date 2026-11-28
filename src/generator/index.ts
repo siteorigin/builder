@@ -235,7 +235,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'activeItem', 'stepItem', 'itemKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'activeItem', 'stepItem', 'itemKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing', 'SoBrowse', 'so_bar', 'so_more', 'so_matches', 'so_m', 'so_e']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -261,7 +261,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_slot_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_slot_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|so_rows_|so_browse_|so_matches_|so_listing_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -2647,22 +2647,43 @@ function propSchemaFor(ctx: EmitCtx, v: unknown): PropSchema | undefined {
   return propBindingSchema(ctx.def.properties, v);
 }
 
+/** Elements a browse form cannot be placed directly inside: lists, text, and a summary (their content is not flow). */
+const NO_FORM_INSIDE = new Set(['ul', 'ol', 'dl', 'p', 'span', 'summary']);
+
 /**
- * The listings visitors may browse in the emitted tree, each by the node its controls are placed around: a connected
- * list's placement itself (`prop:<node>|<prop>`), and a collection query's loop's parent (`repeat:<node>`), as a
- * category filter's pills are placed, or the loop itself when it has none.
+ * The listings visitors may browse in the emitted tree, each by the node its controls are placed around (see
+ * browseWrap): a connected list's placement (`prop:<node>|<prop>`), and the element holding a collection query's
+ * loop (`repeat:<node>`), or the loop itself when nothing holds it. From there the controls go up past whatever
+ * cannot hold them beside it: a list, text, a summary, a row or grid (whose items they would become), a tag a
+ * property chooses, and anything inside a linked card (a form inside a link). They never leave what shows and hides
+ * the listing: a slot's own content, a dialog or drawer, a tab panel, another list's items. Held directly by one of
+ * those, the loop itself is wrapped, so the controls show and hide with its rows.
  */
 function browseListings(ctx: EmitCtx): Map<string, string[]> {
   if (ctx.browseHosts) return ctx.browseHosts;
   const hosts = new Map<string, string[]>();
   const add = (host: string, key: string) => hosts.set(host, [...(hosts.get(host) ?? []), key]);
   const nodes = ctx.tree.nodes && typeof ctx.tree.nodes === 'object' ? ctx.tree.nodes : {};
-  const parents = new Map<string, string>();
-  for (const n of Object.values(nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of cl.ids) parents.set(c, n.id);
+  const parents = new Map<string, GraphNode>();
+  for (const n of Object.values(nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of cl.ids) parents.set(c, n);
+  const boundary = (n: GraphNode) => n.kind === 'slot' || n.kind === 'repeat' || !!ctx.widgets?.panels.has(n.id) || !!ctx.widgets?.overlays.has(n.id);
+  const holdsNoForm = (n: GraphNode) => n.kind === 'element' && (isBinding(n.tag) || NO_FORM_INSIDE.has(n.tag) || n.styles?.base?.layout === 'row' || n.styles?.base?.layout === 'grid');
+  const inLink = (n: GraphNode) => {
+    for (let at: GraphNode | undefined = n, hops = 0; at && !boundary(at) && hops < 200; at = parents.get(at.id), hops++) if (isCardLink(at)) return true;
+    return false;
+  };
+  const hostOf = (start: GraphNode): string => {
+    let host = start;
+    for (let up = parents.get(host.id), hops = 0; up && !boundary(up) && (holdsNoForm(up) || inLink(up)) && hops < 200; up = parents.get(host.id), hops++) host = up;
+    return host.id;
+  };
   for (const id of Object.keys(nodes).sort()) {
     const n = nodes[id];
-    if (n?.kind === 'instance') for (const prop of Object.keys(n.listSources ?? {}).sort()) add(n.id, `prop:${n.id}|${prop}`);
-    else if (n?.kind === 'repeat' && isCollectionLoop(n) && loopBrowses(n)) add(parents.get(n.id) ?? n.id, `repeat:${n.id}`);
+    if (n?.kind === 'instance') for (const prop of Object.keys(n.listSources ?? {}).sort()) add(hostOf(n), `prop:${n.id}|${prop}`);
+    else if (n?.kind === 'repeat' && isCollectionLoop(n) && loopBrowses(n)) {
+      const holder = parents.get(n.id);
+      add(hostOf(holder && !boundary(holder) ? holder : n), `repeat:${n.id}`);
+    }
   }
   return (ctx.browseHosts = hosts);
 }
@@ -2674,7 +2695,10 @@ function browseListings(ctx: EmitCtx): Map<string, string[]> {
  */
 function browsedRows(ctx: EmitCtx, slot: BrowseSlot, rows: string, listing: NonNullable<ReturnType<typeof listingBrowse>>, name: string): string {
   const n = slot.n;
-  ctx.browseData = [...(ctx.browseData ?? []), `	const so_rows_${n} = ${rows};`, `	${BROWSE_DATA_PREFIX}${n} = ${js(listing.rows)};`];
+  // On one line, which export reads past (see main/export.ts): a line or paragraph separator in an entry's text is
+  // written as its escape.
+  const data = js(listing.rows).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  (ctx.browseData ??= []).push(`\tconst so_rows_${n} = ${rows};`, `\t${BROWSE_DATA_PREFIX}${n} = ${data};`);
   slot.browse = { controls: listing.controls, size: listing.rows.length, name };
   return `(so_matches_${n} ? so_matches_${n}.map((so_m) => so_rows_${n}[so_m.i]) : so_rows_${n})`;
 }
@@ -2692,14 +2716,16 @@ export const BROWSE_DATA_PREFIX = 'const so_browse_';
 function browseWrap(ctx: EmitCtx, slot: BrowseSlot, inner: string, section: boolean): string {
   const p = pad(ctx);
   const { controls, size, name } = slot.browse!;
+  const n = slot.n;
   useImport(ctx, 'SoBrowse', `${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`);
+  // Snippets of names no property's local takes, passed by name: inside a snippet called `content`, a design's own
+  // property `content` would read the snippet.
   return [
-    `${p}<SoBrowse controls={${js(controls)}} load={() => ({ default: so_browse_${slot.n} })} size={${size}} name={${js(name)}}>`,
-    ...(section ? [`${p}	{#snippet frame(so_bar)}`, `${p}		<div class="so-container">{@render so_bar()}</div>`, `${p}	{/snippet}`] : []),
-    `${p}	{#snippet content(so_matches_${slot.n})}`,
-    indentBlock(indentBlock(inner)),
-    `${p}	{/snippet}`,
-    `${p}</SoBrowse>`
+    ...(section ? [`${p}{#snippet so_listing_frame_${n}(so_bar)}`, `${p}\t<div class="so-container">{@render so_bar()}</div>`, `${p}{/snippet}`] : []),
+    `${p}{#snippet so_listing_${n}(so_matches_${n})}`,
+    indentBlock(inner),
+    `${p}{/snippet}`,
+    `${p}<SoBrowse controls={${js(controls)}} load={() => ({ default: so_browse_${n} })} size={${size}} name={${js(name)}} content={so_listing_${n}}${section ? ` frame={so_listing_frame_${n}}` : ''} />`
   ].join('\n');
 }
 
@@ -4588,6 +4614,9 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   }
   const header = emitNodes(hctx, state.site.shell.header.rootIds);
   fctx.imports = hctx.imports;
+  // So do their browsed listings, numbered apart and declared together (see browsedRows).
+  fctx.browseData = hctx.browseData ??= [];
+  fctx.browseCount = hctx.browseCount;
   const footer = emitNodes(fctx, state.site.shell.footer.rootIds);
   const imports = renderImports(hctx.imports);
   // The header's and footer's empty slots share one `so_editing`.

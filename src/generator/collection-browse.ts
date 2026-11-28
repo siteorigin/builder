@@ -20,7 +20,7 @@ import { normalizeConnection } from '@shared/collection-rows';
 import { CURRENT_COLLECTION, normalizeCollectionQuery } from '@shared/collection-query';
 import { entryFieldLabel, entryFieldValue, type EntryReadContext } from '@shared/entry-fields';
 import { entryRow, publishedEntries } from '@shared/entry-feed';
-import { allTrees } from '@engine/tree';
+import { allTrees, childLists } from '@engine/tree';
 import { hasArchiveLayout, siteArchives } from './archive';
 import { prepareLoops } from './collection-loops';
 import { entrySearchHidden, FOLD_JS } from './search';
@@ -90,7 +90,16 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
  */
 export function archiveLoopIds(layout: NodeTree | undefined): string[] {
   const nodes = layout && typeof layout === 'object' && layout.nodes && typeof layout.nodes === 'object' ? layout.nodes : {};
-  return Object.values(nodes).flatMap((n) => (n?.kind === 'repeat' && isCollectionLoop(n) && Object.hasOwn(n.list, '$archive') ? [n.id] : []));
+  // Only those the page shows: reached from its sections, never one a hand edit left in the tree on its own.
+  const reached = new Set<string>();
+  const visit = (id: string) => {
+    const n = Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    if (!n || reached.has(id)) return;
+    reached.add(id);
+    for (const cl of childLists(n)) cl.ids.forEach(visit);
+  };
+  (Array.isArray(layout?.rootIds) ? layout.rootIds : []).forEach(visit);
+  return Object.values(nodes).flatMap((n) => (n?.kind === 'repeat' && reached.has(n.id) && isCollectionLoop(n) && (n.list as { $archive?: unknown }).$archive === true && Object.keys(n.list).length === 1 ? [n.id] : []));
 }
 
 /**
@@ -136,9 +145,13 @@ function treeBrowses(state: ProjectState, owner: { kind: string; id: string }, t
   return false;
 }
 
-/** Whether the site has browsing anywhere, so its runtime holds the browse code: an index, or a listing, that browses. */
+/**
+ * Whether the site has browsing anywhere, so its runtime holds the browse code: an index, or a listing, that browses,
+ * or code of the author's that places the browse component (a design's file converted to code keeps its listing).
+ */
 export function usesBrowse(state: ProjectState): boolean {
-  return browsingCollections(state).length > 0 || allTrees(state).some((t) => treeBrowses(state, t.owner, t.tree));
+  const named = Object.values(state.components ?? {}).some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.includes(BROWSE_COMPONENT_FILE));
+  return named || browsingCollections(state).length > 0 || allTrees(state).some((t) => treeBrowses(state, t.owner, t.tree));
 }
 
 /** The value one control reads for an entry, in the form the matching code compares. */
@@ -534,7 +547,13 @@ export const BROWSE_SVELTE = String.raw`<script>
 		more_pages += 1;
 		await tick();
 		if (had) {
-			(reachable().find((el) => !had.has(el) && !form?.contains(el) && !el.classList.contains('so-browse__more')) ?? said)?.focus();
+			// The first of them a keyboard can be on: one hidden at this size takes no focus.
+			for (const el of reachable()) {
+				if (had.has(el) || form?.contains(el) || el.classList.contains('so-browse__more') || el.disabled) continue;
+				el.focus();
+				if (document.activeElement === el) return;
+			}
+			said?.focus();
 			return;
 		}
 		const card = list?.querySelectorAll('li')[before];
@@ -755,8 +774,9 @@ export const BROWSE_SVELTE = String.raw`<script>
 	.so-browse__status p {
 		margin: 0;
 	}
-	.so-browse__status p:focus {
-		outline: none;
+	.so-browse__status p:focus-visible {
+		outline: 2px solid var(--so-surface-ink, var(--so-color-focus, currentColor));
+		outline-offset: 2px;
 	}
 	.so-browse__results {
 		display: flex;
@@ -777,7 +797,8 @@ export const BROWSE_SVELTE = String.raw`<script>
 	}
 	@media print {
 		.so-browse,
-		.so-browse__more {
+		.so-browse__more,
+		:global(.so-browse__more-band) {
 			display: none;
 		}
 	}

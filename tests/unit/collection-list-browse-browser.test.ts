@@ -125,7 +125,7 @@ describe.skipIf(!browserInstalled)("a collection list's visitor browsing switch"
 
   const show = async (browse: boolean) => {
     const { s, owner, grid, loop } = project(browse);
-    await page.evaluate(([state, o, g, l]) => (window as unknown as { show: (...a: unknown[]) => void }).show(state, o, g, l), [s, owner, grid, loop] as const);
+    await page.evaluate(`window.show(${JSON.stringify(s)}, ${JSON.stringify(owner)}, ${JSON.stringify(grid)}, ${JSON.stringify(loop)})`);
     return { s, owner, grid, loop };
   };
   const saved = () => page.evaluate<EditOperation[]>('window.saved');

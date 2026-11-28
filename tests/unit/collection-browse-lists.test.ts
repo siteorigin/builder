@@ -7,14 +7,14 @@
 import { compile } from 'svelte/compiler';
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { InstanceNode, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
-import { RUNTIME_DIR, generateProject, pageFile, publishedState } from '@generator/index';
+import { RUNTIME_DIR, generateProject, pageFile, propLocals, publishedState } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, browseIndexFile, buildLayoutBrowseIndex, listingBrowse } from '@generator/collection-browse';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, archiveLoopIds, browseIndexFile, buildLayoutBrowseIndex, listingBrowse, usesBrowse } from '@generator/collection-browse';
 import { queriedEntries } from '@generator/collection-query';
 import { archiveFile } from '@generator/archive';
 import { runConnectList } from '@agent/collection-lists';
@@ -38,7 +38,7 @@ function refusal(s: ProjectState, op: EditOperation): string {
 /** The featured three, by title. */
 const BY_TITLE = { collectionId: 'homes', sort: [{ field: 'title' }], limit: 3 };
 /** The dearest but one, then the next two. */
-const DEAREST = { collectionId: 'homes', sort: [{ field: 'field.price', direction: 'desc' }], offset: 1, limit: 3 };
+const DEAREST = { collectionId: 'homes', sort: [{ field: 'field.price', direction: 'desc' as const }], offset: 1, limit: 3 };
 
 /**
  * Six published homes and a draft, two to a page of the index, filed by region, browsing by search, region, garden,
@@ -113,14 +113,64 @@ describe("a listing's visitor browsing", () => {
     (nodes[grid] as InstanceNode).listSources!.people = { ...(nodes[grid] as InstanceNode).listSources!.people, browse: 'yes' as unknown as true };
     (nodes[loop] as RepeatNode).list = { $query: DEAREST, browse: false as unknown as true };
     const found = errors(damaged).map((d) => d.message);
-    expect(found.some((m) => /form that cannot be read/.test(m))).toBe(true);
-    expect(found.some((m) => /visitor browsing that is not on/.test(m))).toBe(true);
+    expect(found.filter((m) => /visitor browsing that is not on/.test(m))).toHaveLength(2);
+    expect(found.some((m) => /form that cannot be read/.test(m))).toBe(false);
     // A loop over the archive page's entries browses with the index, never by a switch of its own.
     const designed = run(s, { type: 'collection.update', collectionId: 'homes', archiveTemplate: 'start' } as EditOperation);
     const layout = designed.collections.homes.settings.archiveTemplate!;
     const archiveLoop = Object.values(layout.nodes).find((n) => n.kind === 'repeat') as RepeatNode;
     (archiveLoop.list as Record<string, unknown>).browse = true;
-    expect(errors(designed).map((d) => d.message).some((m) => /archive page it is on/.test(m))).toBe(true);
+    expect(errors(designed).map((d) => d.message).some((m) => /visitor browsing of its own, but it repeats the index page's entries/.test(m))).toBe(true);
+  });
+
+  it('places its controls where a form may go: outside a grid, a list and a linked card', () => {
+    const { s: base, loop } = site();
+    const s = structuredClone(base);
+    const nodes = s.pages[s.site.homePageId].nodes;
+    // The loop's holder becomes a list, inside a linked card, inside a grid of two columns.
+    const holder = Object.values(nodes).find((n) => n.kind === 'element' && n.children.includes(loop))!;
+    const card = { id: 'n_card', kind: 'element', tag: 'article', link: { type: 'url', target: 'https://example.com/' }, children: [holder.id], styles: { base: {} } };
+    const grid = { id: 'n_grid', kind: 'element', tag: 'div', children: ['n_card'], styles: { base: { layout: 'grid' } } };
+    const outer = { id: 'n_outer', kind: 'element', tag: 'section', children: ['n_grid'], styles: { base: {} } };
+    Object.assign(nodes, { n_card: card, n_grid: grid, n_outer: outer } as unknown as typeof nodes);
+    (holder as { tag: string }).tag = 'ul';
+    const page = s.pages[s.site.homePageId];
+    page.rootIds = page.rootIds.map((id) => (id === holder.id ? 'n_outer' : id));
+    const written = homePage(s);
+    // The grid is what the controls go above, inside the section holding it: never inside the grid, the card or the list.
+    expect(written).toMatch(/<section class=\{\["so-n-n_outer"\]\}>\n\t\{#snippet so_listing_1\(so_matches_1\)\}\n\t\t<div class=\{\["so-n-n_grid"\]\}>/);
+    expect(written).toMatch(/\t<SoBrowse [^\n]*content=\{so_listing_1\} \/>\n<\/section>/);
+    expect(warnings(written, 'src/routes/+page.svelte')).toEqual([]);
+  });
+
+  it('declares the footer\'s listings beside the header\'s, numbered apart', () => {
+    const { s: base } = site();
+    let s = base;
+    for (const part of ['header', 'footer'] as const) {
+      const owner: OwnerRef = { kind: 'shell', id: part };
+      const placed = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, primitive: 'container' }]);
+      const looped = applyOperations(placed.state, [{ type: 'node.insert', owner, parentId: placed.results[0].nodeId as string, primitive: 'repeat', query: part === 'header' ? BY_TITLE : DEAREST }]);
+      const loop = looped.results[0].nodeId as string;
+      const heading = applyOperations(looped.state, [{ type: 'node.insert', owner, parentId: loop, primitive: 'heading', text: 'Title' }]);
+      s = run(heading.state, { type: 'node.setBinding', owner, nodeId: heading.results[0].nodeId as string, field: 'text', binding: { $item: 'title' } }, { type: 'node.setRepeatSource', owner, nodeId: loop, source: { $query: part === 'header' ? BY_TITLE : DEAREST, browse: true } });
+    }
+    const layout = generateProject(publishedState(s)).get('src/routes/+layout.svelte')!;
+    expect(declared(layout, 0).map((r) => r.id)).toEqual(['en_cliff', 'en_dune', 'en_harbour']);
+    expect(declared(layout, 1).map((r) => r.id)).toEqual(['en_dune', 'en_orchard', 'en_cliff']);
+    expect(layout).toContain('const so_rows_1 = ');
+    expect(warnings(layout, 'src/routes/+layout.svelte')).toEqual([]);
+  });
+
+  it("never lets a design's own property take a name the browse code declares", () => {
+    const def = { kind: 'managed', properties: { so_rows_0: { type: 'string' }, so_browse_1: { type: 'string' }, so_listing_0: { type: 'string' }, so_bar: { type: 'string' }, SoBrowse: { type: 'string' } } } as unknown as ComponentDefinition;
+    expect([...propLocals(def).values()].sort()).toEqual(['prop_SoBrowse', 'prop_so_bar', 'prop_so_browse_1', 'prop_so_listing_0', 'prop_so_rows_0']);
+  });
+
+  it('holds the browse code while code of the author\'s places the browse component', () => {
+    const { s } = site(null);
+    expect(usesBrowse(s)).toBe(false);
+    const code = { id: 'cmp_list', kind: 'code', name: 'List', properties: {}, source: `<script>import SoBrowse from '../runtime/${BROWSE_COMPONENT_FILE}';</script>` };
+    expect(usesBrowse({ ...s, components: { ...s.components, cmp_list: code } } as unknown as ProjectState)).toBe(true);
   });
 
   it('browses exactly the entries each listing shows, with the controls those entries give', () => {
@@ -221,6 +271,13 @@ describe('an index with a design of its own', () => {
     expect(index).not.toContain('Secret Shack');
     // Later pages list their own share, as they did.
     expect(files.get(archiveFile('/homes/page/2/'))).not.toContain('SoBrowse');
+    // A loop a hand edit left out of the page's sections lists nothing, so it gives the index no controls.
+    const detached = structuredClone(s);
+    const layout = detached.collections.homes.settings.archiveTemplate!;
+    const loop = archiveLoopIds(layout)[0];
+    for (const n of Object.values(layout.nodes)) if (n.kind === 'element') n.children = n.children.filter((c) => c !== loop);
+    expect(archiveLoopIds(layout)).toEqual([]);
+    expect(generateProject(publishedState(detached)).get(archiveFile('/homes/'))).not.toContain('SoBrowse');
   });
 
   it('keeps a listing on the page browsing on its own', () => {
@@ -234,6 +291,7 @@ describe('an index with a design of its own', () => {
     const page = generateProject(publishedState(s)).get(archiveFile('/homes/'))!;
     expect(page.match(/<SoBrowse /g)).toHaveLength(2);
     expect(page).toContain('so_matches_0 ? so_matches_0.map((so_m) => so_rows_0[so_m.i]) : so_rows_0');
+    expect(page).toContain('content={so_listing_0}');
     expect(warnings(page, 'src/routes/homes/+page.svelte')).toEqual([]);
   });
 });
