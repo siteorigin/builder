@@ -188,7 +188,7 @@ describe('learning mode recording a chat (#1566)', () => {
     const records = lines(join(dir, files(dir)[0])) as Array<Record<string, any>>;
     const result = records.find((r) => r.type === 'tool_result');
     expect(result).toMatchObject({ ok: true, mutated: true, ops: [{ type: 'instance.setProp', prop: 'heading', value: 'Learned' }] });
-    expect(result.results).toHaveLength(1);
+    expect(result?.results).toHaveLength(1);
     expect(records.at(-1)).toMatchObject({ type: 'outcome', status: 'completed' });
   });
 
@@ -289,7 +289,7 @@ describe('learning mode recording a chat (#1566)', () => {
         // The turn with its question is sent just after the status.
         setTimeout(() => {
           const q = [...env.events].reverse().find((x) => x.kind === 'message' && x.message?.questions?.length)!.message!.questions!.at(-1)!;
-          expect(env.orch.answer(e.runId, q.id, 'Blue')).toBe(true);
+          expect(env.orch.answer(e.runId, q.id!, 'Blue')).toBe(true);
         });
       }
     });
