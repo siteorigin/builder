@@ -9,7 +9,7 @@ import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
 import type { Component } from 'svelte';
 import { chromium, type Browser } from 'playwright';
-import type { ComponentDefinition, InstanceNode, ListItem, ListProp, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, ListItem, ListProp, PageDoc, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -1259,6 +1259,34 @@ describe('structured data on a page with contact details and an FAQ', () => {
     // Hidden only on phones, the rest of the way it shows.
     wrapper.overrides = { panel: { phone: { hidden: true } } };
     expect(structuredContent(s, contact).faq).toEqual(pairs(items.slice(1)));
+  });
+
+  it('reads the FAQ a design’s own slot fallback shows in each row of its list as each row shows it', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    contact.rootIds = contact.rootIds.filter((id) => !(contact.nodes[id].kind === 'instance' && s.components[(contact.nodes[id] as InstanceNode).definitionId]?.componentId === 'faq.list'));
+    const def = addDef(s, {
+      componentId: 'test.fallback-rows',
+      name: 'Fallback rows',
+      properties: { rows: P.list('Rows', 'Row', { title: P.str('Title', 'Row') }, [{ title: 'One' }, { title: 'Two' }]) },
+      parts: { root: { label: 'Rows', nodeId: 'root' }, row: { label: 'Row', nodeId: 'row' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.repeat('rows-list', 'rows', [b.el('row', 'div', {}, [b.el('holder', 'div', {}, [])])])])
+    });
+    const faq = nest(def, 'holder', s.components[installComponent(s, 'faq.list')]);
+    // The FAQ is the slot's fallback, in place of the holder.
+    const tree = def.tree!;
+    const row = tree.nodes.row as Extract<GraphNode, { kind: 'element' }>;
+    tree.nodes['body-slot'] = { id: 'body-slot', kind: 'slot', slot: 'body', children: [faq.id] } as GraphNode;
+    row.children = ['body-slot'];
+    delete tree.nodes.holder;
+    const wrapper = place(s, def, {}, contact);
+    const count = (faq.props.items as ListItem[] | undefined)?.length ?? (s.components[faq.definitionId].properties.items.default as unknown[]).length;
+    // Each row shows its own copy.
+    expect(structuredContent(s, contact).faq).toHaveLength(2 * count);
+    const ids = (wrapper.props.rows as ListItem[]).map((r) => String(r.id));
+    wrapper.itemOverrides = { row: { list: 'rows', items: { [ids[0]]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
   });
 
   it('reads an FAQ placed in a slot a design shows in every row of its list, whichever rows it hides', () => {
