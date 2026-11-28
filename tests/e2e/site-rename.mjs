@@ -72,7 +72,9 @@ await titleIs('Morning Press');
 
 step('renaming the site in Site details renames the header, the footer and its copyright line');
 await openDetails();
-assert.match(await nameField().innerText(), /The header and footer show it too\./, 'the field says where else the name shows');
+await nameField().getByRole('button', { name: 'About Site name' }).click();
+assert.match(await win.getByRole('tooltip').innerText(), /The header and footer show it too\./, 'the field explains where else the name shows');
+await nameField().getByRole('button', { name: 'About Site name' }).click();
 await rename('Morning Paper');
 await titleIs('Morning Paper');
 await eventually(() => assert.deepEqual([shellProps('header').siteName, shellProps('footer').siteName, shellProps('footer').copyright], ['Morning Paper', 'Morning Paper', '© {year} Morning Paper. All rights reserved.']));
@@ -82,7 +84,9 @@ await eventually(async () => assert.match(await win.locator('.toolbar').innerTex
 step('a footer name of the author’s own stays through the next rename, and the site’s name field says so');
 const footerId = site().shell.footer.rootIds[0];
 assert.ok((await apply([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footerId, prop: 'siteName', value: 'Morning Paper Co.' }], 'Edit footer')).ok);
-await eventually(async () => assert.match(await nameField().innerText(), /The header shows it too\. The footer keeps its own name: “Morning Paper Co\.”/));
+await nameField().getByRole('button', { name: 'About Site name' }).click();
+await eventually(async () => assert.match(await win.getByRole('tooltip').innerText(), /The header shows it too\. The footer keeps its own name: “Morning Paper Co\.”/));
+await nameField().getByRole('button', { name: 'About Site name' }).click();
 await rename('Morning Courier');
 await liveIs({ header: 'Morning Courier', footer: 'Morning Paper Co.', copyright: `© ${year} Morning Courier. All rights reserved.` }, 'the header and copyright follow, the footer keeps its name');
 await nameField().screenshot({ path: join(SHOTS, 'site-rename-details.png') });

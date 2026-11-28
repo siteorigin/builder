@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools, ProjectPackages } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
@@ -64,7 +64,7 @@ import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { heldDraftAssetFiles, heldDraftAssetsStop, holdDraftAssets } from './project/draft-assets';
-import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
+import { atomicWrite, readIfExists, safeJoin, sha, stageWrites, syncStaged, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
@@ -72,7 +72,8 @@ import { isValidFontAsset } from '@shared/fonts';
 import { LibraryImageReader } from './project/library-image';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageDependencies, starterTools, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies, resolvePackageFiles, stageDependencies, starterTools, type PackageFiles, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
+import { declaredVersion, listPackages, packageFailure, packageRequest, placeOf } from './runtime/packages';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -105,6 +106,7 @@ import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
 import { perf, perfNow, serializedSize, timed } from './perf';
+import { trace, traced } from './trace';
 import { pagePerformance, unmeasuredPage, cacheFinding, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
 import { exportCachePolicies, immutableFiles } from './cache-policy';
 
@@ -179,6 +181,60 @@ const STOPPED = 'stopped';
 const BUILD_CALLED_OFF = 'The build was called off.';
 const REVIEW_STOPPED = 'The capture was stopped. No edition was kept; the editions captured before are unchanged.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
+/** A change to the project's packages asked for in an opening that has since closed (#1480). */
+const PACKAGES_CLOSED = 'The project was closed before its packages could be changed.';
+
+/** Why a package can't be removed: code components still import it, by name. */
+const packageInUse = (name: string, users: string[]): string =>
+  `“${name}” is still imported by ${users.length === 1 ? `the code component “${users[0]}”` : `${users.length} code components (${users.slice(0, 3).map((u) => `“${u}”`).join(', ')}${users.length > 3 ? ', …' : ''})`}. Remove the import from ${users.length === 1 ? 'it' : 'them'} first.`;
+
+/** A file's text, or null when there is none; one that is there but can't be read throws. */
+const readStrict = (path: string): Promise<string | null> => fs.readFile(path, 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+
+/** A project's own npm settings, or null when it has none; settings that are there but can't be read throw. */
+const readNpmrc = (dir: string): Promise<string | null> => readStrict(join(dir, '.npmrc'));
+
+/**
+ * Put a project's new package files in place together (#1480): both written out in full and flushed first, then the
+ * lock and the manifest renamed over the old ones. `ready` is asked right before the first rename, and may refuse
+ * (nothing is replaced); package.json must still be as it was right before the second, or the old lock goes back, so
+ * the pair never disagree and an edit made meanwhile outside the app is never written over. Says whether they landed.
+ */
+async function writePackageFiles(dir: string, files: PackageFiles, before: ConfigFiles, ready: () => Promise<boolean>): Promise<boolean> {
+  const lockPath = join(dir, 'package-lock.json');
+  const pkgPath = join(dir, 'package.json');
+  const [lock, pkg] = await stageWrites([
+    { path: lockPath, data: files['package-lock.json'] },
+    { path: pkgPath, data: files['package.json'] }
+  ]);
+  try {
+    if (!(await lock.replace(ready))) return false;
+    let landed = false;
+    let failure: unknown = null;
+    try {
+      landed = await pkg.replace(async () => (await readIfExists(pkgPath)) === before['package.json']);
+    } catch (e) {
+      failure = e;
+    }
+    if (landed) {
+      // Both are in place, whatever flushing their folder says: the change has landed.
+      await syncStaged([lock, pkg]).catch(() => undefined);
+      return true;
+    }
+    try {
+      // Only the lock this wrote goes back, checked right before it does: one written meanwhile by someone else is theirs.
+      const ours = async () => (await readStrict(lockPath)) === files['package-lock.json'];
+      if (before['package-lock.json'] !== null) await atomicWrite(lockPath, before['package-lock.json'], { beforeReplace: ours });
+      else if (await ours()) await fs.rm(lockPath, { force: true });
+    } catch (e) {
+      throw new Error(`package-lock.json no longer matches package.json, and the old one couldn’t be put back (${(e as Error).message}). Reinstall the website tools once package.json is as you want it.`);
+    }
+    if (failure) throw failure;
+    return false;
+  } finally {
+    await Promise.all([lock.discard(), pkg.discard()]);
+  }
+}
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
 
 /**
@@ -274,9 +330,40 @@ async function removeCreatedProject(dir: string, session: ProjectSession | null,
   return removed;
 }
 
+/** The files of a project's build configuration, which run as code: what the author trusts (configHash). */
+const CONFIG_FILES = ['package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js'] as const;
+type ConfigFiles = Record<(typeof CONFIG_FILES)[number], string | null>;
+
+async function readConfig(dir: string): Promise<ConfigFiles> {
+  const parts = await Promise.all(CONFIG_FILES.map((f) => readIfExists(join(dir, f))));
+  return Object.fromEntries(CONFIG_FILES.map((f, i) => [f, parts[i]])) as ConfigFiles;
+}
+
+const hashConfig = (files: ConfigFiles): string => sha(CONFIG_FILES.map((f) => files[f] ?? '').join('\n--\n'));
+
 async function configHash(dir: string): Promise<string> {
-  const parts = await Promise.all(['package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js'].map((f) => readIfExists(join(dir, f))));
-  return sha(parts.map((p) => p ?? '').join('\n--\n'));
+  return hashConfig(await readConfig(dir));
+}
+
+/** What the editor is sent, for the trace (trace.ts): each message's channel, and for the open project's, what moved. */
+function traceSent(channel: string, payload: unknown) {
+  try {
+    traceSentNow(channel, payload);
+  } catch {
+    // A payload that cannot be described (a damaged file's value) is never the send's problem.
+  }
+}
+function traceSentNow(channel: string, payload: unknown) {
+  // The assistant's events stream as it answers: far too many, and none of them the opening's.
+  if (channel === 'ai:event') return;
+  const p = (payload ?? {}) as Record<string, unknown>;
+  if (channel === 'runtime:status') return trace('send', `runtime:status ${String(p.state)}${typeof p.message === 'string' ? `: ${p.message.slice(0, 200)}` : ''}${typeof p.url === 'string' ? ` at ${p.url}` : ''}`);
+  if (channel === 'project:changed') {
+    const snap = (p.snapshot ?? p.fields ?? {}) as Record<string, unknown>;
+    const runtime = snap.runtime as { state?: unknown } | undefined;
+    return trace('send', `project:changed #${String(p.seq)} revision ${String(p.revision)}${p.base === null ? ' whole' : ` on #${String(p.base)}`}${typeof snap.workspaceKey === 'string' ? ` for ${snap.workspaceKey}` : ''}${runtime ? `, runtime ${String(runtime.state)}` : ''}`);
+  }
+  trace('send', channel);
 }
 
 type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
@@ -695,8 +782,9 @@ export class Controller {
 
   send(channel: string, payload?: unknown) {
     const w = this.getWindow();
-    if (!w || w.isDestroyed()) return;
+    if (!w || w.isDestroyed()) return void (channel !== 'ai:event' && trace('send', `${channel} not sent: no window`));
     w.webContents.send(channel, payload);
+    traceSent(channel, payload);
     // What the editor is sent on every change (src/shared/perf.ts), only while marks are on: marked as sent now, then
     // sized as IPC serializes it, after the send so the editor gets it no later than it would. Sizing never throws.
     if (perf.on && channel === 'project:changed') {
@@ -1337,9 +1425,11 @@ export class Controller {
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
+    trace('open', `asked to open ${dir}`);
     if (!(await isTrusted(dir, await configHash(dir)))) {
       // The trust prompt names the project, so a manifest that cannot be read (a truncated copy, say) stops here.
       const manifest = await readManifestSummary(dir);
+      trace('open', `not trusted: ${manifest.ok ? 'asking to trust it' : manifest.message}`);
       if (!manifest.ok) return { ok: false, message: manifest.message };
       return { ok: false, needsTrust: { dir, name: manifest.name, reason: (await wasTrusted(dir)) ? 'changed' : 'new' } };
     }
@@ -1437,6 +1527,7 @@ export class Controller {
   async trustAndOpen(opened: string, opts: { replaces?: string } = {}): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
+      trace('open', `trusted and opening ${dir}`);
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir, { replaces: opts.replaces });
     } catch (e) {
@@ -1466,17 +1557,26 @@ export class Controller {
     let ready!: (s: ProjectSession) => void;
     const readied = new Promise<{ session: ProjectSession; shownEarly: boolean }>((r) => (ready = (session) => r({ session, shownEarly: true })));
     const early = !this.session && !this.remote.active;
+    const began = Date.now();
+    trace('open', `reading ${dir}${this.session ? ` (beside ${this.session.dir}, which stays open until it has opened)` : ''}`);
     const opening = ProjectSession.open(dir, INSTANCE_ID, { force: opts.force, preview: { start: (s) => this.prepareRuntime(s), stop: (s) => this.dropEarly(s) }, sweepLater: true, ...(early ? { shown: (s: ProjectSession) => (ready(s), gate) } : {}) });
     let session: ProjectSession;
     try {
       const first = await Promise.race([readied, opening.then((s) => ({ session: s, shownEarly: false }))]);
       session = first.session;
+      trace('open', `read in ${Date.now() - began}ms: revision ${typeof session.revision === 'number' ? session.revision : '?'}${session.readOnly ? ', read-only' : ''}, ${first.shownEarly ? 'shown before its publication' : 'opened whole'}`);
+      if (first.shownEarly)
+        void opening.then(
+          () => trace('open', `publication done ${Date.now() - began}ms after the open began`),
+          (e: unknown) => trace('open', `publication failed after ${Date.now() - began}ms: ${traced(e)}`)
+        );
       // Shown before its publication: the preview waits for it (startRuntimeWork), the editor is told what it found.
       if (first.shownEarly) {
         this.publications.set(session, opening.then(() => undefined, () => undefined));
         void this.afterPublication(session, opening).catch(() => undefined);
       }
     } catch (e) {
+      trace('open', `could not be read after ${Date.now() - began}ms: ${(e as Error)?.constructor?.name ?? 'Error'}: ${traced(e)}`);
       // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
       const locked = e instanceof ProjectLockedError;
       if (locked || (e instanceof ProjectFormatError && e.readOnly)) {
@@ -1501,11 +1601,14 @@ export class Controller {
       // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
       let workspace: LocalWorkspaceState = {};
       try {
-        workspace = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+        // Only an object is saved state: anything else in the file (`null`, a list) is read as none.
+        const saved: unknown = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+        if (saved && typeof saved === 'object' && !Array.isArray(saved)) workspace = saved as LocalWorkspaceState;
       } catch {
         workspace = {};
       }
       const way = await this.makeWay(since).catch((e: Error) => ({ ok: false, message: `The open project could not be closed: ${e.message}` }));
+      trace('open', way.ok ? 'attaching' : `not attached: ${way.message ?? 'the project open now stays'}`);
       if (!way.ok) {
         shown();
         await this.dropEarly(session);
@@ -1519,6 +1622,7 @@ export class Controller {
     }
     // Only an opening that is listed takes over a missing entry: one open read-only leaves the list as it was.
     if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state), session.state.manifest.projectId, opts.replaces).catch(() => undefined);
+    trace('open', `answered ok ${Date.now() - began}ms after the open began`);
     return { ok: true };
   }
 
@@ -1527,6 +1631,7 @@ export class Controller {
     // Attached in the same turn as the switch (attach makes it the open project before it waits on anything), so no
     // other switch can come between the two.
     void this.attach(session, workspace, null, shown).catch(async (e) => {
+      trace('open', `attaching failed: ${traced(e)}`);
       await this.dropEarly(session);
       if (this.session === session) await this.close();
       else await session.close();
@@ -1628,6 +1733,7 @@ export class Controller {
       shown?.();
     }
     attaching({ revision: session.revision });
+    trace('open', `attached as ${this.workspaceKey}${runtimeError ? `, with the preview's error: ${runtimeError.state}` : ', starting the preview'}`);
     if (runtimeError) this.send('runtime:status', runtimeError);
     else await this.startRuntime();
   }
@@ -1833,18 +1939,21 @@ export class Controller {
     const mine = async () => this.early === early && (await session.stillOwner()) && this.early === early;
     early.started = (async () => {
       // No preview can run from this folder (#1366): the start says why, with no server forked.
-      if (unservableProject(dir)) return;
-      if (!(await isTrusted(dir, await configHash(dir)))) return;
-      if (this.early !== early || !(await dependenciesReady(dir)) || !(await mine())) return;
+      if (unservableProject(dir)) return void trace('preview', 'early start skipped: the folder cannot be served');
+      if (!(await isTrusted(dir, await configHash(dir)))) return void trace('preview', 'early start skipped: not trusted');
+      if (this.early !== early) return;
+      if (!(await dependenciesReady(dir))) return void trace('preview', 'early start skipped: the website tools need setting up');
+      if (!(await mine())) return void trace('preview', 'early start skipped: the lock is not this app\'s');
       // One started for this folder by an earlier opening and stopped since has exited first.
       await this.earlyExits.get(dir);
       await clearComponentPreviews(dir).catch(() => undefined);
       // Nobody to see it (the window closed while the project opened): it starts once a window shows the project.
-      if (!(await mine()) || this.previewUnseen()) return;
+      if (!(await mine()) || this.previewUnseen()) return void trace('preview', 'early start skipped: no window, or the lock went');
+      trace('preview', 'early start: forking the preview server while the project opens');
       const dev: DevServer = new DevServer(dir, async (): Promise<boolean> => this.dev === dev && (await session.stillOwner()));
       early.dev = dev;
       await dev.start();
-    })().catch(() => undefined);
+    })().catch((e: unknown) => trace('preview', `early start failed: ${traced(e)}`));
   }
 
   /**
@@ -1888,10 +1997,11 @@ export class Controller {
     const session = this.session;
     if (!session) return;
     // The server started while it opened is judged only once the opening's publication is done (usableEarly).
+    if (this.publications.has(session)) trace('preview', 'start waits for the opening\'s publication');
     await this.publications.get(session);
-    if (this.session !== session) return;
+    if (this.session !== session) return void trace('preview', 'start dropped: another project is open now');
     await this.stopPreview();
-    if (this.session !== session) return;
+    if (this.session !== session) return void trace('preview', 'start dropped: another project is open now');
     // Nobody can see it (a restart asked for with no window open, a takeover's copy): it starts, with every check
     // below, once a window shows the project again. At rest from now, before the wait below, so a window brought up
     // meanwhile starts it.
@@ -1904,6 +2014,7 @@ export class Controller {
     // before the checks below: so they run, as always, with no wait between them and anything running in the folder.
     // One that can be is taken only after them (startRuntimeNow stops it if the start ends without it).
     const early = await this.usableEarly(session);
+    trace('preview', early ? 'taking over the server started while the project opened' : 'starting a server of its own');
     if (!early) await this.earlyExits.get(session.dir);
     await this.startRuntimeChecked(session, early);
   }
@@ -1922,6 +2033,7 @@ export class Controller {
       return;
     }
     const ready = await dependenciesReady(session.dir);
+    trace('preview', ready ? 'website tools are set up' : 'website tools need setting up');
     // A project in a folder the preview cannot run from (#1366) still gets its tools (an export copies them), but a
     // setup that fails there says what would stop the preview anyway, not that the tools need reinstalling.
     const unservableHere = session.readOnly ? null : unservableProject(session.dir);
@@ -1937,6 +2049,8 @@ export class Controller {
       // The lock is read again first: a takeover the heartbeat has not seen yet must not get an install.
       if (!(await session.stillOwner()) || this.session !== session) return;
       this.status({ state: 'preparing', message: 'Setting up website tools…' });
+      // Without a lock, npm writes one from the trusted package.json: that lock is the install's own, not an edit.
+      const unlocked = existsSync(join(session.dir, 'package-lock.json')) ? null : await readConfig(session.dir);
       const abort = (this.prepareAbort = new AbortController());
       const done = this.changingTools();
       try {
@@ -1951,6 +2065,14 @@ export class Controller {
         if (!abort.signal.aborted) this.toolsLooked.add(session);
         done();
         if (this.prepareAbort === abort) this.prepareAbort = null;
+      }
+      // Setting the tools up takes a while: the configuration the preview is about to run must still be the one trusted.
+      // A lock npm wrote for a project with none is trusted with it, when nothing else changed from what was trusted.
+      const now = await readConfig(session.dir);
+      if (unlocked && CONFIG_FILES.every((f) => f === 'package-lock.json' || now[f] === unlocked[f]) && (await isTrusted(session.dir, hashConfig(unlocked)))) await trust(session.dir, hashConfig(now));
+      else if (!(await isTrusted(session.dir, hashConfig(now)))) {
+        if (this.session === session) this.status({ state: 'error', message: TRUST_CHANGED });
+        return;
       }
     }
     // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again: cleared while
@@ -2598,6 +2720,139 @@ export class Controller {
       }
       await this.startRuntimeNow();
     });
+  }
+
+  /** Why the open project's npm packages can't be changed now (#1480), or null when they can. */
+  private async packagesLocked(s: ProjectSession): Promise<string | null> {
+    if (s.readOnly) return s.readOnly.reason;
+    if (!(await loadSettings()).settings.developerMode) return 'Turn on Developer mode in Settings to change the project’s packages.';
+    // The package files are part of what the author trusted: changed outside the app, they are reviewed first.
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return TRUST_CHANGED;
+    return null;
+  }
+
+  /** The open project's npm packages (#1480), as Project health lists them, and why they can't be changed now. */
+  async projectPackages(): Promise<ProjectPackages> {
+    const s = this.session;
+    if (!s) return { packages: [], locked: 'No project is open.' };
+    // A package.json that is there but can't be read is said so, never listed as one with no packages.
+    const pkg = await fs.readFile(join(s.dir, 'package.json'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(new Error(`package.json can’t be read: ${e.message}`))));
+    const packages = await listPackages(s.dir, pkg);
+    return { packages, locked: await this.packagesLocked(s) };
+  }
+
+  /**
+   * Add or update (`{ add }`) or remove (`{ remove }`) one npm package of the project open as `opening` (#1480). npm
+   * works out the new package files in a private folder first, while the preview runs on, so a change it refuses leaves
+   * the project as it was. Then the preview stops, and the two files are written as every write into the project is
+   * (writeFence): only when the build settings are still the ones npm started from, and a package being removed is
+   * still imported by no code component. They are trusted as written, the author having made the change here, with the
+   * rest of the build settings as they were trusted, so one changed meanwhile outside the app is still reviewed. The
+   * preview then sets the website tools up for the new files, as for any changed lock, and starts again.
+   */
+  async changeProjectPackage(change: unknown, opening: unknown): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s || typeof opening !== 'string' || opening !== this.workspaceKey) return { ok: false, message: PACKAGES_CLOSED };
+    let result: { ok: boolean; message?: string } = { ok: false, message: PACKAGES_CLOSED };
+    await this.enqueue(async () => {
+      result = await this.changePackageNow(s, opening, change);
+    });
+    return result;
+  }
+
+  private async changePackageNow(s: ProjectSession, opening: string, change: unknown): Promise<{ ok: boolean; message?: string }> {
+    const closed = { ok: false, message: PACKAGES_CLOSED };
+    // Registered before anything is waited for: a close or takeover from here on stops npm (prepareAbort), as it stops
+    // an install, and one that came while something was read is seen before npm starts.
+    const abort = new AbortController();
+    this.prepareAbort = abort;
+    const gone = () => this.session !== s || this.workspaceKey !== opening || !!this.closing;
+    const stopped = () => (gone() ? closed : abort.signal.aborted ? { ok: false, message: s.readOnly?.reason ?? READ_ONLY } : null);
+    let req: Extract<ReturnType<typeof packageRequest>, { ok: true }>;
+    let before: ConfigFiles;
+    let npmrc: string | null;
+    let files: PackageFiles;
+    try {
+      if (gone()) return closed;
+      const locked = await this.packagesLocked(s);
+      if (locked) return stopped() ?? { ok: false, message: locked };
+      before = await readConfig(s.dir);
+      // What npm starts from is what was trusted, byte for byte.
+      if (!(await isTrusted(s.dir, hashConfig(before)))) return stopped() ?? { ok: false, message: TRUST_CHANGED };
+      const asked = packageRequest(change, before['package.json']);
+      if (!asked.ok) return asked;
+      req = asked;
+      const users = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
+      if (users.length) return stopped() ?? { ok: false, message: packageInUse(req.name, users) };
+      if (before['package.json'] === null) return { ok: false, message: 'The project has no package.json, so it has no packages to change.' };
+      // The project's own npm settings (its registry) decide what npm finds: settings it can't read are never taken for none.
+      try {
+        npmrc = await readNpmrc(s.dir);
+      } catch (e) {
+        return { ok: false, message: `The project’s npm settings (.npmrc) can’t be read: ${(e as Error).message}` };
+      }
+      const halt = stopped();
+      if (halt) return halt;
+      try {
+        files = await resolvePackageFiles({ 'package.json': before['package.json'], 'package-lock.json': before['package-lock.json'] ?? '', '.npmrc': npmrc }, req.command, req.options, req.spec, abort.signal);
+      } catch (e) {
+        return stopped() ?? { ok: false, message: packageFailure(req, e) };
+      }
+    } finally {
+      if (this.prepareAbort === abort) this.prepareAbort = null;
+    }
+    const halt = stopped();
+    if (halt) return halt;
+    // npm says it succeeded: what it wrote must say so too (an `.npmrc` of the author's can tell it to change nothing).
+    const declared = declaredVersion(files['package.json'], req.name);
+    if ((req.verb === 'remove') !== (declared === null)) return { ok: false, message: `npm didn’t change the project’s package files for “${req.name}”, so nothing was changed. Check the project’s npm settings (.npmrc).` };
+    // An update keeps the package where package.json had it (npm settings can move one: `save-prod` turns a peer into a dependency).
+    if (req.verb === 'update' && placeOf(files['package.json'], req.name) !== placeOf(before['package.json'], req.name)) return { ok: false, message: `npm would move “${req.name}” to another part of package.json (the project’s npm settings ask for that), so nothing was changed. Check the project’s .npmrc.` };
+    if (files['package.json'] === before['package.json'] && files['package-lock.json'] === before['package-lock.json']) return { ok: true, message: `The project already has that version of “${req.name}”.` };
+    await this.stopPreview();
+    // Set in the write, which TypeScript does not follow into.
+    let result = null as { ok: boolean; message?: string } | null;
+    let done: (() => void) | null = null;
+    try {
+      const wrote = await this.writeFence(s)(async () => {
+        if (gone()) return void (result = closed);
+        // Settings changed meanwhile: what was asked with Developer mode on lands only while it still is.
+        if (!(await loadSettings()).settings.developerMode) return void (result = { ok: false, message: 'Developer mode was turned off, so the project’s packages were not changed.' });
+        const using = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
+        if (using.length) return void (result = { ok: false, message: packageInUse(req.name, using) });
+        const changedMeanwhile = { ok: false, message: 'The project’s build settings changed while the package was being worked out, so nothing was changed. Try again.' };
+        // The website tools are changing from here: a website build copying them meanwhile is called off (toolsWork).
+        done = this.changingTools();
+        // Right before the files are replaced, the build settings and npm settings are still what npm started from. The
+        // tools' marker stays: it is for the files as they were, so it says nothing of the new ones, and the tools are
+        // still set up for the old ones should the change not land.
+        const ready = async () => {
+          const now = await readConfig(s.dir);
+          return !CONFIG_FILES.some((f) => now[f] !== before[f]) && (await readNpmrc(s.dir).catch(() => undefined)) === npmrc;
+        };
+        if (!(await writePackageFiles(s.dir, files, before, ready))) return void (result = changedMeanwhile);
+        // Set up again for the new files, not missing, until the preview has looked at them once more.
+        this.toolsLooked.delete(s);
+        try {
+          // Trusted as written, with the rest of the build settings as they were trusted.
+          await trust(s.dir, hashConfig({ ...before, ...files }));
+        } catch (e) {
+          return void (result = { ok: false, message: `The package files changed, but saving them as trusted failed (${(e as Error).message}). They are used until SiteOrigin Builder restarts, which then asks to review them.` });
+        }
+        result = { ok: true };
+      });
+      if (!wrote) result ??= gone() ? closed : { ok: false, message: s.readOnly?.reason ?? READ_ONLY };
+    } catch (e) {
+      result = { ok: false, message: `The project’s package files couldn’t be written: ${friendlyError((e as Error).message)}` };
+    } finally {
+      (done as (() => void) | null)?.();
+    }
+    // The preview starts again either way: on the new files, setting the website tools up for them first, or as it was.
+    if (!gone()) await this.startRuntimeNow();
+    if (!result?.ok) return result ?? closed;
+    const what = req.verb === 'remove' ? `Removed “${req.name}”.` : `${req.verb === 'add' ? 'Added' : 'Updated'} “${req.name}” ${declared}.`;
+    if (gone()) return { ok: true, message: what };
+    return (await dependenciesReady(s.dir)) ? { ok: true, message: what } : { ok: true, message: `${what} The website tools couldn’t be set up for it yet: Project health says why.` };
   }
 
   /** The website tools in the project's folder are being changed until the function returned is called (toolsWork). */
@@ -5291,6 +5546,9 @@ export class Controller {
 
   private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean; held?: Array<() => void>; signal?: AbortSignal } = {}): Promise<ExportResult> {
     const project = join(staging, 'project');
+    // The tools copied below must be the ones set up for the package files this snapshot holds: a change to the
+    // project's packages that lands from here on (#1480) calls the build off, as a reinstall does (`changed`).
+    const begun = this.toolsWork.begun;
     // A review delivers nothing to visitors, so it saves no version either.
     const snap = await this.snapshotSource(s, project, { forBuild: true, ...(opts.review || !opts.held ? {} : { milestone: EXPORTED_SITE, held: opts.held }) });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
@@ -5330,7 +5588,6 @@ export class Controller {
     // taken over by the time the build starts. The copy is kept between exports, checked against the project's tools.
     // Only tools that are set up, copied while nothing was setting them up or reinstalling them (#1395): a copy made
     // while one of those ran may hold some files from before it and some from after, or none at all.
-    const begun = this.toolsWork.begun;
     const unready = await this.toolsUnready(s);
     if (unready) return { ok: false, message: unready, warnings: [] };
     const changed = () => this.toolsWork.begun !== begun || this.toolsWork.running > 0;

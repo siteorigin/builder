@@ -164,7 +164,8 @@ assert.match(await error('Public URL').innerText(), /Start the public URL with h
 assert.match(await error('Public URL').innerText(), /Not saved\. Nothing is saved here yet\./, 'the field says nothing is saved yet');
 const describedBy = await input('Public URL').getAttribute('aria-describedby');
 assert.ok(describedBy, 'the field is described');
-assert.equal(await error('Public URL').getAttribute('id'), describedBy, 'the reason describes the field');
+assert.ok(describedBy.split(/\s+/).includes(await error('Public URL').getAttribute('id')), 'the reason describes the field');
+assert.ok(describedBy.split(/\s+/).includes(await field('Public URL').locator('[id$="-info"]').getAttribute('id')), 'the field explanation also describes it');
 assert.equal(await field('Public URL').locator('[role="alert"]').count(), 1, 'the refusal is announced');
 assert.equal(await status().innerText(), 'Unsaved change', 'the toolbar does not claim the change is saved');
 assert.equal(site().baseUrl, undefined, 'nothing invalid was saved');
@@ -200,7 +201,7 @@ await afterRevert();
 assert.equal(await input('Public URL').inputValue(), 'https://example.com:65536');
 assert.match(await error('Public URL').innerText(), /The port 65536 is not valid\. Use a port from 1 to 65535\./);
 assert.match(await error('Public URL').innerText(), /The saved value is still https:\/\/kloof\.example\./);
-assert.equal(await field('Public URL').getByRole('button').count(), 0, 'no fix is offered for a wrong port');
+assert.equal(await field('Public URL').locator('.field-fix').count(), 0, 'no fix is offered for a wrong port');
 assert.equal(site().baseUrl, 'https://kloof.example', 'the last valid address is kept');
 assert.equal(await status().innerText(), 'Unsaved change');
 
@@ -239,7 +240,7 @@ await input('Language').fill('German');
 await input('Language').press('Tab');
 await eventually(() => assert.equal(site().language, 'de'));
 await eventually(async () => assert.equal(await input('Language').inputValue(), 'de'));
-assert.match(await field('Language').locator('.field-hint').innerText(), /^German\./);
+assert.equal(await field('Language').locator('.field-hint').innerText(), 'German');
 
 step('a language code saves');
 await input('Language').fill('en-AU');
