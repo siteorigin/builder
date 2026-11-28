@@ -1169,18 +1169,19 @@ export function keepDrafts(text) {
 
 /**
  * Brings each Site search back on Back and Forward as the visitor left it in that history entry (#1436). The root
- * layout calls keepSearches once; each search on the page hands rememberSearch its box when it mounts.
+ * layout hands keptSearches to SvelteKit's snapshot() once; each search on the page hands rememberSearch its box when
+ * it mounts.
  */
 export const SEARCH_HISTORY_JS = `/**
  * Back and Forward bring every search on the page back as the visitor left it there: the words in its box and the
  * results of its last search, ready to open another one. SvelteKit's snapshot() holds them for each history entry,
- * in memory and in the tab's session storage, never in the address.
+ * in memory and in the tab's session storage, never in the address: the root layout hands it keptSearches.
  *
- * One snapshot serves the whole site, from the root layout: the searches showing are told apart by their order on the
- * page, which is the same each time an entry is shown, so a search in the header and one in the page each get their
- * own back. The layout mounts after the searches inside it, so on a fresh load every one of them is here to restore.
+ * One snapshot serves the whole site: the searches showing are told apart by their order on the page, which is the
+ * same each time an entry is shown, so a search in the header and one in the page each get their own back. The
+ * layout mounts after the searches inside it, so on a fresh load every one of them is here to restore. Nothing here
+ * imports SvelteKit, so a search shows wherever its component does.
  */
-import { snapshot } from '$app/navigation';
 
 // The searches on screen, by the box each one searches from.
 const searches = new Map();
@@ -1193,19 +1194,17 @@ function inOrder() {
 		.map(([, search]) => search);
 }
 
-/** Called once, from the root layout. */
-export function keepSearches() {
-	snapshot({
-		id: 'siteorigin-searches',
-		capture: () => inOrder().map((search) => search.capture()),
-		restore: (kept) => {
-			if (!Array.isArray(kept)) return;
-			inOrder().forEach((search, at) => {
-				if (kept[at]) search.restore(kept[at]);
-			});
-		}
-	});
-}
+/** The snapshot the root layout keeps for every search on the page. */
+export const keptSearches = {
+	id: 'siteorigin-searches',
+	capture: () => inOrder().map((search) => search.capture()),
+	restore: (kept) => {
+		if (!Array.isArray(kept)) return;
+		inOrder().forEach((search, at) => {
+			if (kept[at]) search.restore(kept[at]);
+		});
+	}
+};
 
 /** A search on screen, from its box: what it keeps for the entry, and how it takes that back. Returns its removal. */
 export function rememberSearch(box, search) {

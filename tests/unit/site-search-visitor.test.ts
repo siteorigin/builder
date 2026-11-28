@@ -99,10 +99,11 @@ export function snapshot(options) {
 
 /** The root layout's part in search: it keeps every search on the page for Back, around the searches it shows. */
 const LAYOUT = `<script>
-	import { keepSearches } from '../runtime/search-history.js';
+	import { snapshot } from '$app/navigation';
+	import { keptSearches } from '../runtime/search-history.js';
 	import Search from 'site-search-component';
 	let { searches } = $props();
-	keepSearches();
+	snapshot(keptSearches);
 </script>
 {#each searches as props}<Search {...props} />{/each}`;
 

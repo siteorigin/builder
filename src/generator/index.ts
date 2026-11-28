@@ -4492,7 +4492,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
 	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';
-	import { keepSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
+	import { snapshot } from '$app/navigation';
+	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4505,7 +4506,7 @@ ${imports}${languages}${devBridge}
 	// Back and Forward put the page back where the visitor left it at once, even with a theme's smooth scrolling.
 	keepHistoryScroll();
 	// A search comes back with Back as the visitor left it, its results ready to open another.
-	keepSearches();${appearStart}${searchStart}
+	snapshot(keptSearches);${appearStart}${searchStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
