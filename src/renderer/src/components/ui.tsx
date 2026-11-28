@@ -1241,6 +1241,8 @@ interface DraftInputProps {
   reveal?: () => void;
   /** Readable, selectable and focusable, never changed (also inside LockedFields). */
   readOnly?: boolean;
+  /** false for text the spelling checker should leave alone, such as code. */
+  spellCheck?: boolean;
 }
 
 /** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
@@ -1299,7 +1301,8 @@ function DraftField({
   reveal,
   handle,
   inputRef,
-  readOnly: ownReadOnly
+  readOnly: ownReadOnly,
+  spellCheck
 }: DraftInputProps) {
   const readOnly = useContext(LockedFieldsContext) || !!ownReadOnly;
   // Text this field refused, kept while it was off screen (another page was open, or the same page's settings showed in
@@ -1648,6 +1651,7 @@ function DraftField({
     value: draft,
     readOnly: readOnly || undefined,
     'aria-readonly': readOnly || undefined,
+    spellCheck,
     placeholder,
     'aria-label': ariaLabel,
     'aria-describedby': [describedBy, note ? noteId : null].filter(Boolean).join(' ') || undefined,
