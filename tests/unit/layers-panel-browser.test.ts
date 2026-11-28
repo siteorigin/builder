@@ -229,6 +229,25 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
     expect(await focusedLabel()).not.toBe('First field');
   });
 
+  it('stops waiting to move focus once another element is picked (#1586)', async () => {
+    await store(`{ dockOpen: true, rightTab: 'chat' }`);
+    // An element with no sections, as an empty slot has: only its name, until another is selected.
+    const named = await sections().nth(1).getAttribute('data-node');
+    await page.evaluate(`(() => {
+      const panel = document.body.appendChild(document.createElement('div'));
+      panel.id = 'dock-panel-inspect';
+      const draw = (s) => (panel.innerHTML = s.selection?.nodeId === ${JSON.stringify(named)} ? '<div class="insp-name"><h3 tabindex="-1">Main</h3></div>' : '<div class="section"><div class="section-body"><input aria-label="First field"></div></div>');
+      draw(window.store.getState());
+      window.store.subscribe(draw);
+    })()`);
+    await sections().nth(1).click({ button: 'right' });
+    await inspectItem().click();
+    await page.waitForTimeout(150);
+    await sections().nth(2).locator('.layer-name').click();
+    await page.waitForTimeout(1200);
+    expect(await focusedLabel()).not.toBe('First field');
+  });
+
   it('leaves a post’s preview for Inspect, since the Inspector shows only the post there (#1586)', async () => {
     await standInInspector();
     const node = await sections().nth(1).getAttribute('data-node');

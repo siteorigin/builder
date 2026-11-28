@@ -5,7 +5,7 @@ import { richTextToMarkdown, sameRichText, toRichText } from '@shared/richtext';
 import { propBindingSchema } from '@shared/bindings';
 import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
 import { tooLongMessage } from '@shared/text-limits';
-import { isBinding, refKey } from '@shared/types';
+import { isBinding, refKey, sameRef } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
@@ -1296,7 +1296,11 @@ export function inspectElement(ref: ElementRef) {
   if (activeWorkspace(getState()) === 'preview') setMode('edit');
   // The menu names one element: layers selected with it are let go.
   setState({ selection: ref, rightTab: 'inspect', dockOpen: true });
-  focusInspector();
+  // An element with no sections (an empty slot) is waited on: focus is not taken once the author has moved on.
+  focusInspector(undefined, () => {
+    const s = getState();
+    return s.dockOpen && s.rightTab === 'inspect' && sameRef(s.selection, ref);
+  });
 }
 
 /**
