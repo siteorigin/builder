@@ -65,6 +65,17 @@ export function cleanDrafts(raw: unknown): ChatDrafts {
 }
 
 /**
+ * The conversations a project's last opening allowed to change the whole site (#1412), as its workspace state kept
+ * them: anything else in the file is left out.
+ */
+export function cleanGrants(raw: unknown): Record<string, true> {
+  const out: Record<string, true> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [id, on] of Object.entries(raw)) if (/^c_[a-z0-9]+$/.test(id) && on === true) out[id] = true;
+  return out;
+}
+
+/**
  * Which conversation to show when a project opens: the one that was open when it was last used, so its draft comes
  * back with it. A conversation that was never sent to is not saved, so one holding a draft comes back as a new
  * conversation carrying that draft ('fresh'): both are empty, so no other thread's context is involved.
@@ -85,6 +96,8 @@ export interface ChatPersistState {
   /** The images attached to those drafts. */
   images?: ChatImages;
   conversationId: string | null;
+  /** The conversations allowed to change the whole site (#1412). */
+  grants?: Record<string, true>;
 }
 
 /**
@@ -97,6 +110,7 @@ export function chatStatePatch(prev: ChatPersistState, next: ChatPersistState): 
   if (next.drafts !== prev.drafts) patch.chatDrafts = next.drafts;
   if (next.images && next.images !== prev.images) patch.chatImages = next.images;
   if (next.conversationId && next.conversationId !== prev.conversationId) patch.chatConversation = next.conversationId;
+  if (next.grants && next.grants !== prev.grants) patch.chatSiteGrants = next.grants;
   return Object.keys(patch).length ? { key: next.key, patch } : null;
 }
 

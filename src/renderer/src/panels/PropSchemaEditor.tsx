@@ -1,6 +1,10 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Braces, ChevronDown, CircleAlert, CircleDot, Hash, Image, Info, Link2, List, ListChecks, Pilcrow, Plus, Shapes, SlidersHorizontal, Table, ToggleRight, Trash2, TriangleAlert, Type, Undo2 } from 'lucide-react';
+import { Braces, ChevronDown, CircleAlert, CircleDot, Hash, Image, Info, Link2, List, ListChecks, Pilcrow, Plus, Shapes, SlidersHorizontal, SwatchBook, Table, ToggleRight, Trash2, TriangleAlert, Type, Undo2 } from 'lucide-react';
 import { checkPropName } from '@engine/schema';
+import { declaredTokens } from '@engine/tokens';
+import { tokenVar } from '@shared/styles';
+import type { TokenDef } from '@shared/types';
+import { useStore } from '../store';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { DraftInput, Field } from '../components/ui';
 import './PropSchemaEditor.css';
@@ -18,8 +22,10 @@ import {
   setItemField,
   settingProblems,
   toCodeName,
+  typeChoice,
   typeOptions,
   type PropType,
+  type TypeChoice,
   type SchemaRow
 } from '../lib/prop-schema';
 
@@ -62,9 +68,16 @@ const TYPE_ICONS: Record<string, ReactNode> = {
   image: <Image />,
   icon: <Shapes />,
   list: <List />,
-  table: <Table />
+  table: <Table />,
+  token: <SwatchBook />
 };
-const typeLabel = (type: unknown) => typeOptions(type as PropType, true).find(([v]) => v === type)?.[1] ?? typeOptions(type as PropType, false).find(([v]) => v === type)?.[1] ?? 'a new type';
+const typeLabel = (schema: Record<string, unknown>) => {
+  const type = typeChoice(schema);
+  return [...typeOptions(type, true), ...typeOptions(type, false)].find(([v]) => v === type)?.[1] ?? 'a new type';
+};
+const NO_TOKENS: TokenDef[] = [];
+/** The token a token schema starts on. */
+const tokenId = (s: Record<string, unknown>) => String((s.default as { token?: unknown } | undefined)?.token ?? '');
 
 /** The nearest valid code name to what was typed, when it differs from it. */
 function camelSuggestion(name: string): string | null {
@@ -175,7 +188,7 @@ interface SummaryPart {
 const summaryText = (parts: SummaryPart[]) => parts.map((p) => (p.key ? `${p.key} ${p.value}` : p.value)).join(' · ');
 
 /** What a row's closed settings hold, so a property can be read without opening it. */
-function settingsSummary(s: Record<string, unknown>, fieldCount?: number): SummaryPart[] {
+function settingsSummary(s: Record<string, unknown>, tokens: TokenDef[], fieldCount?: number): SummaryPart[] {
   const defaultPart = (text: string): SummaryPart => {
     const line = text.trim().split('\n')[0];
     return line ? { key: 'Default', value: line, long: true } : { value: 'No default', quiet: true };
@@ -205,6 +218,10 @@ function settingsSummary(s: Record<string, unknown>, fieldCount?: number): Summa
       return [{ value: plural(Array.isArray(s.options) ? s.options.length : 0, 'option') }];
     case 'icon':
       return [defaultPart(String(s.default ?? ''))];
+    case 'token': {
+      const id = tokenId(s);
+      return [defaultPart(tokens.find((t) => t.id === id && t.group === s.tokenGroup)?.label ?? (id ? `Missing style: ${id}` : ''))];
+    }
     case 'list':
       return [
         { key: 'Each', value: String(s.itemLabel || 'Item'), long: true },
@@ -258,6 +275,9 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
   const uid = useId();
   const typing = useContext(TypingContext);
   const rows = useContext(RowsContext);
+  const state = useStore((x) => x.snapshot?.state);
+  const tokens = state ? declaredTokens(state) : NO_TOKENS;
+  const groupTokens = type === 'token' ? tokens.filter((t) => t.group === s.tokenGroup) : NO_TOKENS;
   /** onLive for a text setting showing `value`: typing counts until the text matches it again. */
   const live = (value: string) => (text: string) => typing(text !== value);
   const options = Array.isArray(s.options) ? (s.options as Array<{ value: string; label: string }>) : [];
@@ -306,10 +326,10 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
   // values. Open, the problem shows on its field, so the summary stays.
   // Open, the problem shows on its field and the summary says only how many settings need fixing.
   const openProblems = settingProblems(row).length;
-  const summary: SummaryPart[] = !firstSettingProblem ? settingsSummary(s, row.fields?.length) : !expanded ? [{ value: firstSettingProblem, error: true }] : openProblems ? [{ value: `${plural(openProblems, 'setting')} to fix`, error: true }] : settingsSummary(s, row.fields?.length);
+  const summary: SummaryPart[] = !firstSettingProblem ? settingsSummary(s, tokens, row.fields?.length) : !expanded ? [{ value: firstSettingProblem, error: true }] : openProblems ? [{ value: `${plural(openProblems, 'setting')} to fix`, error: true }] : settingsSummary(s, tokens, row.fields?.length);
   const summaryAlert = settingsError && (!expanded || openProblems > 0);
   const note = list ? itemFieldNote(row) : renameNote(row);
-  const placementNote = type === 'link' || type === 'image' ? 'Set on each placement in the inspector.' : type === 'table' ? 'Each placement starts from this table and can change it in the inspector.' : type === 'choices' ? 'Its options are set in the component’s source.' : null;
+  const placementNote = type === 'link' || type === 'image' ? 'Set on each placement in the inspector.' : type === 'table' ? 'Each placement starts from this table and can change it in the inspector.' : type === 'choices' ? 'Its options are set in the component’s source.' : type === 'token' ? `Set on each placement in the inspector. Your code receives var(${tokenVar(tokenId(s))}).` : null;
   const messageId = problem ? `${uid}-name-error` : note ? `${uid}-name-note` : undefined;
   return (
     <fieldset className={`schema-row${list ? ' schema-field' : ''}${expanded ? ' open' : ''}${problem || settingsError ? ' invalid' : ''}`} disabled={readOnly} data-row-key={row.key}>
@@ -330,12 +350,12 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           {TYPE_ICONS[type] ?? <Braces />}
           <select
             className="select sm"
-            value={type}
+            value={typeChoice(s)}
             aria-label={named('type')}
-            onChange={(e) => onRetype(retype(row, e.target.value as PropType), holdsSettings(s) || !!row.fields || !!row.drafts)}
+            onChange={(e) => onRetype(retype(row, e.target.value as TypeChoice, tokens), holdsSettings(s) || !!row.fields || !!row.drafts)}
           >
             {/* A type this editor does not offer (several choices, set in code) is still shown as what it is. */}
-            {typeOptions(type, !!list).map(([v, l]) => (
+            {typeOptions(typeChoice(s), !!list, new Set(tokens.map((t) => t.group))).map(([v, l]) => (
               <option key={v} value={v}>
                 {l}
               </option>
@@ -435,6 +455,21 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           <div className="schema-pair schema-pair-icon">
             <Field label="Default icon">
               <DraftInput className="input sm mono" value={String(s.default ?? '')} onLive={live(String(s.default ?? ''))} onCommit={(v) => set({ default: v.trim() || undefined })} ariaLabel={named('default icon')} />
+            </Field>
+          </div>
+        )}
+        {type === 'token' && (
+          <div className="schema-pair schema-pair-icon">
+            <Field label="Default">
+              <select className="select sm" value={tokenId(s)} onChange={(e) => set({ default: { token: e.target.value } })} aria-label={named('default')}>
+                {/* One a theme switch took away stays shown until changed, as the inspector shows it. */}
+                {!groupTokens.some((t) => t.id === tokenId(s)) && <option value={tokenId(s)}>Missing style: {tokenId(s)}</option>}
+                {groupTokens.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
             </Field>
           </div>
         )}
@@ -558,7 +593,7 @@ function ItemFields({ row, onChange, readOnly }: { row: SchemaRow; onChange: (r:
           readOnly={readOnly}
           onToggle={() => rows.toggle(f.key)}
           onChange={(next) => onChange(setItemField(row, i, next))}
-          onRetype={(next, lost) => rows.change(setItemField(row, i, next), lost ? `Changed the field “${named(next)}” of “${String(row.schema.label || own)}” to ${typeLabel(next.schema.type)}. Its earlier settings were cleared.` : undefined, f.key)}
+          onRetype={(next, lost) => rows.change(setItemField(row, i, next), lost ? `Changed the field “${named(next)}” of “${String(row.schema.label || own)}” to ${typeLabel(next.schema)}. Its earlier settings were cleared.` : undefined, f.key)}
           onRemove={fields.length > 1 ? (byKeyboard) => removeField(i, byKeyboard) : undefined}
         />
       ))}
@@ -664,7 +699,7 @@ export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows:
   };
   const retyped = (i: number, next: SchemaRow, lost: boolean) => {
     const after = rows.map((x, j) => (j === i ? next : x));
-    if (lost) setUndo({ message: `Changed “${String(next.schema.label || next.name)}” to ${typeLabel(next.schema.type)}. Its earlier settings were cleared.`, before: rows, after, key: next.key });
+    if (lost) setUndo({ message: `Changed “${String(next.schema.label || next.name)}” to ${typeLabel(next.schema)}. Its earlier settings were cleared.`, before: rows, after, key: next.key });
     onChange(after);
   };
   const rowsApi: RowsApi = {

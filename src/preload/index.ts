@@ -26,7 +26,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'preview-control:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -182,6 +182,7 @@ const api: BuilderApi = {
   }) as BuilderApi['on'],
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
   componentPreviewResult: (requestId, results) => ipcRenderer.send('component-preview:result', requestId, results),
+  previewControlResult: (requestId, result) => ipcRenderer.send('preview-control:result', requestId, result),
   menuReady: () => ipcRenderer.send('menu:ready'),
   menuReceived: (id) => ipcRenderer.send('menu:received', id),
   leaveResult: (requestId, answer) => ipcRenderer.send('lifecycle:result', requestId, answer),

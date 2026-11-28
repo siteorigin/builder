@@ -3,9 +3,9 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import type { ChatContext, ChatMessage } from '@shared/api';
+import { grantsWider, type ChatContext, type ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, codeDesign, composerScope, editScope, requestTarget, retryView, targetOf } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, codeDesign, composerScope, editScope, requestTarget, retryView, targetOf, grantedScope, withGrant } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 import { makeInstance } from '@engine/install';
@@ -270,6 +270,71 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     expect(chatContextFor(state, picked, { enabled, viewport: 1280 })).toMatchObject({ selection: sel, selectionLabel: picked.selectionLabel, scope: 'selection' });
     // This page, or the whole site, with an element still selected on the canvas: the request goes without it.
     for (const scope of ['page', 'site'] as const) expect(chatContextFor(state, picked, { enabled: { page: true, scope }, viewport: 1280 })).toMatchObject({ pageId: home, selection: null, selectionLabel: null, scope });
+  });
+
+  it('starts from the whole site in a conversation that allowed it, until something narrower is chosen (#1412)', () => {
+    const { state, home, about, hero, owner } = project();
+    const nothing = composerScope(state, { pageId: about, selection: null, definitionMode: null });
+    // The default, with nothing selected: the whole site, not the page.
+    expect(grantedScope(nothing, 'selection', true)).toBe('site');
+    expect(chatContextFor(state, nothing, { enabled: { page: true, scope: grantedScope(nothing, 'selection', true) }, viewport: 1280 })).toMatchObject({ pageId: about, selection: null, scope: 'site' });
+    // Without the grant, the page as before; the page chosen by hand stays the page.
+    expect(grantedScope(nothing, 'selection', false)).toBe('selection');
+    expect(grantedScope(nothing, 'page', true)).toBe('page');
+    expect(grantedScope(nothing, 'site', true)).toBe('site');
+    // An element selected is what the author points at: the request keeps to it.
+    const sel: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    const picked = composerScope(state, { pageId: home, selection: sel, definitionMode: null });
+    expect(grantedScope(picked, 'selection', true)).toBe('selection');
+    // A component edited everywhere keeps its own target.
+    const design = composerScope(state, { pageId: home, selection: null, definitionMode: { definitionId: hero, returnPageId: home } });
+    expect(grantedScope(design, 'selection', true)).toBe('selection');
+    const designPart = composerScope(state, { pageId: home, selection: { owner, instancePath: [], nodeId: 'heading' }, definitionMode: { definitionId: hero, returnPageId: home } });
+    expect(grantedScope(designPart, 'selection', true)).toBe('selection');
+    expect(designPart.selection).not.toBeNull();
+    // The writer with no post open already reaches the whole site, and a post or a layout keeps its own target.
+    const homePage = { id: home, title: 'Home' };
+    expect(grantedScope({ page: homePage, selection: null, component: null, empty: true }, 'selection', true)).toBe('selection');
+    expect(grantedScope({ page: homePage, selection: null, component: null, post: { collectionId: 'posts', entryId: 'en_1', title: 'Spring' } }, 'selection', true)).toBe('selection');
+    expect(grantedScope({ page: homePage, selection: null, component: null, template: { collectionId: 'posts', name: 'Posts' } }, 'selection', true)).toBe('selection');
+    // With no page shown, nothing is offered to widen.
+    expect(grantedScope({ page: null, selection: null, component: null }, 'selection', true)).toBe('selection');
+  });
+
+  it('carries on a page request from the whole site once its conversation allowed it (#1412)', () => {
+    const { state, about, home } = project();
+    const nothing = composerScope(state, { pageId: about, selection: null, definitionMode: null });
+    const onPage = chatContextFor(state, nothing, { enabled, viewport: 1280 });
+    expect(withGrant(onPage, true)).toEqual({ ...onPage, scope: 'site' });
+    expect(withGrant(onPage, false)).toBe(onPage);
+    // Only a page request is widened: one sent unscoped, or already on the whole site, goes on as it was.
+    const { scope: _none, ...unscoped } = onPage;
+    expect(withGrant(unscoped, true)).toBe(unscoped);
+    const whole = { ...onPage, scope: 'site' as const };
+    expect(withGrant(whole, true)).toBe(whole);
+    // Anything narrower than the page, or a question, goes on as it was.
+    const sel: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    const picked = chatContextFor(state, composerScope(state, { pageId: home, selection: sel, definitionMode: null }), { enabled, viewport: 1280 });
+    expect(withGrant(picked, true)).toBe(picked);
+    const asked = { ...onPage, mode: 'ask' as const };
+    expect(withGrant(asked, true)).toBe(asked);
+    for (const extra of [{ component: { id: 'x', name: 'X' } }, { post: { collectionId: 'posts', entryId: 'e', title: 'T' } }, { template: { collectionId: 'posts', name: 'Posts' } }]) {
+      const ctx = { ...onPage, ...extra } as ChatContext;
+      expect(withGrant(ctx, true)).toBe(ctx);
+    }
+  });
+
+  it('reads a scope question as allowed by its first choice or a plain typed yes, and nothing else (#1412)', () => {
+    const q = { widen: true, choices: ['Yes, allow changes across the whole site', 'No, only change Home'] };
+    expect(grantsWider(q, 'Yes, allow changes across the whole site')).toBe(true);
+    for (const typed of ['ok', 'Yes.', ' sure ', 'go ahead!']) expect(grantsWider(q, typed)).toBe(true);
+    for (const other of ['No, only change Home', 'no', 'yes but only Our Story', '', undefined]) expect(grantsWider(q, other)).toBe(false);
+    // Only a scope question grants anything.
+    expect(grantsWider({ choices: q.choices }, 'Yes, allow changes across the whole site')).toBe(false);
+    expect(grantsWider(null, 'yes')).toBe(false);
+    // Only a string is an answer: nothing coerced into one.
+    expect(grantsWider(q, ['yes'])).toBe(false);
+    expect(grantsWider(q, { toString: () => 'yes' })).toBe(false);
   });
 
   it('sends a question and a component edited everywhere as before, without a scope', () => {

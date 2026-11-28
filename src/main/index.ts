@@ -9,6 +9,7 @@ import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
 import type { Appearance, ChatContext, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import type { PreviewControlRequest, PreviewControlResult, PreviewControlSettings } from '@shared/preview-control';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { Controller, resourcesDir, suggestedProjectsFolder } from './controller';
@@ -183,6 +184,45 @@ async function publishedPreview(): Promise<{ previewRevision: number | null; cau
   return { previewRevision, caughtUp: previewRevision === null || (await controller.previewPublished(previewRevision, PUBLISH_WAIT_MS)) };
 }
 const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
+const pendingPreviewControls = new Map<string, (result: unknown) => void>();
+/** How long set_preview waits for the editor's answer. */
+const PREVIEW_CONTROL_MS = 10000;
+/** The editor's answer as set_preview takes it: one of the two shapes it has, or an error. */
+function previewControlAnswer(r: unknown): PreviewControlResult {
+  const o = (r ?? null) as Record<string, unknown> | null;
+  if (o && typeof o === 'object' && typeof o.error === 'string') return { error: o.error };
+  const now = o?.now as Record<string, unknown> | undefined;
+  if (o && typeof o === 'object' && now && typeof now === 'object' && typeof now.width === 'number' && typeof now.mode === 'string' && Array.isArray(o.changed) && Array.isArray(o.refused)) return o as unknown as PreviewControlResult;
+  return { error: 'The editor gave no answer.' };
+}
+
+/**
+ * Change the editor's preview controls for the assistant's set_preview (#1405), and give back what they show after:
+ * the editor applies it as its toolbar would. `signal` stops waiting (the run was stopped); a window that has gone or
+ * does not answer is an error, never a change reported as made.
+ */
+function controlPreview(settings: PreviewControlSettings, signal?: AbortSignal): Promise<PreviewControlResult> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve({ error: 'Stopped.' });
+    if (!win || win.isDestroyed()) return resolve({ error: 'The editor window is closed.' });
+    const requestId = Math.random().toString(36).slice(2);
+    const settle = (result: PreviewControlResult) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      pendingPreviewControls.delete(requestId);
+      resolve(result);
+    };
+    const onAbort = () => settle({ error: 'Stopped.' });
+    const timer = setTimeout(() => settle({ error: 'The editor did not respond in time.' }), PREVIEW_CONTROL_MS);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    pendingPreviewControls.set(requestId, (r) => settle(previewControlAnswer(r)));
+    try {
+      controller.send('preview-control:request', { requestId, deadline: Date.now() + PREVIEW_CONTROL_MS, ...settings } satisfies PreviewControlRequest);
+    } catch (e) {
+      settle({ error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+}
 
 /**
  * Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). A report
@@ -478,6 +518,7 @@ const orchestrator = new Orchestrator({
     }
   },
   inspectLayout,
+  controlPreview,
   fileDiagnostics: () => controller.fileDiagnostics(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
   sources: (signal) => controller.agentSources(signal),
@@ -1072,6 +1113,10 @@ function registerIpc() {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     pendingInspections.get(requestId)?.(report);
     pendingInspections.delete(requestId);
+  });
+  ipcMain.on('preview-control:result', (event, requestId: unknown, result: unknown) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame || typeof requestId !== 'string') return;
+    pendingPreviewControls.get(requestId)?.(result);
   });
   ipcMain.on('component-preview:result', (event, requestId: string, results: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;

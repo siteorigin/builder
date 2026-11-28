@@ -23,6 +23,8 @@ const apply = async (operations, label) => {
   assert.ok(r.ok, `${label}: ${JSON.stringify(r.error ?? r)}`);
 };
 const rail = (id) => win.locator(`.rail [data-rail="${id}"]`);
+/** The toolbar's Mode toggle: Edit, Preview and SEO (#1583). */
+const modeButton = (name) => win.getByRole('radiogroup', { name: 'Mode', exact: true }).getByRole('radio', { name, exact: true });
 const holder = win.locator('.seo-view-holder');
 const view = win.getByRole('region', { name: 'SEO view' });
 const panel = win.locator('.seo-panel');
@@ -81,7 +83,9 @@ await eventually(async () => assert.equal(await placeShown.innerText(), 'SEO', '
 await eventually(async () => assert.equal(await inspected.innerText(), 'SEO', 'and so does the Inspector'));
 assert.equal(await inspector.locator('input, textarea, select, [contenteditable="true"]').count(), 0, 'nothing in the Inspector changes the page under the view');
 assert.ok(!(await inspector.innerText()).includes(sectionName), 'Home’s section is out of the Inspector');
-for (const name of ['Desktop', 'Tablet', 'Phone', 'Edit', 'Preview']) assert.equal(await win.locator('.toolbar').getByRole('radio', { name, exact: true }).isDisabled(), true, `${name} waits while the view covers the canvas`);
+for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.locator('.toolbar').getByRole('radio', { name, exact: true }).isDisabled(), true, `${name} waits while the view covers the canvas`);
+assert.equal(await modeButton('SEO').getAttribute('aria-checked'), 'true', 'the toolbar’s Mode toggle has SEO chosen');
+for (const name of ['Edit', 'Preview']) assert.equal(await modeButton(name).isDisabled(), false, `${name} stays ready to leave the view`);
 assert.equal(await crumbs.count(), 0, 'no path in the status bar leads to the section under the view');
 await noWindowShown('opening the view');
 
@@ -764,6 +768,52 @@ assert.equal(await placeShown.innerText(), home.title, 'and the toolbar names Ho
 assert.equal(await win.getByRole('radio', { name: 'Edit', exact: true }).isDisabled(), false, 'the mode can change again');
 assert.equal(await crumbs.count(), 1, 'and the status bar leads to the section again');
 
+step('the toolbar’s Mode toggle opens the view, and Edit or Preview leaves it for the canvas in that mode (#1583)');
+// The rail entry left the view with the sidebar; Layers is the panel the view replaces this time.
+await rail('layers').click();
+await modeButton('SEO').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true, 'SEO opens the view'));
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours', 'on the document it had chosen'));
+assert.equal(await modeButton('SEO').getAttribute('aria-checked'), 'true');
+assert.equal(await rail('seo').getAttribute('aria-pressed'), 'true', 'the rail agrees');
+for (const name of ['Edit', 'Preview']) assert.doesNotMatch((await modeButton(name).getAttribute('title')) ?? '', /covers the canvas/, `${name} has its own tooltip`);
+await modeButton('Preview').click();
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'Preview leaves the view'));
+assert.equal(await modeButton('Preview').getAttribute('aria-checked'), 'true', 'for the canvas in Preview');
+await eventually(async () => assert.equal(await win.locator('.preview-pill').isVisible(), true, 'the page is previewed'));
+assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true', 'with the sidebar back on the panel the view replaced');
+assert.equal(await canvasInert(), false);
+assert.equal(await frameKept(), true, 'the same preview');
+await modeButton('SEO').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await modeButton('Edit').click();
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'Edit leaves the view'));
+assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true', 'for the canvas in Edit');
+assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true');
+await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'Home’s section is selected again'));
+// The command menu leaves it the same way.
+await modeButton('SEO').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await win.keyboard.press(`${MOD}+K`);
+await cmdk.waitFor();
+await win.keyboard.type('Switch to preview');
+await eventually(async () => assert.equal(await cmdk.getByRole('option', { name: /^Switch to preview/ }).getAttribute('aria-selected'), 'true'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'Switch to preview leaves the view'));
+assert.equal(await modeButton('Preview').getAttribute('aria-checked'), 'true');
+assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true');
+await modeButton('SEO').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await win.keyboard.press(`${MOD}+K`);
+await cmdk.waitFor();
+await win.keyboard.type('Switch to editing');
+await eventually(async () => assert.equal(await cmdk.getByRole('option', { name: /^Switch to editing/ }).getAttribute('aria-selected'), 'true'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'Switch to editing leaves the view'));
+assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true');
+assert.equal(await rail('layers').getAttribute('aria-pressed'), 'true');
+await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'with Home’s section selected again'));
+
 step('the chosen document survives switching away and back, and another panel leaves the view too');
 await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours', 'the view opens on the post it had chosen'));
@@ -794,7 +844,6 @@ step('Preview chosen while a post is written, then the SEO view opened before it
 await rail('posts').click();
 await win.locator('.post-row', { hasText: 'Spring open studio' }).click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows the post'));
-const modeButton = (name) => win.locator('.toolbar [aria-label="Mode"]').getByRole('radio', { name, exact: true });
 // Left alone, Preview from the toolbar previews the post once the writer has saved it.
 await modeButton('Preview').click();
 await eventually(async () => assert.equal(await win.locator('.posts-previewing').isVisible(), true, 'the post is previewed'));
@@ -810,9 +859,11 @@ const writingAtClick = await win.evaluate(() => {
 });
 assert.equal(writingAtClick, true, 'Preview was chosen from the writer');
 await eventually(async () => assert.equal(await holder.isVisible(), true, 'the view is open'));
-await eventually(async () => assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true', 'the post’s preview never began, so Edit is the mode again'));
+await eventually(async () => assert.equal(await modeButton('SEO').getAttribute('aria-checked'), 'true', 'the view is the toggle’s choice'));
+await eventually(async () => assert.equal(await win.locator('.canvas-holder .canvas.edit-mode').count(), 1, 'the post’s preview never began, so the canvas under the view is in Edit again'));
 await rail('posts').click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
+assert.equal(await modeButton('Edit').getAttribute('aria-checked'), 'true', 'with Edit chosen');
 assert.equal(await modeButton('Preview').getAttribute('aria-checked'), 'false', 'with Preview ready to choose again');
 assert.equal(await modeButton('Preview').isDisabled(), false);
 
