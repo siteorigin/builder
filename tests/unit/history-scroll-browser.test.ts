@@ -24,7 +24,8 @@ const NAVIGATION = 'export function onNavigate(fn) { window.onNavigates.push(fn)
  * The router. A link to a section of the page is left to the browser, which follows it (smoothly); the entry it
  * makes is then stamped with an index. A move to the other page is a pushState. A traversal to the other page waits
  * for window.release(ok) before the page is put in place, as a page loading would; release(false) cancels it before
- * onNavigate, and release('abort') ends it after onNavigate, as a newer navigation would.
+ * onNavigate, release('abort') ends it after onNavigate, as a newer navigation would, and release('strand') stops
+ * after onNavigate without settling, as SvelteKit does when another onNavigate callback throws.
  * Every scrollTo the router makes to restore is logged with the page's position and scroll-behavior just after.
  */
 const ROUTER = `
@@ -38,6 +39,8 @@ window.onNavigates = [];
 window.unmounts = [];
 const draw = () => (document.getElementById('page').dataset.page = location.pathname);
 const restore = (scroll) => {
+  // Code that keeps the window's scrollTo while the page is put back.
+  window.keptScrollTo = window.scrollTo;
   scrollTo(scroll.x, scroll.y);
   window.restores.push({ to: scroll.y, at: Math.round(scrollY), behavior: getComputedStyle(document.documentElement).scrollBehavior });
 };
@@ -75,6 +78,8 @@ window.startRouter = () => {
     for (const fn of window.onNavigates) fn(navigation);
     await undefined;
     if (ok === 'abort') return reject(new Error('navigation aborted'));
+    // Another onNavigate callback threw: SvelteKit stops, and the navigation never settles.
+    if (ok === 'strand') return;
     draw();
     restore(scroll);
     fulfil();
@@ -98,6 +103,7 @@ const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=de
 let browser: Browser;
 let page: Page;
 
+const scrollY = () => page.evaluate<number>('Math.round(scrollY)');
 const restores = () => page.evaluate<Array<{ to: number; at: number; behavior: string }>>('window.restores');
 /** Where the page is over the next few frames. */
 const frames = () =>
@@ -228,6 +234,9 @@ describe.skipIf(!browserInstalled)('Back and Forward on a smoothly scrolling sit
   it('leaves a popstate SvelteKit keeps no position for alone', async () => {
     // Read in the same task, while a hold would still stand.
     expect(await page.evaluate<string>(`dispatchEvent(new PopStateEvent('popstate', { state: null })), document.documentElement.style.cssText`)).toBe('');
+    expect(await page.evaluate<string>(`dispatchEvent(new PopStateEvent('popstate', { state: { other: 1 } })), document.documentElement.style.cssText`)).toBe(
+      ''
+    );
   });
 
   it('puts the page back at once on Back to another page, as that page is put in place', async () => {
@@ -264,6 +273,49 @@ describe.skipIf(!browserInstalled)('Back and Forward on a smoothly scrolling sit
     expect(await page.evaluate<boolean>('window.scrollTo.toString().includes("[native code]")')).toBe(true);
   });
 
+  it('leaves the window’s scrollTo working for code that kept it during a Back', async () => {
+    await scrollTo(120);
+    await jump();
+    await traverse('back');
+    await frames();
+    // The window's own again: instant when asked, and as the page's smooth scrolling has it otherwise.
+    expect(await page.evaluate<number>(`window.keptScrollTo({ top: 70, behavior: 'instant' }), Math.round(scrollY)`)).toBe(70);
+    await page.evaluate('window.keptScrollTo(0, 2000)');
+    await expect.poll(scrollY).toBe(2000);
+  });
+
+  it('lets a scroll asked for after Back win over putting back a stopped jump', async () => {
+    await page.evaluate(
+      `addEventListener('popstate', async (event) => { if (!event.state) return; await undefined; await undefined; scrollTo({ top: 330, behavior: 'instant' }); })`
+    );
+    await page.evaluate(`new Promise((resolve) => {
+      const on = () => {
+        if (scrollY < 1500) return;
+        removeEventListener('scroll', on);
+        resolve();
+        history.back();
+      };
+      addEventListener('scroll', on);
+      document.getElementById('to-section').click();
+    })`);
+    await page.waitForFunction('window.restores.length > 0');
+    expect(await frames()).toEqual([330, 330, 330, 330]);
+  });
+
+  it('ends a hold for a Back to another page that never settles at the next Back or Forward', async () => {
+    await page.evaluate("document.getElementById('to-other').click()");
+    await page.evaluate('history.back()');
+    await page.waitForFunction('typeof window.release === "function"');
+    await page.evaluate(`window.release('strand')`);
+    await page.evaluate('new Promise((r) => setTimeout(r, 50))');
+    expect(await inlineStyle()).toBe('scroll-behavior: auto !important;');
+    await page.evaluate('history.forward()');
+    await page.waitForFunction('typeof window.release === "function"');
+    await page.evaluate(`window.release(false)`);
+    await page.evaluate('new Promise((r) => setTimeout(r, 50))');
+    expect(await inlineStyle()).toBe('');
+  });
+
   it('puts a page back from the back/forward cache at once', async () => {
     await scrollTo(1800);
     await jump();
@@ -277,8 +329,9 @@ describe.skipIf(!browserInstalled)('Back and Forward on a smoothly scrolling sit
     expect(await frames()).toEqual([shown.to, shown.to, shown.to, shown.to]);
     expect(await inlineStyle()).toBe('');
     // A first showing holds nothing.
-    await page.evaluate(`dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }))`);
-    expect(await inlineStyle()).toBe('');
+    expect(
+      await page.evaluate<string>(`dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false })), document.documentElement.style.cssText`)
+    ).toBe('');
   });
 
   it('leaves the page alone once the layout has gone', async () => {
