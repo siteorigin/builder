@@ -224,6 +224,28 @@ describe('a duplicated project (#176)', () => {
     expect(existsSync(join(original, 'static/assets/old-photo-0f1e2d3c.jpg'))).toBe(true);
   });
 
+  it('refuses a destination the copy’s preview could not run from, and copies a project out of one (#1366)', async () => {
+    const sites = temp('sites');
+    const hashed = join(sites, 'Client #47');
+    mkdirSync(hashed);
+    const original = await makeProject(hashed, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    // Into a folder with a “#” or “?” in its path, or reached through a link to one: nothing is made.
+    const asked = join(sites, 'Archive ?8');
+    mkdirSync(asked);
+    symlinkSync(hashed, join(sites, 'linked'));
+    for (const parentDir of [hashed, asked, join(sites, 'linked')]) {
+      const r = await c.duplicate({ name: 'Copy', parentDir, opening: c.openingKey! });
+      expect(r).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/^The preview can’t run from a folder whose path contains “[#?]”, and “(Client #47|Archive \?8)” does\. Choose a folder with no “#” or “\?” anywhere in its path/) });
+    }
+    expect(readdirSync(hashed)).toEqual(['storefront']);
+    expect(readdirSync(asked)).toEqual([]);
+    // A folder without them is where the project goes on from.
+    expect(await c.duplicate({ name: 'Copy', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true });
+    expect(existsSync(join(sites, 'copy', 'siteorigin.project.json'))).toBe(true);
+  });
+
   it('explains a name or destination it cannot use, and writes nothing', async () => {
     const sites = temp('sites');
     const original = await makeProject(sites, 'storefront', 'Storefront');

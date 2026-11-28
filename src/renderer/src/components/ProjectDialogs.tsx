@@ -678,8 +678,9 @@ function problemOf(message: string): Problem {
   }
   // A folder by this name is already there: a new name or another folder answers it.
   if (/already exists and is not empty|^Enter a project name/i.test(message)) return { about: 'name', text: message };
-  // The chosen folder cannot be written to, or is inside the open project: only another folder answers it.
-  if (/does not have permission to write|outside the open project/i.test(message)) return { about: 'location', text: message };
+  // The chosen folder cannot be written to, is inside the open project, or has a path the preview cannot run under
+  // (#1366): only another folder answers it.
+  if (/does not have permission to write|outside the open project|preview can’t run from a folder/i.test(message)) return { about: 'location', text: message };
   return { about: 'other', text: message };
 }
 

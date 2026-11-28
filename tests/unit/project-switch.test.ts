@@ -3,9 +3,9 @@
  * a new project that is cancelled or fails, leaves the current project open, locked and previewing as it was.
  */
 import { EventEmitter } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { denyAccess } from './deny-access';
 import { editorView } from './editor-feed';
@@ -614,6 +614,33 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     expect((await c.create({ ...orchid(parent), attempt: 'attempt-1' })).ok).toBe(true);
     const list = (await recents()).filter((r) => r.dir === kloof || r.dir.startsWith(parent));
     expect(list.map((r) => r.name)).toEqual(['Orchid Garden', 'New Kloof Studio']);
+  });
+});
+
+describe('a project in a folder whose path the preview cannot run under (#1366)', () => {
+  it('opens for editing with its preview unavailable and the folder to move it out of, forking no server, and previews once moved', async () => {
+    const dir = await makeProject('client #47');
+    const { c, sent } = controller();
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await until(() => c.snapshot()?.runtime.state === 'unavailable', 'the preview to be unavailable');
+    const folder = dir.split('/').pop()!;
+    const runtime = c.snapshot()!.runtime as { state: string; message: string };
+    expect(runtime.message).toBe(`The preview can’t run from this project’s location, because the folder “${folder}” has “#” in its name. Close the project, rename that folder or move the project to a folder with no “#” or “?” in its path, then open it again.`);
+    expect(c.snapshot()!.readOnly).toBeFalsy();
+    // Neither the server started while it opened nor a start asked for again: nothing is forked to fail.
+    await c.startRuntime();
+    expect(c.snapshot()!.runtime.state).toBe('unavailable');
+    expect(workers).toHaveLength(0);
+    expect(sent.some(([ch, p]) => ch === 'runtime:status' && (p as { state: string }).state === 'error')).toBe(false);
+    await c.close();
+    // The same project, moved to a folder without the “#”, previews.
+    const moved = join(dirname(dir), folder.replace('#', ''));
+    renameSync(dir, moved);
+    dirs.push(moved);
+    const again = controller().c;
+    expect((await again.trustAndOpen(moved)).ok).toBe(true);
+    await until(() => again.snapshot()?.runtime.state === 'ready', 'the preview');
+    expect(workers.map((w) => w.cwd)).toEqual([moved]);
   });
 });
 
