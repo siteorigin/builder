@@ -2050,7 +2050,8 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
-      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} />;
+      // A text with a limit of its own (a photo's caption) counts against it, and keeps text over it to shorten.
+      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} {...(schema.maxLength !== undefined ? { limit: schema.maxLength, quietCount: true } : {})} />;
     case 'richtext':
       return (
         <RichTextField

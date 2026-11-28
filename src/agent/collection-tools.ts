@@ -152,6 +152,8 @@ function otherTerms(collection: Collection, entry: EntryDoc): Array<{ taxonomyId
 const VALUE_CHARS = 400;
 /** How much of a gallery an entry's read shows before it is clipped (read whole with field): a few photos' words. */
 const GALLERY_CHARS = 2000;
+/** How much of a gallery one read of the field shows: offset goes on from the photo after it (next). */
+const GALLERY_PART_CHARS = 8000;
 const REFERENCES_SHOWN = 10;
 
 /** A custom text or rich text value as text: rich text as its Markdown. */
@@ -318,6 +320,14 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
     const schema = Object.hasOwn(fields, args.field) ? fields[args.field] : undefined;
     const stored = entry.values && Object.hasOwn(entry.values, args.field) ? entry.values[args.field] : schema?.default;
     if (!schema || typeof schema !== 'object') return fieldError([{ field: 'field', message: `the ${collection.settings.name} collection has no field "${args.field}"` }], 'Nothing was read.');
+    // A gallery a few photos at a time, each part whole photos, so one with long words is read to its end.
+    if (schema.type === 'gallery') {
+      const photos = (valueShownWhole(schema, stored as CollectionFieldValue, state.pages).value as unknown[]) ?? [];
+      const start = Math.min(args.offset ?? 0, photos.length);
+      let end = start;
+      while (end < photos.length && (end === start || JSON.stringify(photos.slice(start, end + 1)).length <= GALLERY_PART_CHARS)) end++;
+      return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, type: 'gallery', total: photos.length, offset: start, next: end < photos.length ? end : null, value: photos.slice(start, end) } };
+    }
     const whole = valueText(schema, stored as CollectionFieldValue, state.pages);
     // Anything but text is read whole at once, as values writes it.
     if (whole === null) return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, type: schema.type, ...valueShownWhole(schema, stored as CollectionFieldValue, state.pages) } };

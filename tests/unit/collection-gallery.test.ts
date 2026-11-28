@@ -17,7 +17,9 @@ import { entryFieldSchema, entryFieldValue } from '@shared/entry-fields';
 import { galleryFitProblem, galleryListProp } from '@shared/gallery-field';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { editGallery } from '../../src/renderer/src/lib/gallery-value';
-import { publishedGalleryFiles } from '../../src/main/export';
+import { publishedGalleryFiles, pruneWebsiteAssets } from '../../src/main/export';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { mappingFieldsProblem } from '../../src/main/sources/mapping';
 import { queriedEntries } from '@generator/collection-query';
 import { queryProblem } from '@engine/collection-sources';
@@ -293,17 +295,30 @@ describe('Assets and exports count every photo', () => {
 
   it('keeps every file of each published listing\'s photo in the website, its responsive copies too, and none of a draft\'s', () => {
     const s = agency();
-    s.assets.assets.a_garden.variants = [{ width: 480, file: 'static/assets/Garden-1a2b3c4d-480w.jpg' }];
-    const kept = publishedGalleryFiles(s);
-    expect(kept.has('static/assets/front-1a2b3c4d.jpg')).toBe(true);
-    expect(kept.has('static/assets/garden-1a2b3c4d.jpg')).toBe(true);
-    // A copy is kept by its spelling and as a disk that ignores case reads it.
-    expect(kept.has('static/assets/Garden-1a2b3c4d-480w.jpg')).toBe(true);
-    expect(kept.has('static/assets/garden-1a2b3c4d-480w.jpg')).toBe(true);
-    expect([...kept].some((f) => f.includes('kitchen'))).toBe(false);
+    s.assets.assets.a_garden.variants = [{ width: 480, file: 'static/assets/garden-1a2b3c4d-480w.jpg' }];
+    expect([...publishedGalleryFiles(s)].sort()).toEqual(['static/assets/front-1a2b3c4d.jpg', 'static/assets/garden-1a2b3c4d-480w.jpg', 'static/assets/garden-1a2b3c4d.jpg']);
     // Once the listing goes back to draft, none of its photos are the website's.
     const drafted = run(s, { type: 'entry.update', collectionId: 'listings', entryId: 'en_harbour', draft: true });
     expect(publishedGalleryFiles(drafted).size).toBe(0);
+  });
+
+  it('keeps a published listing\'s photos when the website is pruned, though no page names them, and drops a draft\'s', async () => {
+    const s = agency();
+    // The listing layout leaves the gallery out: nothing the site reads names a photo.
+    const files = ['static/assets/front-1a2b3c4d.jpg', 'static/assets/Garden-1a2b3c4d.jpg', 'static/assets/kitchen-1a2b3c4d.jpg'];
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(join(resolve('.tmp'), 'gallery-prune-'));
+    try {
+      mkdirSync(join(dir, 'static/assets'), { recursive: true });
+      mkdirSync(join(dir, 'src/routes'), { recursive: true });
+      writeFileSync(join(dir, 'src/routes/+page.svelte'), '<h1>Harbour Homes</h1>\n');
+      for (const f of files) writeFileSync(join(dir, f), 'x');
+      await pruneWebsiteAssets(dir, s);
+      // The garden's file is spelled otherwise on disk than in its record, as a disk that ignores case allows.
+      expect(files.filter((f) => existsSync(join(dir, f)))).toEqual(['static/assets/front-1a2b3c4d.jpg', 'static/assets/Garden-1a2b3c4d.jpg']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('leaves a gallery out of what a sync fills in', () => {
@@ -337,6 +352,7 @@ describe('the Content writer\'s gallery edits', () => {
     expect(editGallery(rows, { kind: 'field', itemId: 'i_b', field: 'image', value: { assetId: 'a_garden', alt: 'Garden', decorative: true } }, assets)?.rows[1].image).toEqual({ assetId: 'a_garden', alt: 'Garden', decorative: true });
     // A photo always has its picture: removing it in the row removes the photo. An edit of one that is gone changes nothing.
     expect(editGallery(rows, { kind: 'field', itemId: 'i_a', field: 'image', value: { assetId: null, alt: '' } }, assets)?.rows).toEqual([rows[1]]);
+    expect(editGallery(rows, { kind: 'field', itemId: 'i_b', field: 'image', value: { assetId: null, alt: '' } }, assets)?.rows).toEqual([rows[0]]);
     expect(editGallery(rows, { kind: 'remove', itemId: 'i_gone' }, assets)).toBeNull();
     expect(editGallery(rows, { kind: 'move', itemId: 'i_a', index: 0 }, assets)).toBeNull();
   });
@@ -404,6 +420,24 @@ describe('the assistant\'s gallery values', () => {
     ]);
     expect((await tool(h, 'upsert_collection_entry', { collectionId: 'listings', entryId: 'en_mill', values: [{ field: 'photos', value: null }] })).ok).toBe(true);
     expect(now().collections.listings.entries.en_mill.values).not.toHaveProperty('photos');
+  });
+
+  it('reads a gallery with long words a few whole photos at a time, to its end', async () => {
+    const long = 'é"'.repeat(140);
+    const many = Array.from({ length: MAX_GALLERY_PHOTOS }, (_, i) => ({ id: `i_${i}`, image: { assetId: 'a_front', alt: long }, caption: long }));
+    const { h } = host(run(agency(), { type: 'entry.update', collectionId: 'listings', entryId: 'en_mill', values: { photos: many } }));
+    const summary = (await tool(h, 'read_collection_entry', { collectionId: 'listings', entryId: 'en_mill' })).content as unknown as { values: Array<{ field: string; clipped?: true }> };
+    expect(summary.values.find((v) => v.field === 'photos')!.clipped).toBe(true);
+    const seen: string[] = [];
+    let offset: number | null = 0;
+    for (let parts = 0; offset !== null && parts < 30; parts++) {
+      const part = (await tool(h, 'read_collection_entry', { collectionId: 'listings', entryId: 'en_mill', field: 'photos', offset })).content as unknown as { value: Array<{ id: string }>; next: number | null; total: number };
+      expect(part.total).toBe(MAX_GALLERY_PHOTOS);
+      expect(JSON.stringify(part).length).toBeLessThan(12000);
+      seen.push(...part.value.map((p) => p.id));
+      offset = part.next;
+    }
+    expect(seen).toEqual(many.map((p) => p.id));
   });
 
   it('defines a gallery field and refuses a value of the wrong shape', async () => {
