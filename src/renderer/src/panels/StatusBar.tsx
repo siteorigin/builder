@@ -4,6 +4,7 @@ import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck,
 import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
+import { BUDGETED_KINDS, KIND_NAMES, bytesText, type PagePerformance, type PerformanceFinding, type PerformanceStatus } from '@shared/performance';
 import { diagnosticKey } from '@engine/validate';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
@@ -767,6 +768,144 @@ function SeoSharedRow({ findings, state }: { findings: SeoFinding[]; state: Proj
   );
 }
 
+/** How a performance finding reads in its row: what it says, as a warning or a note. */
+function PerformanceRow({ finding: f }: { finding: PerformanceFinding }) {
+  const warn = f.severity === 'warning';
+  return (
+    <HealthRow tone={warn ? 'warn' : 'quiet'} icon={warn ? <TriangleAlert /> : <Info />}>
+      <span className="sr-only">{warn ? 'Warning: ' : 'Note: '}</span>
+      {f.message}
+    </HealthRow>
+  );
+}
+
+/** A page's download by kind, as one line: "Scripts 120 KB · Styles 30 KB · …", the kinds over budget said so. */
+function pageBytes(p: PagePerformance, budgets: PerformanceStatus['report']['budgets']): string {
+  // Other files (a video, a document) only when the page downloads any.
+  const kinds = [...BUDGETED_KINDS, 'html' as const, ...(p.totals.other ? (['other'] as const) : [])];
+  return kinds.map((k) => `${KIND_NAMES[k]} ${bytesText(p.totals[k])}${k !== 'html' && k !== 'other' && p.totals[k] > budgets[k] ? ` (over ${bytesText(budgets[k])})` : ''}`).join(' · ');
+}
+
+/** One page of the report: its download by kind, and below it, its findings, largest files and fonts. */
+function PerformancePage({ page: p, budgets }: { page: PagePerformance; budgets: PerformanceStatus['report']['budgets'] }) {
+  const warnings = p.findings.filter((f) => f.severity === 'warning');
+  const name = p.title ? `${p.title} (${p.route})` : p.route;
+  if (p.status === 'unmeasured')
+    return (
+      <HealthRow tone="quiet" icon={<Info />}>
+        <strong>{name}</strong> <span className="health-hint">Not measured: {p.detail?.replace(/\.$/, '')}.</span>
+      </HealthRow>
+    );
+  return (
+    <HealthRow
+      tone={warnings.length ? 'warn' : 'quiet'}
+      icon={warnings.length ? <TriangleAlert /> : p.complete ? <CircleCheck /> : <Info />}
+      details={
+        <Disclosure label={p.findings.length ? `Findings and largest files (${p.findings.length})` : 'Largest files'} summaryLabel={`${p.findings.length ? `Findings (${p.findings.length}) and largest files` : 'Largest files'} of ${name}`}>
+          {p.findings.length > 0 && (
+            <ul className="health-list perf-findings">
+              {p.findings.map((f, i) => (
+                <PerformanceRow key={i} finding={f} />
+              ))}
+            </ul>
+          )}
+          <dl className="health-terms">
+            <dt>Largest files</dt>
+            <dd>{p.largest.length ? p.largest.map((r) => `${r.url} (${bytesText(r.bytes)})`).join(', ') : 'None'}</dd>
+            <dt>Fonts</dt>
+            <dd>{p.fonts.length ? p.fonts.map((r) => `${r.url} (${bytesText(r.bytes)}${r.preloaded ? ', preloaded' : ''})`).join(', ') : 'None loaded'}</dd>
+            <dt>Largest picture on the first screen</dt>
+            <dd>{p.hero ? `${p.hero.url}, ${p.hero.preloaded ? 'preloaded' : 'not preloaded'}${p.hero.from === 'estimate' ? ' (judged by its size: the browser reported no largest paint)' : ''}` : 'None'}</dd>
+          </dl>
+        </Disclosure>
+      }
+    >
+      <span className="sr-only">{warnings.length ? 'Warning: ' : ''}</span>
+      <strong>{name}</strong>
+      {!p.complete && ' (measured in part: some files were still arriving, or its pictures could not be read)'}
+      <span className="health-hint">
+        {pageBytes(p, budgets)}
+        {warnings.length > 0 && ` · ${warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`}`}
+      </span>
+    </HealthRow>
+  );
+}
+
+/**
+ * What the last website export measured of each page's first visit (#1488): its download by kind against budgets,
+ * whether the largest picture on its first screen is preloaded, pictures that do not fit their space, and how the host
+ * caches the website's hashed files. Nothing is measured until the website is exported, and a change since makes it
+ * out of date, which it says; either way it offers the export.
+ */
+function PerformanceReadiness({ status }: { status: PerformanceStatus | null }) {
+  const headId = useId();
+  const exportSite = () => setState({ modal: { kind: 'export' } });
+  if (!status)
+    return (
+      <section className="health-group performance-readiness quiet" aria-labelledby={headId} data-group="performance" data-testid="health-performance">
+        <h3 id={headId} tabIndex={-1}>
+          Performance
+        </h3>
+        <p className="health-note">
+          <Info aria-hidden="true" /> <span>Not measured yet. Each page is measured as the website is exported: what a first visit downloads, whether its main picture is preloaded, and how its pictures fit.</span>
+        </p>
+        <button className="btn btn-sm" onClick={exportSite}>
+          Export website…
+        </button>
+      </section>
+    );
+  const { report, stale } = status;
+  const warnings = [...report.findings, ...report.pages.flatMap((p) => p.findings)].filter((f) => f.severity === 'warning').length;
+  // Pages with warnings, and those not measured or measured only in part, before the rest.
+  const flagged = report.pages.filter((p) => p.status === 'unmeasured' || !p.complete || p.findings.some((f) => f.severity === 'warning'));
+  const fine = report.pages.filter((p) => !flagged.includes(p));
+  const at = new Date(report.measuredAt);
+  const when = Number.isNaN(at.getTime()) ? 'at the last export' : `at the last export, ${at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  return (
+    <section className={`health-group performance-readiness ${warnings ? 'warn' : 'quiet'}`} aria-labelledby={headId} data-group="performance" data-testid="health-performance">
+      <h3 id={headId} tabIndex={-1}>
+        Performance{' '}
+        {warnings > 0 && (
+          <span className="health-count">
+            {warnings}
+            <span className="sr-only"> {warnings === 1 ? 'warning' : 'warnings'}</span>
+          </span>
+        )}
+      </h3>
+      <p className="health-note">
+        {stale ? <TriangleAlert aria-hidden="true" /> : <Info aria-hidden="true" />}{' '}
+        <span>
+          Measured {when}, as a first visit at a {report.viewport.width}px window with nothing cached. Sizes are before the host compresses them.
+          {stale && <strong> The project has changed since the version this export was built from: export again to measure the changes.</strong>}
+        </span>
+      </p>
+      <div className="perf-actions" role="group" aria-labelledby={headId}>
+        <button className="btn btn-sm" onClick={exportSite}>
+          Export again…
+        </button>
+        {warnings > 0 && <AiHandoffButton label="Improve with AI" request={() => ({ mode: 'edit', scope: 'site', text: 'Make the website load faster: work through the performance findings the last export measured' })} />}
+      </div>
+      <ul className="health-list">
+        {report.findings.map((f, i) => (
+          <PerformanceRow key={`site-${i}`} finding={f} />
+        ))}
+        {flagged.map((p) => (
+          <PerformancePage key={p.route} page={p} budgets={report.budgets} />
+        ))}
+      </ul>
+      {fine.length > 0 && (
+        <Fold className="seo-notes" summary={`${fine.length === 1 ? '1 page' : `${fine.length} pages`} with no warnings`}>
+          <ul className="health-list">
+            {fine.map((p) => (
+              <PerformancePage key={p.route} page={p} budgets={report.budgets} />
+            ))}
+          </ul>
+        </Fold>
+      )}
+    </section>
+  );
+}
+
 export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
   // Converting a design's edited file makes code, which needs Developer mode as all code does.
@@ -1279,6 +1418,7 @@ export function HealthModal() {
           </HealthGroup>
         )}
         {seoAudit && projectState && <SeoReadiness audit={seoAudit} state={projectState} focusOnOpen={atSeo} />}
+        {snap.performance !== undefined && <PerformanceReadiness status={snap.performance} />}
         {updates.length > 0 && (
           <HealthGroup title="Updates" count={updates.length} tone="quiet" anchor="updates">
             <HealthRow
