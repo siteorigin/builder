@@ -29,7 +29,7 @@ import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { setTypedAheadField } from '../lib/typed-ahead';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
-import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
+import { MAX_POST_TITLE, futureDateWarning, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
@@ -1020,10 +1020,32 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   // canvas's page, so only the link is kept.
   const setValue = (name: string, value: unknown, label: string, edit?: PendingEdit) =>
     edit && (value as { type?: unknown } | null)?.type !== 'anchor' ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
+  // A published entry dated ahead is still on the website: said under its date, and again as the change lands, since
+  // the details may be closed by then (#1317).
+  const dateWarning = (publishedAt: string) => futureDateWarning({ draft: entry.draft, publishedAt }, nounLower, state.site.language, todayArticleDate());
+  const futureDate = dateWarning(entry.publishedAt);
+  const changeDate = (v: string) =>
+    update({ publishedAt: v }, `Change ${nounLower} date`).then((r) => {
+      const warning = r && dateWarning(v);
+      if (warning) toast(`${warning} Static exports don’t schedule publishing.`, 'info');
+      return r;
+    });
   const details = (
     <div className="post-fields">
-      <Field label="Publication date" hint={`A date in the past backdates the ${nounLower}.`}>
-        <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, `Change ${nounLower} date`) : undefined) : refuse())} />
+      <Field
+        label="Publication date"
+        hint={
+          futureDate ? (
+            <>
+              <span className="field-warning">{futureDate}</span>
+              Static exports don’t schedule publishing.
+            </>
+          ) : (
+            `A date in the past backdates the ${nounLower}.`
+          )
+        }
+      >
+        <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? changeDate(v) : undefined) : refuse())} />
       </Field>
       <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
         <RevisionDateField

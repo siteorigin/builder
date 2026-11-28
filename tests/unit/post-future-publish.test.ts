@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { todayArticleDate } from '@shared/articles';
-import { futurePublishChoice, futurePublishQuestion } from '../../src/renderer/src/lib/posts';
+import { futureDateWarning, futurePublishChoice, futurePublishQuestion } from '../../src/renderer/src/lib/posts';
 
 const today = '2026-11-27';
 const ask = (date: unknown) => futurePublishQuestion(date, 'post', 'en-GB', today);
@@ -65,5 +65,22 @@ describe('publishing a future-dated post', () => {
     expect(futurePublishChoice(true)).toBe('publish');
     expect(futurePublishChoice(false)).toBe('keep-draft');
     expect(futurePublishChoice(null)).toBe('stay');
+  });
+});
+
+describe('a published entry dated ahead (#1317)', () => {
+  const warn = (publishedAt: string, draft?: boolean) => futureDateWarning({ publishedAt, draft: draft as boolean }, 'event', 'en-GB', today);
+
+  it('says it is still in the next export, naming the date and the collection’s noun', () => {
+    expect(warn('2026-11-28', false)).toBe('This event is published, so it is still in the next export, dated 28 November 2026.');
+  });
+
+  it('says nothing for a date today or earlier, an invalid one, or a draft', () => {
+    expect(warn(today, false)).toBeNull();
+    expect(warn('2026-11-26', false)).toBeNull();
+    expect(warn('2099-02-30', false)).toBeNull();
+    expect(warn('2099-01-01', true)).toBeNull();
+    // An entry that says nothing about being a draft is one.
+    expect(warn('2099-01-01', undefined)).toBeNull();
   });
 });
