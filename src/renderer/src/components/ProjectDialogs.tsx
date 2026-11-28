@@ -676,6 +676,8 @@ function problemOf(message: string): Problem {
     const rest = message.replace(/^Cancell?ed\.?\s*/i, '');
     return { about: 'canceled', text: rest ? `Setup was canceled. ${rest}` : 'Setup was canceled. Nothing it made was kept.' };
   }
+  // A folder the preview cannot run under (#1366), told first: the folder's own name, quoted in it, may read like any other.
+  if (/^The preview can’t run from a folder/.test(message)) return { about: 'location', text: message };
   // A folder by this name is already there: a new name or another folder answers it.
   if (/already exists and is not empty|^Enter a project name/i.test(message)) return { about: 'name', text: message };
   // The chosen folder cannot be written to, or is inside the open project: only another folder answers it.

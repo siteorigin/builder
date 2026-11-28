@@ -142,6 +142,12 @@ describe('baseline rules', () => {
     // Two pages left to the site's description share it.
     const inherited = run(state, { type: 'page.update', pageId: home, description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(inherited, 'SEO_DESCRIPTION_DUPLICATE').map((f) => f.owner?.id)).toEqual([home, services]);
+    // Quoted, the shared words end the sentence: one full stop, never a second after the closing quote.
+    const sentence = 'We make pots by hand in a small riverside studio.';
+    const stopped = only(run(state, { type: 'page.update', pageId: home, description: sentence }, { type: 'page.update', pageId: services, description: sentence }), 'SEO_DESCRIPTION_DUPLICATE');
+    expect(stopped.map((f) => f.message.endsWith(`“${sentence}”`))).toEqual([true, true]);
+    const open = only(run(state, { type: 'page.update', pageId: home, description: 'Pots by hand' }, { type: 'page.update', pageId: services, description: 'Pots by hand' }), 'SEO_DESCRIPTION_DUPLICATE');
+    expect(open.map((f) => f.message.endsWith('“Pots by hand”.'))).toEqual([true, true]);
     const lengths = (n: number) => only(run(state, { type: 'page.update', pageId: services, description: x(n) }), 'SEO_DESCRIPTION_LENGTH').length;
     expect(SEO_DESCRIPTION_RANGE).toEqual({ min: 50, max: 160 });
     expect([49, 50, 160, 161].map(lengths)).toEqual([1, 0, 0, 1]);
@@ -294,6 +300,59 @@ describe('baseline rules', () => {
     const go = copy(state);
     addMenuItem(go, 'Go', { type: 'page', target: 'pg_services' });
     expect(runSeoAudit(go)).toEqual([]);
+  });
+
+  it('issue 1518: says when a link on the site’s own address goes where the website has nothing, once per address', () => {
+    const { state } = seoSite();
+    // The fixture's public URL is https://example.com/studio: only addresses under it are the site's own.
+    const linking = (s: ProjectState, entryId: string, ...targets: string[]) =>
+      run(s, { type: 'entry.update', collectionId: 'posts', entryId, body: [...POST_BODY, ...targets.map((target, i) => ({ type: 'p' as const, spans: [{ text: `See ${i}: ` }, { text: `the place numbered ${i}`, link: { type: 'url' as const, target } }] }))] });
+    const fine = linking(
+      state,
+      'en_spring',
+      'https://example.com/studio/services/',
+      'https://example.com/studio/services/index.html#prices',
+      'https://example.com/studio/blog/',
+      'https://example.com/studio/files/price-list.pdf',
+      'https://example.com/studio/services/?m=spring&s=',
+      'https://example.com/about/team/',
+      'https://other.example/studio/about/team/'
+    );
+    expect(only(fine, 'SEO_LINK_OWN_MISSING')).toEqual([]);
+    const broken = linking(state, 'en_spring', 'https://example.com/studio/about/team/', 'https://example.com/studio/?p=88', 'https://example.com/studio/about/team/');
+    // The same address over plain http, an old site's page file, and one read by its query whatever its file, are too.
+    const older = linking(state, 'en_spring', 'http://example.com/studio/about/team/', 'https://example.com/studio/contact.html', 'https://example.com/studio/index.php?p=12', 'http://other.example/studio/about/team/');
+    expect(only(older, 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|http://example.com/studio/about/team/', 'own-link|https://example.com/studio/contact.html', 'own-link|https://example.com/studio/index.php?p=12']);
+    expect(only(broken, 'SEO_LINK_OWN_MISSING')).toEqual([
+      // WordPress read a post by its number; the website has no page for it, whatever is at the address before it.
+      expect.objectContaining({ message: '“Spring pottery classes” links to https://example.com/studio/?p=88, where the website has no page.' }),
+      expect.objectContaining({
+        severity: 'warning',
+        pillar: 'content',
+        message: '“Spring pottery classes” links to https://example.com/studio/about/team/, where the website has no page.',
+        owner: { kind: 'entry', id: 'en_spring' },
+        site: 'own-link|https://example.com/studio/about/team/',
+        aiFixable: false,
+        destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' }
+      })
+    ]);
+    for (const f of only(broken, 'SEO_LINK_OWN_MISSING')) expectValidDestination(broken, f);
+    // Two posts linking to it are one finding, naming the first and counting the rest, before an address one links to:
+    // two posts of the same title are two places.
+    const second = run(broken, { type: 'entry.create', collectionId: 'posts', entryId: 'en_autumn', title: 'Spring pottery classes', publishedAt: '2027-03-01', draft: false, excerpt: 'Glazes for autumn.', body: POST_BODY });
+    const both = linking(second, 'en_autumn', 'https://example.com/studio/about/team/');
+    expect(only(both, 'SEO_LINK_OWN_MISSING').map((f) => f.message)).toEqual([
+      '“Spring pottery classes” and 1 other place link to https://example.com/studio/about/team/, where the website has no page.',
+      '“Spring pottery classes” links to https://example.com/studio/?p=88, where the website has no page.'
+    ]);
+    // An old address that leads nowhere answers nothing; one kept working answers it, and so does a page made there.
+    expect(only(run(broken, { type: 'redirect.add', from: '/about/team/', to: '/nowhere/' }), 'SEO_LINK_OWN_MISSING')).toHaveLength(2);
+    expect(only(run(broken, { type: 'redirect.add', from: '/about/team/', pageId: 'pg_services' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
+    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/' }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
+    // A draft there is left to the export, which already stops at links to a draft.
+    expect(only(run(broken, { type: 'page.create', title: 'Team', route: '/about/team/', draft: true }), 'SEO_LINK_OWN_MISSING').map((f) => f.site)).toEqual(['own-link|https://example.com/studio/?p=88']);
+    // Without a public URL, no address is the site's own.
+    expect(only(run(broken, { type: 'site.update', baseUrl: '' }), 'SEO_LINK_OWN_MISSING')).toEqual([]);
   });
 
   it('says when a picture in a published post has no description, as Project health does', () => {

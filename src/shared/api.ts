@@ -132,6 +132,13 @@ export interface Diagnostic {
 }
 
 /**
+ * The code of a Diagnostic for a code component's file edited outside the app and not loaded (#1533): the project keeps
+ * the version that last loaded, and `site` is the file. An error is code with errors (its message names the first, and
+ * its line when the compiler gives one); a warning is edited code that is fine but held back with the rest of the read.
+ */
+export const EXTERNAL_SOURCE_REFUSED = 'EXTERNAL_SOURCE_REFUSED';
+
+/**
  * What a web-sized copy of a large library image would be, measured by making it: its format and size, `lighter:
  * false` when it would hardly be lighter than the original (so none is offered), or null when none can be made.
  */
@@ -557,6 +564,9 @@ export interface ExportNote {
   message: string;
   destination?: EditorDestination;
 }
+
+/** A production build's failure when nothing in its output names where it was: no page, address or component (#1395). */
+export const BUILD_FAILED_UNPLACED = 'The production build failed.';
 
 export interface ExportResult {
   ok: boolean;
@@ -1039,6 +1049,12 @@ export interface PostImportPreview {
   redirectsLost?: number;
   /** What is not imported at all. */
   skipped: string[];
+  /**
+   * The old site's addresses the posts still link to, each with how many posts link to it, most linked first. `to` is
+   * the new address an old category archive's sends visitors to, when the import keeps it working; `pending` while no
+   * published post is filed under that category, so the archive is not there yet.
+   */
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** What stops the import: nothing can be imported while there is one. */
   problems: string[];
 }
@@ -1412,7 +1428,7 @@ export interface BuilderApi {
      * review: which photos become web-sized copies, and the opening the review was made in. `note` says what was
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
-    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
     /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.

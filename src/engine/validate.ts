@@ -5,6 +5,7 @@ import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
 import { sourceDiagnostics } from './sources';
 import { isPictureAsset } from '@shared/background-image';
+import { overPixelLimit } from '@shared/picture-formats';
 import type { BackgroundImageValue, ComponentDefinition, GraphNode, ImageValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
@@ -13,7 +14,7 @@ import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, isCollectionLoop, conditionRef, is
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
-import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
+import { isLanguageCode, languageKey, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { codeAxisProblems, variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
 import { normalizeTable } from './table';
@@ -25,7 +26,7 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { blankPages, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -231,7 +232,7 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
   for (const clash of translationClashes(state)) {
     const published = translationMembers(state, clash.group)
       .filter((p) => !isDraftPage(state, p))
-      .map((p) => pageLanguage(state.site, p).toLowerCase());
+      .map((p) => languageKey(pageLanguage(state.site, p)));
     const live = new Set(published).size < published.length;
     const effect = live ? 'Until then, the website lists none of their translations.' : 'Publishing the draft as it is would stop the website listing their translations.';
     out.push({ severity: 'warning', code: 'TRANSLATION_LANGUAGE', message: `${translationClashMessage(clash)} ${effect}`, owner: { kind: 'page', id: clash.b.id } });
@@ -608,12 +609,18 @@ function defaultDiagnostics(state: ProjectState): Diagnostic[] {
   return out;
 }
 
+/** What Project health and a website export say of a library image too large to make copies of (overPixelLimit). */
+export const pixelLimitMessage = (a: { name: string; width?: number; height?: number }) =>
+  `${a.name} is ${(a.width ?? 0).toLocaleString('en-US')} × ${(a.height ?? 0).toLocaleString('en-US')} pixels, too large to make smaller web copies of, so a page showing it sends all of it. Replace it everywhere in Assets with a copy under 100 megapixels, then remove it.`;
+
 /** Library images too large for fast pages: what coreValidation reports last. */
 function assetSizeDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   for (const a of Object.values(state.assets.assets)) {
+    // A picture too large to make copies of is sent whole to every visitor, however small its file (#1444).
+    if (a.kind === 'image' && overPixelLimit(a.mime, a.width, a.height)) out.push({ severity: 'warning', code: 'ASSET_PIXEL_LIMIT', message: pixelLimitMessage(a), owner: { kind: 'asset', id: a.id } });
     // A download is the size it is; only what pages load and show is worth making smaller.
-    if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+    else if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
   }
   return out;
 }
@@ -663,10 +670,20 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  const rest: Diagnostic[] = [...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
   return [links, rest];
+}
+
+/** Published pages with nothing on them (see blankPages). */
+function blankPageDiagnostics(state: ProjectState): Diagnostic[] {
+  return blankPages(state).map((p) => ({
+    severity: 'warning',
+    code: 'PAGE_EMPTY',
+    message: `${p.title}: this page has nothing on it, so visitors find it blank. ${p.id === state.site.homePageId ? 'Add content to it.' : 'Add content to it, keep it as a draft, or remove it.'}`,
+    owner: { kind: 'page', id: p.id }
+  }));
 }
 
 /** How reusable each of the project's own components is, as adviceValidation reports it last. */

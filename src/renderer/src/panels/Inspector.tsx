@@ -103,7 +103,7 @@ import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, openSiteStyles, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
-import { isLanguageCode, linkClash, linkedGroup, pageLanguage, sameLanguage, siteLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, languageKey, linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { languageCodeFor } from './site-details';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -2972,7 +2972,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             wideColumns
             tokens={tokens}
-            allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
+            allowed={(placedDef && partStyleControls(placedDef, 'root')) ?? styleSetFor(node)}
             gridChild={gridChild}
             grouped={inGroupAt(state, owner, node.id)}
             layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
@@ -3153,7 +3153,7 @@ function clashReason(state: ProjectState, page: PageDoc, other: PageDoc, mine: S
   const theirs = ours === clash.a ? clash.b : clash.a;
   const here = ours.id === page.id ? 'this page' : ours.title;
   // `direct`: the page itself is in a language this set has, the one refusal a single line can speak for.
-  if (theirs.id === other.id) return { reason: `${lang}, like ${here}`, direct: clash.language.toLowerCase() };
+  if (theirs.id === other.id) return { reason: `${lang}, like ${here}`, direct: languageKey(clash.language) };
   if (!mine.has(theirs.id)) return { reason: `Its ${lang} version, ${theirs.title}, would clash with ${here}`, direct: null };
   return { reason: `${lang} twice already: ${clash.a.title} and ${clash.b.title}`, direct: null };
 }
@@ -3195,7 +3195,7 @@ function PageLanguageField({ page, state }: { page: PageDoc; state: ProjectState
           if (code && !isLanguageCode(code)) return { message: 'Type a language, such as French, or a code, such as fr-CA.' };
           if (code.length > PAGE_LANGUAGE_MAX) return { message: `A language code can be at most ${PAGE_LANGUAGE_MAX} characters.` };
           // A language one of its translations already has (or, cleared, the site's) would be there twice.
-          const twin = peers.find((p) => sameLanguage(pageLanguage(state.site, p), code || site));
+          const twin = peers.find((p) => languageKey(pageLanguage(state.site, p)) === languageKey(code || site));
           return twin ? { message: `${twin.title} is already the ${languageName(code || site)} version. Give it another language first, or unlink it.` } : null;
         }}
         onProblem={(p) => setError(p?.message ?? null)}

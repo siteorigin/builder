@@ -520,7 +520,9 @@ export function CommandMenu() {
               if (e.key === 'ArrowUp') (e.preventDefault(), moveTo(Math.max(0, cur - 1)));
               if (e.key === 'Home' && !q) (e.preventDefault(), moveTo(0));
               if (e.key === 'End' && !q) (e.preventDefault(), moveTo(filtered.length - 1));
-              if (e.key === 'Enter') pick(activeCmd);
+              // Cancelled, so the Enter ends here: what the result opens can put focus on a control before the key's
+              // keypress and activation arrive, and they would press it too (#1371).
+              if (e.key === 'Enter') (e.preventDefault(), pick(activeCmd));
             }}
           />
           {/* For the pointer, as in the Insert panel; the keyboard clears with ⌘A and Delete, since Esc closes the menu. */}

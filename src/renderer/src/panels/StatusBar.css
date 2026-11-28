@@ -120,13 +120,13 @@
   .health-group h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text); scroll-margin-top: 8px; }
   .health-group h3:focus { outline: none; }
   .health-group h3:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
-  .health-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 99px; background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .health-group.danger .health-count { background: var(--red-soft); color: var(--red); }
+  .health-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .health-group.danger .health-count { background: var(--red-soft); color: var(--red-ink); }
   .health-group.warn .health-count { background: var(--amber-soft); color: var(--amber); }
   .health-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); overflow: hidden; }
   .health-group.danger .health-list { border-color: color-mix(in srgb, var(--red) 40%, var(--border-strong)); }
   :root:where([data-appearance='dark']) .health-group.danger .health-list { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
-  .health-group.quiet .health-list { background: transparent; box-shadow: none; border-color: var(--border-strong); }
+  :is(.health-group.quiet, .seo-notes) .health-list { background: transparent; box-shadow: none; border-color: var(--border-strong); }
   .health-list > li + li, .health-place .health-row + .health-row { border-top: 1px solid var(--border); }
   /* Items about one page or component are listed under its name, so the name is read once, not on every row. */
   .health-place > h4 { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 6px 14px; font-size: 12px; font-weight: 600; line-height: 18px; color: var(--text-2); background: var(--panel-2); border-bottom: 1px solid var(--border); }
@@ -196,7 +196,19 @@
   .seo-filters .select { width: auto; max-width: 100%; }
   .seo-filters .select + label { margin-left: 6px; }
   .seo-showing { margin-left: auto; font-variant-numeric: tabular-nums; }
-  .seo-pillar-count { margin-left: auto; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  /* One item about several elements of a page: the sections it is in, each leading to its own. */
+  .health-places { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: -2px; }
+  .health-places-label { margin-right: 2px; font-size: 12px; color: var(--text-2); }
+  /* Search & AI notes wait, folded, below what needs fixing. */
+  .seo-notes { margin-top: 10px; font-size: 12px; color: var(--text-2); }
+  .seo-notes > .health-note { margin: 4px 0 8px; }
+  .seo-readiness .health-details-body { max-width: 72ch; line-height: 1.45; text-wrap: pretty; }
+  /* Pages sharing one description: each page's own way to its fix, the names in one column and their actions lined
+     up beside them, however long a name is (to a point). */
+  .seo-shared-pages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, min(28ch, max-content)) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+  .seo-shared-pages > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
+  .seo-shared-name { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+  .seo-shared-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
   .seo-readiness .health-row .health-hint { color: var(--text-2); }
   .health-copy { display: flex; align-items: center; gap: 8px; }
   .health-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 1px; }

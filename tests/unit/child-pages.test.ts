@@ -194,9 +194,10 @@ describe('moving a page', () => {
     expect(made.pages.pg_team0001.route).toBe('/about/team/');
     expect(made.site.redirects).toBeUndefined();
     // A page that passed through an address keeps nothing there to stop a later move in the same edit, even one an
-    // export once had it at.
+    // export once had it at (and the author has since stopped keeping, as an export's address is otherwise kept, #1382).
     const exportedOnce = lookbook();
-    const s = { ...exportedOnce, published: { pages: { ...exportedOnce.published!.pages, '/work/kitchens/': byTitle(exportedOnce, 'About').id } } };
+    const about = byTitle(exportedOnce, 'About').id;
+    const s = { ...exportedOnce, site: { ...exportedOnce.site, droppedAddresses: [{ from: '/work/kitchens/', pageId: about }] }, published: { pages: { ...exportedOnce.published!.pages, '/work/kitchens/': about } } };
     const through = applyOperations(s, [
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/work/kitchens/' },
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/about-us/' },

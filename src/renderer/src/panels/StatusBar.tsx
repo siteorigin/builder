@@ -21,7 +21,7 @@ import { HeldStyle } from './StylePaste';
 import { Disclosure as Fold, DisclosureMark, Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { GENERATED_DIR, defFile } from '@generator/index';
-import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
+import { auditForHealth, matchesSeoFilter, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 /** "2 problems and 1 warning", or whichever of them there are. */
@@ -364,6 +364,12 @@ function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null
   return { owner: d.owner as ElementRef['owner'], instancePath: [], nodeId: d.nodeId };
 }
 
+function showPage(pageId: string) {
+  selectPage(pageId, null);
+  // With the Inspector, which holds the page's own settings.
+  setState({ modal: null, mode: 'edit', rightTab: 'inspect', dockOpen: true });
+}
+
 function showElement(ref: ElementRef) {
   const s = getState();
   if (ref.owner.kind === 'page') {
@@ -438,10 +444,10 @@ function HealthRow({ tone, icon, actions, details, children }: { tone: Tone; ico
   );
 }
 
-/** A disclosure in a row: a chevron that turns, then whatever it holds. */
-function Disclosure({ label, children }: { label: ReactNode; children: ReactNode }) {
+/** A disclosure in a row: a chevron that turns, then whatever it holds. `summaryLabel` names a repeated one by its row. */
+function Disclosure({ label, summaryLabel, children }: { label: ReactNode; summaryLabel?: string; children: ReactNode }) {
   return (
-    <Fold className="health-details" summary={label}>
+    <Fold className="health-details" summary={label} summaryLabel={summaryLabel}>
       <div className="health-details-body">{children}</div>
     </Fold>
   );
@@ -495,6 +501,8 @@ const PILLAR_ICONS: Record<SeoPillar, ReactNode> = {
   social: <Share2 aria-hidden="true" />
 };
 const SEVERITY_NAMES: Record<SeoSeverityFilter, string> = { all: 'All', error: 'Problems', warning: 'Warnings', info: 'Notes' };
+/** How many findings it takes before Search & AI readiness offers its filters. */
+const SEO_FILTER_FROM = 10;
 
 /**
  * What keeps the website from being found, shared and read by search engines, link previews and AI agents (the SEO
@@ -528,10 +536,35 @@ function SeoReadiness({ audit, state, focusOnOpen }: { audit: SeoAuditResult; st
     if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) lastFocused.current = null;
   };
   const counts = seoFilterCounts(findings, pillar, severity);
-  const groups = seoPillarGroups(findings, pillar, severity);
-  const shown = groups.reduce((n, g) => n + g.findings.length, 0);
-  const readiness = seoReadiness(findings);
   const filtered = pillar !== 'all' || severity !== 'all';
+  // A short list is read faster than two menus are worked: the filters come in once there are many findings (and stay
+  // while one is in use).
+  const filterable = findings.length >= SEO_FILTER_FROM || filtered;
+  const due = findings.filter(needsFixing);
+  // With something to fix, the notes (suggestions only) wait below it, folded, rather than sitting between warnings. An
+  // area chosen with only notes in it shows them as its list.
+  const inArea = findings.filter((f) => matchesSeoFilter(f, pillar, 'all'));
+  const split = severity === 'all' && inArea.some(needsFixing) && inArea.some((f) => !needsFixing(f));
+  const groups = seoPillarGroups(split ? due : findings, pillar, severity);
+  const noteGroups = split ? seoPillarGroups(findings.filter((f) => !needsFixing(f)), pillar, 'all') : [];
+  const noteCount = noteGroups.reduce((n, g) => n + g.findings.length, 0);
+  const shown = groups.reduce((n, g) => n + g.findings.length, 0) + noteCount;
+  const readiness = seoReadiness(findings);
+  const pillarList = (list: typeof groups) => (
+    <ul className="health-list">
+      {list.map((g) => (
+        <li key={g.pillar} className="health-place" data-pillar={g.pillar}>
+          <h4>
+            {PILLAR_ICONS[g.pillar]}
+            {g.name}
+          </h4>
+          <ul>
+            {sharedRuns(g.findings).map((run) => (run.length > 1 ? <SeoSharedRow key={diagnosticKey(run[0])} findings={run} state={state} /> : <SeoRow key={diagnosticKey(run[0])} finding={run[0]} state={state} />))}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  );
   const clear = () => {
     setPillar('all');
     setSeverity('all');
@@ -541,7 +574,7 @@ function SeoReadiness({ audit, state, focusOnOpen }: { audit: SeoAuditResult; st
   return (
     <section className={`health-group seo-readiness ${tone}`} aria-labelledby={headId} data-group="seo" data-testid="health-seo" onFocus={onFocus} onBlur={onBlur}>
       <h3 id={headId} ref={headingRef} tabIndex={-1} data-autofocus={focusOnOpen || undefined}>
-        Search &amp; AI readiness {findings.length > 0 && <span className="health-count">{findings.length}</span>}
+        Search &amp; AI readiness {findings.length > 0 && <span className="health-count">{due.length || findings.length}</span>}
       </h3>
       {!audit.ok ? (
         <p className="health-note seo-readiness-summary">
@@ -556,11 +589,11 @@ function SeoReadiness({ audit, state, focusOnOpen }: { audit: SeoAuditResult; st
           </span>
         </p>
       )}
-      {findings.length > 0 && (
+      {filterable && (
         <div className="seo-filters">
-          <label htmlFor={pillarId}>Pillar</label>
+          <label htmlFor={pillarId}>Area</label>
           <select id={pillarId} ref={pillarRef} className="select sm" value={pillar} onChange={(e) => setPillar(e.target.value as SeoPillarFilter)}>
-            <option value="all">All pillars ({counts.pillars.all})</option>
+            <option value="all">All areas ({counts.pillars.all})</option>
             {SEO_PILLARS.map((p) => (
               <option key={p} value={p}>
                 {SEO_PILLAR_NAMES[p]} ({counts.pillars[p]})
@@ -576,27 +609,20 @@ function SeoReadiness({ audit, state, focusOnOpen }: { audit: SeoAuditResult; st
             ))}
           </select>
           <span className="seo-showing" role="status">
-            {filtered ? `Showing ${shown} of ${findings.length}` : ''}
+            {filtered ? `${shown} of ${findings.length} match${noteCount ? `, including ${noteCount === 1 ? '1 optional note' : `${noteCount} optional notes`}` : ''}` : <span className="sr-only">All {findings.length} findings shown</span>}
           </span>
         </div>
       )}
       {groups.length > 0 ? (
-        <ul className="health-list">
-          {groups.map((g) => (
-            <li key={g.pillar} className="health-place" data-pillar={g.pillar}>
-              <h4>
-                {PILLAR_ICONS[g.pillar]}
-                {g.name}
-                <span className="seo-pillar-count">{g.findings.length}</span>
-              </h4>
-              <ul>
-                {g.findings.map((f) => (
-                  <SeoRow key={diagnosticKey(f)} finding={f} state={state} />
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
+        <>
+          {pillarList(groups)}
+          {noteCount > 0 && (
+            <Fold className="seo-notes" summary={`${noteCount === 1 ? '1 note' : `${noteCount} notes`}, optional`}>
+              <p className="health-note">Suggestions that help the website be found and shared. Nothing here needs fixing before you publish.</p>
+              {pillarList(noteGroups)}
+            </Fold>
+          )}
+        </>
       ) : (
         findings.length > 0 && (
           <p className="health-note seo-empty">
@@ -634,10 +660,95 @@ function SeoRow({ finding: f, state }: { finding: SeoFinding; state: ProjectStat
           </>
         ) : undefined
       }
+      // With a way to the fix beside it, why it matters is there when asked for; without one, the explanation says what
+      // to do, so it stays in view.
+      details={
+        dest || fix ? (
+          <Disclosure label="Why it matters" summaryLabel={`Why it matters: ${f.message}`}>
+            {f.explanation}
+          </Disclosure>
+        ) : undefined
+      }
     >
       <span className="sr-only">{f.severity === 'error' ? 'Problem: ' : f.severity === 'warning' ? 'Warning: ' : 'Note: '}</span>
       {f.message}
-      <span className="health-hint">{f.explanation}</span>
+      {!(dest || fix) && <span className="health-hint">{f.explanation}</span>}
+    </HealthRow>
+  );
+}
+
+/** What a "same description as" finding says: whose, which field, and the words they share. Null for any other finding. */
+function sharedValue(f: SeoFinding): { name: string; what: string; value: string } | null {
+  if (!f.code.endsWith('_DUPLICATE')) return null;
+  const m = /^(.+?) has the same (.+?) as .+?: “(.*)”\.?$/su.exec(f.message);
+  return m ? { name: m[1], what: m[2], value: m[3] } : null;
+}
+
+/** A pillar's findings in order, the pages sharing one description (or title) collected into one run. */
+function sharedRuns(findings: SeoFinding[]): SeoFinding[][] {
+  const runs: SeoFinding[][] = [];
+  const byValue = new Map<string, SeoFinding[]>();
+  for (const f of findings) {
+    const v = sharedValue(f);
+    const key = v && `${f.code}\n${v.value}`;
+    const run = key ? byValue.get(key) : undefined;
+    if (run) run.push(f);
+    else {
+      runs.push([f]);
+      if (key) byValue.set(key, runs[runs.length - 1]);
+    }
+  }
+  return runs;
+}
+
+/**
+ * Pages that share one description: one item, said once with the words they share, and each page's way to its own
+ * fix below it. The audit still counts one finding per page, since each page is fixed on its own.
+ */
+function SeoSharedRow({ findings, state }: { findings: SeoFinding[]; state: ProjectState }) {
+  const textId = useId();
+  const shared = findings.map(sharedValue);
+  const first = findings[0];
+  const names = shared.map((v) => v!.name);
+  const listed = names.length > 2 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names.join(' and ');
+  return (
+    <HealthRow
+      tone={first.severity === 'error' ? 'danger' : first.severity === 'warning' ? 'warn' : 'quiet'}
+      icon={first.severity === 'error' ? <CircleAlert /> : first.severity === 'warning' ? <TriangleAlert /> : <Info />}
+      details={
+        <>
+          <ul className="seo-shared-pages">
+            {findings.map((f, k) => {
+              const dest = f.destination;
+              const fix = findingHandoff(state, f);
+              return (
+                <li key={diagnosticKey(f)}>
+                  <span id={`${textId}-${k}`} className="seo-shared-name">
+                    {names[k]}
+                  </span>
+                  {/* Named by the page and the finding, so each page's actions say whose they are. */}
+                  <div className="seo-shared-actions" role="group" aria-labelledby={`${textId}-${k} ${textId}`}>
+                    {dest && (
+                      <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
+                        {destinationLabel(dest)}
+                      </button>
+                    )}
+                    {fix && <AiHandoffButton label="Fix with AI" request={() => findingHandoff(getState().snapshot?.state ?? state, f)} />}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <Disclosure label="Why it matters" summaryLabel={`Why it matters: ${listed} have the same ${shared[0]!.what}`}>
+            {first.explanation}
+          </Disclosure>
+        </>
+      }
+    >
+      <span className="sr-only">{first.severity === 'error' ? 'Problem: ' : first.severity === 'warning' ? 'Warning: ' : 'Note: '}</span>
+      <span id={textId}>
+        {listed} have the same {shared[0]!.what}: “{shared[0]!.value}”{/[.!?…]$/.test(shared[0]!.value) ? '' : '.'}
+      </span>
     </HealthRow>
   );
 }
@@ -815,7 +926,9 @@ export function HealthModal() {
       ? plural(warnings.length, 'warning')
       : starting
         ? 'No problems so far'
-        : 'No problems found';
+        : seoDue.length
+          ? 'No problems in the project'
+          : 'No problems found';
   const guidance = problems
     ? warnings.length
       ? `Fix the ${problems === 1 ? 'problem' : 'problems'} first, then check the warnings.`
@@ -823,7 +936,9 @@ export function HealthModal() {
         ? 'Below is what happened and how to fix it.'
         : 'Each one says what happened and how to fix it.'
     : warnings.length
-      ? 'Worth checking before you publish.'
+      ? seoDue.length
+        ? `Worth checking before you publish, as are ${seoCountsText(seoDue)} in Search & AI readiness.`
+        : 'Worth checking before you publish.'
       : starting
         ? 'The preview is still starting. This list updates once it’s running.'
         : phase === 'unavailable'
@@ -842,7 +957,8 @@ export function HealthModal() {
     { key: 'problems', label: 'Problems', count: problems, tone: 'danger' },
     { key: 'warnings', label: 'Warnings', count: warnings.length, tone: 'warn' },
     { key: 'notes', label: 'Notes', count: notes.length, tone: 'quiet' },
-    { key: 'seo', label: 'Search & AI', count: seoFindings.length, tone: seoDue.length ? 'warn' : 'quiet' },
+    // What needs fixing is counted while there is any; the notes are counted only when they are all there is.
+    { key: 'seo', label: 'Search & AI', count: seoDue.length || seoFindings.length, tone: seoDue.length ? 'warn' : 'quiet' },
     { key: 'updates', label: 'Updates', count: updates.length, tone: 'quiet' },
     { key: 'saved', label: 'Saved copies', count: saved.length, tone: 'quiet' }
   ].filter((j) => j.count > 0);
@@ -852,12 +968,23 @@ export function HealthModal() {
     heading?.focus({ preventScroll: true });
   };
 
+  /** The element an item's row would show on the page: only when nothing else (Assets, the outline, a setting) fixes it. */
+  const elementOf = (d: Diagnostic): ElementRef | null => {
+    if (d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset') return null;
+    if (d.code.startsWith('HEADING_') && d.owner?.kind === 'page') return null;
+    if (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d))) return null;
+    return diagnosticTarget(st, d);
+  };
   const diagnosticRow = (d: Diagnostic, i: number, rest?: string) => {
-    // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
-    const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
+    // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed. One too large
+    // to make copies of is opened there too, to be replaced everywhere.
+    const missing = d.code === 'ASSET_FILE_MISSING';
+    const asset = (missing || d.code === 'ASSET_PIXEL_LIMIT') && d.owner?.kind === 'asset' ? d.owner.id : null;
     const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
     // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
+    // A page with nothing on it has no element to show: the page itself is opened.
+    const blankPage = d.code === 'PAGE_EMPTY' && d.owner?.kind === 'page' ? d.owner.id : null;
     // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
@@ -875,6 +1002,10 @@ export function HealthModal() {
           ) : outlinePage ? (
             <button className="btn btn-sm" onClick={() => showHeadings(outlinePage, d)}>
               Show headings
+            </button>
+          ) : blankPage ? (
+            <button className="btn btn-sm" onClick={() => showPage(blankPage)}>
+              Open page
             </button>
           ) : dest ? (
             <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
@@ -897,26 +1028,95 @@ export function HealthModal() {
         ) : (
           d.message
         )}
-        {asset && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
+        {asset && missing && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
       </HealthRow>
     );
   };
+  /**
+   * The same item said about several elements of one page (three sections' "Start a project" buttons, say): one row,
+   * with the sections it is in, each leading to its own element. Read as one thing to fix in several places, not as
+   * several things.
+   */
+  const repeatedRow = (items: { d: Diagnostic; i: number }[], rest?: string) => {
+    const first = items[0].d;
+    const targets = items.map(({ d }) => elementOf(d)!);
+    const rowId = `${recoveryNote}-r${items[0].i}`;
+    const names = targets.map((t) => {
+      const crumbs = breadcrumb(st, t!);
+      return (crumbs[1] ?? crumbs[crumbs.length - 1]).label;
+    });
+    // Sections with the same name are told apart by their order on the page.
+    const labels = names.map((n, k) => (names.filter((m) => m === n).length > 1 ? `${n} ${names.slice(0, k + 1).filter((m) => m === n).length}` : n));
+    return (
+      <HealthRow
+        key={`${first.code}:${first.owner?.id ?? ''}:${items[0].i}:x${items.length}`}
+        tone={first.severity === 'error' ? 'danger' : first.severity === 'warning' ? 'warn' : 'quiet'}
+        icon={first.severity === 'error' ? <CircleAlert /> : first.severity === 'warning' ? <TriangleAlert /> : <Info />}
+        details={
+          <div className="health-places" role="group" aria-labelledby={`${rowId} ${rowId}-p`}>
+            <span className="health-places-label" id={`${rowId}-p`}>
+              In {items.length} places
+            </span>
+            {targets.map((t, k) => (
+              <button key={k} className="btn btn-sm" aria-label={`Show ${labels[k]} on the page`} onClick={() => showElement(t!)}>
+                {labels[k]}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        <span id={rowId}>{rest ?? first.message}</span>
+      </HealthRow>
+    );
+  };
+  /** Items in their order, those saying exactly the same thing collected into one row. */
+  const collected = (entries: { d: Diagnostic; i: number; rest?: string }[]) => {
+    const groups = new Map<string, { d: Diagnostic; i: number; rest?: string }[]>();
+    for (const e of entries) {
+      const key = `${e.d.code}\n${e.d.owner?.kind ?? ''}:${e.d.owner?.id ?? ''}\n${e.rest ?? e.d.message}`;
+      groups.set(key, [...(groups.get(key) ?? []), e]);
+    }
+    // Collected only when every one leads to an element; anything else is listed as it is, one row each. Several said
+    // about the same element are one place, so the row offers one way to each element.
+    return [...groups.values()].flatMap((g) => {
+      if (g.length < 2 || !g.every((e) => elementOf(e.d))) return g.map((e) => diagnosticRow(e.d, e.i, e.rest));
+      const seen = new Set<string>();
+      const places = g.filter((e) => {
+        const key = refKey(elementOf(e.d)!);
+        return !seen.has(key) && !!seen.add(key);
+      });
+      return [places.length > 1 ? repeatedRow(places, g[0].rest) : diagnosticRow(g[0].d, g[0].i, g[0].rest)];
+    });
+  };
   /** A severity's items, with those about one page or component listed together under its name. */
   const diagnosticRows = (list: Diagnostic[], keyPrefix: string) => {
-    const places = new Map<string, { kind: 'page' | 'component'; name: string; rows: ReactNode[] }>();
-    const out: Array<ReactNode | string> = [];
+    const places = new Map<string, { kind: 'page' | 'component'; name: string; entries: { d: Diagnostic; i: number; rest?: string }[] }>();
+    const out: Array<{ d: Diagnostic; i: number } | string> = [];
     list.forEach((d, i) => {
       const place = diagnosticPlace(st, d);
-      if (!place) return out.push(diagnosticRow(d, i));
+      if (!place) return out.push({ d, i });
       const key = `${place.kind}:${place.id}`;
       if (!places.has(key)) {
-        places.set(key, { kind: place.kind, name: place.name, rows: [] });
+        places.set(key, { kind: place.kind, name: place.name, entries: [] });
         out.push(key);
       }
-      places.get(key)!.rows.push(diagnosticRow(d, i, place.rest));
+      places.get(key)!.entries.push({ d, i, rest: place.rest });
     });
-    return out.map((item) => {
-      if (typeof item !== 'string') return item;
+    // Standalone items are collected too, each run of them between the places in its own order.
+    const rendered: ReactNode[] = [];
+    let loose: { d: Diagnostic; i: number }[] = [];
+    const flush = () => (rendered.push(...collected(loose)), (loose = []));
+    for (const item of out) {
+      if (typeof item !== 'string') {
+        loose.push(item);
+        continue;
+      }
+      flush();
+      rendered.push(placeGroup(item));
+    }
+    flush();
+    return rendered;
+    function placeGroup(item: string) {
       const p = places.get(item)!;
       return (
         <li key={`${keyPrefix}:${item}`} className="health-place">
@@ -924,10 +1124,10 @@ export function HealthModal() {
             {p.kind === 'page' ? <FileText aria-hidden="true" /> : <Component aria-hidden="true" />}
             {p.kind === 'page' ? `${p.name} page` : `${p.name} component`}
           </h4>
-          <ul>{p.rows}</ul>
+          <ul>{collected(p.entries)}</ul>
         </li>
       );
-    });
+    }
   };
 
   return (

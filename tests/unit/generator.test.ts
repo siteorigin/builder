@@ -132,7 +132,8 @@ describe('the blank starter (#15)', () => {
     const s = createStarterState('blank', 'Kloof', false);
     const home = s.pages[s.site.homePageId];
     expect(home.rootIds).toEqual([]);
-    expect(validateState(s)).toEqual([]);
+    // The one thing to say of it: its Home page has nothing on it yet (#1550).
+    expect(validateState(s).map((d) => [d.severity, d.code, d.owner])).toEqual([['warning', 'PAGE_EMPTY', { kind: 'page', id: home.id }]]);
     const files = generateProject(s);
     // What visitors get: the pages and the shared layout (a component's own file may name its defaults).
     const shown = [...files].filter(([path]) => path.startsWith('src/routes/')).map(([, src]) => src).join('\n');
@@ -590,7 +591,7 @@ describe('SEO and performance', () => {
     expect(page).toContain('application/ld+json');
     expect(page).not.toContain('<script type');
     expect(files.get('static/favicon.svg')).toMatch(/^<svg[^]*>T<\/text>/);
-    expect(files.get('src/routes/+layout.svelte')).toContain('href={asset("favicon.svg")}');
+    expect(files.get('src/routes/+layout.svelte')).toContain('href={headAsset("favicon.svg")}');
   });
 
   it('derives the base path from the public URL', () => {
@@ -1568,7 +1569,7 @@ describe('old addresses kept working (#37)', () => {
     expect(redirect).toContain('const to = resolve("/");');
     expect(redirect).toContain(`<meta http-equiv="refresh" content={'0; url=' + to} />`);
     // With scripts, the query and section of the old link come along.
-    expect(redirect).toContain("' + location.search + location.hash);</' + 'script>'");
+    expect(redirect).toContain("' + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</' + 'script>'");
     expect(redirect).toContain('<meta name="robots" content="noindex" />');
     expect(redirect).toContain('<link rel="canonical" href={"https://me.github.io/studio/"} />');
     expect(files.get(`${GEN_ROOT}/paths.json`)).toContain('"/studio"');
@@ -1589,15 +1590,40 @@ describe('old addresses kept working (#37)', () => {
     let s = exported(fresh());
     s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state);
     const file = generateProject(s).get('src/routes/about/+page.svelte')!;
-    expect(file).toContain('\t{@html go}\n');
-    // Reached by a link inside the running site, the head script never runs; the page goes once it is mounted.
-    expect(file).toContain('onMount(() => location.replace(to + location.search + location.hash));');
+    // Reached by a link inside the running site, the inline script never runs; the page goes once it is mounted.
+    expect(file).toContain('onMount(() => {\n\t\tconst u = to + location.search + location.hash;\n\t\tlink.href = u;\n\t\tlocation.replace(u);\n\t});');
     expect(() => compile(file, { generate: 'server', filename: 'src/routes/about/+page.svelte' })).not.toThrow();
     expect(() => compile(file, { generate: 'client', filename: 'src/routes/about/+page.svelte' })).not.toThrow();
     // The inline script the page writes, for a destination as the browser would get it.
     const go = new Function('to', `return ${file.match(/\tconst go = (.*);\n/)![1]};`);
-    expect(go('/studio/')).toBe('<script>location.replace("/studio/" + location.search + location.hash);</script>');
-    expect(go('/a</script>')).not.toContain('</script>"');
+    expect(go('/studio/')).toBe('<script>var u = "/studio/" + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</script>');
+    expect(go('/a</b/</script>')).not.toContain('</script>"');
+    expect(go('/a</b/</script>')).not.toContain('</b');
+  });
+
+  it('#1502: goes from the body, once its link is there, and leaves that link carrying the query and section', () => {
+    let s = exported(fresh());
+    s.site.baseUrl = 'https://example.com/guide/station/';
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state);
+    const file = generateProject(s).get('src/routes/about/+page.svelte')!;
+    // Nothing in the head navigates: WebKit can stop reading the document when the navigation starts, and a page
+    // that went from its head was left with no body, and so no link, while the new page was slow to come.
+    const head = file.match(/<svelte:head>([\s\S]*?)<\/svelte:head>/)![1];
+    expect(head).not.toContain('{@html');
+    expect(head).not.toContain('location');
+    expect(head).toContain(`<meta http-equiv="refresh" content={'0; url=' + to} />`);
+    // The script comes straight after the link, so the link is in the document whenever the page goes.
+    const body = file.slice(file.indexOf('</svelte:head>'));
+    expect(body).toMatch(/<p><a bind:this=\{link\} href=\{to\}>\{"[^"]+"\}<\/a>\{@html go\}<\/p>/);
+    // Run the inline script as the browser would at /guide/station/about/?book=44#main: the link already goes to the
+    // new address with the query and section when the page leaves for it.
+    const html = new Function('to', `return ${file.match(/\tconst go = (.*);\n/)![1]};`)('/guide/station/');
+    const code = html.replace(/^<script>/, '').replace(/<\/script>$/, '');
+    const link = { href: '/guide/station/' };
+    const seen: string[] = [];
+    const location = { search: '?book=44', hash: '#main', replace: (u: string) => seen.push(`${u} link=${link.href}`) };
+    new Function('document', 'location', code)({ currentScript: { previousElementSibling: link } }, location);
+    expect(seen).toEqual(['/guide/station/?book=44#main link=/guide/station/?book=44#main']);
   });
 
   it('follows its page to a later address, at any depth', () => {

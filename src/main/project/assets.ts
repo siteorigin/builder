@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import type { ImportReviewRow, WebCopyPlan } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
+import { FONT_FILE_RE } from '@shared/fonts';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
-import { COPY_EXTENSIONS, copyMime, isCopyMime, type CopyMime } from '@shared/picture-formats';
+import { COPY_EXTENSIONS, copyMime, isCopyMime, overPixelLimit, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
 import { countMediaRead, perf } from '../perf';
 import { readRegularFile } from '../packs/files';
@@ -49,6 +50,9 @@ export const IMPORT_IMAGE_EXTENSIONS = [...IMAGE_EXTENSIONS, ...PHOTO_EXTENSIONS
 export const LARGE_PHOTO_BYTES = 1_500_000;
 /** The largest photo the importer reads to make a web-sized copy of; what it stores is still held to MAX_BYTES. */
 const CONVERT_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Why a picture over the decode cap (MAX_VARIANT_PIXELS) is not added, as the end of "{file} was not imported because …". */
+const TOO_MANY_PIXELS = 'it is over 100 megapixels, too large to make web-sized copies of. Save a smaller copy of it in an image editor, then add that.';
 
 const isPhotoToConvert = (path: string) => PHOTO_EXTENSIONS.includes(extname(path).slice(1).toLowerCase());
 export { DOCUMENT_EXTENSIONS };
@@ -281,7 +285,8 @@ type Classified =
  */
 function classify(sourcePath: string, buf: Buffer, converter: boolean): Classified {
   const name = basename(sourcePath);
-  const tooLarge = { kind: 'refuse' as const, reason: 'it is over 100 megapixels, too large to resize here. Export a smaller JPEG copy of it, then add that.' };
+  const tooLarge = { kind: 'refuse' as const, reason: TOO_MANY_PIXELS };
+  const over = (info: ReturnType<typeof imageInfo>, mime: string) => !!info && overPixelLimit(mime, info.width, info.height);
   if (buf.length > CONVERT_MAX_BYTES) return { kind: 'refuse', reason: `${name} is larger than 64 MB.`, whole: true };
   if (isPhotoToConvert(sourcePath)) {
     const type = photoType(buf);
@@ -291,6 +296,7 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
       const problem = imageProblem(buf, type.stored);
       // Its name never said what it holds, so a picture that can't be read is only called damaged.
       if (problem) return { kind: 'refuse', reason: unusableReason(problem === 'unreadable' ? 'damaged' : problem, type.stored) };
+      if (over(imageInfo(buf, type.stored), type.stored)) return tooLarge;
       return { kind: 'stored', mime: type.stored, ext: type.ext, info: null, offer: false };
     }
     const problem = imageProblem(buf, 'image/heic');
@@ -298,7 +304,7 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
     if (problem) return { kind: 'refuse', reason: 'it is damaged: its picture data cannot be read. Open the original in Photos or Preview and export a new copy as JPEG.' };
     if (!converter) return { kind: 'refuse', reason: noConverterReason() };
     const info = imageInfo(buf, 'image/heic');
-    if (info && info.width * info.height > MAX_VARIANT_PIXELS) return tooLarge;
+    if (over(info, 'image/heic')) return tooLarge;
     return { kind: 'heic', info };
   }
   const ext = extname(sourcePath).toLowerCase();
@@ -306,7 +312,8 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
   const problem = imageProblem(buf, mime);
   if (problem) return { kind: 'refuse', reason: unusableReason(problem, mime) };
   const info = imageInfo(buf, mime);
-  if (info && info.width * info.height > MAX_VARIANT_PIXELS) return buf.length > MAX_BYTES ? tooLarge : { kind: 'stored', mime, ext, info, offer: false };
+  // No copy of it can be made, so the library never takes it: a site would send every visitor all of its pixels (#1444).
+  if (over(info, mime)) return tooLarge;
   // A resized animation would be one still frame.
   const offer = !!info && !(mime === 'image/png' && isAnimatedPng(buf));
   return { kind: 'stored', mime, ext, info, offer };
@@ -516,8 +523,9 @@ async function planStore(p: PreparedFile, refuse: Refusal, later = false): Promi
   const isFont = kind === 'font';
   const info = isFont ? null : imageInfo(p.buf, p.mime);
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
-  // and keep only the original.
-  const decodable = !!info && p.mime !== 'image/svg+xml' && info.width * info.height <= MAX_VARIANT_PIXELS;
+  // and keep only the original. A file the author chose is refused before this (refuseOverPixelLimit); one a sync or
+  // a package brings is kept, for Project health to name, rather than hold up everything else it brings.
+  const decodable = !!info && p.mime !== 'image/svg+xml' && !overPixelLimit(p.mime, info.width, info.height);
   // Copies made later are made of a picture that is first proved to decode, unless this app just made it.
   const pending = later && decodable && isCopyMime(p.mime);
   const pixels = info ? checkPixels(p.buf, p.mime, info) : 0;
@@ -575,22 +583,56 @@ export async function importAsset(
   existing: AssetRecord[],
   fence: WriteFence = unfenced,
   opts: ImportOptions = {}
-): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font']; note?: string; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
+): Promise<{ record: AssetRecord; existing: boolean; restored?: true; font?: AssetRecord['font']; note?: string; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const refuse = refusal(sourcePath, 'was not imported');
   const { note, ...p } = await prepareImport(sourcePath, refuse, opts);
   const noted = note ? { note } : {};
   const dup = sameFile(existing, p);
-  // A font imported before metadata was recorded gets it now.
-  if (dup) return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+  if (dup) return { ...(await keptDuplicate(projectDir, dup, p, fence)), ...noted };
   return { ...(await storePrepared(projectDir, sourcePath, p, existing, fence, opts, refuse)), ...noted };
+}
+
+/**
+ * The library record already holding an imported file's bytes, as the import returns it. A font whose file has left
+ * the project folder gets it back from these very bytes (#1425, `restored`): its record, its details and the styles
+ * using its family stay as they are. A font imported before metadata was recorded gets it now (`font`).
+ */
+async function keptDuplicate(projectDir: string, dup: AssetRecord, p: PreparedFile, fence: WriteFence, restoring?: Promise<boolean>): Promise<{ record: AssetRecord; existing: true; restored?: true; font?: AssetRecord['font'] }> {
+  const restored = dup.kind === 'font' && (await (restoring ?? restoreFontFile(projectDir, dup, p.buf, fence)));
+  return { record: dup, existing: true, ...(restored ? { restored: true as const } : {}), ...(p.font && !dup.font ? { font: p.font } : {}) };
+}
+
+/**
+ * Put a library font's file back where its record names it, from `buf`, which must be that very file (its recorded
+ * content). Only a missing file is written, while `fence` allows; a file already there is left alone. True when the
+ * file was written.
+ */
+export async function restoreFontFile(projectDir: string, record: AssetRecord, buf: Buffer, fence: WriteFence = unfenced): Promise<boolean> {
+  const name = record.name.trim() || 'This font';
+  if (typeof record.file !== 'string' || !FONT_FILE_RE.test(record.file)) throw new Error(`${name} has a file name SiteOrigin Builder did not give it, so its file cannot be put back. Add the font again as a font of its own.`);
+  if (sha(buf) !== record.hash) throw new Error(`That file is not the one ${name} was made from.`);
+  if (await isFile(safeJoin(projectDir, record.file))) return false;
+  let written: string[] = [];
+  if (!(await fence(async () => void (written = await writeFiles(projectDir, [{ rel: record.file, data: buf }], true))))) throw new Error(`${name} was not restored because ${NOT_WRITTEN}.`);
+  return written.length > 0;
 }
 
 /** The library record already holding a prepared file's bytes. The same bytes under another format's name (a .txt and a .csv) are a file of their own. */
 const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) => a.hash === p.hash && a.mime === p.mime);
 
+/**
+ * Refuse a picture the author chose that no copy can be made of: stored, it would be sent whole to every visitor,
+ * however small its file (#1444).
+ */
+function refuseOverPixelLimit(p: PreparedFile, refuse: Refusal): void {
+  const info = kindOfMime(p.mime) === 'image' ? imageInfo(p.buf, p.mime) : null;
+  if (info && overPixelLimit(p.mime, info.width, info.height)) throw refuse(TOO_MANY_PIXELS);
+}
+
 /** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
 async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const kind = kindOfMime(p.mime);
+  refuseOverPixelLimit(p, refuse);
   const { stored, files, copiesPending } = await planStore(p, refuse, !!opts.copiesLater);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
@@ -628,11 +670,13 @@ export async function importAssetBatch(
   files: ReadonlyArray<{ path: string; opts: ImportOptions }>,
   known: AssetRecord[],
   fence: WriteFence,
-  batch: { parallel: number; go: () => boolean }
+  batch: { parallel: number; go: () => boolean; repair?: (record: AssetRecord) => WriteFence }
 ): Promise<Array<BatchOutcome | undefined>> {
   const out: Array<BatchOutcome | undefined> = new Array(files.length);
   // The families each legacy-named font may join, settled once every file is in (joinFontFamilies).
   const joins: Array<string[] | undefined> = new Array(files.length);
+  // The fonts whose missing file a file of this batch is putting back, by record: the same font given twice writes once.
+  const repairs = new Map<string, Promise<boolean>>();
   // Each picture's store so far, by content: the record a later file with the same bytes takes (null when it failed).
   const stores = new Map<string, Promise<AssetRecord | null>>();
   // Settled once the file started last has claimed its picture (or failed before it could), so claims go in order.
@@ -657,7 +701,15 @@ export async function importAssetBatch(
     const dup = sameFile(known, p);
     if (dup) {
       claimed();
-      return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+      let restoring: Promise<boolean> | undefined;
+      if (dup.kind === 'font') {
+        restoring = repairs.get(dup.id) ?? restoreFontFile(projectDir, dup, p.buf, batch.repair?.(dup) ?? fence);
+        repairs.set(dup.id, restoring);
+      }
+      return keptDuplicate(projectDir, dup, p, fence, restoring).then(
+        (r) => ({ ...r, ...noted }),
+        (e: unknown) => ({ error: e as Error })
+      );
     }
     // A file before this one with the same bytes is storing them: its record is this one's too, unless it failed.
     const key = `${p.hash}\0${p.mime}`;
@@ -844,16 +896,25 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
 /**
  * The file an author located for a library image whose original is missing. The same picture goes back where the
  * library expects it, with its copies, and nothing else changes. A different picture is stored as an import would
- * store it, and what the image record should now say is returned for asset.relink.
+ * store it, and what the image record should now say is returned for asset.relink. A document takes any document; a
+ * font only its very file.
  */
 export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string, fence: WriteFence = unfenced, library: AssetRecord[] = []): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
   const refuse = refusal(sourcePath, "can't be used");
+  // A font is put back only from its very file: another file is another face, which Add fonts adds as one of its own.
+  if (record.kind === 'font') {
+    if (!isAssetOfKind(sourcePath, 'font')) throw refuse('it is not a font. Choose the WOFF2 or WOFF file the font was added from.');
+    const p = await prepareFile(sourcePath, refuse);
+    if (p.hash !== record.hash || p.mime !== record.mime) throw refuse(`it is not the file of ${record.name.trim() || 'this font'}. Choose the file the font was added from, or add this one with Add fonts.`);
+    return { same: true, written: (await restoreFontFile(projectDir, record, p.buf, fence)) ? [record.file] : [], failed: [] };
+  }
   const document = record.kind === 'document';
   if (document && !isAssetOfKind(sourcePath, 'document')) throw refuse('it is not a document. Choose a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file.');
   if (!document && isPhotoToConvert(sourcePath)) throw refuse('it is a HEIC photo, which browsers can’t show. Add it to Assets with Add images, which makes a JPEG copy, then use Replace everywhere.');
   if (!document && !isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
   const p = await prepareFile(sourcePath, refuse);
   if (p.hash === record.hash && p.mime === record.mime) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
+  refuseOverPixelLimit(p, refuse);
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, library)))) throw refuse(`${NOT_WRITTEN}.`);
   return { same: false, stored: { ...stored, originalName: originalNameOf(sourcePath) } };

@@ -457,6 +457,36 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(await run({ adapter: 'wordpress', config: { url: uncounted.origin } })).toMatchObject({ ok: false, code: 'invalid' });
   });
 
+  it('WordPress: a post is dated by its site’s own day, never moved across midnight by GMT (#1428)', async () => {
+    const posts = [
+      // UTC+2: just after local midnight is the evening before in GMT.
+      { id: 1, title: { rendered: 'East' }, date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' },
+      // UTC−8: a local evening is the next morning in GMT.
+      { id: 2, title: { rendered: 'West' }, date: '2026-11-25T21:30:00', date_gmt: '2026-11-26T05:30:00', modified: '2026-11-25T22:00:00', modified_gmt: '2026-11-26T06:00:00' },
+      // A post whose local times are null is still dated by its GMT ones.
+      { id: 3, title: { rendered: 'Only GMT' }, date: null, date_gmt: '2026-11-20T09:00:00', modified: null, modified_gmt: '2026-11-21T09:00:00' }
+    ];
+    const api = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    expect(reply.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-25', '2026-11-26'],
+      ['2026-11-25', '2026-11-25'],
+      ['2026-11-20', '2026-11-21']
+    ]);
+    // The sample shows what WordPress sent under its own names, so a mapping can choose the GMT time instead.
+    const sample = await run({ adapter: 'wordpress', config: { url: api.origin }, mode: 'sample' });
+    expect(sample.ok && sample.raw?.[0]).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
+    expect(sample.ok && sample.raw?.[2]).toMatchObject({ date: '2026-11-20T09:00:00', date_gmt: '2026-11-20T09:00:00', modified: '2026-11-21T09:00:00' });
+    const gmt = await run({ adapter: 'wordpress', config: { url: api.origin }, mapping: { publishedAt: 'date_gmt', updatedAt: 'modified_gmt' } });
+    expect(gmt.ok && gmt.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-24', '2026-11-25'],
+      ['2026-11-26', '2026-11-26'],
+      ['2026-11-20', '2026-11-21']
+    ]);
+  });
+
   it('WordPress: a post’s relative links go where they went on its own page (#1426)', async () => {
     const linksOf = (body: unknown) =>
       (body as Array<{ spans?: Array<{ text: string; link?: { type: string; target: string } }> }>).flatMap((b) => (b.spans ?? []).filter((s) => s.link).map((s) => [s.text, s.link!.type, s.link!.target]));
@@ -582,6 +612,31 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { featuredImageUrl: 'img' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 1’s featured image at img is not a picture’s web address' });
     const words = await run({ adapter: 'rest', config: { url: `${api.origin}/pics` }, mapping: { values: { bio: 'bio' } }, fields: { bio: 'richtext' }, mode: 'sample' });
     expect(words.ok && words.records[0].values).toEqual({ bio: [{ type: 'p', spans: [{ text: 'Hi' }] }] });
+  });
+
+  // A date there that cannot be read is said, by record and the format it takes, never published as the sync's day (#1498).
+  it('refuses a source date it cannot read, where a missing one is left to the fallback', async () => {
+    const dates: Record<string, unknown> = { slashed: '18/11/2026', http: 'Wed, 18 Nov 2026 13:30:00 GMT', rolled: '2026-02-30', listed: ['2026-11-18'], trailing: '2026-11-18garbage', iso: '2026-11-18T13:30:00Z', local: '2026-11-18 13:30:00', lower: '2026-11-18t13:30:00z', day: '2026-11-18', blank: '  ', none: null };
+    const api = await server((req, res) => send(res, [{ id: 1, title: 'A' }, { id: 2, title: 'B', timestamp: dates[req.url.pathname.slice(1)] }]));
+    const at = (name: string, mapping: Partial<SyncRequest['mapping']> = { publishedAt: 'timestamp' }) => run({ adapter: 'rest', config: { url: `${api.origin}/${name}` }, mapping });
+    for (const name of ['slashed', 'http', 'rolled', 'listed', 'trailing'])
+      expect(await at(name), name).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s published date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    expect(await at('slashed', { updatedAt: 'timestamp' })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s updated date at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
+    // The value itself is never repeated: what a source sends may hold what it was sent.
+    const shown = await at('slashed');
+    expect(!shown.ok && shown.detail).not.toContain('18/11');
+    const iso = await at('iso');
+    expect(iso.ok && iso.records.map((r) => r.publishedAt)).toEqual([undefined, '2026-11-18']);
+    for (const name of ['local', 'lower', 'day']) {
+      const read = await at(name);
+      expect(read.ok && read.records.map((r) => r.publishedAt), name).toEqual([undefined, '2026-11-18']);
+    }
+    for (const name of ['blank', 'none']) {
+      const empty = await at(name);
+      expect(empty.ok && empty.records.map((r) => r.publishedAt), name).toEqual([undefined, undefined]);
+    }
+    // A date field names the format it takes too.
+    expect(await run({ adapter: 'rest', config: { url: `${api.origin}/slashed` }, mapping: { values: { when: 'timestamp' } }, fields: { when: 'date' } })).toMatchObject({ ok: false, code: 'invalid', detail: 'record 2’s when at timestamp is not a date written YYYY-MM-DD, such as 2026-11-18' });
   });
 
   // A literal backslash is two on the wire (a quoted pair), so the quote after them closes the title (#1530).

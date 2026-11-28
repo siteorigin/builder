@@ -35,6 +35,8 @@ const filesIn = (dir: string): string[] =>
 // host serves at its address, with static/ copied as it is (as draft-export.test.ts builds).
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The project's website tools are set up, so the website is built (#1395).
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     if (env.tools.real) env.builtWith.push(lstatSync(join(dir, 'node_modules/vite/package.json'), { bigint: true }).ino);
     if (!env.build.ok) return { ...env.build, logs: [], exited: env.tools.exited };

@@ -5,10 +5,13 @@
 import { TEXT_LIMITS } from '@shared/text-limits';
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, entryRoute, orderedEntries, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, entryRoute, hasDetailPages, isSyncedCollection, orderedEntries, siteEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { fold } from './fold';
+import { entryLinkUses } from '@engine/page-links';
+import { canReplaceEntry, entryReferenceUses } from '@engine/collections';
+import { deleteDestinations } from './content';
 
 /** A collection entry the Posts workspace has open. */
 export interface PostRef {
@@ -254,13 +257,27 @@ export interface FuturePublishQuestion {
   details: Array<{ kind: 'risk' | 'keep'; text: string }>;
 }
 
+/** Whether `publishedAt` is a calendar date after `today`. Days compare as YYYY-MM-DD text, which orders them. */
+function isFutureDay(publishedAt: unknown, today: string): publishedAt is string {
+  return isArticleDate(publishedAt) && isArticleDate(today) && publishedAt > today;
+}
+
+/**
+ * What the Publication date of an entry already on the website says when it is after `today` (#1317): moving the date
+ * ahead holds nothing back. Null for a draft, which Publish asks about itself, and for a date today or earlier.
+ */
+export function futureDateWarning(entry: Pick<EntryDoc, 'draft' | 'publishedAt'>, noun: string, language: string | undefined, today: string): string | null {
+  if (entry.draft !== false || !isFutureDay(entry.publishedAt, today)) return null;
+  return `This ${noun} is published, so it is still in the next export, dated ${formatArticleDate(entry.publishedAt, language)}.`;
+}
+
 /**
  * What Publish asks first when the post is dated after `today` (#1115): nothing makes the website wait for that day,
  * so a post published now is included in the next export. Null for a post dated today or earlier,
- * or without a valid date. Days compare as YYYY-MM-DD text, which orders them.
+ * or without a valid date.
  */
 export function futurePublishQuestion(publishedAt: unknown, noun: string, language: string | undefined, today: string): FuturePublishQuestion | null {
-  if (!isArticleDate(publishedAt) || !isArticleDate(today) || publishedAt <= today) return null;
+  if (!isFutureDay(publishedAt, today)) return null;
   const day = formatArticleDate(publishedAt, language);
   return {
     title: `Publish this ${noun} dated ${day}?`,
@@ -280,4 +297,73 @@ export function futurePublishQuestion(publishedAt: unknown, noun: string, langua
 /** What an answer to `futurePublishQuestion` does: publish, keep the post as a draft, or nothing (the dialog dismissed). */
 export function futurePublishChoice(answer: boolean | null): 'publish' | 'keep-draft' | 'stay' {
   return answer === true ? 'publish' : answer === false ? 'keep-draft' : 'stay';
+}
+
+/** Where the links and old addresses of a deleted entry, and the references naming it, go instead. */
+export type DeleteChoice = { kind: 'page' | 'entry'; id: string; label: string; group: string };
+
+/**
+ * What deleting an entry has to deal with first (#1461): the links pointing to it, its old addresses kept working, and
+ * the references naming it, by the entries holding them; and the places all of those can go instead. A reference names
+ * an entry of its own field's collection, so with one only another entry of the deleted entry's collection can take its
+ * place: no page, nor an entry of another collection. Links and old addresses send visitors on, so they go only where
+ * visitors can (deleteDestinations, canReplaceEntry). With references alone, a draft can take its place too. `synced`
+ * names a holder whose collection is synced from a source, so read-only here: while one holds a link or reference to
+ * it, nothing can take its place.
+ */
+export function deleteHolds(
+  state: ProjectState,
+  ref: PostRef
+): { links: number; linkedFrom: string[]; kept: number; references: number; referencedFrom: string[]; synced: string | null; choices: DeleteChoice[] } {
+  const uses = entryLinkUses(state, ref.entryId);
+  const kept: unknown = state.site.redirects;
+  const keptN = Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === ref.entryId).length : 0;
+  const refs = entryReferenceUses(state, ref.entryId);
+  const all = state.collections ?? {};
+  let choices: DeleteChoice[];
+  if (refs.length) {
+    const from = Object.hasOwn(all, ref.collectionId) ? all[ref.collectionId] : undefined;
+    // With links or old addresses as well, it must be somewhere visitors can go, as the engine asks (canReplaceEntry):
+    // published, unless its collection has no pages, when no entry of it has one and any may take its place.
+    const visitors = uses.length > 0 || keptN > 0;
+    const pageless = !!from && !hasDetailPages(from.settings);
+    choices = from
+      ? orderedEntries(from)
+          .filter((x) => x.id !== ref.entryId && (!visitors || ((x.draft === false || pageless) && canReplaceEntry(from, { collection: from, entry: x }, true))))
+          .map((x): DeleteChoice => ({ kind: 'entry', id: x.id, label: x.draft === false ? x.title : `${x.title} (draft)`, group: from.settings.name }))
+      : [];
+  } else {
+    const { pages, groups } = deleteDestinations(state, ref);
+    const choice = (value: string, label: string, group: string): DeleteChoice => ({ kind: value.startsWith('page:') ? 'page' : 'entry', id: value.slice(value.indexOf(':') + 1), label, group });
+    choices = [...pages.map((p) => choice(p.value, p.label, 'Pages')), ...groups.flatMap((g) => g.entries.map((x) => choice(x.value, x.label, g.name)))];
+  }
+  const syncedLink = uses.find((u) => u.owner.kind === 'entry' && isSyncedCollection(all[u.owner.collectionId]?.settings));
+  const syncedRef = refs.find((r) => isSyncedCollection(r.collection.settings));
+  return {
+    links: uses.length,
+    linkedFrom: [...new Set(uses.map((u) => u.where))],
+    kept: keptN,
+    references: refs.length,
+    referencedFrom: [...new Set(refs.map((r) => `${r.entry.title} (${r.collection.settings.name})`))],
+    synced: syncedRef ? `${syncedRef.entry.title} (${syncedRef.collection.settings.name})` : (syncedLink?.where ?? null),
+    choices
+  };
+}
+
+/** Whether deleting the entry asks what takes its place, rather than only whether to delete it. */
+export function deleteAsksWhere(state: ProjectState, ref: PostRef): boolean {
+  const h = deleteHolds(state, ref);
+  return h.links > 0 || h.kept > 0 || h.references > 0;
+}
+
+/**
+ * What a delete was checked against: each link to the entry by its holder and label, each old address it keeps, and
+ * each reference by its entry and field. The same means the author's choice still covers everything it changes.
+ */
+export function deleteFingerprint(state: ProjectState, ref: PostRef): string {
+  const kept: unknown = state.site.redirects;
+  const addresses = Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === ref.entryId).map((r) => String((r as { from?: unknown }).from)) : [];
+  const links = entryLinkUses(state, ref.entryId).map((u) => `${JSON.stringify(u.owner)}:${u.where}:${u.label}`);
+  const refs = entryReferenceUses(state, ref.entryId).map((r) => `${r.collection.settings.id}:${r.entry.id}:${r.field}`);
+  return JSON.stringify([links.sort(), addresses.sort(), refs.sort()]);
 }
