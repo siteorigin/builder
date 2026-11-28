@@ -78,6 +78,7 @@ const PLACEMENTS: Placement[] = [
   { name: 'features.grid inverse copy', component: 'features.grid', tone: 'inverse', copy: true, spots: [at(INNER, 'on-inverse'), at(card('card'), 'theme')] },
   // Testimonials stand on the section's own ground, each under a hairline rather than in a card.
   { name: 'testimonials.grid inverse', component: 'testimonials.grid', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
+  { name: 'faq.list inverse', component: 'faq.list', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
   { name: 'contact.form inverse', component: 'contact.form', tone: 'inverse', spots: [at('.so-form__inner', 'on-inverse')], ownInk: 'on-inverse' },
   { name: 'site.search inverse', component: 'site.search', tone: 'inverse', spots: [at('.so-search__inner', 'on-inverse')], ownInk: 'on-inverse' }
 ];
@@ -437,6 +438,41 @@ describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds
       expect(rest.filter((s) => s.role === 'light').length).toBeGreaterThanOrEqual(3);
     });
   }, 180_000);
+
+  // A dark section's own words, its supporting paragraph above all: muted on the light grounds, it has to lift on the
+  // dark one (#1399), as the heading, questions and answers do.
+  it('reads a dark section’s own text: its supporting paragraph, heading, questions and answers', async () => {
+    await withPage('sections', 1280, async (p) => {
+      const words = "[class*='__lead'], [class*='__eyebrow'], [class*='__heading'], [class*='__question'], [class*='__answer']";
+      const labelled = (await p.evaluate(
+        `((placements) => {
+          const label = ${LABEL_FN};
+          const roots = [...document.querySelectorAll('main > *')];
+          const out = [];
+          for (const [i, pl] of placements.entries()) {
+            if (pl.tone !== 'inverse' || pl.nestIn) continue;
+            // Opened, so an answer is measured as a visitor reads it.
+            roots[i].querySelectorAll('details').forEach((d) => (d.open = true));
+            roots[i].querySelectorAll(${JSON.stringify(words)}).forEach((el, j) => {
+              const part = [...el.classList].find((c) => /__(lead|eyebrow|heading|question|answer)$/.test(c));
+              if (!part || !el.textContent.trim()) return;
+              const name = pl.name + ' ' + part;
+              label(el, name + ' ' + j, 'text');
+              out.push(name);
+            });
+          }
+          return out;
+        })(${JSON.stringify(PLACEMENTS)})`
+      )) as string[];
+      for (const part of ['lead', 'heading', 'question', 'answer']) expect(labelled, part).toContain(`faq.list inverse faq__${part}`);
+      await settle(p);
+      const ids = (await p.evaluate(`[...document.querySelectorAll('[data-role="text"][data-probe-id]')].map((el) => el.dataset.probeId)`)) as string[];
+      const samples: Sample[] = [];
+      for (const id of ids) samples.push(await sample(p, id));
+      expect(samples.length).toBe(labelled.length);
+      expect(failures(samples)).toEqual([]);
+    });
+  }, 60_000);
 
   it('shows a dark header’s action and links readably, and its current-page mark in the header’s text colour', async () => {
     await withPage('header-dark', 1280, async (p) => {
