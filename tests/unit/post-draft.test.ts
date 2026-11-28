@@ -77,6 +77,25 @@ describe('the post draft', () => {
     expect(h.timers.size).toBe(2);
   });
 
+  it('leaves no deadline behind once everything typed is saved, and keeps the pause as the retry while a save is on its way (#1451)', async () => {
+    const h = harness();
+    h.type('a');
+    const flushed = h.draft.flush();
+    h.type('ab');
+    const max = [...h.timers.keys()].find((k) => h.delays.get(k) === 3000)!;
+    const fire = h.timers.get(max)!;
+    h.timers.delete(max);
+    fire();
+    // The longest wait fired during a save: it does not cancel the pause timer, the retry of the newer text.
+    expect(h.timers.size).toBe(1);
+    h.saves[0].answer({ kind: 'applied' });
+    await h.settled();
+    h.saves[1].answer({ kind: 'applied' });
+    await flushed;
+    expect(h.draft.dirty).toBe(false);
+    expect(h.timers.size).toBe(0);
+  });
+
   it('keeps what is typed while a save is on its way, and saves it next', async () => {
     const h = harness();
     h.type('One');
@@ -103,7 +122,8 @@ describe('the post draft', () => {
     h.type('Before ');
     expect(h.timers.size).toBe(2);
     h.draft.compositionStart();
-    expect(h.timers.size).toBe(0);
+    // Only the pause stops; the longest wait keeps counting.
+    expect(h.timers.size).toBe(1);
     h.type('にほ');
     expect(h.timers.size).toBe(0);
     expect(await h.draft.flush()).toBe(false);

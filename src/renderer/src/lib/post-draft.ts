@@ -125,7 +125,9 @@ export class PostDraft {
   compositionStart(): void {
     if (this.closed) return;
     this.composing = true;
-    this.cancelTimer();
+    // Only the pause: the longest wait keeps counting, so composed text is still saved on time.
+    if (this.timer !== null) (this.deps.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>)))(this.timer);
+    this.timer = null;
   }
 
   /** A composition ended: what it typed arrives as input, saved after the usual pause. */
@@ -237,6 +239,8 @@ export class PostDraft {
       this.emit();
       return false;
     }
+    // Nothing is unsaved: a deadline left over from the typing just saved must not shorten the next stretch's.
+    if (!this.dirty) this.cancelTimer();
     this.emit();
     return !this.dirty;
   }
@@ -251,7 +255,8 @@ export class PostDraft {
     }, this.deps.delayMs ?? POST_SAVE_DELAY);
     this.maxTimer ??= set(() => {
       this.maxTimer = null;
-      void this.flush();
+      // A save on its way takes the newer text next; the pause timer stays as the retry if that save fails.
+      if (!this.draining) void this.flush();
     }, this.deps.maxWaitMs ?? POST_SAVE_MAX_WAIT);
   }
 
