@@ -5,48 +5,63 @@
   /* Under the editor's outline while a project opens (App): kept, not drawn. */
   .welcome[hidden] { display: none; }
   @media (max-width: 1200px) { .welcome { --welcome-rail: 280px; } }
-  .welcome-side { position: relative; display: flex; flex-direction: column; gap: 28px; padding: 52px 20px 16px; background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
-  /* The one brand wash in the app: the mark's sky, fading out behind the brand block. */
-  .welcome-side::before { content: ''; position: absolute; inset: 0 0 auto; height: 300px; background: radial-gradient(130% 100% at 0% 0%, rgb(134 197 255 / 0.34), transparent 70%); pointer-events: none; }
-  :where(:root[data-appearance='dark']) { .welcome-side::before { background: radial-gradient(130% 100% at 0% 0%, rgb(134 197 255 / 0.2), transparent 70%); } }
+  /* On a short window with the theme-pack note open the rail scrolls rather than cutting off Settings. */
+  .welcome-side { position: relative; display: flex; flex-direction: column; gap: 28px; padding: 52px 20px 16px; background: var(--panel); border-right: 1px solid var(--border); overflow: hidden auto; }
+  /* The one brand wash in the app, in dark only: the mark's sky as a faint light behind the brand block. On light
+     panels any tint of it darkens the surface into a stain, so light keeps the plain panel. */
+  :where(:root[data-appearance='dark']) { .welcome-side::before { content: ''; position: absolute; inset: 0 0 auto; height: 300px; background: radial-gradient(130% 100% at 0% 0%, rgb(134 197 255 / 0.2), transparent 70%); pointer-events: none; } }
   .welcome-side > * { position: relative; }
-  .brand { display: flex; align-items: center; gap: 12px; padding: 0 2px; }
-  .brand-mark { display: grid; flex: none; }
-  .brand-mark svg { display: block; filter: drop-shadow(0 6px 14px rgb(35 48 79 / 0.2)); }
+  /* The mark's tile sits on the cards' edge (their ring is drawn 1px outside them; the tile 1px inside its box) and the
+     name starts where the cards' titles do (-1 + 48 + 11 = icon tile + card padding + gap = 58px), so the rail reads
+     as one column at either width. */
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand-mark { display: grid; flex: none; margin-left: -1px; }
+  /* A card's lift, no more: the tile's own edge already holds it on the light panel. */
+  .brand-mark svg { display: block; filter: drop-shadow(0 1px 3px rgb(28 39 66 / 0.12)); }
   :where(:root[data-appearance='dark']) { .brand-mark svg { filter: drop-shadow(0 6px 16px rgb(0 0 0 / 0.45)); } }
   .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
   .brand h1 span { font-weight: 500; color: var(--text-2); }
   .brand p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
-  @media (max-width: 1200px) { .brand { gap: 10px; padding: 0; } .brand-mark svg { width: 44px; height: 44px; } .brand p { font-size: 12px; } }
+  @media (max-width: 1200px) { .brand p { font-size: 12px; } }
   .welcome-actions { display: flex; flex-direction: column; gap: 8px; }
   /* Welcome's own rail actions; Export reuses .welcome-action, so everything below is scoped. */
-  .welcome-side .welcome-action { padding: 11px 12px; }
-  .welcome-side .welcome-action .title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .welcome-side .welcome-action { padding: 11px 12px; transition: background 140ms, box-shadow 140ms; }
+  .welcome-side .welcome-action .title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
   .welcome-side .welcome-action .grow > span:not(.title) { display: block; margin-top: 1px; }
-  .welcome-side .welcome-action .kbd { flex: none; line-height: 15px; background: var(--panel-2); }
+  /* Shortcuts are hints, set the way menus set them: the keys alone in the quiet ink, no keycap frame to outweigh the
+     title they annotate. Spelled-out keys (Ctrl+Shift+N, on Windows and Linux) are untracked, so they still share the
+     title's line in the narrow rail. While an open is on its way no key does anything, so the hints go, keeping their
+     space. */
+  .welcome-side .welcome-action .kbd { flex: none; padding: 0; border: 0; font-size: 12px; line-height: 16px; letter-spacing: 0.04em; color: var(--text-3); }
+  .welcome-side .welcome-action .kbd[data-keys='words'] { letter-spacing: 0; }
+  .welcome-side .welcome-action:disabled .kbd { visibility: hidden; }
   /* With recent projects, New project is the screen's one primary action: the filled accent, without a coloured glow,
-     so it stays a calm control and the newest project keeps the first glance. Enabled only: waiting draws it neutral. */
-  .welcome-side .welcome-action.primary:not(:disabled) { background: var(--accent-fill); box-shadow: var(--shadow-sm); }
-  .welcome-side .welcome-action.primary:hover:not(:disabled) { background: var(--accent-fill-hover); box-shadow: var(--shadow-sm); }
+     so it stays a calm control and the newest project keeps the first glance. Enabled only: waiting draws it neutral.
+     A 1px ring in its own fill puts its edge where the hairline cards below draw theirs. */
+  .welcome-side .welcome-action.primary:not(:disabled) { background: var(--accent-fill); box-shadow: 0 0 0 1px var(--accent-fill), var(--shadow-sm); }
+  .welcome-side .welcome-action.primary:hover:not(:disabled) { background: var(--accent-fill-hover); box-shadow: 0 0 0 1px var(--accent-fill-hover), var(--shadow-sm); }
+  /* That ring takes 1px of the focus outline's 2px gap, so the outline steps out one more. */
+  .welcome-side .welcome-action.primary:focus-visible { outline-offset: 3px; }
   .welcome-side .welcome-action.primary:not(:disabled) :is(strong, span) { color: var(--on-accent); }
   .welcome-side .welcome-action.primary:not(:disabled) .grow > span:not(.title) { color: color-mix(in srgb, var(--on-accent) 88%, var(--accent-fill)); }
   .welcome-side .welcome-action.primary:not(:disabled) .ico { background: rgb(255 255 255 / 0.18); color: var(--on-accent); }
-  .welcome-side .welcome-action.primary:not(:disabled) .kbd { background: transparent; color: var(--on-accent); border-color: color-mix(in srgb, var(--on-accent) 45%, transparent); }
+  .welcome-side .welcome-action.primary:not(:disabled) .kbd { color: color-mix(in srgb, var(--on-accent) 88%, var(--accent-fill)); }
   :where(:root[data-appearance='dark']) {
-    .welcome-side .welcome-action.primary:not(:disabled) { box-shadow: none; }
+    .welcome-side .welcome-action.primary:not(:disabled) { box-shadow: 0 0 0 1px var(--accent-fill); }
+    .welcome-side .welcome-action.primary:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--accent-fill-hover); }
     .welcome-side .welcome-action.primary:not(:disabled) .ico { background: rgb(16 32 63 / 0.12); }
   }
-  /* Waiting is drawn, not faded: the action card's own unavailable face (primitives.css), and its key in the same ink. */
-  .welcome-side .welcome-action:disabled .kbd { color: var(--disabled-ink); background: transparent; border-color: var(--border-strong); }
+  /* Waiting is drawn, not faded: the shared unavailable face (primitives.css). */
+  .welcome-side .welcome-action:disabled:not([aria-busy='true']) { opacity: 1; }
   /* The rail action that started an open is the one thing on its way: raised, ringed, and saying so. */
   .welcome-side .welcome-action[aria-busy='true'] { opacity: 1; background: var(--raised); box-shadow: 0 0 0 1px var(--accent); }
   .welcome-side .welcome-action[aria-busy='true'] .ico { background: var(--accent-soft); }
   .welcome-side .welcome-action[aria-busy='true'] strong { color: var(--text); }
   .welcome-side .welcome-action[aria-busy='true'] .grow > span:not(.title) { color: var(--accent-text); font-weight: 600; }
   .welcome-foot { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
-  /* The button's own padding hangs outside the column on the left, so its icon and the text below share the cards'
-     left edge; it is as wide as its words, so its hover and waiting face never run past the column on the right. */
-  .welcome-foot .btn { justify-content: flex-start; align-self: flex-start; margin-left: -12px; }
+  /* As wide as its label, its padding hung outside the column, so its icon and the text below share the cards' left
+     edge and its hover (or waiting) face hugs the words instead of running past the divider. */
+  .welcome-foot .btn { align-self: flex-start; padding-inline: 8px; margin-left: -8px; }
   .welcome-foot .btn:disabled { opacity: 1; }
   .welcome-foot p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-3); }
 

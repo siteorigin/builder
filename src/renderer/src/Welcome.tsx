@@ -113,6 +113,8 @@ const keys = {
   newProject: { label: mac ? '⇧⌘N' : 'Ctrl+Shift+N', aria: mac ? 'Shift+Meta+N' : 'Control+Shift+N' },
   open: { label: mac ? '⌘O' : 'Ctrl+O', aria: mac ? 'Meta+O' : 'Control+O' }
 };
+/** Spelled-out keys (Windows and Linux) are set untracked so they share the title's line (Welcome.css). */
+const keyWords = mac ? undefined : 'words';
 /** Past three full rows at the widest window, a filter beats scanning. */
 const FILTER_FROM = 8;
 
@@ -495,8 +497,8 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
             </span>
             <span className="grow">
               <span className="title">
-                <strong>New project</strong>
-                <kbd className="kbd" aria-hidden="true">
+                <strong>New project…</strong>
+                <kbd className="kbd" aria-hidden="true" data-keys={keyWords}>
                   {keys.newProject.label}
                 </kbd>
               </span>
@@ -509,7 +511,7 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
             <span className="grow">
               <span className="title">
                 <strong>Open project…</strong>
-                <kbd className="kbd" aria-hidden="true">
+                <kbd className="kbd" aria-hidden="true" data-keys={keyWords}>
                   {keys.open.label}
                 </kbd>
               </span>
@@ -533,7 +535,7 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
             </span>
             <span className="grow">
               <strong>Join live session…</strong>
-              <span>Edit with someone who shared an invite link</span>
+              <span>Edit with an invite link</span>
             </span>
           </button>
         </div>
