@@ -659,7 +659,8 @@ function sameValue(a: unknown, b: unknown): boolean {
  * picture replaced in them; an undo of an edit made before a sync, or one that attaches it again as it takes an edit
  * back). The source is where they change, and its next sync would put back what it says. Its settings (its layout,
  * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
- * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
+ * collection is refused on its own (see collectionRemove). `except` leaves out a collection, or several: the one a sync
+ * writes, or those only restores of saved versions change (#1474). Worded to follow "This" or "it".
  */
 /** Whether `after` is `before` with each entry given where it came from (`source`, from `sourceId`) and nothing else. */
 function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, EntryDoc>, sourceId: string): boolean {
@@ -673,15 +674,39 @@ function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, 
   });
 }
 
-export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string): string | null {
+export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string | ReadonlySet<string>): string | null {
+  const excepted = (id: string) => (typeof except === 'string' ? id === except : !!except?.has(id));
   for (const c of Object.values(after.collections ?? {})) {
-    if (!isSyncedCollection(c?.settings) || c.settings.id === except) continue;
+    if (!isSyncedCollection(c?.settings) || excepted(c.settings.id)) continue;
     const was = own(before.collections ?? {}, c.settings.id);
     if (!was || sameValue(was.entries, c.entries)) continue;
     // Attached again as it was detached (an undo of Detach): the very same entries, each given back only where it came
     // from, by the source it is attached to.
     if (!isSyncedCollection(was.settings) && sameEntriesBut(was.entries, c.entries, c.settings.sourceId!)) continue;
     return `would change the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
+  }
+  return null;
+}
+
+/**
+ * Why `state` leaves a synced collection among `ids` holding an entry its source never wrote, or two from one record,
+ * or null: an undo of a restore that takes the collection back to another source than the one that synced an entry
+ * since, or leaves beside an entry one synced since from the same record under another ID (#1474). Its next sync
+ * would refuse the collection. Worded to follow "it".
+ */
+export function foreignSyncedEntry(state: ProjectState, ids: Iterable<string>): string | null {
+  for (const id of ids) {
+    const c = own(state.collections ?? {}, id);
+    if (!c || !isSyncedCollection(c.settings)) continue;
+    // As its next sync reads them (syncedIndex): each written by its source, and no two from one record.
+    const records = new Set<string>();
+    for (const e of Object.values(c.entries)) {
+      const src = e.source;
+      if (src?.sourceId !== c.settings.sourceId || typeof src?.externalId !== 'string')
+        return `would leave “${e.title}” in the ${c.settings.name} collection, which would be synced from a source that did not write it. Restore a saved version instead.`;
+      if (records.has(src.externalId)) return `would leave two entries of the ${c.settings.name} collection from the same record of its source. Restore a saved version instead.`;
+      records.add(src.externalId);
+    }
   }
   return null;
 }

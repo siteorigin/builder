@@ -24,7 +24,7 @@ import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tre
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { syncedEntryChange } from '@engine/collections';
+import { foreignSyncedEntry, syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
@@ -412,6 +412,11 @@ export interface HistoryEntry {
   revertsRunId?: string;
   /** The live-session guest who made this change, by the name the host let them in under (#765); on an AI step, the guest the AI ran for (#769). */
   guestName?: string;
+  /**
+   * A saved version's restore (#1474). It may rewrite a synced collection's entries, as no edit may, so taking it back
+   * or putting it back again may too: Undo returns what the last sync wrote, Redo the version's own.
+   */
+  restore?: true;
 }
 
 interface HistoryFile {
@@ -674,6 +679,8 @@ type PersistOptions = CommitOptions & {
   cursor?: number;
   wholeProject?: boolean;
   amendHistory?: boolean;
+  /** The change is a saved version's restore (see HistoryEntry.restore). */
+  restore?: boolean;
   /**
    * The active run's checkpoint with this change made to it too (#1281): an author's edit saved while the run waits for
    * an answer. Its History step goes from the checkpoint to this, and the run's checkpoint becomes this in the same
@@ -3893,7 +3900,7 @@ export class ProjectSession extends EventEmitter {
    * The history after recording `docs` as one step at `revision`, built on a copy: nothing changes until it is
    * installed, so it can be journaled with the change it records. `entryId` is the entry that holds the step.
    */
-  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
+  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string; restore?: boolean }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
     const h = structuredClone(this.history);
     noteDropped(h, h.entries.slice(h.cursor), 'undone');
     h.entries = h.entries.slice(0, h.cursor);
@@ -3922,7 +3929,8 @@ export class ProjectSession extends EventEmitter {
         coalesceKey: opts.coalesceKey,
         runId: opts.runId,
         ...(opts.revertsRunId ? { revertsRunId: opts.revertsRunId } : {}),
-        ...(opts.guestName ? { guestName: opts.guestName } : {})
+        ...(opts.guestName ? { guestName: opts.guestName } : {}),
+        ...(opts.restore ? { restore: true as const } : {})
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
@@ -5047,7 +5055,7 @@ export class ProjectSession extends EventEmitter {
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
           // Read from the version's files, every document is a new object: those that read the same are the project's
           // own (shareUnchanged), so the editor is sent only the documents the restore changes (#967).
-          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user' }) : null;
+          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user', restore: true }) : null;
         });
       } catch (e) {
         // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
@@ -5269,9 +5277,13 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
-    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
-    // Nor one that takes away what such an entry needs, or leaves a collection synced from a source that is gone.
-    const synced = syncedEntryChange(this.state, next) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
+    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may,
+    // except a collection only restores of saved versions on the way change (#1474): a restore may rewrite its entries,
+    // so taking one back, or putting it back again, may too. Nor one that takes away what such an entry needs, or
+    // leaves a collection synced from a source that is gone.
+    // A collection left out must still hold only entries its source wrote: one synced since from another, say.
+    const byRestore = restoredOnly(steps);
+    const synced = syncedEntryChange(this.state, next, byRestore) ?? foreignSyncedEntry(next, byRestore) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
     if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
@@ -6385,6 +6397,18 @@ function readableJournalHistory(h: unknown): h is HistoryFile {
 /** A history file from a journal is installed only when it is well formed and in this format: undo steps hold whole documents. */
 function usableJournalHistory(h: unknown): h is HistoryFile {
   return readableJournalHistory(h) && h.schemaVersion === SCHEMA_VERSION;
+}
+
+/** The collections whose documents, among `steps`, only restores of saved versions change (HistoryEntry.restore). */
+function restoredOnly(steps: HistoryEntry[]): Set<string> {
+  const [restored, edited] = [new Set<string>(), new Set<string>()];
+  for (const step of steps)
+    for (const path of Object.keys(step.docs)) {
+      const c = collectionPathOf(path)?.collectionId;
+      if (c) (step.restore ? restored : edited).add(c);
+    }
+  for (const c of edited) restored.delete(c);
+  return restored;
 }
 
 function emptyHistory(): HistoryFile {
