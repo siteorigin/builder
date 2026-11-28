@@ -137,6 +137,20 @@ for (const [saved, opens] of [['project', 'dock-tab-project'], ['outline', 'dock
   await win.waitForSelector('.editor');
   await eventually(async () => assert.equal(await selectedTab(), opens, `a saved "${saved}" opens ${opens}`));
 }
+
+step('a project whose workspace file holds null opens in the editor with its preview, and a new project opens after it');
+assert.ok((await win.evaluate(() => window.builder.projects.close())).ok, 'the project closes');
+await win.waitForSelector('.welcome');
+// Read as no saved state, as a missing file is: since #1729 it threw once the open had answered, and the project closed again.
+writeFileSync(workspaceFile, 'null');
+assert.ok((await win.evaluate((d) => window.builder.projects.open(d), projectDir)).ok, 'the project opens');
+await win.waitForSelector('.editor', { timeout: 60000 });
+await win.frameLocator('.frame-box iframe').locator('h1').first().waitFor({ timeout: 90000 });
+assert.equal((await win.evaluate(() => window.builder.project.snapshot()))?.dir, projectDir, 'and stays open');
+assert.ok((await win.evaluate(() => window.builder.projects.close())).ok, 'the project closes');
+await win.waitForSelector('.welcome');
+await createProject(win, { name: 'Kloof Street Bakery', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
+assert.notEqual((await win.evaluate(() => window.builder.project.snapshot()))?.dir, projectDir, 'the new project is the one open');
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();
