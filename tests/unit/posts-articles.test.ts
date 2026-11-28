@@ -146,7 +146,10 @@ describe('entry text in the project', () => {
     // 168 paragraphs of about 120 words: 20,160 words, near 120,000 characters.
     const read = Array.from({ length: 168 }, (_, i) => `Part ${i} ${'harbour light over water '.repeat(30)}`.trim());
     expect(read.join(' ').split(' ').length).toBeGreaterThanOrEqual(20_000);
-    expect(withBody(s, read).collections.posts.entries.en_spring.body).toHaveLength(168);
+    // Past what a post used to hold, so the long read is what is being tested.
+    expect(read.join('').length).toBeGreaterThan(100_000);
+    const body = withBody(s, read).collections.posts.entries.en_spring.body;
+    expect(body.map((b) => ('spans' in b ? b.spans.map((sp) => sp.text).join('') : ''))).toEqual(read);
     expect(() => withBody(s, ['x'.repeat(MAX_ENTRY_CHARS + 1)])).toThrow(/too long/);
   });
 });

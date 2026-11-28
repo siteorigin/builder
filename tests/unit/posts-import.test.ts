@@ -793,7 +793,9 @@ describe('planning an import: limits, drafts and the review', () => {
     expect(plan.media).toHaveLength(1);
     const entry = Object.values(after.collections.posts.entries).find((e) => e.title === 'long')!;
     expect(entry.draft).toBeFalsy();
-    expect(text(entry.body!).slice(0, 168).join('')).toBe(paragraphs.join(''));
+    expect(text(entry.body!).slice(0, 168)).toEqual(paragraphs);
+    // Published at its old address, as it was on the old site.
+    expect(after.site.redirects).toEqual([{ from: '/2024/05/twenty-k/', entryId: entry.id }]);
     expect(entry.body!.at(-1)).toMatchObject({ type: 'image', caption: 'The last boat in.' });
   });
 
