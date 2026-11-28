@@ -2257,12 +2257,24 @@ export async function settlePageModules(dir: string): Promise<void> {
   const files = manifest.files ?? {};
   const generated = sha(STATIC_PAGE_JS);
   const claimed = (path: string) => Object.hasOwn(files, path);
-  const theirs = Object.keys(files).filter((path) => files[path] === generated && isPageModule(path) && ownRouteFiles(dir, path, claimed));
-  if (!theirs.length) return;
+  // Only a module under the copy's own routes, still the bytes SiteOrigin Builder wrote, is ever taken out.
+  const inside = (path: string) => {
+    try {
+      return safeJoin(dir, path);
+    } catch {
+      return null;
+    }
+  };
+  const theirs = Object.keys(files).filter((path) => files[path] === generated && isPageModule(path) && inside(path) && ownRouteFiles(dir, path, claimed));
+  let changed = false;
   for (const path of theirs) {
-    await fs.rm(join(dir, path), { force: true });
+    const abs = inside(path)!;
+    if ((await readExportText(abs)) !== STATIC_PAGE_JS) continue;
+    await fs.rm(abs, { force: true });
     delete files[path];
+    changed = true;
   }
+  if (!changed) return;
   await fs.writeFile(join(dir, MANIFEST_PATH), toJson(manifest));
 }
 

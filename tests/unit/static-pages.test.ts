@@ -208,7 +208,8 @@ describe('a page that asks for plain HTML', () => {
     const s = run(landing(), { type: 'page.update', pageId: LANDING, draft: true });
     expect(blocked(s)).toMatchObject({ blocker: 'draft' });
     expect(generateProject(s).has('src/routes/landing/+page.js')).toBe(false);
-    for (const value of ['false', null, 0, 1]) expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: value }).ok, String(value)).toBe(false);
+    for (const value of ['false', 'true', null, 0, 1]) expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: value }).ok, String(value)).toBe(false);
+    expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: true }).ok).toBe(true);
     expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: false }).ok).toBe(true);
   });
 });
@@ -287,6 +288,7 @@ describe('what keeps a page’s scripts', () => {
     expect(blocked(design((d) => (d.tree!.nodes.list = { id: 'list', kind: 'link', link: { type: 'none' }, label: 'Open', appearance: 'primary', stateAction: { state: 'open', action: 'toggle' } } as unknown as ElementNode)))).toMatchObject({ blocker: 'state' });
     // A condition that hides it today still leaves it in the page's code.
     expect(blocked(design((d) => Object.assign(el(d, 'inner'), { when: { $prop: 'never' }, appear: 'fade' })))).toMatchObject({ blocker: 'appear' });
+    expect(blocked(design((d) => Object.assign(el(d, 'list'), { unless: { $prop: 'always' }, carousel: true })))).toMatchObject({ blocker: 'carousel' });
     expect(blocked(design((d) => (d.state = { open: { type: 'boolean', label: 'Open', initial: false } })))).toMatchObject({ blocker: 'state' });
     expect(blocked(design((d) => (d.tree!.nodes.list = { id: 'list', kind: 'repeat', list: { $prop: 'items' }, children: [], filter: { field: 'kind' } })))).toMatchObject({ blocker: 'filter' });
     // A slot's fallback, shown while a placement gives it nothing.
@@ -359,9 +361,14 @@ describe('a project’s own route files', () => {
     expect(own('src/routes/services/+layout.svelte')).toBe(true);
     expect(own('src/routes/+layout.server.ts')).toBe(true);
     expect(own('src/hooks.client.js')).toBe(true);
-    // Another page's files above it are not its own.
+    expect(own('src/hooks.client.ts')).toBe(true);
+    expect(own('src/hooks.client/index.ts')).toBe(true);
+    // Another page's files above it are not its own, and SvelteKit passes by names it does not take.
     expect(own('src/routes/services/+page.server.js')).toBe(false);
     expect(own('src/routes/services/design/notes.txt')).toBe(false);
+    expect(own('src/routes/+layout.svelte.bak')).toBe(false);
+    expect(own('src/routes/services/design/+page.test.ts')).toBe(false);
+    expect(own('src/hooks.client/helpers.js')).toBe(false);
   });
 
   it('leave the generated module out of a staged copy, which then lists only what it has', async () => {
@@ -376,6 +383,20 @@ describe('a project’s own route files', () => {
     writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ files }));
     await settlePageModules(dir);
     expect(readFileSync(join(dir, path), 'utf8')).toBe(STATIC_PAGE_JS);
+    // A module claimed as anything else, or a path that leads out of the copy, is never touched.
+    mkdirSync(join(dir, 'src/routes/other'), { recursive: true });
+    writeFileSync(join(dir, 'src/routes/other/+page.js'), 'export const csr = true;\n');
+    writeFileSync(join(dir, 'src/routes/other/+page.ts'), '\n');
+    const outside = mkdtempSync(join(tmpdir(), 'so-page-module-outside-'));
+    roots.push(outside);
+    writeFileSync(join(outside, '+page.js'), STATIC_PAGE_JS);
+    writeFileSync(join(outside, '+page.ts'), '\n');
+    const escape = `src/routes/${posix.relative(join(dir, 'src/routes'), outside).split('\\').join('/')}/+page.js`;
+    writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ files: { ...files, 'src/routes/other/+page.js': sha256Hex('export const csr = true;\n'), [escape]: sha256Hex(STATIC_PAGE_JS) } }));
+    await settlePageModules(dir);
+    expect(readFileSync(join(dir, 'src/routes/other/+page.js'), 'utf8')).toBe('export const csr = true;\n');
+    expect(readFileSync(join(outside, '+page.js'), 'utf8')).toBe(STATIC_PAGE_JS);
+    writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ files }));
     writeFileSync(join(dir, 'src/routes/landing/+page.ts'), 'export const prerender = true;\n');
     await settlePageModules(dir);
     expect(existsSync(join(dir, path))).toBe(false);

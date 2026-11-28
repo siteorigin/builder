@@ -2,11 +2,10 @@ import { readdirSync, statSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { perf } from '../perf';
 
-const exists = (path: string) => {
+const isFile = (path: string) => {
   perf.count('fs.syncCalls');
   try {
-    statSync(path);
-    return true;
+    return statSync(path).isFile();
   } catch {
     return false;
   }
@@ -21,11 +20,21 @@ const names = (path: string): string[] => {
   }
 };
 
-/** Client hooks SvelteKit runs wherever a page runs its scripts, under any name it finds them by. */
-const CLIENT_HOOKS = ['src/hooks.client.js', 'src/hooks.client.ts', 'src/hooks.client', 'src/hooks.client/index.js', 'src/hooks.client/index.ts'];
+/**
+ * Client hooks SvelteKit runs wherever a page runs its scripts, under any name it finds them by: a file without an
+ * extension, a JavaScript or TypeScript file, or a folder's index.
+ */
+const CLIENT_HOOKS = ['src/hooks.client', 'src/hooks.client.js', 'src/hooks.client.ts', 'src/hooks.client/index.js', 'src/hooks.client/index.ts'];
 
-/** Whether a path is a page's route module of the kind SiteOrigin Builder writes for one served as plain HTML. */
-export const isPageModule = (path: string): boolean => /^src\/routes\/(?:.+\/)?\+page\.js$/.test(path);
+/** SvelteKit's page and layout files, as it takes them (`+page.svelte`, `+layout@group.ts`, `+page.server.js`). */
+const PAGE_OR_LAYOUT = /^\+(?:page|layout)(?:@[^./]*)?(?:\.server)?\.(?:svelte|js|ts)$/;
+const LAYOUT = /^\+layout(?:@[^./]*)?(?:\.server)?\.(?:svelte|js|ts)$/;
+
+/**
+ * Whether a path is a page's route module of the kind SiteOrigin Builder writes for one served as plain HTML: one under
+ * src/routes, every folder on the way a real name (no `.`, `..` or empty segment).
+ */
+export const isPageModule = (path: string): boolean => /^src\/routes\/(?:[^/]+\/)*\+page\.js$/.test(path) && !path.split('/').some((seg) => seg === '.' || seg === '..');
 
 /**
  * Whether a page has SvelteKit files of the project's own that decide how it runs, where SiteOrigin Builder would write
@@ -38,10 +47,10 @@ export const isPageModule = (path: string): boolean => /^src\/routes\/(?:.+\/)?\
 export function ownRouteFiles(dir: string, path: string, claimed: (path: string) => boolean): boolean {
   const folder = posix.dirname(path);
   for (let at = folder; at === 'src/routes' || at.startsWith('src/routes/'); at = posix.dirname(at)) {
-    const kinds = at === folder ? /^\+(?:page|layout)\b/ : /^\+layout\b/;
+    const kinds = at === folder ? PAGE_OR_LAYOUT : LAYOUT;
     for (const name of names(join(dir, ...at.split('/')))) if (kinds.test(name) && !claimed(`${at}/${name}`)) return true;
   }
-  return CLIENT_HOOKS.some((hook) => exists(join(dir, ...hook.split('/'))));
+  return CLIENT_HOOKS.some((hook) => isFile(join(dir, ...hook.split('/'))));
 }
 
 /** Code the website runs, where a generated file kept as edited outside the app may add what needs scripts. */
