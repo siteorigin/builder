@@ -769,6 +769,8 @@ assert.equal(await win.getByRole('radio', { name: 'Edit', exact: true }).isDisab
 assert.equal(await crumbs.count(), 1, 'and the status bar leads to the section again');
 
 step('the toolbar’s Mode toggle opens the view, and Edit or Preview leaves it for the canvas in that mode (#1583)');
+// The rail entry left the view with the sidebar; Layers is the panel the view replaces this time.
+await rail('layers').click();
 await modeButton('SEO').click();
 await eventually(async () => assert.equal(await holder.isVisible(), true, 'SEO opens the view'));
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours', 'on the document it had chosen'));
