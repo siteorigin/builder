@@ -352,8 +352,9 @@ export function placeQualifiers(state: ProjectState, fields: ContentField[]): Ma
     const found = alike.map((f) => ({ f, at: placeAddress(state, f.owner) }));
     for (const { f, at } of found) {
       if (!at) continue;
-      const shared = f.owner.kind === 'entry' && found.filter((x) => x.at === at).length > 1;
-      out.set(placeKey(f), shared && f.owner.kind === 'entry' ? `${at} · ${f.owner.collectionId}` : at);
+      // Compared as they are read: two collection names may differ only in their spacing.
+      const same = f.owner.kind === 'entry' && found.filter((x) => x.at && titleAs(x.at) === titleAs(at)).length > 1;
+      out.set(placeKey(f), same && f.owner.kind === 'entry' ? `${at} · ${f.owner.collectionId}` : at);
     }
   }
   return out;

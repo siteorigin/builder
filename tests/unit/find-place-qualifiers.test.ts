@@ -4,23 +4,24 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { GraphNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { contentFields, findContent, placeKey, placeQualifiers, type ContentField } from '../../src/renderer/src/lib/find-content';
+import { contentFields, findContent, placeQualifiers, type ContentField } from '../../src/renderer/src/lib/find-content';
 
 const SENTENCE = 'Bring your photo card to the desk.';
-const REGIONS = ['regional-services-and-community-programmes/north-point', 'regional-services-and-community-programmes/south-point', 'east-quay'];
+/** Two deep addresses that differ only in the middle, and one whose last segment is not its title's. */
+const ROUTES = ['/regional-services-and-community-programmes/north-point/intake-checklist/', '/regional-services-and-community-programmes/south-point/intake-checklist/', '/east-quay/arrivals/'];
 
 /** A page called "Intake checklist" under each region, with the same two sentences. */
 function handbook(): ProjectState {
   let s = createStarterState('business', 'Test Studio', false);
-  REGIONS.forEach((region, i) => {
+  ROUTES.forEach((route, i) => {
     const pageId = `pg_intake000${i}`;
-    s = applyOperations(s, [{ type: 'page.create', pageId, title: 'Intake checklist', route: `/${region}/intake-checklist/` }]).state;
+    s = applyOperations(s, [{ type: 'page.create', pageId, title: 'Intake checklist', route }]).state;
     for (const n of [1, 2]) {
       const node: GraphNode = { id: `n_intake_${i}_${n}`, kind: 'text', tag: 'p', text: SENTENCE };
       s.pages[pageId].nodes[node.id] = node;
@@ -36,7 +37,7 @@ describe('qualifying places that share a title', () => {
   it('gives each of the same-titled pages its full address, and a page with a title of its own none', () => {
     const s = handbook();
     const fields = [...findContent(s, 'photo card').map((m) => m.field), ...contentFields(s).filter((f) => f.where === 'About')];
-    expect([...placeQualifiers(s, fields)]).toEqual(REGIONS.map((r, i) => [`page:pg_intake000${i}`, `/${r}/intake-checklist/`]));
+    expect([...placeQualifiers(s, fields)]).toEqual(ROUTES.map((route, i) => [`page:pg_intake000${i}`, route]));
   });
 
   it('counts places, not fields', () => {
@@ -50,6 +51,7 @@ describe('qualifying places that share a title', () => {
     const s = handbook();
     const out = placeQualifiers(s, [field({ kind: 'page', id: 'pg_intake0000' }, 'Intake  checklist '), field({ kind: 'page', id: 'pg_intake0001' }, 'intake CHECKLIST')]);
     expect(out.size).toBe(2);
+    expect(placeQualifiers(s, [field({ kind: 'page', id: 'pg_intake0000' }, 'Intake checklist'), field({ kind: 'page', id: 'pg_intake0001' }, 'Intakechecklist')]).size).toBe(0);
   });
 
   it('says which is the shared part or the site’s details when a page takes their name', () => {
@@ -63,25 +65,28 @@ describe('qualifying places that share a title', () => {
     expect(out.get('shell:footer')).toBe('Shared');
     expect(out.get('page:pg_intake0000')).toBe(s.pages.pg_intake0000.route);
     expect(out.get('site:site')).toBe('Whole site');
+    expect(out.get('page:pg_intake0001')).toBe(s.pages.pg_intake0001.route);
   });
 
-  it('gives an entry its address, or without a page its collection and slug, and the collection’s ID where those match too', () => {
+  it('gives an entry its address, or without a page its collection and slug, and the collection’s ID where those read the same', () => {
     let s = createStarterState('business', 'Test Studio', false);
-    const entry = (collectionId: string, entryId: string) => ({ type: 'entry.create' as const, collectionId, entryId, title: 'Intake checklist', slug: 'intake-checklist' });
+    const entry = (collectionId: string, entryId: string) => ({ type: 'entry.create' as const, collectionId, entryId, title: 'Intake checklist', slug: 'first-visit' });
     s = applyOperations(s, [
-      { type: 'collection.create', collectionId: 'guides', name: 'Guides' },
-      { type: 'collection.create', collectionId: 'notes', name: 'Notes', pages: { detail: false, archive: false } },
-      { type: 'collection.create', collectionId: 'old-notes', name: 'Notes', pages: { detail: false, archive: false } },
+      { type: 'collection.create', collectionId: 'guides', name: 'Guides', route: '/help/' },
+      { type: 'collection.create', collectionId: 'notes', name: 'Desk notes', pages: { detail: false, archive: false } },
+      // Reads as the other's name does: a browser shows the two spaces as one.
+      { type: 'collection.create', collectionId: 'old-notes', name: 'Desk  notes', pages: { detail: false, archive: false } },
       entry('guides', 'en_guide0001'),
       entry('notes', 'en_note00001')
     ]).state;
-    const fields = () => findContent(s, 'Intake checklist').map((m) => m.field);
-    expect([...placeQualifiers(s, fields()).values()].sort()).toEqual(['/guides/intake-checklist/', 'Notes · intake-checklist']);
+    const qualified = () => placeQualifiers(s, findContent(s, 'Intake checklist').map((m) => m.field));
+    expect([...qualified().values()].sort()).toEqual(['/help/first-visit/', 'Desk notes · first-visit']);
     s = applyOperations(s, [entry('old-notes', 'en_note00002')]).state;
-    const out = placeQualifiers(s, fields());
-    expect(out.get(placeKey(fields().find((f) => f.owner.id === 'en_note00001')!))).toBe('Notes · intake-checklist · notes');
-    expect(out.get('entry:en_note00002')).toBe('Notes · intake-checklist · old-notes');
-    expect(out.get('entry:en_guide0001')).toBe('/guides/intake-checklist/');
+    expect(Object.fromEntries(qualified())).toEqual({
+      'entry:en_guide0001': '/help/first-visit/',
+      'entry:en_note00001': 'Desk notes · first-visit · notes',
+      'entry:en_note00002': 'Desk  notes · first-visit · old-notes'
+    });
   });
 });
 
@@ -137,16 +142,25 @@ const STYLES = [
 
 describe.skipIf(!browserInstalled)('Find and replace with same-titled pages (#1539)', { timeout: 30_000 }, () => {
   let browser: Browser;
+  let script: string;
+  let context: BrowserContext;
   let page: Page;
-  const errors: string[] = [];
-  const routes = REGIONS.map((r) => `/${r}/intake-checklist/`);
+  let errors: string[];
 
   beforeAll(async () => {
-    const [script, launched] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
-    browser = launched;
-    // The narrowest window the dialog is designed for.
-    page = await browser.newPage({ viewport: { width: 900, height: 640 } });
-    page.setDefaultTimeout(5_000);
+    browser = await chromium.launch({ headless: true });
+    script = await bundle();
+  }, 120_000);
+  afterAll(async () => {
+    await browser?.close();
+  }, 60_000);
+
+  // A dialog of its own for each test, in the narrowest window the app allows at a 125% zoom, with nothing moving.
+  beforeEach(async () => {
+    context = await browser.newContext({ viewport: { width: 880, height: 600 }, reducedMotion: 'reduce' });
+    context.setDefaultTimeout(5_000);
+    page = await context.newPage();
+    errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const state = JSON.stringify(handbook()).replace(/</g, '\\u003c');
     await page.route(`${SITE}/**`, (route) =>
@@ -156,34 +170,44 @@ describe.skipIf(!browserInstalled)('Find and replace with same-titled pages (#15
     );
     await page.goto(`${SITE}/`);
     await page.getByRole('dialog').waitFor();
-  }, 120_000);
-  afterAll(async () => {
-    await browser?.close();
+  });
+  afterEach(async () => {
+    await context?.close();
     expect(errors).toEqual([]);
-  }, 60_000);
-
-  it('names each jump chip by its page’s address, all of it on screen', async () => {
-    // Six matches on three pages: the strip needs more than ten.
-    const chips = page.getByRole('navigation', { name: 'Places with matches' });
-    if (!(await chips.count())) await page.getByLabel('Find', { exact: true }).fill('o');
-    for (const route of routes) {
-      const chip = chips.getByRole('button', { name: new RegExp(`^Intake checklist, ${route}, \\d+ match`) });
-      await chip.waitFor();
-      const cut = await chip.evaluate((el) => {
-        const box = el.getBoundingClientRect();
-        return [...el.querySelectorAll<HTMLElement>('span')].filter((s) => s.scrollWidth > s.clientWidth + 1 || s.getBoundingClientRect().right > box.right + 1).map((s) => s.textContent);
-      });
-      expect(cut).toEqual([]);
-    }
-    await page.getByLabel('Find', { exact: true }).fill('photo card');
   });
 
-  it('names each group, and its checkbox, by its address, so one page can be chosen alone', async () => {
-    for (const route of routes) await expect.poll(() => page.getByRole('button', { name: `Intake checklist ${route} 2 matches` }).count()).toBe(1);
+  it('shows and names each jump chip by its page’s address, all of it', async () => {
+    // The strip shows only past ten matches: these words are in every checklist's sentence and across the site.
+    await page.getByLabel('Find', { exact: true }).fill('the');
+    const chips = page.getByRole('navigation', { name: 'Places with matches' });
+    for (const route of ROUTES) {
+      const chip = chips.getByRole('button', { name: new RegExp(`^Intake checklist, ${route}, \\d+ match`) });
+      await chip.waitFor();
+      expect(await chip.locator('.find-address').innerText()).toBe(route);
+      // Scrolled to in the strip, the whole address is inside both its chip and the strip.
+      const cut = await chip.evaluate((el) => {
+        el.scrollIntoView({ block: 'nearest' });
+        const address = el.querySelector<HTMLElement>('.find-address')!;
+        const text = address.getBoundingClientRect();
+        const outside = [el, el.parentElement!].filter((box) => {
+          const r = box.getBoundingClientRect();
+          return text.left < r.left - 1 || text.right > r.right + 1 || text.top < r.top - 1 || text.bottom > r.bottom + 1;
+        });
+        return address.scrollWidth > address.clientWidth + 1 || outside.length > 0;
+      });
+      expect(cut, route).toBe(false);
+    }
+  });
+
+  it('names each group and its checkbox by its address, so one page can be chosen alone', async () => {
     await page.getByRole('button', { name: 'Replace…' }).click();
     await page.getByRole('button', { name: 'Choose none' }).click();
-    await page.getByRole('checkbox', { name: `Choose all matches in Intake checklist, ${routes[0]}` }).check();
-    await expect.poll(() => page.getByRole('region', { name: `Intake checklist, ${routes[0]}, this page only` }).locator('li input:checked').count()).toBe(2);
+    for (const route of ROUTES) {
+      await expect.poll(() => page.getByRole('button', { name: `Intake checklist ${route} 0 of 2 chosen` }).count()).toBe(1);
+      expect(await page.getByRole('checkbox', { name: `Choose all matches in Intake checklist, ${route}`, exact: true }).count()).toBe(1);
+    }
+    await page.getByRole('checkbox', { name: `Choose all matches in Intake checklist, ${ROUTES[1]}`, exact: true }).check();
+    await expect.poll(() => page.getByRole('region', { name: `Intake checklist, ${ROUTES[1]}, this page only` }).locator('li input:checked').count()).toBe(2);
     expect(await page.locator('li input:checked').count()).toBe(2);
   });
 });

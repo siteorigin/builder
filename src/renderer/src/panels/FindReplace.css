@@ -49,8 +49,9 @@
   .find-jump-item.shared { border-color: var(--green); background: var(--green-soft); color: var(--green); }
   .find-jump-item.shared:hover:not(:disabled) { color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--raised)); }
   .find-jump-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Chips with addresses are long: a third row shows more of the places before the strip scrolls. */
-  .find-jump:has(> .addressed) { max-height: 96px; }
+  /* Chips with addresses are long: with the height for it, a third row shows more places before the strip scrolls. A
+     short window (or a zoomed one) keeps two, so the results keep their room. */
+  .find-jump:has(> .addressed) { max-height: clamp(64px, 14vh, 96px); }
   /* A chip that says its address shows all of it, on as many lines as it takes: any part may be what tells it apart. */
   .find-jump-item.addressed { flex-wrap: wrap; max-width: 100%; height: auto; min-height: 26px; padding-block: 3px; text-align: left; }
   .find-jump-item.addressed :is(.find-jump-name, .find-address) { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
@@ -76,7 +77,8 @@
   .find-toggle:hover .find-chevron { color: var(--text); }
   .find-toggle[aria-expanded='true'] .find-chevron { transform: rotate(90deg); }
   .find-group-name { min-width: 0; overflow-wrap: anywhere; }
-  .find-address { min-width: 0; font-weight: 400; color: var(--text-2); overflow-wrap: anywhere; }
+  /* Isolated, so a right-to-left title never reads into the middle of its address. */
+  .find-address { min-width: 0; unicode-bidi: isolate; direction: ltr; font-weight: 400; color: var(--text-2); overflow-wrap: anywhere; }
   .find-jump-item .find-address { color: inherit; }
   .find-count { flex: none; margin-left: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .find-group ul { margin: 0; padding: 0; list-style: none; }
