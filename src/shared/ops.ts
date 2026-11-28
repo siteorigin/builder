@@ -259,6 +259,12 @@ const ARTICLE_FIELDS = {
 const COLLECTION_QUERY_TEXT =
   '{ collectionId, where?, sort?, limit?, offset?, excludeCurrent? }: collectionId names the collection ("$current" in a collection\'s layout or archive layout is its own); where is a list of { field, op, value } clauses all entries must pass (op eq, ne, in, contains, gt, gte, lt, lte or exists; fields as bindings name them: title, publishedAt, terms.<grouping>, field.<name>...); sort a list of { field, direction? } ("entryOrder" is the editorial order); drafts are always left out.';
 
+/** A collection list's visitor browsing (see ListConnection.browse), beside its query and never part of it. */
+const BROWSE_LIST = z
+  .literal(true)
+  .optional()
+  .describe("true lets visitors search, filter and sort the entries the list shows, with the controls the collection's browse setting offers (collection.update browse); left out, they cannot. It never changes which entries show.");
+
 const COLLECTION_SETTINGS = {
   name: z.string().min(1).max(80).optional(),
   kind: z.enum(['editorial', 'structured']).optional().describe('What it holds: "editorial", dated articles such as blog posts (the default), or "structured", records such as team members, projects or events.'),
@@ -581,7 +587,7 @@ export const OPERATION_SCHEMAS = {
       owner,
       nodeId: z.string().describe('A collection loop: a repeat over a query or over an archive page\'s entries.'),
       source: z
-        .union([z.object({ $query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT) }).strict(), z.object({ $archive: z.literal(true) }).strict()])
+        .union([z.object({ $query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT), browse: BROWSE_LIST }).strict(), z.object({ $archive: z.literal(true) }).strict()])
         .describe("What it repeats: a query's entries, or (in a collection's archive layout) the entries of the archive page shown.")
     })
     .describe('Change which entries a collection loop repeats, keeping what each row shows.'),
@@ -611,7 +617,8 @@ export const OPERATION_SCHEMAS = {
       source: z
         .object({
           query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT),
-          fields: z.record(z.string(), z.string()).describe('Which entry field fills each item field, by item field name: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "field.<name>", "id", "slug" or "entryLink" (a link to the entry\'s page). Every field an item needs must be filled; others left out show their default.')
+          fields: z.record(z.string(), z.string()).describe('Which entry field fills each item field, by item field name: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "field.<name>", "id", "slug" or "entryLink" (a link to the entry\'s page). Every field an item needs must be filled; others left out show their default.'),
+          browse: BROWSE_LIST
         })
         .strict()
         .nullable()

@@ -22,7 +22,7 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
+import { BROWSE_DATA_PREFIX, RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
 import { hasFeedEntries } from '@generator/rss';
@@ -483,20 +483,32 @@ const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
 const browseIndexes = (state: ProjectState): ReadonlySet<string> => new Set(browsingCollections(state).map((id) => `${RUNTIME_DIR}/${browseIndexFile(id)}`));
 
 /**
- * What of a generated file names the files it loads, for finding the library files the website uses: all of it,
- * nothing of the search index, and of a collection's browse index only the pictures its cards show, never the words
- * and values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
+ * A generated file without the declarations of what its browsed listings' controls read (generator/index.ts
+ * browsedRows): the words and values of entries, which name no file and import nothing. The rows the listings show
+ * stay, as the rest of the file.
+ */
+const BROWSE_DATA_LINE = new RegExp(`^\\t${BROWSE_DATA_PREFIX}\\d+ = .*;$`, 'gm');
+const withoutBrowseData = (text: string): string => (text.includes(BROWSE_DATA_PREFIX) ? text.replace(BROWSE_DATA_LINE, '') : text);
+
+/**
+ * What of a generated file names the files it loads, for finding the library files the website uses: all of it
+ * (but what its browsed listings' controls read), nothing of the search index, and of a collection's browse index
+ * only what its entries show (the pictures of its cards, or every row of an index's own design), never the words and
+ * values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
  * generator writes it (edited by hand) counts whole, so nothing it may name is left out.
  */
 function namingText(rel: string, text: string, browse: ReadonlySet<string>): string {
   if (rel === SEARCH_INDEX) return '';
-  if (!browse.has(rel)) return text;
+  if (!browse.has(rel)) return withoutBrowseData(text);
   try {
     const rows: unknown = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
     if (!Array.isArray(rows)) return text;
     const out: string[] = [];
     const take = (v: unknown) => typeof v === 'string' && out.push(v);
     for (const row of rows) {
+      // An index's own design lists each entry as its loops' rows, which name what the page would.
+      const loops = (row as { loops?: unknown } | null)?.loops;
+      if (loops !== undefined) out.push(JSON.stringify(loops));
       const image = (row as { image?: { src?: unknown; srcset?: unknown; sources?: unknown } } | null)?.image;
       if (!image || typeof image !== 'object') continue;
       take(image.src);
@@ -590,7 +602,7 @@ export async function unusedComponents(project: string, state: ProjectState): Pr
   const browse = browseIndexes(state);
   for (const rel of (await listFiles(join(project, 'src'))).map((f) => `src/${f.split(sep).join('/')}`)) {
     if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX || browse.has(rel)) continue;
-    const text = await readExportFile(join(project, rel), 'utf8');
+    const text = withoutBrowseData(await readExportFile(join(project, rel), 'utf8'));
     if (owner.has(rel)) texts.set(rel, text);
     else seeds.push(text);
   }

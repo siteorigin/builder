@@ -744,7 +744,7 @@ export const DEFINE_COLLECTION_ARGS = z
       .nullable()
       .optional()
       .describe(
-        'Search, filters and sorting visitors get on the first page of its index (a real estate or directory index), over every published entry; needs its index with the ready-made cards. read_project shows the current setting as browse. search: its titles, excerpts and categories, and the options of its choice filters. filters: terms.<grouping ID>, or field.<name> of an enum (pick options), boolean (yes or no) or number field (a range). sort: title, publishedAt, or field.<name> of a string, number or date field. Replaces the whole setting; null removes it.'
+        'Search, filters and sorting visitors get on the first page of its index (a real estate or directory index), over every published entry, with the ready-made cards or in its own design\'s loops over the page\'s entries; and in each list connect_collection_list gives browse, over that list\'s entries only. read_project shows the current setting as browse. search: its titles, excerpts and categories, and the options of its choice filters. filters: terms.<grouping ID>, or field.<name> of an enum (pick options), boolean (yes or no) or number field (a range). sort: title, publishedAt, or field.<name> of a string, number or date field. Replaces the whole setting; null removes it.'
       )
   })
   .strict();

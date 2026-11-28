@@ -107,7 +107,7 @@ import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { NO_QUERY, codeEntryQueries, entryQuery, entryQueryKey, feedRowFields, feedRows, type EntryQuery } from '@shared/entry-feed';
 import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteEntries, type SiteEntry } from '@shared/collections';
 import { entryNeighbours, materializeTemplate } from './entry-template';
-import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
+import { connectedList, connectedListItems, loopBrowses, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
 import { archivePages, collectionIndexRoutes, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
@@ -115,7 +115,7 @@ import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, 
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
-import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseIndexFile, browseJs, browsingCollections, generateBrowseIndex, usesBrowse } from './collection-browse';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, archiveLoopIds, browseIndexFile, browseJs, browsingCollections, generateBrowseIndex, listingBrowse, usesBrowse, type BrowseControls } from './collection-browse';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -127,7 +127,7 @@ import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
 import { generateWebManifest, siteColors, HEAD_ASSET, HEAD_ASSET_SCRIPT, siteIconLinks, themeColorMeta } from './site-icons';
 import { WEB_MANIFEST } from '@shared/site-icons';
-import { elementKind, isEmptyLayout } from '@engine/tree';
+import { childLists, elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
@@ -1748,6 +1748,24 @@ interface EmitCtx {
   /** The collection loops' rows, by repeat ID, and how many loops are open around the node emitted (see ./collection-loops). */
   loops?: Map<string, LoopRows>;
   inLoop?: number;
+  /** The listings visitors browse whose host is being emitted, by listing (see browseListings). */
+  browse?: Map<string, BrowseSlot>;
+  /** The listings visitors may browse in the tree, by the node they are placed around (see browseListings). */
+  browseHosts?: Map<string, string[]>;
+  /** The script's declarations of what each browsed listing shows and what its controls read, and how many listings are numbered. */
+  browseData?: string[];
+  browseCount?: number;
+  /**
+   * An index's own design that visitors browse (see generateArchive): the snippet parameter holding the entries that
+   * match, and the place of each loop over the page's entries in their rows of the browse index.
+   */
+  archiveBrowse?: { matches: string; slots: Map<string, number> };
+}
+
+/** One browsed listing while its host is emitted: its number in the file, and once the listing is written, what it browses. */
+interface BrowseSlot {
+  n: number;
+  browse?: { controls: BrowseControls; size: number; name: string };
 }
 
 /** One UI state variable of the definition being emitted: the local holding it and its well-formed declaration. */
@@ -2629,11 +2647,78 @@ function propSchemaFor(ctx: EmitCtx, v: unknown): PropSchema | undefined {
   return propBindingSchema(ctx.def.properties, v);
 }
 
+/**
+ * The listings visitors may browse in the emitted tree, each by the node its controls are placed around: a connected
+ * list's placement itself (`prop:<node>|<prop>`), and a collection query's loop's parent (`repeat:<node>`), as a
+ * category filter's pills are placed, or the loop itself when it has none.
+ */
+function browseListings(ctx: EmitCtx): Map<string, string[]> {
+  if (ctx.browseHosts) return ctx.browseHosts;
+  const hosts = new Map<string, string[]>();
+  const add = (host: string, key: string) => hosts.set(host, [...(hosts.get(host) ?? []), key]);
+  const nodes = ctx.tree.nodes && typeof ctx.tree.nodes === 'object' ? ctx.tree.nodes : {};
+  const parents = new Map<string, string>();
+  for (const n of Object.values(nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of cl.ids) parents.set(c, n.id);
+  for (const id of Object.keys(nodes).sort()) {
+    const n = nodes[id];
+    if (n?.kind === 'instance') for (const prop of Object.keys(n.listSources ?? {}).sort()) add(n.id, `prop:${n.id}|${prop}`);
+    else if (n?.kind === 'repeat' && isCollectionLoop(n) && loopBrowses(n)) add(parents.get(n.id) ?? n.id, `repeat:${n.id}`);
+  }
+  return (ctx.browseHosts = hosts);
+}
+
+/**
+ * A browsed listing's rows as the place showing them reads them: every row, until a visitor uses a control and the
+ * rows that match are known, in the order chosen. The rows and what the controls read of each are declared once in
+ * the script; the slot is told what the listing browses, so its host is placed in the controls (see browseWrap).
+ */
+function browsedRows(ctx: EmitCtx, slot: BrowseSlot, rows: string, listing: NonNullable<ReturnType<typeof listingBrowse>>, name: string): string {
+  const n = slot.n;
+  ctx.browseData = [...(ctx.browseData ?? []), `	const so_rows_${n} = ${rows};`, `	${BROWSE_DATA_PREFIX}${n} = ${js(listing.rows)};`];
+  slot.browse = { controls: listing.controls, size: listing.rows.length, name };
+  return `(so_matches_${n} ? so_matches_${n}.map((so_m) => so_rows_${n}[so_m.i]) : so_rows_${n})`;
+}
+
+/**
+ * How the declaration of what a browsed listing's controls read starts, on a line of its own in the script: the
+ * words and values of its entries, which name no file (see main/export.ts).
+ */
+export const BROWSE_DATA_PREFIX = 'const so_browse_';
+
+/**
+ * A browsed listing's host, placed in its controls: the controls just above it (in the site's container when it is a
+ * page's section), and the host given the rows that match through the content snippet (see BROWSE_SVELTE).
+ */
+function browseWrap(ctx: EmitCtx, slot: BrowseSlot, inner: string, section: boolean): string {
+  const p = pad(ctx);
+  const { controls, size, name } = slot.browse!;
+  useImport(ctx, 'SoBrowse', `${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`);
+  return [
+    `${p}<SoBrowse controls={${js(controls)}} load={() => ({ default: so_browse_${slot.n} })} size={${size}} name={${js(name)}}>`,
+    ...(section ? [`${p}	{#snippet frame(so_bar)}`, `${p}		<div class="so-container">{@render so_bar()}</div>`, `${p}	{/snippet}`] : []),
+    `${p}	{#snippet content(so_matches_${slot.n})}`,
+    indentBlock(indentBlock(inner)),
+    `${p}	{/snippet}`,
+    `${p}</SoBrowse>`
+  ].join('\n');
+}
+
 function emitNode(ctx: EmitCtx, id: string): string {
   const node = ctx.tree.nodes[id];
   if (!node) return '';
   const p = pad(ctx);
+  // The listings visitors may browse around this node, each with a number of its own in the file.
+  const keys = browseListings(ctx).get(node.id) ?? [];
+  const slots = keys.map((key) => {
+    const slot: BrowseSlot = { n: (ctx.browseCount = (ctx.browseCount ?? 0) + 1) - 1 };
+    (ctx.browse ??= new Map()).set(key, slot);
+    return slot;
+  });
   let out = emitNodeInner(ctx, node);
+  for (const key of keys) ctx.browse!.delete(key);
+  // Each listing that turned out to browse something places the node in its controls.
+  const section = !ctx.def && Array.isArray(ctx.tree.rootIds) && ctx.tree.rootIds.includes(node.id);
+  for (const slot of slots) if (slot.browse) out = browseWrap(ctx, slot, out, section);
   // A list's category pills go just above the element holding it, shown and hidden with it.
   const filter = ctx.filters?.find((f) => f.host === node.id);
   if (filter) {
@@ -3321,7 +3406,15 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const v = `item${ctx.items.length ? ctx.items.length + 1 : ''}`;
       // A collection loop's rows are written in (see ./collection-loops); one with none prepared shows nothing.
       const loop = isCollectionLoop(node) ? ctx.loops?.get(node.id) : undefined;
-      const list = isCollectionLoop(node) ? js(loop?.rows ?? []) : bindExpr(ctx, node.list);
+      let list = isCollectionLoop(node) ? js(loop?.rows ?? []) : bindExpr(ctx, node.list);
+      // In an index's own design that visitors browse, a loop over the page's entries shows the rows that match once
+      // a visitor uses a control, each entry's row for this loop from the browse index (see buildLayoutBrowseIndex).
+      const archive = loop ? ctx.archiveBrowse?.slots.get(node.id) : undefined;
+      if (archive !== undefined) list = `(${ctx.archiveBrowse!.matches} ? ${ctx.archiveBrowse!.matches}.map((so_e) => so_e.loops[${archive}]) : ${list})`;
+      // A query's loop that visitors browse shows the rows of its own that match.
+      const slot = loop && loopBrowses(node) ? ctx.browse?.get(`repeat:${node.id}`) : undefined;
+      const browsed = slot ? listingBrowse(ctx.state, loop!.collection, loop!.entries) : undefined;
+      if (slot && browsed) list = browsedRows(ctx, slot, list, browsed, loop!.collection!.settings.name);
       const listSchema = loop ? loop.schema : isCollectionLoop(node) ? undefined : bindingSchema(ctx, node.list);
       if (isCollectionLoop(node)) ctx.inLoop = (ctx.inLoop ?? 0) + 1;
       ctx.items.push(v);
@@ -3555,7 +3648,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     // every page shares) it takes the rows the page handed down (`so_pages`).
     const feed = schema.type === 'list' && schema.feed;
     // A list connected to a collection holds the entries its query finds where it is written (see ./collection-loops).
-    const connected = connectedListItems(ctx.state, def, node, propName, ctx.rctx);
+    const listing = connectedList(ctx.state, def, node, propName, ctx.rctx);
+    const connected = listing?.items;
     let expr = connected
       ? js(resolveValue(ownItems(schema), connected, rctx))
       : feed
@@ -3565,6 +3659,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       : isBinding(raw)
         ? bindExpr(ctx, raw)
         : valueExpr(propName, schema, raw, rctx);
+    // One visitors browse shows the items of its own that match.
+    const slot = listing?.browse ? ctx.browse?.get(`prop:${node.id}|${propName}`) : undefined;
+    const browsed = slot ? listingBrowse(ctx.state, listing!.collection, listing!.entries) : undefined;
+    if (slot && browsed) expr = browsedRows(ctx, slot, expr, browsed, listing!.collection!.settings.name);
     // A value bound from the design arrives as blocks; each field the code takes as paragraph strings is converted.
     const fields = code && isBinding(raw) ? paragraphFields(schema) : [];
     if (code && isBinding(raw) && ((schema.type === 'richtext' && !codeTakesBlocks(schema)) || fields.length)) {
@@ -3841,14 +3939,17 @@ function emptyFrameAttr(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): st
 }
 
 /**
- * Editor variants: `so_editing`, whether the editor shows the page in Edit (the bridge marks <html> with
+ * The script's own declarations, after its imports and properties: what each browsed listing shows (see browsedRows)
+ * and, in editor variants, `so_editing`, whether the editor shows the page in Edit (the bridge marks <html> with
  * `data-so-editing`), for what the markup shows only then. False until mounted, so the server's render and the
  * first paint have none of it, as Preview has none. The page's globals are reached through `globalThis`, which no
  * property's local takes (see INTERNAL_LOCALS): a component's own property may be called `document`.
  */
 function editingState(ctx: EmitCtx): string {
-  if (!ctx.usesEditing) return '';
-  return [
+  // What the file's browsed listings show, and what their controls read (see browsedRows).
+  const data = ctx.browseData?.length ? `${ctx.browseData.join('\n')}\n` : '';
+  if (!ctx.usesEditing) return data;
+  return data + [
     `\tlet so_editing = $state(false);`,
     `\t$effect(() => {`,
     `\t\tconst html = globalThis.document.documentElement;`,
@@ -4906,7 +5007,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
  * the loops over the page's entries (`{ $archive: true }`) repeating once for each entry it lists, in order. Its
  * imports and script go in the page's script; its markup in place of the ready-made cards.
  */
-export function emitArchiveLayout(state: ProjectState, collectionId: string, entryIds: readonly string[], file: string, opts: GenerateOptions = {}): { imports: string[]; script: string; markup: string } {
+export function emitArchiveLayout(state: ProjectState, collectionId: string, entryIds: readonly string[], file: string, opts: GenerateOptions = {}, browse?: { matches: string }): { imports: string[]; script: string; markup: string } {
   const layout = state.collections[collectionId]?.settings.archiveTemplate;
   const rctx: ResolveContext = { state, archive: { collectionId, entryIds } };
   const { tree, loops } = prepareLoops(state, layout && typeof layout === 'object' ? layout : { rootIds: [], nodes: {} }, rctx);
@@ -4922,7 +5023,9 @@ export function emitArchiveLayout(state: ProjectState, collectionId: string, ent
     items: [],
     rctx,
     indent: 0,
-    locals: new Map()
+    locals: new Map(),
+    // While visitors browse the index, its loops over the page's entries show the ones that match (see generateArchive).
+    ...(browse ? { archiveBrowse: { matches: browse.matches, slots: new Map(archiveLoopIds(layout).map((id, i) => [id, i])) } } : {})
   };
   const roots = Array.isArray(tree.rootIds) ? tree.rootIds : [];
   const markup = roots
