@@ -548,13 +548,8 @@ describe('checks before the website goes out', () => {
   it('follow links a layout shows from an entry’s link and rich text fields', () => {
     let s = run(studio(), { type: 'site.update', baseUrl: 'https://example.com' }, { type: 'entry.create', collectionId: 'projects', entryId: 'en_plan', title: 'Plans', draft: true });
     const owner = { kind: 'template' as const, id: 'projects' };
-    const body = Object.values(s.collections.projects.settings.template.nodes).find((n) => JSON.stringify(n).includes('{"$entry":"body"}'))!;
-    s = run(
-      s,
-      { type: 'node.setBinding', owner, nodeId: body.id, field: 'text', binding: { $entry: 'field.summary' } },
-      { type: 'node.setBinding', owner, nodeId: body.id, field: 'when', binding: null },
-      { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: 'See [the plans](entry:en_plan).' } }
-    );
+    // The records layout shows the Summary rich text field under its own heading.
+    s = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: 'See [the plans](entry:en_plan).' } });
     expect(publicationPlan(s).draftLinks).toEqual([expect.objectContaining({ entryId: 'en_plan', owner })]);
     // Another entry's page linking from the same place to another draft is another link.
     const two = run(
