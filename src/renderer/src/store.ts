@@ -199,9 +199,10 @@ export interface State {
   postReveal: { entryId: string; picture: number; seq: number } | null;
   /**
    * An entry the Content panel is making or copying, to open in the writer once it is (#1394). Until then the writer
-   * still shows the entry open before it: that one takes nothing typed, and the writer says what it is waiting for.
+   * still shows the entry open before it: that one takes nothing typed, and the writer says what it is waiting for
+   * (`label`). With `field`, the new entry's text can be typed meanwhile, in a field of that name (lib/typed-ahead).
    */
-  postOpening: { label: string } | null;
+  postOpening: { label: string; field?: string } | null;
   /**
    * The page or post the SEO view has chosen (shown while the SEO panel is), kept while other panels are. Null with none
    * chosen, and once the project no longer has it (see App). Never saved: each opening starts with none.

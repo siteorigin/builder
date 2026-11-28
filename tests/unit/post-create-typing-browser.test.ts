@@ -1,8 +1,8 @@
 /**
  * Typing straight on after Create draft (#1394): while the new entry is made, the writer still shows the one open
- * before it. What is typed then, after Enter in the title or into the writer still showing, reaches the new entry once
- * it opens, and never the one before it. The real Content panel, writer and store run in a real browser, over a stand-in
- * for the preload bridge whose edits take a moment to land, as main's do.
+ * before it. What is typed then, after Enter in the title or with a click on the writer still showing, reaches the new
+ * entry once it opens, and never the one before it. The real Content panel, writer and store run in a real browser, over
+ * a stand-in for the preload bridge whose edits take a moment to land, as main's do; making an entry waits for the test.
  */
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -27,8 +27,6 @@ const ENTRY = [
   `import { PostWriter } from ${src('renderer/src/panels/PostWriter')};`,
   `import { useStore } from ${src('renderer/src/store')};`,
   `import { applyOperations } from ${src('engine/apply')};`,
-  `import { holdTyping } from ${src('renderer/src/lib/typed-ahead')};`,
-  'window.holdTyping = holdTyping;',
   'function Editor() {',
   '  return h("div", null, h("div", { id: "panel" }, h(PostsPanel)), h("div", { id: "writer" }, h(PostWriter, { hidden: false })));',
   '}',
@@ -40,34 +38,40 @@ const ENTRY = [
   "  flushSync(() => createRoot(document.getElementById('root')).render(h(Editor)));",
   '};',
   // Main's side of an edit: checked against the revision it was planned for, applied, the project sent on, then answered.
+  // Making an entry waits until the test lets it go; with `lag`, the project arrives after the answer, as it may.
   'window.edit = async (batch) => {',
-  '  window.edits.push(batch.operations.map((o) => o.type));',
-  '  await new Promise((r) => setTimeout(r, window.editDelay));',
+  '  const making = batch.operations.some((o) => o.type === "entry.create");',
+  '  if (making) await new Promise((r) => (window.release = r));',
+  '  else await new Promise((r) => setTimeout(r, 30));',
+  '  if (making) window.release = null;',
   '  const s = useStore.getState().snapshot;',
   "  if (batch.operations.some((o) => o.type === window.refuse)) return { ok: false, revision: s.revision, error: { code: 'INVALID_OPERATION', message: 'That change could not be applied.' } };",
   "  if (batch.expectedRevision !== undefined && batch.expectedRevision !== s.revision) return { ok: false, revision: s.revision, error: { code: 'STALE_REVISION', message: 'Stale' } };",
   '  const r = applyOperations(s.state, batch.operations);',
   '  const revision = s.revision + 1;',
-  '  useStore.setState({ snapshot: { ...s, state: r.state, revision } });',
+  '  const send = () => useStore.setState({ snapshot: { ...s, state: r.state, revision } });',
+  '  if (making && window.lag) setTimeout(send, window.lag);',
+  '  else send();',
   "  return { ok: true, revision, results: r.results, entryId: 'h' + revision };",
   '};',
   'window.so = {',
   '  snapshot: () => useStore.getState().snapshot,',
   // Each entry's text as the project has it, by title: its paragraphs one per line.
   '  bodies: () => Object.fromEntries(Object.values(useStore.getState().snapshot.state.collections.posts.entries).map((e) => [e.title, (e.body ?? []).map((b) => (b.spans ?? []).map((x) => x.text).join("")).join("\\n")])),',
+  '  values: (c) => Object.fromEntries(Object.values(useStore.getState().snapshot.state.collections[c].entries).map((e) => [e.title, e.values])),',
   '  open: () => { const p = useStore.getState().post; return p && useStore.getState().snapshot.state.collections[p.collectionId].entries[p.entryId]?.title; },',
-  '  toasts: () => useStore.getState().toasts.map((t) => t.text)',
+  '  toasts: () => useStore.getState().toasts.map((t) => t.text),',
+  // The control with focus, by its name: its own label, or the label it is under.
+  '  focused: () => { const a = document.activeElement; return a === document.body ? "body" : a?.getAttribute("aria-label") ?? a?.labels?.[0]?.textContent ?? a?.className ?? null; },',
+  '  waiting: () => typeof window.release === "function",',
+  '  release: () => window.release()',
   '};'
 ].join('\n');
 
-/**
- * The preload bridge: edits go through `edit` above, after `editDelay` ms, and one with an operation of the `refuse` type
- * is refused; a snapshot asked for is the store's own.
- */
+/** The preload bridge: edits go through `edit` above; one with an operation of the `refuse` type is refused. */
 const BRIDGE = `
-  window.edits = [];
-  window.editDelay = 300;
   window.refuse = null;
+  window.lag = 0;
   const answers = {
     'project.apply': (batch) => window.edit(batch),
     'project.snapshot': () => Promise.resolve(window.so.snapshot())
@@ -100,14 +104,17 @@ async function bundle(): Promise<string> {
   return chunk.code;
 }
 
-/** A blog with one post open, a line of text in it. */
+/** A blog with Post 1 open, a line of text in it, and an older Post 0. */
 function site(): ProjectState {
   return run(
     createStarterState('business', 'Riverside Studio', false),
     { type: 'collection.create', collectionId: 'posts' },
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_zero', title: 'Post 0', publishedAt: '2027-01-02', body: [{ type: 'p', spans: [{ text: 'The oldest post.' }] }] },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_one', title: 'Post 1', publishedAt: '2027-03-02', body: [{ type: 'p', spans: [{ text: 'The first post.' }] }] }
   );
 }
+
+const BEFORE = { 'Post 0': 'The oldest post.', 'Post 1': 'The first post.' };
 
 describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394)', { timeout: 30_000 }, () => {
   let browser: Browser;
@@ -117,10 +124,16 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
   let errors: string[];
   const start = site();
 
-  const so = <R = unknown>(name: string): Promise<R> => page.evaluate((name) => (globalThis as unknown as { so: Record<string, () => unknown> }).so[name](), name) as Promise<R>;
+  const so = <R = unknown>(name: string, arg?: unknown): Promise<R> => page.evaluate(([name, arg]) => (globalThis as unknown as { so: Record<string, (a: unknown) => unknown> }).so[name](arg), [name, arg] as const) as Promise<R>;
   const bodies = () => so<Record<string, string>>('bodies');
   const open = () => so<string | null>('open');
   const toasts = () => so<string[]>('toasts');
+  const focused = () => so<string | null>('focused');
+  /** Lets the entry being made land in the project, once it has been asked for. */
+  async function release() {
+    await expect.poll(() => so<boolean>('waiting')).toBe(true);
+    await so('release');
+  }
   const set = (key: string, value: unknown) => page.evaluate(([key, value]) => ((globalThis as unknown as Record<string, unknown>)[key] = value), [key, value] as const);
   /** The New post form (or New `noun`), opened from the panel's head, with `title` typed in it. */
   async function typeTitle(title: string, noun = 'post') {
@@ -129,9 +142,20 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     await field.waitFor();
     await field.pressSequentially(title);
   }
+  /** While the entry is made: the writer still shows Post 1, as it was, and takes nothing; it says what it waits for. */
+  async function waitingFor(note: string) {
+    expect(await page.locator('#writer .post-hold').getAttribute('inert')).not.toBeNull();
+    expect(await page.locator('#writer .post-opening-note').textContent()).toBe(` ${note}`);
+    expect(await page.locator('#writer .post-title-input').inputValue()).toBe('Post 1');
+    expect(await page.locator('#writer .post-body').textContent()).toBe('The first post.');
+  }
   async function mount(state: ProjectState, post: string | null, collection: string) {
     await page.evaluate(([state, post, usage, collection]) => (globalThis as unknown as { mount(s: unknown, p: unknown, u: unknown, c: unknown): void }).mount(state, post, usage, collection), [state as unknown, post, assetUsages(state), collection] as const);
   }
+  const mountBlog = async () => {
+    await mount(start, 'en_one', 'posts');
+    await page.locator('#writer .post-body p').first().waitFor();
+  };
 
   beforeAll(async () => {
     [script, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
@@ -153,10 +177,6 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     );
     await page.goto(`${SITE}/`);
   });
-  const mountBlog = async () => {
-    await mount(start, 'en_one', 'posts');
-    await page.locator('#writer .post-body p').first().waitFor();
-  };
   afterEach(async () => {
     await context?.close();
     expect(errors).toEqual([]);
@@ -166,85 +186,134 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     await mountBlog();
     await typeTitle('Post 2');
     await page.keyboard.press('Enter');
-    // Straight on, at about 25 characters a second, while the draft is made.
-    await page.keyboard.type('MARKER-2 body', { delay: 40 });
+    // Straight on, while the draft is made.
+    await page.keyboard.type('MARKER-2', { delay: 20 });
+    await waitingFor('Opening “Post 2”…');
+    await release();
     await expect.poll(open).toBe('Post 2');
-    await expect.poll(bodies).toEqual({ 'Post 1': 'The first post.', 'Post 2': 'MARKER-2 body' });
+    // Into its text, where typing goes on.
+    expect(await focused()).toBe('Post text');
+    await page.keyboard.type(' body');
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-2 body' });
+    expect(await page.locator('#writer .post-opening').count()).toBe(0);
+    expect(await page.locator('#writer .post-hold').getAttribute('inert')).toBeNull();
   });
 
-  it('puts what is typed into the writer still showing the last post in the new one, never the last', async () => {
+  it('puts what is typed with a click on the writer still showing the last post in the new one, never the last', async () => {
     await mountBlog();
     await typeTitle('Post 2');
     await page.getByRole('button', { name: 'Create draft' }).click();
     // Into the text still on screen, at once, as the draft is made.
     await page.locator('#writer .post-body').click({ force: true });
-    await page.keyboard.type('MARKER-3', { delay: 40 });
+    await page.keyboard.type('MARKER-3', { delay: 20 });
+    await waitingFor('Opening “Post 2”…');
+    expect(await focused()).toBe('Text for “Post 2”');
+    await release();
     await expect.poll(open).toBe('Post 2');
-    await expect.poll(bodies).toEqual({ 'Post 1': 'The first post.', 'Post 2': 'MARKER-3' });
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-3' });
   });
-  it('holds Enter as a new paragraph and Backspace as a correction, while the writer still showing the last post says it is waiting', async () => {
+
+  it('takes corrections and new paragraphs as typed, and a composition once it has ended', async () => {
     await mountBlog();
-    // Long enough that everything is typed before the draft is made.
-    await set('editDelay', 1500);
     await typeTitle('Post 2');
     await page.keyboard.press('Enter');
-    await page.keyboard.type('MARKX', { delay: 20 });
+    await page.keyboard.type('MARKX');
     await page.keyboard.press('Backspace');
-    await page.keyboard.type('ER', { delay: 20 });
+    await page.keyboard.type('ER');
     await page.keyboard.press('Enter');
-    await page.keyboard.type('Second line', { delay: 20 });
-    // Meanwhile Post 1 is shown, taking nothing, and the writer says what it waits for.
-    expect(await page.locator('#writer .post-hold').getAttribute('inert')).not.toBeNull();
-    expect(await page.locator('#writer .post-opening').textContent()).toBe(' Opening “Post 2”…');
-    expect(await page.locator('#writer .post-title-input').inputValue()).toBe('Post 1');
-    await expect.poll(open, { timeout: 10_000 }).toBe('Post 2');
-    await set('editDelay', 0);
-    expect(await page.locator('#writer .post-opening').count()).toBe(0);
-    expect(await page.locator('#writer .post-hold').getAttribute('inert')).toBeNull();
-    await expect.poll(bodies).toEqual({ 'Post 1': 'The first post.', 'Post 2': 'MARKER\nSecond line' });
-    // Typing goes on where the held text ended.
-    await page.keyboard.type(' and more');
-    await expect.poll(bodies).toEqual({ 'Post 1': 'The first post.', 'Post 2': 'MARKER\nSecond line and more' });
+    await page.keyboard.type('Secnd');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.type('o');
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    // An IME composition still open when the draft is made: it opens once the composition is committed.
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Input.imeSetComposition', { text: 'にほん', selectionStart: 3, selectionEnd: 3 });
+    await release();
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
+    expect(await open()).toBe('Post 1');
+    await waitingFor('Opening “Post 2”…');
+    await cdp.send('Input.insertText', { text: '日本' });
+    await expect.poll(open).toBe('Post 2');
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER\nSecond\n日本' });
+  });
+
+  it('waits for the new post to be in the project when the answer comes before it', async () => {
+    await mountBlog();
+    await set('lag', 300);
+    await typeTitle('Post 2');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('MARKER-7', { delay: 20 });
+    await release();
+    await expect.poll(open).toBe('Post 2');
+    expect(await focused()).toBe('Post text');
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-7' });
+    expect(await toasts()).toEqual([]);
   });
 
   it('saves what was typed in the new post when another is chosen before it opens, and says so', async () => {
     await mountBlog();
-    await set('editDelay', 600);
     await typeTitle('Post 2');
     await page.keyboard.press('Enter');
     await page.keyboard.type('MARKER-4', { delay: 20 });
-    // Post 1 chosen again in the list while the draft is made: that choice stands.
-    await page.locator('#panel [data-post="en_one"]').click();
-    await expect.poll(bodies, { timeout: 5_000 }).toEqual({ 'Post 1': 'The first post.', 'Post 2': 'MARKER-4' });
-    expect(await open()).toBe('Post 1');
-    await expect.poll(toasts).toContain('What you typed is saved in “Post 2”, in the list.');
+    // Post 0 chosen in the list while the draft is made: that choice stands.
+    await page.locator('#panel [data-post="en_zero"]').click();
+    await release();
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-4' });
+    expect(await open()).toBe('Post 0');
+    await expect.poll(toasts).toContain('What you typed is saved in “Post 2”.');
   });
 
-  it('says what was typed was not kept when the draft could not be made, and leaves the last post alone', async () => {
+  it('leaves typing in Find where it is, and saves what was typed ahead in the new post', async () => {
     await mountBlog();
-    await set('refuse', 'entry.create');
     await typeTitle('Post 2');
     await page.keyboard.press('Enter');
+    await page.keyboard.type('MARKER-8', { delay: 20 });
+    const find = page.getByLabel('Find a post by title, address, author or excerpt');
+    await find.click();
+    await page.keyboard.type('Post');
+    await release();
+    await expect.poll(open).toBe('Post 2');
+    await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-8' });
+    // Find kept its words and its focus.
+    expect(await find.inputValue()).toBe('Post');
+    expect(await focused()).toBe('Find a post by title, address, author or excerpt');
+    expect(await toasts()).toContain('What you typed is saved in “Post 2”.');
+  });
+
+  it('says what was typed was not kept when the draft could not be made, and only then', async () => {
+    await mountBlog();
+    await set('refuse', 'entry.create');
+    // Refused with nothing typed for it: only the refusal is said.
+    await typeTitle('Post 2');
+    await page.keyboard.press('Enter');
+    await release();
+    await expect.poll(toasts).toContain('That change could not be applied.');
+    expect((await toasts()).some((t) => t.includes('was not kept'))).toBe(false);
+    // Refused again, with words typed for it.
+    await page.getByLabel('New post title').press('Enter');
     await page.keyboard.type('MARKER-6', { delay: 20 });
+    await release();
     await expect.poll(toasts).toContain('What you typed for “Post 2” was not kept: it was not made.');
-    expect(await bodies()).toEqual({ 'Post 1': 'The first post.' });
+    expect(await bodies()).toEqual(BEFORE);
     expect(await open()).toBe('Post 1');
     // The form keeps its title to try again, and the writer takes typing again.
     expect(await page.getByLabel('New post title').inputValue()).toBe('Post 2');
     expect(await page.locator('#writer .post-hold').getAttribute('inert')).toBeNull();
+    expect(await page.locator('#writer .post-opening').count()).toBe(0);
   });
 
   it('takes nothing into the writer still showing the post while a copy of it is made', async () => {
     await mountBlog();
-    await set('editDelay', 600);
     await page.locator('#panel [data-post="en_one"]').click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Duplicate as draft' }).click();
     await page.locator('#writer .post-body').click({ force: true });
     await page.keyboard.type('MARKER-5', { delay: 20 });
-    expect(await page.locator('#writer .post-opening').textContent()).toBe(' Opening the copy…');
-    await expect.poll(async () => Object.keys(await bodies()).length).toBe(2);
-    await expect.poll(async () => (await open()) !== 'Post 1').toBe(true);
-    expect(Object.values(await bodies())).toEqual(['The first post.', 'The first post.']);
+    await waitingFor('Opening the copy…');
+    await release();
+    await expect.poll(open).toBe('Post 1 (copy)');
+    expect(await bodies()).toEqual({ ...BEFORE, 'Post 1 (copy)': 'The first post.' });
   });
 
   it('opens a new record at its first field, with what was typed while it was made', async () => {
@@ -252,31 +321,14 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     await mount(run(start, ...team.ops), null, team.collectionId);
     await typeTitle('Ada Potter', 'team member');
     await page.keyboard.press('Enter');
-    await page.keyboard.type('Head potter', { delay: 40 });
+    await page.keyboard.type('Head potter', { delay: 20 });
+    await release();
     await expect.poll(open).toBe('Ada Potter');
-    expect(await page.locator('#writer').getByLabel('Role').inputValue()).toBe('Head potter');
-    expect(await page.evaluate(() => document.activeElement?.closest('label, .field')?.textContent ?? '')).toContain('Role');
-  });
-
-  it('holds what a key types, AltGr’s and a paste’s too, and leaves shortcuts, compositions and fields that take keys alone', async () => {
-    await mountBlog();
-    const held = await page.evaluate(() => {
-      const typed = (globalThis as unknown as { holdTyping(): { stop(): string } }).holdTyping();
-      const field = document.createElement('input');
-      document.body.append(field);
-      const key = (init: KeyboardEventInit, at: Element = document.body) => at.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
-      const taken = [key({ key: 'a' }), key({ key: '@', ctrlKey: true, altKey: true }), key({ key: 's', metaKey: true }), key({ key: 'c', ctrlKey: true }), key({ key: 'Dead' }), key({ key: 'é' }), key({ key: 'x', isComposing: true }), key({ key: 'z' }, field), key({ key: 'Backspace' }), key({ key: 'b' })];
-      const paste = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
-      paste.clipboardData!.setData('text/plain', 'one\r\ntwo');
-      document.body.dispatchEvent(paste);
-      const text = typed.stop();
-      // Let go: keys typed after go where they would.
-      const after = key({ key: 'q' });
-      return { text, taken, after };
-    });
-    // Each held key is kept from going anywhere else; the others go on.
-    expect(held.taken).toEqual([false, false, true, true, true, false, true, true, false, false]);
-    expect(held.text).toBe('a@bone\ntwo');
-    expect(held.after).toBe(true);
+    const role = page.locator('#writer').getByLabel('Role');
+    expect(await role.inputValue()).toBe('Head potter');
+    expect(await focused()).toBe('Role');
+    // Saved as the field's value once it is left, as typing there is.
+    await role.blur();
+    await expect.poll(async () => (await so<Record<string, Record<string, unknown>>>('values', team.collectionId))['Ada Potter']?.role).toBe('Head potter');
   });
 });

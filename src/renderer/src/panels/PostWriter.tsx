@@ -1,5 +1,5 @@
 import './PostsPanel.css';
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
@@ -27,6 +27,7 @@ import { isImeComposing } from '../lib/ime';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
+import { setTypedAheadField } from '../lib/typed-ahead';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
@@ -147,11 +148,28 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   const key = post ? `${post.collectionId}/${post.entryId}` : null;
   const keep = key !== null && (exists || shown.current === key);
   shown.current = keep ? key : null;
-  // An entry the Content panel is making or copying (#1394): until it opens, the one shown takes nothing typed (what is
-  // typed is held for the new one), and the writer says what it is waiting for.
+  // An entry the Content panel is making or copying (#1394): until it opens, the one shown takes nothing typed, and the
+  // writer says what it is waiting for. A new entry's text can be typed meanwhile, in a field of its own (lib/typed-ahead),
+  // focused at once and where a click on the writer goes.
   const opening = useStore((s) => s.postOpening);
+  const ahead = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ahead.current;
+    if (!el) return;
+    const off = setTypedAheadField(el);
+    el.focus({ preventScroll: true });
+    return off;
+  }, [opening]);
   return (
-    <div className="post-writer" hidden={hidden} aria-busy={opening ? true : undefined}>
+    <div
+      className="post-writer"
+      hidden={hidden}
+      aria-busy={opening ? true : undefined}
+      onMouseDown={(e) => {
+        const el = ahead.current;
+        if (el && !el.contains(e.target as Node)) (e.preventDefault(), el.focus({ preventScroll: true }));
+      }}
+    >
       <div className="post-hold" inert={!!opening}>
         {post && keep ? (
           <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
@@ -163,9 +181,12 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
         )}
       </div>
       {opening && (
-        <p className="post-opening" role="status">
-          <Spinner decorative /> <span className="ellipsis">{opening.label}</span>
-        </p>
+        <div className="post-opening">
+          <p className="post-opening-note" role="status">
+            <Spinner decorative /> <span className="ellipsis">{opening.label}</span>
+          </p>
+          {opening.field && <textarea ref={ahead} className="input post-opening-text" aria-label={opening.field} placeholder="Keep typing: it goes into the text as it opens" rows={3} spellCheck />}
+        </div>
       )}
     </div>
   );
@@ -549,12 +570,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    */
   const start = (typed: string): boolean => {
     const el = root.current?.isContentEditable ? root.current : null;
-    const at = el ?? pageRef.current?.querySelector<HTMLElement>('.post-record .entry-values :is(input, textarea, select):not(:disabled)');
+    // A record's own fields, not a box that only finds something to choose; words go into the first that takes words.
+    const fields = [...(pageRef.current?.querySelectorAll<HTMLElement>('.post-record .entry-value :is(input, textarea, select):not(:disabled)') ?? [])].filter((f) => !f.closest('.entry-ref-find'));
+    const words = fields.find((f) => f.matches('textarea, input:is(:not([type]), [type="text"], [type="url"], [type="email"], [type="tel"])'));
+    const at = el ?? words ?? fields[0];
     if (!at) return !typed;
     at.focus();
     if (!typed) return true;
-    if (el) return document.execCommand('insertText', false, typed);
-    if (!at.matches('textarea, input:is(:not([type]), [type="text"], [type="url"], [type="email"], [type="search"], [type="tel"])')) return false;
+    // Focus that could not come here (the writer put away, a dialog over it) types nothing anywhere else.
+    if (document.activeElement !== at || (at !== el && at !== words)) return false;
     // One line, in a field of one line.
     return document.execCommand('insertText', false, at.matches('input') ? typed.replace(/\s*\n\s*/g, ' ') : typed);
   };

@@ -10,10 +10,13 @@
   .post-writer { flex: 1; min-width: 0; display: flex; flex-direction: column; container: writer / inline-size; }
   .post-writer[hidden] { display: none; }
   /* An entry the Content panel is making or copying, until it opens (#1394): the one shown meanwhile takes nothing typed.
-     It dims a moment in, so a quick opening never flickers, and a note above it says what the writer is waiting for. */
+     It dims a moment in, so a quick opening never flickers, and a card above it says what the writer is waiting for,
+     with the field the new entry's text is typed into meanwhile (focused at once, seen only if the wait is long). */
   .post-hold { display: contents; }
   .post-hold[inert] > * { opacity: 0.55; transition: opacity 0.12s 0.2s; }
-  .post-opening { position: absolute; top: 56px; left: 50%; z-index: 4; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 32px); margin: 0; padding: 6px 12px; transform: translateX(-50%); border: 1px solid var(--border); border-radius: 999px; background: var(--panel); box-shadow: var(--shadow-md); color: var(--text-2); font-size: 12px; line-height: 16px; animation: post-opening-in 0.12s 0.2s both; }
+  .post-opening { position: absolute; top: 56px; left: 50%; z-index: 4; display: flex; flex-direction: column; gap: 8px; width: min(420px, calc(100% - 32px)); padding: 10px 12px; transform: translateX(-50%); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); box-shadow: var(--shadow-md); animation: post-opening-in 0.12s 0.2s both; }
+  .post-opening-note { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; color: var(--text-2); font-size: 12px; line-height: 16px; }
+  .post-opening-text { width: 100%; resize: none; }
   @keyframes post-opening-in { from { opacity: 0; } }
   .post-none { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; }
   .post-none svg { width: 28px; height: 28px; }

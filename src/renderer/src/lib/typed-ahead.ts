@@ -1,66 +1,53 @@
 /**
- * Typing that runs ahead of an entry opening (#1394). From Create draft until the new entry's text has focus, the
- * writer still shows the entry open before it, which takes nothing typed then, and the form's title is read-only and
- * soon gone. Keys typed where nothing takes them (that title, the page once the form has gone, a control switched off)
- * are held in order, to be typed into the new entry's text as it opens. A control that takes keys itself (the Find box,
- * a row of the list, a button) keeps them: the author went there.
- *
- * Held is what a key types: a character (AltGr's and Option's too), Enter as a new paragraph, Backspace taking back the
- * last character held, and the words of a paste. A composition (IME) or a dead key starts nowhere in this window,
- * there being no field for it, and is left as it is.
+ * Typing that runs ahead of an entry opening (#1394). From Create draft until the new entry's text has focus, the writer
+ * still shows the entry open before it, which takes nothing typed then, and the form's title is read-only and soon gone.
+ * Typing goes instead into a field of its own, in the writer's note of what it is waiting for (PostWriter), focused at
+ * once: a composition (IME), a dead key, a correction or a paste works there as in any field. As the entry opens, the
+ * field's words go into its text, once a composition in progress there has ended.
  */
 
-/** Typing held for an entry that is opening; `stop` lets keys go where they would and says what was held. */
-export interface TypedAhead {
-  readonly text: string;
-  stop(): string;
+let field: HTMLTextAreaElement | null = null;
+let composing = false;
+let waiting: Array<() => void> = [];
+
+const settle = () => {
+  const done = waiting;
+  waiting = [];
+  for (const go of done) go();
+};
+
+/** The field typed ahead into registers itself while it shows; returns the unregister. */
+export function setTypedAheadField(el: HTMLTextAreaElement): () => void {
+  field = el;
+  composing = false;
+  const start = () => void (composing = true);
+  // A composition ends with its commit, or with the field's focus.
+  const end = () => {
+    composing = false;
+    settle();
+  };
+  el.addEventListener('compositionstart', start);
+  el.addEventListener('compositionend', end);
+  el.addEventListener('blur', end);
+  return () => {
+    el.removeEventListener('compositionstart', start);
+    el.removeEventListener('compositionend', end);
+    el.removeEventListener('blur', end);
+    if (field !== el) return;
+    field = null;
+    composing = false;
+    settle();
+  };
 }
 
-/** Whether keys typed at `t` go somewhere: a field that can be typed in, or a control left on that acts on keys. */
-function takesKeys(t: EventTarget | null): boolean {
-  if (!(t instanceof HTMLElement) || t === t.ownerDocument.body || t === t.ownerDocument.documentElement) return false;
-  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return !t.readOnly && !t.disabled;
-  if (t.isContentEditable) return true;
-  return !t.matches(':disabled');
+/** Resolves once no composition is in progress in the field typed ahead into: one in progress ends first. */
+export function typedAheadSettled(): Promise<void> {
+  return field && composing ? new Promise((go) => waiting.push(go)) : Promise.resolve();
 }
 
-export function holdTyping(win: Window = window): TypedAhead {
-  let text = '';
-  let on = true;
-  const onKey = (e: KeyboardEvent) => {
-    if (e.defaultPrevented || e.isComposing || takesKeys(e.target)) return;
-    // AltGr arrives as Ctrl+Alt on Windows: what it makes is a character, as Option's is on a Mac.
-    if (e.metaKey || (e.ctrlKey && !e.altKey)) return;
-    if (e.key === 'Enter') text += '\n';
-    else if (e.key === 'Backspace') {
-      if (!text) return;
-      text = [...text].slice(0, -1).join('');
-    } else if ([...e.key].length === 1) text += e.key;
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
-  };
-  const onPaste = (e: ClipboardEvent) => {
-    if (takesKeys(e.target)) return;
-    const words = e.clipboardData?.getData('text/plain');
-    if (!words) return;
-    e.preventDefault();
-    e.stopPropagation();
-    text += words.replace(/\r\n?/g, '\n');
-  };
-  win.addEventListener('keydown', onKey, true);
-  win.addEventListener('paste', onPaste, true);
-  return {
-    get text() {
-      return text;
-    },
-    stop() {
-      if (on) {
-        on = false;
-        win.removeEventListener('keydown', onKey, true);
-        win.removeEventListener('paste', onPaste, true);
-      }
-      return text;
-    }
-  };
+/** What was typed ahead, and whether the author has since gone on to type somewhere else (Find, a dialog). */
+export function typedAhead(): { text: string; elsewhere: boolean } {
+  const doc = field?.ownerDocument ?? document;
+  const at = doc.activeElement;
+  return { text: field?.value ?? '', elsewhere: !!at && at !== field && at !== doc.body && at !== doc.documentElement };
 }
