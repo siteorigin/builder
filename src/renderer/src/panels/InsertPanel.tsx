@@ -1728,7 +1728,7 @@ export function InsertPanel() {
       if (r.message) toast(r.message, 'error');
       return;
     }
-    toast(`Imported ${r.name ?? 'the component'}`, 'info', workspaceKey && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey }) : undefined);
+    toast([`Imported ${r.name ?? 'the component'}.`, ...(r.notes ?? [])].join(' '), 'info', workspaceKey && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey }) : undefined);
   };
   // A saved component's own menu: where it came from, and taking it out of the library.
   const savedItemsMenu = (c: SavedComponent): MenuItem[] => [
