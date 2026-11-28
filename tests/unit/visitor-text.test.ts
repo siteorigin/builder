@@ -582,7 +582,7 @@ describe('English wording on a page in French or Urdu, as the export prerenders 
     const site = englishFallbackSite();
     const page = await prerender(site.files);
     const marked = {
-      skip: '<a class="so-skip-link" href="#main" lang="en">Skip to content</a>',
+      skip: '<a class="so-skip-link" href="#main" lang="en" data-search-ignore="">Skip to content</a>',
       nav: '<nav id="so-site-nav" aria-labelledby="ID">',
       name: '<span id="ID" hidden="" lang="en">Main</span>',
       submenu: '<span class="so-visually-hidden">About<span lang="en"> submenu</span></span>'
@@ -593,7 +593,7 @@ describe('English wording on a page in French or Urdu, as the export prerenders 
     expect({ ...ur, nav: ur.nav.replace(/"so-nav-name:[^"]+"/, '"ID"') }).toEqual({ ...marked, menu: '<span class="so-visually-hidden" lang="en">Menu</span>' });
     const en = read(page(site.routes.en));
     expect({ ...en, nav: en.nav.replace(/"so-nav-name:[^"]+"/, '"ID"') }).toEqual({
-      skip: '<a class="so-skip-link" href="#main">Skip to content</a>',
+      skip: '<a class="so-skip-link" href="#main" data-search-ignore="">Skip to content</a>',
       menu: '<span class="so-visually-hidden">Menu</span>',
       nav: '<nav id="so-site-nav" aria-labelledby="ID">',
       name: '<span id="ID" hidden="">Main</span>',
@@ -621,6 +621,6 @@ describe('English wording on a page in French or Urdu, as the export prerenders 
     for (const props of [{ siteName: 'Atelier Nord', showSiteName: true, logo: null }, { siteName: 'Atelier Nord', showSiteName: false, logo: null }]) expect(await render(props)).not.toContain('lang=');
     // The skip link on that page is marked too, without the layout naming a language.
     const s2 = generateProject(s);
-    expect((await prerender(s2))('/')).toContain('<a class="so-skip-link" href="#main" lang="en">Skip to content</a>');
+    expect((await prerender(s2))('/')).toContain('<a class="so-skip-link" href="#main" lang="en" data-search-ignore="">Skip to content</a>');
   });
 });

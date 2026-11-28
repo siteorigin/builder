@@ -22,6 +22,7 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
+import { searchProvider } from '@shared/site-search';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
@@ -1615,7 +1616,44 @@ export async function finishExportedSource(dest: string, state: ProjectState, no
   if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs, installedThemeRequirement(state)));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
+  // A site that searches through SearchSocket gets a starting point for indexing it, never in place of the owner's own.
+  if (searchProvider(state.site) === 'searchsocket' && !existsSync(join(dest, SEARCHSOCKET_CONFIG_FILE))) await fs.writeFile(join(dest, SEARCHSOCKET_CONFIG_FILE), SEARCHSOCKET_CONFIG);
 }
+
+/** SearchSocket's configuration file, at the root of the project beside package.json. */
+export const SEARCHSOCKET_CONFIG_FILE = 'searchsocket.config.ts';
+
+/**
+ * The SearchSocket configuration a Source export starts with while Site search asks SearchSocket: index the built
+ * website's pages, as `npm run build` writes them. It holds no secret: the keys indexing needs come from the
+ * environment it runs in, and the website only ever asks the service's public search address.
+ */
+export const SEARCHSOCKET_CONFIG = `// Written by SiteOrigin Builder because Site settings choose SearchSocket for Site search. It is yours to change:
+// an export never writes it again while it is here.
+//
+// SearchSocket (https://github.com/gregpriday/searchsocket) indexes this website once it is built:
+//
+//   npm run build
+//   npx searchsocket index
+//
+// The index is kept in Upstash Vector, so indexing reads UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN from
+// the environment it runs in. Keep them out of this file and out of the website: visitors' browsers only ever ask the
+// public search address set in Site settings, served by the SearchSocket deployment that holds the keys. That
+// deployment must let this website's address ask it (api.cors.allowOrigins in its own configuration), and index into
+// the same project and scope it searches: give project.id (and scope) here as that deployment has them.
+//
+// Pages left out of site search in SiteOrigin Builder say so themselves (searchsocket:noindex). Whether search engines
+// may list a page is a separate setting, so robots noindex is not read as one.
+export default {
+\tsource: {
+\t\tmode: 'static-output',
+\t\tstaticOutputDir: 'build'
+\t},
+\textract: {
+\t\trespectRobotsNoindex: false
+\t}
+};
+`;
 
 export async function listFiles(dir: string, base = ''): Promise<string[]> {
   const out: string[] = [];
