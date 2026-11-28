@@ -134,11 +134,27 @@ describe('splitter limits', () => {
 });
 
 describe('toolbar tiers', () => {
-  it('compacts the toolbar at the 1100px minimum on macOS, and shows it all from 1232px', () => {
+  it('compacts the toolbar at the 1100px minimum on macOS, and shows it all from 1312px', () => {
     expect(toolbarTier(1100, true)).toBe('compact');
-    expect(toolbarTier(1231, true)).toBe('compact');
-    expect(toolbarTier(1232, true)).toBe('full');
+    expect(toolbarTier(1311, true)).toBe('compact');
+    expect(toolbarTier(1312, true)).toBe('full');
     expect(toolbarTier(1440, true)).toBe('full');
+  });
+
+  it('shows a live session’s wider toolbar in full only once it fits (#1342)', () => {
+    // A host's live Share pill, with its time, people and waiting counts.
+    expect(toolbarTier(1455, true, 'hosting')).toBe('compact');
+    expect(toolbarTier(1456, true, 'hosting')).toBe('full');
+    // A guest's Notes, session pill and Leave session: a 1440px window gives Leave session its icon, not its words.
+    expect(toolbarTier(1440, true, 'guest')).toBe('compact');
+    expect(toolbarTier(1503, true, 'guest')).toBe('compact');
+    expect(toolbarTier(1504, true, 'guest')).toBe('full');
+    // The compact toolbar has room for either at the minimum window, so the More menu comes no sooner.
+    for (const session of ['hosting', 'guest'] as const) {
+      expect(toolbarTier(1100, true, session)).toBe('compact');
+      expect(toolbarTier(1080, true, session)).toBe('compact');
+      expect(toolbarTier(1079, true, session)).toBe('overflow');
+    }
   });
 
   it('moves controls into the More menu only below the compact toolbar’s room', () => {
@@ -149,8 +165,10 @@ describe('toolbar tiers', () => {
   });
 
   it('gives Windows and Linux the 70px macOS keeps for its window buttons', () => {
-    expect(toolbarTier(1162, false)).toBe('full');
-    expect(toolbarTier(1161, false)).toBe('compact');
+    expect(toolbarTier(1242, false)).toBe('full');
+    expect(toolbarTier(1241, false)).toBe('compact');
+    expect(toolbarTier(1434, false, 'guest')).toBe('full');
+    expect(toolbarTier(1433, false, 'guest')).toBe('compact');
     expect(toolbarTier(1100, false)).toBe('compact');
     expect(toolbarTier(1010, false)).toBe('compact');
     expect(toolbarTier(1009, false)).toBe('overflow');
