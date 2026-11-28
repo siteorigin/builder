@@ -617,6 +617,25 @@ describe('redirects in the project session', () => {
     expect(readFileSync(join(dir, s.savedCopies.find((c) => c.path === HOST_REDIRECTS_FILE)!.file), 'utf8')).toBe(edited);
     await s.close();
   });
+
+  it('names an edited vercel.json once the host is no longer Vercel, for its caching rule as well as its redirects (#1487)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-redirects-'));
+    dirs.push(dir);
+    const s = await ProjectSession.create(dir, createStarterState('business', 'Persist', false));
+    s.settleMs = 0;
+    const ok = async (operations: EditOperation[]) => expect((await s.apply({ operations }, { label: 'Host' })).ok).toBe(true);
+    // No redirect: the file holds the caching rule alone.
+    await ok([{ type: 'site.update', redirectHost: 'vercel' }]);
+    const config = join(dir, VERCEL_CONFIG_FILE);
+    const edited = readFileSync(config, 'utf8').replace('"headers"', '"cleanUrls": true,\n\t"headers"');
+    writeFileSync(config, edited);
+    await ok([{ type: 'site.update', redirectHost: 'netlify' }]);
+    expect(readFileSync(config, 'utf8')).toBe(edited);
+    const conflict = s.conflicts.find((c) => c.path === VERCEL_CONFIG_FILE)!;
+    expect(conflict).toMatchObject({ kind: 'generated', builderMissing: true });
+    expect(conflict.reason).toMatch(/^This vercel\.json was edited outside SiteOrigin Builder, and the website is no longer published on Vercel/);
+    await s.close();
+  });
 });
 
 describe('vercel.json in an exported website', () => {

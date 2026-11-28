@@ -634,7 +634,12 @@ function packFontFaceCss(state: ProjectState): string {
 }
 
 /** The text styles whose fonts a page shows first, in the order their faces are preloaded: body text, the main heading. */
-const PRELOAD_TEXT_STYLES = ['text.body', 'text.h1'];
+/**
+ * What a page shows first, in the order its faces are preloaded: body text, which takes its family from the body font
+ * itself (the theme's `body` rule) at the normal weight, then the hero's display heading and the main heading, each
+ * from its text style.
+ */
+const PRELOAD_ROLES: Array<{ font: string; weight: number } | { text: string }> = [{ font: 'font.body', weight: 400 }, { text: 'text.display' }, { text: 'text.h1' }];
 /** The range of a face that covers basic Latin, the space among it: a page showing the family loads that file whatever its language. */
 const BASIC_LATIN_RANGE = /(^|,)\s*U\+0000-00FF\s*(,|$)/i;
 
@@ -646,30 +651,37 @@ function faceDraws(face: { weight: string }, weight: number): boolean {
 
 /**
  * The project files of the theme font faces every page loads first (#1487), which the server hook asks the browser
- * to fetch from <head> rather than once the stylesheet that names them has arrived. For body text and then the main
- * heading: the upright .woff2 face of the family its stack leads with that covers basic Latin and the style's weight.
- * None for a style that leads with a system font, one of the project's own fonts, or a family the site's text could
- * also take from a project font of the same name; each file once.
+ * to fetch from <head> rather than once the stylesheet that names them has arrived. For each of PRELOAD_ROLES: the
+ * upright .woff2 face covering basic Latin of the family its stack leads with, the one drawing its weight where the
+ * family has several (otherwise the browser draws the nearest weight from the one it has). None for a role that
+ * leads with a system font, or with a family a project font of the same name may stand in for; each file once.
  */
 export function preloadFontFiles(state: ProjectState): string[] {
   const fonts = usedFonts(state);
   if (!fonts.length) return [];
   const tokens = effectiveTokens(state);
   const theme = getTheme(state.site.themeId);
+  // CSS reads family names without regard to case, as the font token's validation does (resolveFontStack).
   const key = (family: string) => family.replace(/\s+/g, ' ').toLowerCase();
-  // The project's own fonts are read only for a style that leads with a theme font, so most edits to the media
+  // The project's own fonts are read only for a role that leads with a theme font, so most edits to the media
   // library leave the server hook as it is.
   let own: Set<string> | undefined;
   const files = new Set<string>();
-  for (const id of PRELOAD_TEXT_STYLES) {
-    const metrics = textMetrics(tokens, id, theme.tokens.find((t) => t.id === id)?.value);
-    if (!metrics) continue;
-    const link = linkOf(metrics.family);
-    const stack = link ? followedText(tokens, link) : typeof metrics.family === 'string' ? metrics.family : '';
+  for (const role of PRELOAD_ROLES) {
+    let stack: string;
+    let weight: number;
+    if ('font' in role) [stack, weight] = [followedText(tokens, role.font), role.weight];
+    else {
+      const metrics = textMetrics(tokens, role.text, theme.tokens.find((t) => t.id === role.text)?.value);
+      if (!metrics) continue;
+      const link = linkOf(metrics.family);
+      [stack, weight] = [link ? followedText(tokens, link) : typeof metrics.family === 'string' ? metrics.family : '', metrics.weight];
+    }
     const lead = fontFamilies(stack)[0];
     const font = lead && fonts.find((f) => key(f.family) === key(lead));
     if (!font || (own ??= new Set(projectFontFamilies(state).map((f) => key(f.family)))).has(key(lead))) continue;
-    const face = font.faces.find((f) => f.style === 'normal' && f.file.endsWith('.woff2') && (!f.unicodeRange || BASIC_LATIN_RANGE.test(f.unicodeRange)) && faceDraws(f, metrics.weight));
+    const latin = font.faces.filter((f) => f.style === 'normal' && f.file.endsWith('.woff2') && (!f.unicodeRange || BASIC_LATIN_RANGE.test(f.unicodeRange)));
+    const face = latin.find((f) => faceDraws(f, weight)) ?? (latin.length === 1 ? latin[0] : undefined);
     if (face) files.add(`${FONTS_DIR}/${face.file.slice('fonts/'.length)}`);
   }
   return [...files];
@@ -5350,7 +5362,7 @@ const SECTIONS = ${js(notFoundSections(state))};
   const fonts = preloadFontFiles(state);
   const preload = fonts.length
     ? `
-/** The theme font faces every page shows first (body text, the main heading), as project files. */
+/** The theme font faces every page shows first (body text, headings), as project files. */
 const FONTS = new Set(${js(fonts)});
 
 /** What each page's <head> asks the browser for early: SvelteKit's scripts and styles, and the fonts above. */

@@ -109,6 +109,8 @@ const OBSOLETE_FEED_REASON = 'This RSS feed was edited outside SiteOrigin Builde
 const routesVisitors = (path: string) => path === HOST_REDIRECTS_FILE || path === VERCEL_CONFIG_FILE;
 const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside SiteOrigin Builder, and the website no longer has any, so its host would still follow them, even past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 /** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
+/** vercel.json, once the site's host is no longer Vercel: it holds Vercel's caching rule as well as any redirects. */
+const OBSOLETE_VERCEL_REASON = 'This vercel.json was edited outside SiteOrigin Builder, and the website is no longer published on Vercel, so Vercel would still follow its rules if the site went back there, even its redirects past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
@@ -3273,7 +3275,7 @@ export class ProjectSession extends EventEmitter {
         // or moved away.
         nextFiles[path] = prev[path] ?? inflight[path];
         // So would redirect rules a host follows, even past a page given one of their addresses since.
-        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
+        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : path === VERCEL_CONFIG_FILE ? OBSOLETE_VERCEL_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);

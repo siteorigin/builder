@@ -1589,19 +1589,19 @@ const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string; 
     notFound: 'Cloudflare Pages, Netlify and Vercel use it automatically',
     redirects:
       'The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.',
-    caching: 'Cloudflare Pages reads `_headers` from the root of the folder you publish, as it does `_redirects`.'
+    caching: 'Cloudflare Pages reads `_headers` only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its paths already include the sub-folder).'
   },
   netlify: {
     notFound: 'Netlify uses it automatically',
     redirects:
       'The rules are in `static/_redirects`, written for Netlify, each forced (`301!`) so that it applies ahead of the old address’s own page. The build copies the file to `build/_redirects`. Netlify reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Cloudflare Pages or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.',
-    caching: 'Netlify reads `_headers` from the root of the folder you publish, as it does `_redirects`.'
+    caching: 'Netlify reads `_headers` only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its paths already include the sub-folder).'
   },
   vercel: {
     notFound: 'Vercel uses it automatically',
     redirects:
       'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there; set the Vercel project’s Output Directory to `build`. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.',
-    caching: 'For Vercel, the same rule is in the `headers` of `vercel.json`, which goes where the redirect rules above say.'
+    caching: 'For Vercel, the same rule is in the `headers` of `vercel.json`, beside `package.json`, whether or not the site keeps old addresses. Vercel reads that file from the root of what you deploy: when Vercel builds this project, it is already there; when you deploy `build/` by itself, copy `vercel.json` into `build/` after each build (`npm run build` does not); if the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its paths already include the sub-folder).'
   }
 };
 
@@ -1643,7 +1643,7 @@ ${README_HOSTS[host].redirects}
 
 ### Caching
 
-The build names each file in \`build/_app/immutable/\` (the site's scripts, styles and fonts) by its contents, so a file that changes gets a new address. \`static/_headers\` (\`build/_headers\` after a build) tells Cloudflare Pages and Netlify that browsers may keep those files for a year (\`Cache-Control: ${IMMUTABLE_CACHE_CONTROL}\`). ${README_HOSTS[host].caching} Other hosts read neither file: give \`_app/immutable/\` (with the sub-folder in front when the site is in one) that header in the host's own settings. Every other file keeps the host's own caching, since its address stays the same when it changes.
+The build names each file in \`build/_app/immutable/\` (the site's scripts, styles and fonts) by its contents, so a file that changes gets a new address. \`static/_headers\` (\`build/_headers\` after a build) tells Cloudflare Pages and Netlify that browsers may use those files for a year without asking for them again (\`Cache-Control: ${IMMUTABLE_CACHE_CONTROL}\`). ${README_HOSTS[host].caching} Other hosts read neither file: give \`_app/immutable/\` (with the sub-folder in front when the site is in one) that header in the host's own settings. Every other file keeps the host's own caching, since its address stays the same when it changes.
 
 ## Project layout
 

@@ -1,12 +1,13 @@
 /**
- * Issue 1487: every page of the website asks for the theme fonts it shows first (body text, the main heading) from
+ * Issue 1487: every page of the website asks for the theme fonts it shows first (body text, headings) from
  * its <head>, through SvelteKit's `preload` option in the generated server hook, rather than once the stylesheet that
  * names them has arrived.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { Operation, ProjectState } from '@shared/types';
+import type { ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { getTheme } from '@catalogue/index';
@@ -15,10 +16,11 @@ import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
-const run = (s: ProjectState, ...ops: Operation[]) => applyOperations(s, ops).state;
+const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const stack = (name: string) => getTheme('foundation').fonts.find((f) => f.name === name)!.stack;
 const INTER = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
 const FRAUNCES = `${FONTS_DIR}/fraunces-latin-wght-normal.woff2`;
+const PLAYFAIR = `${FONTS_DIR}/playfair-display-latin-wght-normal.woff2`;
 
 const roots: string[] = [];
 afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -71,7 +73,7 @@ describe('font preloads', () => {
 
   it('are asked for on pages in another language too, which keep their own <html lang>', async () => {
     const start = fresh();
-    const s = run(start, { type: 'page.update', pageId: start.site.pageOrder[1], language: 'fr' } as Operation);
+    const s = run(start, { type: 'page.update', pageId: start.site.pageOrder[1], language: 'fr' } as EditOperation);
     const hook = generateServerHook(s);
     // The route SvelteKit gives the page in French, as the hook lists it.
     const french = Object.keys(JSON.parse(hook.match(/const LANGUAGES = (\{[^;]*\});/)![1]))[0];
@@ -88,24 +90,33 @@ describe('font preloads', () => {
   });
 
   it('name one file when body text and headings share a family', () => {
-    const s = run(fresh(), { type: 'token.set', tokenId: 'font.display', value: stack('Inter') } as Operation);
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.display', value: stack('Inter') } as EditOperation);
     expect(preloadFontFiles(s)).toEqual([INTER]);
   });
 
-  it('follow the fonts the author chose', () => {
-    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: stack('Lora') } as Operation, { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display' } } as Operation);
-    expect(preloadFontFiles(s)).toEqual([`${FONTS_DIR}/lora-latin-wght-normal.woff2`, `${FONTS_DIR}/playfair-display-latin-wght-normal.woff2`]);
+  it('follow the fonts the author chose: the body font, then the display heading’s and the main heading’s', () => {
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: stack('Lora') } as EditOperation, { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display' } } as EditOperation);
+    expect(preloadFontFiles(s)).toEqual([`${FONTS_DIR}/lora-latin-wght-normal.woff2`, FRAUNCES, PLAYFAIR]);
+    // A hero's heading is a display heading: its font counts even when the main heading's is another.
+    const hero = run(fresh(), { type: 'token.set', tokenId: 'text.display', value: { family: 'Playfair Display' } } as EditOperation);
+    expect(preloadFontFiles(hero)).toEqual([INTER, PLAYFAIR, FRAUNCES]);
+  });
+
+  it('take body text’s family from the body font, which the page’s body is set in', () => {
+    // The body text style's own family dresses only what names it, not the page.
+    const s = run(fresh(), { type: 'token.set', tokenId: 'text.body', value: { family: 'Lora' } } as EditOperation);
+    expect(preloadFontFiles(s)).toEqual([INTER, FRAUNCES]);
   });
 
   it('skip a style that leads with a system font, even with a theme font behind it', () => {
-    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: "system-ui, 'Inter Variable', sans-serif" } as Operation);
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: "system-ui, 'Inter Variable', sans-serif" } as EditOperation);
     expect(preloadFontFiles(s)).toEqual([FRAUNCES]);
   });
 
-  it('skip a face that does not draw the style’s weight', () => {
-    // Playfair Display's file draws 400 to 900: a lighter heading takes a face the browser makes up.
-    const s = run(fresh(), { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display', weight: 300 } } as Operation);
-    expect(preloadFontFiles(s)).toEqual([INTER]);
+  it('take a family’s one upright face for a weight it does not draw, which the browser draws from the nearest', () => {
+    // Playfair Display's one file draws 400 to 900: a lighter heading is drawn from it at 400.
+    const s = run(fresh(), { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display', weight: 300 } } as EditOperation);
+    expect(preloadFontFiles(s)).toEqual([INTER, FRAUNCES, PLAYFAIR]);
   });
 
   it('skip a family the project’s own font files may stand in for', () => {
@@ -115,7 +126,7 @@ describe('font preloads', () => {
   });
 
   it('leave the server hook as it was while the site shows only system fonts', async () => {
-    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: 'system-ui, sans-serif' } as Operation, { type: 'token.set', tokenId: 'font.display', value: 'Georgia, serif' } as Operation);
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: 'system-ui, sans-serif' } as EditOperation, { type: 'token.set', tokenId: 'font.display', value: 'Georgia, serif' } as EditOperation);
     expect(preloadFontFiles(s)).toEqual([]);
     const hook = generateServerHook(s);
     expect(hook).not.toContain('preload');
