@@ -3,7 +3,7 @@
  * file it read, as it read it, while the project still holds it as its own.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -214,7 +214,8 @@ describe('saveCodeFile', () => {
     expect(readFileSync(join(dir, 'src/lib/util.js'), 'utf8')).toBe('theirs\n');
     // Another file put in its place meanwhile, holding the very same bytes: it is not the file that was read.
     const same = sha(Buffer.from('theirs\n'));
-    const swapped = await saveCodeFile(dir, 'src/lib/util.js', 'mine\n', same, opts({ fence: async (write) => (rmSync(join(dir, 'src/lib/util.js')), writeFileSync(join(dir, 'src/lib/util.js'), 'theirs\n'), await write(), true) }));
+    // The one read is moved aside, not deleted, so the new file can never be given its number on the disk.
+    const swapped = await saveCodeFile(dir, 'src/lib/util.js', 'mine\n', same, opts({ fence: async (write) => (renameSync(join(dir, 'src/lib/util.js'), join(dir, 'src/lib/util.was.js')), writeFileSync(join(dir, 'src/lib/util.js'), 'theirs\n'), await write(), true) }));
     expect(swapped).toMatchObject({ ok: false, reason: 'changed' });
     expect(readFileSync(join(dir, 'src/lib/util.js'), 'utf8')).toBe('theirs\n');
     // The app started writing the path meanwhile (a page took that route).
