@@ -5,7 +5,7 @@
  * around: they are chosen and described in a dialog, never typed into.
  */
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
-import { isImageBlock, isListBlock, isRichBlock, linkToTarget } from '@shared/richtext';
+import { isImageBlock, isListBlock, isRichBlock, linkQuery, linkToTarget } from '@shared/richtext';
 import { linkRels, relsFromAttribute } from '@shared/link-rel';
 import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
 import { collectionIndexRoutes } from '@shared/archives';
@@ -301,15 +301,19 @@ function pastedLinks(state: ProjectState): ArticleRead {
       const kept = links.link(href, newTab, rel);
       if (kept) return kept;
       const t = href.trim();
-      if (!t.startsWith('/') || t.startsWith('//') || /[?#]/.test(t)) return null;
-      let path = t;
+      if (!t.startsWith('/') || t.startsWith('//') || t.includes('#')) return null;
+      const at = t.indexOf('?');
+      let path = at < 0 ? t : t.slice(0, at);
       try {
-        path = decodeURI(t);
+        path = decodeURI(path);
       } catch {
         // Kept as written.
       }
       const found = siteRoutes().get(path.endsWith('/') ? path : `${path}/`);
-      return found ? { ...found, ...(newTab ? { newTab: true } : {}) } : null;
+      const query = at < 0 ? '' : linkQuery(t.slice(at));
+      // Only a link to a post keeps a query.
+      if (!found || (query && found.type !== 'entry')) return null;
+      return { ...found, ...(query ? { query } : {}), ...(newTab ? { newTab: true } : {}) };
     }
   };
 }

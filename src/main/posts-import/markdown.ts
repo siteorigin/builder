@@ -197,7 +197,7 @@ export function readFrontmatter(text: string): Frontmatter {
 // ---------------------------------------------------------------------------
 
 /** A link destination as Markdown means it: its character references read once, as CommonMark reads them. */
-const destination = (s: string) => decodeEntities(s, true);
+const destination = (s: string) => decodeEntities(s.replace(/\\([!-/:-@[-`{-~])/g, '$1'), true);
 
 const escapeHtml = (s: string) => s.replace(/&(?!#?[A-Za-z0-9]{1,32};)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

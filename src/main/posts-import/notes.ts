@@ -45,13 +45,19 @@ const shownHref = (href: string) => (href.length > 200 ? `${href.slice(0, 200)}�
 
 /** The links of one post that lose part of their address, each named once as the post wrote it. */
 export function linkNotes() {
-  const found = new Set<string>();
-  const add = (href: string, what: string) => void found.add(`The link “${shownHref(href)}” ${what}`);
+  // By the whole address, so two that read alike once shortened stay two.
+  const found = new Map<string, Set<string>>();
   return {
-    add,
+    add(href: string, what: string): void {
+      let said = found.get(href);
+      if (!said) found.set(href, (said = new Set()));
+      said.add(what);
+    },
     list(): string[] {
+      const out = [...found].slice(0, NAMED_LINKS).flatMap(([href, said]) => [...said].map((what) => `The link “${shownHref(href)}” ${what}`));
       const rest = found.size - NAMED_LINKS;
-      return rest > 0 ? [...[...found].slice(0, NAMED_LINKS), `${rest} more ${rest === 1 ? 'link' : 'links'} also lost part of ${rest === 1 ? 'its' : 'their'} address.`] : [...found];
+      if (rest > 0) out.push(`${rest} more ${rest === 1 ? 'link also needs' : 'links also need'} checking.`);
+      return out;
     }
   };
 }

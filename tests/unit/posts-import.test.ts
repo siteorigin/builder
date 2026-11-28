@@ -15,6 +15,7 @@ import { normalizeLink, normalizeRichText } from '@engine/values';
 import { linkToTarget, richTextToMarkdown } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { siteHref } from '../../src/generator/llms';
+import { pageIds } from '../../src/generator/checks';
 import { articleLinks } from '../../src/renderer/src/lib/article-links';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
@@ -1296,7 +1297,7 @@ describe('what a link between imported posts says after its file (#1545)', () =>
   it('keeps a query on the entry’s new address, and names a section it cannot carry', async () => {
     const source = await readMarkdownFolder(
       mdFolder({
-        'first.md': dated('First', '[plain](./intake.md) [briefing](./intake.md?mode=briefing) [steps](./intake.md#next-steps)'),
+        'first.md': dated('First', '[plain](./intake.md) [briefing](./intake.md?mode=briefing) [steps](./intake.md?step=1#next-steps)'),
         'intake.md': dated('Intake', '## Next steps\n\nText.')
       }),
       {}
@@ -1305,9 +1306,9 @@ describe('what a link between imported posts says after its file (#1545)', () =>
     const entries = Object.values(after.collections.posts.entries);
     const first = entries.find((e) => e.title === 'First')!;
     const hrefs = spans(first.body).map((s) => resolveLink(s.link, { state: after } as Parameters<typeof resolveLink>[1])?.href);
-    expect(hrefs).toEqual(['/blog/intake/', '/blog/intake/?mode=briefing', '/blog/intake/']);
+    expect(hrefs).toEqual(['/blog/intake/', '/blog/intake/?mode=briefing', '/blog/intake/?step=1']);
     const notes = plan.posts.find((p) => p.title === 'First')!.notes;
-    expect(notes.filter((n) => n.includes('./intake.md#next-steps'))).toHaveLength(1);
+    expect(notes.filter((n) => n.includes('./intake.md?step=1#next-steps'))).toHaveLength(1);
     expect(notes.some((n) => n.includes('mode=briefing'))).toBe(false);
   });
 
@@ -1338,17 +1339,31 @@ describe('what a link between imported posts says after its file (#1545)', () =>
     expect(notes).toContain('Kept the words of a link whose address could not be kept.');
   });
 
-  it('names no more than twenty links of one post, and counts the rest', async () => {
-    const body = Array.from({ length: 23 }, (_, i) => `[l](./intake.md#s${i})`).join(' ');
+  it('says nothing of a section the page has, or of a mark the Markdown escapes', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const section = [...pageIds(s, about.id)].at(-1)!;
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', `[there](/about/#${section}) [both](./intake.md?a=1\\&b=2)`), 'intake.md': dated('Intake', 'Text.') }), pages(s));
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'page', target: about.id, anchor: section },
+      { type: 'entry', target: 'post:md:intake.md', query: '?a=1&b=2' }
+    ]);
+    expect(commit(s, source).plan.posts[0].notes).toEqual([]);
+  });
+
+  it('names no more than twenty links of one post, shortened, and counts the rest', async () => {
+    const long = 'x'.repeat(300);
+    const body = Array.from({ length: 23 }, (_, i) => `[l](./intake.md?${long}#s${i})`).join(' ');
     const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', body), 'intake.md': dated('Intake', 'Text.') }), {});
     expect(source.posts[0].notes).toHaveLength(21);
-    expect(source.posts[0].notes[20]).toBe('3 more links also lost part of their address.');
+    expect(source.posts[0].notes[0]).toContain(`“${`./intake.md?${long}`.slice(0, 200)}…”`);
+    expect(source.posts[0].notes[20]).toBe('3 more links also need checking.');
   });
 
   it('keeps a WordPress link’s query, less the ID that found the post', async () => {
     const source = await readWordPress(
       wxr([
-        item(10, { title: 'First', link: 'https://old.example/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<a href="/second/?a=1&amp;a=%23&amp;b=">pretty</a> <a href="/?p=11&amp;utm_source=mail">by id</a> <a href="/?page_id=11">selector only</a> <a href="/second/#more">section</a> <a href="https://elsewhere.example/?p=11#x">out</a>'),
+        item(10, { title: 'First', link: 'https://old.example/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<a href="/second/?a=1&amp;a=%23&amp;b=">pretty</a> <a href="/?p=11&amp;utm_source=mail">by id</a> <a href="/?page_id=11">selector only</a> <a href="/?page_id=11&amp;view=compact&amp;?page_id=keep">page selector</a> <a href="/second/#more">section</a> <a href="https://elsewhere.example/?p=11#x">out</a>'),
         item(11, { title: 'Second', link: 'https://old.example/second/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' })
       ]),
       {}
@@ -1357,6 +1372,7 @@ describe('what a link between imported posts says after its file (#1545)', () =>
       { type: 'entry', target: 'post:wp:11', query: '?a=1&a=%23&b=' },
       { type: 'entry', target: 'post:wp:11', query: '?utm_source=mail' },
       { type: 'entry', target: 'post:wp:11' },
+      { type: 'entry', target: 'post:wp:11', query: '?view=compact&?page_id=keep' },
       { type: 'entry', target: 'post:wp:11' },
       { type: 'url', target: 'https://elsewhere.example/?p=11#x' }
     ]);
@@ -1380,6 +1396,7 @@ describe('what a link between imported posts says after its file (#1545)', () =>
     expect(() => normalizeRichText(`[b](entry:${intake.id}?x#y)`, after, 'Body', undefined, { entries: true })).toThrow(/does not exist/);
 
     expect(siteHref(after, '/', `/blog/café/${link.query}`)).toBe(`./blog/caf%C3%A9/${link.query}`);
+    expect(siteHref({ ...after, site: { ...after.site, baseUrl: 'https://example.com' } }, '/', `/blog/café/${link.query}`)).toBe(`https://example.com/blog/caf%C3%A9/${link.query}`);
 
     const replaced = (replacement: object) =>
       spans(applyOperations(after, [{ type: 'entry.remove', collectionId: 'posts', entryId: intake.id, ...replacement } as EditOperation]).state.collections.posts.entries[first.id].body)[0].link;

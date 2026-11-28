@@ -223,7 +223,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
       const section = url.hash.length > 1 ? url.hash : '';
       // The ID has done its work once the post is found; the rest of the query goes on to its new address.
-      const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(pair).has(selector)).join('&')}`;
+      const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(`&${pair}`).has(selector)).join('&')}`;
       if (post) return postLink(post, t, query, section, newTab, links);
       // A page of the project at the same address, its section kept; never for an address that names something by ID
       // (`/?p=88`), which is something other than the page at its path.

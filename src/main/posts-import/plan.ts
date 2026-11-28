@@ -344,7 +344,7 @@ function sectionCheck(state: ProjectState): SectionCheck {
     if (link.type === 'anchor') notes.add(`#${link.target}`, 'was kept, but an imported post’s text has no section with that ID: check where it goes.');
     if (link.type !== 'page' || !link.anchor || !Object.hasOwn(state.pages, link.target)) return;
     let found = ids.get(link.target);
-    if (!found) ids.set(link.target, (found = pageIds(state, link.target, undefined, true)));
+    if (!found) ids.set(link.target, (found = pageIds(state, link.target)));
     if (!found.has(link.anchor)) notes.add(`${state.pages[link.target].route}#${link.anchor}`, 'was kept, but that page has no section with that ID: check where it goes.');
   };
 }
