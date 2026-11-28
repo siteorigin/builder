@@ -1237,27 +1237,25 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
   const { collectionId, name, settings, designed } = props;
   const now = storedBrowse(settings) ?? {};
   const { filters, sorts } = browseChoices(settings);
-  // Each change replaces the whole setting, so one made before the last has landed builds on the last one sent, never
-  // on the project as it was: two quick clicks keep both. Once the project shows a change, it is what changes build on.
-  const sent = useRef<{ base: string; browse: CollectionBrowse } | null>(null);
-  const shownKey = JSON.stringify(now);
-  if (sent.current && sent.current.base !== shownKey) sent.current = null;
+  // Each change replaces the whole setting, so it is made from the setting the project shows, one at a time: while a
+  // change is on its way, until the project shows the revision it made (or it is refused), a click changes nothing.
+  const revision = useStore((st) => st.snapshot?.revision ?? 0);
+  const [sending, setSending] = useState<{ revision?: number } | null>(null);
+  const busy = !!sending && (sending.revision === undefined || revision < sending.revision);
   const commit = (change: (was: CollectionBrowse) => CollectionBrowse, label: string) => {
-    const was = sent.current?.browse ?? now;
-    const stored = storedBrowse({ ...settings, browse: change(was) });
-    sent.current = { base: shownKey, browse: stored ?? {} };
-    return commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label).then((r) => {
-      if (!r?.ok) sent.current = null;
-      return r;
-    });
+    if (busy) return;
+    const stored = storedBrowse({ ...settings, browse: change(now) });
+    if (JSON.stringify(stored ?? {}) === JSON.stringify(now)) return;
+    setSending({});
+    void commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label).then((r) => setSending(r?.ok ? { revision: r.revision } : null));
   };
   // Each list keeps the order the fields are offered in.
   const toggle = (list: 'filters' | 'sort', offered: Array<{ key: string }>, key: string, on: boolean, label: string) =>
-    void commit((was) => ({ ...was, [list]: offered.map((c) => c.key).filter((k) => (k === key ? on : (was[list] ?? []).includes(k))) }), label);
+    commit((was) => ({ ...was, [list]: offered.map((c) => c.key).filter((k) => (k === key ? on : (was[list] ?? []).includes(k))) }), label);
   // At the most a list takes, the fields not chosen wait until one is unticked.
   const full = (list: 'filters' | 'sort', key: string) => (now[list] ?? []).length >= MAX_BROWSE_KEYS && !(now[list] ?? []).includes(key);
   return (
-    <fieldset className="pages-collection-browse" disabled={designed}>
+    <fieldset className="pages-collection-browse" disabled={designed} aria-busy={busy || undefined}>
       <legend>Visitor browsing</legend>
       <p className="pages-collection-note">{designed ? 'Works with the ready-made cards, so it is off while the index has its own design.' : 'On the first page of the index, working on every published entry.'}</p>
       <SwitchRow
@@ -1265,7 +1263,7 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
         disabled={designed}
         label="Search"
         hint="Visitors search the entries’ titles, excerpts and categories, and the options they can filter by."
-        onChange={(on) => void commit((was) => ({ ...was, search: on }), on ? `Let visitors search the ${name} index` : `Stop letting visitors search the ${name} index`)}
+        onChange={(on) => commit((was) => ({ ...was, search: on }), on ? `Let visitors search the ${name} index` : `Stop letting visitors search the ${name} index`)}
       />
       <fieldset className="pages-collection-checks">
         <legend>Filters</legend>
