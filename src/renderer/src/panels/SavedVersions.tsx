@@ -8,7 +8,7 @@ import { Spinner } from '../components/ui';
 import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
 import { settleEdits } from '../lib/leave';
 import { formatBytes, plural } from '../lib/storage';
-import { describeReview, fileName, othersOnly, restoredNotice, savedAt } from '../lib/versions';
+import { describeReview, fileName, othersOnly, restoredNotice, savedAt, twinsOf } from '../lib/versions';
 import { fullWhen, lowerDay } from '../lib/when';
 
 /** The longest version name the project accepts (src/main/project/versions.ts). */
@@ -51,6 +51,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   const runStatus = useStore((s) => s.runStatus);
   const info = snap?.versions;
   const list = info?.list ?? [];
+  const twins = twinsOf(list);
   const [name, setName] = useState('');
   const [busy, setBusyState] = useState(false);
   const setBusy = (b: boolean) => (setBusyState(b), onBusy(b));
@@ -325,6 +326,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
           <p className="muted version-review-when" title={fullWhen(open.version.time)}>
             {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically, ' : 'Saved '}
             {lowerDay(savedAt(open.version.time))}
+            {twins.get(open.version.id) && ` (${twins.get(open.version.id)!.precise}, ${twins.get(open.version.id)!.place})`}
           </p>
           {note}
           {!r ? (
@@ -392,6 +394,9 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
               <ol ref={listRef} className="history-list versions-list" aria-label="Saved versions">
                 {list.map((v) => {
                   const editing = renaming?.id === v.id;
+                  const twin = twins.get(v.id);
+                  // Versions sharing a name get the second and their place among them, in the row and in every action's name.
+                  const who = twin ? `“${v.name}” (saved ${twin.precise}, ${twin.place})` : `“${v.name}”`;
                   return (
                     <li key={v.id} data-version={v.id} className={editing ? 'renaming' : undefined}>
                       {v.auto ? <ArchiveRestore aria-label={v.restored ? 'Saved automatically after a restore' : 'Saved automatically'} /> : <Bookmark aria-label="Saved by you" />}
@@ -399,7 +404,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                         {editing ? (
                           <input
                             className="input version-rename"
-                            aria-label={`New name for “${v.name}”`}
+                            aria-label={`New name for ${who}`}
                             autoFocus
                             maxLength={NAME_MAX}
                             value={renaming.name}
@@ -430,12 +435,14 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                         )}
                         <small title={fullWhen(v.time)}>
                           {v.auto ? 'Saved automatically · ' : ''}
-                          {savedAt(v.time)} · {plural(v.pages, 'page', 'pages')}
+                          {savedAt(v.time)}
+                          {twin ? ` (${twin.precise})` : ''} · {plural(v.pages, 'page', 'pages')}
+                          {twin ? ` · ${twin.place}` : ''}
                           {v.missing.length ? ` · ${plural(v.missing.length, 'file', 'files')} missing` : ''}
                         </small>
                       </span>
                       {/* While restoring is held, what the button opens is a review: it says so. */}
-                      <button className="btn btn-sm" data-row-action="restore" aria-label={`${blocked ? 'Review' : 'Restore'} “${v.name}”…`} onClick={() => void review(v)} disabled={busy}>
+                      <button className="btn btn-sm" data-row-action="restore" aria-label={`${blocked ? 'Review' : 'Restore'} ${who}…`} onClick={() => void review(v)} disabled={busy}>
                         {blocked ? 'Review…' : 'Restore…'}
                       </button>
                       <span className="version-tools">
@@ -455,7 +462,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                           <button
                             className="icon-btn"
                             data-row-action="rename"
-                            aria-label={`Rename “${v.name}”`}
+                            aria-label={`Rename ${who}`}
                             title={listBlocked ? `Can’t rename: ${listBlocked}` : 'Rename'}
                             aria-disabled={!!listBlocked || undefined}
                             onClick={() => !listBlocked && !busy && ((renameSettled.current = false), setError(null), setRenaming({ id: v.id, name: v.name }))}
@@ -466,7 +473,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                         )}
                         <button
                           className="icon-btn"
-                          aria-label={`Delete “${v.name}”`}
+                          aria-label={`Delete ${who}`}
                           title={listBlocked ? `Can’t delete: ${listBlocked}` : 'Delete'}
                           aria-disabled={!!listBlocked || undefined}
                           onClick={() => !listBlocked && void remove(v)}
