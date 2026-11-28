@@ -190,7 +190,7 @@ await win.waitForSelector('.welcome');
     { id: '1a2b3c4d5e6f7082', path: 'siteorigin/site.json', kind: 'canonical', side: 'builder', savedAt: Date.now() - 34 * day, file: '.siteorigin/recovery/older-2.json' },
     { id: '2a3b4c5d6e7f8093', path: 'siteorigin/components/custom.testimonial-quote/component.json', kind: 'canonical', side: 'attempted', removed: true, savedAt: Date.now() - 36 * day, file: '.siteorigin/recovery/older-3.json' }
   ];
-  writeFileSync(join(dir, older[0].file), '<script>\n\timport Hero from "$lib/siteorigin/generated/hero.svelte";\n</script>\n\n<Hero heading="Our services" />\n<!-- tweaked by hand -->\n');
+  writeFileSync(join(dir, older[0].file), '<script>\n\timport Hero from "#lib/siteorigin/generated/hero.svelte";\n</script>\n\n<Hero heading="Our services" />\n<!-- tweaked by hand -->\n');
   writeFileSync(join(dir, older[1].file), JSON.stringify({ name: 'Harbour Lane Studio', language: 'en' }, null, 2));
   writeFileSync(local('recovery', 'copies.json'), JSON.stringify({ copies: older }));
 }

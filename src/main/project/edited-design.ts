@@ -36,14 +36,16 @@ export async function relocateSource(source: string, from: string, to: string, r
   const toDir = posix.dirname(to);
   /** The reference as it reads from the new folder, or null when it reads the same there (or is not module-relative). */
   const moved = (spec: string): string | null => {
-    // A query or fragment (`?url`, `#icon`) stays as it was written after the path.
-    const cut = spec.search(/[?#]/);
+    // A query or fragment (`?url`, `#icon`) stays as it was written after the path; the `#` of `#lib/` is no fragment.
+    const lib = spec.startsWith('#lib/');
+    const at = spec.slice(lib ? 5 : 0).search(/[?#]/);
+    const cut = at < 0 ? -1 : at + (lib ? 5 : 0);
     const path = cut < 0 ? spec : spec.slice(0, cut);
     const suffix = cut < 0 ? '' : spec.slice(cut);
     // Named from the library: it reads the same from anywhere, but a file written only now and then is still the one it copies.
-    if (spec.startsWith('$lib/')) {
+    if (lib) {
       const to = redirect?.(posix.normalize(`src/lib/${path.slice(5)}`));
-      return to?.startsWith('src/lib/') ? `$lib/${to.slice(8)}${suffix}` : null;
+      return to?.startsWith('src/lib/') ? `#lib/${to.slice(8)}${suffix}` : null;
     }
     if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
     const was = posix.join(fromDir, path);

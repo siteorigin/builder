@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createStarterState } from '../../src/catalogue/starters';
 import { hidePaths, stripTerminal } from '../../src/main/build-failure';
 import { explainBuildFailure } from '../../src/main/export';
+import { serializeBuildError } from '../../src/runtime/build-diagnostics';
 
 const state = () => createStarterState('business', 'Studio', false);
 const ctx = { appVersion: '1.2.3', platform: 'darwin arm64', roots: [{ path: '/var/folders/ab/T/export-1/project', label: '<project>' }, { path: '/var/folders/ab/T/export-1', label: '<temp>' }, { path: '/Users/ada', label: '~' }] };
@@ -119,6 +120,22 @@ describe('explaining a failed production build', () => {
     // What the author cannot act on is not among the first lines, but the report keeps it.
     expect(r.details).toContain('To suppress or handle this error');
     expect(explainBuildFailure(s, { error: 'x', failure: { message: 'x', cause: { message: 'boom', id: '<project>/src/lib/siteorigin/custom/OpeningHours.svelte' } }, logs: [] }, ctx).message).toBe('The production build failed in the “Opening hours” component (src/lib/siteorigin/custom/OpeningHours.svelte).');
+  });
+
+  it('gives a SvelteKit error’s explanation with its code, not the code alone (#1479)', () => {
+    const removed = 'module_removed_lib\n`$lib` has been removed. Use `#lib` instead: https://svelte.dev/docs/kit/$lib.\nhttps://svelte.dev/e/kit/module_removed_lib';
+    const r = explainBuildFailure(state(), { error: 'x', failure: { name: 'SvelteKit error', message: removed, stack: '' }, logs: [] }, ctx);
+    expect(r.warnings[0]).toBe('SvelteKit error: module_removed_lib: `$lib` has been removed. Use `#lib` instead: https://svelte.dev/docs/kit/$lib.');
+    // As a real build reports it: Kit's error gathered under the bundler's own, the component it came from named.
+    const s = state();
+    s.components.cmp_hours = { schemaVersion: 1, id: 'cmp_hours', componentId: 'custom.hours', contractVersion: 1, kind: 'code', owner: 'project', name: 'Opening hours', description: '', category: 'content', tags: [], properties: {}, parts: {}, sourcePath: 'src/lib/siteorigin/custom/OpeningHours.svelte' } as never;
+    const inner = Object.assign(new Error(removed), { name: 'SvelteKit error', id: '/var/folders/ab/T/export-1/project/src/lib/siteorigin/custom/OpeningHours.svelte' });
+    const wrapped = explainBuildFailure(s, { error: 'x', failure: serializeBuildError(Object.assign(new Error('Build failed with 1 error:'), { errors: [inner] })), logs: [] }, ctx);
+    expect(wrapped.warnings[0]).toBe(r.warnings[0]);
+    expect(wrapped.message).toBe('The production build failed in the “Opening hours” component (src/lib/siteorigin/custom/OpeningHours.svelte).');
+    // Any other error keeps its first line.
+    const other = explainBuildFailure(state(), { error: 'x', failure: { name: 'TypeError', message: 'not_a_code at all\nmore' }, logs: [] }, ctx);
+    expect(other.warnings[0]).toBe('TypeError: not_a_code at all');
   });
 
   it('matches a route under the site’s public address path, and names it as the build did', () => {

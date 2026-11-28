@@ -31,8 +31,32 @@ export interface CodeProblem {
 const COMPONENT_DIR = 'src/lib/siteorigin/custom';
 
 const inLib = (p: string) => !p.includes('\0') && (p === 'src/lib' || p.startsWith('src/lib/'));
+/** The site's own name for src/lib (`#lib`, `#lib/…`), which its package.json maps there as SvelteKit 3 has it. */
+const LIB_ALIAS = /^#lib(?=$|[/?])/;
+/** The alias SvelteKit 3 removed, spelled as its build refuses it (`$lib`, `$lib/…`, `$lib?…`). */
+const REMOVED_LIB = /^\$lib(?:\/.*|\?.*)?$/;
+/** The project path an import names, query and all, or null when it names no project file. */
 const resolveSpec = (spec: string): string | null =>
-  spec.startsWith('$lib/') ? posix.normalize(`src/lib/${spec.slice(5)}`) : spec.startsWith('./') || spec.startsWith('../') ? posix.normalize(`${COMPONENT_DIR}/${spec}`) : null;
+  LIB_ALIAS.test(spec) ? posix.normalize(`src/lib${spec.slice(4)}`) : spec.startsWith('./') || spec.startsWith('../') ? posix.normalize(`${COMPONENT_DIR}/${spec}`) : null;
+/** The import without its query or fragment (`./data.js?raw`), which never decides which file it is; `#lib` is no fragment. */
+const withoutQuery = (spec: string): string => {
+  const from = LIB_ALIAS.test(spec) ? 4 : 0;
+  const cut = spec.slice(from).search(/[?#]/);
+  return cut < 0 ? spec : spec.slice(0, from + cut);
+};
+
+/** The extensions Vite tries after a path without one and in a folder's index, as the site's build resolves them. */
+const MODULE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'];
+/** TypeScript's sources for a `.js` name (`./calc.js` is `calc.ts`), which Vite finds too. */
+const TS_FOR_JS: Record<string, string[]> = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'], '.jsx': ['.ts', '.tsx'] };
+
+/** The files an import of the project path `p` may be, any of which the build would load. */
+function moduleFiles(p: string): string[] {
+  const ext = posix.extname(p);
+  const stem = p.slice(0, p.length - ext.length);
+  // A component named without `.svelte` is found as it always was here; a folder's index never is one.
+  return [p, ...[...MODULE_EXTENSIONS, '.svelte'].map((e) => p + e), ...MODULE_EXTENSIONS.map((e) => `${p}/index${e}`), ...(TS_FOR_JS[ext] ?? []).map((e) => stem + e)];
+}
 
 /** The authored source saved at each project path, so the strict check can follow imports between components. */
 export function componentSources(components: Record<string, ComponentDefinition>): (path: string) => string | undefined {
@@ -254,13 +278,15 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   const missing = (spec: string) => {
     // The file is the path before any query or fragment, which never decides which file it is; a query whose own
     // `..` would carry the path elsewhere names no file the other checks looked at.
-    const p = resolveSpec(spec.replace(/[?#].*$/, ''));
+    const p = resolveSpec(withoutQuery(spec));
     if (p && resolveSpec(spec)?.split(/[?#]/)[0] !== p) return !!opts.modules;
-    return !!p && !!opts.modules && !['', '.js', '.ts', '.svelte', '/index.js'].some((ext) => opts.modules!(`${p}${ext}`));
+    return !!p && !!opts.modules && !moduleFiles(p).some((f) => opts.modules!(f));
   };
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
-    if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, $lib, svelte or $app modules only.`, node);
+    // SvelteKit 3's build stops at it, so it is refused here, with the spelling that works.
+    if (REMOVED_LIB.test(spec)) add('error', `"$lib" was removed in SvelteKit 3. Use "#lib${spec.slice(4)}" instead.`, node);
+    else if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, #lib, svelte or $app modules only.`, node);
     else if (strict && !importAllowed(spec, true) && !generated(spec)) forbid(`"${spec}"`, node);
     else if (missing(spec)) add('error', `It imports "${spec}", which is not a file in this project.`, node);
   };
@@ -1104,8 +1130,8 @@ const PART_HOSTS = new Set(['RegularElement', 'SvelteElement', 'Component', 'Sve
  * The Builder's own components that put what they are given on one element where they are placed: their class, their
  * other attributes and their children (Link), or their value (RichText). The rest may show it anywhere, or not at all.
  */
-const IN_PLACE = /^(?:\.\.|\$lib\/siteorigin)\/runtime\/(?:Link|RichText)\.svelte$/;
-const RUNTIME_UTIL = /^(?:\.\.|\$lib\/siteorigin)\/runtime\/util\.js$/;
+const IN_PLACE = /^(?:\.\.|#lib\/siteorigin)\/runtime\/(?:Link|RichText)\.svelte$/;
+const RUNTIME_UTIL = /^(?:\.\.|#lib\/siteorigin)\/runtime\/util\.js$/;
 
 /** What a part's code shows of its text (codePartTexts): the marked paths, and the properties whose presence also decides what shows outside it. */
 export interface CodePartText {

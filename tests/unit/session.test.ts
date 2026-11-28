@@ -474,6 +474,56 @@ describe('project session', () => {
     expect(s.state.components[defId].source).toBe(source);
   });
 
+  it('saves code importing a project file through #lib, and refuses $lib or an import of a file that is not there (#1479)', async () => {
+    const { dir, s } = await make();
+    writeFileSync(join(dir, 'src/lib/vektor-calc.js'), 'export const estimateCluster = () => 3;\n');
+    const using = (spec: string) => `<script>\n\timport { estimateCluster } from '${spec}';\n</script>\n<p>{estimateCluster()}</p>\n`;
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Calc', source: using('#lib/vektor-calc.js') }] }, { label: 'x' });
+    expect(made.ok).toBe(true);
+    const defId = made.results![0].definitionId as string;
+    const saved = s.state.components[defId].source;
+    const refused = async (source: string) => {
+      const r = await s.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source }] }, { label: 'x' });
+      expect(r.error?.code).toBe('VALIDATION_FAILED');
+      expect(s.state.components[defId].source).toBe(saved);
+      return r.error!.message;
+    };
+    expect(await refused(using('$lib/vektor-calc.js'))).toMatch(/"\$lib" was removed in SvelteKit 3\. Use "#lib\/vektor-calc\.js" instead\./);
+    expect(await refused(using('#lib/vektor-calcs.js'))).toMatch(/"#lib\/vektor-calcs\.js", which is not a file in this project/);
+    expect(await refused(`<script>\n\timport Image from '../runtime/SoImage.svelte';\n</script>\n<Image />\n`)).toMatch(/"\.\.\/runtime\/SoImage\.svelte", which is not a file in this project/);
+    // The runtime the app writes is there, whether or not it is on disk yet, and so is a component made in the same batch.
+    const image = `<script>\n\timport Image from '../runtime/Image.svelte';\n</script>\n<Image />\n`;
+    expect((await s.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: image }] }, { label: 'x' })).ok).toBe(true);
+    const pair = await s.apply({ operations: [{ type: 'component.createCode', name: 'Inner', source: '<p>in</p>\n' }] }, { label: 'x' });
+    const inner = s.state.components[pair.results![0].definitionId as string].sourcePath!.split('/').pop();
+    expect((await s.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: `<script>\n\timport Inner from './${inner}';\n</script>\n<Inner />\n` }] }, { label: 'x' })).ok).toBe(true);
+  });
+
+  it('checks the code editor draft against the files the project has, the draft included (#1479)', async () => {
+    const { dir, s } = await make();
+    writeFileSync(join(dir, 'src/lib/vektor-calc.js'), 'export const estimateCluster = () => 3;\n');
+    const has = s.draftModules('<p>x</p>\n');
+    expect(has('src/lib/vektor-calc.js')).toBe(true);
+    expect(has('src/lib/vektor-calcs.js')).toBe(false);
+    expect(has('src/lib/siteorigin/runtime/Image.svelte')).toBe(true);
+    expect(has('src/lib/siteorigin/runtime/SoImage.svelte')).toBe(false);
+    // A file the app wrote is there only while it still writes it; one of the project's own stays wherever it is.
+    writeFileSync(join(dir, 'src/lib/siteorigin/runtime/format.js'), 'export const f = 1;\n');
+    expect(s.draftModules('<p>x</p>\n')('src/lib/siteorigin/runtime/format.js')).toBe(true);
+    // A component's code the app wrote is gone with the component, though the file is still on disk until the save.
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Gone', source: '<p>gone</p>\n' }] }, { label: 'x' });
+    const gone = s.state.components[made.results![0].definitionId as string];
+    expect(existsSync(join(dir, gone.sourcePath!))).toBe(true);
+    const { [gone.id]: _gone, ...rest } = s.state.components;
+    expect(s.projectModules(s.state)(gone.sourcePath!)).toBe(true);
+    expect(s.projectModules({ ...s.state, components: rest })(gone.sourcePath!)).toBe(false);
+    // A new component's stand-in is no file to import.
+    expect(s.draftModules('<p>x</p>\n')('src/lib/siteorigin/custom/.draft-check.svelte')).toBe(false);
+    // The search helper is written once a component searches, so a draft that is the first to search finds it.
+    expect(has('src/lib/siteorigin/runtime/site-search.js')).toBe(false);
+    expect(s.draftModules(`<script>\n\timport { search } from '../runtime/site-search.js';\n</script>\n<p>{search}</p>\n`)('src/lib/siteorigin/runtime/site-search.js')).toBe(true);
+  });
+
   it('rejects path traversal for authored sources (I06)', async () => {
     const { s } = await make();
     const r = await s.apply({ operations: [{ type: 'component.createCode', name: 'X', source: '<p>x</p>' }] }, { label: 'x' });

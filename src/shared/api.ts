@@ -1652,7 +1652,8 @@ export interface BuilderApi {
      */
     answer(runId: string, questionId: string, answer: string | { assetId: string }): Promise<boolean>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
-    fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
+    /** `definitionId`: the component being edited, whose code the repair replaces (absent for a new one). */
+    fixCode(source: string, definitionId?: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
     /** Cancel an in-flight fixCode request. */
     cancelFix(): Promise<void>;
   };

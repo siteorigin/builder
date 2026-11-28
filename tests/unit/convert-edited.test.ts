@@ -24,7 +24,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
       '\timport { has } from "../runtime/util.js";',
       "\timport Own from '../custom/Own.svelte';",
       "\timport { page } from '$app/state';",
-      "\timport lib from '$lib/helpers.js';",
+      "\timport lib from '#lib/helpers.js';",
       "\texport { thing } from './thing.js';",
       "\tconst lazy = () => import('./lazy.svelte');",
       '\tconst tpl = () => import(`./tpl.js`);',
@@ -65,7 +65,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
       '\timport A from ".\\x2fa.js";',
       "\timport icon from './icon.svg?url#frag';",
       "\timport Form from './contact-form.webmcp.svelte';",
-      "\timport Lib from '$lib/siteorigin/generated/contact-form.webmcp.svelte';",
+      "\timport Lib from '#lib/siteorigin/generated/contact-form.webmcp.svelte';",
       "\tconst pic = new URL('pic.png', import.meta.url);",
       '</script>',
       '',
@@ -88,7 +88,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
         .replace('".\\x2fa.js"', '"../generated/a.js"')
         .replace("'./icon.svg?url#frag'", "'../generated/icon.svg?url#frag'")
         .replace("'./contact-form.webmcp.svelte'", "'../generated/contact-form.svelte'")
-        .replace("'$lib/siteorigin/generated/contact-form.webmcp.svelte'", "'$lib/siteorigin/generated/contact-form.svelte'")
+        .replace("'#lib/siteorigin/generated/contact-form.webmcp.svelte'", "'#lib/siteorigin/generated/contact-form.svelte'")
         .replace("'pic.png'", "'../generated/pic.png'")
         .replace('URL("./has space.png")', 'URL("../generated/has space.png")')
         .replace('url(bare.png)', 'url(../generated/bare.png)')

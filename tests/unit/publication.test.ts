@@ -286,8 +286,8 @@ describe('the components the published website imports', () => {
         unused: def('unused', { kind: 'code', sourcePath: 'src/lib/siteorigin/custom/Unused.svelte' })
       }
     } as unknown as ProjectState;
-    write(dir, 'src/routes/+page.svelte', `<script>\n  import Hero from '$lib/siteorigin/generated/hero.svelte';\n  import Coded from '$lib/siteorigin/custom/Coded.svelte';\n</script>\n<!-- formerly imported orphan.svelte -->\n<p>See unused.svelte</p>`);
-    write(dir, 'src/routes/later/+page.svelte', `<script>\n  const Lazy = import('$lib/siteorigin/generated/lazy.svelte');\n  import Converted from '$lib/siteorigin/custom/Converted.svelte';\n  import source from '$lib/siteorigin/generated/raw.svelte?raw';\n  // import Old from '$lib/siteorigin/generated/old.svelte';\n  /* import Old from '$lib/siteorigin/generated/old.svelte'; */\n</script>`);
+    write(dir, 'src/routes/+page.svelte', `<script>\n  import Hero from '#lib/siteorigin/generated/hero.svelte';\n  import Coded from '#lib/siteorigin/custom/Coded.svelte';\n</script>\n<!-- formerly imported orphan.svelte -->\n<p>See unused.svelte</p>`);
+    write(dir, 'src/routes/later/+page.svelte', `<script>\n  const Lazy = import('#lib/siteorigin/generated/lazy.svelte');\n  import Converted from '#lib/siteorigin/custom/Converted.svelte';\n  import source from '#lib/siteorigin/generated/raw.svelte?raw';\n  // import Old from '#lib/siteorigin/generated/old.svelte';\n  /* import Old from '#lib/siteorigin/generated/old.svelte'; */\n</script>`);
     for (const f of ['design', 'raw', 'old']) write(dir, `${gen}/${f}.svelte`, '<p></p>');
     write(dir, 'src/lib/siteorigin/custom/Converted.svelte', '<p>converted</p>');
     write(dir, `${gen}/hero.svelte`, `<script>import Card from './card.svelte';</script>`);
@@ -296,7 +296,7 @@ describe('the components the published website imports', () => {
     write(dir, `${gen}/lazy.svelte`, '<p></p>');
     write(dir, `${gen}/badge.svelte`, '<p></p>');
     write(dir, 'src/lib/siteorigin/custom/Coded.svelte', '<p>coded</p>');
-    write(dir, 'src/lib/siteorigin/custom/Unused.svelte', `<script>import Orphan from '$lib/siteorigin/generated/orphan.svelte';</script>`);
+    write(dir, 'src/lib/siteorigin/custom/Unused.svelte', `<script>import Orphan from '#lib/siteorigin/generated/orphan.svelte';</script>`);
     // Imported only in comments: old. Through the design converted code was made from: design. With a query: raw.
     expect(await unusedComponents(dir, state)).toEqual(['old', 'orphan', 'unused']);
   });

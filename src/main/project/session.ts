@@ -37,7 +37,7 @@ import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
 import type { MissingAssetFiles } from '@shared/api';
 import type { WriteFailure } from './save-error';
 import { EXTERNAL_SOURCE_REFUSED, HISTORY_LIMIT } from '@shared/api';
-import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
+import { CUSTOM_DIR, defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -826,6 +826,8 @@ export class ProjectSession extends EventEmitter {
   private docs = new Map<string, string>();
   private history: HistoryFile = emptyHistory();
   private generated: GeneratedManifest = { generator: GENERATOR_VERSION, files: {} };
+  /** The files the app writes for each state an import check has asked about (writtenFiles). */
+  private written = new WeakMap<ProjectState, Set<string> | null>();
   /**
    * The generated manifest as opening read it, with the stat of its file when that can stand for its text
    * (statTrusted); null once anything has written it since. A publication that would write it unchanged leaves it.
@@ -1799,20 +1801,7 @@ export class ProjectSession extends EventEmitter {
       return refuse(`The project could not be generated with the code component: ${(e as Error).message}`);
     }
     const resolve = componentSources(next.components);
-    /** A file the project has there: one the app writes, a component's code, or the project's own (never a folder). */
-    const exists = (p: string) => {
-      // The check tries each extension after the whole reference, a query too (`./data?raw.js`): the file is the path
-      // before the query, with that extension.
-      const q = p.search(/[?#]/);
-      const tail = q < 0 ? '' : p.slice(q);
-      const file = q < 0 ? p : p.slice(0, q) + (['/index.js', '.svelte', '.js', '.ts'].find((ext) => tail.endsWith(ext)) ?? '');
-      if (files.has(file) || resolve(file) !== undefined) return true;
-      try {
-        return statSync(safeJoin(this.dir, file)).isFile();
-      } catch {
-        return false;
-      }
-    };
+    const exists = this.projectModules(next, files);
     const problems = (
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
@@ -2809,6 +2798,66 @@ export class ProjectSession extends EventEmitter {
     return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace, retryCheck: beforeReplace } : {});
   }
 
+  /**
+   * Whether code in `state` finds a file of the project at `path` (CheckOptions.modules): a code component's source,
+   * a file of the project's own on disk (never a folder) that the app never wrote nor holds a component's code in, or a file the app writes for
+   * `writes` (the runtime helpers, the designs' files, the theme's font copies). A file the app wrote before is there
+   * only while it still writes it, whatever is on disk now. The app's files are made only when an import reaches
+   * past the others, once per resolver and state, unless `files` already holds them.
+   */
+  projectModules(state: ProjectState, files?: Map<string, string>, writes: ProjectState = state): (path: string) => boolean {
+    const sources = componentSources(state.components);
+    const saved = componentSources(this.state.components);
+    let made: Set<string> | null | undefined = files ? new Set([...files.keys(), ...packFileCopies(writes, this.generation).map((c) => c.path)]) : undefined;
+    return (path) => {
+      if (sources(path) !== undefined) return true;
+      // A code component's file is the app's too: it goes with the component.
+      if (!Object.hasOwn(this.generated.files, path) && saved(path) === undefined) {
+        try {
+          if (statSync(safeJoin(this.dir, path)).isFile()) return true;
+        } catch {
+          // Not a file of the project's own: the app may still write one there.
+        }
+      }
+      made ??= this.writtenFiles(writes);
+      // A project that cannot be generated is refused by its save, which says why; no import is blamed for it.
+      return made === null || made.has(path);
+    };
+  }
+
+  /** The files the app writes for `state`, or null when it cannot be generated; kept per state, as states never change. */
+  private writtenFiles(state: ProjectState): Set<string> | null {
+    const known = this.written.get(state);
+    if (known !== undefined) return known;
+    let files: Set<string> | null;
+    try {
+      files = new Set([...this.generate(state, false).keys(), ...packFileCopies(state, this.generation).map((c) => c.path)]);
+    } catch {
+      files = null;
+    }
+    this.written.set(state, files);
+    return files;
+  }
+
+  /**
+   * projectModules for code being edited and not yet saved (the code editor's check, as it types): the project as it
+   * is, with the draft as the code of the component it edits. What the app writes is read from the project as it is
+   * (made once per saved state), and only for an import that finds nothing there, from the project with the draft in
+   * it: what the app writes can hang on the code itself (the search helper is written once a component searches).
+   * A new component's draft stands in under a name of its own, which no import may find.
+   */
+  draftModules(source: string, definitionId?: string): (path: string) => boolean {
+    const was = definitionId !== undefined && Object.hasOwn(this.state.components, definitionId) ? this.state.components[definitionId] : undefined;
+    const own = was?.kind === 'code';
+    const stand = `${CUSTOM_DIR}/.draft-check.svelte`;
+    const def: ComponentDefinition = own ? { ...was!, source } : { schemaVersion: SCHEMA_VERSION, id: 'code.draft-check', componentId: 'project.draft-check', contractVersion: 1, kind: 'code', owner: 'project', name: 'Draft', description: '', category: 'custom', tags: [], properties: {}, parts: { root: { nodeId: 'root', label: 'Root' } }, source, sourcePath: stand };
+    const draft: ProjectState = { ...this.state, components: { ...this.state.components, [def.id]: def } };
+    const base = own ? draft : this.state;
+    const now = this.projectModules(base, undefined, this.state);
+    let drafted: ((path: string) => boolean) | undefined;
+    return (path) => now(path) || (path !== stand && (drafted ??= this.projectModules(base, undefined, draft))(path));
+  }
+
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */
   private generate(state: ProjectState, instrument: boolean): Map<string, string> {
     const files = generateProject(state, { instrument }, this.generation);
@@ -3740,6 +3789,7 @@ export class ProjectSession extends EventEmitter {
       // A form decides in its code where visitors' messages go, so a package's code may never place one.
       const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
       const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
+      let modules: ((path: string) => boolean) | undefined;
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
@@ -3797,9 +3847,10 @@ export class ProjectSession extends EventEmitter {
             // Its code takes what its properties hold, and nothing they do not.
             manifest,
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
+            // Every file it imports is there once the change lands: compiling it alone never notices one missing.
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }
-              : {})
+              : { modules: (modules ??= this.projectModules(next)) })
           })
         ).filter((p) => p.severity === 'error');
         // A theme's or a package's code is held to its axes' props alone (its slots and parts are the theme's to check).

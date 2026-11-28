@@ -153,7 +153,7 @@ const IMPORT_SPEC = /(?<![.$\w])(from|import)((?:\s|\(|\/\*(?:[^*]|\*(?!\/))*\*\
 /** The project file an import specifier in the file `fromFile` names, or null for a package import. */
 function resolveImport(spec: string, fromFile: string): string | null {
   const fromDir = fromFile.split('/').slice(0, -1).join('/');
-  return spec.startsWith('$lib/') ? normalizePath(`src/lib/${spec.slice(5)}`) : spec.startsWith('./') || spec.startsWith('../') ? normalizePath(`${fromDir}/${spec}`) : null;
+  return spec.startsWith('#lib/') ? normalizePath(`src/lib/${spec.slice(5)}`) : spec.startsWith('./') || spec.startsWith('../') ? normalizePath(`${fromDir}/${spec}`) : null;
 }
 
 /** The project files a code component's source imports. */
@@ -505,7 +505,7 @@ function relinkSource(source: string, fromFile: string, toFile: string, moved: R
     const at = resolveImport(spec, fromFile);
     const target = at === null ? undefined : moved.get(at);
     if (!target) return m;
-    return `${lead}${gap}${q}${spec.startsWith('$lib/') ? `$lib/${target.replace(/^src\/lib\//, '')}` : relativeSpec(toDir, target)}${q}`;
+    return `${lead}${gap}${q}${spec.startsWith('#lib/') ? `#lib/${target.replace(/^src\/lib\//, '')}` : relativeSpec(toDir, target)}${q}`;
   });
   for (const [from, to] of keys) {
     const k = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

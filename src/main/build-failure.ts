@@ -136,6 +136,18 @@ function errorLine(e: BuildErrorInfo, max = 300): string {
   return e.name && e.name !== 'Error' && !text.startsWith(e.name) ? `${e.name}: ${text}` : text;
 }
 
+/** A code SvelteKit 3 names its own errors by (`module_removed_lib`): the line after it says what went wrong. */
+const KIT_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+
+/** An error as its cause reads: SvelteKit's own with the sentence that explains its code, not the code alone. */
+function causeLine(e: BuildErrorInfo): string {
+  const [code, says] = e.message
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return e.name === 'SvelteKit error' && says && KIT_CODE.test(code) ? clip(`${e.name}: ${code}: ${says}`, 300) : errorLine(e);
+}
+
 function describeError(e: BuildErrorInfo, indent = ''): string[] {
   const out = [`${indent}${errorLine(e, Infinity)}`];
   const rest = e.message.split('\n').filter((l) => l.trim()).slice(1);
@@ -243,7 +255,7 @@ export function readBuildFailure(state: ProjectState, build: BuildReport, ctx: B
   const strong = printed.filter((l) => STRONG_ERROR.test(l) && !WARNING.test(l));
   const found = [...strong.filter((l) => !REQUEST_LINE.test(l)), ...printed.filter((l) => ERROR_WORD.test(l) && !STRONG_ERROR.test(l) && !WARNING.test(l))];
   const causes: string[] = [];
-  if (specific) causes.push(errorLine(specific));
+  if (specific) causes.push(causeLine(specific));
   const add = (pool: string[]) => {
     const fresh = pool.map((l) => firstLine(l)).filter((text, i, all) => all.indexOf(text) === i && !causes.some((c) => c.includes(text) || text.includes(c)));
     // When there are more than fit, the first ones and the last one: the failure that began it and the one that ended it.
