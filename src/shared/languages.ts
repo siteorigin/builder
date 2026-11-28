@@ -22,8 +22,8 @@ export function pageLanguage(site: Pick<SiteDoc, 'language'>, page: Pick<PageDoc
 /** Which way text runs: left to right, or right to left. */
 export type TextDirection = 'ltr' | 'rtl';
 
-/** Languages written right to left in their usual script (Hebrew and Yiddish also under their old codes). */
-const RTL_LANGUAGES = new Set(['ar', 'arc', 'azb', 'bal', 'bqi', 'ckb', 'dv', 'fa', 'glk', 'he', 'iw', 'ji', 'khw', 'ks', 'lrc', 'mzn', 'nqo', 'pnb', 'prs', 'ps', 'sd', 'sdh', 'skr', 'syr', 'ug', 'ur', 'yi']);
+/** Languages written right to left in their usual script, Arabic's regional varieties under their own codes ("arz", "ary") included (Hebrew and Yiddish also under their old codes). */
+const RTL_LANGUAGES = new Set(['ar', 'aao', 'abh', 'abv', 'acm', 'acq', 'acw', 'acx', 'acy', 'adf', 'aeb', 'aec', 'afb', 'ajp', 'apc', 'apd', 'arb', 'arq', 'ars', 'ary', 'arz', 'auz', 'avl', 'ayh', 'ayl', 'ayn', 'ayp', 'pga', 'shu', 'ssh', 'xaa', 'bgn', 'haz', 'hnd', 'lki', 'arc', 'azb', 'bal', 'bqi', 'ckb', 'dv', 'fa', 'glk', 'he', 'iw', 'ji', 'khw', 'ks', 'lrc', 'mzn', 'nqo', 'pnb', 'prs', 'ps', 'sd', 'sdh', 'skr', 'syr', 'ug', 'ur', 'yi']);
 /** Scripts written right to left. A code that names its script ("az-Arab", "ku-Latn") goes the script's way. */
 const RTL_SCRIPTS = new Set(['adlm', 'arab', 'aran', 'hebr', 'mand', 'mend', 'nkoo', 'rohg', 'samr', 'syrc', 'thaa', 'yezi']);
 
