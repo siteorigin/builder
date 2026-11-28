@@ -139,7 +139,8 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
   async function typeTitle(title: string, noun = 'post') {
     await page.locator('#panel').getByRole('button', { name: `New ${noun}` }).click();
     const field = page.getByLabel(`New ${noun} title`);
-    await field.waitFor();
+    // Focused by the form once it is drawn: typed into only then, so that focus never comes after the Enter that follows.
+    await expect.poll(focused).toBe(`New ${noun} title`);
     await field.pressSequentially(title);
   }
   /** While the entry is made: the writer still shows Post 1, as it was, and takes nothing; it says what it waits for. */
