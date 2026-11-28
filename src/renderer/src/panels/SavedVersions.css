@@ -2,6 +2,8 @@
   /* Reviewing a saved version: its name under its glyph, when it was saved, then what restoring it changes. */
   .version-review { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }
   .version-review > * { margin: 0; }
+  /* Project paths named in full (#1396) break anywhere rather than run past the dialog. */
+  .version-review > p { overflow-wrap: anywhere; }
   .version-review h3 { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; outline-offset: 2px; }
   .version-review h3:focus-visible { outline: 2px solid var(--focus); border-radius: var(--r-sm); }
   .version-review h3 svg { width: 14px; height: 14px; flex: none; margin-top: 3px; color: var(--text-3); }
