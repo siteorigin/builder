@@ -117,7 +117,7 @@ import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
 import { derived, isTracked, type GenerationCache } from './cache';
-import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from './seo-metadata';
+import { createSeoResolver, entryMetadata, pageMetadata, sameAddress, type SeoMetadata } from './seo-metadata';
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
@@ -4687,14 +4687,20 @@ export function fillParts(text, values) {
 
 /**
  * The versions of a published page in each language it has, itself among them, in page order: what its
- * alternate-language links name. None for a draft, for a page without translations, and for a set whose pages
- * clash on language (which the editor never lets happen).
+ * alternate-language links name. None for a draft, for a page hidden from search engines or a copy of another address,
+ * for a page without translations, and for a set whose pages clash on language (which the editor never lets happen).
+ * A version the sitemap leaves out (hidden from search engines, a copy) is named by none, as in the sitemap's links.
  */
 export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
   const group = translationGroup(page);
   if (!group || isDraftPage(state, page)) return [];
+  const searchable = (p: PageDoc) => {
+    const meta = pageMetadata(state, p);
+    return !!meta && !meta.noindex && sameAddress(meta.canonical, meta.url);
+  };
+  if (!searchable(page)) return [];
   const members = translationMembers(state, group)
-    .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
+    .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p) && searchable(p))
     .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
   const languages = new Set(members.map((m) => languageKey(m.language)));
   return members.length < 2 || languages.size < members.length ? [] : members;

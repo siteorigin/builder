@@ -646,11 +646,23 @@ describe('page languages in the website', () => {
       ['WebSite', 'en'],
       ['WebPage', 'en']
     ]);
-    // A page hidden from search engines is still a published version, with no structured data of its own.
-    const hidden = generateProject(apply(published, { type: 'page.update', pageId: fr, noindex: true }));
-    expect(alternatesIn(hidden.get(pageFile(s.pages[en]))!)).toEqual(full);
-    expect(alternatesIn(hidden.get(pageFile(s.pages[fr]))!)).toEqual(full);
+    // A page hidden from search engines is still a published version, with no structured data of its own, but the
+    // versions search engines read leave it out, as the sitemap does, and it lists none itself.
+    const hiddenState = apply(published, { type: 'page.update', pageId: fr, noindex: true });
+    const hidden = generateProject(hiddenState);
+    const rest = [full[0], full[2]];
+    expect(alternatesIn(hidden.get(pageFile(s.pages[en]))!)).toEqual(rest);
+    expect(alternatesIn(hidden.get(pageFile(s.pages[de]))!)).toEqual(rest);
+    expect(alternatesIn(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
+    expect(hidden.get(pageFile(s.pages[fr]))).toContain('noindex');
     expect(ld(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
+    // With one eligible version left, it has no alternates in the HTML or the sitemap.
+    const one = generateProject(apply(hiddenState, { type: 'page.update', pageId: de, noindex: true }));
+    expect(alternatesIn(one.get(pageFile(s.pages[en]))!)).toEqual([]);
+    expect(one.get('static/sitemap.xml') ?? '').not.toContain('xhtml:link');
+    // Showing it again restores the full set.
+    const again = generateProject(apply(hiddenState, { type: 'page.update', pageId: fr, noindex: false }));
+    expect(alternatesIn(again.get(pageFile(s.pages[fr]))!)).toEqual(full);
   });
 
   it('lists the versions at full addresses once a public address is set, with no relinking', () => {
