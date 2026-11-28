@@ -1,5 +1,9 @@
+const STOPS: Record<string, string> = { '.': '\u0001', '!': '\u0002', '?': '\u0003' };
+
 /** Strips Markdown to the words a reader sees: link text without its target, no emphasis or code marks. */
-export function plainText(markdown: string): string {
+export function plainText(markdown: string, maskLinkStops = false): string {
+  // A sentence stop inside link text ("Acme Inc.") is not the end of the sentence, so it can be masked for the splitter.
+  const mask = (t: string) => (maskLinkStops ? t.replace(/[.!?]/g, (c) => STOPS[c]) : t);
   const code: string[] = [];
   // Code spans keep their characters as written, so they are set aside before anything else is read.
   const keep = (s: string) => `\u0000${code.push(s) - 1}\u0000`;
@@ -7,9 +11,9 @@ export function plainText(markdown: string): string {
     .replace(/(```|~~~)[\s\S]*?\1/g, ' ')
     .replace(/`([^`]*)`/g, (_m, s: string) => keep(s))
     .replace(/<(https?:\/\/[^>\s]+)>/g, (_m, s: string) => keep(s))
-    .replace(/(?<![(\[])\bhttps?:\/\/[^\s)<>\]]+/g, (m) => keep(m))
-    .replace(/!?\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*(?:\s+"[^"]*")?\)/g, '$1')
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+    .replace(/(?<![(\[])\bhttps?:\/\/[^\s)<>\]*"'`]+/g, (m) => keep(m))
+    .replace(/!?\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*(?:\s+(?:"[^"]*"|'[^']*'))?\)/g, (_m, t: string) => mask(t))
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, (_m, t: string) => mask(t))
     .replace(/<\/?[a-zA-Z][^>\n]*>/g, '')
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+[.)])\s+/gm, '')
     .replace(/^\s*(?:[-*_]\s*){3,}$/gm, ' ')
@@ -34,7 +38,9 @@ export function cutAtWord(text: string, max: number): string {
 
 /** The name of an AI turn in History, Undo and its toast: the first sentence of the reply as plain words. */
 export function turnName(reply: string, fallback: string, max = 80): string {
-  // The sentence is found in the Markdown, where a link's text and target hold no sentence breaks.
-  const first = (text: string) => plainText(text.trim().split(/(?<=[.!?]["'”’)]?)\s/)[0] ?? '');
+  const first = (text: string) => {
+    const sentence = plainText(text, true).split(/(?<=[.!?]["'”’)]?)\s/)[0] ?? '';
+    return sentence.replace(/[\u0001-\u0003]/g, (c) => ['.', '!', '?'][c.charCodeAt(0) - 1]).trim();
+  };
   return cutAtWord(first(reply) || first(fallback) || 'Changes', max);
 }

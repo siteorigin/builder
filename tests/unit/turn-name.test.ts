@@ -37,3 +37,17 @@ describe('turnName edge cases', () => {
     expect(turnName('', '')).toBe('Changes');
   });
 });
+
+describe('turnName second pass', () => {
+  it('finds the sentence in the plain text', () => {
+    expect(turnName('1. Updated the footer. Then more.', 'x')).toBe('Updated the footer.');
+    expect(turnName('```\n// Build complete. See details.\n```\nAdded the page. More.', 'x')).toBe('Added the page.');
+    expect(turnName('See [Acme Inc. Support](/acme) today. More.', 'x')).toBe('See Acme Inc. Support today.');
+    expect(turnName('**Added the hero.** Then more.', 'x')).toBe('Added the hero.');
+  });
+  it('strips emphasis around URLs and quoted titles', () => {
+    expect(turnName('See **https://example.com** today.', 'x')).toBe('See https://example.com today.');
+    expect(turnName('See http://a.test/x now.', 'x')).toBe('See http://a.test/x now.');
+    expect(turnName("See [FAQ](/faq 'Title') and [Help](/h \"See https://example.com\").", 'x')).toBe('See FAQ and Help.');
+  });
+});
