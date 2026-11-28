@@ -20,6 +20,7 @@ import { heldAsMedia } from '../../src/main/project/versions';
 import { ProjectSession } from '../../src/main/project/session';
 import { projectSummary } from '../../src/agent/context';
 import { run, seoSite } from './fixtures/seo-site';
+import { createStarterState } from '@catalogue/starters';
 import { markdownDesigns } from './fixtures/llms-designs';
 
 const SECRET = 'PRIVATE-SENTINEL-7f3a';
@@ -235,14 +236,219 @@ describe('Markdown copies', () => {
     for (const words of footerWords) expect(md).not.toContain(words);
   });
 
-  // Release gap: the Markdown copies read only the release's table, form and video code sections (code() in src/generator/markdown.ts).
-  it.fails('keeps the headings, paragraphs, lists, links and questions with their answers of Foundation’s text and FAQ sections', () => {
+  it('keeps the headings, paragraphs, lists, links and questions with their answers of Foundation’s text and FAQ sections', () => {
     const { s } = richHome({ release: true });
     const md = files(s).get('static/index.html.md')!;
     expect(md).toContain('\n### How classes run\n');
     expect(md).toContain('We throw, **trim** and glaze. See [our services](https://example.com/studio/services/).');
     expect(md).toContain('#### What to bring\n\n- An apron\n- Old clothes');
     expect(md).toContain('**Do I need experience?**\n\nNo. Beginners are welcome.');
+  });
+
+  it('writes what the Business starter’s Foundation sections say, in each copy and in the full text (#1350)', () => {
+    const s = run(createStarterState('business', 'Harbor Studio', false), { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true });
+    const out = files(s);
+    const contact = out.get('static/contact/index.html.md')!;
+    // The page's introduction, every contact method and every question with its answer.
+    for (const words of ['Let’s talk', 'Whether you are planning a single room or a whole building', 'Get in touch', 'hello@example.com', '+1 555 0134', 'What happens at a consultation visit?', 'After a free first call'])
+      expect(contact).toContain(words);
+    const home = out.get('static/index.html.md')!;
+    // The Split hero, the Services grid, Content with image, the statistics, the testimonials and the call to action.
+    for (const words of [
+      'Calm, considered spaces for everyday life',
+      'Start a project',
+      'Everything your project needs, in one place',
+      'Planning & layout',
+      'Room-by-room plans that make the most of light',
+      'Good design starts with listening',
+      'That conversation shapes **every decision** that follows',
+      'A small studio with a long record',
+      'In practice',
+      'What clients say once the builders have gone',
+      'Amelia Hart',
+      'Let’s make your space work better',
+      'Get in touch'
+    ])
+      expect(home).toContain(words);
+    // Each button and contact method where it goes, and an address that goes nowhere as its words alone.
+    expect(home).toContain('[Start a project](https://example.com/contact/)\n\n[About the studio](https://example.com/about/)');
+    expect(contact).toContain('- Email\n  [hello@example.com](mailto:hello@example.com)\n- Phone\n  [+1 555 0134](tel:+15550134)\n- Studio\n  12 Harbor Lane, Millbrook');
+    for (const question of ['What happens at a consultation visit?', 'How long does a typical project take?', 'How are your fees calculated?', 'Do you work outside the local area?', 'Can you recommend builders?'])
+      expect(contact).toMatch(new RegExp(`\\*\\*${question.replace(/\?/g, '\\?')}\\*\\*\\n\\n\\S`));
+    const about = out.get('static/about/index.html.md')!;
+    expect(about).toContain('- **Hannah Wells**\n  Founder & lead designer\n  Fifteen years designing homes and small workplaces.');
+    // The full text holds every copy, in the index's order.
+    const full = out.get('static/llms-full.txt')!;
+    expect(full.indexOf(home.trimEnd())).toBeGreaterThan(0);
+    expect(full.indexOf(about.trimEnd())).toBeGreaterThan(full.indexOf(home.trimEnd()));
+    expect(full.indexOf(contact.trimEnd())).toBeGreaterThan(full.indexOf(about.trimEnd()));
+  });
+
+  it('leaves out a part of a Foundation section hidden at every size, for every item or for one', () => {
+    const site = designedSite();
+    const owner = { kind: 'page' as const, id: site.home };
+    const items = [
+      { id: 'q1', question: 'Do I need experience?', answer: 'No. Beginners are welcome.' },
+      { id: 'q2', question: 'What should I wear?', answer: 'Old clothes.' }
+    ];
+    const faq = insert(discovery(site.state), site.home, 'faq.list', { eyebrow: '', heading: 'Questions we hear', lead: '', items });
+    expect(files(faq.state).get('static/index.html.md')).toContain('### Questions we hear\n\n**Do I need experience?**\n\nNo. Beginners are welcome.\n\n**What should I wear?**\n\nOld clothes.');
+    const s = run(
+      faq.state,
+      { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'heading', scope: 'base', property: 'hidden', value: true },
+      { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'answer', itemId: 'q1', scope: 'base', property: 'hidden', value: true },
+      // Hidden on phones only, the second answer still shows.
+      { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'answer', itemId: 'q2', scope: 'phone', property: 'hidden', value: true }
+    );
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).not.toContain('Questions we hear');
+    expect(md).toContain('**Do I need experience?**');
+    expect(md).not.toContain('Beginners are welcome');
+    expect(md).toContain('**What should I wear?**\n\nOld clothes.');
+    // Every answer hidden: the questions stay.
+    const none = files(run(s, { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'answer', scope: 'base', property: 'hidden', value: true })).get('static/index.html.md')!;
+    expect(none).toContain('**What should I wear?**');
+    expect(none).not.toContain('Old clothes.');
+  });
+
+  it('writes nothing of a Foundation section made unique, or changed from what the app ships, whose code decides what it shows', () => {
+    const site = designedSite();
+    const placed = insert(discovery(site.state), site.home, 'content.text', { heading: 'How classes run', body: BODY });
+    expect(files(placed.state).get('static/index.html.md')).toContain('### How classes run');
+    const unique = run(placed.state, { type: 'component.makeUnique', owner: { kind: 'page', id: site.home }, nodeId: placed.nodeId });
+    expect(unique.components[(unique.pages[site.home].nodes[placed.nodeId] as InstanceNode).definitionId].owner).toBe('project');
+    const changed = structuredClone(placed.state);
+    const def = changed.components[(changed.pages[site.home].nodes[placed.nodeId] as InstanceNode).definitionId];
+    def.source = `${def.source}\n<p>{heading}</p>`;
+    for (const s of [unique, changed]) {
+      const md = files(s).get('static/index.html.md')!;
+      expect(md).not.toContain('How classes run');
+      expect(md).not.toContain('We throw');
+    }
+  });
+
+  it('writes the words Foundation’s sections show beyond what the canvas types into: a featured card, both periods’ prices, a comparison and a news list’s rows', () => {
+    const { state, home, services } = designedSite();
+    let s = discovery(run(state, { type: 'page.update', pageId: services, articleDate: '2027-01-05', excerpt: `Classes ${SECRET}` } as never));
+    for (const section of ['features.bento', 'pricing.toggle', 'pricing.compare']) s = insert(s, home, section, {}).state;
+    s = insert(s, home, 'content.news', { heading: 'Studio news' }).state;
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).toContain('- **One designer, start to finish**\n  The designer who walks your rooms');
+    // Both billing periods are on the page, the switch showing one at a time, each named by its label there.
+    expect(md).toContain('**Monthly** $29 per month');
+    expect(md).toContain('**Annual** $290 per year, billed once');
+    expect(md).toContain('|   | Consultation | Design (Recommended) | Full service |\n| --- | --- | --- | --- |\n|   | $350 One session | $4,800 From, per project | Custom Quoted after the visit |\n| Site visit: Two hours at your home, with measurements | Included | Included | Included |');
+    expect(md).toContain('Fees exclude furniture and building work, which are quoted separately.');
+    expect(md).toContain(`### Studio news\n\n- [Services](https://example.com/studio/services/)\n  January 5, 2027\n  Classes ${SECRET}`);
+    // Hidden from search engines, the article leaves the list: nothing of it is shown.
+    const hidden = files(run(s, { type: 'page.update', pageId: services, noindex: true })).get('static/index.html.md')!;
+    expect(hidden).toContain('### Studio news');
+    expect(hidden).not.toContain(SECRET);
+    expect(hidden).not.toContain('services');
+  });
+
+  it('writes Foundation’s comparison of plans as a table, as its placement shows it', () => {
+    const site = designedSite();
+    const owner = { kind: 'page' as const, id: site.home };
+    const plan = (name: string, price: string, actionLabel = '', actionLink: unknown = { type: 'none', target: '' }) => ({ name, price, period: 'a year', actionLabel, actionLink });
+    const placed = insert(discovery(site.state), site.home, 'pricing.compare', {
+      eyebrow: '',
+      heading: 'Compare',
+      lead: '',
+      planOne: plan('Basic', '$10'),
+      planTwo: plan('Pro | plus', '$20', 'Buy Pro', { type: 'page', target: site.services }),
+      planThree: plan('', '$30', 'Talk to us'),
+      features: [
+        { id: 'f1', feature: 'Visits', detail: 'At home', one: 'included', oneNote: '', two: 'excluded', twoNote: 'Ask us', three: 'included', threeNote: '' },
+        // A row the placement never filled in shows each plan's default.
+        { id: 'f2', feature: 'Drawings' }
+      ]
+    });
+    const s = run(placed.state, { type: 'instance.setVariant', owner, nodeId: placed.nodeId, axis: 'highlight', variant: 'one' });
+    const md = files(s).get('static/index.html.md')!;
+    // The third plan has no name, so it is not shown; the first is the recommended one.
+    expect(md).toContain(
+      [
+        '### Compare',
+        '',
+        '|   | Basic (Recommended) | Pro \\| plus |',
+        '| --- | --- | --- |',
+        '|   | $10 a year | $20 a year |',
+        '| Visits: At home | Included | Not included Ask us |',
+        '| Drawings | Included | Included |',
+        '|   |   | [Buy Pro](https://example.com/studio/services/) |'
+      ].join('\n')
+    );
+    expect(md).not.toContain('$30');
+    // A hidden price, and one row's hidden feature name, are left out with nothing else.
+    const hidden = files(
+      run(
+        s,
+        { type: 'node.setStyle', owner, nodeId: placed.nodeId, partId: 'price', scope: 'base', property: 'hidden', value: true },
+        { type: 'node.setStyle', owner, nodeId: placed.nodeId, partId: 'feature', itemId: 'f1', scope: 'base', property: 'hidden', value: true }
+      )
+    ).get('static/index.html.md')!;
+    expect(hidden).toContain('|   | a year | a year |\n| At home | Included | Not included Ask us |\n| Drawings |');
+    expect(hidden).not.toContain('$10');
+    // With the plans' row hidden, each value still names its plan where the columns stack: the names stay, the prices go.
+    const row = files(run(s, { type: 'node.setStyle', owner, nodeId: placed.nodeId, partId: 'plans', scope: 'base', property: 'hidden', value: true })).get('static/index.html.md')!;
+    expect(row).toContain('|   | Basic | Pro \\| plus |\n| --- | --- | --- |\n| Visits: At home |');
+    expect(row).not.toContain('$10');
+  });
+
+  it('names each tab’s panel by its tab, and writes a plan’s features as its text says them', () => {
+    const site = designedSite();
+    let s = insert(discovery(site.state), site.home, 'tabs.showcase', {
+      tabs: [
+        { id: 't1', label: 'Eligibility', icon: '', heading: '', copy: [{ type: 'p', spans: [{ text: 'Who can apply.' }] }], actionLabel: '', actionLink: { type: 'none', target: '' }, image: { assetId: null, alt: '' } },
+        { id: 't2', label: 'Appeals', icon: '', heading: '', copy: [{ type: 'p', spans: [{ text: 'How to appeal.' }] }], actionLabel: '', actionLink: { type: 'none', target: '' }, image: { assetId: null, alt: '' } }
+      ]
+    }).state;
+    s = insert(s, site.home, 'pricing.plans', {
+      plans: [
+        { id: 'p1', name: 'Listed', features: ['Two visits', 'Drawings'] },
+        { id: 'p2', name: 'Written', features: [{ type: 'p', spans: [{ text: 'Setup billed separately' }] }] }
+      ]
+    }).state;
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).toContain('**Eligibility**\n\nWho can apply.\n\n**Appeals**\n\nHow to appeal.');
+    // Plain strings are the feature list's items; text written as paragraphs stays paragraphs.
+    expect(md).toContain('- [x] Two visits\n  - [x] Drawings');
+    expect(md).toContain('Setup billed separately');
+    expect(md).not.toContain('- [x] Setup billed separately');
+  });
+
+  it('leaves out a connected list’s entries agents are not told of, all of their words', () => {
+    const site = designedSite();
+    const placed = insert(discovery(site.state), site.home, 'team.grid', { heading: 'Our writers' });
+    let s = run(placed.state, { type: 'instance.setListSource', owner: { kind: 'page', id: site.home }, nodeId: placed.nodeId, prop: 'people', source: { query: { collectionId: 'posts' }, fields: { name: 'title', bio: 'excerpt' } } } as never);
+    expect(files(s).get('static/index.html.md')).toContain('- **Spring pottery classes**\n  Spring wheel classes open for bookings');
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: site.entry, noindex: true });
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).toContain('### Our writers');
+    expect(md).not.toContain('Spring pottery classes');
+    expect(md).not.toContain('Spring wheel classes');
+    // A data-only collection's entries are no documents of their own: what the list shows of them stays.
+    const data = run(s, { type: 'collection.update', collectionId: 'posts', pages: { detail: false, archive: false } } as never);
+    expect(files(data).get('static/index.html.md')).toContain('- **Spring pottery classes**\n  Spring wheel classes open for bookings');
+  });
+
+  it('gives a cached run the same copies as a fresh one when a section placed on several pages changes', () => {
+    const cache = new GenerationCache();
+    const site = designedSite();
+    let s = insert(discovery(site.state), site.home, 'intro.page', { heading: 'Welcome home' }).state;
+    s = insert(s, site.services, 'intro.page', { heading: 'Our services' }).state;
+    const same = (state: ProjectState) => expect([...generateProject(state, {}, cache).entries()].sort()).toEqual([...generateProject(state).entries()].sort());
+    same(s);
+    // Changed from what the app ships, the section's code decides what it shows: neither copy says it any more.
+    const changed = structuredClone(s);
+    const def = Object.values(changed.components).find((d) => d.componentId === 'intro.page')!;
+    def.source = `${def.source}\n<p>{heading}</p>`;
+    same(changed);
+    const out = generateProject(changed, {}, cache);
+    expect(out.get('static/index.html.md')).not.toContain('Welcome home');
+    expect(out.get('static/services/index.html.md')).not.toContain('Our services');
+    same(s);
   });
 
   it('keeps a quote apart from the words after it in a list item, and a working button’s words when its page is not listed', () => {

@@ -9,7 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { displayWinner, rangeDisplay } from '@shared/styles';
 import { publicUrl } from '@shared/public-url';
-import { entryRoute, findEntry, type SiteEntry } from '@shared/collections';
+import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
@@ -170,6 +170,11 @@ export interface Visit {
    * `scope` where it is placed, and `inDef` when that is inside another component's design.
    */
   code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, n: GraphNode & { kind: 'instance' }, scope: Scope, inDef: boolean) => void;
+  /**
+   * A managed design to walk in place of a code component, standing for what its markup shows (the Markdown copies
+   * read Foundation's sections through one, generator/shipped-outlines.ts); undefined walks it as code.
+   */
+  outline?: (def: ComponentDefinition) => ComponentDefinition | undefined;
   /** A page-level node (page or shell tree) about to render, before anything inside it. */
   enter?: (n: GraphNode) => void;
   /** After everything inside a page-level node has been visited. */
@@ -244,7 +249,10 @@ export function effectiveProps(
     // A list connected to a collection shows its entries, as the generator writes them, never its own items.
     const connected = connectedListItems(state, def, n, name, place);
     if (connected) {
-      props[name] = connected;
+      // Each item is one of the collection's entries, by its ID. One with a page of its own is a document: one the walk
+      // may not show is left out, all of it. A data-only collection's entries are no documents, only what lists show.
+      const document = (id: unknown) => typeof id === 'string' && hasDetailPages(findEntry(state, id)?.collection.settings);
+      props[name] = listed ? connected.filter((item) => !document(item.id) || listed({ type: 'entry', target: item.id })) : connected;
       continue;
     }
     const own = Object.hasOwn(n.props, name);
@@ -473,7 +481,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
         break;
       }
       case 'instance': {
-        const def = state.components[n.definitionId];
+        const placed = state.components[n.definitionId];
+        const def = placed?.kind === 'code' ? (visit.outline?.(placed) ?? placed) : placed;
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
         const props = effectiveProps(state, def, n, frame.scope, pageId, entry, visit.listed, archive);
@@ -605,6 +614,15 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
  */
 export function hiddenInDesignEverywhere(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
   return hiddenEverySize(hiddenInDesign(def, nodeId, scope, false)) && hiddenEverySize(hiddenInDesign(def, nodeId, scope));
+}
+
+/**
+ * Whether a placement surely hides a code component's part at every size, by its styles for the parts `around` it
+ * (outermost first, the part itself last) and, with `itemId`, that item's own: a code component's markup is all there
+ * is to say what is inside what.
+ */
+export function codePartsHidden(def: ComponentDefinition, inst: InstanceNode, around: readonly string[], itemId?: string): boolean {
+  return hiddenEverySize(around.map((part) => hiddenSizes([inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined])));
 }
 
 /**
