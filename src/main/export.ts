@@ -1196,10 +1196,13 @@ export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{
   return routes.map((r) => (answered.has(r.route.toLowerCase()) ? { ...r, answered: true as const } : r));
 }
 
+/** A route module SvelteKit builds a page with: a page, a layout or a load, or an endpoint (never a backup's name). */
+const ROUTE_MODULE = /^\+(?:page|layout|server)(?:@[^.]*)?(?:\.server)?\.(?:svelte|[cm]?[jt]s)$/;
+
 /**
  * A file of the author's own at an address the website keeps back from a draft but answers at with a page of its own
  * (withheldRoutes' `answered`: an old address kept working there, say), in the staged copy `dir`: a copy of the page in
- * static/, or a route file beside or around the generated page there (a layout, a load, an error page) that
+ * static/, or a route module beside or around the generated page there (a layout, a load, an endpoint) that
  * generated-manifest.json does not list as SiteOrigin Builder's. Built with the website's page, it would publish what
  * the author kept back. Null when there is none.
  */
@@ -1212,7 +1215,8 @@ export async function answeredAddressFile(dir: string, state: ProjectState, live
     if (isPlainFile(join(dir, copy))) return { file: copy, route, draft };
     const folder = dirname(redirectFile(route));
     const names = await fs.readdir(join(dir, folder)).catch(() => [] as string[]);
-    const file = names.map((n) => `${folder}/${n}`).find((f) => basename(f).startsWith('+') && !owned.has(f));
+    // An error page there shows only for a page that fails, never in place of the old address's.
+    const file = names.map((n) => `${folder}/${n}`).find((f) => ROUTE_MODULE.test(basename(f)) && !owned.has(f));
     if (file) return { file, route, draft };
   }
   return null;

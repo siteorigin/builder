@@ -271,6 +271,9 @@ describe('exporting a project with a draft', () => {
     await refused('static/winter/index.html.md', 'The website has a Markdown copy of the draft Winter stock preview at /winter/index.html.md. Remove the file that puts it there, then export again.');
     await refused('static/winter/index.html', 'The website has static/winter/index.html at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
     await refused('src/routes/winter/+layout.svelte', 'The website has src/routes/winter/+layout.svelte at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    await refused('src/routes/winter/+page.server.ts', 'The website has src/routes/winter/+page.server.ts at /winter/, the address of the draft Winter stock preview. Remove or move the file, then export again.');
+    // A backup, or an error page, shows nothing in the old address's place.
+    for (const file of ['src/routes/winter/+layout.svelte.bak', 'src/routes/winter/+error.svelte']) writeFileSync(join(dir, file), '<p>An older copy</p>');
     expect((await c.buildStaticTo(dest)).ok).toBe(true);
   });
 

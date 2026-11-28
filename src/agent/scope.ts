@@ -617,7 +617,13 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
     case 'page.update': {
       if (op.pageId !== authority.pageId) return `page.update changes another page, not ${label}.`;
       const wider = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !PAGE_SETTINGS.has(k));
-      return wider.length ? `page.update ${wider.join(' and ')} changes more than ${label}: it reaches other pages.` : null;
+      if (wider.length) return `page.update ${wider.join(' and ')} changes more than ${label}: it reaches other pages.`;
+      // A draft published takes over an old address the site keeps working at its route, which is the site's (#1363).
+      const page = state.pages[authority.pageId];
+      const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+      const at = (r: unknown) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === page.route.toLowerCase();
+      if (op.draft === false && page.draft === true && kept.some(at)) return `page.update draft publishes ${label} at ${page.route}, an old address the site keeps sending visitors on from, which changes more than ${label}.`;
+      return null;
     }
     // Each adds a new component to the site, which every page can then place.
     case 'component.makeUnique':
