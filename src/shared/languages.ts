@@ -62,6 +62,11 @@ export function sameLanguage(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+/** Registered whole tags the platform does not replace itself, with the code the IANA registry prefers. */
+const LEGACY_TAGS: Record<string, string> = { 'no-bok': 'nb', 'no-nyn': 'nn', 'zh-hakka': 'hak', 'zh-min-nan': 'nan', 'zh-xiang': 'hsn' };
+/** An extended language written after its macrolanguage ("zh-yue"), which the registry prefers alone ("yue"); "zh-min" is no such pair. */
+const EXTLANG_PREFIX = /^(?:ar|kok|lv|ms|sgn|sw|uz|zh)-(?=(?!min\b)[a-z]{3}(?:-|$))/;
+
 /**
  * What the versions in a translation set are told apart by: the canonical code in lower case, so a deprecated code
  * ("iw", "in") is the language that replaced it ("he", "id"). A code the platform cannot canonicalize is compared
@@ -69,10 +74,12 @@ export function sameLanguage(a: string, b: string): boolean {
  * as the author wrote it (sameLanguage).
  */
 export function languageKey(code: string): string {
+  const lower = code.toLowerCase();
+  const current = (LEGACY_TAGS[lower] ?? lower).replace(EXTLANG_PREFIX, '');
   try {
-    return Intl.getCanonicalLocales(code)[0].toLowerCase();
+    return Intl.getCanonicalLocales(current)[0].toLowerCase();
   } catch {
-    return code.toLowerCase();
+    return current;
   }
 }
 

@@ -213,13 +213,42 @@ describe('page languages in the project', () => {
     const sitemap = generateProject(published).get('static/sitemap.xml') as string;
     expect(sitemap).toContain('hreflang="iw" href="https://example.com/other/"');
     expect(sitemap).toContain('hreflang="x-default" href="https://example.com/other/"');
+    expect(pageAlternates(published, published.pages[other.id]).map((a) => a.language)).toEqual(expect.arrayContaining(['en', 'iw']));
     // Outside translation sets the page's own code still counts as another than the site's.
     expect(routeLanguages(published).map(([, language]) => language)).toContain('iw');
+  });
+
+  it.each([
+    ['no-bok', 'nb'],
+    ['no-nyn', 'nn'],
+    ['zh-yue', 'yue'],
+    ['zh-cmn-Hans', 'zh-Hans'],
+    ['zh-min-nan', 'nan'],
+    ['zh-hakka', 'hak'],
+    ['zh-xiang', 'hsn'],
+    ['in-ID', 'id-ID']
+  ])('reads the registered spelling “%s” as “%s” (#1532)', (legacy, preferred) => {
+    expect(languageKey(legacy)).toBe(languageKey(preferred));
+  });
+
+  it('keeps languages that only look alike apart (#1532)', () => {
+    expect(languageKey('zh-min')).not.toBe(languageKey('min'));
+    expect(languageKey('zh-yue')).not.toBe(languageKey('zh'));
+    expect(languageKey('he-IL')).not.toBe(languageKey('he'));
+  });
+
+  it('lets the site language be respelled over a set that already clashed by hand (#1532)', () => {
+    const { s, fr } = bilingual();
+    const hand = structuredClone(s);
+    hand.site.language = 'iw';
+    hand.pages[fr].language = 'he';
+    expect(apply(hand, { type: 'site.update', language: 'he' }).site.language).toBe('he');
   });
 
   it('compares a code the platform cannot canonicalize as written, ignoring case', () => {
     expect(languageKey('en-abcd-abcd')).toBe(languageKey('EN-abcd-ABCD'));
     expect(languageKey('en-abcd-abcd')).not.toBe(languageKey('en'));
+    expect(languageKey('en-abcd-abcd')).not.toBe(languageKey('en-abcd-efgh'));
   });
 
   it('refuses a language change that would make two versions the same, wherever it comes from', () => {
