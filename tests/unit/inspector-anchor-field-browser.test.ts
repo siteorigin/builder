@@ -138,6 +138,6 @@ describe.skipIf(!browserInstalled)('the Anchor ID of a placed section (#1353)', 
     const stale = structuredClone(plain);
     stale.pages[home].nodes[hero].anchor = 'old';
     expect(await advanced(stale, hero)).toContain('Anchor ID');
-    expect(await page.getByLabel('Anchor ID').inputValue()).toBe('old');
+    expect(await page.getByLabel('Anchor ID', { exact: true }).inputValue()).toBe('old');
   });
 });

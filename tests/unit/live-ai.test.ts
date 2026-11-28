@@ -112,6 +112,16 @@ describe('a collaborator’s request to the host’s AI', () => {
     expect(env.hero().props.heading).not.toBe('Bigger and better');
   });
 
+  it('never offers the host Developer mode for a guest’s request that says it needs it, nor tells the guest where it is (#1329)', async () => {
+    const env = await setup([() => finish('A working calculator needs Developer mode.')]);
+    await env.orch.send('Add a calculator', env.ctx, undefined, undefined, env.delegation());
+    await env.settled();
+    expect(env.orch.conversation!.messages.at(-1)!.result).toMatchObject({ status: 'no-changes' });
+    expect(env.orch.conversation!.messages.at(-1)!.result!.needs).toBeUndefined();
+    // Turning it on would not help a guest, whose request never gets code: the run is not told where it is.
+    expect(JSON.stringify(env.adapter.requests[0])).not.toContain('Settings > General');
+  });
+
   it('never offers code, the project brief, the external sources or the host’s own conversation, whatever the host’s Developer mode', async () => {
     let reached = 0;
     const env = await setup([() => finish('Noted.'), () => finish('Done.')], () => (reached++, {}) as SourceToolHost);

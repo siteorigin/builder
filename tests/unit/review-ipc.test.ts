@@ -13,6 +13,7 @@ describe('the client review’s IPC', () => {
   it.each([
     ['reviewEditions', 'controller.reviewEditions()'],
     ['captureReviewEdition', 'controller.captureReviewEdition('],
+    ['stopReviewCapture', 'controller.stopReviewCapture(id)'],
     ['exportReviewSheet', 'controller.exportReviewSheet(']
   ])('project.%s invokes project:%s, which the main process hands to the controller', (method, call) => {
     expect(preload).toContain(`    ${method}: invoke('project:${method}'),`);
@@ -22,5 +23,11 @@ describe('the client review’s IPC', () => {
     // The handler's own body calls the controller method of the same name.
     const body = main.slice(at, main.indexOf('handle(', at + 1));
     expect(body).toContain(call);
+  });
+
+  it('lets the editor hear how far a capture has got, and asks for each capture by its ID (#1413)', () => {
+    expect(preload).toMatch(/ALLOWED_EVENTS = new Set\(\[[^\]]*'review:progress'/);
+    const at = main.indexOf(`handle('project:captureReviewEdition'`);
+    expect(main.slice(at, main.indexOf('handle(', at + 1))).toContain('{ id: r.id }');
   });
 });

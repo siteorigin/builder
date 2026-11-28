@@ -1,4 +1,4 @@
-import type { ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
+import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -483,6 +483,9 @@ export type DuplicateProjectResult = { ok: true; dir: string; name: string } | {
  */
 export type TrustRequest = { dir: string; name: string; reason: 'new' | 'changed' | 'unpacked' };
 
+/** A project beside a chosen folder that is not one (the project it is inside, or the one it holds), which Open project offers to open instead (#1433). */
+export type NearbyProject = { dir: string; name: string };
+
 /**
  * A project ZIP file being unpacked: into a new folder in `dir`, named `folder` unless that name is taken (then a
  * number follows it), with `done` of its `total` files written so far.
@@ -775,6 +778,11 @@ export interface ChatMessage {
      * API key (`key`). Either way the same request can be sent again once it is.
      */
     repair?: 'settings' | 'key';
+    /**
+     * What the request still needs that only the user can turn on: `developer-mode`, when the AI answered that what was
+     * asked needs custom code while Developer mode was off. The turn offers Settings at that switch (#1329).
+     */
+    needs?: 'developer-mode';
     /**
      * Code the run wrote that the project does not keep, each version kept in the project's recovery folder (spec
      * 14.3): a source patch the checks refused (`rejected`), or one that landed in a run that was then undone because it
@@ -1380,9 +1388,10 @@ export interface BuilderApi {
     /**
      * Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and
      * Linux). `replaces` is a missing recent entry's folder: once the chosen project opens, the entry is dropped if it
-     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first.
+     * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first. A chosen folder
+     * that is not a project comes back with `nearby` when a project beside it is the one most likely meant (#1433).
      */
-    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest }>;
+    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject }>;
     /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
     cancelOpen(): Promise<void>;
     trustAndOpen(dir: string, opts?: { replaces?: string }): Promise<{ ok: boolean; message?: string }>;
@@ -1545,9 +1554,12 @@ export interface BuilderApi {
     reviewEditions(): Promise<ReviewEditionManifest[]>;
     /**
      * Build the site for review and picture each page at `routes` at each of `widths` (a desktop and a phone width when
-     * none are given), keeping the pictures as a new review edition in the project.
+     * none are given), keeping the pictures as a new review edition in the project. Its `review:progress` events carry
+     * `id` (#1413).
      */
-    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }> }): Promise<ReviewEditionResult>;
+    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }>; id?: string }): Promise<ReviewEditionResult>;
+    /** Stop the review edition being captured with `id`, if it is still being captured (#1413): nothing of it is kept, and its capture answers `stopped`. */
+    stopReviewCapture(id: string): Promise<void>;
     /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */
     exportReviewSheet(editionId: string): Promise<ReviewSheetResult>;
     retryPreview(): Promise<void>;
@@ -1729,6 +1741,8 @@ export interface BuilderApi {
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
+  /** Where the review edition being captured has got to (#1413): the build, then each picture, then keeping it. */
+  on(channel: 'review:progress', cb: (p: ReviewCaptureProgress) => void): () => void;
   /** A project ZIP file is being unpacked, sent as it starts and as its files are written (null: it finished, failed or was called off). */
   on(channel: 'projects:unpacking', cb: (u: Unpacking | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
