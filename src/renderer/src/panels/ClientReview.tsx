@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Camera, ChevronRight, CircleAlert, CircleCheck, CircleStop, Info } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
-import { DEFAULT_REVIEW_WIDTHS, reviewPages, type ReviewCaptureProgress, type ReviewEditionManifest } from '@shared/review-edition';
+import { DEFAULT_REVIEW_WIDTHS, reviewPages, type ReviewCaptureStep, type ReviewEditionManifest } from '@shared/review-edition';
 import { publishedState } from '@generator/index';
 import { api, getState } from '../store';
 import { Spinner } from '../components/ui';
@@ -27,7 +27,7 @@ function madeAt(iso: string): string {
  * What a capture is doing now (#1413): building the website, picturing one page at one width, or keeping the edition.
  * The pictures done count every one tried, taken or not: one a page could not give is said in the outcome.
  */
-export function captureStatus(p: ReviewCaptureProgress | null, stopping: boolean): string {
+export function captureStatus(p: ReviewCaptureStep | null, stopping: boolean): string {
   if (stopping) return !p || p.phase === 'build' ? 'Stopping once the website is built…' : 'Stopping the capture…';
   if (!p || p.phase === 'build') return 'Building the website…';
   if (p.phase === 'saving') return `Keeping the edition of ${p.total} ${p.total === 1 ? 'picture' : 'pictures'}…`;
@@ -57,12 +57,13 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
   // Where the capture running from here has got to, and whether the author asked it to stop (#1413).
-  const [progress, setProgress] = useState<ReviewCaptureProgress | null>(null);
+  const [progress, setProgress] = useState<ReviewCaptureStep | null>(null);
   const [stopping, setStopping] = useState(false);
-  const capturing = useRef(false);
+  // The ID the capture running from here was asked with: an event of an earlier one, arriving late, is not its.
+  const capturing = useRef<string | null>(null);
   // Asked before the capture reached the main process (its edits still being saved): it is never asked for.
   const stopAsked = useRef(false);
-  useEffect(() => api.on('review:progress', (p) => capturing.current && setProgress(p)), []);
+  useEffect(() => api.on('review:progress', ({ id, ...p }) => id === capturing.current && setProgress(p)), []);
   // An answer for a project no longer open is never shown.
   const key = useRef(workspaceKey);
   key.current = workspaceKey;
@@ -104,7 +105,8 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
     setOutcome(null);
     setProgress(null);
     setStopping(false);
-    capturing.current = true;
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    capturing.current = id;
     stopAsked.current = false;
     try {
       const started = await afterEditsSettle(
@@ -117,7 +119,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
           const lost = picked.find((r) => !live.some((p) => p.route === r));
           if (lost) return { ok: false as const, message: `The website no longer has a page at ${lost}. Check the pages to capture, then capture again.` };
           if (stopAsked.current) return { ok: false as const, stopped: true as const, message: 'The capture was stopped before it began. No edition was kept.' };
-          return await api.project.captureReviewEdition({ routes: picked });
+          return await api.project.captureReviewEdition({ routes: picked, id });
         }
       );
       if (key.current !== opening) return;
@@ -131,7 +133,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
     } catch (e) {
       say({ ok: false, message: `The pages were not captured: ${(e as Error).message}` });
     } finally {
-      capturing.current = false;
+      capturing.current = null;
       setProgress(null);
       setStopping(false);
       onBusy(null);

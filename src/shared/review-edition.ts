@@ -80,10 +80,12 @@ export type ReviewEditionResult = { ok: true; edition: ReviewEditionManifest; pa
 
 /**
  * Where the edition being captured has got to (#1413), sent as `review:progress` while it is captured: the website
- * being built, a picture about to be taken (`done` of `total` tried so far, taken or not), or every picture taken and the edition
- * being kept.
+ * being built, a picture about to be taken (`done` of `total` tried so far, taken or not), or every picture taken and
+ * the edition being kept. `id` is the one its capture was asked with: an event can arrive after its capture's answer
+ * (it travels apart from it), so the editor shows only those of the capture it is waiting for.
  */
-export type ReviewCaptureProgress = { phase: 'build' } | { phase: 'capture'; done: number; total: number; route: string; title: string; label: string } | { phase: 'saving'; done: number; total: number };
+export type ReviewCaptureProgress = { id: string } & ReviewCaptureStep;
+export type ReviewCaptureStep = { phase: 'build' } | { phase: 'capture'; done: number; total: number; route: string; title: string; label: string } | { phase: 'saving'; done: number; total: number };
 
 /** What saving an edition's offline sheet (#1134) came to: the file written, or why there is none (no message: the chooser was closed). */
 export type ReviewSheetResult = { ok: true; path: string; message: string } | { ok: false; message?: string };

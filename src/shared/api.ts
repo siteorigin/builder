@@ -1545,9 +1545,10 @@ export interface BuilderApi {
     reviewEditions(): Promise<ReviewEditionManifest[]>;
     /**
      * Build the site for review and picture each page at `routes` at each of `widths` (a desktop and a phone width when
-     * none are given), keeping the pictures as a new review edition in the project.
+     * none are given), keeping the pictures as a new review edition in the project. Its `review:progress` events carry
+     * `id` (#1413).
      */
-    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }> }): Promise<ReviewEditionResult>;
+    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }>; id?: string }): Promise<ReviewEditionResult>;
     /** Stop the review edition being captured, if any (#1413): nothing of it is kept, and its capture answers `stopped`. */
     stopReviewCapture(): Promise<void>;
     /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */

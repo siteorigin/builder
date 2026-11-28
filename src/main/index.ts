@@ -812,8 +812,8 @@ function registerIpc() {
   handle('project:reviewEditions', () => controller.reviewEditions());
   handle('project:captureReviewEdition', (request: unknown) => {
     if (readOnlyReason()) return { ok: false, message: readOnlyReason() };
-    const r = request && typeof request === 'object' ? (request as { routes?: unknown; widths?: unknown }) : {};
-    return controller.captureReviewEdition({ routes: r.routes, ...(r.widths === undefined ? {} : { widths: r.widths }) });
+    const r = request && typeof request === 'object' ? (request as { routes?: unknown; widths?: unknown; id?: unknown }) : {};
+    return controller.captureReviewEdition({ routes: r.routes, ...(r.widths === undefined ? {} : { widths: r.widths }), ...(r.id === undefined ? {} : { id: r.id }) });
   });
   handle('project:stopReviewCapture', () => controller.stopReviewCapture());
   handle('project:exportReviewSheet', (editionId: unknown) => controller.exportReviewSheet(editionId));

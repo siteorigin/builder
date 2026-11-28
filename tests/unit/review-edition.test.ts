@@ -361,16 +361,16 @@ describe('capturing a review edition', () => {
     c.reviewShoot = fakeShooter({ unavailable: { '/': [390] } }).shoot;
     const sent: unknown[] = [];
     c.send = (channel: string, payload: unknown) => void (channel === 'review:progress' && sent.push(payload));
-    const r = await c.captureReviewEdition({ routes: ['/', '/about/'] });
+    const r = await c.captureReviewEdition({ routes: ['/', '/about/'], id: 'capture-1' });
     expect(r.ok).toBe(true);
     const title = (route: string) => (r.ok ? r.edition.routes.find((p) => p.route === route)!.title : '');
     expect(sent).toEqual([
-      { phase: 'build' },
-      { phase: 'capture', done: 0, total: 4, route: '/', title: title('/'), label: 'Desktop' },
-      { phase: 'capture', done: 1, total: 4, route: '/', title: title('/'), label: 'Phone' },
-      { phase: 'capture', done: 2, total: 4, route: '/about/', title: title('/about/'), label: 'Desktop' },
-      { phase: 'capture', done: 3, total: 4, route: '/about/', title: title('/about/'), label: 'Phone' },
-      { phase: 'saving', done: 4, total: 4 }
+      { id: 'capture-1', phase: 'build' },
+      { id: 'capture-1', phase: 'capture', done: 0, total: 4, route: '/', title: title('/'), label: 'Desktop' },
+      { id: 'capture-1', phase: 'capture', done: 1, total: 4, route: '/', title: title('/'), label: 'Phone' },
+      { id: 'capture-1', phase: 'capture', done: 2, total: 4, route: '/about/', title: title('/about/'), label: 'Desktop' },
+      { id: 'capture-1', phase: 'capture', done: 3, total: 4, route: '/about/', title: title('/about/'), label: 'Phone' },
+      { id: 'capture-1', phase: 'saving', done: 4, total: 4 }
     ]);
   });
 

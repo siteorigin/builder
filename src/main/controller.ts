@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import type { PageCheck } from './page-check';
-import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewCaptureProgress, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
+import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewCaptureStep, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
 import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
@@ -4592,7 +4592,7 @@ export class Controller {
    * be pictured faithfully at a width is recorded as unavailable there; the edition is kept all the same. Nothing is
    * kept when the build fails, the project closes or changes hands, or the edition cannot be written.
    */
-  async captureReviewEdition(request: { routes: unknown; widths?: unknown }): Promise<ReviewEditionResult> {
+  async captureReviewEdition(request: { routes: unknown; widths?: unknown; id?: unknown }): Promise<ReviewEditionResult> {
     const shoot = this.reviewShoot;
     if (!shoot) return { ok: false, message: 'Review pages cannot be captured here.' };
     const blocked = this.exportBlocked();
@@ -4617,9 +4617,11 @@ export class Controller {
     // Stopped by the author (stopReviewCapture), with the project still open: said as such, not as a failure (#1413).
     const stopped = () => job.signal.reason === STOPPED && this.session === s;
     const closed = (): ReviewEditionResult => (stopped() ? { ok: false, stopped: true, message: REVIEW_STOPPED } : { ok: false, message: closedMessage });
-    // Where it has got to, for the dialog to say (#1413); only this capture's, while it is the one being captured.
-    const progress = (p: ReviewCaptureProgress) => {
-      if (this.reviewCapture === job && !gone()) this.send('review:progress', p);
+    // Where it has got to, for the dialog to say (#1413); only this capture's, while it is the one being captured, and
+    // named with the ID it was asked with.
+    const id = typeof request.id === 'string' ? request.id.slice(0, 64) : '';
+    const progress = (p: ReviewCaptureStep) => {
+      if (this.reviewCapture === job && !gone()) this.send('review:progress', { id, ...p });
     };
     try {
       return await this.withStaging(async (staging): Promise<ReviewEditionResult> => {
