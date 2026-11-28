@@ -6,7 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, saveHeldNow, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
-import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
+import { afterLanding, isLeaving, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
@@ -1130,7 +1130,7 @@ function DraftField({
   // Text `check` refused, kept as a draft after the field was left (or by another control of its place), and the reason
   // shown for it.
   const kept = useRef(restoredAs === 'check');
-  // Text the project refused once sent while it was being left, or sent again after Keep editing (see keepAfterRefusal).
+  // Text the project refused while it was being left, or again after that (see keepAfterRefusal).
   const projectRefused = useRef(false);
   const shown = useRef<DraftProblem | null>(null);
   const showProblem = (p: DraftProblem | null) => {
@@ -1283,17 +1283,37 @@ function DraftField({
   const held = useRef(false);
   const refusedLast = useRef(!!restored);
   const named = (el: HTMLInputElement | HTMLTextAreaElement) => refusedReport(fieldName(el, ariaLabel));
-  /** The project refused text sent while it was being left, or kept since with Keep editing (its folder moved, so it
-   *  is read-only now): the text stays, marked as not saved, from where typing began. Leaving again sends it again and
-   *  asks again when it is refused, leaving the project with it unfocused asks too, and the field going away offers
-   *  it to copy. Not once the author has typed on: that newer text is the field's now. */
-  const keepAfterRefusal = (text: string, from: DraftStart | null, el: HTMLInputElement | HTMLTextAreaElement) => {
-    if (!mounted.current || !from || draftRef.current !== text) return;
+  /** The project refused text while it was being left, or again after that (its folder moved, so it is read-only now):
+   *  the text stays, marked as not saved, from where typing began. Leaving again sends it again and asks again when it
+   *  is refused, leaving the project with it unfocused asks too, and the field going away offers it to copy. */
+  const keepAfterRefusal = (text: string, from: DraftStart) => {
+    const el = input.current;
+    // The field went while its text was being sent: offered to copy, while the project it was typed in is still open.
+    if (!mounted.current || !el) {
+      if (text.trim() && useStore.getState().snapshot?.workspaceKey === from.base?.workspaceKey) toast(`${refusedReport(nameRef.current)} The field went away, so copy it to keep it.`, 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) });
+      return;
+    }
+    // The project holds that very text by now: nothing is left to keep.
+    if (text === valueRef.current) return;
+    // Typed on meanwhile: the newer text is the field's, and one started from the refused text starts where it began.
+    if (draftRef.current !== text) {
+      if (startedAt.current?.value === text) startedAt.current = from;
+      return;
+    }
     projectRefused.current = true;
     refusedLast.current = true;
     startedAt.current ??= from;
     mark(true);
     retainRefused(draftKey, named(el), revealable(el, reveal));
+  };
+  /** Hears whether the project refuses `text`, sent from `from`: refused while the project is being left, or again
+   *  after that, it stays (see keepAfterRefusal); otherwise the saved value comes back, as for any refused change. */
+  const whenRefused = (text: string, from: DraftStart | null) => {
+    const again = projectRefused.current;
+    projectRefused.current = false;
+    return () => {
+      if (from && (again || isLeaving())) keepAfterRefusal(text, from);
+    };
   };
   /** Leave the field with this text: commit it, or (refused) say so; the saved value comes back after, unless
    *  `check` refused it or it is too long to save, which keeps it. */
@@ -1315,11 +1335,7 @@ function DraftField({
       reportRefused(named(el), draftKey, revealable(el, reveal));
       return;
     }
-    // Sent while the project is being left, or kept since then with Keep editing: refused, it stays (see keepAfterRefusal).
-    // Otherwise a refusal puts the saved value back, as below.
-    const keepIfRefused = isSettling() || held.current || projectRefused.current;
-    projectRefused.current = false;
-    const result = commit(text, keepIfRefused ? () => keepAfterRefusal(text, from, el) : undefined);
+    const result = commit(text, whenRefused(text, from));
     // Too long to save: the whole text stays, marked as not saved, for the author to shorten. Nothing is put
     // back, now or once leaving the project is decided.
     if (result === TOO_LONG) {
@@ -1373,7 +1389,8 @@ function DraftField({
         const from = startedAt.current ?? { base: useStore.getState().snapshot, value: valueRef.current, commit: onCommit, ai: aiActivity() };
         if (text === from.value) return forget();
         const edit: PendingEdit = { operations: [], separate: true };
-        const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text, edit), text, { check: true, control: owner.current }) : commitDraft(from.base, () => onCommit(text, edit), text, { control: owner.current });
+        const refused = whenRefused(text, from);
+        const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text, edit), text, { check: true, control: owner.current, refused }) : commitDraft(from.base, () => onCommit(text, edit), text, { control: owner.current, refused });
         if (result !== false) {
           forget();
           mark(false);

@@ -41,6 +41,8 @@ export interface Refocusable {
 }
 
 interface Active {
+  /** Leaving the project: see isLeaving. */
+  leaving: boolean;
   problems: string[];
   /** Drafts whose problem is already explained (a field that refused its text), so it is not said twice. */
   explained: Set<string>;
@@ -112,6 +114,9 @@ export function refusedWithin(root: object): { message: string; field: Refocusab
 /** Resolves once every change on its way into the project now has landed or failed. */
 export const appliesLanded = (): Promise<unknown> => Promise.allSettled([...inflight]);
 export const isSettling = () => active.length > 0;
+/** A settle for leaving the project is running: text the project refuses meanwhile stays in its field, for the author
+ *  to keep editing or leave without, rather than the saved value coming back. */
+export const isLeaving = () => active.some((a) => a.leaving);
 
 /** Something typed was refused before it reached the project (a page with no title, text too long to send).
  *  Counted only while a settle is running; otherwise the field explains it as it always has. `draftKey` is
@@ -177,6 +182,8 @@ export function setCanvasCommit(fn: (() => void) | null): void {
 export interface SettleDeps {
   /** Commit what the focused control holds, as leaving it does. */
   blur: () => void;
+  /** This settle is for leaving the project (see isLeaving). */
+  leaving?: boolean;
   /** Stop new input, once the preview has handed back its inline edit (holding input earlier would take focus
    *  from a link being typed there, which drops it). */
   hold?: () => void;
@@ -217,7 +224,7 @@ async function until(cond: () => boolean, ms: number, wait: SettleDeps['wait']):
 /** Commit every draft and wait for every change to land, collecting what could not be saved. */
 export async function settle(deps: SettleDeps): Promise<Settled> {
   // A settle already running (Save just before Close) may have heard of a refusal this one must answer too.
-  const s: Active = { problems: [...new Set(active.flatMap((a) => a.problems))], explained: new Set(active.flatMap((a) => [...a.explained])), refused: active.find((a) => a.refused)?.refused ?? null };
+  const s: Active = { leaving: !!deps.leaving, problems: [...new Set(active.flatMap((a) => a.problems))], explained: new Set(active.flatMap((a) => [...a.explained])), refused: active.find((a) => a.refused)?.refused ?? null };
   active.push(s);
   let finished = false;
   const finish = () => {
