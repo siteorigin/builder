@@ -1,7 +1,10 @@
 /**
  * Reads a post's HTML (a WordPress post, or the HTML a Markdown file holds or becomes) into the element tree the
  * editor's rich text reader takes (see shared/richtext-tree.ts), keeping only prose: paragraphs, headings, quotes,
- * lists, links, bold and italic, and pictures. Anything active is never carried: scripts, styles, frames, objects,
+ * lists, links, bold and italic, and pictures. Formatting it has no form for becomes ordinary text, and is counted:
+ * code and preformatted text keep their lines, superscripts and subscripts are written with characters of their own
+ * so their digits never join the text around them (m², 10⁶, CO₂, or 10^(-1.5)), and struck-through text keeps its
+ * words. Anything active is never carried: scripts, styles, frames, objects,
  * forms and every attribute but a link's address and a picture's source and description. What was left out is
  * counted in a report the author reads before importing.
  *
@@ -32,9 +35,17 @@ export interface HtmlReport {
   galleryOverflow: number;
   /** Links whose address could not be kept (a script, or an address on the old site that is not a post): their words stay. */
   droppedLinks: number;
+  /** Blocks of code or preformatted text kept as ordinary text, line by line. */
+  code: number;
+  /** Superscripts and subscripts written on the line (see scriptForm). */
+  raised: number;
+  /** Struck-through passages kept as ordinary text. */
+  struck: number;
+  /** Done tasks of a Markdown task list, which became a check list's items with no tick. */
+  ticked: number;
 }
 
-export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], galleryOverflow: 0, droppedLinks: 0 });
+export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], galleryOverflow: 0, droppedLinks: 0, code: 0, raised: 0, struck: 0, ticked: 0 });
 
 /** A picture the HTML shows, as written. */
 export interface HtmlImage {
@@ -461,6 +472,7 @@ const KEEP = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquot
 /** Blocks the reader has no kind of its own for: their words stay, as paragraphs. */
 const AS_BLOCK = new Set(['main', 'aside', 'nav', 'address', 'details', 'summary', 'dl', 'dt', 'dd', 'figcaption', 'fieldset', 'legend', 'center', 'hgroup', 'caption', 'menu']);
 
+const hasClass = (el: HElement, name: string) => (el.attrs.class ?? '').split(/\s+/).includes(name);
 const textOf = (n: HNode): string => (typeof n === 'string' ? n : n.children.map(textOf).join(''));
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
@@ -481,6 +493,59 @@ function embedAddress(el: HElement): string | null {
   return /^https?:\/\/[^\s<>"]+$/i.test(url) ? url : null;
 }
 
+/** The characters of their own that superscripts and subscripts have, for what they commonly hold. */
+const SUP: Record<string, string> = { ...digits('⁰¹²³⁴⁵⁶⁷⁸⁹'), '+': '⁺', '-': '⁻', '−': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', n: 'ⁿ', i: 'ⁱ' };
+const SUB: Record<string, string> = { ...digits('₀₁₂₃₄₅₆₇₈₉'), '+': '₊', '-': '₋', '−': '₋', '=': '₌', '(': '₍', ')': '₎' };
+function digits(forms: string): Record<string, string> {
+  return Object.fromEntries([...forms].map((c, d) => [String(d), c]));
+}
+
+const isScript = (n: HNode) => typeof n !== 'string' && (n.tag === 'sup' || n.tag === 'sub');
+const hasScript = (el: HElement): boolean => el.children.some((c) => typeof c !== 'string' && (isScript(c) || hasScript(c)));
+
+function mapText(nodes: HNode[], map: Record<string, string>): HNode[] {
+  return nodes.map((n) => (typeof n === 'string' ? [...n].map((c) => map[c] ?? c).join('') : { ...n, children: mapText(n.children, map) }));
+}
+
+/**
+ * How a superscript or subscript is written on the line, which post text has no form for: with characters of its own
+ * when every one it holds has them (m², CO₂, October¹), so its digits never join the number or word around it;
+ * otherwise, holding a digit, in brackets after "^" or "_" (10^(-1.5), x_(i,2)), as is one holding another
+ * (10^(2³), never 10²³). Letters alone, an ordinal's (19th), read as they are.
+ */
+function scriptForm(el: HElement): { map: Record<string, string> } | { mark: string } | null {
+  const map = el.tag === 'sup' ? SUP : SUB;
+  const text = textOf(el);
+  if (!hasScript(el) && [...text].every((c) => /\s/.test(c) || Object.hasOwn(map, c))) return { map };
+  return /\p{Nd}/u.test(text) ? { mark: el.tag === 'sup' ? '^' : '_' } : null;
+}
+
+/** A superscript or subscript on the line (see scriptForm). What it holds (a footnote marker's link) is kept. */
+function raised(node: HElement, convertKids: (nodes: HNode[]) => RichDomNode[], report: HtmlReport): RichDomNode[] {
+  if (!textOf(node).trim()) return [{ tag: 'span', children: convertKids(node.children) }];
+  report.raised++;
+  const form = scriptForm(node);
+  if (form && 'map' in form) return [{ tag: 'span', children: convertKids(mapText(node.children, form.map)) }];
+  const kids: RichDomNode = { tag: 'span', children: convertKids(node.children) };
+  return form ? [`${form.mark}(`, kids, ')'] : [kids];
+}
+
+/**
+ * An element's words as one line of text (a picture's caption): its superscripts and subscripts written on the line
+ * as in the text, and what else it held counted as there.
+ */
+function lineText(n: HNode, report: HtmlReport): string {
+  if (typeof n === 'string') return n;
+  const inner = n.children.map((c) => lineText(c, report)).join('');
+  if (!inner.trim()) return inner;
+  if (n.tag === 'pre') report.code++;
+  if (n.tag === 's' || n.tag === 'strike' || n.tag === 'del') report.struck++;
+  if (!isScript(n)) return inner;
+  report.raised++;
+  const form = scriptForm(n);
+  return !form ? inner : 'map' in form ? [...inner].map((c) => form.map[c] ?? c).join('') : `${form.mark}(${inner})`;
+}
+
 function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre = false): RichDomNode[] {
   const out: RichDomNode[] = [];
   let cells = 0;
@@ -490,7 +555,8 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       else node.split('\n').forEach((line, k) => (k && out.push({ tag: 'br', children: [] }), line && out.push(line)));
       continue;
     }
-    const kids = () => convert(node.children, opts, report, pre || node.tag === 'pre');
+    const convertKids = (children: HNode[]) => convert(children, opts, report, pre || node.tag === 'pre');
+    const kids = () => convertKids(node.children);
     const tag = node.tag;
     if (tag === 'img') {
       const key = opts.image({ src: node.attrs.src ?? '', alt: oneLine(node.attrs.alt ?? '') });
@@ -498,10 +564,11 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
     } else if (tag === 'figure') {
       const imgs = descendants(node, 'img');
       if (imgs.length) {
-        const caption = oneLine(descendants(node, 'figcaption').map(textOf).join(' '));
+        // Several pictures share no caption: it is left out, and so is what it held.
+        const caption = imgs.length === 1 ? oneLine(descendants(node, 'figcaption').map((c) => lineText(c, report)).join(' ')) : '';
         for (const img of imgs) {
           const key = opts.image({ src: img.attrs.src ?? '', alt: oneLine(img.attrs.alt ?? '') });
-          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption && imgs.length === 1 ? { caption } : {}) }, children: [] });
+          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption ? { caption } : {}) }, children: [] });
         }
       } else {
         const url = embedAddress(node);
@@ -524,7 +591,18 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
       // Cells of a row, one after another on its line.
       if (cells++) out.push(' · ');
       out.push({ tag: 'span', children: kids() });
-    } else if (tag === 'pre') out.push({ tag: 'div', children: kids() });
+    } else if (tag === 'pre') {
+      if (textOf(node).trim()) report.code++;
+      out.push({ tag: 'div', children: kids() });
+    } else if (tag === 'sup' || tag === 'sub') out.push(...raised(node, convertKids, report));
+    else if (tag === 's' || tag === 'strike' || tag === 'del') {
+      if (textOf(node).trim()) report.struck++;
+      out.push({ tag: 'span', children: kids() });
+    } else if (tag === 'ul' && hasClass(node, 'so-task-list')) {
+      // A Markdown task list (markdown.ts): a check list, which shows no item as done.
+      report.ticked += node.children.filter((c) => typeof c !== 'string' && c.tag === 'li' && hasClass(c, 'so-task-done')).length;
+      out.push({ tag, check: true, children: kids() });
+    }
     else if (tag === 'hr') out.push({ tag: 'div', children: [] });
     else if (KEEP.has(tag)) out.push({ tag, children: kids() });
     else if (AS_BLOCK.has(tag) || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') out.push({ tag: 'div', children: kids() });
