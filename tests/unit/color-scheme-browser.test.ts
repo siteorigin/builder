@@ -157,7 +157,7 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
     if (noStorage) await context.addInitScript(`Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Storage is turned off', 'SecurityError'); } });`);
     const key = themeStorageKey(site.state);
     if (!noStorage && stored) await context.addInitScript(`try { if (!sessionStorage.getItem('seeded')) { localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(stored)}); sessionStorage.setItem('seeded', '1'); } } catch {}`);
-    const run = script && mode === 'toggle' ? `<script type="module">${themeToggleJs(key)}\nwindow.__stop = startThemeToggle(() => 'Dark mode');\nwindow.__ready = true;</script>` : '';
+    const run = script && mode === 'toggle' ? `<script type="module">${themeToggleJs(key)}\nconst stopFollowing = followThemeChoice();\nconst stopSwitch = startThemeToggle(() => 'Dark mode');\nwindow.__stop = () => (stopSwitch(), stopFollowing());\nwindow.__ready = true;</script>` : '';
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">${site.head}<style>${site.css}</style></head><body>${site.body}${run}</body></html>`;
     await context.route(`${ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
     const page = await context.newPage();
@@ -221,6 +221,44 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       expect((await toggle(page)).count).toBe(0);
     } finally {
       await close();
+    }
+  });
+
+  it('keeps every open tab of the site on the visitor’s choice, a page without the header too (#1421)', async () => {
+    const site = sites.toggle;
+    const key = themeStorageKey(site.state);
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: 'light' });
+    try {
+      // As the layout starts them: every page follows the choice, and a page with the header also gets the switch.
+      const html = (header: boolean) =>
+        `<!doctype html><html lang="en"><head><meta charset="utf-8">${site.head}<style>${site.css}</style></head><body>${site.body}` +
+        `${header ? '' : `<script>document.querySelector('header.so-header').remove();</script>`}` +
+        `<script type="module">${themeToggleJs(key)}\nfollowThemeChoice();\n${header ? `startThemeToggle(() => 'Dark mode');\n` : ''}window.__ready = true;</script></body></html>`;
+      await context.route(`${ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html(!route.request().url().endsWith('/about')) }));
+      const home = await context.newPage();
+      const about = await context.newPage();
+      const contact = await context.newPage();
+      for (const [page, path] of [[home, '/'], [about, '/about'], [contact, '/contact']] as const) {
+        await page.goto(`${ORIGIN}${path}`, { waitUntil: 'domcontentloaded' });
+        await page.waitForFunction('window.__ready === true');
+      }
+      expect((await toggle(about)).count).toBe(0);
+      expect(await colors(about)).toMatchObject({ background: site.light.background, theme: null });
+      await home.click('.so-theme-toggle');
+      for (const page of [contact, about]) await page.waitForFunction(`document.documentElement.dataset.soTheme === 'dark'`);
+      expect(await colors(about)).toMatchObject({ background: site.dark.background, text: site.dark.text, theme: 'dark' });
+      expect((await toggle(contact)).pressed).toBe('true');
+      // And back, still without the switch on the page that hides the header.
+      await home.click('.so-theme-toggle');
+      for (const page of [contact, about]) await page.waitForFunction(`document.documentElement.dataset.soTheme === 'light'`);
+      expect(await colors(about)).toMatchObject({ background: site.light.background, theme: 'light' });
+      expect((await toggle(contact)).pressed).toBe('false');
+      expect((await toggle(about)).count).toBe(0);
+      // A choice forgotten in another tab hands every page back to the device.
+      await contact.evaluate('localStorage.clear()');
+      for (const page of [home, about]) await page.waitForFunction(`!('soTheme' in document.documentElement.dataset)`);
+    } finally {
+      await context.close();
     }
   });
 

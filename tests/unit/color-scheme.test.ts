@@ -266,8 +266,13 @@ describe('what the site gets in each mode', () => {
     const layout = clean.get('src/routes/+layout.svelte')!;
     expect(layout).toContain(`<svelte:head>\n\t${themeBootstrap(themeStorageKey(s))}`);
     expect(themeStorageKey(s)).toBe(`so-theme:${s.manifest.projectId}`);
-    expect(layout).toContain(`import { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';`);
+    expect(layout).toContain(`import { followThemeChoice, startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';`);
     expect(layout).toContain('return startThemeToggle(() => text().themeToggle);');
+    // Every page follows a choice made in another tab, a page that hides the header too (#1421): its own effect, never
+    // behind the header's.
+    expect(layout).toContain('\t$effect(() => followThemeChoice());\n');
+    expect(layout).not.toMatch(/if \(!showHeader\) return;[^}]*followThemeChoice/);
+    expect(clean.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain('export function followThemeChoice()');
     // The browser's theme colour follows the visitor's choice as well as the device, on every page.
     const [light, dark] = [siteColors(effectiveTokens(s)).brand, siteColors(effectiveTokens(s, 'dark')).brand];
     expect(light).not.toBe(dark);
@@ -288,6 +293,8 @@ describe('what the site gets in each mode', () => {
     expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).not.toContain('root.dataset.soTheme =');
     expect(themeToggleJs('k', true)).toEqual(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)!.replace(JSON.stringify(themeStorageKey(s)), '"k"'));
     expect(dev.get('src/routes/+layout.svelte')).toContain('startThemeToggle');
+    expect(dev.get('src/routes/+layout.svelte')).not.toContain('followThemeChoice');
+    expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).not.toContain('followThemeChoice');
     for (const [path, source] of [...clean, ...dev])
       if (path.endsWith('.svelte')) for (const generate of ['server', 'client'] as const) expect(() => compile(source, { filename: path, generate, runes: true }), path).not.toThrow();
   });
