@@ -2647,7 +2647,7 @@ function propSchemaFor(ctx: EmitCtx, v: unknown): PropSchema | undefined {
   return propBindingSchema(ctx.def.properties, v);
 }
 
-/** Elements a browse form cannot be placed directly inside: lists, text, and a summary (their content is not flow). */
+/** Elements browse controls cannot be placed directly inside: lists, text, and a summary (their content is not flow). */
 const NO_FORM_INSIDE = new Set(['ul', 'ol', 'dl', 'p', 'span', 'summary']);
 
 /**
@@ -2655,10 +2655,11 @@ const NO_FORM_INSIDE = new Set(['ul', 'ol', 'dl', 'p', 'span', 'summary']);
  * browseWrap): a connected list's placement (`prop:<node>|<prop>`), and the element holding a collection query's
  * loop (`repeat:<node>`), or the loop itself when nothing holds it. From there the controls go up past whatever
  * cannot hold them beside it: a list, text, a summary, a row or grid (whose items they would become), a tag a
- * property chooses, and anything inside a linked card (a form inside a link). They never leave what shows and hides
- * the listing: a slot's own content, a placement's slot content, a disclosure, a dialog or drawer, a tab panel,
- * another list's items, or an element shown only while a condition holds. Held directly by one of those, the loop
- * itself is wrapped, so the controls show and hide with its rows.
+ * property chooses, and anything inside a linked card (controls inside a link). They never leave what shows and
+ * hides the listing: a slot's own content, a placement's slot content, a disclosure, a dialog or drawer, a tab panel,
+ * another list's items, or an element shown only while a condition holds or at some screen sizes. Held directly by
+ * one of those, the loop itself is wrapped, so the controls show and hide with its rows. Kept from going higher, they
+ * stay where a list or text can still hold them; a listing that could only have them inside a link has none.
  */
 function browseListings(ctx: EmitCtx): Map<string, string[]> {
   if (ctx.browseHosts) return ctx.browseHosts;
@@ -2668,27 +2669,41 @@ function browseListings(ctx: EmitCtx): Map<string, string[]> {
   const parents = new Map<string, GraphNode>();
   for (const n of Object.values(nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of cl.ids) parents.set(c, n);
   // What shows and hides what it holds on its own: a slot's own content, a placement's slot content (which its
-  // design places where it likes), a list's items, a disclosure, a dialog or drawer, a tab panel.
-  const boundary = (n: GraphNode) => n.kind === 'slot' || n.kind === 'repeat' || n.kind === 'instance' || (n.kind === 'element' && n.tag === 'details') || !!ctx.widgets?.panels.has(n.id) || !!ctx.widgets?.overlays.has(n.id);
-  // A node that shows only while a condition holds keeps the controls inside with it.
-  const gated = (n: GraphNode) => n.when !== undefined || n.unless !== undefined || (n.kind === 'element' && !!n.collapseEmpty);
-  const holdsNoForm = (n: GraphNode) => n.kind === 'element' && (isBinding(n.tag) || NO_FORM_INSIDE.has(n.tag) || n.styles?.base?.layout === 'row' || n.styles?.base?.layout === 'grid');
-  const inLink = (n: GraphNode) => {
-    for (let at: GraphNode | undefined = n, hops = 0; at && !boundary(at) && hops < 200; at = parents.get(at.id), hops++) if (isCardLink(at)) return true;
+  // design places where it likes), a list's items, a disclosure (or a tag a property chooses, which may be one), a
+  // dialog or drawer, a tab panel.
+  const boundary = (n: GraphNode) =>
+    n.kind === 'slot' || n.kind === 'repeat' || n.kind === 'instance' || (n.kind === 'element' && (n.tag === 'details' || isBinding(n.tag))) || !!ctx.widgets?.panels.has(n.id) || !!ctx.widgets?.overlays.has(n.id);
+  // A node shown only while a condition holds, or hidden at some screen size, keeps the controls inside with it.
+  const gated = (n: GraphNode) =>
+    n.when !== undefined || n.unless !== undefined || (n.kind === 'element' && !!n.collapseEmpty) || Object.values((n as { styles?: Record<string, unknown> }).styles ?? {}).some((sc) => !!sc && typeof sc === 'object' && Object.hasOwn(sc, 'hidden'));
+  // Elements a browse landmark cannot be a child of, and those whose items it would only become one of.
+  const invalidParent = (n: GraphNode | undefined) => n?.kind === 'element' && NO_FORM_INSIDE.has(n.tag as string);
+  const holdsNoForm = (n: GraphNode) => invalidParent(n) || (n.kind === 'element' && (n.styles?.base?.layout === 'row' || n.styles?.base?.layout === 'grid'));
+  const inLink = (n: GraphNode | undefined) => {
+    for (let at = n, hops = 0; at && hops < 200; at = parents.get(at.id), hops++) if (isCardLink(at)) return true;
     return false;
   };
-  const hostOf = (start: GraphNode): string => {
-    let host = start;
+  /**
+   * Where the controls go for a listing starting at `start`, or undefined when there is nowhere they may: only
+   * inside a link (a form control inside a link is no link), the listing then shows without them.
+   */
+  const hostOf = (start: GraphNode): string | undefined => {
+    const chain = [start];
     // Never onto an item a list repeats, where the controls would be one more item each time.
-    for (let up = parents.get(host.id), hops = 0; up && !gated(host) && !boundary(up) && parents.get(up.id)?.kind !== 'repeat' && (holdsNoForm(up) || inLink(up)) && hops < 200; up = parents.get(host.id), hops++) host = up;
-    return host.id;
+    for (let host = start, up = parents.get(host.id), hops = 0; up && !gated(host) && !boundary(up) && parents.get(up.id)?.kind !== 'repeat' && (holdsNoForm(up) || inLink(up)) && hops < 200; host = up, up = parents.get(host.id), hops++) chain.push(up);
+    // The highest of them whose parent may hold the controls; the start, when none may.
+    const host = [...chain].reverse().find((h) => !invalidParent(parents.get(h.id)) && !inLink(parents.get(h.id))) ?? (inLink(parents.get(start.id)) ? undefined : start);
+    return host?.id;
   };
   for (const id of Object.keys(nodes).sort()) {
     const n = nodes[id];
-    if (n?.kind === 'instance') for (const prop of Object.keys(n.listSources ?? {}).sort()) add(hostOf(n), `prop:${n.id}|${prop}`);
-    else if (n?.kind === 'repeat' && isCollectionLoop(n) && loopBrowses(n)) {
+    if (n?.kind === 'instance') {
+      const host = hostOf(n);
+      if (host) for (const prop of Object.keys(n.listSources ?? {}).sort()) add(host, `prop:${n.id}|${prop}`);
+    } else if (n?.kind === 'repeat' && isCollectionLoop(n) && loopBrowses(n)) {
       const holder = parents.get(n.id);
-      add(hostOf(holder && !boundary(holder) ? holder : n), `repeat:${n.id}`);
+      const host = hostOf(holder && !boundary(holder) ? holder : n);
+      if (host) add(host, `repeat:${n.id}`);
     }
   }
   return (ctx.browseHosts = hosts);

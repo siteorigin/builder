@@ -536,7 +536,10 @@ export const BROWSE_SVELTE = String.raw`<script>
 	}
 
 	/** What a keyboard can reach on the page. */
-	const reachable = () => [...document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')];
+	const reachable = () => [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')];
+	// No form of the page owns the controls: Enter in the search box, or a number a visitor is still typing, never
+	// submits or holds up a form the listing sits in.
+	const detached = 'so-browse-detached';
 
 	/** The next matches, and focus on the first of them, so a keyboard goes on from there. */
 	async function more() {
@@ -568,7 +571,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 		{#if controls.search}
 			<label class="so-browse__field so-browse__field--search">
 				<span class="so-browse__label">{text().browseSearch}</span>
-				<input class="so-browse__input" type="search" bind:value={query} oninput={changed} />
+				<input class="so-browse__input" type="search" form={detached} bind:value={query} oninput={changed} />
 			</label>
 		{/if}
 		{#each controls.filters as f (f.key)}
@@ -577,7 +580,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<legend class="so-browse__label">{f.label}</legend>
 					{#each f.options as o (o.value)}
 						<label class="so-browse__option">
-							<input type="checkbox" checked={(choices[f.key] ?? []).includes(o.value)} onchange={(e) => pick(f.key, o.value, e.currentTarget.checked)} />
+							<input type="checkbox" form={detached} checked={(choices[f.key] ?? []).includes(o.value)} onchange={(e) => pick(f.key, o.value, e.currentTarget.checked)} />
 							<span>{o.label}</span>
 						</label>
 					{/each}
@@ -586,6 +589,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 				<label class="so-browse__field">
 					<span class="so-browse__label">{f.label}</span>
 					<select
+						form={detached}
 						class="so-browse__input"
 						value={yesno[f.key] ?? ''}
 						onchange={(e) => {
@@ -604,6 +608,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<label class="so-browse__bound">
 						<span>{text().browseMin}</span>
 						<input
+							form={detached}
 							class="so-browse__input"
 							type="number"
 							step="any"
@@ -618,6 +623,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<label class="so-browse__bound">
 						<span>{text().browseMax}</span>
 						<input
+							form={detached}
 							class="so-browse__input"
 							type="number"
 							step="any"
@@ -635,7 +641,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 		{#if sorts.length}
 			<label class="so-browse__field">
 				<span class="so-browse__label">{text().browseSort}</span>
-				<select class="so-browse__input" bind:value={sort} onchange={changed}>
+				<select class="so-browse__input" form={detached} bind:value={sort} onchange={changed}>
 					<option value="">{text().browseSortDefault}</option>
 					{#each sorts as s (s.value)}
 						<option value={s.value}>{s.label}</option>
@@ -643,19 +649,19 @@ export const BROWSE_SVELTE = String.raw`<script>
 				</select>
 			</label>
 		{/if}
-		<button type="button" class="so-browse__button" disabled={!active} onclick={clear}>{text().browseClear}</button>
+		<button type="button" form={detached} class="so-browse__button" disabled={!active} onclick={clear}>{text().browseClear}</button>
 	</fieldset>
 	<div class="so-browse__status">
 		<p role="status" tabindex="-1" bind:this={said}>{status}</p>
 		{#if active && failed}
-			<button type="button" class="so-browse__button" onclick={fetchEntries}>{text().browseRetry}</button>
+			<button type="button" form={detached} class="so-browse__button" onclick={fetchEntries}>{text().browseRetry}</button>
 		{/if}
 	</div>
 </div>
 {/snippet}
 
 {#snippet more_button()}
-	<button type="button" class="so-browse__button so-browse__more" onclick={more}>{text().browseMore}</button>
+	<button type="button" form={detached} class="so-browse__button so-browse__more" onclick={more}>{text().browseMore}</button>
 {/snippet}
 
 {#if frame}

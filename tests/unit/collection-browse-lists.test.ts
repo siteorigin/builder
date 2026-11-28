@@ -14,7 +14,7 @@ import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, generateProject, pageFile, propLocals, publishedState } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, archiveLoopIds, browseIndexFile, buildLayoutBrowseIndex, listingBrowse, usesBrowse } from '@generator/collection-browse';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, archiveLoopIds, browseIndexFile, buildLayoutBrowseIndex, listingBrowse, usesBrowse } from '@generator/collection-browse';
 import { queriedEntries } from '@generator/collection-query';
 import { archiveFile } from '@generator/archive';
 import { runConnectList } from '@agent/collection-lists';
@@ -155,6 +155,25 @@ describe("a listing's visitor browsing", () => {
     page.rootIds = page.rootIds.map((id) => (id === holder.id ? 'n_grid' : id));
     // Its holder is wrapped, inside the grid, rather than the grid itself.
     expect(homePage(s)).toMatch(/<div class=\{\["so-n-n_grid"\]\}>\n\t\{#snippet so_listing_1\(so_matches_1\)\}/);
+  });
+
+  it('stays inside a list item it cannot climb past, rather than going directly into the list', () => {
+    const { s: base, loop } = site();
+    const s = structuredClone(base);
+    const nodes = s.pages[s.site.homePageId].nodes;
+    const holder = Object.values(nodes).find((n) => n.kind === 'element' && n.children.includes(loop))!;
+    const item = { id: 'n_item', kind: 'element', tag: 'li', unless: { ref: { $item: 'title' }, eq: 'never' }, children: [holder.id], styles: { base: { layout: 'grid' } } };
+    const list = { id: 'n_list', kind: 'element', tag: 'ul', children: ['n_item'], styles: { base: {} } };
+    Object.assign(nodes, { n_item: item, n_list: list } as unknown as typeof nodes);
+    const page = s.pages[s.site.homePageId];
+    page.rootIds = page.rootIds.map((id) => (id === holder.id ? 'n_list' : id));
+    expect(homePage(s)).toMatch(/<li class=\{\["so-n-n_item"\]\}>\n\t\t\{#snippet so_listing_1\(so_matches_1\)\}/);
+  });
+
+  it('leaves no browse control to a form the listing sits in', () => {
+    // Every control names a form that is not there, so none belongs to an author's form around it.
+    expect(BROWSE_SVELTE.match(/<(input|select|button)\b/g)!.length).toBe(BROWSE_SVELTE.match(/form=\{detached\}/g)!.length);
+    expect(BROWSE_SVELTE).not.toMatch(/<form\b/);
   });
 
   it('declares a footer\'s listing with no header listing before it', () => {
