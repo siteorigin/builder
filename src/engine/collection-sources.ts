@@ -9,7 +9,7 @@ import type { Collection, ComponentDefinition, GraphNode, InstanceNode, NodeTree
 import { conditionRef, isBinding, isBindingRef, isCollectionLoop, isComparison, isEntryBinding } from '@shared/types';
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, normalizeCollectionQuery, type CollectionQuery } from '@shared/collection-query';
 import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/collection-rows';
-import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldLabel, isEntryDateField } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldLabel, isEntryDateField, isLinkedForm } from '@shared/entry-fields';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
 import { requiredGap } from '@shared/required';
 import { formDestinationLookup, type FormDestinationLookup } from './form-destinations';
@@ -43,7 +43,7 @@ const QUERY_ONLY = new Set(['id', 'slug']);
 /** A row's fields no query reads: a link to the entry's page is the row's, not a value to filter or sort by. */
 const UNQUERIED = new Set(['entryLink']);
 /** Whether a query can read `field` of `collection`'s entries. */
-const queryable = (collection: Collection, field: string) => QUERY_ONLY.has(field) || (!UNQUERIED.has(field) && !!rowFieldSchema(collection, field));
+const queryable = (collection: Collection, field: string) => QUERY_ONLY.has(field) || (!UNQUERIED.has(field) && !isLinkedForm(field) && !!rowFieldSchema(collection, field));
 
 /** Which collection a query reads where it is placed: the one it names, or for `$current` the one whose layout it is in. */
 function queryCollectionOf(state: ProjectState, owner: OwnerRef, query: Pick<CollectionQuery, 'collectionId'>): Collection | undefined {

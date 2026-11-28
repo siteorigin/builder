@@ -21,6 +21,7 @@ import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isD
 import { entryFieldSchemas, entryFieldValue } from '@shared/entry-fields';
 import { syncedEntryChange } from '@engine/collections';
 import { isDefaultLayout, themeArticleTemplate } from '@engine/collection-layouts';
+import { queryProblem } from '@engine/collection-sources';
 import { collectionsFromDocs, stateToDocs } from '../../src/main/project/documents';
 import { planPostImport } from '../../src/main/posts-import/plan';
 import type { ParsedSource } from '../../src/main/posts-import/source';
@@ -383,6 +384,12 @@ describe('a reference in the ready-made layout (#1511)', () => {
     expect(crew.replace(/<[^>]*>/g, '')).toBe('Ben Okafor, Ana Ruiz');
     expect(crew).not.toContain('<a');
     expect(fact(html, 'Lead').replace(/<[^>]*>/g, '')).toBe('Ana Ruiz');
+    // A reference naming nothing has no links, and its fact is left out.
+    const none = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { related: [] } });
+    expect(entryFieldValue({ ...read, state: none, entry: none.collections.projects.entries.en_hall }, 'field.related.links')).toEqual([]);
+    const bare = await serverHtml(generateProject(publishedState(none)), 'reference-links-', 'src/routes/work/town-hall/+page.svelte');
+    expect(bare).toMatch(/>Crew<\/dt>/);
+    expect(bare).not.toMatch(/>Related<\/dt>/);
   });
 
   it('keeps a reference shown as text where an author binds it to text, and guards the field the links read', () => {
@@ -392,16 +399,21 @@ describe('a reference in the ready-made layout (#1511)', () => {
     expect(links).toMatchObject({ kind: 'text', rich: true });
     // A plain text cannot take the linked form, and a rich one cannot take the titles alone.
     const title = Object.values(s.collections.projects.settings.template.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')!;
-    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.related.links' } }])).toThrow();
-    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: links.id, field: 'text', binding: { $entry: 'field.related' } }])).toThrow();
+    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.related.links' } }])).toThrow(/"Related \(links\)" cannot be shown as the text: it needs a string/);
+    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: links.id, field: 'text', binding: { $entry: 'field.related' } }])).toThrow(/"Related" cannot be shown as the text: it needs a richtext field/);
+    // The links are shown, never filtered or sorted by: the reference itself is.
+    const query = (field: string) => queryProblem(s, owner, { collectionId: 'projects', sort: [{ field }] });
+    expect(query('field.related.links')).toMatch(/sorts by "field\.related\.links"/);
+    expect(query('field.related')).toBeNull();
     // Edited, the layout is the author's: the field it links can't go while it does.
     const edited = run(s, { type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.lead' } });
-    const rest = { ...edited.collections.projects.settings.fields };
+    const rest: Record<string, Record<string, unknown>> = { ...edited.collections.projects.settings.fields };
     delete rest.related;
     // Only the links read it, its condition gone.
     const unlinked = structuredClone(edited);
     for (const n of Object.values(unlinked.collections.projects.settings.template.nodes)) if (n.when && JSON.stringify(n.when).includes('"field.related"')) delete n.when;
-    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: rest }])).toThrow(/layout shows Related/);
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: rest }])).toThrow(/layout shows Related\. Unbind it in the layout before removing it/);
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: { ...rest, related: { type: 'string', label: 'Related' } } }])).toThrow(/layout shows Related\. Unbind it in the layout before changing its kind/);
   });
 });
 

@@ -12,7 +12,7 @@ import type { InstanceNode, ListConnection, ListProp, OwnerRef, ProjectState, Re
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, QUERY_OPERATORS, normalizeCollectionQuery, queryEntries, type CollectionQuery, type QueryClause, type QueryOperator } from '@shared/collection-query';
 import { fieldFitProblem, rowFieldSchemas } from '@shared/collection-rows';
 import { requiredGap } from '@shared/required';
-import { isEntryDateField } from '@shared/entry-fields';
+import { isEntryDateField, isLinkedForm } from '@shared/entry-fields';
 import { connectionProblem, loopProblem } from '@engine/collection-sources';
 import { getTree } from '@engine/tree';
 import { applyOps, toast, useStore } from '../store';
@@ -50,7 +50,8 @@ export function QueryControls({ state, owner, query, onChange, note }: { state: 
   const collectionId = query.collectionId === CURRENT_COLLECTION && (owner.kind === 'template' || owner.kind === 'archive') ? owner.id : query.collectionId;
   const collection = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
   const fields = collection ? rowFieldSchemas(collection) : {};
-  const readable = Object.entries(fields).filter(([f]) => f !== 'entryLink');
+  // A reference's linked form is what a rich text shows: the reference itself filters and sorts.
+  const readable = Object.entries(fields).filter(([f]) => f !== 'entryLink' && !isLinkedForm(f));
   const set = (patch: Partial<CollectionQuery>) => onChange(normalizeCollectionQuery({ ...query, ...patch }) ?? query);
   /** The first term of the grouping a field reads, for a filter by it to start with. */
   const firstTerm = (field: string): string | undefined => {

@@ -121,6 +121,9 @@ export function customFieldName(field: string): string | undefined {
   return name.endsWith(LINKS) ? name.slice(0, -LINKS.length) : name;
 }
 
+/** Whether a binding reads a reference field's linked form: rich text to show, never a value to filter or sort by. */
+export const isLinkedForm = (field: string): boolean => typeof field === 'string' && field.startsWith('field.') && field.endsWith(LINKS);
+
 /** The reference field whose linked form a `field.<name>.links` binding reads, as the collection declares it. */
 function linkedReference(collection: Pick<Collection, 'settings'>, field: string): ReferenceFieldSchema | undefined {
   if (!field.startsWith('field.') || !field.endsWith(LINKS)) return undefined;
