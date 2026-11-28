@@ -8,7 +8,9 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { generateProject, publishedState } from '@generator/index';
+import { generateProject, liveRedirects, publishedState } from '@generator/index';
+import { generateHostRedirects } from '@generator/host-redirects';
+import { validateState } from '@engine/validate';
 import { checkHeld, fieldKey, placeOf, readFields, shownField } from '../../src/renderer/src/lib/held';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -191,5 +193,100 @@ describe('a collection’s archive pages when found or shared', () => {
     expect(checkHeld(swapped, [news], base).kind).toBe('changed');
     // Other settings of a collection are never held.
     expect(readFields(s, [{ type: 'collection.update', collectionId: 'posts', pageSize: 3 }])).toBeNull();
+  });
+});
+
+describe('a collection that moves (#1548)', () => {
+  it('keeps its index, its later pages and its category archives working at their old addresses', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 1 });
+    const moved = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/repair-notes/' });
+    const live = liveRedirects(publishedState(moved));
+    const sent = Object.fromEntries(live.map((r) => [r.from, r.to]));
+    expect(sent).toMatchObject({
+      '/blog/': '/journal/repair-notes/',
+      '/blog/page/2/': '/journal/repair-notes/page/2/',
+      '/blog/page/3/': '/journal/repair-notes/page/3/',
+      '/blog/category/news/': '/journal/repair-notes/category/news/',
+      '/blog/category/news/page/2/': '/journal/repair-notes/category/news/page/2/',
+      '/blog/category/craft/': '/journal/repair-notes/category/craft/',
+      // The entries' own addresses still follow them.
+      '/blog/new-kiln/': '/journal/repair-notes/new-kiln/'
+    });
+    const out = files(moved);
+    expect(out.has(route('/journal/repair-notes/category/news/page/2/'))).toBe(true);
+    expect(out.get(route('/blog/category/news/'))).toContain('/journal/repair-notes/category/news/');
+    // A category's later page is deeper than a page can be, and is kept all the same, with its HTTP 301 rule.
+    expect(out.get(route('/blog/category/news/page/2/'))).toContain('/journal/repair-notes/category/news/page/2/');
+    expect(generateHostRedirects(publishedState(moved))).toContain('/blog/category/news/page/2/ /journal/repair-notes/category/news/page/2/ 301');
+    expect(validateState(moved).filter((d) => d.code.startsWith('REDIRECT') || d.code.startsWith('ROUTE'))).toEqual([]);
+    // An author can keep one that deep working too.
+    const own = run(moved, { type: 'redirect.add', from: '/journal/old/category/news/page/2/', to: '/journal/repair-notes/' });
+    expect(liveRedirects(own).map((r) => r.from)).toContain('/journal/old/category/news/page/2/');
+  });
+
+  it('sends every old address straight to the newest one, past a page later put at an address it passed through', () => {
+    let s = run(blog(), { type: 'redirect.add', from: '/latest/', to: '/blog/category/news/' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/notes/' });
+    s = run(s, { type: 'page.create', pageId: 'pg_journal1', title: 'Journal', route: '/journal/' });
+    const sent = Object.fromEntries(liveRedirects(s).map((r) => [r.from, [r.to, r.hops]]));
+    expect(sent['/blog/']).toEqual(['/notes/', 0]);
+    expect(sent['/blog/category/news/']).toEqual(['/notes/category/news/', 0]);
+    expect(sent['/journal/category/news/']).toEqual(['/notes/category/news/', 0]);
+    // The author's own redirect is left as they wrote it, and arrives through the category's old address.
+    expect(s.site.redirects).toContainEqual({ from: '/latest/', custom: true, to: '/blog/category/news/' });
+    expect(sent['/latest/']).toEqual(['/notes/category/news/', 1]);
+    // The page holds its address; the index's old address there is left out.
+    expect(sent['/journal/']).toBeUndefined();
+    expect(s.pages.pg_journal1.route).toBe('/journal/');
+  });
+
+  it('keeps only the archive pages visitors had as the batch began, and leaves them with the collection', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' }, { type: 'collection.update', collectionId: 'posts', route: '/notes/' });
+    const archived = (t: ProjectState) => (t.site.redirects ?? []).filter((r) => r.archiveOf === 'posts').map((r) => [r.from, r.to]);
+    expect(archived(s)).toEqual([
+      ['/blog/', '/notes/'],
+      ['/blog/category/news/', '/notes/category/news/'],
+      ['/blog/category/craft/', '/notes/category/craft/']
+    ]);
+    // Moving back takes its old addresses back, and keeps the ones it leaves.
+    expect(archived(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }))).toEqual([
+      ['/notes/', '/blog/'],
+      ['/notes/category/news/', '/blog/category/news/'],
+      ['/notes/category/craft/', '/blog/category/craft/']
+    ]);
+    // Removed, the collection takes them with it.
+    const gone = run(s, { type: 'collection.remove', collectionId: 'posts' });
+    expect(archived(gone)).toEqual([]);
+    // Passing back through an old address in a batch keeps it, sent on to where the batch leaves the collection.
+    expect(archived(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }, { type: 'collection.update', collectionId: 'posts', route: '/later/' })).sort()).toEqual([
+      ['/blog/', '/later/'],
+      ['/blog/category/craft/', '/later/category/craft/'],
+      ['/blog/category/news/', '/later/category/news/'],
+      ['/notes/', '/later/'],
+      ['/notes/category/craft/', '/later/category/craft/'],
+      ['/notes/category/news/', '/later/category/news/']
+    ]);
+  });
+
+  it('sends an old address of a page gone for a while on to that page again once it is back', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 2 });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', pageSize: 5 });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/notes/' });
+    expect(s.site.redirects).toContainEqual({ from: '/blog/page/2/', to: '/notes/page/2/', archiveOf: 'posts' });
+    // Gone for now: nothing is there to send visitors to, and Project health says so.
+    expect(liveRedirects(s).map((r) => r.from)).not.toContain('/blog/page/2/');
+    s = run(s, { type: 'collection.update', collectionId: 'posts', pageSize: 2 });
+    expect(Object.fromEntries(liveRedirects(s).map((r) => [r.from, r.to]))['/blog/page/2/']).toBe('/notes/page/2/');
+  });
+
+  it('keeps no old address for a page the moved archive no longer has, and none while the archive is turned off', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 2 });
+    // Page 2 exists before the move; turning category archives off in the same change leaves no equivalents for them.
+    const moved = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/', categoryArchives: false });
+    expect((moved.site.redirects ?? []).filter((r) => r.archiveOf).map((r) => r.from)).toEqual(['/blog/', '/blog/page/2/']);
+    const off = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/', pages: { detail: true, archive: false } });
+    expect((off.site.redirects ?? []).filter((r) => r.archiveOf)).toEqual([]);
   });
 });

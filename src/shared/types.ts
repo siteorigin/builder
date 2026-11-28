@@ -1182,9 +1182,11 @@ export interface SiteIdentity {
 /**
  * An old address that sends visitors on: to a page or a collection entry, by ID, so it follows that one's later moves,
  * or to another address of the site (`to`, a route), whatever has it then. It names exactly one of them. `custom` marks
- * one the author added, rather than one a move recorded.
+ * one the author added, rather than one a move recorded. `archiveOf` marks one a collection's move recorded for a page
+ * of its archive (its index, a later page, a category's), by the collection's ID: the collection's later moves send
+ * it on to the page's new address, and the collection takes the address back when it returns there (#1548).
  */
-export type SiteRedirect = { from: string; custom?: true } & (
+export type SiteRedirect = { from: string; custom?: true; archiveOf?: string } & (
   | { pageId: string; entryId?: never; to?: never }
   | { entryId: string; pageId?: never; to?: never }
   | { to: string; pageId?: never; entryId?: never }

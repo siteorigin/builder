@@ -51,11 +51,11 @@ import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
 import { collectionIndexRoutes } from '@shared/archives';
-import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
+import { loopText, redirectSourceProblem, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
-import { POSTS_PRESET_NAME, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
+import { POSTS_PRESET_NAME, archiveAddressesInUse, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -186,6 +186,12 @@ export interface ApplyContext {
    * for another hands its old addresses on to it here, for the rest of the batch. applyOperations fills it.
    */
   entryAddressesAtStart?: Map<string, EntryAddress>;
+  /**
+   * The addresses of collections' archive pages visitors had when the batch began (see archiveAddressesInUse), worked
+   * out the first time a collection moves: a collection that moves keeps only these old addresses working, not ones it
+   * passed through in the batch. A collection removed in the batch takes its own out. applyOperations fills it.
+   */
+  archivesAtStart?: () => Set<string>;
   /**
    * A sync of an external source (see engine/sources.ts), which only the main process's sync gives: never an edit,
    * never the assistant. The batch's entry operations may write that one synced collection's entries.
@@ -478,9 +484,9 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       return op.addToNavigation ? { ...made, addedToNavigation: addIndexToHeaderNavigation(state, op.collectionId) } : made;
     }
     case 'collection.update':
-      return collectionUpdate(state, op, ctx.entryAddressesAtStart);
+      return collectionUpdate(state, op, ctx.entryAddressesAtStart, ctx.archivesAtStart);
     case 'collection.remove':
-      return collectionRemove(state, op, ctx.entryAddressesAtStart);
+      return collectionRemove(state, op, ctx.entryAddressesAtStart, ctx.archivesAtStart);
     case 'collection.createTerm':
       return termCreate(state, op);
     case 'collection.renameTerm':
@@ -1018,7 +1024,7 @@ function refuseRedirectLoop(state: ProjectState, from: string) {
 function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
   const from = typedSitePath(op.from, 'The old address');
   if (from === '/') fail('The Home page address cannot send visitors elsewhere.');
-  const err = validateRoute(from);
+  const err = redirectSourceProblem(from);
   if (err) fail(`${from}: ${err}`);
   const page = Object.values(state.pages).find((p) => p.route.toLowerCase() === from.toLowerCase());
   if (page) fail(`${from} is the address of the page “${page.title}”. Move the page first, or choose another address.`);
@@ -4388,7 +4394,7 @@ export function walkChecks(state: ProjectState, given: EditOperation[], checks: 
   const open = new Set(checks.keys());
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? lazyArchives(state) };
   for (const [i, op] of ops.entries()) {
     for (const c of [...open]) {
       const reason = checks[c](draft ?? state, op);
@@ -4410,6 +4416,12 @@ export function walkChecks(state: ProjectState, given: EditOperation[], checks: 
   return reasons;
 }
 
+/** The archive addresses `state` has, worked out the first time they are asked for (see ApplyContext.archivesAtStart). */
+function lazyArchives(state: ProjectState): () => Set<string> {
+  let keys: Set<string> | undefined;
+  return () => (keys ??= archiveAddressesInUse(state));
+}
+
 /** The addresses in use in `state`, lowercased: its pages' routes and the old addresses it keeps working. */
 function addressesInUse(state: ProjectState): Set<string> {
   const out = new Set<string>(Object.values(state.pages).map((p) => p.route.toLowerCase()));
@@ -4425,7 +4437,7 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
   const working = draftOf(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? lazyArchives(state) };
   const span = ctx.span ?? (() => UNTIMED);
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.

@@ -106,6 +106,8 @@ describe('collection entries on the website', () => {
 
 const rename = (entryId: string, slug: string): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, slug });
 const kept = (s: ProjectState) => s.site.redirects ?? [];
+/** The old addresses kept for entries, apart from a moved collection's archive's (#1548). */
+const entryKept = (s: ProjectState) => kept(s).filter((r) => !r.archiveOf);
 
 describe('old addresses of entries', () => {
   it('keeps a published entry’s old address working, following it through later renames', () => {
@@ -160,27 +162,30 @@ describe('old addresses of entries', () => {
 
   it('keeps every published entry’s address when the collection moves, and settles old addresses when entries go', () => {
     let s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    // Its index's old address too (#1548).
     expect(kept(s)).toEqual([
       { from: '/blog/winter-workshop/', entryId: 'en_winter' },
-      { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
+      { from: '/blog/spring-open-studio/', entryId: 'en_spring' },
+      { from: '/blog/', to: '/journal/', archiveOf: 'posts' }
     ]);
     expect(generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('resolve("/journal/winter-workshop/")');
     // Moving back takes each address back.
     expect(kept(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }))).toEqual([
       { from: '/journal/winter-workshop/', entryId: 'en_winter' },
-      { from: '/journal/spring-open-studio/', entryId: 'en_spring' }
+      { from: '/journal/spring-open-studio/', entryId: 'en_spring' },
+      { from: '/journal/', to: '/blog/', archiveOf: 'posts' }
     ]);
     // An entry removed for another sends its old addresses there; without one they go with it.
     const about = Object.values(s.pages).find((p) => p.route === '/about/')!.id;
-    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }))).toEqual([
+    expect(entryKept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }))).toEqual([
       { from: '/blog/winter-workshop/', entryId: 'en_spring' },
       { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
     ]);
-    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementPageId: about }))).toContainEqual({ from: '/blog/winter-workshop/', pageId: about });
+    expect(entryKept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementPageId: about }))).toContainEqual({ from: '/blog/winter-workshop/', pageId: about });
     const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
-    expect(kept(run(unlinked, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }))).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
+    expect(entryKept(run(unlinked, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }))).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
     s = run(exported(s), { type: 'page.update', pageId: about, route: '/about-us/' });
-    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
+    expect(entryKept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
   });
 
   it('refuses to hand links and old addresses to a record with no page of its own (#1495)', () => {
@@ -460,7 +465,8 @@ describe('old addresses of entries, across a batch', () => {
     const s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' }, { type: 'collection.update', collectionId: 'posts', route: '/news/' });
     expect(kept(s)).toEqual([
       { from: '/blog/winter-workshop/', entryId: 'en_winter' },
-      { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
+      { from: '/blog/spring-open-studio/', entryId: 'en_spring' },
+      { from: '/blog/', to: '/news/', archiveOf: 'posts' }
     ]);
   });
 
@@ -472,7 +478,7 @@ describe('old addresses of entries, across a batch', () => {
     expect(() => run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' })).toThrow(/old address of “Spring open studio”/);
     // Moving back with no clash takes each entry's own addresses back.
     s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
-    expect(kept(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' })).map((r) => r.from)).toEqual(['/journal/winter-workshop/', '/journal/spring-open-studio/']);
+    expect(kept(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' })).map((r) => r.from)).toEqual(['/journal/winter-workshop/', '/journal/spring-open-studio/', '/journal/']);
   });
 
   it('gives a page made automatically a numbered address beside an entry’s old address', () => {
