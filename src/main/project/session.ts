@@ -36,7 +36,7 @@ import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } fr
 import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
 import type { MissingAssetFiles } from '@shared/api';
 import type { WriteFailure } from './save-error';
-import { HISTORY_LIMIT } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, HISTORY_LIMIT } from '@shared/api';
 import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
@@ -772,6 +772,23 @@ async function compileDesigns(defs: ComponentDefinition[], files: Map<string, st
   return null;
 }
 
+/** A code component's file edited outside the app and not loaded: where, and what the editor is told (#1533). */
+interface RefusedSource {
+  path: string;
+  message: string;
+  /** Its code is fine, but waits on the rest of the read, which was refused. */
+  held?: true;
+}
+
+/** A code component's source as a read found it changed: where, and the refusal if it has errors. */
+interface EditedSource {
+  id: string;
+  name: string;
+  path: string;
+  problem: boolean;
+  message: string;
+}
+
 export class ProjectSession extends EventEmitter {
   private current!: ProjectState;
   /**
@@ -857,6 +874,12 @@ export class ProjectSession extends EventEmitter {
    * exist). The in-memory state uses these versions; the external version stays on disk until the user chooses.
    */
   private pending = new Map<string, string | null>();
+  /**
+   * Code components whose file was edited outside the app into code with errors, by definition id: the file, and the
+   * refusal as the editor shows it. The project keeps the version that last loaded; the file keeps the edit. Worked out
+   * again by every read that gets as far as the code (#1533), and held only in memory.
+   */
+  private refusedSources = new Map<string, RefusedSource>();
   /**
    * For each canonical document in conflict that an AI request's rollback left, the version that request tried to save:
    * the stored blob that holds it (null = it removed the file), and its text once read. The reference is kept even
@@ -1664,6 +1687,8 @@ export class ProjectSession extends EventEmitter {
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'Keep external change', source: 'system' });
       await this.saveLocalState();
+      // Kept, the external version brought every edited code with it (code with errors refuses the choice): nothing waits.
+      if (choice !== 'restore') this.setRefusedSources(new Map(), { quiet: true });
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
     }));
@@ -6080,7 +6105,8 @@ export class ProjectSession extends EventEmitter {
    * does not keep, a folder, a held conflict, a format update due, an interrupted save) is for the full read to decide.
    */
   private async ownSave(paths: string[]): Promise<boolean> {
-    if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size) return false;
+    // A refused outside edit is looked at again by the full read, whatever the watch named: only it can tell it settled.
+    if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size || this.refusedSources.size) return false;
     // A lock taken over is noticed now, as any reload notices it.
     if (!(await this.stillOwner())) return false;
     try {
@@ -6133,10 +6159,15 @@ export class ProjectSession extends EventEmitter {
       if (settled) this.emit('history');
       return { ok: false, message: (e as Error).message };
     }
+    // Every component's edited code is checked, so each refused file is told of, and one put right is no longer. Edited
+    // code that is fine but held back with the rest of the read is told of too, until it loads (#1533).
+    const sources = await this.editedSources(next);
+    const refusedCode = sources.filter((e) => e.problem);
+    if (refusedCode.length) return this.refuseSources(sources, ', because other edited code has problems', { ok: false, message: refusedCode.map((e) => e.message).join(' ') });
     const errors = this.introducedProblems(next);
-    if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
+    if (errors.length) return this.refuseSources(sources, ' with the other changed files', { ok: false, message: errors.map((e) => e.message).join(' ') });
     const pin = themePinProblem(next);
-    if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
+    if (pin) return this.refuseSources(sources, ' with the other changed files', { ok: false, message: `The changed files were not loaded: ${pin}` });
     // A component put back from an older copy (or one from before a theme update) can lack an option placements
     // chose since: loading it would quietly show them its default instead.
     // Documents put back from before variant axes come with their own choices, converted (and checked) by that step.
@@ -6145,12 +6176,7 @@ export class ProjectSession extends EventEmitter {
       const [kind, id] = owner.split(/:(.*)/s);
       return older(kind === 'shell' ? stored.site : kind === 'page' ? stored.pages[id] : stored.components[id]);
     });
-    if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
-    for (const def of Object.values(next.components)) {
-      if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-      const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
-      if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
-    }
+    if (lost.length) return this.refuseSources(sources, ' with the other changed files', { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` });
     this.migrationDue = migrated;
     // Frozen as it will be once it is the project, so its documents' texts are kept from here.
     const nextDocs = stateToDocs(frozen(next));
@@ -6165,6 +6191,8 @@ export class ProjectSession extends EventEmitter {
       }
       // Only the stored format differs (a file put back from an older copy): store it in the current one.
       if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
+      // Nothing changed: a refused file was put back as it was loaded. Cleared before a settled conflict tells of it.
+      this.setRefusedSources(new Map(), { quiet: settled });
       if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
       return { ok: true };
     }
@@ -6188,12 +6216,60 @@ export class ProjectSession extends EventEmitter {
     if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
     await this.saveLocalState();
     if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
+    // The edited code is loaded: its notices go with the change that brings it, never in a snapshot of their own. Kept
+    // until then, so a step above that fails leaves them for the next read to clear, and tell of.
+    this.setRefusedSources(new Map(), { quiet: true });
     this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
     return { ok: true };
   }
 
+  /**
+   * The code components of `next` whose source differs from the project's, each with its file and its first error if it
+   * has one. Inline code (a theme's component) is in the component's document.
+   */
+  private async editedSources(next: ProjectState): Promise<EditedSource[]> {
+    const edited: EditedSource[] = [];
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
+      const problem = (await checkSvelteSource(def.source ?? '')).find((p) => p.severity === 'error');
+      const path = def.sourcePath ?? componentDocPath(def.id);
+      const where = problem?.line ? `${path}, line ${problem.line}${def.sourcePath ? '' : ' of its source'}` : path;
+      edited.push({ id: def.id, name: def.name, path, problem: !!problem, message: problem ? `The edited code for "${def.name}" has problems, so it was not loaded (${where}): ${problem.message}` : '' });
+    }
+    return edited;
+  }
+
+  /**
+   * A read of `sources` refused (`result`): those with errors stand as refusals, and the rest are held back with them,
+   * `why` finishing "it waits…".
+   */
+  private refuseSources(sources: EditedSource[], why: string, result: { ok: false; message: string }) {
+    const standing = new Map<string, RefusedSource>();
+    for (const e of sources)
+      standing.set(e.id, e.problem ? { path: e.path, message: e.message } : { path: e.path, message: `The edited code for "${e.name}" (${e.path}) has not loaded yet: it waits${why}. ${result.message}`, held: true });
+    this.setRefusedSources(standing);
+    return result;
+  }
+
+  /** Keep `standing` as the refusals, telling (`refused-sources`) of a change unless a snapshot of the read tells it. */
+  private setRefusedSources(standing: Map<string, RefusedSource>, opts: { quiet?: boolean } = {}) {
+    const before = JSON.stringify([...this.refusedSources]);
+    this.refusedSources = standing;
+    if (!opts.quiet && JSON.stringify([...standing]) !== before) this.emit('refused-sources');
+  }
+
+  /**
+   * The outside edits of code components refused for their errors (and those held back with them, as warnings), as
+   * Project health and the source editor show them.
+   */
+  refusedSourceDiagnostics(): Diagnostic[] {
+    return [...this.refusedSources].map(([id, r]) => ({ severity: r.held ? 'warning' : 'error', code: EXTERNAL_SOURCE_REFUSED, message: r.message, owner: { kind: 'component', id }, site: r.path }));
+  }
+
   /** Read-only inspection follows the owner's edits without writing anything. */
   private async reloadReadOnly(): Promise<{ ok: boolean; message?: string }> {
+    // A project only inspected loads whatever its owner keeps: nothing it shows is a refused edit of this window's.
+    this.setRefusedSources(new Map());
     let next: ProjectState;
     try {
       next = await readState(this.dir, { allowNewer: true });
