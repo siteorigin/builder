@@ -244,7 +244,7 @@ window.go = (id) => { go(id); flushSync(); };`;
           if (id === '\0empty') return '';
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return compileModule(STATE_STUB, { filename: 'state.svelte.js', generate: 'client' }).js.code;
-          if (id === '\0$app/navigation') return 'export function afterNavigate() {} export function beforeNavigate() {} export function snapshot() {}';
+          if (id === '\0$app/navigation') return 'export function afterNavigate() {} export function onNavigate() {} export function beforeNavigate() {} export function snapshot() {}';
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected', runes: true }).js.code : text;

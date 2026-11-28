@@ -1147,51 +1147,68 @@ export function keepDrafts(text) {
 export const HISTORY_SCROLL_JS = `/**
  * Back and Forward put the page back where the visitor left it at once, as the browser does with JavaScript off.
  * SvelteKit takes over the browser's scroll restoration and puts each history entry's position back with
- * scrollTo(), which a theme's smooth scrolling (html { scroll-behavior: smooth }, there for jumps to a section)
+ * scrollTo(x, y), which a theme's smooth scrolling (html { scroll-behavior: smooth }, there for jumps to a section)
  * turns into a long glide: moments after Back the page would still be at the section the visitor jumped to. While
- * SvelteKit restores a position the page scrolls instantly; jumps from links stay smooth.
+ * SvelteKit restores a position, the page scrolls instantly; jumps from links stay smooth.
  *
  * A Back or Forward within the page (between a section's address and the page's) restores in the same task as the
  * browser's popstate, heard here before SvelteKit hears it: a window's listeners hear an event in the order they were
  * added, and SvelteKit adds its own once the page has hydrated, after the layout has mounted. One to another page
- * restores once that page is drawn,
- * at the end of SvelteKit's navigation. A page brought back from the browser's back/forward cache restores as it
- * shows again.
+ * restores as that page is put in place, after onNavigate. A page brought back from the browser's back/forward cache
+ * restores as it shows again.
+ *
+ * A jump still scrolling when the visitor goes Back stops, or it would carry the page on past the position put back;
+ * Chromium still takes the jump's last step in the next frame, so that frame puts the position back again.
  */
 import { onMount } from 'svelte';
-import { afterNavigate, beforeNavigate } from '$app/navigation';
+import { onNavigate } from '$app/navigation';
 
 const holds = new Set();
 // The page root's own scroll-behavior from before the first hold, and its priority, put back after the last.
 let kept = ['', ''];
+// The window's own scrollTo, while the holds stand in for it.
+let native = null;
+// A scroll is under way (a smooth jump): one was heard and has not ended since.
+let moving = false;
+// Whether this hold stopped a jump, which takes one more step after it stops.
+let stopped = false;
 
-/**
- * Makes the page scroll instantly until the returned function is called, and every other hold has ended too. A
- * smooth scroll still running (a jump the visitor went Back from before it finished) stops where it is, or it
- * would carry on past the position put back; Chromium still takes its last step in the next frame, so the position
- * the page has when the hold ends is put back after that frame.
- */
+/** SvelteKit's scrollTo(x, y) while held: instant, and kept there if a stopped jump takes its last step. */
+function restore(...args) {
+	// The frame after may come once the hold has ended.
+	const to = native;
+	if (typeof args[0] === 'object' || args[0] === undefined) return to.apply(window, args);
+	to.call(window, { left: Number(args[0]) || 0, top: Number(args[1]) || 0, behavior: 'instant' });
+	if (!stopped) return;
+	const left = scrollX;
+	const top = scrollY;
+	requestAnimationFrame(() => {
+		if (scrollX !== left || scrollY !== top) to.call(window, { left, top, behavior: 'instant' });
+	});
+}
+
+/** Makes the page scroll instantly until the returned function is called, and every other hold has ended too. */
 function hold() {
-	const style = document.documentElement.style;
-	if (!holds.size) kept = [style.getPropertyValue('scroll-behavior'), style.getPropertyPriority('scroll-behavior')];
+	if (!holds.size) {
+		const style = document.documentElement.style;
+		kept = [style.getPropertyValue('scroll-behavior'), style.getPropertyPriority('scroll-behavior')];
+		style.setProperty('scroll-behavior', 'auto', 'important');
+		native = window.scrollTo;
+		window.scrollTo = restore;
+		stopped = moving;
+		if (stopped) native.call(window, { left: scrollX, top: scrollY, behavior: 'instant' });
+	}
 	const key = {};
 	holds.add(key);
-	style.setProperty('scroll-behavior', 'auto', 'important');
-	scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' });
 	return () => {
-		if (!holds.has(key)) return;
-		const left = scrollX;
-		const top = scrollY;
-		requestAnimationFrame(() => {
-			if (!holds.delete(key)) return;
-			if (scrollX !== left || scrollY !== top) scrollTo({ left, top, behavior: 'instant' });
-			if (!holds.size) unhold();
-		});
+		if (holds.delete(key) && !holds.size) unhold();
 	};
 }
 
 function unhold() {
 	holds.clear();
+	if (window.scrollTo === restore) window.scrollTo = native;
+	native = null;
 	const style = document.documentElement.style;
 	if (kept[0]) style.setProperty('scroll-behavior', kept[0], kept[1]);
 	else style.removeProperty('scroll-behavior');
@@ -1203,16 +1220,11 @@ function briefly() {
 }
 
 export function keepHistoryScroll() {
-	// To another page: held from the start of the navigation until it has finished, whichever way it ends.
-	beforeNavigate((navigation) => {
-		if (navigation?.type !== 'popstate') return;
+	// To another page: held from just before the page is put in place until the navigation has settled.
+	onNavigate((navigation) => {
+		if (navigation?.type !== 'popstate' || !navigation.complete) return;
 		const release = hold();
-		if (navigation.complete) navigation.complete.then(release, release);
-		else release();
-	});
-	// SvelteKit has restored by the time it says a navigation has finished; one that never settles ends here too.
-	afterNavigate(() => {
-		if (holds.size) unhold();
+		navigation.complete.then(release, release);
 	});
 	onMount(() => {
 		// Only an entry SvelteKit keeps a position for: following a link to a section is the browser's own popstate,
@@ -1223,11 +1235,19 @@ export function keepHistoryScroll() {
 		const shown = (event) => {
 			if (event.persisted) briefly();
 		};
+		// A browser that cannot say when a scroll ends counts every scroll as under way.
+		const ends = 'onscrollend' in window;
+		const scrolled = () => (moving = true);
+		const ended = () => (moving = !ends);
 		window.addEventListener('popstate', popped);
 		window.addEventListener('pageshow', shown);
+		window.addEventListener('scroll', scrolled, { passive: true });
+		window.addEventListener('scrollend', ended);
 		return () => {
 			window.removeEventListener('popstate', popped);
 			window.removeEventListener('pageshow', shown);
+			window.removeEventListener('scroll', scrolled);
+			window.removeEventListener('scrollend', ended);
 			if (holds.size) unhold();
 		};
 	});

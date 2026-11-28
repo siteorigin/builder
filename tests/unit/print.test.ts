@@ -154,7 +154,7 @@ async function bundleSite(files: Map<string, string>, page: string): Promise<str
           if (id === '\0empty') return '';
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return 'export const page = { route: { id: "/contact" }, url: new URL("https://site.test/contact/") };';
-          if (id === '\0$app/navigation') return 'export function afterNavigate() {} export function beforeNavigate() {} export function snapshot() {}';
+          if (id === '\0$app/navigation') return 'export function afterNavigate() {} export function onNavigate() {} export function beforeNavigate() {} export function snapshot() {}';
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;
