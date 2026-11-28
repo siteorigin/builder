@@ -119,7 +119,7 @@ describe.skipIf(!browserInstalled)('picking several posts and changing them toge
     await page.evaluate(([state, usage]) => (globalThis as unknown as { mount(s: unknown, u: unknown): void }).mount(state, usage), [state as unknown, assetUsages(state)] as const);
   }
   const row = (title: string) => page.getByRole('option', { name: new RegExp(`^${title}\\b`) });
-  const selected = () => page.locator('[role="option"][aria-selected="true"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-post')));
+  const selected = () => page.locator('[role="option"][aria-selected="true"]').evaluateAll((els) => els.map((e) => (e as unknown as { dataset: Record<string, string> }).dataset.post));
   /** The picked posts' actions, from the bar above the list. */
   async function action(name: string | RegExp) {
     await page.getByTestId('posts-bulk-actions').click();
