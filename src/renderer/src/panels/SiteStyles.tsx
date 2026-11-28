@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { Check, CircleAlert, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
+import { buttonStyleIds, resetOrder, tokenFollowers } from '@shared/button-styles';
 import { effectiveTokens } from '@generator/index';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
@@ -104,11 +105,13 @@ const JUMPS = [
   { id: 'tok-basics', label: 'Basics' },
   { id: 'tok-color', label: 'Colors' },
   { id: 'tok-text', label: 'Text' },
+  { id: 'tok-buttons', label: 'Buttons' },
   { id: 'tok-layout', label: 'Layout' },
   { id: 'tok-custom', label: 'Yours' },
   { id: 'site-settings', label: 'Site' }
 ];
-const JUMP_IDS = JUMPS.map((j) => j.id);
+/** The jump links for a theme: Buttons only when it declares a button style, as its section shows only then. */
+const jumpsFor = (buttons: boolean) => (buttons ? JUMPS : JUMPS.filter((j) => j.id !== 'tok-buttons'));
 
 /**
  * Says a change out loud in the panel's status region (WCAG 2.2 SC 4.1.3): a reset happens away from where focus
@@ -1168,7 +1171,11 @@ export function SiteStyles() {
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
   // own section stays marked through the scroll it starts (lib/use-jump-mark).
-  const { here, jump, panel } = useJumpMark(JUMP_IDS, '.ss-head');
+  const themeButtons = useMemo(() => (snap ? buttonStyleIds(getTheme(snap.state.site.themeId).tokens) : { radius: null, text: null }), [snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hasButtons = !!(themeButtons.radius || themeButtons.text);
+  const jumps = useMemo(() => jumpsFor(hasButtons), [hasButtons]);
+  const jumpIds = useMemo(() => jumps.map((j) => j.id), [jumps]);
+  const { here, jump, panel } = useJumpMark(jumpIds, '.ss-head');
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
@@ -1196,6 +1203,9 @@ export function SiteStyles() {
   /** Linking and unlinking are steps of their own, so undo always returns to the link before. */
   const relink = (id: string, value: unknown) => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`);
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
+  // The button styles have one place in the panel, Buttons: Text and Layout > Corners leave them out.
+  const buttonIds = [themeButtons.radius, themeButtons.text].filter((id): id is string => !!id);
+  const listed = (g: TokenDef['group']) => group(g).filter((t) => !buttonIds.includes(t.id));
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;
     return n ? `${n} changed` : undefined;
@@ -1220,6 +1230,7 @@ export function SiteStyles() {
     const t = byId(id);
     if (!t) return;
     const at = `[data-token-id="${CSS.escape(id)}"]`;
+    if (buttonIds.includes(id)) return void openSection('tok-buttons', { focus: `${at} :is(select, input)` });
     if (t.group === 'color') return jumpTo(id);
     if (t.group === 'text') return void (setOpenText(id), openSection('tok-text', { focus: `${at} .ss-text-toggle` }));
     if (t.group === 'font') return void openSection('tok-basics', { focus: `${at} select` });
@@ -1237,7 +1248,8 @@ export function SiteStyles() {
     const panel = e.currentTarget.closest('.ss');
     const trigger = e.currentTarget;
     const n = changedIds.length;
-    void applyOps(savedIds.map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
+    // Each style after the ones its theme value follows, so no reset on the way passes through a loop.
+    void applyOps(resetOrder(savedIds, theme.tokens).map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
     // The changes bar goes with the reset: focus moves to the theme, the next thing down, not back to the top.
     refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.ss-theme-change, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
   };
@@ -1264,22 +1276,10 @@ export function SiteStyles() {
   const colors = group('color');
   const colorIds = colors.map((t) => t.id);
   const fontIds = group('font').map((t) => t.id);
-  const textIds = group('text').map((t) => t.id);
-  const layoutIds = LAYOUT_GROUPS.flatMap(({ group: g }) => group(g).map((t) => t.id));
+  const textIds = listed('text').map((t) => t.id);
+  const layoutIds = LAYOUT_GROUPS.flatMap(({ group: g }) => listed(g).map((t) => t.id));
   /** Colours that already follow `id`, directly or through another colour: linking to them would loop. */
-  const followers = (id: string): Set<string> => {
-    const out = new Set<string>();
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const c of shownTokens) {
-        if (c.group !== 'color') continue;
-        const r = refOf(c.value);
-        if (r && (r === id || out.has(r)) && !out.has(c.id)) (out.add(c.id), (grew = true));
-      }
-    }
-    return out;
-  };
+  const followers = (id: string): Set<string> => tokenFollowers(shownTokens, id, 'color');
 
   /** The palette's other colours, as its picker offers them to copy. */
   const colorPresets = (id: string) => colorIds.filter((c) => c !== id && !!shownHex(c)).map((c) => ({ id: c, label: byId(c)?.label ?? c, value: shownHex(c)! }));
@@ -1320,6 +1320,7 @@ export function SiteStyles() {
 
   /** A changed style's name in the review list; layout steps share names ("Medium"), so they carry their group. */
   const reviewName = (id: string) => {
+    if (buttonIds.includes(id)) return `Buttons: ${id === themeButtons.radius ? 'Corners' : 'Label'}`;
     const t = byId(id);
     const g = LAYOUT_GROUPS.find((x) => x.group === t?.group);
     return g ? `${g.label}: ${t?.label}` : (t?.label ?? id);
@@ -1521,26 +1522,24 @@ export function SiteStyles() {
     );
   };
 
-  const textRow = (t: TokenDef) => {
+  /** A text style's fields (font, size, weight and case, line height and letter spacing), each with its own reset. */
+  const textFields = (t: TokenDef, bodyId: string, hints: Partial<Record<TextMetric, string>> = {}) => {
     const v = textMetrics(tokens, t.id, themeValue(t.id));
     if (!v) return null;
     // The theme's own metrics, worked out through its links, so a field is marked changed only when it differs from them.
     const base = (textMetrics(theme.tokens, t.id) ?? themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
     const stack = famRef ? fontStack(famRef) : String(v.family);
-    const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
-    const max = clampRange(v.size)?.[1] ?? toPx(v.size) ?? 16;
-    const open = openText === t.id;
-    const bodyId = `${uid}-text-${t.id}`;
-    const nameId = `${bodyId}-name`;
-    const textUse = theme.id.startsWith('foundation') ? FOUNDATION_TEXT_USES[t.id] : t.description;
-    const weights = WEIGHTS.some(([n]) => n === v.weight) ? WEIGHTS : [...WEIGHTS, [v.weight, String(v.weight)] as [number, string]].sort((a, b) => a[0] - b[0]);
+    // The named weights, with the style's own and the theme's among them when they fall between (Foundation's buttons are 550).
+    const between = [...new Set([v.weight, base.weight])].filter((n) => typeof n === 'number' && Number.isFinite(n) && !WEIGHTS.some(([w]) => w === n));
+    const weights = [...WEIGHTS, ...between.map((n) => [n, String(n)] as [number, string])].sort((a, b) => a[0] - b[0]);
     const metricChanged = (k: TextMetric) => changed(t.id) && !sameValue(metricOf(v, k), metricOf(base, k));
     // Put back one metric; when that leaves the whole style matching the theme, drop the change entirely.
     const resetMetric = (k: TextMetric) => (TEXT_METRICS.every((m) => m === k || sameValue(metricOf(v, m), metricOf(base, m))) ? set(t.id, null) : set(t.id, { [k]: metricOf(base, k) }));
     /** One metric: its label (with the reset beside it, outside the label) over its control. */
-    const metric = (k: TextMetric, control: (id: string) => ReactNode, hint?: string) => {
+    const metric = (k: TextMetric, control: (id: string) => ReactNode) => {
       const id = `${bodyId}-${k}`;
+      const hint = hints[k];
       return (
         <div className="field ss-field" data-ss-row>
           <div className="ss-name ss-field-name ss-nowrap">
@@ -1560,6 +1559,63 @@ export function SiteStyles() {
         </div>
       );
     };
+    return (
+      <>
+        {metric('family', (id) => (
+          <select id={id} className="select sm" value={famRef ?? ''} onChange={(e) => set(t.id, { family: { token: e.target.value } })}>
+            {!famRef && <option value="">{familyName(stack)}</option>}
+            {famRef && !byId(famRef) && (
+              <option value={famRef} disabled>
+                No longer available
+              </option>
+            )}
+            {group('font').map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label} ({familyName(fontStack(f.id))})
+              </option>
+            ))}
+          </select>
+        ))}
+        {metric('size', (id) => <SizeControl id={id} value={v.size} name={`${t.label} size`} onCommit={(size) => set(t.id, { size })} />)}
+        <div className="grid-2">
+          {metric('weight', (id) => (
+            <select id={id} className="select sm" value={v.weight} onChange={(e) => set(t.id, { weight: Number(e.target.value) })}>
+              {weights.map(([n, name]) => (
+                <option key={n} value={n}>
+                  {name === String(n) ? n : `${n} · ${name}`}
+                </option>
+              ))}
+            </select>
+          ))}
+          {metric('transform', (id) => (
+            <select id={id} className="select sm" value={String(metricOf(v, 'transform'))} onChange={(e) => set(t.id, { transform: e.target.value })}>
+              {CASES.map(([c, label]) => (
+                <option key={c} value={c}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          ))}
+        </div>
+        <div className="grid-2">
+          {metric('lineHeight', (id) => <DraftInput id={id} className="input sm" value={v.lineHeight} onCommit={(lineHeight) => (lineHeight.trim() ? set(t.id, { lineHeight: lineHeight.trim() }) : false)} />)}
+          {metric('tracking', (id) => <DraftInput id={id} className="input sm" value={v.tracking} onCommit={(tracking) => (tracking.trim() ? set(t.id, { tracking: tracking.trim() }) : false)} />)}
+        </div>
+      </>
+    );
+  };
+
+  const textRow = (t: TokenDef) => {
+    const v = textMetrics(tokens, t.id, themeValue(t.id));
+    if (!v) return null;
+    const famRef = refOf(v.family);
+    const stack = famRef ? fontStack(famRef) : String(v.family);
+    const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
+    const max = clampRange(v.size)?.[1] ?? toPx(v.size) ?? 16;
+    const open = openText === t.id;
+    const bodyId = `${uid}-text-${t.id}`;
+    const nameId = `${bodyId}-name`;
+    const textUse = theme.id.startsWith('foundation') ? FOUNDATION_TEXT_USES[t.id] : t.description;
     return (
       <div className={`ss-text${open ? ' open' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
         {/* The whole head opens the row (the toggle's hit area covers it); the reset sits beside the name, as on every Site styles row. */}
@@ -1589,46 +1645,7 @@ export function SiteStyles() {
         <div className="ss-text-body" id={bodyId} role="group" aria-labelledby={nameId} hidden={!open}>
           {open && (
             <>
-              {metric('family', (id) => (
-                <select id={id} className="select sm" value={famRef ?? ''} onChange={(e) => set(t.id, { family: { token: e.target.value } })}>
-                  {!famRef && <option value="">{familyName(stack)}</option>}
-                  {famRef && !byId(famRef) && (
-                    <option value={famRef} disabled>
-                      No longer available
-                    </option>
-                  )}
-                  {group('font').map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.label} ({familyName(fontStack(f.id))})
-                    </option>
-                  ))}
-                </select>
-              ))}
-              {metric('size', (id) => <SizeControl id={id} value={v.size} name={`${t.label} size`} onCommit={(size) => set(t.id, { size })} />)}
-              <div className="grid-2">
-                {metric('weight', (id) => (
-                  <select id={id} className="select sm" value={v.weight} onChange={(e) => set(t.id, { weight: Number(e.target.value) })}>
-                    {weights.map(([n, name]) => (
-                      <option key={n} value={n}>
-                        {name === String(n) ? n : `${n} · ${name}`}
-                      </option>
-                    ))}
-                  </select>
-                ))}
-                {metric('transform', (id) => (
-                  <select id={id} className="select sm" value={String(metricOf(v, 'transform'))} onChange={(e) => set(t.id, { transform: e.target.value })}>
-                    {CASES.map(([c, label]) => (
-                      <option key={c} value={c}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                ))}
-              </div>
-              <div className="grid-2">
-                {metric('lineHeight', (id) => <DraftInput id={id} className="input sm" value={v.lineHeight} onCommit={(lineHeight) => (lineHeight.trim() ? set(t.id, { lineHeight: lineHeight.trim() }) : false)} />)}
-                {metric('tracking', (id) => <DraftInput id={id} className="input sm" value={v.tracking} onCommit={(tracking) => (tracking.trim() ? set(t.id, { tracking: tracking.trim() }) : false)} />)}
-              </div>
+              {textFields(t, bodyId)}
               {textUse && (
                 <div className="ss-uses-block">
                   <div className="ss-detail-label">In the theme</div>
@@ -1730,6 +1747,93 @@ export function SiteStyles() {
           <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} negative={g === 'space'} css={cssGroups.has(g)} />
         )}
       </div>
+    );
+  };
+
+  /** Button corners: a step of Layout > Corners it follows, or a value of its own, started from what it shows now. */
+  const cornerField = (t: TokenDef) => {
+    const ref = refOf(t.value);
+    const value = resolvedText(tokens, t.id);
+    const loops = tokenFollowers(tokens, t.id, 'radius');
+    const steps = group('radius').filter((x) => x.id !== t.id && !loops.has(x.id));
+    const id = `${uid}-button-corners`;
+    const stepName = (x: TokenDef) => {
+      const v = resolvedText(tokens, x.id);
+      const px = toPx(v);
+      return `${x.label} (${px !== null && px >= 100 ? 'fully rounded' : friendlySize(v)})`;
+    };
+    return (
+      <div className="field ss-field" data-ss-row data-token-id={t.id}>
+        <div className="ss-name ss-field-name ss-nowrap">
+          <label htmlFor={id}>
+            Corners<span className="sr-only"> of buttons</span>
+          </label>
+          {changed(t.id) && (
+            <>
+              {' '}
+              <ResetDot label="Button corners" theme={`corners, ${show('radius', null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />
+            </>
+          )}
+        </div>
+        {/* Linking and unlinking are steps of their own; "Its own value" keeps the corners as they are drawn now. */}
+        <select id={id} className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value || '0px')}>
+          {ref && !steps.some((x) => x.id === ref) && (
+            <option value={ref} disabled>
+              No longer available
+            </option>
+          )}
+          {steps.map((x) => (
+            <option key={x.id} value={x.id}>
+              Same as {stepName(x)}
+            </option>
+          ))}
+          <option value="">Its own value</option>
+        </select>
+        {!ref && <SizeControl value={value} name="Button corners" onCommit={(v) => set(t.id, v)} />}
+        <div className="field-hint">{ref ? `Changes with ${byId(ref)?.label ?? 'that step'} in Layout > Corners.` : 'Buttons only. 0px makes them square.'}</div>
+      </div>
+    );
+  };
+
+  /** Site styles > Buttons: a sample drawn as the theme draws its buttons, then their corners and their label. */
+  const buttonsBody = () => {
+    const r = themeButtons.radius ? byId(themeButtons.radius) : undefined;
+    const label = themeButtons.text ? byId(themeButtons.text) : undefined;
+    const v = label ? textMetrics(tokens, label.id, themeValue(label.id)) : null;
+    const famRef = v ? refOf(v.family) : null;
+    const stack = v ? (famRef ? fontStack(famRef) : String(v.family)) : fontStack('font.body');
+    const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
+    // At its real size, as far as the dock has room for; the padding is in em, as the theme's is, so it scales with it.
+    const size = v ? (toPx(v.size) ?? clampRange(v.size)?.[1] ?? 16) : 16;
+    const look: React.CSSProperties = {
+      borderRadius: r ? resolvedText(tokens, r.id) || undefined : undefined,
+      fontFamily: shownStack(stack),
+      fontSize: Math.max(11, Math.min(24, size)),
+      ...(v ? { fontWeight: v.weight, lineHeight: v.lineHeight, letterSpacing: v.tracking, textTransform: (v.transform as React.CSSProperties['textTransform']) ?? 'none' } : {})
+    };
+    const ink = shownHex('color.text') || undefined;
+    return (
+      <>
+        <div className="ss-btn-sample" style={{ background: shownHex('color.background') || undefined, color: ink }} aria-hidden="true">
+          <span className="ss-btn-sample-btn" style={{ ...look, background: shownHex('color.brand') || undefined, color: shownHex('color.on-brand') || undefined }}>
+            Get in touch
+          </span>
+          <span className="ss-btn-sample-btn secondary" style={look}>
+            Learn more
+          </span>
+        </div>
+        <p className="ss-btn-note">
+          {v ? `${friendlySize(v.size)} · ${weightWords(v.weight)} · ${famLabel}. ` : ''}Every button the theme draws. Hover and focus colors follow Brand.
+        </p>
+        <div className="ss-btn-fields">
+          {r && cornerField(r)}
+          {label && (
+            <div className="ss-btn-fields" data-token-id={label.id} role="group" aria-label="Button label">
+              {textFields(label, `${uid}-button-label`, { size: 'The padding grows and shrinks with it.' })}
+            </div>
+          )}
+        </div>
+      </>
     );
   };
 
@@ -1867,7 +1971,7 @@ export function SiteStyles() {
           <h3>Site styles</h3>
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
-          {JUMPS.map((j, i) => (
+          {jumps.map((j, i) => (
             <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => jump(i)}>
               {j.label}
             </button>
@@ -2116,12 +2220,18 @@ export function SiteStyles() {
             </div>
           </div>
         )}
-        <div className="ss-text-list">{group('text').map(textRow)}</div>
+        <div className="ss-text-list">{listed('text').map(textRow)}</div>
       </Section>
 
+      {hasButtons && (
+        <Section title="Buttons" id="tok-buttons" scope={changedNote(buttonIds)}>
+          {buttonsBody()}
+        </Section>
+      )}
+
       <Section title="Layout" id="tok-layout" defaultOpen={false} scope={changedNote(layoutIds)}>
-        {LAYOUT_GROUPS.filter(({ group: g }) => group(g).length).map(({ group: g, label }) => {
-          const max = Math.max(...group(g).map((t) => toPx(resolvedText(tokens, t.id)) ?? clampRange(resolvedText(tokens, t.id))?.[1] ?? 0));
+        {LAYOUT_GROUPS.filter(({ group: g }) => listed(g).length).map(({ group: g, label }) => {
+          const max = Math.max(...listed(g).map((t) => toPx(resolvedText(tokens, t.id)) ?? clampRange(resolvedText(tokens, t.id))?.[1] ?? 0));
           return (
             <div className="ss-group" key={g} role="group" aria-label={label}>
               <div className="ss-group-label ss-group-head">
@@ -2140,7 +2250,7 @@ export function SiteStyles() {
                   </button>
                 )}
               </div>
-              {group(g).map((t) => layoutRow(g, t, max))}
+              {listed(g).map((t) => layoutRow(g, t, max))}
             </div>
           );
         })}

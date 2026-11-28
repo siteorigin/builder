@@ -320,6 +320,13 @@
   .ss-token:has(.ss-css-area) .ss-size { display: contents; }
   .ss-token .ss-size > .ss-css-area { grid-column: 1 / -1; margin-left: 48px; }
   .ss-text-body .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; }
+  /* Buttons: two samples on the site's own background, drawn as the theme draws a button, then the fields under them. */
+  .ss-btn-sample { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .ss-btn-sample-btn { display: inline-flex; align-items: center; justify-content: center; max-width: 100%; min-height: 46px; padding: 0.7em 1.35em; border: 1px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ss-btn-sample-btn.secondary { border-color: color-mix(in srgb, currentColor 52%, transparent); }
+  .ss-btn-note { margin: 8px 2px 12px; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .ss-btn-fields { display: flex; flex-direction: column; gap: 10px; }
+  .ss-btn-fields .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; }
   /* Fonts start their own part of Basics, after the brand colour and what it says. */
   .ss-group > :not(.ss-font) + .ss-font { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
   .ss-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
