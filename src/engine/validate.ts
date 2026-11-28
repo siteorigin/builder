@@ -36,7 +36,7 @@ import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
-import { formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
+import { formConnectionProblem, formNoun, isFormDefinition, readsFormServices, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -555,7 +555,7 @@ function treeDiagnostics(state: ProjectState, { owner, tree, label }: CheckedTre
   const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
   for (const n of Object.values(tree.nodes)) {
     const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
-    if (inTheme || n.kind !== 'instance' || !def || !isFormContract(def.componentId) || def.kind !== 'code') continue;
+    if (inTheme || n.kind !== 'instance' || !def || !isFormDefinition(def) || def.kind !== 'code') continue;
     const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
     const unconnected = formConnectionDiagnostic(state, owner, label, n);
     if (unconnected) out.push(unconnected);
@@ -789,7 +789,7 @@ export function formNameDiagnostics(state: ProjectState, parts?: CheckParts): Di
 export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
   if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
   const def = state.components[node.definitionId];
-  if (!def || !isFormContract(def.componentId) || def.kind !== 'code') return undefined;
+  if (!def || !readsFormServices(def)) return undefined;
   const what = formNoun(def);
   const found = (problem: string | undefined): Diagnostic | undefined =>
     problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the ${what} is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: node.id } : undefined;

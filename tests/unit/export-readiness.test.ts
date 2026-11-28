@@ -354,3 +354,17 @@ describe('an earlier export’s note, read against the project now', () => {
     expect(noteState(s, { message: 'Private files were left out.' } satisfies ExportNote, [])).toBeNull();
   });
 });
+
+describe('a contact form made unique', () => {
+  it('keeps reporting that visitors cannot send it', () => {
+    const { s, node } = lookbook();
+    const before = healthForms(s).filter((d) => d.nodeId === node.id);
+    expect(before).toHaveLength(1);
+    const made = apply(s, [{ type: 'component.makeUnique', owner: { kind: 'page', id: 'pg_lookbook' }, nodeId: node.id, name: 'Enquiry form' }]);
+    const copy = made.pages.pg_lookbook.nodes[node.id] as InstanceNode;
+    expect(made.components[copy.definitionId].componentId).not.toBe('contact.form');
+    expect(healthForms(made).filter((d) => d.nodeId === node.id).map((d) => d.message)).toEqual(before.map((d) => d.message));
+    expect(websiteFormNotes(made).map((n) => n.message)).toEqual(websiteFormNotes(s).map((n) => n.message));
+    expect(websiteFormNotes(made)[0].destination).toEqual({ kind: 'form', owner: { kind: 'page', id: 'pg_lookbook' }, nodeId: node.id, setting: 'connection' });
+  });
+});

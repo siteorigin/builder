@@ -18,6 +18,10 @@ export const FORM_CONTRACTS: readonly string[] = ['contact.form', 'block.signup'
 /** Whether a contract (a component ID, or the one a copy's provenance names) is one of the theme's forms. */
 export const isFormContract = (componentId: unknown): boolean => typeof componentId === 'string' && FORM_CONTRACTS.includes(componentId);
 
+/** Whether a definition is one of the theme's forms or a project copy of one (made unique), by the contract it names. */
+export const isFormDefinition = (def: Pick<ComponentDefinition, 'componentId' | 'provenance'> | undefined): boolean =>
+  !!def && (isFormContract(def.componentId) || isFormContract(def.provenance?.componentId));
+
 /** What a form is called in a finding: the signup form, else the contact form. A copy goes by the form it came from. */
 export const formNoun = (def: Pick<ComponentDefinition, 'componentId' | 'provenance'> | undefined): string =>
   def?.componentId === 'block.signup' || def?.provenance?.componentId === 'block.signup' ? 'signup form' : 'contact form';
