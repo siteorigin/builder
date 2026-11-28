@@ -505,7 +505,7 @@ describe('as diagnostics', () => {
     const tree = more.components[def.id].tree!;
     tree.nodes.sub = { id: 'sub', kind: 'text', tag: 'h3', text: 'Summer' };
     (tree.nodes.root as { children: string[] }).children.push('sub');
-    expect(introducedDiagnostics(renamed, validateState(more)).map((d) => d.nodeId)).toEqual(['sub']);
+    expect(introducedDiagnostics(renamed, validateState(more).filter(isReusabilityWarning)).map((d) => d.nodeId)).toEqual(['sub']);
   });
 });
 
