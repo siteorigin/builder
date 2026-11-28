@@ -9,7 +9,8 @@ const subscribe = (fn: () => void) => {
   return () => void off();
 };
 /** Whether the form-routing review is the dialog on screen (#1322), so other prompts for its question can step back. */
-export const useRoutingReviewShown = () => useSyncExternalStore(subscribe, () => routingReviewShown(getConfirm()));
+const reviewShown = () => routingReviewShown(getConfirm());
+export const useRoutingReviewShown = () => useSyncExternalStore(subscribe, reviewShown, reviewShown);
 
 /**
  * Shows the app's question about an AI change to where contact forms send in the app's own dialog (#1130), whether or

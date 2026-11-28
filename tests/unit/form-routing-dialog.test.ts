@@ -147,6 +147,9 @@ describe('the other prompts while the review is open (#1322)', () => {
     expect(questionHint(q, true)).not.toMatch(/typed|below|chat/i);
     expect(questionHint(q, true)).toMatch(/review that is open/);
     expect(questionHint(q, false)).toMatch(/A typed “yes” allows it too/);
+    // Only the review's own question points at the dialog: any other keeps its usual hint.
+    expect(questionHint({ choices: ['Yes', 'No'], widen: true }, true)).toBe('Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.');
+    expect(questionHint({ choices: ['A'] }, true)).toBe('Choose an option, or type your own answer below.');
 
     // Taken back with the question still waiting (it moved threads, or the chat answered it): the prompts return.
     first.withdraw();
@@ -172,6 +175,7 @@ describe('the other prompts while the review is open (#1322)', () => {
   it('only the review counts, not any dialog', () => {
     expect(routingReviewShown(null)).toBe(false);
     expect(routingReviewShown({})).toBe(false);
+    expect(routingReviewShown({ formRouting: undefined })).toBe(false);
     expect(routingReviewShown({ formRouting: review })).toBe(true);
   });
 });

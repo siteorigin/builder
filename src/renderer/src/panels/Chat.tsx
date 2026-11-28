@@ -1616,7 +1616,7 @@ export function Chat() {
             {anyRunStatus === 'awaiting-input' ? <CircleHelp /> : <Spinner key={anyRunStatus === 'stopping' ? 'stopping' : 'working'} decorative />}
           </span>
           <span className="run-phase" role="status">
-            {anyRunStatus === 'awaiting-input' ? 'The AI needs your answer in another conversation' : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}
+            {anyRunStatus === 'awaiting-input' ? (reviewing ? 'The AI is waiting on the review that is open' : 'The AI needs your answer in another conversation') : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}
           </span>
           <span className="run-actions">
             {/* Not while the form-routing review is open over the chat: that question is answered there (#1322). */}
