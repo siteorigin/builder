@@ -4,6 +4,7 @@ import type { ImportReviewRow } from '@shared/api';
 import { getState, setState } from '../store';
 import { Disclosure, Modal } from '../components/ui';
 import { settleImportReview } from '../lib/import-review';
+import { fromFolder } from '../lib/import-folder';
 import './ImportReview.css';
 
 const size = (w?: number, h?: number) => (w && h ? `${w.toLocaleString()} × ${h.toLocaleString()}` : '');
@@ -72,11 +73,17 @@ export function ReviewDisclosure({ summary, icon, className, children, testId }:
 
 function Row({ r, copy, onCopy }: { r: ImportReviewRow; copy: boolean; onCopy: (on: boolean) => void }) {
   const id = useId();
+  const folder = fromFolder(r.path);
   return (
     <li className={`import-review-row ${r.action}`} data-testid="import-review-row">
       <div className="import-review-name">
         <b id={`${id}-name`}>{r.name}</b>
         <span className="muted">{describe(r)}</span>
+        {folder && (
+          <span className="import-review-from muted" id={`${id}-from`} title={r.path}>
+            From {folder}
+          </span>
+        )}
       </div>
       {r.action === 'convert' && r.copy && (
         <p className="import-review-what">
@@ -94,7 +101,7 @@ function Row({ r, copy, onCopy }: { r: ImportReviewRow; copy: boolean; onCopy: (
       )}
       {r.action === 'offer' && r.copy && !r.copyOnly && (
         <label className="import-review-what import-review-choice">
-          <input type="checkbox" checked={copy} onChange={(e) => onCopy(e.target.checked)} aria-labelledby={`${id}-choice ${id}-name`}
+          <input type="checkbox" checked={copy} onChange={(e) => onCopy(e.target.checked)} aria-labelledby={`${id}-choice ${id}-name${folder ? ` ${id}-from` : ''}`}
             onKeyDown={(e) => enterToggles(e, () => onCopy(!copy))} aria-describedby={`${id}-else`} />
           <span>
             <span id={`${id}-choice`}>Add a web-sized copy instead: {describeCopy(r.copy)}.</span>{' '}
