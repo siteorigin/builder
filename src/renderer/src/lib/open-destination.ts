@@ -11,6 +11,8 @@ import { treeFor } from './model';
 
 /** The section of Site styles each site field is in, and the control it is reached by (see SiteStyles): a site image's card, by its first button. */
 const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'], { section: string; focus: string }> = {
+  name: { section: 'site-settings', focus: '#site-name' },
+  description: { section: 'site-settings', focus: '#site-description' },
   baseUrl: { section: 'site-settings', focus: '#site-public-url' },
   favicon: { section: 'site-settings', focus: '#site-favicon button' },
   socialImage: { section: 'site-settings', focus: '#site-social-image button' },

@@ -289,7 +289,12 @@ export interface VersionReview {
   left: string[];
   /** Files its documents name that were missing when it was saved: restoring can't bring them back. */
   missing: string[];
-  /** The project already matches it. */
+  /**
+   * With Git snapshots on, the other files of the site that differ from its snapshot (hand-written code, setup and
+   * public files, as project paths): restoring doesn't copy them from it (#1396).
+   */
+  others: string[];
+  /** Restoring would change nothing: its documents and the media they name already match (`others` may still differ). */
   unchanged: boolean;
 }
 
@@ -309,6 +314,8 @@ export interface RestoreVersionResult {
   replaced?: number;
   /** Files an earlier restore put back that this one leaves in the project folder. */
   left?: string[];
+  /** The other files of the site that differ from the version, which the restore didn't copy from it (VersionReview.others). */
+  others?: string[];
   /**
    * With Git snapshots on: why the site as restored is not, or not yet, a saved version of its own, though the restore
    * itself is done (#1155).
@@ -538,7 +545,7 @@ export type ExportFormat = 'folder' | 'zip';
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
+  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
@@ -1486,7 +1493,7 @@ export interface BuilderApi {
      * Restore saved version `id` as reviewed at `revision`, putting back the files the review listed: one Undo step for
      * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
      */
-    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
+    restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
     /** Give saved version `id` a new name; what it holds and when it was saved stay. */
     renameVersion(id: string, name: string, workspaceKey: string): Promise<{ ok: boolean; message?: string }>;
     /** Delete saved version `id`, freeing what only it held. */
