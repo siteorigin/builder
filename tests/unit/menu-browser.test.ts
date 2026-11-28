@@ -2,9 +2,10 @@
  * The shared popup menu (Menu and useMenu in components/ui.tsx): a row that only states a fact is not a menu item
  * (the arrows pass it, a screen reader hears it once, in the menu's description, after its group's heading); the
  * button whose menu is up says so from React's own render; a menu given its rows as a function keeps up with them
- * while it is open, focus staying on the same row; and each run of radio items keeps its own choice.
+ * while it is open, focus staying on the same row; and each run of radio items keeps its own choice. A menu
+ * opened in the sidebar stays clear of the rail beside it.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
@@ -34,6 +35,10 @@ const ENTRY = [
   '  { separator: true },',
   '  { label: "Leave", onSelect: () => {} }',
   '];',
+  'const described = [',
+  '  { label: "Import a WordPress export…", description: "In WordPress: Tools → Export. Put the site’s uploads folder beside it for its pictures.", onSelect: () => {} },',
+  '  { label: "Collection settings…", description: "Fields, groupings and pages.", onSelect: () => {} }',
+  '];',
   'function Host() {',
   '  const menu = useMenu();',
   '  const [where, setWhere] = useState("In Team row");',
@@ -45,6 +50,8 @@ const ENTRY = [
   '  return h("div", null,',
   '    h("button", { id: "a", ...menu.triggerProps("a"), onClick: (e) => menu.openAt(e.currentTarget, () => rows.current, "Manage") }, "A"),',
   '    h("button", { id: "b", ...menu.triggerProps("b"), onClick: (e) => menu.openAt(e.currentTarget, rowsFor("x"), "Other") }, "B"),',
+  '    h("aside", { className: "side-panel", style: { position: "fixed", top: 100, height: 40 } },',
+  '      h("button", { id: "side", style: { position: "absolute", right: 10, width: 24, height: 24 }, ...menu.triggerProps("side"), onClick: (e) => menu.openAt(e.currentTarget, described, "Collection options") }, "…")),',
   '    menu.node);',
   '}',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Host)));"
@@ -79,6 +86,9 @@ async function bundle(): Promise<string> {
   if (!chunk || chunk.type !== 'chunk') throw new Error('The menu did not bundle');
   return chunk.code;
 }
+
+/** The editor's rail, at the window's left edge, before the sidebar. */
+const RAIL = 48;
 
 describe.skipIf(!browserInstalled)('the shared popup menu', { timeout: 30_000 }, () => {
   let browser: Browser;
@@ -174,5 +184,25 @@ describe.skipIf(!browserInstalled)('the shared popup menu', { timeout: 30_000 },
     await menu().waitFor();
     const checked = await menu().getByRole('menuitemradio', { checked: true }).allTextContents();
     expect(checked).toEqual(['100%', 'Dark']);
+  });
+
+  // #1313: the menu is wider than the room between the rail and its button, and was right-aligned over the rail.
+  it.each([200, 260, 420])('keeps a menu opened in a %ipx sidebar clear of the rail beside it, with its descriptions whole', async (width) => {
+    const css = ['tokens', 'reset', 'primitives'].map((name) => readFileSync(resolve('src/renderer/src/styles', `${name}.css`), 'utf8')).join('\n');
+    await page.addStyleTag({ content: css });
+    await page.locator('.side-panel').evaluate((el, [left, w]) => Object.assign((el as HTMLElement).style, { left: `${left}px`, width: `${w}px` }), [RAIL, width]);
+    await page.locator('#side').click();
+    await menu().waitFor();
+    // Placed, and past its opening animation.
+    await page.waitForFunction(`document.querySelector('[role="menu"]').getAnimations().length === 0 && document.querySelector('[role="menu"]').getBoundingClientRect().top > 0`);
+    const box = (await menu().boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(RAIL + 8);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
+    // Still under its button: shifted along it, not detached.
+    const button = (await page.locator('#side').boundingBox())!;
+    expect(box.x).toBeLessThan(button.x + button.width);
+    expect(box.x + box.width).toBeGreaterThan(button.x);
+    expect(box.y).toBeGreaterThanOrEqual(button.y + button.height);
+    expect(await menu().evaluate((el) => [el, ...el.querySelectorAll('.menu-desc')].filter((n) => n.scrollWidth > n.clientWidth).length)).toBe(0);
   });
 });

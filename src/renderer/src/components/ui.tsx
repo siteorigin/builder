@@ -250,7 +250,8 @@ const boxOf = (el: HTMLElement): Box => {
 
 /**
  * Popup menu, built on Radix DropdownMenu (WAI-ARIA APG menu pattern). It opens at a point (right-click) or
- * against a trigger, flipping and shifting to stay 8px inside the window. A keyboard-opened menu focuses
+ * against a trigger, flipping and shifting to stay 8px inside the window (from a button in the sidebar, 8px inside
+ * the sidebar's left edge, clear of the rail). A keyboard-opened menu focuses
  * its first available item (its last with `focusLast`); Up/Down wrap, Home/End jump, letters jump by label,
  * Enter/Space choose, Escape or Tab close. Refused actions are reached by the arrows but do nothing; information rows
  * are passed by (MenuItem says which is which). It is
@@ -423,6 +424,8 @@ export function Menu({ x, y, items: source, onClose, label, alignEnd, returnTo, 
       })()
     )
   );
+  // A sidebar menu is wider than the room beside its button: it shifts out over the canvas, never over the rail.
+  const sidebar = trigger?.closest('.side-panel')?.getBoundingClientRect();
   return (
     <DropdownMenu.Root open modal onOpenChange={(o) => !o && closeRef.current()}>
       {createPortal(
@@ -442,7 +445,7 @@ export function Menu({ x, y, items: source, onClose, label, alignEnd, returnTo, 
           side={above ? 'top' : 'bottom'}
           align={alignEnd ? 'end' : 'start'}
           sideOffset={trigger ? 4 : 0}
-          collisionPadding={8}
+          collisionPadding={{ top: 8, right: 8, bottom: 8, left: (sidebar?.left ?? 0) + 8 }}
           loop
           // Focus goes back to the opener in the cleanup above, and only when nothing else claimed it.
           onCloseAutoFocus={(e) => e.preventDefault()}
