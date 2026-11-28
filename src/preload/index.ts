@@ -26,7 +26,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -95,6 +95,7 @@ const api: BuilderApi = {
     exportStatic: invoke('project:exportStatic'),
     reviewEditions: invoke('project:reviewEditions'),
     captureReviewEdition: invoke('project:captureReviewEdition'),
+    stopReviewCapture: invoke('project:stopReviewCapture'),
     exportReviewSheet: invoke('project:exportReviewSheet'),
     retryPreview: invoke('project:retryPreview'),
     prepareComponentPreview: invoke('project:prepareComponentPreview'),

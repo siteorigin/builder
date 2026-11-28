@@ -86,6 +86,7 @@ const HOST_ONLY_METHODS = [
   'project.exportStatic',
   'project.reviewEditions',
   'project.captureReviewEdition',
+  'project.stopReviewCapture',
   'project.exportReviewSheet',
   'project.exportComponent',
   'project.importComponent',
