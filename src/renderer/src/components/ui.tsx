@@ -150,7 +150,7 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
  * it, except with `dismissOnBackdrop={false}`: a dialog over work in progress, whose close would cancel that
  * work, ends only by its own buttons, Escape, or the close button.
  */
-export function Modal({ title, icon, onClose, children, footer, wide, describedBy, busy, dismissOnBackdrop = true }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; describedBy?: string; busy?: boolean; dismissOnBackdrop?: boolean }) {
+export function Modal({ title, icon, onClose, children, footer, wide, describedBy, busy, dismissOnBackdrop = true, actions }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; describedBy?: string; busy?: boolean; dismissOnBackdrop?: boolean; /** Controls in the header, before Close (the code workspace's toolbar). */ actions?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // While busy (creating a project, opening a trusted one), only the dialog's own buttons can end it.
@@ -167,6 +167,7 @@ export function Modal({ title, icon, onClose, children, footer, wide, describedB
             <h2 className="grow" id={titleId}>
               {title}
             </h2>
+            {actions}
             <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title={busy ? undefined : 'Close (Esc)'}>
               <X />
             </button>

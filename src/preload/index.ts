@@ -27,11 +27,11 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'preview-control:request', 'menu:command', 'menu:history', 'menu:open', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'project-check:update', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'preview-control:request', 'menu:command', 'menu:history', 'menu:open', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
   platform: chromePlatform(process.argv, process.platform),
-  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), gitRuntime: invoke('app:gitRuntime'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
+  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), gitRuntime: invoke('app:gitRuntime'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut'), chooseExternalEditor: invoke('app:chooseExternalEditor') } as BuilderApi['app'],
   edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
   projects: {
@@ -118,7 +118,15 @@ const api: BuilderApi = {
     unlock: invoke('project:unlock'),
     saveLocalState: invoke('project:saveLocalState'),
     validateSource: invoke('project:validateSource'),
-    flush: invoke('project:flush')
+    flush: invoke('project:flush'),
+    codeFiles: invoke('project:codeFiles'),
+    readCodeFile: invoke('project:readCodeFile'),
+    saveCodeFile: invoke('project:saveCodeFile'),
+    openInEditor: invoke('project:openInEditor'),
+    runCheck: invoke('project:runCheck'),
+    stopCheck: invoke('project:stopCheck'),
+    checks: invoke('project:checks'),
+    previewLog: invoke('project:previewLog')
   } as BuilderApi['project'],
   ai: {
     providers: invoke('ai:providers'),

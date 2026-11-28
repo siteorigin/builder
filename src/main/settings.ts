@@ -12,6 +12,8 @@ import type { LocalEndpoint } from '@agent/local';
 import { DEFAULT_SHORTCUTS, normalShortcut, shortcutConflict, type ShortcutSettings } from '@shared/shortcuts';
 import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem, localModelFor, localServerKey, type LocalProviderSettings } from '@shared/local';
 import { checkRelayUrl } from '@shared/live/relay-url';
+import type { ExternalEditor } from '@shared/code-workspace';
+import { storedEditor } from './external-editor';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -27,6 +29,7 @@ const DEFAULTS: SettingsFile = {
   settings: {
     appearance: 'system',
     developerMode: false,
+    externalEditor: { kind: 'system' },
     gitSnapshots: false,
     liveRelayUrl: null,
     shortcuts: DEFAULT_SHORTCUTS,
@@ -126,6 +129,8 @@ export async function loadSettings(): Promise<SettingsFile> {
     if (typeof cache.settings.liveRelayUrl !== 'string' || !cache.settings.liveRelayUrl.trim()) cache.settings.liveRelayUrl = null;
     // Only a hand-edited true turns Git snapshots on: anything else is the default, off.
     cache.settings.gitSnapshots = cache.settings.gitSnapshots === true;
+    // An editor that is not a usable choice is the system's default.
+    cache.settings.externalEditor = storedEditor(cache.settings.externalEditor);
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     // Kept in the main process's log (main-log.ts): settings that could not be read start from the defaults.
@@ -185,6 +190,12 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
     const { gitSnapshots: _refused, ...rest } = patch;
     patch = rest;
   }
+  // The editor goes back to the system's default this way; an application is chosen only through setExternalEditor,
+  // which checks it is one, so nothing the editor window sends can name a program to start.
+  if ('externalEditor' in patch) {
+    const { externalEditor: asked, ...rest } = patch;
+    patch = (asked as { kind?: unknown } | undefined)?.kind === 'system' ? { ...rest, externalEditor: { kind: 'system' } } : rest;
+  }
   const prev = s.settings.ai;
   const local = { ...prev.local, ...(patch.ai?.local ?? {}), modelsByServer: { ...prev.local.modelsByServer } };
   const choose = (server: string | null, id: unknown) => {
@@ -210,6 +221,14 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
     if (s.settings.shortcuts === shortcuts) s.settings.shortcuts = savedShortcuts;
     throw e;
   }
+  return s.settings;
+}
+
+/** Use `editor`, an application checked by external-editor.ts checkEditorApp, as the code editor from now on. */
+export async function setExternalEditor(editor: ExternalEditor): Promise<AppSettings> {
+  const s = await loadSettings();
+  s.settings = { ...s.settings, externalEditor: storedEditor(editor) };
+  await saveSettings();
   return s.settings;
 }
 

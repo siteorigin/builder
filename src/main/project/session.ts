@@ -51,6 +51,7 @@ import { ownServerHook } from './server-hook';
 import { isPageModule, isSourceCode, ownRouteFiles } from './page-module';
 import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, declaredPackages, importedPackages, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
+import { isAppCodePath } from '@shared/code-workspace';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
@@ -2852,6 +2853,26 @@ export class ProjectSession extends EventEmitter {
       made ??= this.writtenFiles(writes);
       // A project that cannot be generated is refused by its save, which says why; no import is blamed for it.
       return made === null || made.has(path);
+    };
+  }
+
+  /**
+   * Whether the app writes a project-relative path or holds it as its own, for the code workspace (#1483): anything in
+   * src/lib/siteorigin/, a file it generated or is generating, one its next publication writes for the project as it is
+   * now (a page added since takes its route), and a code component's file. A server hook of the project's own (as
+   * publication finds it, ownServerHook) is the project's. Names are compared folded, as a disk that ignores case
+   * compares them. When the project cannot be generated, so what it writes cannot be said, every path is the app's.
+   */
+  appWrites(): (path: string) => boolean {
+    const claimed = [...Object.keys(this.generated.files), ...Object.keys(this.generated.pending ?? {})];
+    const written = this.writtenFiles(this.state);
+    const hook = ownServerHook(this.dir, Object.hasOwn(this.generated.files, SERVER_HOOK_FILE) || Object.hasOwn(this.generated.pending ?? {}, SERVER_HOOK_FILE));
+    const sources = componentSources(this.state.components);
+    const app = new Set([...claimed, ...(written ?? [])].map(foldName));
+    return (path) => {
+      if (isAppCodePath(path) || written === null) return true;
+      if (hook !== undefined && foldName(hook) === foldName(path)) return false;
+      return app.has(foldName(path)) || sources(path) !== undefined;
     };
   }
 

@@ -11,7 +11,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools, ProjectPackages } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
-import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
+import type { AppSettings, NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
+import { maskSecrets } from '../runtime/build-diagnostics';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme, installedThemeNote, installedThemeRequirement } from '@catalogue/index';
@@ -72,8 +73,14 @@ import { isValidFontAsset } from '@shared/fonts';
 import { LibraryImageReader } from './project/library-image';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies, resolvePackageFiles, stageDependencies, starterTools, type PackageFiles, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, npmCliPath, prepareDependencies, projectEnv, resolvePackageFiles, stageDependencies, starterTools, type PackageFiles, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
 import { declaredVersion, listPackages, packageFailure, packageRequest, placeOf } from './runtime/packages';
+import { declaredTestScript, runProjectTests } from './runtime/project-tests';
+import { codeFilePath, listCodeFiles, projectFile, readCodeFile, saveCodeFile } from './project/code-files';
+import { checkEditorApp, desktopHandOff, openInEditor } from './external-editor';
+import { compileFile, type Compile } from './compile-file';
+import type { CompiledBatch } from './compile-client';
+import { MAX_CODE_FILES, PROJECT_TEST_TIMEOUT_MS, type CodeFileList, type CodeFileRead, type CodeFileSave, type EditorOpenResult, type EditorTarget, type PreviewLogLine, type ProjectCheckProblem, type ProjectCheckRun } from '@shared/code-workspace';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -83,7 +90,7 @@ import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { unservableLocation, unservableProject } from './project-location';
 import { waitForPreviewPage } from '../runtime/preview-ready';
-import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, setExternalEditor, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -180,6 +187,8 @@ const STALE_INSERT = 'The page changed while the component was being inserted. I
 const STOPPED = 'stopped';
 const BUILD_CALLED_OFF = 'The build was called off.';
 const REVIEW_STOPPED = 'The capture was stopped. No edition was kept; the editions captured before are unchanged.';
+/** How long a close waits for the code workspace's stopped checks to end before it goes on without them. */
+const CHECKS_END_MS = 10_000;
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 /** A change to the project's packages asked for in an opening that has since closed (#1480). */
 const PACKAGES_CLOSED = 'The project was closed before its packages could be changed.';
@@ -754,6 +763,19 @@ export class Controller {
   onOpeningChange: (() => void) | null = null;
   aiBusy = () => false;
   aiRunId = (): string | null => null;
+  /** Compiles Svelte files in the app's compile workers (index.ts sets it); the code workspace's Svelte check uses it. */
+  compileSvelte: ((files: Array<[string, string]>) => Promise<CompiledBatch>) | null = null;
+  /** Runs a project's own tests (runtime/project-tests.ts; a stand-in in tests). */
+  projectTestRunner: typeof runProjectTests = runProjectTests;
+  /** The code workspace's checks (#1483), each with its opening, as they last stood, and how to stop one still running. */
+  private codeChecks = new Map<string, { run: ProjectCheckRun; abort: AbortController; done: Promise<void> }>();
+  /** Checks stopped and still ending: a close waits for each, so no test of the project outlives its lock. */
+  private checksEnding = new Set<Promise<void>>();
+  /**
+   * Moves on whenever what the workspace may do changes under a call already under way (Developer mode turned off, the
+   * project taken over, the editor gone): a save or a hand-off begun before then does nothing.
+   */
+  private codeEpoch = 0;
   /** No editor window is open: macOS keeps the app, and the project with it, running without one (#1036). */
   private windowless = false;
   /**
@@ -1766,6 +1788,8 @@ export class Controller {
     // install into it), then start it again from a private copy.
     session.on('lock-lost', () => {
       if (this.session !== session) return;
+      // The project's tests ran in its folder, which is another app's now.
+      void this.stopProjectChecks();
       this.prepareAbort?.abort();
       // A private copy's preview goes on only where there is still a project to copy.
       if (!this.stage || previewUnavailable(session)) void this.dev?.stop();
@@ -2974,6 +2998,8 @@ export class Controller {
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
+    // The code workspace's checks belong to it too: a test run's processes are ended before the lock goes (waited below).
+    const checksEnded = this.stopProjectChecks();
     await this.settleReviews();
     // A live session ends with its project: guests lose the preview now, and the relay is told (waited for below).
     const liveEnded = this.live.end();
@@ -3010,6 +3036,7 @@ export class Controller {
       // Closed before its start took over the server started while it opened (Close Project during attach).
       await this.dropEarly(s);
       await liveEnded;
+      await checksEnded;
       await s.close();
       // Its entry in Recent projects leaves with the name it has now, whichever way it was left: back to Welcome or
       // for another project. A list that cannot be saved never stops the close.
@@ -4635,6 +4662,237 @@ export class Controller {
     const s = this.session!;
     if (kind === 'page') return generatePage(s.state, s.state.pages[id], {});
     return this.readSource(id).source;
+  }
+
+  // -------------------------------------------------------------------------
+  // Code workspace (#1483)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The open project, for a code workspace call made in `opening`: only in Developer mode, and only while that opening
+   * is the open project's and it is not closing. Otherwise why not.
+   */
+  private async codeSession(opening: unknown): Promise<{ ok: true; session: ProjectSession } | { ok: false; reason: 'closed' | 'read-only'; message: string }> {
+    const s = this.session;
+    if (!s || typeof opening !== 'string' || opening !== this.workspaceKey || this.closing) return { ok: false, reason: 'closed', message: 'The project was closed, so its code can’t be reached from here.' };
+    if (!(await loadSettings()).settings.developerMode) return { ok: false, reason: 'read-only', message: 'The code workspace needs Developer mode. Turn it on in Settings.' };
+    if (this.session !== s || opening !== this.workspaceKey || this.closing) return { ok: false, reason: 'closed', message: 'The project was closed, so its code can’t be reached from here.' };
+    return { ok: true, session: s };
+  }
+
+  /** Why nothing of `s` can be saved, started or opened from the workspace, or null when it can. */
+  private codeReadOnly(s: ProjectSession): string | null {
+    return s.readOnly ? s.readOnly.reason : null;
+  }
+
+  async codeFiles(opening: unknown): Promise<CodeFileList> {
+    const at = await this.codeSession(opening);
+    if (!at.ok) return { ok: false, message: at.message };
+    const { files, truncated } = await listCodeFiles(at.session.dir, at.session.appWrites());
+    return { ok: true, files, truncated, readOnly: this.codeReadOnly(at.session) };
+  }
+
+  async readCodeFile(opening: unknown, path: unknown): Promise<CodeFileRead> {
+    const at = await this.codeSession(opening);
+    if (!at.ok) return { ok: false, reason: at.reason, message: at.message };
+    const read = await readCodeFile(at.session.dir, path, at.session.appWrites());
+    return read.ok ? { ...read, readOnly: this.codeReadOnly(at.session) } : read;
+  }
+
+  async saveCodeFile(opening: unknown, path: unknown, text: unknown, expectedHash: unknown): Promise<CodeFileSave> {
+    const at = await this.codeSession(opening);
+    if (!at.ok) return { ok: false, reason: at.reason, message: at.message };
+    const s = at.session;
+    const readOnly = this.codeReadOnly(s);
+    if (readOnly) return { ok: false, reason: 'read-only', message: readOnly };
+    const epoch = this.codeEpoch;
+    // What the app writes is asked again at each check, as of the project then: a page added meanwhile takes its route.
+    return saveCodeFile(s.dir, path, text, expectedHash, {
+      appWrites: (p) => s.appWrites()(p),
+      fence: this.writeFence(s),
+      open: () => this.session === s && this.workspaceKey === opening && !this.closing && !s.readOnly && this.codeEpoch === epoch
+    });
+  }
+
+  /** Hand a file, a code component's file or the project's folder to the code editor chosen in Settings. */
+  async openInEditor(opening: unknown, target: unknown): Promise<EditorOpenResult> {
+    const at = await this.codeSession(opening);
+    if (!at.ok) return { ok: false, message: at.message };
+    const s = at.session;
+    const readOnly = this.codeReadOnly(s);
+    if (readOnly) return { ok: false, message: readOnly };
+    const t = target as Partial<EditorTarget> | null;
+    // Taken before anything is awaited: a change while the target is looked for (Developer mode off, a crash) counts.
+    const epoch = this.codeEpoch;
+    let abs: string;
+    if (t?.kind === 'project') abs = s.dir;
+    else if (t?.kind === 'file') {
+      const found = await codeFilePath(s.dir, t.path, s.appWrites());
+      if (!found.ok) return { ok: false, message: found.message };
+      abs = found.abs;
+    } else if (t?.kind === 'component' && typeof t.definitionId === 'string' && Object.hasOwn(s.state.components, t.definitionId)) {
+      const def = s.state.components[t.definitionId];
+      if (def.kind !== 'code' || def.owner !== 'project') return { ok: false, message: `${def.name} is made from its settings, so it has no file of its own to edit.` };
+      const found = await projectFile(s.dir, defFile(def));
+      if (!found.ok) return { ok: false, message: found.message };
+      abs = found.abs;
+    } else return { ok: false, message: 'There is nothing to open.' };
+    const { externalEditor: editor, developerMode } = (await loadSettings()).settings;
+    // Read again last: the project still this opening's and this app's, Developer mode still on.
+    if (!developerMode || !(await s.stillOwner()) || this.session !== s || opening !== this.workspaceKey || this.closing || this.codeEpoch !== epoch) return { ok: false, message: 'The project was closed, so nothing was opened.' };
+    return openInEditor(editor, abs, desktopHandOff((p) => shell.openPath(p), (p) => shell.showItemInFolder(p)));
+  }
+
+  /** Choose the code editor from the system's chooser (Settings), checked to be an application that can be started. */
+  async chooseExternalEditor(): Promise<{ ok: true; settings: AppSettings } | { ok: false; message: string } | null> {
+    const win = this.getWindow();
+    const platform = process.platform;
+    const options: OpenDialogOptions = {
+      title: 'Choose your code editor',
+      ...(platform === 'darwin' ? { defaultPath: '/Applications', filters: [{ name: 'Applications', extensions: ['app'] }] } : platform === 'win32' ? { filters: [{ name: 'Programs', extensions: ['exe'] }] } : {}),
+      properties: ['openFile']
+    };
+    const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    if (r.canceled || !r.filePaths[0]) return null;
+    const checked = checkEditorApp(r.filePaths[0]);
+    if (!checked.ok) return checked;
+    return { ok: true, settings: await setExternalEditor(checked.editor) };
+  }
+
+  /** The workspace's checks of this opening, newest first. */
+  async projectChecks(opening: unknown): Promise<ProjectCheckRun[]> {
+    if (typeof opening !== 'string' || opening !== this.workspaceKey) return [];
+    return [...this.codeChecks.values()].map((c) => c.run).filter((r) => r.opening === opening).sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /** Start a check of the project, or give back the one of the same kind still running. */
+  async runProjectCheck(opening: unknown, task: unknown): Promise<{ ok: true; run: ProjectCheckRun } | { ok: false; message: string }> {
+    if (task !== 'svelte' && task !== 'test') return { ok: false, message: 'That is not a check the workspace runs.' };
+    const at = await this.codeSession(opening);
+    if (!at.ok) return { ok: false, message: at.message };
+    const s = at.session;
+    const key = opening as string;
+    for (const c of this.codeChecks.values()) if (c.run.opening === key && c.run.task === task && c.run.status === 'running') return { ok: true, run: c.run };
+    if (task === 'test' && this.codeReadOnly(s)) return { ok: false, message: `${this.codeReadOnly(s)} Its tests can’t be run while it is.` };
+    // One run of each kind is kept: a new one replaces the last.
+    for (const [id, c] of this.codeChecks) if (c.run.task === task) this.codeChecks.delete(id);
+    const run: ProjectCheckRun = { runId: randomUUID(), task, opening: key, status: 'running', lines: [], problems: [], startedAt: Date.now() };
+    const abort = new AbortController();
+    const update = (patch: Partial<ProjectCheckRun>) => {
+      Object.assign(run, patch);
+      // A run stopped (and forgotten), or of an opening since closed, tells nobody.
+      if (this.workspaceKey === key && this.codeChecks.get(run.runId)?.run === run) this.send('project-check:update', { ...run });
+    };
+    const done = (task === 'svelte' ? this.checkSvelte(s, abort.signal, update) : this.runTests(s, abort.signal, update)).catch((e: unknown) =>
+      update({ status: 'failed', summary: `The check could not finish: ${e instanceof Error ? e.message : String(e)}`, endedAt: Date.now() })
+    );
+    this.codeChecks.set(run.runId, { run, abort, done });
+    return { ok: true, run: { ...run } };
+  }
+
+  /** Stop a check still running. */
+  async stopProjectCheck(opening: unknown, runId: unknown): Promise<void> {
+    const c = typeof runId === 'string' ? this.codeChecks.get(runId) : undefined;
+    if (c && c.run.opening === opening) c.abort.abort();
+  }
+
+  /**
+   * Stop every check still running and wait (a few seconds at most) for its processes to end: the project closing,
+   * Developer mode turned off, or the editor that asked for them gone. What they found is forgotten.
+   */
+  async stopProjectChecks(): Promise<void> {
+    this.codeEpoch++;
+    const running = [...this.codeChecks.values()];
+    this.codeChecks.clear();
+    for (const c of running) {
+      // Said stopped now, while the opening is still shown (a takeover leaves it open): the run itself tells nobody more.
+      if (c.run.status === 'running') {
+        Object.assign(c.run, { status: 'cancelled', summary: 'Stopped.', endedAt: Date.now() });
+        if (this.workspaceKey === c.run.opening) this.send('project-check:update', { ...c.run });
+      }
+      c.abort.abort();
+      this.checksEnding.add(c.done);
+      void c.done.finally(() => this.checksEnding.delete(c.done));
+    }
+    // Each run ends within moments of being stopped (runProjectTests kills what is left); one stuck past that (a read
+    // the system never answers) is not let hold a close for ever.
+    let cap: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.all([...this.checksEnding]), new Promise<void>((r) => (cap = setTimeout(r, CHECKS_END_MS)))]);
+    clearTimeout(cap);
+  }
+
+  /** Compile every Svelte file of the website and of the project's own code, as its build would, and list what fails. */
+  private async checkSvelte(s: ProjectSession, signal: AbortSignal, update: (patch: Partial<ProjectCheckRun>) => void): Promise<void> {
+    const stopped = () => update({ status: 'cancelled', summary: 'Stopped.', endedAt: Date.now() });
+    const files = new Map<string, string>();
+    for (const [path, source] of s.websiteFiles()) if (path.endsWith('.svelte')) files.set(path, source);
+    const own = await listCodeFiles(s.dir, s.appWrites());
+    const unread: string[] = [];
+    for (const f of own.files) {
+      if (signal.aborted) return stopped();
+      if (!f.path.endsWith('.svelte')) continue;
+      const read = await readCodeFile(s.dir, f.path, s.appWrites());
+      if (read.ok) files.set(f.path, read.text);
+      else unread.push(f.path);
+    }
+    if (signal.aborted) return stopped();
+    const list = [...files];
+    const aborted = new Promise<null>((r) => signal.addEventListener('abort', () => r(null), { once: true }));
+    const batch = this.compileSvelte ? await Promise.race([this.compileSvelte(list), aborted]) : { outcomes: list.map(() => undefined), runs: 0 };
+    if (!batch || signal.aborted) return stopped();
+    let compile: Compile | null = null;
+    const problems: ProjectCheckProblem[] = [];
+    for (let i = 0; i < list.length; i++) {
+      if (signal.aborted) return stopped();
+      let outcome = batch.outcomes[i];
+      // What no worker answered for is compiled here.
+      if (outcome === undefined) {
+        compile ??= (await import('svelte/compiler')).compile;
+        outcome = compileFile(compile, list[i][0], list[i][1]);
+      }
+      if (outcome) problems.push({ file: list[i][0], ...(outcome.start ? { line: outcome.start.line } : {}), message: outcome.message.split('\n')[0] });
+    }
+    // A file that could not be read, or one past what a listing holds, was not checked: the check says so, and does not pass.
+    for (const path of unread) problems.push({ file: path, message: 'Could not be read, so it was not checked.' });
+    if (own.truncated) problems.push({ message: `The project has more files than one check reads (${MAX_CODE_FILES}): those past it were not checked.` });
+    const counted = `${list.length} Svelte file${list.length === 1 ? '' : 's'}`;
+    const failed = problems.length - unread.length - (own.truncated ? 1 : 0);
+    const incomplete = unread.length || own.truncated ? ' Some files were not checked.' : '';
+    update({
+      status: problems.length ? 'failed' : 'passed',
+      problems,
+      files: list.length,
+      lines: problems.map((p) => `${p.file ?? ''}${p.line ? `:${p.line}` : ''}${p.file ? ': ' : ''}${p.message}`),
+      summary: failed ? `${failed} of ${counted} did not compile.${incomplete}` : `All ${counted} compiled.${incomplete}`,
+      endedAt: Date.now()
+    });
+  }
+
+  /** Run the project's own `npm test`, once its setup is still what its author trusted and its tools are set up. */
+  private async runTests(s: ProjectSession, signal: AbortSignal, update: (patch: Partial<ProjectCheckRun>) => void): Promise<void> {
+    const notStarted = (summary: string) => update({ status: 'not-started', summary, endedAt: Date.now() });
+    const stopped = () => update({ status: 'cancelled', summary: 'Stopped before the tests started.', endedAt: Date.now() });
+    // Only a plain file is read: anything else (a pipe) could hold the check, and the close waiting on it, for ever.
+    const manifest = await projectFile(s.dir, 'package.json');
+    if (!manifest.ok) return notStarted('This project has no package.json, so it has no tests to run.');
+    if (!declaredTestScript(await readIfExists(manifest.abs))) return notStarted('This project’s package.json has no test script. Add one, such as "test": "vitest run", to run its tests here.');
+    if (signal.aborted) return stopped();
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return notStarted(TRUST_CHANGED);
+    if (!(await dependenciesReady(s.dir))) return notStarted('The website tools are not set up yet. Wait for the preview to start, then run the tests again.');
+    // Read last, just before anything runs: still this app's project, still open, still asked for.
+    if (signal.aborted || this.session !== s || s.readOnly || !(await s.stillOwner()) || signal.aborted) return stopped();
+    const outcome = await this.projectTestRunner({ dir: s.dir, npmCli: npmCliPath(), execPath: process.execPath, env: projectEnv(), signal, timeoutMs: PROJECT_TEST_TIMEOUT_MS, onOutput: (lines) => update({ lines }) });
+    update({ status: outcome.status, exitCode: outcome.exitCode, summary: outcome.summary, endedAt: Date.now() });
+  }
+
+  /** What the preview's server logged after line `since`, secrets masked, for the workspace's Preview log. */
+  async previewLog(opening: unknown, since: unknown): Promise<PreviewLogLine[]> {
+    const at = await this.codeSession(opening);
+    if (!at.ok || !this.dev) return [];
+    const after = typeof since === 'number' && Number.isFinite(since) ? since : 0;
+    return this.dev.logs
+      .filter((l) => l.seq > after && l.message.trim())
+      .map((l) => ({ seq: l.seq, level: l.level === 'error' ? 'error' : l.level === 'warn' || l.level === 'warning' ? 'warn' : 'info', message: maskSecrets(l.message).trimEnd().slice(0, 4000), time: l.time }));
   }
 
   // -------------------------------------------------------------------------

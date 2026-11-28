@@ -1,0 +1,106 @@
+@layer components {
+  /* The code workspace (CodeWorkspace.tsx): the files on the left, the open file's editor in the middle, the preview
+     on the right and the checks below, in one fixed frame where the editor takes the free room. Each side pane can be
+     put away from the header's toggles, so a narrow window keeps the editor and its Save. */
+  .modal:has(> .modal-body > .code-workspace) { width: min(1480px, calc(100vw - 48px)); height: calc(92vh - 32px); }
+  .modal:has(> .modal-body > .code-workspace) > .modal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
+  .modal:has(> .modal-body > .code-workspace) > .modal-head { gap: 12px; padding-top: 14px; }
+  .code-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  /* Where the open editor puts its heading, badge and footer: laid out as if they were the dialog's own. */
+  .cw-slot { display: contents; }
+  .cw-main { flex: 1; min-height: 0; display: flex; gap: 12px; }
+  .cw-editor { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .cw-editor > .code-dialog { flex: 1; min-height: 0; }
+  .cw-empty { color: var(--text-2); }
+  .cw-read-failed { margin: 0; font-size: 12px; color: var(--text-2); }
+
+  /* The header's toolbar: the pane toggles, then the hand-off to the developer's own editor. */
+  .cw-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+  .cw-actions .btn svg { width: 14px; height: 14px; }
+  .cw-actions-sep { width: 1px; height: 18px; margin: 0 6px; background: var(--border-strong); }
+  .cw-pane-toggle svg { width: 16px; height: 16px; }
+
+  /* The files: code components first, then the project's own code by folder. */
+  .cw-files { width: 228px; flex: none; min-height: 0; display: flex; flex-direction: column; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); overflow: hidden; }
+  .cw-files-head { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .cw-files-head .icon-btn { width: 26px; height: 26px; }
+  .cw-files-head .icon-btn svg { width: 14px; height: 14px; }
+  .cw-files-list { flex: 1; min-height: 0; overflow: auto; padding: 6px; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; }
+  .cw-group + .cw-group { margin-top: 10px; }
+  .cw-group-head { padding: 4px 6px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-group-head.mono { font-size: 11px; }
+  .cw-file { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); font-size: 12.5px; text-align: left; }
+  .cw-file:hover { background: var(--hover); }
+  .cw-file[aria-current='true'] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); font-weight: 500; }
+  .cw-file:focus-visible { outline-offset: -2px; }
+  .cw-file svg { width: 14px; height: 14px; flex: none; }
+  .cw-file.component svg { color: var(--plum); }
+  .cw-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A file's language as a small swatch beside its name, in the editor's own syntax colours. */
+  .cw-file-lang { width: 8px; height: 8px; flex: none; border-radius: 2px; background: var(--text-3); }
+  .cw-file-lang.svelte { background: var(--cm-tag); }
+  .cw-file-lang.javascript { background: var(--cm-attr); }
+  .cw-file-lang.typescript { background: var(--cm-fn); }
+  .cw-file-lang.css { background: var(--cm-kw); }
+  .cw-file-lang.json { background: var(--cm-str); }
+  .cw-files-note { display: flex; gap: 6px; margin: 2px 6px 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .cw-files-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--red); }
+  .cw-files-note code { font-family: var(--mono); font-size: 11.5px; }
+  .cw-group > .btn { margin: 0 6px; }
+
+  /* The preview: an address (or what it shows) and Reload above a frame of the site. */
+  .cw-preview { width: clamp(320px, 34%, 560px); flex: none; min-height: 0; display: flex; flex-direction: column; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); overflow: hidden; }
+  .cw-preview-head { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 4px 0 6px; border-bottom: 1px solid var(--border); }
+  .cw-preview-head .icon-btn { width: 26px; height: 26px; }
+  .cw-preview-head .icon-btn svg { width: 14px; height: 14px; }
+  .cw-preview-what { min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .cw-preview-address { display: flex; align-items: center; gap: 6px; min-width: 0; padding-left: 4px; }
+  .cw-preview-address > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+  .cw-preview-address .input { width: 100%; height: 26px; font-size: 12px; }
+  .cw-preview-address .input[aria-invalid='true'] { box-shadow: inset 0 0 0 1px var(--red); }
+  .cw-preview-frame { flex: 1; position: relative; min-height: 0; display: flex; background: var(--panel); }
+  .cw-preview-frame iframe { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
+  .cw-preview-note { display: flex; align-items: center; gap: 8px; margin: auto; padding: 16px; max-width: 360px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); text-align: left; }
+  .cw-preview-note svg { width: 16px; height: 16px; flex: none; color: var(--amber); }
+  .cw-preview-note .spinner { border-top-color: var(--text-2); }
+  .cw-preview-note.over { position: absolute; inset: auto 8px 8px; margin: 0; max-width: none; border-radius: var(--r-sm); background: var(--raised); box-shadow: var(--shadow-md); color: var(--text); }
+
+  /* The checks: tabs over each check's result. */
+  .cw-checks { flex: none; height: clamp(170px, 28vh, 300px); min-height: 0; display: flex; flex-direction: column; }
+  .cw-checks-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-top: 8px; }
+  .cw-checks-panel[hidden] { display: none; }
+  .cw-checks .tabs .tab { padding-right: 18px; }
+  .cw-checks .tab .spinner, .cw-checks .tab .cw-run-mark { position: absolute; top: 9px; right: 3px; width: 11px; height: 11px; }
+  .cw-run-mark.passed { color: var(--green); }
+  .cw-run-mark.failed, .cw-run-mark.timed-out { color: var(--red); }
+  .cw-run-mark.cancelled, .cw-run-mark.not-started { color: var(--text-3); }
+  .cw-check { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+  .cw-check-head { display: flex; align-items: center; gap: 12px; }
+  .cw-check-head .btn { flex: none; }
+  .cw-check-head .btn svg { width: 13px; height: 13px; }
+  .cw-check-summary { flex: 1; display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-2); }
+  .cw-check-summary svg { width: 14px; height: 14px; flex: none; }
+  .cw-check-summary.passed { color: var(--text); }
+  .cw-check-summary.passed svg { color: var(--green); }
+  .cw-check-summary.failed, .cw-check-summary.timed-out { color: var(--text); }
+  .cw-check-summary.failed svg, .cw-check-summary.timed-out svg { color: var(--red); }
+  .cw-check-summary .spinner { width: 12px; height: 12px; border-top-color: var(--text-2); }
+  .cw-check-when { color: var(--text-3); }
+  .cw-check-problems { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0; list-style: none; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--raised); }
+  .cw-check-problems li + li { border-top: 1px solid var(--border); }
+  .cw-problem { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 6px 10px; border: 0; background: none; color: var(--text); font-size: 12.5px; text-align: left; }
+  button.cw-problem:hover { background: var(--hover); }
+  .cw-problem-at { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+  button.cw-problem .cw-problem-at { color: var(--text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
+  .cw-problem-text { min-width: 0; }
+  .cw-output { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 10px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--raised); font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); user-select: text; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; }
+  :where(:root[data-appearance='dark']) .cw-output, :where(:root[data-appearance='dark']) .cw-check-problems { background: var(--bg); }
+  .cw-log-line.error { color: var(--red-ink); }
+  .cw-log-line.warn { color: var(--amber); }
+
+  /* In a narrower window the side panes give the editor more of the room. */
+  @media (max-width: 1100px) {
+    .cw-files { width: 190px; }
+    .cw-preview { width: clamp(260px, 36%, 420px); }
+  }
+}
