@@ -193,6 +193,9 @@ describe('links to a collection index', () => {
     const label = headerMenu(s)!.schema.fields.label as { maxLength?: number };
     expect(s.components[headerMenu(s)!.node.definitionId].properties.links).toBe(headerMenu(s)!.schema);
     label.maxLength = 3;
+    // The menu's own rows fit the limit, with room to spare: only the new link is refused.
+    for (const link of menuLinks(s)) link.label = link.label.slice(0, 3);
+    expect(menuLinks(s).length).toBeLessThan(headerMenu(s)!.schema.max!);
     const before = menuLinks(s);
     const r = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
     expect(r.results[0]).toMatchObject({ addedToNavigation: false });

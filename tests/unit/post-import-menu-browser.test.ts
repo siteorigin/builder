@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { PostImportPreview, PostImportResult } from '@shared/api';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
+import { applyOperations } from '@engine/apply';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://post-import-menu.test';
@@ -62,18 +63,19 @@ async function bundle(): Promise<string> {
   return chunk.code;
 }
 
-const preview = (create: boolean): PostImportPreview => ({
+const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostImportPreview => ({
   id: 'review-1',
   kind: 'markdown',
   source: 'posts',
   collection: { name: 'Posts', route: '/blog/', create },
-  posts: [{ title: 'Bread', slug: 'bread', route: '/blog/bread/', date: '2026-01-02', draft: false, pictures: 0, categories: [], tags: [], notes: [] }],
+  posts: [{ title: 'Bread', from: '2026-01-02-bread.md', route: '/blog/bread/', date: '2026-01-02', draft: false, pictures: 0, categories: [], tags: [], notes: [] }],
   pictures: 0,
   missing: [],
   newTerms: { categories: [], tags: [] },
   redirects: 0,
   skipped: [],
-  problems: []
+  problems: [],
+  ...more
 });
 
 const BOX = 'Add a Blog link to the header menu';
@@ -135,34 +137,55 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await expect.poll(toasts).toEqual(['Imported 1 post. Added the Blog link to the header menu.']);
   });
 
-  it('asks for no link once unticked', async () => {
+  it('asks for no link once unticked, and Enter ticks and unticks it as a click does', async () => {
     await mount(site, preview(true));
     await box().uncheck();
+    await box().check();
+    await box().press('Enter');
+    expect(await box().isChecked()).toBe(false);
     expect(await importing()).toEqual(['review-1', 'w', false]);
     await expect.poll(toasts).toEqual(['Imported 1 post.']);
   });
 
-  it('says when the link could not join the menu, in the notice and beside pictures that were not added', async () => {
+  it('says when the link could not join the menu', async () => {
     await mount(site, preview(true), { ok: true, imported: 1, addedToNavigation: false });
     await importing();
     await expect.poll(toasts).toEqual([expect.stringContaining('Imported 1 post. Its Blog link could not join the header menu')]);
-    await page.reload();
-    await mount(site, preview(true), { ok: true, imported: 1, addedToNavigation: false, notes: [{ file: 'oven.png', posts: ['Bread'], reason: 'it is damaged.' }] });
-    await importing();
-    await page.getByText('Its Blog link could not join the header menu', { exact: false }).waitFor();
   });
 
-  it('is not offered when the blog is already there, or the header has no menu', async () => {
-    await mount(site, preview(false));
+  const added = 'Added the Blog link to the header menu.';
+  const refused = 'Its Blog link could not join the header menu';
+  it.each([
+    { addedToNavigation: true, said: [1, 0] },
+    { addedToNavigation: false, said: [0, 1] },
+    { addedToNavigation: undefined, said: [0, 0] }
+  ])('says what became of the link beside pictures that were not added ($addedToNavigation)', async ({ addedToNavigation, said }) => {
+    await mount(site, preview(true, { pictures: 1 }), { ok: true, imported: 1, addedToNavigation, notes: [{ file: 'oven.png', posts: ['Bread'], reason: 'it is damaged.' }] });
+    await importing();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByText('oven.png').waitFor();
+    expect([await dialog.getByText(added).count(), await dialog.getByText(refused).count()]).toEqual(said);
+  });
+
+  it('is not offered when the blog is already there', async () => {
+    await mount(applyOperations(site, [{ type: 'collection.create', collectionId: 'posts' }]).state, preview(false));
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
     expect(await importing()).toEqual(['review-1', 'w', false]);
-    await page.reload();
+  });
+
+  it('is not offered when the header has no menu', async () => {
     const bare = structuredClone(site);
     bare.site.shell.header = { rootIds: [], nodes: {} } as typeof bare.site.shell.header;
     await mount(bare, preview(true));
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
     expect(await importing()).toEqual(['review-1', 'w', false]);
+  });
+
+  it('is not offered for posts that can’t be imported', async () => {
+    await mount(site, preview(true, { problems: ['The posts can’t be imported.'] }));
+    await page.getByTestId('post-import-problems').waitFor();
+    expect(await box().count()).toBe(0);
   });
 });

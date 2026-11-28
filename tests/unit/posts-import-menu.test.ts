@@ -48,6 +48,7 @@ vi.mock('../../src/main/posts-import/process', async () => {
 
 const { createStarterState } = await import('@catalogue/starters');
 const { headerMenu } = await import('@engine/tree');
+const { applyOperations } = await import('@engine/apply');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { Controller } = await import('../../src/main/controller');
 
@@ -64,19 +65,28 @@ afterEach(async () => {
 });
 
 const links = (s: ProjectState) => (headerMenu(s)!.node.props.links ?? headerMenu(s)!.schema.default) as Array<{ label: string; link: unknown }>;
+const titles = (s: ProjectState) => Object.values(s.collections.posts.entries).map((e) => e.title);
 
 /** A new Business site, open, with a review of one post that shows a picture: its picture is added before the blog is. */
-async function reviewed() {
+async function reviewed({ picture = true, fullMenu = false } = {}) {
   env.userData = tmp('so-import-userdata-');
   const dir = tmp('so-import-site-');
-  await (await ProjectSession.create(dir, createStarterState('business', 'Riverside Bakery', false))).close();
+  let site = createStarterState('business', 'Riverside Bakery', false);
+  if (fullMenu) {
+    const menu = headerMenu(site)!;
+    const value = Array.from({ length: menu.schema.max! }, (_, i) => ({ label: `Link ${i + 1}`, link: { type: 'page' as const, target: site.site.homePageId } }));
+    site = applyOperations(site, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: menu.node.id, prop: 'links', value }]).state;
+  }
+  await (await ProjectSession.create(dir, site)).close();
   const posts = tmp('so-import-posts-');
   mkdirSync(join(posts, 'images'));
   writeFileSync(join(posts, 'images', 'oven.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'));
-  writeFileSync(join(posts, '2026-01-02-bread.md'), '---\ntitle: Bread\n---\nFresh today.\n\n![The oven](images/oven.png)\n');
+  writeFileSync(join(posts, '2026-01-02-bread.md'), '---\ntitle: Bread\n---\nFresh today.\n' + (picture ? '\n![The oven](images/oven.png)\n' : ''));
   const c = new Controller(() => null);
   c.send = () => undefined;
   controllers.push(c);
+  // No preview: starting one would install the website's packages.
+  c.windowClosed();
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
   const opening = c.snapshot()!.workspaceKey;
   const review = await c.reviewPostImport('markdown', opening, posts);
@@ -92,7 +102,9 @@ describe('the header link of a blog an import makes (#1509)', () => {
     expect(r).toMatchObject({ ok: true, imported: 1, addedToNavigation: true });
     expect(r.notes).toBeUndefined();
     const after = c.snapshot()!.state;
-    expect(Object.keys(after.assets.assets).length).toBeGreaterThan(0);
+    expect(Object.keys(after.assets.assets)).toContain('a_oven');
+    expect(titles(after)).toEqual(['Bread']);
+    expect(JSON.stringify(after.collections.posts.entries)).toContain('a_oven');
     expect(links(after).slice(0, before.length)).toEqual(before);
     expect(links(after).slice(before.length)).toMatchObject([{ label: 'Blog', link: { type: 'collection', target: 'posts' } }]);
     expect((await c.session!.undo()).ok).toBe(true);
@@ -106,7 +118,16 @@ describe('the header link of a blog an import makes (#1509)', () => {
     const r = await commit(false);
     expect(r).toMatchObject({ ok: true, imported: 1 });
     expect(r).not.toHaveProperty('addedToNavigation');
-    expect(c.snapshot()!.state.collections.posts).toBeDefined();
+    expect(titles(c.snapshot()!.state)).toEqual(['Bread']);
+    expect(links(c.snapshot()!.state)).toEqual(before);
+  });
+
+  it('still imports into a full menu, and says the link did not join', async () => {
+    // No picture, so the collection is made by the batch's first operation.
+    const { c, commit } = await reviewed({ picture: false, fullMenu: true });
+    const before = links(c.snapshot()!.state);
+    expect(await commit(true)).toMatchObject({ ok: true, imported: 1, addedToNavigation: false });
+    expect(titles(c.snapshot()!.state)).toEqual(['Bread']);
     expect(links(c.snapshot()!.state)).toEqual(before);
   });
 });
