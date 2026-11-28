@@ -147,7 +147,7 @@ describe.skipIf(!browserInstalled)('the redirect form', { timeout: 30_000 }, () 
     }, state);
     const row = page.locator('[data-from="/old-studio/"]');
     await row.waitFor();
-    expect(await row.locator('.so-redirect-main').innerText()).toMatch(/About \(\/about\/\)\s+Added by you · The draft “Studio rewrite” has this address and takes it over once it is published$/);
+    expect(await row.locator('.so-redirect-main').innerText()).toMatch(/About \(\/about\/\)\s+Added by you\s+Draft “Studio rewrite” takes it over once published$/);
   });
 
   it('closes once its own add is answered', async () => {
