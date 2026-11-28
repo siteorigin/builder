@@ -357,6 +357,36 @@ describe('syncing a source into a project', () => {
     expect(s.state.assets.assets[record.id]).toBeDefined();
   });
 
+  it('takes back a restored version’s synced entries with Undo, and puts them back with Redo (#1474)', async () => {
+    const { s, world, deps } = await setup();
+    const ana = syncedEntryId('people', '1', () => false);
+    const cy = syncedEntryId('people', '3', () => false);
+    world.records = [person('1', 'Ana'), person('2', 'Ben')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 2 });
+    const saved = await s.saveVersion('Winter register');
+    expect(saved.ok).toBe(true);
+    world.records = [person('1', 'Ana', { title: 'Ana Ruiz' }), person('2', 'Ben'), person('3', 'Cy')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, updated: 1, created: 1 });
+    const synced = structuredClone(s.state.collections.team.entries);
+    const review = await s.reviewVersion(saved.id!);
+    expect(review.review?.problem).toBeUndefined();
+    const restored = await s.restoreVersion(saved.id!, review.review!.revision);
+    expect(restored.ok).toBe(true);
+    const older = structuredClone(s.state.collections.team.entries);
+    expect(older[ana].title).toBe('Ana');
+    expect(older[cy]).toBeUndefined();
+    // The one step the review and the restore's notice offer to take it back.
+    const undo = await s.undo();
+    expect(undo.error?.message).toBeUndefined();
+    expect(s.state.collections.team.entries).toEqual(synced);
+    expect((await readState(s.dir)).collections.team.entries[ana].title).toBe('Ana Ruiz');
+    const redo = await s.redo();
+    expect(redo.error?.message).toBeUndefined();
+    expect(s.state.collections.team.entries).toEqual(older);
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.collections.team.entries[cy]).toMatchObject({ title: 'Cy' });
+  });
+
   it('refuses a sync whose secret is not saved, before anything is read', async () => {
     const { s, world, deps } = await setup();
     await deps.secrets.set(s.state.manifest.projectId, 'people-token', null);

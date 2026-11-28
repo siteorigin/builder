@@ -659,7 +659,8 @@ function sameValue(a: unknown, b: unknown): boolean {
  * picture replaced in them; an undo of an edit made before a sync, or one that attaches it again as it takes an edit
  * back). The source is where they change, and its next sync would put back what it says. Its settings (its layout,
  * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
- * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
+ * collection is refused on its own (see collectionRemove). `except` leaves out a collection, or several: the one a sync
+ * writes, or those only restores of saved versions change (#1474). Worded to follow "This" or "it".
  */
 /** Whether `after` is `before` with each entry given where it came from (`source`, from `sourceId`) and nothing else. */
 function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, EntryDoc>, sourceId: string): boolean {
@@ -673,9 +674,10 @@ function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, 
   });
 }
 
-export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string): string | null {
+export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string | ReadonlySet<string>): string | null {
+  const excepted = (id: string) => (typeof except === 'string' ? id === except : !!except?.has(id));
   for (const c of Object.values(after.collections ?? {})) {
-    if (!isSyncedCollection(c?.settings) || c.settings.id === except) continue;
+    if (!isSyncedCollection(c?.settings) || excepted(c.settings.id)) continue;
     const was = own(before.collections ?? {}, c.settings.id);
     if (!was || sameValue(was.entries, c.entries)) continue;
     // Attached again as it was detached (an undo of Detach): the very same entries, each given back only where it came
