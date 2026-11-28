@@ -13,12 +13,16 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { developerModeRefusal } from '@engine/developer-mode';
+import { developerModeCheck, developerModeRefusal } from '@engine/developer-mode';
+import { validateOperation } from '@shared/ops';
+import { projectSummary } from '../../src/agent/context';
+import { executeTool, SITE_CODE_READ_MAX, type ToolHost } from '../../src/agent/tools';
+import { checkHeld, readField, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { validateState } from '@engine/validate';
 import { generateProject, GLOBAL_CSS_FILE, STYLES_DIR } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { globalCssProblem, headCodeProblem, HEAD_CODE_MAX, siteGlobalCss, siteHeadCode } from '@shared/site-code';
-import { addedIntegrations, fathomSiteId, fathomTag } from '@shared/integrations';
+import { globalCssProblem, headCodeProblem, headCodeWithoutComments, HEAD_CODE_MAX, siteGlobalCss, siteHeadCode } from '@shared/site-code';
+import { addedIntegrations, fathomSiteId, quietRequest } from '@shared/integrations';
 
 const LAYOUT = 'src/routes/+layout.svelte';
 const CSS_FILE = `${STYLES_DIR}/${GLOBAL_CSS_FILE}`;
@@ -55,7 +59,9 @@ describe('head code', () => {
       '<script>const close = "<\\/script>";</script>',
       '<STYLE media="print">body { color: black }</STYLE >',
       '<link rel="preload" as="style" href="/x.css" onload="this.rel=\'stylesheet\'">',
-      '<!-- a comment -->\n<!-- -->'
+      '<!-- a comment -->\n<!-- -->',
+      '<script type="importmap">{"imports":{"x":"https://esm.sh/x"}}</script><script type="module">import x from "x";</script>',
+      '<style>/* <!-- */ body { margin: 0 }</style>'
     ])
       expect(headCodeProblem(ok), ok).toBeNull();
   });
@@ -85,10 +91,35 @@ describe('head code', () => {
       ['<meta name="a" content="b"', /never closed with >/],
       ['<!doctype html>', /doctype/],
       ['<meta name="a\u0000">', /NUL/],
-      ['x'.repeat(HEAD_CODE_MAX + 1), /at most/]
+      ['x'.repeat(HEAD_CODE_MAX + 1), /at most/],
+      // HTML reads "meta.foo" as the tag's name, an element no head holds, which would start the page's body there.
+      ['<meta.foo>', /<meta\.foo> cannot go in the head/],
+      ['<template></template>', /<template> cannot go in the head/],
+      ['<META NAME=" VIEWPORT " content="x">', /viewport/],
+      ['<meta name="view&#112;ort" content="width=800">', /viewport/],
+      ['<meta name="a" content="%SVELTEKIT.body%">', /SvelteKit/],
+      ['<!--->', /closes as soon as it opens/],
+      ['<!-- a --!> b -->', /ends a comment early/],
+      ['<meta /x>', /“\/” in a tag/],
+      ['<meta name=>', /needs a value/],
+      ['<link rel="x"href="/x">', /space between them/],
+      ['<meta name="a>', /never closed with its "/],
+      ['<script>1</script x>', /holds nothing but its name/],
+      ['<style></style>Text', /Text follows <\/style>/],
+      ['<script></script><!-- note -->Text', /Text cannot go in the head/]
     ];
     for (const [code, message] of cases) expect(headCodeProblem(code)?.message, code).toMatch(message);
     expect(headCodeProblem('<meta name="a" content="b">\n\n  <span>')).toMatchObject({ line: 3, column: 3 });
+    // The way round "<!--" in a script works in JSON as in JavaScript.
+    expect(headCodeProblem('<script type="application/ld+json">{"text":"<!-- x"}</script>')?.message).toContain('\\u003C!--');
+    expect(headCodeProblem('<!-- x -->'.padEnd(HEAD_CODE_MAX, ' '))).toBeNull();
+  });
+
+  it('is written without its comments, so none can be taken for one of Svelte’s markers', () => {
+    expect(headCodeWithoutComments(GA)).toBe(GA.replace('<!-- Google tag (gtag.js) -->\n', ''));
+    expect(headCodeWithoutComments('<meta name="a" content="b">\n<!--1uha8ag-->\n<meta name="c" content="d">')).toBe('<meta name="a" content="b">\n<meta name="c" content="d">');
+    // A comment inside a script or style is the script's own.
+    expect(headCodeWithoutComments('<style>/* <!-- x --> */</style>')).toBe('<style>/* <!-- x --> */</style>');
   });
 });
 
@@ -116,7 +147,14 @@ const GOOD_CSS = [
   "@property --x { syntax: '<length>'; inherits: false; initial-value: 0px }",
   '@container card (min-width: 20rem) { .title { font-size: 2rem } }',
   'a{color:red}@media print{a{color:black}}',
-  'a { color: }'
+  'a { color: }',
+  '.\\31 2-col { display: grid } [xlink\\:href] { fill: red } .a\\.b { color: red }',
+  'a:not(/*)*/.muted) { color: red }',
+  '@font-feature-values Brand { @styleset { nice-style: 1; } }',
+  '.badge { background: url(https://example.org/offer!.png) }',
+  '@keyframes k { entry 0%, exit 100% { opacity: 0 } 0% /* start */, 50% { opacity: .5 } }',
+  'a::after { content: "one \\\r\ntwo" }',
+  'a { background: image-set("/a.png" 1x, url(https://x.example/b.png) 2x) }'
 ];
 
 describe('custom CSS', () => {
@@ -172,7 +210,29 @@ describe('custom CSS', () => {
       ['a { b { c } }', /needs a colon/],
       ['a { color: red background: blue }', /is a “;” missing/],
       ['a { background: url(https://x/y"z.png) }', /needs quotes/],
-      ['a { background: url(https://x/y.png }', /never closed/]
+      ['a { background: url(https://x/y.png }', /never closed/],
+      // PostCSS reads a colon in a [line] name as a missing semicolon, where url() makes the build run it.
+      ['a { grid-template-columns: [x:y] 1fr; filter: url(#logo) }', /is a “;” missing/],
+      ['a { filter: url(#logo) } /*# sourceMappingURL=data:application/json;base64,ew== */', /source map/],
+      ['@namespace xlink "http://www.w3.org/1999/xlink";', /@namespace/],
+      ['@charset "UTF-8"; a { color: red }', /UTF-8 already/],
+      // The build moves "@import" out of a string, wherever it is.
+      [".tip::before { content: '@import \"theme.css\";' }", /@import/],
+      ['@im\\70ort "missing.css";', /cannot hold an escape/],
+      ['a { background: image-set("icon.png" 1x) }', /in image-set\(\)/],
+      ['a { background: url(https:images/logo.svg) }', /https:\/\//],
+      ['svg|circle { fill: red }', /Namespaced/],
+      ['@font-face { a { color: red } }', /Only declarations/],
+      ['@media screen { color: red; }', /declaration with no rule|needs a \{ block \}/],
+      ['@keyframes k { @media screen { } }', /Keyframes hold only/],
+      ['@supports (background: url(images/x.png)) { a { color: red } }', /url\(images/],
+      ['a { content: "one\ntwo" }', /end of its line/],
+      ['a/* open', /never closed with \*\//],
+      ['a { color: red); }', /closes nothing/],
+      ['a:is(> b) { color: red }', /cannot start with/],
+      ['a[data-x]b { color: red }', /type selector comes first/],
+      ['a{}<!--', /HTML comment marks/],
+      ['x'.repeat(65537), /at most/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });
@@ -191,9 +251,21 @@ describe('site.update', () => {
     let s = run(fresh(), { type: 'site.update', headCode: GA, globalCss: 'body { margin: 0 }  \n' });
     expect(s.site.headCode).toBe(GA);
     expect(s.site.globalCss).toBe('body { margin: 0 }  \n');
-    s = run(s, { type: 'site.update', headCode: '  \n', globalCss: '' });
+    // An update that leaves them out leaves them alone.
+    s = run(s, { type: 'site.update', name: 'Riverside' });
+    expect([s.site.headCode, s.site.globalCss]).toEqual([GA, 'body { margin: 0 }  \n']);
+    s = run(s, { type: 'site.update', headCode: '  \n', globalCss: ' \t\n' });
     expect(Object.hasOwn(s.site, 'headCode')).toBe(false);
     expect(Object.hasOwn(s.site, 'globalCss')).toBe(false);
+    const padded = '\n  <meta name="a" content="b">  \n';
+    expect(run(fresh(), { type: 'site.update', headCode: padded }).site.headCode).toBe(padded);
+  });
+
+  it('takes the new fields only as the operation’s schema allows', () => {
+    expect(validateOperation({ type: 'site.update', headCode: GA, globalCss: 'a{}', integrations: { fathom: { siteId: 'ABCDEFGH' } } }).ok).toBe(true);
+    expect(validateOperation({ type: 'site.update', integrations: { fathom: null } }).ok).toBe(true);
+    for (const bad of [{ headCode: 1 }, { globalCss: ['a{}'] }, { headCode: 'x'.repeat(HEAD_CODE_MAX + 1) }, { integrations: { plausible: { domain: 'x' } } }, { integrations: { fathom: { siteId: 'ABCDEFGH', extra: 1 } } }, { integrations: { fathom: { siteId: 'A'.repeat(17) } } }])
+      expect(validateOperation({ type: 'site.update', ...bad }).ok, JSON.stringify(bad).slice(0, 80)).toBe(false);
   });
 
   it('refuses code that does not pass its check, saying where, and changes nothing in the batch', () => {
@@ -213,6 +285,10 @@ describe('site.update', () => {
     expect(fathomSiteId(s.site)).toBe('ABCDEFGH');
     expect(refusal(s, { type: 'site.update', integrations: { fathom: { siteId: 'not an id!' } } })).toMatch(/^Fathom Analytics: A Fathom site ID is a short code/);
     expect(refusal(s, { type: 'site.update', integrations: { fathom: { siteId: '' } } })).toMatch(/Enter the site ID/);
+    s = run(s, { type: 'site.update', integrations: { fathom: { siteId: 'a1B2c3D4' } } });
+    expect(fathomSiteId(s.site)).toBe('a1B2c3D4');
+    s = run(s, { type: 'site.update', integrations: {} });
+    expect(fathomSiteId(s.site)).toBe('a1B2c3D4');
     s = run(s, { type: 'site.update', integrations: { fathom: null } });
     expect(Object.hasOwn(s.site, 'integrations')).toBe(false);
     expect(addedIntegrations(s.site)).toEqual([]);
@@ -224,6 +300,55 @@ describe('site.update', () => {
     expect(developerModeRefusal(s, [{ type: 'site.update', name: 'A' }, { type: 'site.update', globalCss: '' }])).toMatch(/Developer mode/);
     expect(developerModeRefusal(s, [{ type: 'site.update', integrations: { fathom: { siteId: 'ABCDEFGH' } } }])).toBeNull();
     expect(developerModeRefusal(s, [{ type: 'site.update', name: 'A' }])).toBeNull();
+    // Known without walking the batch, whatever comes before the code edit.
+    expect(developerModeCheck(s, [{ type: 'page.delete', pageId: 'missing' }, { type: 'site.update', globalCss: 'a{}' }])).toBe('The site’s head code and custom CSS need Developer mode.');
+    expect(developerModeCheck(s, [{ type: 'site.update', integrations: { fathom: null } }])).toBeNull();
+  });
+
+  it('holds an edit typed while the AI changes the same setting, and only that one', () => {
+    const s = run(fresh(), { type: 'site.update', headCode: '<meta name="a" content="b">', globalCss: 'a{}', integrations: { fathom: { siteId: 'ABCDEFGH' } } });
+    const css: EditOperation = { type: 'site.update', globalCss: 'b{}' };
+    const fathom: EditOperation = { type: 'site.update', integrations: { fathom: { siteId: 'HGFEDCBA' } } };
+    const base = (op: EditOperation) => readFields(s, [op])!.map((r) => (r.found ? r.value : undefined));
+    expect(checkHeld(run(s, { type: 'site.update', headCode: '' }), [css], base(css)).kind).toBe('apply');
+    expect(checkHeld(run(s, { type: 'site.update', globalCss: 'c{}' }), [css], base(css)).kind).toBe('changed');
+    expect(checkHeld(run(s, { type: 'site.update', globalCss: 'c{}' }), [fathom], base(fathom)).kind).toBe('apply');
+    expect(checkHeld(run(s, { type: 'site.update', integrations: { fathom: null } }), [fathom], base(fathom)).kind).toBe('changed');
+    // The conflict says what each holds: the ID typed, and the one saved meanwhile.
+    expect(typedText(fathom)).toBe('HGFEDCBA');
+    const now = readField(run(s, { type: 'site.update', integrations: { fathom: { siteId: 'ZZZZZZZZ' } } }), fathom)!;
+    expect(now.found && shownField(fathom, now.value)).toBe('ZZZZZZZZ');
+  });
+});
+
+describe('the AI', () => {
+  const host = (state: ProjectState) => ({ state: () => state, revision: () => 7 }) as unknown as ToolHost;
+
+  it('is told how much code the site has and which integrations, and reads the code whole, alone', async () => {
+    const s = run(fresh(), { type: 'site.update', headCode: GA, globalCss: 'a { color: red }', integrations: { fathom: { siteId: 'ABCDEFGH' } } });
+    expect(projectSummary(s, 1).site.siteCode).toEqual({ headCode: { characters: GA.length }, globalCss: { characters: 16 }, integrations: { fathom: { siteId: 'ABCDEFGH' } } });
+    expect(projectSummary(fresh(), 1).site).not.toHaveProperty('siteCode');
+    const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as Record<string, unknown>;
+    expect(read).toEqual({ ok: true, revision: 7, siteCode: { headCode: GA, globalCss: 'a { color: red }' } });
+  });
+
+  it('never replaces code longer than it can read whole', async () => {
+    const long = `/* ${'x'.repeat(SITE_CODE_READ_MAX)} */ a { color: red }`;
+    const s = run(fresh(), { type: 'site.update', globalCss: long });
+    const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as { siteCode: { globalCss: { characters: number } } };
+    expect(read.siteCode.globalCss.characters).toBe(long.length);
+    const replaced = (await executeTool('apply_operations', JSON.stringify({ expectedRevision: 7, operations: [{ type: 'site.update', globalCss: 'a{}' }] }), host(s), 'c2')).content as { error?: { message: string } };
+    expect(replaced.error?.message).toMatch(/^The site's custom CSS is \d+ characters, more than a run reads whole/);
+  });
+});
+
+describe('Builder’s own hidden windows', () => {
+  it('load no integration’s code and send no beacon, and everything else', () => {
+    expect(quietRequest('https://cdn.usefathom.com/script.js', 'script')).toBe(true);
+    expect(quietRequest('https://cdn.usefathom.com/?h=x', 'image')).toBe(true);
+    expect(quietRequest('https://www.google-analytics.com/g/collect', 'ping')).toBe(true);
+    expect(quietRequest('https://fonts.googleapis.com/css2?family=Inter', 'stylesheet')).toBe(false);
+    expect(quietRequest('not a url', 'script')).toBe(false);
   });
 });
 
@@ -235,10 +360,12 @@ describe('the website and the editor’s preview', () => {
     expect(clean).toContain(`import { dev } from '$app/env';`);
     const tags = /\{#if !dev\}\{@html ("(?:[^"\\]|\\.)*")\}\{\/if\}/.exec(clean);
     expect(tags).not.toBeNull();
-    expect(JSON.parse(tags![1])).toBe(`${fathomTag('ABCDEFGH')}\n${GA}`);
+    // Fathom's script, following page changes made without a reload, then the head code without its comment.
+    expect(JSON.parse(tags![1])).toBe(`<script src="https://cdn.usefathom.com/script.js" data-site="ABCDEFGH" data-spa="auto" defer></script>\n${GA.replace('<!-- Google tag (gtag.js) -->\n', '')}`);
     // The tags come last in the head, after everything the website writes there itself.
     expect(clean.indexOf('{#if !dev}')).toBeGreaterThan(clean.indexOf('og:site_name'));
     expect(clean.indexOf('{#if !dev}')).toBeLessThan(clean.indexOf('</svelte:head>'));
+    expect(clean).toMatch(/\{#if !dev\}\{@html [^\n]*\}\{\/if\}\n<\/svelte:head>/);
     const dev = generateProject(coded(), { instrument: true }).get(LAYOUT)!;
     expect(dev).not.toContain('googletagmanager');
     expect(dev).not.toContain('usefathom');
@@ -260,11 +387,16 @@ describe('the website and the editor’s preview', () => {
     for (const opts of [{}, { instrument: true }]) {
       const files = generateProject(coded(), opts);
       const layout = files.get(LAYOUT)!;
-      expect(layout.indexOf(`styles/${GLOBAL_CSS_FILE}'`)).toBeGreaterThan(layout.indexOf(`styles/site.css'`));
+      const styles = [...layout.matchAll(/import '\.\.\/lib\/siteorigin\/styles\/([^']+)';/g)].map((m) => m[1]);
+      expect(styles).toEqual(['tokens.css', 'theme.css', 'components.css', 'site.css', GLOBAL_CSS_FILE]);
       expect(files.get(CSS_FILE)).toMatch(/^\/\* The site's own CSS, from Site settings > Custom code[^\n]*\*\/\n\.so-btn \{ border-radius: 0 \}\n$/);
     }
     // Without any, the file is there with its first line alone, so adding some changes no import.
     expect(generateProject(fresh()).get(CSS_FILE)).toMatch(/^\/\*[^\n]*\*\/\n$/);
+    expect(generateProject(fresh()).get(LAYOUT)).toContain(`import '../lib/siteorigin/styles/${GLOBAL_CSS_FILE}';`);
+    // The author's CSS as typed, padding and all, with one line break at its end.
+    const padded = run(fresh(), { type: 'site.update', globalCss: '\n  a { color: red }  \n' });
+    expect(generateProject(padded).get(CSS_FILE)!.split('\n').slice(1).join('\n')).toBe('\n  a { color: red }  \n');
   });
 
   it('leaves out, and reports, code or an integration a hand edit left unusable', () => {
@@ -284,6 +416,24 @@ describe('the website and the editor’s preview', () => {
       ['INTEGRATION_INVALID', 'integrations.fathom', 'warning']
     ]);
     expect(found[0].message).toMatch(/^Head code, line 1, column 1: <div> cannot go in the head/);
+  });
+
+  it('reports each unusable shape on its own, and nothing for usable, blank or absent settings', () => {
+    const codes = (edit: (s: ProjectState) => void) => {
+      const s = fresh();
+      edit(s);
+      return validateState(s).filter((d) => d.code === 'SITE_CODE_INVALID' || d.code === 'INTEGRATION_INVALID').map((d) => `${d.code}@${d.site}`);
+    };
+    expect(codes((s) => (s.site.globalCss = 'a {'))).toEqual(['SITE_CODE_INVALID@globalCss']);
+    expect(codes((s) => (s.site.headCode = 5 as unknown as string))).toEqual(['SITE_CODE_INVALID@headCode']);
+    for (const bad of ['x', 3, null, []]) expect(codes((s) => (s.site.integrations = bad as never)), JSON.stringify(bad)).toEqual(['INTEGRATION_INVALID@integrations']);
+    for (const bad of [null, 'x', {}, { siteId: 1 }, { siteId: '   ' }]) expect(codes((s) => (s.site.integrations = { fathom: bad } as never)), JSON.stringify(bad)).toEqual(['INTEGRATION_INVALID@integrations.fathom']);
+    expect(codes((s) => Object.assign(s.site, { headCode: '<meta name="a" content="b">', globalCss: '  ', integrations: { fathom: { siteId: 'ABCDEFGH' } } }))).toEqual([]);
+    expect(codes(() => undefined)).toEqual([]);
+    // A usable field is still written beside one that is not.
+    const mixed = fresh();
+    Object.assign(mixed.site, { headCode: '<div>', globalCss: 'a { color: red }' });
+    expect(generateProject(mixed).get(CSS_FILE)).toContain('a { color: red }');
   });
 
   it('makes again only the files an edit of each reaches, with the bytes of a full run', () => {

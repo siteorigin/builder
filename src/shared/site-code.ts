@@ -115,6 +115,30 @@ function readHead(src: string): void {
   }
 }
 
+/** An attribute value as the browser reads it: its numeric character references (&#112;, &#x70;) and &amp; decoded. */
+function decodedAttr(v: string): string {
+  return v.replace(/&#(?:x([0-9a-f]+)|(\d+));?/gi, (_, hex: string | undefined, dec: string | undefined) => String.fromCodePoint(Math.min(parseInt(hex ?? dec!, hex ? 16 : 10), 0x10ffff))).replace(/&amp;/gi, '&');
+}
+
+/**
+ * Head markup as the website writes it: without its comments, which visitors never see, so none can be taken for
+ * a marker Svelte's hydration looks for. Markup that does not pass its check is given back as it is.
+ */
+export function headCodeWithoutComments(text: string): string {
+  if (headCodeProblem(text)) return text;
+  let out = '';
+  let from = 0;
+  for (let i = 0; i < text.length; ) {
+    if (text.startsWith('<!--', i)) {
+      const end = readComment(text, i);
+      out += text.slice(from, i);
+      i = from = end;
+    } else if (text[i] === '<' && /[a-zA-Z]/.test(text[i + 1] ?? '')) i = readElement(text, i).end;
+    else i++;
+  }
+  return (out + text.slice(from)).replace(/\n[\t ]*(?=\n)/g, '').trim();
+}
+
 /** Reads a comment at `i`, giving the index after it. A comment HTML reads as empty would end Svelte's {@html} early. */
 function readComment(src: string, i: number): number {
   const start = i + 4;
@@ -131,7 +155,8 @@ function readComment(src: string, i: number): number {
 /** Reads an element at `i`: its start tag, and for a script or style its text and end tag. */
 function readElement(src: string, i: number): { end: number; name: string; raw: boolean } {
   const at = i;
-  const name = /^<([a-zA-Z][a-zA-Z0-9-]*)/.exec(src.slice(i))![1].toLowerCase();
+  // HTML's tag name runs to white space, "/" or ">": "<meta.x>" is an element called "meta.x", which is no head's.
+  const name = /^<([^\t\n\f\r />]*)/.exec(src.slice(i))![1].toLowerCase();
   if (!HEAD_ELEMENTS.has(name)) throw new Refusal(elementRefusal(name), at);
   i += name.length + 1;
   const attrs = new Map<string, string>();
@@ -179,7 +204,7 @@ function readElement(src: string, i: number): { end: number; name: string; raw: 
   if (name === 'meta') {
     if (attrs.has('charset')) throw new Refusal('The website already says its character set (UTF-8).', at);
     if (attrs.has('http-equiv')) throw new Refusal('A <meta http-equiv> stands in for a header the host sends: set it in the host’s settings instead.', at);
-    if ((attrs.get('name') ?? '').trim().toLowerCase() === 'viewport') throw new Refusal('The website already sets the viewport, for its layouts at every size.', at);
+    if (decodedAttr(attrs.get('name') ?? '').trim().toLowerCase() === 'viewport') throw new Refusal('The website already sets the viewport, for its layouts at every size.', at);
   }
   if (VOID.has(name)) return { end: i, name, raw: false };
   if (selfClosed) throw new Refusal(`<${name}/> does not close in HTML: write <${name}></${name}>.`, at);
@@ -191,7 +216,7 @@ function readElement(src: string, i: number): { end: number; name: string; raw: 
   const body = rest.slice(0, m.index);
   // In a script, "<!--" turns on HTML's old escaping, where a "</script>" may not end it after all.
   const escaped = name === 'script' ? body.indexOf('<!--') : -1;
-  if (escaped >= 0) throw new Refusal('A script cannot hold “<!--”: split it as “<!-” + “-” where a string needs it.', i + escaped);
+  if (escaped >= 0) throw new Refusal('A script cannot hold “<!--”: where a string needs it, write it as “\\u003C!--”.', i + escaped);
   i += m.index + name.length + 2;
   while (i < src.length && WS.test(src[i])) i++;
   if (src[i] !== '>') throw new Refusal(`</${name}> holds nothing but its name.`, i);
@@ -203,10 +228,17 @@ function readElement(src: string, i: number): { end: number; name: string; raw: 
 // ---------------------------------------------------------------------------
 
 /** At-rules whose block holds declarations (and, in @page, its margin boxes), not rules. */
-const DECLARATION_BLOCKS = new Set(['font-face', 'page', 'property', 'counter-style', 'font-palette-values', 'view-transition', 'position-try', 'top-left-corner', 'top-left', 'top-center', 'top-right', 'top-right-corner', 'bottom-left-corner', 'bottom-left', 'bottom-center', 'bottom-right', 'bottom-right-corner', 'left-top', 'left-middle', 'left-bottom', 'right-top', 'right-middle', 'right-bottom']);
+const DECLARATION_BLOCKS = new Set(['font-face', 'font-feature-values', 'page', 'property', 'counter-style', 'font-palette-values', 'view-transition', 'position-try', 'top-left-corner', 'top-left', 'top-center', 'top-right', 'top-right-corner', 'bottom-left-corner', 'bottom-left', 'bottom-center', 'bottom-right', 'bottom-right-corner', 'left-top', 'left-middle', 'left-bottom', 'right-top', 'right-middle', 'right-bottom']);
 const KEYFRAMES = new Set(['keyframes', '-webkit-keyframes', '-moz-keyframes', '-o-keyframes']);
 /** Pseudo-classes whose argument is a selector list, checked as one (`has` takes relative selectors). */
 const SELECTOR_ARGS = new Set(['is', 'where', 'not', 'has', 'matches', '-webkit-any', '-moz-any', 'host', 'host-context', 'slotted', 'cue']);
+
+/** Why each at-rule the build moves (or loses) is left out, wherever its name appears. */
+const HOISTED: Record<string, string> = {
+  import: '@import is not supported here, even in a string or comment: add the stylesheet to the head code as <link rel="stylesheet" href="…">.',
+  charset: 'The site’s CSS is UTF-8 already: leave out @charset, even in a string or comment.',
+  namespace: '@namespace is not supported here, even in a string or comment: it would be lost where the build joins the site’s stylesheets.'
+};
 
 /** What a block holds: rules (a stylesheet's, or @media's at its top), a style rule's mix, declarations, or keyframes. */
 type Block = 'rules' | 'mixed' | 'declarations' | 'keyframes';
@@ -220,6 +252,12 @@ type Block = 'rules' | 'mixed' | 'declarations' | 'keyframes';
 export function globalCssProblem(text: string): CodeProblem | null {
   return checked(text, () => {
     if (text.length > GLOBAL_CSS_MAX) throw new Refusal(`The site’s CSS can be at most ${GLOBAL_CSS_MAX.toLocaleString('en')} characters long.`, GLOBAL_CSS_MAX);
+    // A source map comment names a map the build then reads, and stops at when it cannot.
+    const map = text.search(/\/\*\s*[#@]\s*source(?:Mapping)?URL\s*=/i);
+    if (map >= 0) throw new Refusal('A source map comment cannot be in the site’s CSS: remove it.', map);
+    // The build moves these to the top of the joined stylesheet wherever it finds them, even in a string or comment.
+    const hoisted = /@(import|charset|namespace)(?![-\w])/i.exec(text);
+    if (hoisted) throw new Refusal(HOISTED[hoisted[1].toLowerCase()], hoisted.index);
     new CssReader(text).stylesheet();
   });
 }
@@ -254,7 +292,8 @@ class CssReader {
       const c = s[j];
       if (c === '\\') {
         if (j + 1 >= s.length) break;
-        j += 2;
+        // A backslash before a line break carries the string on to the next line, CRLF being one break.
+        j += s[j + 1] === '\r' && s[j + 2] === '\n' ? 3 : 2;
         continue;
       }
       if (c === q) return j + 1;
@@ -389,6 +428,7 @@ class CssReader {
     const at = this.i;
     const name = /^@(-?[a-zA-Z_][-a-zA-Z0-9_]*)/.exec(s.slice(at))?.[1]?.toLowerCase();
     if (!name) this.fail('An at-rule needs a name after its @.');
+    if (s[at + name.length + 1] === '\\') this.fail('An at-rule’s name cannot hold an escape.');
     if (name === 'import') this.fail('@import is not supported here: add the stylesheet to the head code as <link rel="stylesheet" href="…">.');
     if (kind === 'keyframes') this.fail('Keyframes hold only from, to and percentages.');
     this.i = at + name.length + 1;
@@ -411,7 +451,7 @@ class CssReader {
   declaration(custom: boolean): void {
     const s = this.src;
     const at = this.i;
-    const name = custom ? /^--[-a-zA-Z0-9_ -￿]*/.exec(s.slice(at))?.[0] : /^-?(?:[a-zA-Z_ -￿]|\\.)(?:[-a-zA-Z0-9_ -￿]|\\.)*/.exec(s.slice(at))?.[0];
+    const name = custom ? /^--[-a-zA-Z0-9_\u00a0-\uffff]*/.exec(s.slice(at))?.[0] : /^-?(?:[a-zA-Z_\u00a0-\uffff]|\\.)(?:[-a-zA-Z0-9_\u00a0-\uffff]|\\.)*/.exec(s.slice(at))?.[0];
     if (!name) {
       const shown = s.slice(at, this.scan(':;{}')).trim().slice(0, 40);
       this.fail(`“${shown}” is not a property name.`, at);
@@ -467,21 +507,27 @@ function outsideStrings(text: string): Array<[number, number]> {
 
 /** A colon outside brackets, strings and comments in a value. */
 function colonInValue(r: CssReader, value: string, at: number): void {
-  // The brackets open where each stretch outside strings starts, carried from one stretch to the next.
+  // Only parentheses may hold one (PostCSS reads a colon in [grid-line] names as a missing semicolon too). The
+  // parentheses open where each stretch outside strings starts are carried from one stretch to the next.
+  const v = withoutUrls(value);
   let depth = 0;
-  for (const [a, b] of outsideStrings(value)) {
+  for (const [a, b] of outsideStrings(v)) {
     for (let j = a; j < b; j++) {
-      const c = value[j];
+      const c = v[j];
       if (c === '\\') j++;
-      else if (c === '(' || c === '[') depth++;
-      else if (c === ')' || c === ']') depth--;
+      else if (c === '(') depth++;
+      else if (c === ')') depth--;
       else if (c === ':' && depth <= 0) r.fail('A value cannot hold “:” here: is a “;” missing before it?', at + j);
     }
   }
 }
 
+/** A value with what each unquoted url() holds blanked out, keeping its length: an address is never a value's own token. */
+const withoutUrls = (value: string) => value.replace(/((?:^|[^-a-zA-Z0-9_\\])url\(\s*)([^"'\s)][^)]*)\)/gi, (_, open: string, inner: string) => `${open}${' '.repeat(inner.length)})`);
+
 /** Each `!` in a value is the `!important` at its end: the website's build stops at any other. */
 function important(r: CssReader, value: string, at: number): void {
+  value = withoutUrls(value);
   for (const [a, b] of outsideStrings(value)) {
     const k = value.slice(a, b).indexOf('!');
     if (k < 0) continue;
@@ -510,17 +556,42 @@ function urls(r: CssReader, value: string, at: number): void {
         const close = value.indexOf(')', j);
         target = value.slice(j, close < 0 ? value.length : close).trim();
       }
-      if (!usableUrl(target)) r.fail(`url(${target.slice(0, 60)}) needs a full https:// address, a data: URL or a path from the site’s root (/…): a relative path would break from pages at other addresses.`, at + open - 4);
+      if (!usableUrl(target)) r.fail(`url(${target.slice(0, 60)}) ${URL_NEEDS}`, at + open - 4);
+    }
+  }
+  // An image-set() names its images as strings too, which the build reads as addresses.
+  const sets = /(^|[^-a-zA-Z0-9_\\])(?:-webkit-)?image-set\(/gi;
+  for (const [a, b] of outsideStrings(value)) {
+    const part = value.slice(a, b);
+    sets.lastIndex = 0;
+    for (let m = sets.exec(part); m; m = sets.exec(part)) {
+      const open = a + m.index + m[0].length;
+      let depth = 1;
+      let j = open;
+      for (; j < value.length && depth; j++) {
+        const c = value[j];
+        if (c === '"' || c === "'") {
+          let k = j + 1;
+          while (k < value.length && value[k] !== c) k += value[k] === '\\' ? 2 : 1;
+          const target = value.slice(j + 1, k);
+          if (!usableUrl(target)) r.fail(`“${target.slice(0, 60)}” in image-set() ${URL_NEEDS}`, at + j);
+          j = k;
+        } else if (c === '(') depth++;
+        else if (c === ')') depth--;
+      }
     }
   }
 }
 
-const usableUrl = (target: string) => /^(https:|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
+const URL_NEEDS = 'needs a full https:// address, a data: URL or a path from the site’s root (/…): a relative path would break from pages at other addresses.';
+
+const usableUrl = (target: string) => /^(https:\/\/[^/\\\s]|data:|\/|#)/i.test(target.trim()) && !/[\\]/.test(target);
 
 /** The offsets a @keyframes rule names: from, to, or percentages. */
 function keyframeSelectors(r: CssReader, prelude: string, at: number): void {
   for (const part of splitList(r, prelude, at)) {
-    if (!/^(from|to|[+]?(\d+(\.\d+)?|\.\d+)%)$/i.test(part.text.trim())) r.fail(`“${part.text.trim().slice(0, 40)}” is not a keyframe: use from, to or a percentage.`, part.at);
+    const offset = part.text.replace(/\/\*[\s\S]*?\*\//g, ' ').trim();
+    if (!/^(from|to|(?:(?:entry|exit|cover|contain|entry-crossing|exit-crossing)\s+)?[+]?(\d+(\.\d+)?|\.\d+)%)$/i.test(offset)) r.fail(`“${offset.slice(0, 40)}” is not a keyframe: use from, to or a percentage.`, part.at);
   }
 }
 
@@ -558,8 +629,8 @@ function splitList(r: CssReader, text: string, at: number): Array<{ text: string
   return parts;
 }
 
-const IDENT_START = /[a-zA-Z_ -￿]/;
-const IDENT_CHAR = /[-a-zA-Z0-9_ -￿]/;
+const IDENT_START = /[a-zA-Z_\u00a0-\uffff]/;
+const IDENT_CHAR = /[-a-zA-Z0-9_\u00a0-\uffff]/;
 
 /**
  * A selector list, as the website's build reads it: each selector a series of compound selectors (types, `*`, `&`,
@@ -580,7 +651,7 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
     if (text[e] === '-') e++;
     if (text[e] === '-') e++;
     if (!(IDENT_START.test(text[e] ?? '') || text[e] === '\\' || (e > k + 1 && IDENT_CHAR.test(text[e] ?? '')))) return k;
-    while (e < text.length && (IDENT_CHAR.test(text[e]) || text[e] === '\\')) e += text[e] === '\\' ? 2 : 1;
+    while (e < text.length && (IDENT_CHAR.test(text[e]) || text[e] === '\\')) e = text[e] === '\\' ? escapeEnd(text, e) : e + 1;
     return e;
   };
   /** Index after the bracket that opens at `k`, closing at its match. */
@@ -598,6 +669,11 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
         let q = e + 1;
         while (q < text.length && text[q] !== c) q += text[q] === '\\' ? 2 : 1;
         e = q;
+        continue;
+      }
+      if (text.startsWith('/*', e)) {
+        const end = text.indexOf('*/', e + 2);
+        e = end < 0 ? text.length : end + 1;
         continue;
       }
       if (c === open) depth++;
@@ -628,6 +704,7 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
     for (;;) {
       const d = text[k];
       if (d === undefined || WS.test(d) || d === '>' || d === '+' || d === '~' || text.startsWith('/*', k)) break;
+      if (d === '|') fail('Namespaced selectors are not supported here.', k);
       if (d === '*' || d === '&') k++;
       else if (d === '.' || d === '#') {
         const e = d === '#' ? hashEnd(text, k + 1) : ident(k + 1);
@@ -669,13 +746,29 @@ function selector(r: CssReader, text: string, at: number, relative: boolean): vo
 /** Index after an ID selector's name, which may start with a digit as a hash token can. */
 function hashEnd(text: string, k: number): number {
   let e = k;
-  while (e < text.length && (IDENT_CHAR.test(text[e]) || text[e] === '\\')) e += text[e] === '\\' ? 2 : 1;
+  while (e < text.length && (IDENT_CHAR.test(text[e]) || text[e] === '\\')) e = text[e] === '\\' ? escapeEnd(text, e) : e + 1;
   return e;
 }
 
+/**
+ * Index after the escape that starts with the backslash at `k`: up to six hex digits and the one white space that may
+ * end them (".\\31 2-col" is the class "12-col"), else the one character after it.
+ */
+function escapeEnd(text: string, k: number): number {
+  const hex = /^[0-9a-fA-F]{1,6}/.exec(text.slice(k + 1, k + 7));
+  if (!hex) return k + 2;
+  const e = k + 1 + hex[0].length;
+  if (text[e] === '\r' && text[e + 1] === '\n') return e + 2;
+  return WS.test(text[e] ?? '') ? e + 1 : e;
+}
+
+/** One CSS name, escapes and all, as a regular expression's source. */
+const NAME = String.raw`-?(?:[a-zA-Z_\u00a0-\uffff]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f0-9a-fA-F])(?:[-a-zA-Z0-9_\u00a0-\uffff]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f0-9a-fA-F])*`;
+const ATTRIBUTE = new RegExp(String.raw`^\s*${NAME}\s*(?:([~|^$*]?=)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|${NAME}|-?\d[-a-zA-Z0-9_]*)\s*([iIsS])?\s*)?$`);
+
 /** An attribute selector's inside: a name, then optionally an operator and a value, then optionally i or s. */
 function attribute(r: CssReader, inner: string, at: number): void {
-  const m = /^\s*(?:[-a-zA-Z_ -￿*]*\|)?-?[a-zA-Z_ -￿][-a-zA-Z0-9_ -￿]*\s*(?:([~|^$*]?=)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?[a-zA-Z_ -￿][-a-zA-Z0-9_ -￿]*|-?\d[-a-zA-Z0-9_]*)\s*([iIsS])?\s*)?$/.exec(inner);
+  const m = ATTRIBUTE.exec(inner);
   if (!m) r.fail('This attribute selector is not one a browser reads: [name], [name="value"] or [name="value" i].', at);
 }
 

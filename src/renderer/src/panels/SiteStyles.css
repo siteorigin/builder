@@ -462,6 +462,8 @@
   .site-integration-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .site-integration-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; font-weight: 500; color: var(--text); }
   .site-integration-summary { font-size: 12px; font-weight: 400; line-height: 1.4; color: var(--text-2); }
+  .site-integration-add { display: flex; flex-direction: column; gap: 8px; }
+  .site-integration-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
   /* ---------- AI agents (AgentDiscovery.tsx) ---------- */
   /* Plain names first; the file or standard each writes follows as secondary text. The index's summary and preview

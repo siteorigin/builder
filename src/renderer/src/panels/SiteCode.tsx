@@ -1,8 +1,8 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import type { SiteDoc } from '@shared/types';
 import { GLOBAL_CSS_MAX, globalCssProblem, hasCode, HEAD_CODE_MAX, headCodeProblem, type CodeProblem } from '@shared/site-code';
-import { addedIntegrations, FATHOM_ID_MAX, fathomIdText, fathomSiteIdProblem, INTEGRATIONS } from '@shared/integrations';
-import { DraftInput, Field, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { addedIntegrations, FATHOM_ID_MAX, fathomIdText, fathomSiteId, fathomSiteIdProblem, INTEGRATIONS } from '@shared/integrations';
+import { DraftInput, Field, openSection, type DraftProblem } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 
 /** What the Integrations section's closed heading says: how many are added, or nothing while none is. */
@@ -111,53 +111,60 @@ export function SiteCodeFields({ site, developer, onChange }: { site: SiteDoc; d
 
 /**
  * Site settings' Integrations section: services the website works with, each added from what it needs (its site ID)
- * and removed with one button (shared/integrations.ts).
+ * and removed with one button (shared/integrations.ts). A new one's ID stays in its form until Add saves it, so
+ * putting it back (Cancel, or Escape) adds nothing; an added one's ID saves as it is changed, as other settings do.
  */
 export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange: (patch: Record<string, unknown>) => unknown }) {
   const added = addedIntegrations(site);
-  // An integration being added: its field shows before anything is saved, and goes when it is put back.
+  // The integration being added, and what is typed for it.
   const [adding, setAdding] = useState<string | null>(null);
-  const handle = useRef<DraftHandle | null>(null);
+  const [typed, setTyped] = useState('');
+  const [addProblem, setAddProblem] = useState<string | null>(null);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
+  const stopAdding = () => (setAdding(null), setTyped(''), setAddProblem(null));
   return (
     <>
       {INTEGRATIONS.map(({ id, name, summary }) => {
         const on = added.includes(id);
-        const open = on || adding === id;
         const saved = on ? fathomIdText(site.integrations?.fathom?.siteId) : '';
+        // Added, but with an ID a hand edit left unusable: the website is built without it until it is corrected.
+        const working = on && !!fathomSiteId(site);
         const savedProblem = on && !problem ? fathomSiteIdProblem(saved) : null;
         const shown = problem?.message ?? savedProblem;
+        const add = (e: FormEvent) => {
+          e.preventDefault();
+          const p = fathomSiteIdProblem(typed);
+          if (p) return setAddProblem(p);
+          stopAdding();
+          void onChange({ integrations: { [id]: { siteId: fathomIdText(typed) } } });
+        };
         return (
           <div className={`site-integration${on ? ' on' : ''}`} key={id} role="group" aria-labelledby={`integration-${id}`}>
             <div className="site-integration-head">
               <div className="site-integration-name">
                 <span id={`integration-${id}`}>{name}</span>
-                <span className="site-integration-summary">{on ? 'Added. Counts visits to the published website, never the editor’s preview.' : summary}</span>
+                <span className="site-integration-summary">{working ? 'Added. Counts visits to the published website, never the editor’s preview.' : on ? 'Added, but not counting visits until its site ID is corrected.' : summary}</span>
               </div>
               {on ? (
                 <button type="button" className="btn btn-sm" onClick={() => (setProblem(null), onChange({ integrations: { [id]: null } }))}>
                   Remove<span className="sr-only"> {name}</span>
                 </button>
-              ) : adding === id ? (
-                <button type="button" className="btn btn-sm" onClick={() => (setProblem(null), setAdding(null))}>
-                  Cancel<span className="sr-only"> adding {name}</span>
-                </button>
               ) : (
-                <button type="button" className="btn btn-sm" onClick={() => setAdding(id)}>
-                  Add<span className="sr-only"> {name}</span>
-                </button>
+                adding !== id && (
+                  <button type="button" className="btn btn-sm" onClick={() => (setAdding(id), setTyped(''), setAddProblem(null))}>
+                    Add<span className="sr-only"> {name}</span>
+                  </button>
+                )
               )}
             </div>
-            {open && (
-              <Field label="Site ID" info="The code in your Fathom site’s settings, also in its embed code as data-site." error={shown && <span role={problem ? 'alert' : undefined}>{shown}{problem && <span className="field-saved"> Not saved.</span>}</span>}>
+            {on && (
+              <Field label="Site ID" info={SITE_ID_INFO} error={shown && <span role={problem ? 'alert' : undefined}>{shown}{problem && <span className="field-saved"> Not saved.</span>}</span>}>
                 <DraftInput
                   id={`integration-${id}-site-id`}
                   className="input site-code-id"
                   limit={FATHOM_ID_MAX}
                   quietCount
                   spellCheck={false}
-                  autoFocus={!on}
-                  handle={handle}
                   value={saved}
                   placeholder="ABCDEFGH"
                   check={(v) => {
@@ -165,13 +172,24 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
                     return p ? { message: p } : null;
                   }}
                   onProblem={setProblem}
-                  onCommit={(v) => {
-                    if (fathomIdText(v) === saved) return;
-                    setAdding(null);
-                    return onChange({ integrations: { [id]: { siteId: fathomIdText(v) } } });
-                  }}
+                  onCommit={(v) => (fathomIdText(v) === saved ? undefined : onChange({ integrations: { [id]: { siteId: fathomIdText(v) } } }))}
                 />
               </Field>
+            )}
+            {!on && adding === id && (
+              <form className="site-integration-add" onSubmit={add} onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), stopAdding())}>
+                <Field label="Site ID" info={SITE_ID_INFO} error={addProblem && <span role="alert">{addProblem}</span>}>
+                  <input id={`integration-${id}-new-id`} className="input site-code-id" value={typed} maxLength={FATHOM_ID_MAX} placeholder="ABCDEFGH" spellCheck={false} autoComplete="off" autoFocus onChange={(e) => (setTyped(e.target.value), setAddProblem(null))} />
+                </Field>
+                <div className="site-integration-actions">
+                  <button type="button" className="btn btn-sm" onClick={stopAdding}>
+                    Cancel<span className="sr-only"> adding {name}</span>
+                  </button>
+                  <button type="submit" className="btn btn-sm btn-primary">
+                    Add<span className="sr-only"> {name}</span>
+                  </button>
+                </div>
+              </form>
             )}
           </div>
         );
@@ -179,3 +197,6 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
     </>
   );
 }
+
+/** Where a Fathom site ID is found, behind the field's info button. */
+const SITE_ID_INFO = 'The code in your Fathom site’s settings, also in its embed code as data-site.';

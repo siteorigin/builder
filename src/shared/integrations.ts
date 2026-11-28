@@ -46,6 +46,27 @@ export function addedIntegrations(site: Pick<SiteDoc, 'integrations'>): Integrat
   return INTEGRATIONS.filter(({ id }) => Object.hasOwn(own, id) && own[id] != null).map(({ id }) => id);
 }
 
+/**
+ * Where the integrations' code is served from. Builder's own hidden windows (an export's check of its pages, a review
+ * capture) load none of it, so opening the built website there never counts as a visit.
+ */
+export const INTEGRATION_ORIGINS: readonly string[] = [new URL(FATHOM_SCRIPT).origin];
+
+/** Whether a request is for an integration's code or reports to one: none goes out from Builder's own hidden windows. */
+export function integrationRequest(url: string): boolean {
+  try {
+    return INTEGRATION_ORIGINS.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether one of Builder's hidden windows leaves a request out: an integration's, or a beacon (navigator.sendBeacon,
+ * which analytics in the author's own head code report visits with), so checking a page is never a visit.
+ */
+export const quietRequest = (url: string, resourceType: string): boolean => resourceType === 'ping' || integrationRequest(url);
+
 /** What the integrations add to the published website's <head>, one tag per line. */
 export function integrationHead(site: Pick<SiteDoc, 'integrations'>): string {
   const fathom = fathomSiteId(site);

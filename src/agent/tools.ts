@@ -167,7 +167,7 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names), the installed components, or the site\'s own head code and custom CSS in full (siteCode: read it before replacing either with site.update).',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names), the installed components, or the site\'s own head code and custom CSS in full (siteCode, read alone: read it before replacing either with site.update).',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
@@ -216,7 +216,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names), installed components, or siteCode (the site\'s head code and custom CSS in full).',
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names), installed components, or siteCode alone (the site\'s head code and custom CSS in full).',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
   search_components: 'Theme and project components by keywords, with their IDs.',
@@ -290,6 +290,38 @@ const NEVER_OFFERED = new Set<OperationType>([
 ]);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
+
+/** The most of each piece of the site's own code a run reads whole, and so may replace: both fit in one result. */
+export const SITE_CODE_READ_MAX = 10000;
+const SITE_CODE_FIELDS = [
+  ['headCode', 'head code'],
+  ['globalCss', 'custom CSS']
+] as const;
+
+/**
+ * The site's own code as read_project's siteCode section gives it: each piece whole, as stored (site.update replaces
+ * it whole, so an edit starts from this), or, past what a run may replace, its length and start alone.
+ */
+function siteCodeRead(state: ProjectState): Record<string, unknown> {
+  return Object.fromEntries(
+    SITE_CODE_FIELDS.map(([key]) => {
+      const v = hasCode(state.site[key]) ? state.site[key] : '';
+      return [key, v.length <= SITE_CODE_READ_MAX ? v : { characters: v.length, start: v.slice(0, 2000), note: 'Too long to replace here: the author changes it in Site settings > Custom code.' }];
+    })
+  );
+}
+
+/** Why a batch may not replace the site's code: code too long for a run to have read whole. Null when it may. */
+function siteCodeUnread(state: ProjectState, ops: EditOperation[]): string | null {
+  for (const op of ops) {
+    if (op.type !== 'site.update') continue;
+    for (const [key, what] of SITE_CODE_FIELDS) {
+      const saved = state.site[key];
+      if (op[key] !== undefined && hasCode(saved) && saved.length > SITE_CODE_READ_MAX) return `The site's ${what} is ${saved.length} characters, more than a run reads whole, so it is not replaced here. Ask the author to change it in Site settings > Custom code.`;
+    }
+  }
+  return null;
+}
 
 /** Whether an operation creates or copies code: a code operation, or a copy of a code component (as the editor checks). */
 export const copiesCode = (state: ProjectState, op: EditOperation): boolean => developerModeReason(state, op) !== null;
@@ -1130,6 +1162,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   switch (name as ToolName) {
     case 'read_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
+      // The site's own code is read alone, so no summary beside it can push it past what one result holds.
+      if (a.sections?.includes('siteCode')) return { ok: true, content: { revision: host.revision(), siteCode: siteCodeRead(state) } };
       const out: Record<string, unknown> = projectSummary(state, host.revision());
       if (a.sections?.includes('tokens')) {
         out.tokens = tokensSummary(state);
@@ -1142,8 +1176,6 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       }
       if (a.sections?.includes('components'))
         out.installedComponents = Object.values(state.components).map((d) => ({ definitionId: d.id, componentId: d.componentId, name: d.name, owner: d.owner, kind: d.kind }));
-      // The site's own code in full, as stored: site.update replaces each whole, so an edit starts from this.
-      if (a.sections?.includes('siteCode')) out.siteCode = { headCode: hasCode(state.site.headCode) ? state.site.headCode : '', globalCss: hasCode(state.site.globalCss) ? state.site.globalCss : '' };
       out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup}${p.containerTokens ? `, of container only ${p.containerTokens.join(' or ')}` : ''})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}${valueHint(p)}`);
       return { ok: true, content: out };
     }
@@ -1274,6 +1306,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       // A swap keeps every piece of content or is refused, naming what has no place: content goes only by an edit that says so.
       if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
         return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.');
+      // site.update replaces the site's code whole: a run replaces only code it can read whole (read_project siteCode).
+      const unread = siteCodeUnread(state, ops);
+      if (unread) return toolError('INVALID_ARGUMENT', unread);
       const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, undefined, a.scope);
       if (!res.ok) {
