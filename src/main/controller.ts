@@ -2702,9 +2702,10 @@ export class Controller {
         const sources = await this.sourcesCopyProblem(s);
         if (sources) throw Object.assign(new Error(sources), { code: 'SOURCES' });
         await copyProjectSource(s.dir, tmp, { keepBrief: true });
-        // Not the files kept only for the original's undo and saved versions, which the copy doesn't take (#1378).
-        await leaveOutRetiredAssets(tmp, s.state);
         await writeExportedSources(tmp, s.state, { keep: true });
+        // Not the files kept only for the original's undo and saved versions, which the copy doesn't take (#1378): by
+        // everything the copy holds, its sources' settings and converters too.
+        await leaveOutRetiredAssets(tmp, s.state);
       });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));

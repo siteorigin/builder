@@ -204,6 +204,8 @@ describe('a duplicated project (#176)', () => {
     // A file the owner put among the assets, and one only hand-written source names, are the site’s own.
     writeFileSync(join(original, 'static/assets/price-list.txt'), 'Prices.');
     writeFileSync(join(original, 'static/assets/map-0a1b2c3d.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    // A picture deleted from Assets, kept for undo like the first edition.
+    writeFileSync(join(original, 'static/assets/old-photo-0f1e2d3c.jpg'), 'old photo');
     mkdirSync(join(original, 'src/routes/visit'), { recursive: true });
     writeFileSync(join(original, 'src/routes/visit/+page.svelte'), '<img src="/assets/map-0a1b2c3d.svg" alt="Map" />\n');
     expect(await c.flush()).toBe(true);
@@ -217,7 +219,9 @@ describe('a duplicated project (#176)', () => {
     expect(existsSync(join(copy, 'static/assets/map-0a1b2c3d.svg'))).toBe(true);
     // The copy has none of the original’s history, so the old edition would only be published from it.
     expect(existsSync(join(copy, retired))).toBe(false);
+    expect(existsSync(join(copy, 'static/assets/old-photo-0f1e2d3c.jpg'))).toBe(false);
     expect(existsSync(join(original, retired))).toBe(true);
+    expect(existsSync(join(original, 'static/assets/old-photo-0f1e2d3c.jpg'))).toBe(true);
   });
 
   it('explains a name or destination it cannot use, and writes nothing', async () => {

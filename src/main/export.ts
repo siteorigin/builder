@@ -313,7 +313,7 @@ const importedToken = (name: string) => name.match(/-([a-f0-9]{8})(?:-\d+w)?\.[a
  * file shares them; a document by its whole name. A document counts as the importer's only while its bytes still have
  * the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one. Anything that can't
  * be read for what it names leaves every file in place. Read from the copy, so it decides by exactly what was copied.
- * Returns the files it removed.
+ * Returns the files it removed; one that can't be removed fails the copy, which would otherwise publish it.
  */
 export async function leaveOutRetiredAssets(copy: string, state: ProjectState): Promise<string[]> {
   const library = libraryAssetFiles(state);
@@ -324,13 +324,31 @@ export async function leaveOutRetiredAssets(copy: string, state: ProjectState): 
   } catch {
     return [];
   }
-  const shared = new Set([...library].filter((f) => /^static\/assets\/[^/]+$/.test(f) && IMPORTED_MEDIA_FILE.test(basename(f))).map((f) => importedToken(basename(f))));
+  // Without case, as the disk may read paths: a record of `static/Assets/…` keeps its file wherever the folder is.
+  const listed = new Set([...library].map((f) => f.toLowerCase()));
+  const shared = new Set([...listed].filter((f) => /^static\/assets\/[^/]+$/.test(f) && IMPORTED_MEDIA_FILE.test(basename(f))).map((f) => importedToken(basename(f))));
   const dir = join(copy, 'static', 'assets');
+  const st = await fs.stat(dir).catch(() => null);
+  if (!st?.isDirectory()) return [];
+  // The copy's folders have their originals' modes: one this app, the copy's owner, could not read, write in or look
+  // into is opened while it is weighed, and closed again.
+  const mode = st.mode & 0o7777;
+  const closed = (mode & 0o700) !== 0o700;
+  if (closed) await fs.chmod(dir, mode | 0o700);
+  try {
+    return await leaveOutRetired(copy, dir, listed, shared);
+  } finally {
+    if (closed) await fs.chmod(dir, mode);
+  }
+}
+
+/** leaveOutRetiredAssets, once the copy's static/assets/ can be read: `listed` and `shared` are its library's files and their hash characters. */
+async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, shared: Set<string>): Promise<string[]> {
   const media = new Map<string, string>();
   const documents = new Set<string>();
   for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
     const rel = `static/assets/${e.name}`;
-    if (!e.isFile() || library.has(rel)) continue;
+    if (!e.isFile() || listed.has(rel.toLowerCase())) continue;
     if (IMPORTED_MEDIA_FILE.test(e.name)) {
       if (!shared.has(importedToken(e.name))) media.set(rel, importedToken(e.name));
     } else if (IMPORTED_DOCUMENT_FILE.test(e.name)) {
@@ -342,21 +360,24 @@ export async function leaveOutRetiredAssets(copy: string, state: ProjectState): 
   const tokens = new Set(media.values());
   const found = new Set<string>();
   const named = new NameMatcher([...documents].map((rel) => basename(rel)));
-  const open = () => [...tokens].some((t) => !found.has(t)) || [...documents].some((rel) => !named.whole(basename(rel)));
-  // What the copy carries, read as text: the files the website build reads, and those with no extension (`_redirects`).
-  const searched = (name: string) => TEXT_FILE.test(name) || !/.\.[^.]+$/.test(name);
+  // What the copy carries, read as text: the files the website build reads, stylesheets and transforms it may be built
+  // from, and files with no extension (`_redirects`).
+  const searched = (name: string) => TEXT_FILE.test(name) || /\.(s[ac]ss|less|styl|xslt?)$/i.test(name) || !/.\.[^.]+$/.test(name);
   let unreadable = false;
+  let done = false;
   const walk = async (rel: string): Promise<void> => {
     for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
-      if (unreadable || !open()) return;
+      if (unreadable || done) return;
       const child = rel ? `${rel}/${e.name}` : e.name;
+      const key = child.toLowerCase();
       if (e.isDirectory()) await walk(child);
-      else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) {
+      else if (e.isFile() && searched(e.name) && !media.has(key) && !documents.has(key) && key !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) {
         const text = await fs.readFile(join(copy, child), 'utf8').catch(() => null);
         if (text === null) unreadable = true;
         else {
           for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
           named.scan(text);
+          done = found.size === tokens.size && [...documents].every((d) => named.whole(basename(d)));
         }
       }
     }
@@ -364,21 +385,13 @@ export async function leaveOutRetiredAssets(copy: string, state: ProjectState): 
   await walk('').catch(() => (unreadable = true));
   if (unreadable) return [];
   const gone = [...[...media].filter(([, t]) => !found.has(t)).map(([rel]) => rel), ...[...documents].filter((rel) => !named.whole(basename(rel)))];
-  if (!gone.length) return [];
-  // The copy's folders have their originals' modes: one the original keeps read-only is opened for the removal alone.
-  const mode = (await fs.stat(dir)).mode & 0o7777;
-  if (!(mode & 0o200)) await fs.chmod(dir, mode | 0o700);
-  const removed: string[] = [];
-  try {
-    for (const rel of gone) {
-      // A read-only file can't be removed on Windows; one that won't go stays, as every file did before.
-      await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
-      if (await fs.rm(join(copy, rel)).then(() => true, () => false)) removed.push(rel);
-    }
-  } finally {
-    if (!(mode & 0o200)) await fs.chmod(dir, mode);
+  for (const rel of gone) {
+    // A read-only file can't be removed on Windows, nor one a virus scanner holds for a moment. One that won't go
+    // fails the copy, which would otherwise publish it.
+    await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
+    await fs.rm(join(copy, rel), { maxRetries: 5, retryDelay: 100 });
   }
-  return removed;
+  return gone;
 }
 
 /** Files the website build reads as text, searched for the asset file names they use. */
