@@ -58,6 +58,10 @@ export function EndpointsPanel() {
   const mayLeave = async () => !open || open.text === open.saved || (await confirmDialog({ title: 'Discard your changes?', body: `Your changes to ${open.file} have not been saved.`, subject: open.file, confirmLabel: 'Discard changes', stayLabel: 'Keep editing', tone: 'caution' })) === true;
   useEffect(() => {
     void refresh();
+    // An endpoint added or removed in another editor shows when the author comes back to the app.
+    const back = () => void refresh();
+    window.addEventListener('focus', back);
+    return () => window.removeEventListener('focus', back);
   }, [opening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openFile = async (ep: EndpointFile) => {
@@ -143,6 +147,9 @@ export function EndpointsPanel() {
           ))}
         </ul>
       )}
+      <button type="button" className="btn btn-sm ep-refresh" onClick={() => void refresh()}>
+        Refresh list
+      </button>
       {!readOnly && (
         <form
           className="ep-new"
@@ -362,7 +369,7 @@ function EndpointVariables({ opening, readOnly }: { opening: string; readOnly: b
       </p>
       {env?.declarations === 'own' && (
         <p className="ep-note" role="note">
-          <code>src/env.js</code> is your own, so SiteOrigin Builder leaves it as it is: declare new variables there too.
+          Your project declares its variables itself (<code>src/env.js</code> or <code>src/env.ts</code>), so SiteOrigin Builder leaves the declarations as they are: declare new variables there too. They decide which variables are public: a public one’s value is sent to browsers, in the preview too.
         </p>
       )}
       {env && env.variables.length > 0 && (

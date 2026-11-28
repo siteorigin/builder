@@ -79,6 +79,9 @@ describe('which addresses an endpoint answers', () => {
     expect(endpointAnswers('/report-[year]', '/summary-2026/')).toBe(false);
     expect(endpointAnswers('/api/search', '/staff/')).toBe(false);
     expect(endpointAnswers('/', '/')).toBe(true);
+    // An escaped character is that character, not any text.
+    expect(endpointAnswers('/offer[x+2d]details', '/offer-details/')).toBe(true);
+    expect(endpointAnswers('/offer[x+2d]details', '/offer-special-details/')).toBe(false);
   });
 });
 

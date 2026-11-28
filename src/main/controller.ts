@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, nativeTheme, shell, type OpenDialogOptions,
 import { markdownMirrorRoute } from '@shared/llms';
 import { PREVIEW_PROJECT_STYLES } from '@shared/component-preview';
 import { firstStepsStart } from '@shared/first-steps';
-import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -277,6 +277,20 @@ async function configHash(dir: string): Promise<string> {
 }
 
 type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
+
+/** Whether every part of `file` below `root` is there under exactly that name, as a disk that ignores case would not say. */
+function spelledExactly(root: string, file: string): boolean {
+  let at = root;
+  for (const part of file.slice(root.length + 1).split(sep)) {
+    try {
+      if (!readdirSync(at).includes(part)) return false;
+    } catch {
+      return false;
+    }
+    at = join(at, part);
+  }
+  return true;
+}
 
 /** A built website served for the export's own look at it (Controller.serveBuild), at its base path, ending in "/". */
 interface ServedBuild {
@@ -5504,7 +5518,8 @@ export class Controller {
     const pageFile = (route: string) => join(pagesRoot, route === '/' ? 'index.html' : join(route, 'index.html'));
     const notFoundRel = builtRel(join(pagesRoot, NOT_FOUND_FILE));
     // A file of the site's own (static/) that adapter-node would send at a page's address in place of the page.
-    const shadowing = (route: string) => (node ? [join(publicRoots[1], route, 'index.html'), ...(route === '/' ? [] : [join(publicRoots[1], `${route.replace(/\/$/, '')}.html`)])].find(isPlainFile) : undefined);
+    // Spelled exactly: adapter-node keys its files by their names, case and all, whatever the disk compares.
+    const shadowing = (route: string) => (node ? [join(publicRoots[1], route, 'index.html'), ...(route === '/' ? [] : [join(publicRoots[1], `${route.replace(/\/$/, '')}.html`)])].find((f) => isPlainFile(f) && spelledExactly(publicRoots[1], f)) : undefined);
     const shadowStop = (route: string, file: string) => ({ ok: false as const, message: `The website has its own file ${file.slice(publicRoots[1].length + 1).split(sep).join('/')} in static/, which the Node.js server would send at ${route} in place of the page there. Remove or rename the file, then export again.`, warnings: warnings() });
     // What a Node.js server's build would need rewritten to be cleaned: it records every file's size and hash as it
     // is built, so nothing is rewritten in it, and the export stops instead.
@@ -5625,14 +5640,16 @@ export class Controller {
       if (opened.unchecked) warn(opened.unchecked);
     }
     if (node) await keepTools();
-    // A Node.js server goes out ready to start: the package file that runs it, and how. A lockfile that goes with it
-    // (its server code imports packages) is checked as a published one is, for an address with a token in it.
+    // A Node.js server goes out ready to start: the package file that runs it, and how. Its package files (the
+    // packages its server code imports, and their lockfile) are checked as published ones are, for an address with a
+    // password or token in it.
     if (node) {
       await writeNodeServerFiles(out, live, project);
-      const lock = join(out, 'package-lock.json');
-      if (existsSync(lock)) {
-        const leak = await credentialProblem([{ path: 'package-lock.json', read: () => fs.readFile(lock) }], []);
-        if (leak) return { ok: false, message: `The Node.js server would go out with the project’s package-lock.json, which names a package address with a password or token in it. Install that package from an address without one, then export again.`, warnings: warnings() };
+      for (const name of ['package.json', 'package-lock.json']) {
+        const file = join(out, name);
+        if (!existsSync(file)) continue;
+        if (await credentialProblem([{ path: name, read: () => fs.readFile(file) }], []))
+          return { ok: false, message: `The Node.js server would go out with a ${name} that names a package address with a password or token in it. Install that package from an address without one, then export again.`, warnings: warnings() };
       }
     }
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();

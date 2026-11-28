@@ -33,7 +33,9 @@ const PARAM = /^\[[^\]]+\]$/;
  * towards yes. Text is compared as written.
  */
 export function endpointAnswers(route: string, address: string): boolean {
-  const parts = route.split('/').filter(Boolean);
+  // SvelteKit's escapes for a character a folder name cannot hold (`[x+2d]`, `[u+0041]`) are that character.
+  const unescaped = (part: string) => part.replace(/\[(?:x\+([0-9a-f]{2})|u\+([0-9a-f]{4,6}))\]/gi, (_all, x: string | undefined, u: string | undefined) => String.fromCodePoint(parseInt(x ?? u!, 16)));
+  const parts = route.split('/').filter(Boolean).map(unescaped);
   const want = address.split('/').filter(Boolean);
   const at = (i: number, j: number): boolean => {
     if (i === parts.length) return j === want.length;

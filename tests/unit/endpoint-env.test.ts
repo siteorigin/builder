@@ -133,6 +133,12 @@ describe('the project’s environment', () => {
     const dir = temp();
     for (let i = 0; i < 127; i++) expect((await changeEndpointVariable(dir, { name: `K${i}`, value: 'v'.repeat(8192) }, open)).ok, `K${i}`).toBe(true);
     expect(await changeEndpointVariable(dir, { name: 'ONE_MORE', value: 'v'.repeat(8192) }, open)).toMatchObject({ ok: false, message: expect.stringContaining('larger than') });
+    // A .env grown past what it can read refuses a removal whole too.
+    const big = temp();
+    await changeEndpointVariable(big, { name: 'KEEP', declare: true }, open);
+    writeFileSync(join(big, '.env'), `KEEP=${'v'.repeat(1024 * 1024)}\n`);
+    expect(await changeEndpointVariable(big, { name: 'KEEP', declare: false, value: null }, open)).toMatchObject({ ok: false });
+    expect(JSON.parse(readFileSync(join(big, ENV_NAMES_FILE), 'utf8'))).toEqual(['KEEP']);
     // Refused whole: not declared either.
     expect(await changeEndpointVariable(dir, { name: 'ONE_MORE', declare: true, value: 'v'.repeat(8192) }, open)).toMatchObject({ ok: false });
     expect(existsSync(join(dir, ENV_NAMES_FILE))).toBe(false);

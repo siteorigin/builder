@@ -104,7 +104,7 @@ describe('what a Node.js server goes out with', () => {
     mkdirSync(out);
     writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'harbour', version: '1.2.0', type: 'module', engines: { node: '>=22.17.0' }, devDependencies: { vite: '8.3.8' }, dependencies: { nanoid: '^5.0.0' } }));
     await writeNodeServerFiles(out, starter(), project);
-    expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toEqual({ name: 'harbour', version: '1.2.0', private: true, type: 'module', scripts: { start: 'node index.js' }, engines: { node: '>=22.17.0' }, dependencies: { nanoid: '^5.0.0' }, devDependencies: { vite: '8.3.8' } });
+    expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toEqual({ name: 'harbour', version: '1.2.0', private: true, type: 'module', scripts: { start: 'node index.js' }, engines: { node: '>=22.17.0' }, dependencies: { nanoid: '^5.0.0' } });
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
     // No lockfile to install from exactly.
     expect(readme).toContain('npm install --omit=dev');
@@ -138,6 +138,12 @@ describe('what a Node.js server goes out with', () => {
     await writeNodeServerFiles(join(unlocked, 'build'), starter(), unlocked);
     expect(readFileSync(join(unlocked, 'build', 'README.md'), 'utf8')).toContain('npm install --omit=dev');
     expect(readFileSync(join(unlocked, 'build', 'README.md'), 'utf8')).not.toContain('npm ci');
+    // Nor the build's own tools, which npm install would fetch for nothing (or fail to, from a path it does not have).
+    const both = temp();
+    mkdirSync(join(both, 'build'));
+    writeFileSync(join(both, 'package.json'), JSON.stringify({ name: 'x', dependencies: { nanoid: '^5.0.0' }, devDependencies: { tools: 'file:../tools.tgz' } }));
+    await writeNodeServerFiles(join(both, 'build'), starter(), both);
+    expect(JSON.parse(readFileSync(join(both, 'build', 'package.json'), 'utf8')).devDependencies).toBeUndefined();
   });
 
   it('nothing rewritten in its build, whose files the server has measured: what would be is listed instead', async () => {

@@ -124,13 +124,14 @@ afterEach(async () => {
 });
 
 /** A business site, built as `target`, open in a controller whose page checks fetch each page and the endpoint. */
-async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean; draft?: boolean; lock?: string } = {}) {
+async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean; draft?: boolean; lock?: string; manifest?: string } = {}) {
   const dir = temp('project');
   let state = createStarterState('business', 'Harbour Lane', false);
   if (opts.base) state.site.baseUrl = `https://harbour.example${opts.base}`;
   state = applyOperations(state, [{ type: 'site.update', deployTarget: target, ...(opts.vercel ? { redirectHost: 'vercel' as const } : {}) }, ...(opts.vercel ? [{ type: 'redirect.add' as const, from: '/old/', to: '/contact/' }] : [])]).state;
   if (opts.draft) state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_staff001', title: 'Staff', route: '/staff/' }, { type: 'page.update', pageId: 'pg_staff001', draft: true }]).state;
   await (await ProjectSession.create(dir, state)).close();
+  if (opts.manifest) writeFileSync(join(dir, 'package.json'), opts.manifest);
   if (opts.lock) {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'harbour', type: 'module', dependencies: { secretpkg: '1.0.0' } }));
     writeFileSync(join(dir, 'package-lock.json'), opts.lock);
@@ -224,8 +225,12 @@ describe('what a Node.js server goes out with', () => {
     const leaky = await site('node', { lock: JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/secretpkg': { resolved: 'https://ci:npm_abcdefghijklmnop@registry.example.com/secretpkg-1.0.0.tgz' } } }) });
     const stopped = join(temp('out'), 'server');
     const r = await leaky.c.buildStaticTo(stopped);
-    expect(r).toMatchObject({ ok: false, message: expect.stringContaining('password or token') });
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining('package-lock.json that names a package address with a password or token') });
     expect(existsSync(stopped)).toBe(false);
+    for (const ctl of controllers.splice(0)) await ctl.close();
+    // Without a lockfile, the manifest is checked the same way.
+    const inManifest = await site('node', { manifest: JSON.stringify({ name: 'harbour', type: 'module', dependencies: { secretpkg: 'https://ci:npm_abcdefghijklmnop@registry.example.com/secretpkg-1.0.0.tgz' } }) });
+    expect(await inManifest.c.buildStaticTo(join(temp('out'), 'server'))).toMatchObject({ ok: false, message: expect.stringContaining('package.json that names a package address') });
   });
 });
 
@@ -242,6 +247,13 @@ describe('what a Node.js server must not answer', () => {
   });
 
   it('stops for a file of the site’s own the server would send at a page’s or an old address’s place', async () => {
+    // Another spelling is another address to the server, whatever the disk compares.
+    {
+      const { c, dir } = await site('node');
+      writeFileSync(join(dir, 'static', 'Contact.html'), '<p>another page</p>');
+      expect((await c.buildStaticTo(join(temp('out'), 'server'))).ok).toBe(true);
+      for (const ctl of controllers.splice(0)) await ctl.close();
+    }
     for (const shadow of ['old.html', 'contact/index.html']) {
       const { c, dir } = await site('node', { vercel: true });
       mkdirSync(join(dir, 'static', shadow, '..'), { recursive: true });
