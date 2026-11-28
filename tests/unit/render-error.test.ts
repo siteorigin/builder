@@ -116,6 +116,10 @@ describe('a code component that throws while the page renders', () => {
     // A live session's guest is shown SvelteKit's own words, never what went wrong on the host's machine.
     const guest = { request: new Request('http://127.0.0.1/', { headers: { [LIVE_GUEST_HEADER]: '1' } }) };
     expect(hooks.handleError({ error: new Error('/Users/host/secret.svelte broke'), kind: 'unknown', event: guest })).toBeUndefined();
+    const marked = { request: new Request('http://127.0.0.1/', { headers: { [LIVE_GUEST_HEADER]: '' } }) };
+    expect(hooks.handleError({ error: new Error('broke'), kind: 'unknown', event: marked })).toBeUndefined();
+    // A page the server fetches while rendering another goes without the guest's mark: it says nothing either.
+    expect(hooks.handleError({ error: new Error('broke'), kind: 'unknown', event: { ...host, isSubRequest: true } })).toBeUndefined();
   });
 
   it('gives the preview’s server hook nothing else the website’s lacks', async () => {

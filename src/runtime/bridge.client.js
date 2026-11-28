@@ -9,13 +9,16 @@ let revision = 0;
 /** The attribute of a code placement's note that it threw while the page rendered (RENDER_ERROR_ATTR in the generator). */
 const RENDER_ERROR_ATTR = 'data-so-render-error';
 /**
- * Notes already reported on the page (see reportRenderErrors), by file and message: the revision last reported for
- * each. Kept for one navigation at a time.
+ * The notes on the page already reported (see reportRenderErrors), by file and message: the revision last reported
+ * for each. Kept for one navigation at a time.
  */
 const renderErrorsSent = new Map();
 let renderErrorsAt = '';
 /** The most notes reported for one page: a list whose every item throws its own message says enough by then. */
 const RENDER_ERRORS_MAX = 50;
+/** A note an isolated component preview said with its `ready` (see reportRenderErrors). */
+const RENDER_ERRORS_TOLD = 'ready';
+let renderErrorsReady = false;
 let renderErrorsQueued = false;
 /**
  * The editor measures this page in a frame of its own (a page check, a component preview), named so from its first
@@ -5859,22 +5862,30 @@ window.addEventListener('unhandledrejection', (e) => {
  */
 function reportRenderErrors() {
   renderErrorsQueued = false;
-  // An isolated component preview says whether its component got on the page when it is ready (see previewEntry).
-  if (window.__siteoriginPreview) return;
   if (renderErrorsAt !== navigationId) {
     renderErrorsAt = navigationId;
     renderErrorsSent.clear();
   }
+  // An isolated component preview has said whether its component got on the page when it said it was ready (see
+  // previewEntry): the notes there then are not said again; one that appears later is.
+  const told = !!window.__siteoriginPreview && !renderErrorsReady;
+  renderErrorsReady = true;
+  /** The notes on the page now: one gone and back is a problem again. */
+  const shown = new Set();
   for (const el of document.querySelectorAll(`[${RENDER_ERROR_ATTR}]`)) {
     const message = (el.getAttribute(RENDER_ERROR_ATTR) || 'Something went wrong.').slice(0, 2000);
     const file = el.getAttribute('data-so-error-file') || '';
     const key = `${file}\n${message}`;
-    const known = renderErrorsSent.has(key);
-    if ((known && renderErrorsSent.get(key) === revision) || (!known && renderErrorsSent.size >= RENDER_ERRORS_MAX)) continue;
-    if (!known) errors.push(message);
-    renderErrorsSent.set(key, revision);
-    reportError(message, undefined, file);
+    if (shown.has(key)) continue;
+    if (shown.size >= RENDER_ERRORS_MAX) break;
+    shown.add(key);
+    const last = renderErrorsSent.get(key);
+    if (last === revision || last === RENDER_ERRORS_TOLD) continue;
+    if (last === undefined) errors.push(message);
+    renderErrorsSent.set(key, told ? RENDER_ERRORS_TOLD : revision);
+    if (!told) reportError(message, undefined, file);
   }
+  for (const key of [...renderErrorsSent.keys()]) if (!shown.has(key)) renderErrorsSent.delete(key);
 }
 /** Report the notes once the page has finished changing, however many changes arrive in a frame. */
 function queueRenderErrors() {

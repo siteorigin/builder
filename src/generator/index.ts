@@ -5199,8 +5199,9 @@ export function generateServerHook(state: ProjectState, instrument = false): str
     ? `
 /** The editor's preview only: what went wrong while a page rendered, for the editor to say. */
 export function handleError({ error, event, kind }) {
-	// A guest of a live session is shown the site, not what went wrong on the host's machine.
-	if (kind !== 'unknown' || event?.request?.headers?.get(${js(GUEST_HEADER)})) return;
+	// A guest of a live session is shown the site, not what went wrong on the host's machine. A page the server fetches
+	// for another while rendering it is sent without the guest's mark, so says nothing either.
+	if (kind !== 'unknown' || event?.isSubRequest || event?.request?.headers?.has(${js(GUEST_HEADER)})) return;
 	return { soRenderError: String((error && error.message) || error).slice(0, 2000) };
 }
 `

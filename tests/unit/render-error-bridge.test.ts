@@ -35,7 +35,7 @@ type Message = { type: string; navigationId: string; payload: Record<string, unk
 type Opened = { page: Page; frame: () => Frame; loads: () => number; messages: () => Promise<Message[]>; errors: () => Promise<Array<{ message: unknown; file: unknown; revision: unknown }>> };
 
 /** A host page framing `path` of the site, which the editor asked for; `serve` answers each load of it in turn. */
-async function open(path: string, serve: Array<{ status: number; body: string }>): Promise<Opened> {
+async function open(path: string, serve: Array<{ status: number; body: string }>, init = ''): Promise<Opened> {
   const page = await browser.newPage();
   let loads = 0;
   await page.route('**/*', (route) => {
@@ -47,7 +47,7 @@ async function open(path: string, serve: Array<{ status: number; body: string }>
   });
   await page.addInitScript(`if (location.origin === '${HOST}') { window.seen = []; window.addEventListener('message', (e) => { if (e.data && e.data.sessionId === 'so-test') window.seen.push({ type: e.data.type, navigationId: e.data.navigationId, payload: e.data.payload }); }); }`);
   // The editor asked for this page, as it does for one it has just made: a 500 for it is loaded again. Asked once.
-  await page.addInitScript(`if (location.origin === '${SITE}') { ${HOT} if (!sessionStorage.getItem('so-test-asked')) { sessionStorage.setItem('so-test-asked', '1'); sessionStorage.setItem('siteorigin:asked', JSON.stringify({ path: '${path}', tries: 0 })); } }`);
+  await page.addInitScript(`if (location.origin === '${SITE}') { ${HOT} ${init} if (!sessionStorage.getItem('so-test-asked')) { sessionStorage.setItem('so-test-asked', '1'); sessionStorage.setItem('siteorigin:asked', JSON.stringify({ path: '${path}', tries: 0 })); } }`);
   await page.goto(`${HOST}/`);
   const messages = () => page.evaluate<Message[]>(`window.seen`);
   return {
@@ -115,6 +115,32 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
     const after = (await o.messages()).filter((m) => m.type === 'navigated' || m.type === 'runtimeError');
     expect(after[0].type).toBe('navigated');
     expect(new Set(after.map((m) => m.navigationId)).size).toBe(1);
+    await o.page.close();
+  });
+
+  it('reports a new note once the notes before it have left the page, however many there were', async () => {
+    const o = await open('/frame', [{ status: 500, body: BROKEN }]);
+    await expect.poll(async () => (await o.errors()).length, { timeout: 10000 }).toBe(1);
+    const frame = o.frame();
+    // Fifty-one rows, each throwing its own message: the first fifty are said.
+    const rows = Array.from({ length: 51 }, (_, i) => note(`row ${i} broke`, 'src/lib/siteorigin/custom/Rows.svelte')).join('');
+    await frame.evaluate(`document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(`<div id="rows">${rows}</div>`)})`);
+    await expect.poll(async () => (await o.errors()).length, { timeout: 10000 }).toBe(50);
+    // Fixed, the page is left with one new problem, which is said.
+    await o.page.evaluate(`window.seen = []`);
+    await frame.evaluate(`document.getElementById('rows').remove(); document.querySelector('[data-so-render-error]').remove(); document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(note('only this', 'src/lib/siteorigin/custom/Rows.svelte'))})`);
+    await expect.poll(async () => (await o.errors()).map((e) => e.message), { timeout: 10000 }).toEqual(['only this']);
+    await o.page.close();
+  });
+
+  it('in an isolated component preview, says only the notes that appear after the preview said whether it was shown', async () => {
+    const o = await open('/frame', [{ status: 200, body: BROKEN }], `window.__siteoriginPreview = { key: 'k', mounted: false, error: 'said with ready' };`);
+    await expect.poll(async () => (await o.messages()).some((m) => m.type === 'ready'), { timeout: 10000 }).toBe(true);
+    const frame = o.frame();
+    await drawn(frame);
+    expect(await o.errors()).toEqual([]);
+    await frame.evaluate(`document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(note('broke after a click', 'src/lib/siteorigin/custom/Later.svelte'))})`);
+    await expect.poll(async () => (await o.errors()).map((e) => e.message), { timeout: 10000 }).toEqual(['broke after a click']);
     await o.page.close();
   });
 
