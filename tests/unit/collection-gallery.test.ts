@@ -16,7 +16,7 @@ import { generateProject, publishedState } from '@generator/index';
 import { entryFieldSchema, entryFieldValue } from '@shared/entry-fields';
 import { galleryFitProblem, galleryListProp } from '@shared/gallery-field';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
-import { editGallery } from '../../src/renderer/src/lib/gallery-value';
+import { editGallery, nextBase } from '../../src/renderer/src/lib/gallery-value';
 import { publishedGalleryFiles, pruneWebsiteAssets } from '../../src/main/export';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -342,6 +342,25 @@ describe('the Content writer\'s gallery edits', () => {
     });
     expect(editGallery(rows, { kind: 'pick', assetIds: ['a_doc'] }, assets, makeId)).toBeNull();
     expect(editGallery(Array.from({ length: MAX_GALLERY_PHOTOS }, (_, i) => ({ ...rows[0], id: `i_${i}` })), { kind: 'pick', assetIds: ['a_front'] }, assets, makeId)).toBeNull();
+  });
+
+  it('builds each quick change on the one still to land, and on the project\'s gallery once another change is there', () => {
+    const remove = (from: GalleryItem[], id: string) => editGallery(from, { kind: 'remove', itemId: id }, assets)!.rows;
+    // Three photos removed one after another, before any lands: each builds on the last sent.
+    const three = [...rows, { id: 'i_c', image: { assetId: 'a_front', alt: '' }, caption: '' }];
+    let step = nextBase(null, three);
+    const a = remove(step.base, 'i_a');
+    let sending = step.send(a);
+    step = nextBase(sending, three);
+    const b = remove(step.base, 'i_b');
+    sending = step.send(b);
+    // The first has landed; the second has not.
+    step = nextBase(sending, a);
+    expect(step.base).toEqual(b);
+    expect(remove(step.base, 'i_c')).toEqual([]);
+    // A change made elsewhere meanwhile is the one to build on.
+    const elsewhere = [{ ...three[2], caption: 'Theirs' }];
+    expect(nextBase(sending, elsewhere).base).toEqual(elsewhere);
   });
 
   it('moves, removes and edits the photo it names, and leaves the rest as they are', () => {

@@ -309,9 +309,10 @@ export function publishedGalleryFiles(state: ProjectState): Set<string> {
 
 /**
  * The staged files that are `kept` (publishedGalleryFiles): each by its very path, or, where the copy has no file of
- * that spelling, the ones a disk that ignores case reads as it (`Photo-…` for the record's `photo-…`).
+ * that spelling, the ones a disk that ignores case reads as it (`Photo-…` for the record's `photo-…`) that no other
+ * record of `library` (libraryAssetFiles) spells so.
  */
-function keptFiles(kept: ReadonlySet<string>, files: readonly string[]): Set<string> {
+function keptFiles(kept: ReadonlySet<string>, files: readonly string[], library: ReadonlySet<string>): Set<string> {
   const exact = new Set(files);
   const out = new Set<string>();
   const wanted = new Set<string>();
@@ -319,7 +320,8 @@ function keptFiles(kept: ReadonlySet<string>, files: readonly string[]): Set<str
     if (exact.has(f)) out.add(f);
     else wanted.add(f.toLowerCase());
   }
-  for (const rel of files) if (wanted.has(rel.toLowerCase())) out.add(rel);
+  // Never a file that is another library record's own by its very spelling.
+  for (const rel of files) if (wanted.has(rel.toLowerCase()) && !library.has(rel)) out.add(rel);
   return out;
 }
 
@@ -577,7 +579,7 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
   const named = await websiteNames(project, site, candidates.map((rel) => basename(rel)));
-  const photos = keptFiles(publishedGalleryFiles(state), candidates);
+  const photos = keptFiles(publishedGalleryFiles(state), candidates, libraryAssetFiles(state));
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
@@ -613,7 +615,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const unreached: string[] = [];
   const shipped = await websiteNames(project, site, candidates.map((rel) => basename(rel)), unreached);
   // A published entry's gallery photo is the website's whether or not a page shows it (pruneWebsiteAssets).
-  const photos = keptFiles(publishedGalleryFiles(state), candidates);
+  const photos = keptFiles(publishedGalleryFiles(state), candidates, libraryAssetFiles(state));
   const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));

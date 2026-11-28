@@ -15,7 +15,7 @@ import { MAX_REFERENCES } from '@engine/collections';
 import { DraftInput, Field } from '../components/ui';
 import { PropField, ScalarField, type ListOp } from './PropEditors';
 import { galleryListProp, galleryRows } from '@shared/gallery-field';
-import { editGallery, type GalleryEdit } from '../lib/gallery-value';
+import { editGallery, nextBase, type GalleryEdit, type GallerySending } from '../lib/gallery-value';
 import { getState, type PendingEdit } from '../store';
 
 /** The value an entry shows for a field: its own, else the field's default. */
@@ -100,24 +100,32 @@ function GalleryValue({ state, name, schema, value, read, set }: { state: Projec
   const list = galleryListProp(schema);
   const rows = galleryRows(value);
   const field = schema.label.toLowerCase();
-  // Each change waits for the one before it to be saved or refused, then builds on the gallery as the project has it
-  // then (`read`): two photos removed in quick succession both go, and a change made elsewhere meanwhile stays.
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // Each change builds on the gallery as the project has it now (`read`), so one made elsewhere stays; while the last
+  // change sent from here has not landed yet, on the gallery it sent, so two photos removed in quick succession both
+  // go. Sent at once, as every other field's change is, so the writer's checks and Save draft see it.
+  // `known`: the gallery as it was saved when this run of changes began, and each gallery the run sent since; while the
+  // project holds one of them, the run's last is still to land.
+  const sent = useRef<GallerySending | null>(null);
   const onList = (op: ListOp) => {
     const edit: GalleryEdit | null =
       op.kind === 'pick' ? { kind: 'pick', assetIds: op.assetIds } : op.kind === 'remove' ? { kind: 'remove', itemId: op.itemId } : op.kind === 'move' ? { kind: 'move', itemId: op.itemId, index: op.index } : op.kind === 'field' ? { kind: 'field', itemId: op.itemId, field: op.field, value: op.value } : null;
     if (!edit) return undefined;
-    const saved = queue.current.then(() => {
-      const latest = read();
-      const base = latest === undefined ? rows : galleryRows(latest);
-      const next = editGallery(base, edit, getState().snapshot?.state.assets.assets ?? state.assets.assets);
-      if (!next) return null;
-      const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : next.rows.length < base.length ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
-      return Promise.resolve(set(name, next.rows, label)).then((ok) => (ok ? next : null));
-    });
-    queue.current = saved.catch(() => undefined);
+    const latest = read();
+    const saved = latest === undefined ? rows : galleryRows(latest);
+    const { base, send } = nextBase(sent.current, saved);
+    const next = editGallery(base, edit, getState().snapshot?.state.assets.assets ?? state.assets.assets);
+    if (!next) return op.kind === 'pick' ? Promise.resolve(null) : undefined;
+    const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : next.rows.length < base.length ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
+    const mine = send(next.rows);
+    sent.current = mine;
+    // Once it lands or is refused, the project's gallery is the one to build on again.
+    const done = () => {
+      if (sent.current === mine) sent.current = null;
+    };
+    const result = set(name, next.rows, label);
+    Promise.resolve(result).then(done, done);
     // Choose images… opens the photos it added once they show.
-    return op.kind === 'pick' ? saved.then((next) => (next ? { added: next.added, replaced: 0 } : null)) : saved;
+    return op.kind === 'pick' ? Promise.resolve(result).then((ok) => (ok ? { added: next.added, replaced: 0 } : null)) : result;
   };
   return (
     <div className="entry-gallery" data-testid={`entry-gallery-${name}`}>

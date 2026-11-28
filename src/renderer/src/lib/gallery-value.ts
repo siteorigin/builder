@@ -59,3 +59,26 @@ export function editGallery(rows: readonly GalleryItem[], edit: GalleryEdit, ass
     }
   }
 }
+
+/**
+ * A run of changes sent from one gallery editor whose last has not landed yet: the gallery as it was saved when the
+ * run began and every gallery it sent since (`known`), and the last it sent (`rows`).
+ */
+export interface GallerySending {
+  known: Set<string>;
+  rows: GalleryItem[];
+}
+
+/**
+ * What the next change builds on: while the project holds the gallery as the run began or as one of its changes left
+ * it, the run's last (still to land); otherwise the project's own, so a change made elsewhere stays. With the run as
+ * it is once the change is sent.
+ */
+export function nextBase(sending: GallerySending | null, saved: readonly GalleryItem[]): { base: GalleryItem[]; send: (rows: GalleryItem[]) => GallerySending } {
+  const at = JSON.stringify(saved);
+  const ours = !!sending && sending.known.has(at);
+  return {
+    base: ours ? sending!.rows : [...saved],
+    send: (rows) => ({ known: new Set([...(ours ? sending!.known : [at]), JSON.stringify(rows)]), rows })
+  };
+}
