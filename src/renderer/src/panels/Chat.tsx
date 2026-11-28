@@ -25,6 +25,7 @@ import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
+import { SAYS_DEVELOPER_MODE } from '@engine/developer-mode';
 import { chatBusy, clearRefusal, composerAction, imageLabels, isClearCommand, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { requestRoutingReview } from '../lib/formRoutingReview';
@@ -1785,6 +1786,8 @@ export function Chat() {
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
+          {/* A collaborator's request never gets code, whatever the host's setting, so only the user's own offers it. */}
+          {!msgs.find((m) => m.id === asking.messageId)?.guest && SAYS_DEVELOPER_MODE.test(asking.question.text) && <DeveloperModeOffer waiting />}
           {/* The app's question about where forms send is answered in its own dialog, which shows each address before
               and after (#1130); the card opens it again. Only the options scroll, so a long list never scrolls the
               question and its instructions out of sight. */}
@@ -2156,12 +2159,13 @@ function HandledBy({ recipient }: { recipient: TurnModel }) {
 const openDeveloperMode = () => setState({ modal: { kind: 'settings', tab: 'general', focus: 'developer-mode' } });
 
 /**
- * Where Developer mode is turned on, under a turn that said the request needs it while it is off (#1329). Turning it on
- * stays the user's to do in Settings; once it is on, the turn says to send the request again, as an edit when it was a
- * question.
+ * Where Developer mode is turned on, under a turn (or the user's own waiting question) that said the request needs it
+ * while it is off (#1329). Turning it on stays the user's to do in Settings; once it is on, a finished turn says to send
+ * the request again, as an edit when it was a question. A request still waiting started without it, so says no more.
  */
-function DeveloperModeOffer({ question }: { question: boolean }) {
+function DeveloperModeOffer({ question = false, waiting = false }: { question?: boolean; waiting?: boolean }) {
   const devMode = useStore((s) => !!s.settings?.developerMode);
+  if (devMode && waiting) return null;
   return (
     <div className="scope-note developer-mode-offer" role="note">
       <Info aria-hidden="true" />
@@ -2169,7 +2173,7 @@ function DeveloperModeOffer({ question }: { question: boolean }) {
         <span>Developer mode is on now. Send the request again{question ? ' as an edit' : ''} for the AI to write it in code.</span>
       ) : (
         <span>
-          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then send the request again.{' '}
+          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then send the request again{waiting ? ' once this one finishes' : ''}.{' '}
           <button className="link" onClick={openDeveloperMode}>
             Open Settings
           </button>

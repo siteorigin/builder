@@ -1720,11 +1720,12 @@ export class Orchestrator {
     // Never code for a collaborator, whatever the host's Developer mode says: code runs on the host's computer.
     const codeEnabled = delegation ? false : ((await this.deps.codeEnabled?.()) ?? true);
     /**
-     * A run the user could turn Developer mode on for, whose answer (or a question it asked on the way) says the request
-     * needs it, offers Settings at that switch.
+     * A run the user could turn Developer mode on for, whose answer says the request needs it, offers Settings at that
+     * switch. So does one that changed nothing after a question on the way said so ("Build a static version instead?",
+     * answered no); one that went on to build what the user accepted instead does not.
      */
-    const needs = (text: string): { needs?: 'developer-mode' } =>
-      !codeEnabled && !delegation && [text, ...(msg.questions ?? []).map((q) => q.text)].some((t) => SAYS_DEVELOPER_MODE.test(t)) ? { needs: 'developer-mode' } : {};
+    const needs = (text: string, unchanged = false): { needs?: 'developer-mode' } =>
+      !codeEnabled && !delegation && [text, ...(unchanged ? (msg.questions ?? []).map((q) => q.text) : [])].some((t) => SAYS_DEVELOPER_MODE.test(t)) ? { needs: 'developer-mode' } : {};
     /**
      * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
      * the run is decided: one taken away while it finished leaves nothing of it.
@@ -2395,8 +2396,7 @@ export class Orchestrator {
         error,
         incomplete: true,
         unfinished: unfinishedPages(),
-        pendingLinks: macros.pendingLinks,
-        ...needs('')
+        pendingLinks: macros.pendingLinks
       });
     };
 
@@ -2746,7 +2746,7 @@ export class Orchestrator {
             }
             msg.text = finalText;
             if (!finalText) await finish('failed', 'The AI finished without an answer. Try asking again.', { usage, error: 'empty answer' });
-            else await finish('no-changes', finalText, { usage, locations: [...locations.values()], ...needs(finalText) });
+            else await finish('no-changes', finalText, { usage, locations: [...locations.values()], ...needs(finalText, true) });
             return;
           }
           const resumeForNudge = (text: string) => {
@@ -2854,7 +2854,7 @@ export class Orchestrator {
             const kept = unfinished.length ? (committed ? `The changes made so far are checked and kept.${again}` : `Nothing was changed.${again ? ' Press Continue, or reply "continue", to try again.' : ''}`) : '';
             const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} ${kept}` : finalText || 'Done.';
             const status = !unfinished.length ? 'completed' : committed ? 'partial' : 'no-changes';
-            await finish(status, summary, { changes: unfinished.length && !committed ? [] : changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}), ...needs(finalText) });
+            await finish(status, summary, { changes: unfinished.length && !committed ? [] : changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}), ...needs(finalText, !committed) });
           } else {
             await completeRun('AI (no changes)');
             msg.text = finalText;
@@ -2867,9 +2867,9 @@ export class Orchestrator {
                 incomplete: true,
                 unfinished: unfinishedPages(),
                 pendingLinks: macros.pendingLinks,
-                ...needs(finalText)
+                ...needs(finalText, true)
               });
-            else await finish('no-changes', finalText || 'No changes were needed.', { usage, checks: inspections.checks(session.state), ...needs(finalText) });
+            else await finish('no-changes', finalText || 'No changes were needed.', { usage, checks: inspections.checks(session.state), ...needs(finalText, true) });
           }
           return;
         }

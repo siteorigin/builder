@@ -52,8 +52,8 @@ const ENTRY = [
   "  stream: (text, at) => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'text', text, ...(at === undefined ? {} : { at }) })),",
   "  done: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' })),",
   // The run asks the author a question and waits for the answer.
-  "  ask: () => flushSync(() => {",
-  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] } });",
+  "  ask: (text = 'Which page should it go on?', guest) => flushSync(() => {",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text, choices: [] }], ...(guest ? { guest: { name: guest, id: 'grant-1' } } : {}) } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
   // Another thread on screen while the running request, filed in this one, asks its question here.
@@ -67,7 +67,7 @@ const ENTRY = [
   // The live turn ends with an answer that says the request needs Developer mode (#1329).
   "  blocked: () => flushSync(() => {",
   "    const text = 'A working calculator needs Developer mode, which is off. You can turn it on in Settings > General.';",
-  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), text, result: { status: 'no-changes', summary: text, changes: [], validation: [], checks: [], canUndo: false, needs: 'developer-mode' } } });",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), text, result: { status: 'no-changes', summary: text, changes: [], validation: [], checks: [], canUndo: false, ask: true, needs: 'developer-mode' } } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' });",
   '  }),',
   "  modal: () => useStore.getState().modal,",
@@ -338,8 +338,26 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Unsent words');
     // Once it is on, the turn says to ask again instead.
     await page.evaluate('so.developerMode()');
-    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Send the request again for the AI');
+    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Send the request again as an edit for the AI');
     expect(await offer.getByRole('button').count()).toBe(0);
+  });
+
+  it('offers Settings under the user’s own waiting question that says the request needs Developer mode, never a guest’s (#1329)', async () => {
+    const question = 'A working calculator needs Developer mode, which is off. Build a static version instead?';
+    await page.evaluate(([q]) => (globalThis as unknown as { so: { ask(t: string, g?: string): void } }).so.ask(q), [question]);
+    const offer = page.locator('.question-card .developer-mode-offer');
+    await expect.poll(() => offer.innerText()).toContain('then send the request again once this one finishes');
+    await offer.getByRole('button', { name: 'Open Settings' }).click();
+    expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
+    // Once it is on, a request that started without it has nothing more to say.
+    await page.evaluate('so.developerMode()');
+    await expect.poll(() => offer.count()).toBe(0);
+  });
+
+  it('offers nothing under a collaborator’s waiting question, whose request never gets code (#1329)', async () => {
+    await page.evaluate(() => (globalThis as unknown as { so: { ask(t: string, g?: string): void } }).so.ask('A working calculator needs Developer mode. Build a static version instead?', 'Ann'));
+    await page.locator('.question-card').waitFor();
+    expect(await page.locator('.question-card .developer-mode-offer').count()).toBe(0);
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {
