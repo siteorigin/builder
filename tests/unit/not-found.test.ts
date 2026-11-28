@@ -708,8 +708,16 @@ describe('a server hook added or removed while the project is open', () => {
     mkdirSync(join(deleted, 'siteorigin'), { recursive: true });
     writeFileSync(join(deleted, 'siteorigin/generated-manifest.json'), JSON.stringify({ generator: 1, files: { [SERVER_HOOK_FILE]: 'abc' } }));
     expect(await editedGeneratedFile(deleted)).toBe(SERVER_HOOK_FILE);
+    // A link in its place is no replacement: a copy of the project leaves links out.
+    writeFileSync(join(deleted, 'elsewhere.ts'), '// mine');
+    symlinkSync(join(deleted, 'elsewhere.ts'), join(deleted, 'src/hooks.server.ts'));
+    expect(await editedGeneratedFile(deleted)).toBe(SERVER_HOOK_FILE);
+    rmSync(join(deleted, 'src/hooks.server.ts'));
     writeFileSync(join(deleted, 'src/hooks.server.ts'), '// mine');
     expect(await editedGeneratedFile(deleted)).toBeNull();
+    // Anything else at the generated path is not a deletion.
+    mkdirSync(join(deleted, SERVER_HOOK_FILE));
+    expect(await editedGeneratedFile(deleted)).toBe(SERVER_HOOK_FILE);
     // Its own hook gone again before the next regeneration, the copy gets the generated one back.
     rmSync(join(dir, 'src/hooks.server.ts'));
     await settleServerHook(dir);

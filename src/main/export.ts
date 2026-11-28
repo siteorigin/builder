@@ -1113,10 +1113,26 @@ export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<strin
     const disk = await readExportFile(join(dir, path)).catch(() => null);
     // The generated server hook deleted for one of the project's own, as README.md says to: the staged copy is settled
     // (settleServerHook) as the next regeneration would.
-    if (disk === null && path === SERVER_HOOK_FILE && ownServerHook(dir, true)) continue;
+    if (disk === null && path === SERVER_HOOK_FILE && replacedServerHook(dir)) continue;
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;
+}
+
+/**
+ * Whether the generated server hook is gone and a hook of the project's own is in its place: a file of its own, not a
+ * link, which a copy of the project leaves out.
+ */
+function replacedServerHook(dir: string): boolean {
+  const lstat = (rel: string) => {
+    try {
+      return lstatSync(join(dir, ...rel.split('/')));
+    } catch {
+      return null;
+    }
+  };
+  const own = ownServerHook(dir, true);
+  return !lstat(SERVER_HOOK_FILE) && !!own && !!lstat(own)?.isFile();
 }
 
 /**
