@@ -2768,7 +2768,7 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'webmcpToolName':
     case 'webmcpToolDescription': {
-      if (node.kind !== 'instance' || !isWebMcpForm(own(state.components, node.definitionId))) fail('Only a contact form has a WebMCP tool name and description.');
+      if (node.kind !== 'instance' || !isWebMcpForm(own(state.components, node.definitionId))) fail('Only a contact or signup form has a WebMCP tool name and description.');
       const key = op.field === 'webmcpToolName' ? 'toolName' : 'toolDescription';
       if (v !== null && v !== undefined && typeof v !== 'string') fail(`${op.field} is text, or null for the default.`);
       const text = typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';

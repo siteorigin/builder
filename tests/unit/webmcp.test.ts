@@ -25,20 +25,16 @@ import { compileProject } from '../../src/main/compile';
 import { bundle, removeRendered, serverHtml } from './generated-site';
 import { projectDesign } from './fixtures/packs';
 import { HERO } from './fixtures/appear-designs';
-import { SUPPORTED_FORM_SOURCE, withSupportedForm } from './fixtures/webmcp-designs';
 
 /** A new project, as the release makes it. */
-const release = () => createStarterState('business', 'Test Studio', false);
-/**
- * A new project whose contact form is written as the adapter reads it (fixtures/webmcp-designs.ts): what WebMCP does
- * with a form that declares a tool is tested on it, while the release's own form declares none (see the Release gap).
- */
-const fresh = () => withSupportedForm(release());
-/** The contact form code, as such a project installs it. */
-const FORM_SOURCE_FOR_TESTS = (() => {
+const fresh = () => createStarterState('business', 'Test Studio', false);
+/** A form's code, as the release installs it. */
+const sourceOf = (componentId: 'contact.form' | 'block.signup') => {
   const s = fresh();
-  return s.components[installComponent(s, 'contact.form')].source!;
-})();
+  return s.components[installComponent(s, componentId)].source!;
+};
+const FORM_SOURCE_FOR_TESTS = sourceOf('contact.form');
+const SIGNUP_SOURCE = sourceOf('block.signup');
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const home = (s: ProjectState): OwnerRef => ({ kind: 'page', id: s.site.homePageId });
 const header: OwnerRef = { kind: 'shell', id: 'header' };
@@ -104,7 +100,7 @@ describe('the contact form’s code', () => {
     expect(adapted).not.toContain('toolautosubmit');
     // Short text, long text, a single-choice question's answers and its group, and a checkbox: each from its label.
     expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
-    expect(adapted).toMatch(/<fieldset class="so-form__field so-form__field--wide so-form__choices" toolparamdescription=\{so_webmcp \? String\(field\.label/);
+    expect(adapted).toMatch(/<fieldset class="so-form__field so-form__choices" toolparamdescription=\{so_webmcp \? String\(field\.label/);
     // The spam trap tells agents to leave it empty. The service's hidden fields get no description, which keeps them out
     // of what agents may fill in (an access key decides whose inbox a message reaches).
     expect(adapted.match(/name=\{honeypot\} toolparamdescription=\{so_webmcp \? 'A spam trap: always leave it empty\. Filling it in discards the message\.' : undefined\}/g)).toHaveLength(FORM_SOURCE_FOR_TESTS.match(/name=\{honeypot\}/g)!.length);
@@ -122,9 +118,26 @@ describe('the contact form’s code', () => {
     expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(1);
   });
 
-  it('adapts the first forms too, whose fields are named by fieldName', () => {
-    const first = FORM_SOURCE_FOR_TESTS.replace(/name=\{names\[i\]\}/g, 'name={fieldName(field, i)}');
-    expect(adaptFormSource(first)?.match(/name=\{fieldName\(field, i\)\}\n\t+toolparamdescription=/g)).toHaveLength(4);
+  it('adapts the signup form the same way, its text fields where the snippet writes them', () => {
+    const adapted = adaptFormSource(SIGNUP_SOURCE)!;
+    expect(adapted).not.toBeNull();
+    expect(adapted).toContain('toolname={so_webmcpName}');
+    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
+    expect(adapted.match(/(?:readonly|disabled)=\{status === 'sending' && !so_answering\}/g)).toHaveLength(4);
+    // The snippet is written once, wherever the one-row layout places it.
+    expect(adapted.match(/\{#snippet control\(field, i\)\}/g)).toHaveLength(1);
+  });
+
+  it('tells the agent when the form’s own checks or its spam trap stop a send', () => {
+    const adapted = adaptFormSource(FORM_SOURCE_FOR_TESTS)!;
+    expect(adapted).toContain("controlOf(form, first)?.focus();\n\t\t\treturn 'invalid';");
+    expect(adapted).toMatch(/if \(data\.get\(honeypot\)\) \{\n\t+so_reset\(form\);\n\t+status = 'sent';\n\t+return 'trapped';/);
+    // A form that cannot send, or a send that throws, answers for itself, never with an earlier send's status.
+    expect(adapted).toContain("if (!ready || status === 'sending') return 'unready';");
+    expect(adapted).toContain("so_send(event).then(done, () => done('failed'));");
+    // The service's hidden fields are never described, so agents leave them alone.
+    expect(adapted).toMatch(/name="form-name" value=\{netlifyName\} \/>/);
+    expect(adapted).toMatch(/name="access_key" value=\{key\} \/>/);
   });
 
   it('leaves code that no longer reads as the theme’s form alone', () => {
@@ -159,6 +172,30 @@ describe('the contact form’s code', () => {
     expect(changed("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from '../runtime/visitor-text.js';\n\timport /* helper */ '\\x2e/Helper.svelte';")).toBeNull();
     // A field that locks itself some other way while sending would change under an agent.
     expect(changed("readonly={status === 'sending'}", 'readonly={busy}')).toBeNull();
+    // A field named another way in the snippet, or a checkbox added to the loop, would go undescribed.
+    expect(changed(/(\{#snippet control\(field, i\)\}[\s\S]*?)name=\{names\[i\]\}/, '$1name={field.name}')).toBeNull();
+    expect(changed('\t\t\t\t\t{:else if field.type === \'checkbox\'}', "\t\t\t\t\t{:else if field.type === 'consent'}\n\t\t\t\t\t\t<input type=\"checkbox\" name=\"consent\" />\n\t\t\t\t\t{:else if field.type === 'checkbox'}")).toBeNull();
+    // No snippet, no loop, or either twice: the form is not the theme's.
+    expect(changed('{#snippet control(field, i)}', '{#snippet field(field, i)}')).toBeNull();
+    expect(changed('{#each fields as field, i (field.id)}', '{#each fields as field, i}')).toBeNull();
+    expect(changed('</script>\n', '</script>\n\n{#snippet control(field, i)}{/snippet}\n')).toBeNull();
+    // The question's group, the trap, and the places a send stops, each as the theme writes them.
+    expect(changed('class="so-form__field so-form__choices"', 'class="so-form__field so-form__group"')).toBeNull();
+    expect(changed(/name=\{honeypot\}/g, 'name={trap}')).toBeNull();
+    expect(changed('controlOf(form, first)?.focus();', 'controlOf(form, first)?.focus({ preventScroll: true });')).toBeNull();
+    expect(changed("status = 'sent';\n\t\t\treturn;", "status = 'sent';\n\t\t\treturn false;")).toBeNull();
+    expect(changed("if (!ready || status === 'sending') return;", "if (!ready) return;")).toBeNull();
+    // A field outside both, which would go undescribed or change under an agent.
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name="company" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', "\t\t\t\t<input class=\"x\" disabled={status === 'sending'} />\n\t\t\t</form>")).toBeNull();
+    // However it is spaced or written, and under a name the service's own fields use.
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name = "company" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name="access_key" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input class="x" disabled={"sending" === status} />\n\t\t\t</form>')).toBeNull();
+    // A list inside the loop closing at the loop's own indentation ends the loop early, leaving the checkbox outside it.
+    expect(changed('\t\t\t\t\t\t\t\t{/each}', '\t\t\t\t{/each}')).toBeNull();
+    // The button outside them is the form's own.
+    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS)).toMatch(/aria-disabled=\{status === 'sending' \? 'true' : undefined\}/);
   });
 
   it('changes only the form’s markup and code, whatever else the code says, and either quote', () => {
@@ -170,18 +207,13 @@ describe('the contact form’s code', () => {
   });
 });
 
-describe('the release’s contact form', () => {
-  const s = release();
-  const def = s.components[installComponent(s, 'contact.form')];
-
-  it('is not the code the other tests adapt', () => {
-    expect(def.source).not.toBe(SUPPORTED_FORM_SOURCE);
-  });
-
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) reads the form as Builder's own copy of Foundation wrote it; the release's contact form opens its <form> at another indentation, writes its text fields in a `control` snippet outside the field loop, and drops `so-form__field--wide` from its choices, so it declares no tool and gets no WebMCP copy.
-  it.fails('takes the tool attributes, and a site placing it declares a tool', () => {
-    expect(adaptFormSource(def.source!)).not.toBeNull();
-    expect(showsFormTool(on(withForms(release(), 1)))).toBe(true);
+describe('the release’s forms', () => {
+  it('take the tool attributes, and a site placing either declares a tool', () => {
+    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS)).not.toBeNull();
+    expect(adaptFormSource(SIGNUP_SOURCE)).not.toBeNull();
+    expect(showsFormTool(on(withForms(fresh(), 1)))).toBe(true);
+    const s = fresh();
+    expect(showsFormTool(on(run(s, { type: 'node.insert', owner: home(s), componentId: 'block.signup' })))).toBe(true);
   });
 });
 
@@ -218,6 +250,56 @@ describe('the exported website with WebMCP on', () => {
     expect(page).not.toContain(`/${defFile(def).split('/').pop()}"`);
     expect(toolsIn(page).map((t) => t.name)).toEqual(['contact', 'contact_2']);
     expect(await compileProject(s)).toEqual([]);
+  });
+
+  it('declares a signup form by its own name and words, numbered apart from the contact forms', async () => {
+    let s = fresh();
+    s = run(s, { type: 'node.insert', owner: home(s), componentId: 'block.signup' }, { type: 'node.insert', owner: home(s), componentId: 'contact.form' }, { type: 'node.insert', owner: home(s), componentId: 'block.signup' });
+    s = on(s);
+    const signup = Object.values(s.components).find((d) => d.componentId === 'block.signup')!;
+    const files = generateProject(s);
+    expect(files.get(webMcpFormFile(signup))).toBe(adaptFormSource(signup.source!));
+    const page = files.get('src/routes/+page.svelte')!;
+    expect(page).toContain(`/${webMcpFormFile(signup).split('/').pop()}"`);
+    expect(toolsIn(page)).toEqual([
+      { name: 'signup', description: 'Get our newsletter. Sign up with Test Studio: fills in this form, which the visitor checks and sends.' },
+      expect.objectContaining({ name: 'contact' }),
+      expect.objectContaining({ name: 'signup_2' })
+    ]);
+    const html = await serverHtml(files, 'webmcp-signup-');
+    expect([...html.matchAll(/toolname="([^"]+)"/g)].map((m) => m[1])).toEqual(['signup', 'contact', 'signup_2']);
+    expect(html).toMatch(/toolparamdescription="Email"/);
+    expect(await compileProject(s)).toEqual([]);
+  });
+
+  it('has a signup form in a section’s content area name itself from its own ID', async () => {
+    let s = fresh();
+    s = run(s, { type: 'node.insert', newNodeId: 'n_section', owner: home(s), parentId: null, index: 0, componentId: 'layout.section' } as EditOperation);
+    s = run(s, { type: 'node.insert', owner: home(s), parentId: 'n_section', slot: 'content', componentId: 'block.signup' } as EditOperation);
+    s = on(s);
+    const files = generateProject(s);
+    expect(toolsIn(files.get('src/routes/+page.svelte')!)).toEqual([expect.objectContaining({ name: 'signup', unique: true })]);
+    const html = await serverHtml(files, 'webmcp-slot-');
+    const names = [...html.matchAll(/toolname="([^"]+)"/g)].map((m) => m[1]);
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(/^signup\.[A-Za-z0-9_-]+$/);
+  });
+
+  it('declares the Netlify contact form of a Contact page, beside the page’s FAQ and contact details', async () => {
+    let s = fresh();
+    s.site.baseUrl = 'https://studio.example';
+    const owner: OwnerRef = { kind: 'page', id: Object.values(s.pages).find((p) => p.title === 'Contact')!.id };
+    s = on(withForms(s, 1, owner));
+    const form = forms(s, owner)[0];
+    s = run(s, { type: 'instance.setProp', owner, nodeId: form.id, prop: 'provider', value: 'netlify' }, { type: 'instance.setProp', owner, nodeId: form.id, prop: 'formName', value: 'enquiries' });
+    const files = generateProject(s);
+    const page = files.get('src/routes/contact/+page.svelte')!;
+    expect(page).toContain('FAQPage');
+    expect(page).toContain('ContactPoint');
+    expect(page).toContain(`/${webMcpFormFile(formDef(s)).split('/').pop()}"`);
+    const html = await serverHtml(files, 'webmcp-contact-', 'src/routes/contact/+page.svelte');
+    expect(html).toMatch(/<form[^>]*toolname="contact"/);
+    expect(html).toContain('name="form-name" value="enquiries"');
   });
 
   it('declares the tool in the prerendered HTML, with every value escaped', async () => {
@@ -474,7 +556,7 @@ describe('editing a form’s tool', () => {
     // Site search is code too, and no form.
     const searching = withSearch(s);
     fails({ type: 'node.setContent', owner: home(s), nodeId: searching.pages[s.site.homePageId].rootIds.at(-1)!, field: 'webmcpToolName', value: 'find' } as EditOperation);
-    expect(() => applyOperations(searching, [{ type: 'node.setContent', owner: home(s), nodeId: searching.pages[s.site.homePageId].rootIds.at(-1)!, field: 'webmcpToolName', value: 'find' }])).toThrow(/contact form/);
+    expect(() => applyOperations(searching, [{ type: 'node.setContent', owner: home(s), nodeId: searching.pages[s.site.homePageId].rootIds.at(-1)!, field: 'webmcpToolName', value: 'find' }])).toThrow(/contact or signup form/);
     // At the limits, accepted.
     const at = setTool(setTool(s, home(s), id, 'webmcpToolName', 'a'.repeat(128)), home(s), id, 'webmcpToolDescription', 'b'.repeat(500));
     expect(forms(at, home(at))[0].webmcp).toEqual({ toolName: 'a'.repeat(128), toolDescription: 'b'.repeat(500) });
@@ -517,9 +599,9 @@ describe('the WebMCP readiness suggestion', () => {
     expect(finding(fresh())).toEqual([]);
     const both = finding(withSearch(withForms(fresh(), 2)));
     expect(both).toEqual([
-      expect.objectContaining({ pillar: 'agentic', severity: 'info', site: 'webmcp', aiFixable: true, destination: { kind: 'site', field: 'webmcp' }, message: expect.stringContaining('a contact form and site search') })
+      expect.objectContaining({ pillar: 'agentic', severity: 'info', site: 'webmcp', aiFixable: true, destination: { kind: 'site', field: 'webmcp' }, message: expect.stringContaining('a form and site search') })
     ]);
-    expect(finding(withForms(fresh(), 1, header))[0].message).toContain('has a contact form but');
+    expect(finding(withForms(fresh(), 1, header))[0].message).toContain('has a form but');
     expect(finding(withSearch(fresh()))[0].message).toContain('has site search but');
   });
 
@@ -529,7 +611,7 @@ describe('the WebMCP readiness suggestion', () => {
     for (const id of s.site.pageOrder) s = run(s, { type: 'page.update', pageId: id, showHeader: false } as EditOperation);
     expect(finding(s)).toEqual([]);
     s = run(s, { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_first', title: 'First', publishedAt: '2026-01-01', draft: false, body: ['First.'] } as EditOperation);
-    expect(finding(s)[0]?.message).toContain('a contact form');
+    expect(finding(s)[0]?.message).toContain('a form');
   });
 
   it('counts a form in a collection’s layout only while an entry shows it', () => {
@@ -538,7 +620,7 @@ describe('the WebMCP readiness suggestion', () => {
     const placed = withForms(posts, 1, layout);
     expect(finding(placed)).toEqual([]);
     const published = run(placed, { type: 'entry.update', collectionId: 'projects', entryId: 'en_first', draft: false } as EditOperation);
-    expect(finding(published)[0]?.message).toContain('a contact form');
+    expect(finding(published)[0]?.message).toContain('a form');
   });
 
   it('says nothing for a form whose code declares no tool', () => {
@@ -695,6 +777,33 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
       expect(await page.evaluate('window.nameWhenTold')).toBe('Ana');
       await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
       expect(posts).toHaveLength(0);
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('tells the agent what the form’s own checks found, before its spam trap, and sends once they are put right', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      await page.fill('input[name="email"]', 'not an address');
+      await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = 'spam'");
+      await page.focus('button[type="submit"]');
+      expect(await page.evaluate(agentSubmit(true))).toBe(true);
+      expect(await page.evaluate('window.claimed')).toBe(true);
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: false, message: expect.stringContaining('missing or not valid') });
+      expect(posts).toHaveLength(0);
+      // Nothing was emptied, and the field to put right has the focus.
+      expect(await page.inputValue('input[name="name"]')).toBe('Ana');
+      expect(await page.evaluate('document.activeElement?.getAttribute("name")')).toBe('email');
+      expect(await page.locator('.so-form__error').count()).toBe(1);
+      await page.fill('input[name="email"]', 'ana@example.com');
+      await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = ''");
+      await page.evaluate(agentSubmit(true));
+      await expect.poll(() => posts.length).toBe(1);
+      await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: true, message: 'The message was sent.' });
     } finally {
       await browser.close();
     }

@@ -22,11 +22,12 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
+import { shippedOutline } from './shipped-outlines';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
 import { selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
-import { itemStylesOf } from '@shared/item-styles';
+import { itemStylesOf, liveItemStyles } from '@shared/item-styles';
 import { CODE_TEXT_ATTR, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { findTheme } from '@catalogue/index';
 
@@ -600,11 +601,20 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
   const seen = new Set<string>();
   for (let id: string | null | undefined = nodeId; id && !seen.has(id); id = findParent(def.tree, id)?.parentId) {
     seen.add(id);
-    const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
-    const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
-    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...(variants ? selectedVariantStyles(def, scope.chosen ?? inst?.variants, id) : []), ...own]));
+    out.push(ownHiddenInDesign(def, id, scope, variants, inst, itemId));
   }
   return out;
+}
+
+/**
+ * The sizes at which a design's node is hidden by itself alone (see hiddenInDesign), its ancestors aside: for the
+ * current item, or for `itemId` (null: no item's own styles).
+ */
+function ownHiddenInDesign(def: ComponentDefinition, id: string, scope: Scope, variants: boolean, inst = scope.instance, row?: string | null): Set<Size> {
+  const itemId = row === undefined ? (typeof scope.item?.id === 'string' ? scope.item.id : undefined) : (row ?? undefined);
+  const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
+  const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
+  return hiddenSizes([def.tree?.nodes[id]?.styles, ...(variants ? selectedVariantStyles(def, scope.chosen ?? inst?.variants, id) : []), ...own]);
 }
 
 /**
@@ -718,19 +728,39 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
   // lists inside lists give them the same trail.
   const faqIn = new Map<object, Map<string, Partial<FaqEntry>>>();
   const factsIn = new Map<object, BusinessFacts>();
+  const contactFact = (scope: Scope, link: LinkValue | undefined, label: string) => {
+    let facts = factsIn.get(scope.props);
+    if (!facts) {
+      facts = { email: [], telephone: [], address: [] };
+      factsIn.set(scope.props, facts);
+      businesses.push(facts);
+    }
+    const target = typeof link?.target === 'string' ? link.target.trim() : '';
+    const add = (list: string[], v: string) => v && !list.includes(v) && list.push(v);
+    if (link?.type === 'email') add(facts.email, target.split('?')[0]);
+    // The number as shown, unless the label is words: then the number it dials.
+    else if (link?.type === 'tel') add(facts.telephone, phoneLike(label) ? label : target);
+    // An address shown beside an address icon, not words such as "Get directions".
+    else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
+  };
   for (const tree of trees) {
-    // The sizes each page node around what renders hides it at, from the outermost one in.
-    const hiding: Array<Set<Size>> = [];
-    const shown = (def: ComponentDefinition, nodeId: string, scope: Scope) => !hiddenEverySize([...hiding, ...hiddenInDesign(def, nodeId, scope)]);
+    // The sizes each node on the way down hides what is inside it at, from the outermost one in: page nodes, and the
+    // nodes of every design around (a design that wraps an FAQ hides it with its own part), with the options its
+    // placement chose. What a placement puts in a slot is walked once however many rows of a design's list show the
+    // slot, so a node above the innermost such slot on the way down hides it only as it hides every row (`every`, read
+    // only when needed), never by one row's own styles; below it, each row of the content's own lists is walked, and
+    // hides by its own. A slot's fallback is the design's own, walked in each row.
+    type Hiding = { sizes: Set<Size>; every: () => Set<Size>; slot?: { def: ComponentDefinition; fallback: string[] } };
+    const hiding: Hiding[] = [];
+    const shown = () => {
+      const below = hiding.findLastIndex((h) => h.slot);
+      return !hiddenEverySize(hiding.map((h, i) => (i < below ? h.every() : h.sizes)));
+    };
     walkRendered(state, tree, {
-      enter: (n) => {
-        hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
-      },
-      leave: () => {
-        hiding.pop();
-      },
+      // The theme's FAQ and Contact details are code: read through the designs that stand for what they show.
+      outline: (def) => (isComponent(def, 'faq.list') || isComponent(def, 'contact.details') ? shippedOutline(state, def) : undefined),
       text: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown(def, n.id, scope)) return;
+        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown()) return;
         // One entry per item of each rendering: its question and answer render together.
         const byItem = faqIn.get(scope.props) ?? new Map<string, Partial<FaqEntry>>();
         faqIn.set(scope.props, byItem);
@@ -744,23 +774,37 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
         entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
       },
       node: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || n.kind !== 'link' || n.id !== 'method-value' || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
-        let facts = factsIn.get(scope.props);
-        if (!facts) {
-          facts = { email: [], telephone: [], address: [] };
-          factsIn.set(scope.props, facts);
-          businesses.push(facts);
+        // The first node inside a slot that comes from the slot's own fallback: the slot shows it in each row.
+        const top = hiding.at(-1);
+        if (top?.slot && top.slot.def === def && top.slot.fallback.includes(n.id)) delete top.slot;
+        if (!def) {
+          const sizes = hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]);
+          hiding.push({ sizes, every: () => sizes });
+        } else {
+          const inst = scope.instance;
+          const sizes = ownHiddenInDesign(def, n.id, scope, true);
+          // A row's node as every row has it: the sizes hidden both without a row's own styles and with each one's.
+          let every: Set<Size> | undefined = scope.item ? undefined : sizes;
+          const everyRow = () => {
+            if (every) return every;
+            every = ownHiddenInDesign(def, n.id, scope, true, inst, null);
+            const part = Object.entries(def.parts).find(([, p]) => p.nodeId === n.id)?.[0];
+            const rows = part && inst ? liveItemStyles(def, inst, part)?.items : undefined;
+            for (const id of Object.keys(rows ?? {})) {
+              const row = ownHiddenInDesign(def, n.id, scope, true, inst, id);
+              every = new Set([...every].filter((z) => row.has(z)));
+            }
+            return every;
+          };
+          hiding.push({ sizes, every: everyRow, ...(n.kind === 'slot' ? { slot: { def, fallback: slotFallback(n) } } : {}) });
         }
-        const link = evaluate(n.link, scope) as LinkValue | undefined;
-        const label = plainText(evaluate(n.label, scope));
-        const target = typeof link?.target === 'string' ? link.target.trim() : '';
-        const add = (list: string[], v: string) => v && !list.includes(v) && list.push(v);
-        if (link?.type === 'email') add(facts.email, target.split('?')[0]);
-        // The number as shown, unless the label is words: then the number it dials.
-        else if (link?.type === 'tel') add(facts.telephone, phoneLike(label) ? label : target);
-        // An address shown beside an address icon, not words such as "Get directions".
-        else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
-      }
+        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown()) return;
+        // A method's value: a design's link, or the theme's own as its outline shows it (a link, or its words alone
+        // while it goes nowhere).
+        if (n.kind === 'link' && (n.id === 'method-value' || n.id === 'md-value')) contactFact(scope, evaluate(n.link, scope) as LinkValue | undefined, plainText(evaluate(n.label, scope)));
+        else if (n.kind === 'text' && n.id === 'md-value-text') contactFact(scope, undefined, plainText(evaluate(n.text, scope), !!n.rich));
+      },
+      done: () => void hiding.pop()
     });
   }
   return {

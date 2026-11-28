@@ -425,7 +425,7 @@ const agenticDiscovery: SeoAuditRule = {
 };
 
 /**
- * WebMCP readiness: a website with a contact form or its own search, which agents in a visitor's browser could use
+ * WebMCP readiness: a website with a contact or signup form or its own search, which agents in a visitor's browser could use
  * through declared tools (shared/webmcp.ts), while the author has not turned WebMCP on. A suggestion only: it is off by
  * choice until the author decides agents may fill in the site's forms.
  */
@@ -437,14 +437,14 @@ const webMcpReadiness: SeoAuditRule = {
     const forms = showsFormTool(state);
     const search = showsSiteSearch(state);
     if (!forms && !search) return [];
-    const what = forms && search ? 'a contact form and site search' : forms ? 'a contact form' : 'site search';
+    const what = forms && search ? 'a form and site search' : forms ? 'a form' : 'site search';
     return [
       finding('agentic', {
         severity: 'info',
         code: 'SEO_WEBMCP_OFF',
         message: `The website has ${what} but declares no WebMCP tools: AI agents in visitors’ browsers have to work ${forms && search ? 'them' : 'it'} out from the page.`,
         site: 'webmcp',
-        explanation: 'With WebMCP on, each contact form tells AI assistants in the browser what it is for and what each field asks, and the site’s search can be used as a tool. The visitor still checks and sends every message.',
+        explanation: 'With WebMCP on, each contact or signup form tells AI assistants in the browser what it is for and what each field asks, and the site’s search can be used as a tool. The visitor still checks and sends every message.',
         aiFixable: true,
         destination: { kind: 'site', field: 'webmcp' }
       })
