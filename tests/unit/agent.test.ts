@@ -11,6 +11,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { asksToOpenPage, copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
+import { asksToOpenInEditor, asksToSaveVersion } from '@agent/editor-nav';
 import { findingsOf, inTurns, introducedProblems, MEASURE_AT_ONCE, requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, requestedAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
@@ -542,6 +543,229 @@ describe('asksToOpenPage', () => {
     expect(asksToOpenPage('open company', named)).toBe(true);
     expect(asksToOpenPage('open our team', named)).toBe(true);
     expect(asksToOpenPage('View a list of fonts', named)).toBe(false);
+  });
+});
+
+describe('opening entries, sections and editor views, and saving versions, from Chat (#1406)', () => {
+  const openings = (events: AiEvent[]) => events.filter((e) => e.kind === 'open-editor').map((e) => e.opening);
+  const lastResult = (adapter: FakeAdapter, i: number) => JSON.parse((adapter.requests[i].items.at(-1) as { content: string }).content);
+  const offered = (adapter: FakeAdapter, i = 0) => adapter.requests[i].tools.map((t) => t.name);
+  /** A Properties collection (one entry is a "Property") holding the issue's own entry, and a Journal with an entry of the same title as another. */
+  const withEntries = async (session: ProjectSession) => {
+    const r = await session.apply(
+      {
+        operations: [
+          { type: 'collection.create', collectionId: 'properties', name: 'Properties', singularName: 'Property', kind: 'structured' },
+          { type: 'entry.create', collectionId: 'properties', entryId: 'en_bastide01', title: 'Bastide de Lourmarin' },
+          { type: 'entry.create', collectionId: 'properties', entryId: 'en_mas0001', title: 'Mas des Oliviers' },
+          { type: 'collection.create', collectionId: 'journal', name: 'Journal' },
+          { type: 'entry.create', collectionId: 'journal', entryId: 'en_mas0002', title: 'Mas des Oliviers' }
+        ] as EditOperation[]
+      },
+      { label: 'Collections', source: 'user' }
+    );
+    expect(r.ok, JSON.stringify(r.error)).toBe(true);
+  };
+
+  it('opens the entry the author names in Content, as no change to the site (the issue\'s first request)', async () => {
+    const { session, run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'entry', target: 'Bastide de Lourmarin' })], () => finish('The Bastide de Lourmarin property is open in Content.')]);
+    await withEntries(session);
+    const revision = session.revision;
+    const history = session.historyInfo().entries.length;
+    const { result, runId } = await run('Open the Bastide de Lourmarin property in the editor, or open Site Styles');
+    expect(offered(adapter)).toContain('open_in_editor');
+    expect(adapter.requests[0].system).toContain('call open_in_editor');
+    expect(adapter.requests[0].system).toContain('is called Content');
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: true, opened: { collection: 'Properties', entryId: 'en_bastide01', title: 'Bastide de Lourmarin' } });
+    const conversationId = events.find((e) => e.kind === 'message')!.conversationId;
+    expect(events.filter((e) => e.kind === 'open-editor')).toEqual([{ runId, conversationId, kind: 'open-editor', opening: { kind: 'entry', collectionId: 'properties', entryId: 'en_bastide01' } }]);
+    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
+    expect(session.revision).toBe(revision);
+    expect(session.historyInfo().entries).toHaveLength(history);
+  });
+
+  it('opens Site styles and the other editor views by name, in a question too', async () => {
+    const { run, adapter, events } = await setup([() => [calls(['a', 'open_in_editor', { view: 'site_styles' }], ['b', 'open_in_editor', { view: 'project_health' }])], () => finish('Site styles and Project health are open.')]);
+    await run('Open Site Styles and then Project Health', { mode: 'ask' });
+    expect(offered(adapter)).toContain('open_in_editor');
+    expect(openings(events)).toEqual([
+      { kind: 'view', view: 'site_styles' },
+      { kind: 'view', view: 'project_health' }
+    ]);
+  });
+
+  it('saves the named version and opens Export without exporting (the issue\'s second request)', async () => {
+    const { session, run, adapter, events } = await setup([() => [call('v', 'save_version', { name: 'Before spring launch' })], () => [call('x', 'open_in_editor', { view: 'export' })], () => finish('Saved "Before spring launch" and opened Export.')]);
+    const revision = session.revision;
+    const { result } = await run('Save a version snapshot called Before spring launch and export my website');
+    expect(offered(adapter)).toEqual(expect.arrayContaining(['save_version', 'open_in_editor']));
+    expect(adapter.requests[0].system).toContain('call save_version');
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: true, saved: { name: 'Before spring launch' } });
+    expect(lastResult(adapter, 2)).toMatchObject({ ok: true, opened: { view: 'export' } });
+    expect(lastResult(adapter, 2).note).toMatch(/Nothing was exported/);
+    expect(openings(events)).toEqual([{ kind: 'view', view: 'export' }]);
+    expect(session.versionsInfo().list.map((v) => v.name)).toEqual(['Before spring launch']);
+    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
+    expect(session.revision).toBe(revision);
+    expect(session.historyInfo().entries).toHaveLength(0);
+  });
+
+  it('saves a version asked for twice in one request once', async () => {
+    const { session, run } = await setup([() => [call('v1', 'save_version', { name: 'Launch' })], () => [call('v2', 'save_version', { name: ' launch ' })], () => finish('Saved.')]);
+    await run('Save a version called Launch');
+    expect(session.versionsInfo().list).toHaveLength(1);
+  });
+
+  it('refuses to save a version once the request has changed the site, and keeps the change', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter } = await setup([
+      () => [call('e1', 'apply_operations', { expectedRevision: session.revision, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Welcome' }] })],
+      () => [call('v', 'save_version', { name: 'After' })],
+      () => finish('Renamed Home; the version could not be saved yet.')
+    ]);
+    session = s;
+    const { result } = await run('Rename Home to Welcome, then save a version called After');
+    expect(lastResult(adapter, 2)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: expect.stringMatching(/already changed the site/) } });
+    expect(session.versionsInfo().list).toHaveLength(0);
+    expect(result?.status).toBe('completed');
+    expect(session.state.pages[session.state.site.homePageId].title).toBe('Welcome');
+  });
+
+  it('never offers save_version to a question, nor the editor tools to an edit that asks for none', async () => {
+    const asked = await setup([() => finish('Switch to Edit to save a version.')]);
+    await asked.run('Save a version called Launch', { mode: 'ask' });
+    expect(offered(asked.adapter)).not.toContain('save_version');
+    const edit = await setup([() => [call('x', 'open_in_editor', { view: 'share' })], () => finish('Done.')]);
+    await edit.run('Change the SEO title of the About page to Our story');
+    expect(offered(edit.adapter)).not.toContain('open_in_editor');
+    expect(offered(edit.adapter)).not.toContain('save_version');
+    expect(lastResult(edit.adapter, 1)).toMatchObject({ ok: false });
+    expect(openings(edit.events)).toEqual([]);
+  });
+
+  it('opens nothing for a title two collections share, and says where each is', async () => {
+    const { session, run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'entry', target: 'Mas des Oliviers' })], () => finish('Which one?')]);
+    await withEntries(session);
+    await run('Open Mas des Oliviers', { mode: 'ask' });
+    const message = lastResult(adapter, 1).error.message;
+    expect(message).toMatch(/More than one entry is titled "Mas des Oliviers"/);
+    expect(message).toContain('in Properties');
+    expect(message).toContain('in Journal');
+    expect(openings(events)).toEqual([]);
+  });
+
+  it('opens an entry its collection narrows down, and says when no entry matches', async () => {
+    const { session, run, adapter, events } = await setup([() => [call('a', 'open_in_editor', { view: 'entry', target: 'mas des oliviers', collection: 'Journal' })], () => [call('b', 'open_in_editor', { view: 'entry', target: 'Château Nowhere' })], () => finish('Done.')]);
+    await withEntries(session);
+    await run('Open the journal entry Mas des Oliviers, then Château Nowhere', { mode: 'ask' });
+    expect(openings(events)).toEqual([{ kind: 'entry', collectionId: 'journal', entryId: 'en_mas0002' }]);
+    expect(lastResult(adapter, 2).error.message).toMatch(/No entry in any collection has the ID, address, title or slug "Château Nowhere"/);
+  });
+
+  it('tells the model an entry deleted while a question was answered was not opened', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([
+      async () => {
+        expect((await session.apply({ operations: [{ type: 'entry.remove', collectionId: 'properties', entryId: 'en_bastide01' }] }, { label: 'Delete entry', source: 'user' })).ok).toBe(true);
+        return [call('nav', 'open_in_editor', { view: 'entry', target: 'en_bastide01' })];
+      },
+      () => finish('It has gone.')
+    ]);
+    session = s;
+    await withEntries(session);
+    await run('Open the Bastide de Lourmarin property', { mode: 'ask' });
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/deleted while you answered/) } });
+    expect(openings(events)).toEqual([]);
+  });
+
+  /** The About page's call to action, which Home has too, and the name it shows. */
+  const aboutCta = (session: ProjectSession) => {
+    const about = Object.values(session.state.pages).find((p) => p.title === 'About')!;
+    const nodeId = about.rootIds.find((id) => (about.nodes[id] as InstanceNode).definitionId === 'foundation.cta.banner')!;
+    return { about, nodeId, name: lastName(session.state, about.id, nodeId) };
+  };
+
+  it('selects a section on the page on screen, even when the request left that page out', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'section', target: aboutCta(session).name })], () => finish('Selected it.')]);
+    session = s;
+    const { about, nodeId, name } = aboutCta(session);
+    const home = session.state.pages[session.state.site.homePageId];
+    expect(home.rootIds.some((id) => (home.nodes[id] as InstanceNode).definitionId === 'foundation.cta.banner')).toBe(true);
+    // Home has the same section: the page the author is on, sent apart from the home page the request names, decides.
+    await run(`Scroll to the ${name} section on this page`, { mode: 'ask', shownPageId: about.id });
+    expect(openings(events)).toEqual([{ kind: 'section', pageId: about.id, ref: { owner: { kind: 'page', id: about.id }, instancePath: [], nodeId } }]);
+  });
+
+  it('asks which section when the name fits one on several pages and none on the page on screen', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'section', target: aboutCta(session).name })], () => finish('Which one?')]);
+    session = s;
+    const contact = Object.values(session.state.pages).find((p) => p.title === 'Contact')!;
+    await run(`Scroll to the ${aboutCta(session).name} section`, { mode: 'ask', pageId: contact.id, pageTitle: 'Contact' });
+    expect(lastResult(adapter, 1).error.message).toMatch(/More than one section fits/);
+    expect(openings(events)).toEqual([]);
+  });
+
+  it('saves a version only for the request that holds the project, and keeps the manual save waiting meanwhile', async () => {
+    const { session } = await setup([]);
+    expect(await session.saveVersionForRun('r1', 'Early')).toMatchObject({ ok: false, message: expect.stringMatching(/no longer holds/) });
+    await session.beginRun('r1');
+    expect(await session.saveVersionForRun('r0', 'Other')).toMatchObject({ ok: false });
+    expect(await session.saveVersion('By hand')).toMatchObject({ ok: false, message: expect.stringMatching(/Wait for the AI/) });
+    expect(await session.saveVersionForRun('r1', '  Kept   name ')).toMatchObject({ ok: true, name: 'Kept name' });
+    expect(session.versionsInfo().list.map((v) => v.name)).toEqual(['Kept name']);
+    expect(session.activeRun?.id).toBe('r1');
+  });
+
+  it('refuses arguments a view does not take', async () => {
+    const { run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'settings', target: 'Billing' })], () => finish('Done.')]);
+    await run('Open Settings', { mode: 'ask' });
+    expect(lastResult(adapter, 1).error.message).toMatch(/takes no target/);
+    expect(openings(events)).toEqual([]);
+  });
+});
+
+/** The name a placed section shows (its own, else its component's), as the editor and open_in_editor call it. */
+function lastName(state: ProjectState, pageId: string, nodeId: string): string {
+  const n = state.pages[pageId].nodes[nodeId];
+  return n.name ?? state.components[(n as InstanceNode).definitionId].name;
+}
+
+describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
+  const state = createStarterState('business', 'Test', false);
+  it.each([
+    'Open the Bastide de Lourmarin property in the editor, or open Site Styles',
+    'open site styles',
+    'Take me to the SEO view',
+    'Show me Project health',
+    'open settings',
+    'Open the Assets panel',
+    'open the Content panel',
+    'export my website',
+    'Share this site',
+    'Open the blog post about pricing',
+    'Scroll to the testimonials',
+    'Select the hero section',
+    'go to Versions'
+  ])('hears "%s" as opening something in the editor', (text) => {
+    expect(asksToOpenInEditor(text, state)).toBe(true);
+  });
+  it.each(['Change the SEO title of the About page', 'Add a Share button to the footer', 'How do I export my website?', 'Make the hero bigger', 'Make the settings link open in a new tab', 'Write a section about our history'])('hears "%s" as no request to open anything', (text) => {
+    expect(asksToOpenInEditor(text, state)).toBe(false);
+  });
+  it('hears an entry by its title, and a collection by what one entry is called', () => {
+    const named = structuredClone(state);
+    named.collections = { properties: { settings: { id: 'properties', name: 'Estates', singularName: 'Property' }, entries: { en_b: { id: 'en_b', title: 'Bastide de Lourmarin', slug: 'bastide' } } } } as never;
+    expect(asksToOpenInEditor('pull up Bastide de Lourmarin', named)).toBe(true);
+    expect(asksToOpenInEditor('open the property', named)).toBe(true);
+    expect(asksToOpenInEditor('pull up the weather', named)).toBe(false);
+  });
+  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version'])('hears "%s" as saving a version', (text) => {
+    expect(asksToSaveVersion(text)).toBe(true);
+  });
+  it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions'])('hears "%s" as no request to save one', (text) => {
+    expect(asksToSaveVersion(text)).toBe(false);
   });
 });
 

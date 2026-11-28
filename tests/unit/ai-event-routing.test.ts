@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AiEvent, ChatContext, ChatMessage, ChatMode, Conversation, ConversationState, RunStatus } from '@shared/api';
+import type { AiEvent, ChatContext, ChatMessage, ChatMode, Conversation, ConversationState, EditorOpening, RunStatus } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
@@ -41,6 +41,7 @@ const store = (await load('../../src/renderer/src/store')) as {
   openThread: (pick: Promise<Conversation>, opening: string) => Promise<boolean>;
   openRunThread: (id?: string | null) => Promise<boolean>;
   setPageOpener: (open: (pageId: string) => void) => void;
+  setEditorOpener: (open: (opening: EditorOpening, still: () => boolean) => void) => void;
 };
 
 /**
@@ -766,4 +767,52 @@ describe('a page the author asked Chat to go to (#1357)', () => {
     expect(opened).toEqual([]);
   });
 
+});
+
+describe('an entry, a section or an editor view the author asked Chat to open (#1406)', () => {
+  const conv = (id: string): Conversation => ({ id, title: '', messages: [], createdAt: '', updatedAt: '' }) as unknown as Conversation;
+  const state = createStarterState('business', 'Views', false);
+  state.collections = { journal: { settings: { id: 'journal', name: 'Journal' }, entries: { en_one: { id: 'en_one', title: 'One', slug: 'one' } } } } as never;
+  const home = state.pages[state.site.homePageId];
+  const section: EditorOpening = { kind: 'section', pageId: home.id, ref: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] } };
+  const entry: EditorOpening = { kind: 'entry', collectionId: 'journal', entryId: 'en_one' };
+  const opened: Array<{ opening: EditorOpening; still: () => boolean }> = [];
+  const event = (opening: EditorOpening, over: Partial<AiEvent> = {}): AiEvent => ({ runId: 'r1', conversationId: 'c1', kind: 'open-editor', opening, ...over });
+  const prime = (over: Record<string, unknown> = {}) => {
+    opened.length = 0;
+    store.setEditorOpener((opening, still) => opened.push({ opening, still }));
+    store.setState({ conversation: conv('c1'), activeRunId: 'r1', runStatus: 'running', snapshot: { state, workspaceKey: 'w1' }, ...over } as Partial<ChatState>);
+  };
+  afterEach(() => store.setState({ snapshot: null } as Partial<ChatState>));
+
+  it('opens it while its request runs in the conversation on screen', () => {
+    prime();
+    store.applyAiEvent(event(entry));
+    store.applyAiEvent(event(section));
+    store.applyAiEvent(event({ kind: 'view', view: 'share' }));
+    expect(opened.map((o) => o.opening)).toEqual([entry, section, { kind: 'view', view: 'share' }]);
+  });
+
+  it('opens nothing for another conversation, another request, or an entry or section the site no longer has', () => {
+    prime();
+    store.applyAiEvent(event(entry, { conversationId: 'c2' }));
+    store.applyAiEvent(event(entry, { runId: 'r0' }));
+    store.applyAiEvent(event({ ...entry, entryId: 'en_gone' }));
+    store.applyAiEvent(event({ ...section, ref: { ...section.ref, nodeId: 'n_gone' } } as EditorOpening));
+    store.applyAiEvent(event({ ...section, pageId: 'pg_gone' } as EditorOpening));
+    expect(opened).toEqual([]);
+  });
+
+  it('stops holding once the author moves on while the opening waits (another thread, the request ended, another project)', () => {
+    prime();
+    store.applyAiEvent(event(entry));
+    const [{ still }] = opened;
+    expect(still()).toBe(true);
+    store.setState({ conversation: conv('c2') } as Partial<ChatState>);
+    expect(still()).toBe(false);
+    store.setState({ conversation: conv('c1'), activeRunId: null } as Partial<ChatState>);
+    expect(still()).toBe(false);
+    store.setState({ activeRunId: 'r1', snapshot: { state, workspaceKey: 'w2' } } as Partial<ChatState>);
+    expect(still()).toBe(false);
+  });
 });

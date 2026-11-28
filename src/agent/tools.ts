@@ -1745,6 +1745,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
     case 'save_version': {
       const a = args as z.infer<(typeof TOOL_ARGS)['save_version']>;
       if (!host.saveVersion) return toolError('SCOPE_MISMATCH', 'A version cannot be saved from this request. The author can save one from History, Versions.', { recoverable: false });
+      if (!a.name.trim()) return toolError('INVALID_ARGUMENT', 'Give the version a name: ask the author what to call it.');
       const r = await host.saveVersion(a.name);
       if (!r.ok) return toolError('CONFLICT', `The version was not saved: ${r.message ?? 'it could not be saved.'}`, { recoverable: false });
       const missing = r.missing?.length ? ` ${r.missing.length} image ${r.missing.length === 1 ? 'file it names is' : 'files it names are'} missing from the project folder, so the version records ${r.missing.length === 1 ? 'it' : 'them'} as missing: tell the author.` : '';
