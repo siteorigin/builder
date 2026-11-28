@@ -347,8 +347,8 @@ describe('a live session hosted by the open project', () => {
   });
 
   it('lets a copy editor reword the pages over the live protocol, and refuses at commit what its grant does not reach', async () => {
-    // The project's own managed split hero and section (fixtures/live-copy-editor-designs.ts): the release's are code,
-    // which the copy editor cannot read (the Release gap test below).
+    // The project's own managed split hero and section (fixtures/live-copy-editor-designs.ts): the release's Section is
+    // code, whose slot the copy editor cannot read (the Release gap test below).
     const dir = await makeProject('acme', (state) => {
       heroDesign(state);
       sectionDesign(state);
@@ -403,6 +403,46 @@ describe('a live session hosted by the open project', () => {
       const answer = await rpc(guest, 'project.apply', [{ operations }]);
       expect(answer, message.source).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringMatching(message) } });
       if (operationIndex !== undefined) expect(answer).toMatchObject({ error: { operationIndex } });
+    }
+    expect(c.session!.revision).toBe(revision);
+    expect(readFileSync(file, 'utf8')).toBe(saved);
+    expect(c.snapshot()!.history.entries.length).toBe(steps);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+  });
+
+  it('lets a copy editor reword the shipped theme’s own sections over the live protocol, and leaves their settings and buttons to the host', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'copy-editor');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    // The release's own Split hero, placed by the host.
+    const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
+    const placed = c.session!.state.pages[owner.id].nodes[hero] as { definitionId: string };
+    expect(c.session!.state.components[placed.definitionId]).toMatchObject({ kind: 'code', owner: 'theme' });
+    const file = join(dir, `siteorigin/pages/${owner.id}.json`);
+    const setProp = (prop: string, value: unknown) => ({ type: 'instance.setProp', owner, nodeId: hero, prop, value });
+
+    const before = c.session!.revision;
+    expect(await rpc(guest, 'project.apply', [{ operations: [setProp('eyebrow', 'Bakery'), setProp('heading', 'Fresh bread daily')], expectedRevision: before, label: 'Reword' }])).toMatchObject({ ok: true, result: { revision: before + 1 } });
+    expect(readFileSync(file, 'utf8')).toContain('Fresh bread daily');
+    expect(c.snapshot()!.history.entries.at(-1)).toMatchObject({ label: 'Reword (Ann)', guestName: 'Ann', applied: true });
+
+    const saved = readFileSync(file, 'utf8');
+    const revision = c.session!.revision;
+    const steps = c.snapshot()!.history.entries.length;
+    // Copy beside a heading level, a button's words or where it goes: the whole batch refused, naming that one.
+    for (const [prop, value, label] of [
+      ['headingLevel', 'h2', 'Heading level'],
+      ['primaryLabel', 'Buy now', 'Primary button label'],
+      ['primaryLink', { type: 'url', target: 'https://evil.example' }, 'Primary button link']
+    ] as const) {
+      const answer = await rpc(guest, 'project.apply', [{ operations: [setProp('heading', 'Open on Sundays'), setProp(prop, value)] }]);
+      expect(answer, prop).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 1, message: `Only the host can change “${label}”.` } });
     }
     expect(c.session!.revision).toBe(revision);
     expect(readFileSync(file, 'utf8')).toBe(saved);

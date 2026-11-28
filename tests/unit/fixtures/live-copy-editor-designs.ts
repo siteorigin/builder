@@ -1,7 +1,7 @@
 /**
  * The managed designs a copy editor's tests edit: the slice of the old managed Foundation split hero the copy editor
- * reads, and a section that shows what is put in it once. Foundation's own heroes and Section are code, which the copy
- * editor cannot read (the Release gap tests in live-copy-editor.test.ts and live-host-controller.test.ts).
+ * reads, and a section that shows what is put in it once. Foundation's own Section is code, whose slot the copy editor
+ * cannot read (the Release gap tests in live-copy-editor.test.ts and live-host-controller.test.ts).
  */
 import type { ProjectState } from '@shared/types';
 import { P } from '@catalogue/dsl';
