@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { askFrame, followed, followReport, newFrameNav } from '../../src/renderer/src/lib/frame-nav';
+import { askFrame, followed, followReport, newFrameNav, sendsFrame } from '../../src/renderer/src/lib/frame-nav';
 
 const ROUTES: Record<string, string> = { home: '/', about: '/about/', contact: '/contact/', work: '/work/' };
 const pageAt = (path: string) => Object.keys(ROUTES).find((id) => ROUTES[id] === path || ROUTES[id] === `${path}/`) ?? null;
@@ -111,5 +111,20 @@ describe('following the preview frame between pages', () => {
     expect(e.report('/contact/')).toBe(false);
     expect(e.report('/about/')).toBe(true);
     expect(e.page()).toBe('about');
+  });
+});
+
+describe('sending the frame to a page the editor opens', () => {
+  it('waits for this computer’s own preview to serve it, and sends a live session guest’s frame unchecked (#1529)', () => {
+    // This computer's preview serves the page: the frame goes there.
+    expect(sendsFrame(true, false)).toBe(true);
+    // Not yet, or no preview up just now (it is restarting): the canvas's recovery opens the page once it is served.
+    expect(sendsFrame(false, false)).toBe(false);
+    expect(sendsFrame(null, false)).toBe(false);
+    // A guest has no preview of its own to ask (the host's is the host's): the frame goes there, as it would on a yes.
+    expect(sendsFrame(null, true)).toBe(true);
+    expect(sendsFrame(true, true)).toBe(true);
+    // A check that failed is no reason to go there, for a guest either.
+    expect(sendsFrame(false, true)).toBe(false);
   });
 });
