@@ -140,6 +140,24 @@ const STYLES = [
   ...['styles/tokens.css', 'styles/reset.css', 'styles/primitives.css', 'styles/layout.css', 'panels/FindReplace.css'].map((f) => readFileSync(resolve('src/renderer/src', f), 'utf8'))
 ].join('\n');
 
+/**
+ * In the page, given a jump chip scrolled to in its strip: whether any of its address is outside the chip or the
+ * strip, or cut short. Built from text, as this file is checked without the DOM's types.
+ */
+const ADDRESS_CUT = new Function(
+  'el',
+  `
+  el.scrollIntoView({ block: 'nearest' });
+  const address = el.querySelector('.find-address');
+  const text = address.getBoundingClientRect();
+  const outside = [el, el.parentElement].some((box) => {
+    const r = box.getBoundingClientRect();
+    return text.left < r.left - 1 || text.right > r.right + 1 || text.top < r.top - 1 || text.bottom > r.bottom + 1;
+  });
+  return outside || address.scrollWidth > address.clientWidth + 1;
+`
+) as (el: unknown) => boolean;
+
 describe.skipIf(!browserInstalled)('Find and replace with same-titled pages (#1539)', { timeout: 30_000 }, () => {
   let browser: Browser;
   let script: string;
@@ -184,18 +202,7 @@ describe.skipIf(!browserInstalled)('Find and replace with same-titled pages (#15
       const chip = chips.getByRole('button', { name: new RegExp(`^Intake checklist, ${route}, \\d+ match`) });
       await chip.waitFor();
       expect(await chip.locator('.find-address').innerText()).toBe(route);
-      // Scrolled to in the strip, the whole address is inside both its chip and the strip.
-      const cut = await chip.evaluate((el) => {
-        el.scrollIntoView({ block: 'nearest' });
-        const address = el.querySelector<HTMLElement>('.find-address')!;
-        const text = address.getBoundingClientRect();
-        const outside = [el, el.parentElement!].filter((box) => {
-          const r = box.getBoundingClientRect();
-          return text.left < r.left - 1 || text.right > r.right + 1 || text.top < r.top - 1 || text.bottom > r.bottom + 1;
-        });
-        return address.scrollWidth > address.clientWidth + 1 || outside.length > 0;
-      });
-      expect(cut, route).toBe(false);
+      expect(await chip.evaluate(ADDRESS_CUT), route).toBe(false);
     }
   });
 
