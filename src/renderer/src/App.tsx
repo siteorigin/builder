@@ -219,7 +219,7 @@ export function App() {
           return;
         }
         const askAi = isAskAiKey(k);
-        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) editor?.handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi);
+        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) editor?.handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi, k.repeat === true);
       }),
       useStore.subscribe(persistChatState),
       useStore.subscribe(persistPlaces),

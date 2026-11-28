@@ -10,7 +10,7 @@ let flushes: Array<{ opening: string | undefined; resolve: (saved: boolean) => v
 let undos: Array<(r: ApplyResult) => void> = [];
 let undoFails: Array<(e: Error) => void> = [];
 const held = () => new Promise<ApplyResult>((resolve, reject) => (undos.push(resolve), undoFails.push(reject)));
-/** Each Undo and Redo the editor sent the project, in order. */
+/** Each Undo and Redo the editor sent the project, in order, and each time it asked for the whole project again. */
 const sent: string[] = [];
 const holdFlush = (opening: string | undefined) => new Promise<boolean>((resolve) => flushes.push({ opening, resolve }));
 const bridge = {
@@ -19,7 +19,8 @@ const bridge = {
     flush: holdFlush as (opening: string | undefined) => Promise<boolean>,
     undo: () => (sent.push('undo'), held()),
     redo: () => (sent.push('redo'), held()),
-    undoEntry: held
+    undoEntry: held,
+    resync: async () => (sent.push('resync'), true)
   },
   platform: 'darwin'
 };
@@ -57,6 +58,8 @@ const SAVED = 'All changes are saved on this computer.';
 const notices = () => store.getState().toasts.map((t) => t.text);
 
 afterEach(() => {
+  // A step still waiting to be shown stops holding Undo back once no project is.
+  store.setState({ snapshot: null });
   saved.length = 0;
   sent.length = 0;
   flushes = [];
@@ -338,78 +341,164 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
 });
 
 describe('Undo or Redo held down (#1452)', () => {
+  const show = (workspaceKey: string, revision: number) => store.setState({ snapshot: { workspaceKey, revision } as unknown as ProjectSnapshot });
   const lands = async (r: ApplyResult = { ok: true, revision: 5 }) => {
     undos.at(-1)!(r);
     await tick();
   };
+  const repeat = { repeat: true };
 
-  it('sends one step at a time, and the presses made while it is on its way make one more step, not a backlog', async () => {
+  it.each(['undo', 'redo'] as const)('sends one %s at a time, drops the repeats made while it is on its way, and lets the next go once the editor shows it', async (action) => {
     open('opening#a');
+    show('opening#a', 4);
     // A second of key repeat while each step takes longer than a press.
-    for (let i = 0; i < 28; i++) store.projectHistory('undo');
+    store.projectHistory(action);
+    for (let i = 0; i < 28; i++) store.projectHistory(action, repeat);
+    expect(sent).toEqual([action]);
+    // Saved, but not shown yet: the editor still shows what came before it.
+    await lands({ ok: true, revision: 5 });
+    store.projectHistory(action, repeat);
+    expect(sent).toEqual([action]);
+    show('opening#a', 5);
+    await tick();
+    // The repeats made meanwhile were dropped, never replayed.
+    expect(sent).toEqual([action]);
+    store.projectHistory(action, repeat);
+    expect(sent).toEqual([action, action]);
+    await lands({ ok: true, revision: 6 });
+    show('opening#a', 6);
+    await tick();
+    // The key was let go: nothing more is sent.
+    expect(sent).toEqual([action, action]);
+    store.projectHistory(action);
+    expect(sent).toEqual([action, action, action]);
+    await lands({ ok: true, revision: 7 });
+  });
+
+  it('lets the next go as soon as the reply comes when the editor already shows the step', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    store.projectHistory('undo');
+    show('opening#a', 5);
+    await lands({ ok: true, revision: 5 });
+    store.projectHistory('undo', repeat);
+    expect(sent).toEqual(['undo', 'undo']);
+    await lands({ ok: true, revision: 5 });
+  });
+
+  it('keeps one press of its own made meanwhile for once the step shows, and an Undo and a Redo pressed meanwhile cancel out', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    // A quick double tap: the second is not lost; a third meanwhile is.
+    store.projectHistory('undo');
+    store.projectHistory('undo');
+    store.projectHistory('undo');
+    await lands({ ok: true, revision: 5 });
     expect(sent).toEqual(['undo']);
-    await lands();
+    show('opening#a', 5);
+    await tick();
     expect(sent).toEqual(['undo', 'undo']);
-    await lands();
-    // The key was let go: nothing more is undone.
+    await lands({ ok: true, revision: 6 });
+    show('opening#a', 6);
+    await tick();
     expect(sent).toEqual(['undo', 'undo']);
-    // The next press goes at once.
-    store.projectHistory('undo');
-    expect(sent).toEqual(['undo', 'undo', 'undo']);
-    await lands();
-    expect(sent).toEqual(['undo', 'undo', 'undo']);
-  });
 
-  it('holds Redo back the same way, and an Undo and a Redo pressed while a step is on its way cancel out', async () => {
-    open('opening#a');
-    for (let i = 0; i < 40; i++) store.projectHistory('redo');
-    expect(sent).toEqual(['redo']);
-    await lands();
-    expect(sent).toEqual(['redo', 'redo']);
-    await lands();
-    expect(sent).toEqual(['redo', 'redo']);
-
-    // Undo, then Undo and Redo while it is on its way: one step back in all.
+    // Undo, then Undo and Redo meanwhile: one step back in all.
     store.projectHistory('undo');
     store.projectHistory('undo');
     store.projectHistory('redo');
-    await lands();
-    expect(sent).toEqual(['redo', 'redo', 'undo']);
+    await lands({ ok: true, revision: 7 });
+    show('opening#a', 7);
+    await tick();
+    expect(sent).toEqual(['undo', 'undo', 'undo']);
 
-    // Undo, then Redo while it is on its way: the Redo follows it.
+    // Undo, then Redo meanwhile: the Redo follows it.
     store.projectHistory('undo');
     store.projectHistory('redo');
-    await lands();
-    expect(sent).toEqual(['redo', 'redo', 'undo', 'undo', 'redo']);
-    await lands();
-    expect(sent).toEqual(['redo', 'redo', 'undo', 'undo', 'redo']);
+    await lands({ ok: true, revision: 8 });
+    show('opening#a', 8);
+    await tick();
+    expect(sent).toEqual(['undo', 'undo', 'undo', 'undo', 'redo']);
+    await lands({ ok: true, revision: 9 });
+    show('opening#a', 9);
   });
 
-  it('lets the next press through after a step that was refused or could not be sent', async () => {
+  it('lets the next press through at once after a step that was refused or could not be sent', async () => {
     open('opening#a');
+    show('opening#a', 4);
     store.projectHistory('undo');
-    await lands({ ok: false, revision: 5, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } });
-    store.projectHistory('undo');
+    await lands({ ok: false, revision: 4, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } });
+    store.projectHistory('undo', repeat);
     expect(sent).toEqual(['undo', 'undo']);
     undoFails.at(-1)!(new Error("Error invoking remote method 'project:undo': Error: The project was closed."));
     await tick();
-    store.projectHistory('redo');
+    store.projectHistory('redo', repeat);
     expect(sent).toEqual(['undo', 'undo', 'redo']);
-    await lands();
+    await lands({ ok: false, revision: 4, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to redo.', recoverable: true } });
   });
 
-  it('never takes a step held back for one project in another, or once the project is being left', async () => {
+  it('never takes a press kept for one project in another, or once the project is being left', async () => {
     open('opening#a');
+    show('opening#a', 4);
     store.projectHistory('undo');
     store.projectHistory('undo');
-    open('opening#b');
-    await lands();
+    await lands({ ok: true, revision: 5 });
+    show('opening#b', 1);
+    await tick();
     expect(sent).toEqual(['undo']);
 
+    // The step on its way stops holding Undo back once its project is no longer shown.
     store.projectHistory('undo');
+    expect(sent).toEqual(['undo', 'undo']);
     store.projectHistory('undo');
     store.setState({ leaving: true });
-    await lands();
+    await lands({ ok: true, revision: 2 });
+    show('opening#b', 2);
+    await tick();
     expect(sent).toEqual(['undo', 'undo']);
+    store.setState({ leaving: false });
+  });
+
+  it('asks for the whole project again when the editor has not shown the step after a while, and holds the next back until it does', async () => {
+    vi.useFakeTimers();
+    try {
+      open('opening#a');
+      show('opening#a', 4);
+      store.projectHistory('undo');
+      undos.at(-1)!({ ok: true, revision: 5 });
+      await vi.advanceTimersByTimeAsync(2900);
+      expect(sent).toEqual(['undo']);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(sent).toEqual(['undo', 'resync']);
+      // A lost update never lets a step go that the editor has not shown.
+      store.projectHistory('undo', repeat);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(sent).toEqual(['undo', 'resync', 'resync']);
+      show('opening#a', 5);
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(sent).toEqual(['undo', 'resync', 'resync']);
+      store.projectHistory('undo', repeat);
+      expect(sent).toEqual(['undo', 'resync', 'resync', 'undo']);
+      undos.at(-1)!({ ok: false, revision: 5, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } });
+      await vi.advanceTimersByTimeAsync(10);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets Save finish once the step is saved, while the next step still waits for the editor to show it', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    store.projectHistory('undo');
+    const done = saveNow();
+    await tick();
+    expect(flushes).toEqual([]);
+    await lands({ ok: true, revision: 5 });
+    expect(flushes.map((f) => f.opening)).toEqual(['opening#a']);
+    store.projectHistory('undo', repeat);
+    expect(sent).toEqual(['undo']);
+    show('opening#a', 5);
+    flushes[0].resolve(true);
+    await done;
   });
 });

@@ -80,9 +80,9 @@ const textSelected = () => {
 /**
  * Global editor shortcuts. Also called for keys forwarded from the preview frame. `askAi`: the press is Ask AI's,
  * on the key the author gave it in Settings (#750). It is looked at first, so a binding such as Cmd/Ctrl+Shift+K
- * never also opens what Cmd/Ctrl+K does.
+ * never also opens what Cmd/Ctrl+K does. `repeat`: the key is held down and this is its auto-repeat.
  */
-export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi = false): boolean {
+export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi = false, repeat = false): boolean {
   const s = getState();
   // While the project is being left, nothing may change it any more (the editor itself is inert then).
   if (s.leaving) return true;
@@ -94,11 +94,11 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi 
     return true;
   }
   if (mod && key.toLowerCase() === 'z') {
-    projectHistory(shift ? 'redo' : 'undo');
+    projectHistory(shift ? 'redo' : 'undo', { repeat });
     return true;
   }
   if (mod && key.toLowerCase() === 'y') {
-    projectHistory('redo');
+    projectHistory('redo', { repeat });
     return true;
   }
   if (mod && key.toLowerCase() === 'k') {
@@ -552,7 +552,7 @@ export function Editor() {
       // Copy and paste of sections and elements: Copy only from the page, Layers, the selection's own controls and that
       // Insert tile, Paste from any control that takes no typing.
       if (mod && !askAi && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body, getState().selection)) return;
-      if (handleShortcut(e.key, mod, e.shiftKey, askAi)) e.preventDefault();
+      if (handleShortcut(e.key, mod, e.shiftKey, askAi, e.repeat)) e.preventDefault();
     };
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
