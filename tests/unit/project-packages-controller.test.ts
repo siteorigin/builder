@@ -311,7 +311,11 @@ describe('changing the project’s npm packages (#1480)', () => {
     npm.duringInstall = (d) => {
       if (!existsSync(join(d, 'package-lock.json'))) copyFileSync(join(starter, 'package-lock.json'), join(d, 'package-lock.json'));
     };
-    const { c } = await opened({ lock: false });
+    const { c, read } = await opened({ lock: false });
+    expect(c.snapshot()?.runtime.state).toBe('ready');
+    expect(read('package-lock.json')).toBe(readFileSync(join(starter, 'package-lock.json'), 'utf8'));
+    // The lock is trusted with the package.json it was made from: starting again asks for no review either.
+    await c.startRuntime();
     expect(c.snapshot()?.runtime.state).toBe('ready');
   });
 

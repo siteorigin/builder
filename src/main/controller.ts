@@ -1980,7 +1980,7 @@ export class Controller {
       if (!(await session.stillOwner()) || this.session !== session) return;
       this.status({ state: 'preparing', message: 'Setting up website tools…' });
       // Without a lock, npm writes one from the trusted package.json: that lock is the install's own, not an edit.
-      const locked = existsSync(join(session.dir, 'package-lock.json'));
+      const unlocked = existsSync(join(session.dir, 'package-lock.json')) ? null : await readConfig(session.dir);
       const abort = (this.prepareAbort = new AbortController());
       const done = this.changingTools();
       try {
@@ -1997,7 +1997,10 @@ export class Controller {
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
       // Setting the tools up takes a while: the configuration the preview is about to run must still be the one trusted.
-      if (locked && !(await isTrusted(session.dir, await configHash(session.dir)))) {
+      // A lock npm wrote for a project with none is trusted with it, when nothing else changed from what was trusted.
+      const now = await readConfig(session.dir);
+      if (unlocked && CONFIG_FILES.every((f) => f === 'package-lock.json' || now[f] === unlocked[f]) && (await isTrusted(session.dir, hashConfig(unlocked)))) await trust(session.dir, hashConfig(now));
+      else if (!(await isTrusted(session.dir, hashConfig(now)))) {
         if (this.session === session) this.status({ state: 'error', message: TRUST_CHANGED });
         return;
       }
