@@ -25,7 +25,7 @@ import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
-import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { chatBusy, clearRefusal, composerAction, imageLabels, isClearCommand, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { requestRoutingReview } from '../lib/formRoutingReview';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
@@ -500,7 +500,9 @@ export function Chat() {
   // piece of a reply that streams while the box is empty.
   const replayWanted = configured && provider?.id === 'local' && !asking && !!draft.trim();
   const replayed = useMemo(() => (replayWanted ? replayedWords(conversation?.messages ?? []) : []), [replayWanted, conversation?.messages]);
-  const [answerBox, setAnswerBox] = useState({ key: '', text: '' });
+  const answerBox = useStore((s) => s.chatAnswer);
+  const setAnswerBox = (next: { key: string; text: string } | ((b: { key: string; text: string }) => { key: string; text: string })) =>
+    setState({ chatAnswer: typeof next === 'function' ? next(getState().chatAnswer) : next });
   const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
   const composerText = asking ? answerText : draft;
   const answering = useRef<string | null>(null);
@@ -904,21 +906,17 @@ export function Chat() {
   // the collection the Content list shows.
   const listedNow = listedCollection(st, listed, openPostRef);
   const openNoun = scope.post ? entryNounLower(st.collections[scope.post.collectionId]) : entryNounLower(listedNow);
-  // With none open, what to do first, said on the chip beside the message field and by the send guard: open one from the
-  // collection shown (a synced one's entries are never started here), or, before the first collection, add one.
+  // With none open, a change goes to the whole site (#1424): the chip says nothing is open, and its title how to change
+  // one entry alone (open one from the collection shown; a synced one's entries are never changed here).
   const emptyChip = listedNow ? `No ${openNoun} open` : 'Nothing open';
-  const emptyStep = nothingOpenStep(listedNow);
-  const emptyGuard = !listedNow
-    ? 'Nothing open: add a collection in the Content list and its first entry, then send again with that entry open.'
-    : isReadOnlyCollection(listedNow)
-      ? `${listedNow.settings.name} is synced: its entries are changed at their source, not here.`
-      : `${emptyChip}: ${emptyStep}, then send again. The change is made to the one open in the writer.`;
+  const emptyTitle = listedNow && !isReadOnlyCollection(listedNow) ? `Whole site · ${emptyChip}. To change one ${openNoun} alone, ${nothingOpenStep(listedNow)} first` : `Whole site · ${emptyChip}`;
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
       [{ value: 'page' as const, label: `This ${openNoun}`, description: askMode ? `The ${openNoun} you have open` : 'Its words and details', icon: <Pencil />, title: askMode ? `The ${openNoun} “${scope.post.title}”` : `Only the ${openNoun} “${scope.post.title}”`, chip: scope.post.title, where: `this ${openNoun}` }]
     : scope.empty
-    ? // The writer with no post open shows no page: a change waits for a post, and a question reads the site.
-      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: emptyChip, description: listedNow && isReadOnlyCollection(listedNow) ? `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)}` : `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)} to ask for a change`, icon: <Pencil />, title: listedNow && isReadOnlyCollection(listedNow) ? `${emptyChip}: ${emptyStep}` : `${emptyChip}: ${emptyStep} to ask for a change`, chip: emptyChip, where: emptyStep }]
+    ? // The writer with no post open shows no page: a change reaches the whole site, never the page out of sight under
+      // the writer (#895, #1424), and a question reads the site.
+      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, styles and collections', icon: <Globe />, title: emptyTitle, chip: 'Whole site', where: listedNow ? `no ${openNoun} open` : 'nothing open' }]
     : scope.template
     ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
       [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
@@ -936,7 +934,7 @@ export function Chat() {
           ...(askMode ? [] : [{ value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, and styles', icon: <Globe />, title: `Whole site · from ${page.title}`, chip: 'Whole site', where: `from ${page.title}` }])
         ]
       : [];
-  const scopeValue: ChatEditScope = scope.empty ? 'page' : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
+  const scopeValue: ChatEditScope = scope.empty ? (askMode ? 'page' : 'site') : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
   const found = scopeOptions.find((o) => o.value === scopeValue) ?? scopeOptions[0] ?? null;
   // A selection in the shared header or footer reaches every page, so the chip says so in words, not only in green.
   const shell = !component && found?.value === 'selection' && scope.selection?.owner.kind === 'shell' ? (scope.selection.owner.id === 'footer' ? 'shared footer' : 'shared header') : null;
@@ -1113,6 +1111,8 @@ export function Chat() {
 
   /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */
   const answer = async (q: WaitingQuestion, value: string | ChatImageRef, typed: boolean) => {
+    // `/clear` is never an answer either, from Enter or Send answer (#1356): the chat says why it can't clear now.
+    if (typed && typeof value === 'string' && isClearCommand(value)) return void clearCommand();
     const key = `${q.runId}:${q.question.id}`;
     if ((typeof value === 'string' && !value.trim()) || answering.current === key) return;
     answering.current = key;
@@ -1149,6 +1149,8 @@ export function Chat() {
   };
 
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
+    // `/clear` never goes to the AI, from Enter or the Send button (#1356).
+    if (!context && isClearCommand(text)) return (void clearCommand(), false);
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
     if (getState().settingsSaving) return false;
@@ -1160,14 +1162,14 @@ export function Chat() {
     // A question asked now would go without them too; only one put back with its own images (Try again) need not wait.
     if (dropping && !(context && context.mode === 'ask')) return (toast('The dropped images are still being added. Send once they show under your message.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
-    // it. A question changes nothing, so it is still asked.
-    const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
+    // it. A question changes nothing, so it is still asked. The writer with no post open covers the studio too, and its
+    // edit goes to the whole site (#1424), never to the design under it.
+    const code = !context && !askMode && !ownTarget && !scope.empty ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
-    // would reach the page under the view, so it waits for one (#700), as one from the writer with no post open does
-    // (#895). The draft stays.
-    if (!context && changeWithoutDocument(workspace, workspace === 'seo' ? !!seoChosen : !!scope.post, askMode))
-      return (toast(workspace === 'seo' ? 'Choose a page or post in the SEO list first: the change is made to the one chosen there.' : emptyGuard, 'info'), false);
+    // would reach the page under the view, so it waits for one (#700). The draft stays. One from the writer with no
+    // post open goes to the whole site instead (#1424, lib/chatTarget editScope).
+    if (!context && changeWithoutDocument(workspace, !!seoChosen, askMode)) return (toast('Choose a page or post in the SEO list first: the change is made to the one chosen there.', 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
@@ -1354,6 +1356,54 @@ export function Chat() {
     show(opened, (c) => (moveWidened(from, c.id), { chatDrafts: moveDraft(getState().chatDrafts, from, c.id), chatImages: moveImages(getState().chatImages, from, c.id) }));
   };
 
+  /**
+   * `/clear` typed in the composer (#1356): once confirmed, the same new conversation as the New conversation button,
+   * with the earlier one kept under Earlier conversations. When the button would not start one, or a request is still
+   * running, the chat says why and the text stays in the box.
+   */
+  const composerNow = useRef({ configured, clearingHistory, sending });
+  /** A `/clear` being confirmed or opening its conversation: a second one meanwhile asks nothing more. */
+  const clearing = useRef(false);
+  const clearCommand = async () => {
+    const refusal = () => {
+      const s = getState();
+      const shown = s.conversation;
+      return clearRefusal({ ...composerNow.current, loaded: !!shown, running: !!s.runStatus, waiting: !!waitingQuestion(shown, s.activeRunId, s.runStatus), messages: shown?.messages.length ?? 0 });
+    };
+    if (clearing.current) return;
+    const why = refusal();
+    if (why) return toast(why, 'info');
+    const from = getState().conversation!.id;
+    clearing.current = true;
+    try {
+      const ok = await confirmDialog({
+        title: 'Start a new conversation?',
+        body: 'The chat is cleared so the AI starts fresh, without this conversation’s messages.',
+        details: [
+          { kind: 'keep', text: 'This conversation stays under Earlier conversations.' },
+          { kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }
+        ],
+        confirmLabel: 'Clear chat'
+      });
+      // Cancelled, or the project or the conversation changed while the question was open.
+      if (ok !== true || !stillOpen() || getState().conversation?.id !== from) return;
+      // A request started, or history began to clear, while it was open.
+      const late = refusal();
+      if (late) return toast(late, 'info');
+      // Once the new conversation shows, the command is not left behind as the earlier one's unsent message; its
+      // images stay with it. A failed open leaves the box as it was.
+      await openThread(api.ai.newConversation(), opening, () => {
+        const drafts = getState().chatDrafts;
+        return { chatDrafts: isClearCommand(draftFor(drafts, from)) ? withDraft(drafts, from, '') : drafts };
+      }).then(
+        (shown) => shown && focusComposer(),
+        (e: Error) => stillOpen() && toast(e.message || 'Could not start a new conversation.', 'error')
+      );
+    } finally {
+      clearing.current = false;
+    }
+  };
+
 
   // What leaves this computer with a message. A server that is not this computer already says where content goes,
   // in its own warning above the box, so the note does not say it twice.
@@ -1363,6 +1413,7 @@ export function Chat() {
   const modelShown = modelLines(msgs, next);
   useLayoutEffect(() => {
     turnActions.current = { undoTurn, reviewTurn, continueRequest, retryRequest, msgs };
+    composerNow.current = { configured, clearingHistory, sending };
   });
   const previousRequest: (ChatMessage | undefined)[] = [];
   let lastRequest: ChatMessage | undefined;
@@ -1859,6 +1910,7 @@ export function Chat() {
                 if (action === 'answer') void answer(asking!, composerText, true);
                 else if (action === 'hold') toast('Your message is kept here. You can send it when the current request finishes.', 'info');
                 else if (action === 'send') void send();
+                else if (action === 'clear') void clearCommand();
               }
             }}
           />

@@ -3,6 +3,8 @@
  * ready to import. What a package holds, and how it lands, is the engine's (engine/component-package.ts).
  */
 import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import {
   MAX_PACKAGE_BYTES,
@@ -19,6 +21,9 @@ import { newId } from '@shared/ids';
 import { readRegularFile } from '../packs/files';
 import { safeJoin, sha } from './fsutil';
 import { importPackageImage, type WriteFence } from './assets';
+import { createStarterState } from '@catalogue/starters';
+import { ProjectSession } from './session';
+import { siteIconRecord } from './site-icons';
 
 const MB = 1024 * 1024;
 
@@ -46,9 +51,64 @@ export async function buildComponentPackage(projectDir: string, state: ProjectSt
   }
   const text = `${JSON.stringify(pkg, null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_PACKAGE_BYTES) throw new Error(`The package would be larger than ${MAX_PACKAGE_BYTES / MB} MB. Use smaller images first.`);
-  // Only a package this app can read again is written.
-  decodeComponentPackage(text);
+  // Only a package this app can read again is written, and only one another project can import (#1417): code the
+  // author's project saves with warnings may be what an import, holding a package's code to a stricter policy, refuses.
+  await trialImport(migratePackage(decodeComponentPackage(text)), state.site.themeId);
   return { text, notes, pkg };
+}
+
+/** A blank project on `themeId`, or on the default theme when that theme can't make one here (a release without its shell). */
+function blankOn(themeId: string): ProjectState {
+  try {
+    return createStarterState('blank', 'Package check', false, themeId);
+  } catch {
+    return createStarterState('blank', 'Package check', false);
+  }
+}
+
+/**
+ * Import a package as the editor does, with Developer mode on, into a blank project on the theme it was made on (`themeId`),
+ * made for it in a folder of its own and removed afterwards: whatever that import refuses, a new project on that theme
+ * in this build would refuse too. Throws the reason.
+ */
+async function trialImport(pkg: ComponentPackage, themeId: string): Promise<void> {
+  let dir: string | null = null;
+  let session: ProjectSession | null = null;
+  let refused: string | null = null;
+  try {
+    dir = await fs.mkdtemp(join(tmpdir(), 'so-package-check-'));
+    // Kept before its first file is written, so a project that fails to be made is still closed.
+    session = ProjectSession.starting(dir, blankOn(themeId));
+    await session.writeNew();
+    // As the editor imports: the package's images are written before their records land, with sweeping held off.
+    const trial = session;
+    const at = dir;
+    refused = await trial.withImport(async () => {
+      let prepared: PreparedImport;
+      try {
+        prepared = await preparePackageImport(at, trial.state, pkg, { codeAllowed: true });
+      } catch (e) {
+        if (e instanceof PackageError) return e.message;
+        throw e;
+      }
+      const r = await trial.apply(
+        { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }] },
+        { label: 'Import component', source: 'user', codeAllowed: true, componentImport: prepared.input }
+      );
+      return r.ok ? null : (r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '');
+    });
+  } catch (e) {
+    throw new Error(`whether another project could import it could not be checked: ${(e as Error).message}`);
+  } finally {
+    await session?.close().catch(() => undefined);
+    if (dir) {
+      // Nor is the note of its site icons, kept for a project's next opening, left behind.
+      const icons = siteIconRecord(dir);
+      if (icons) await fs.rm(icons.file, { force: true }).catch(() => undefined);
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  if (refused) throw new Error(`another project would refuse it on import. ${refused.replace(/\s*$/, '')} Fix what it names, then try again.`);
 }
 
 /** Read a package file, check its structure and bring its components to the current format. Throws a PackageError. */

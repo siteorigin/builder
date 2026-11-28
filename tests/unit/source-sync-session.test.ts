@@ -42,6 +42,7 @@ const { syncSource } = await import('../../src/main/sources/sync');
 const { syncedEntryId } = await import('../../src/main/sources/reconcile');
 const { copyProjectSource, exportedSourcesProblem, inProjectSource, writeExportedSources } = await import('../../src/main/export');
 const { isPrivateFileName } = await import('../../src/main/project/private-files');
+const { foreignSyncedEntry } = await import('../../src/engine/collections');
 import type { SyncHandle, SyncResult, SyncRunner } from '../../src/main/sources/client';
 import { spoolFile, type NormalizedRecord, type SyncReply, type SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
@@ -83,7 +84,7 @@ async function setup() {
     { label: 'Add the team source' }
   );
   expect(r.error?.message).toBeUndefined();
-  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
+  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json')).in(dir);
   await secrets.set(s.state.manifest.projectId, 'people-token', SECRET);
   pictures = { 'https://cdn.example/ana.png': await png(10), 'https://cdn.example/ben.png': await png(200) };
   // Another address for Ana's very picture.
@@ -355,6 +356,87 @@ describe('syncing a source into a project', () => {
     expect(undo.ok).toBe(false);
     expect(undo.error?.message).toMatch(/“Ana” in the Team collection uses/);
     expect(s.state.assets.assets[record.id]).toBeDefined();
+  });
+
+  it('takes back a restored version’s synced entries with Undo, and puts them back with Redo (#1474)', async () => {
+    const { s, world, deps } = await setup();
+    const ana = syncedEntryId('people', '1', () => false);
+    const cy = syncedEntryId('people', '3', () => false);
+    world.records = [person('1', 'Ana'), person('2', 'Ben')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 2 });
+    const saved = await s.saveVersion('Winter register');
+    expect(saved.ok).toBe(true);
+    const was = s.state.collections.team.entries[ana].slug;
+    world.records = [person('1', 'Ana', { title: 'Ana Ruiz', slug: 'ana-ruiz' }), person('2', 'Ben'), person('3', 'Cy')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, updated: 1, created: 1 });
+    const synced = structuredClone(s.state.collections.team.entries);
+    expect(synced[ana].slug).toBe('ana-ruiz');
+    const review = await s.reviewVersion(saved.id!);
+    expect(review.review?.problem).toBeUndefined();
+    const restored = await s.restoreVersion(saved.id!, review.review!.revision);
+    expect(restored.ok).toBe(true);
+    const older = structuredClone(s.state.collections.team.entries);
+    expect(older[ana]).toMatchObject({ title: 'Ana', slug: was });
+    expect(older[cy]).toBeUndefined();
+    // The one step the review and the restore's notice offer to take it back, as the notice's Undo asks for it.
+    const undo = await s.undoEntry(restored.entryId!);
+    expect(undo.error?.message).toBeUndefined();
+    expect(s.state.collections.team.entries).toEqual(synced);
+    expect((await readState(s.dir)).collections.team.entries[ana].title).toBe('Ana Ruiz');
+    const redo = await s.redo();
+    expect(redo.error?.message).toBeUndefined();
+    expect(s.state.collections.team.entries).toEqual(older);
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.collections.team.entries[cy]).toMatchObject({ title: 'Cy' });
+  });
+
+  it('never lets an undo of a restore leave a synced collection holding an entry another source wrote (#1474)', async () => {
+    const { s, world, deps } = await setup();
+    world.records = [person('1', 'Ana')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 1 });
+    const saved = await s.saveVersion('People');
+    expect(saved.ok).toBe(true);
+    // The collection moves to another source: detached, emptied, and synced from that one instead.
+    const moved = await s.apply(
+      {
+        operations: [
+          { type: 'collection.update', collectionId: 'team', sourceId: null },
+          { type: 'entry.remove', collectionId: 'team', entryId: syncedEntryId('people', '1', () => false) },
+          { type: 'source.remove', sourceId: 'people' },
+          { type: 'source.upsert', sourceId: 'crew', name: 'Crew API', adapter: 'fixture', collectionId: 'team', config: { credentials: { token: { $secret: 'people-token' } } } }
+        ] as EditOperation[]
+      },
+      { label: 'Move to Crew' }
+    );
+    expect(moved.error?.message).toBeUndefined();
+    world.records = [person('9', 'Ben')];
+    await expect(syncSource(deps, 'crew')).resolves.toMatchObject({ ok: true, created: 1 });
+    const review = await s.reviewVersion(saved.id!);
+    const restored = await s.restoreVersion(saved.id!, review.review!.revision);
+    expect(restored.ok).toBe(true);
+    expect(s.state.collections.team.settings.sourceId).toBe('people');
+    // The source it went back to adds a record, which no step of History names.
+    world.records = [person('1', 'Ana'), person('2', 'Cy')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 1 });
+    const kept = structuredClone(s.state.collections.team);
+    const undo = await s.undoEntry(restored.entryId!);
+    expect(undo.ok).toBe(false);
+    expect(undo.error?.message).toMatch(/would leave “Cy” in the Team collection/);
+    expect(s.state.collections.team).toEqual(kept);
+  });
+
+  it('finds a synced collection an undo of a restore would leave as its next sync could not read it (#1474)', async () => {
+    const { s, world, deps } = await setup();
+    world.records = [person('1', 'Ana')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 1 });
+    expect(foreignSyncedEntry(s.state, ['team'])).toBeNull();
+    const ana = s.state.collections.team.entries[syncedEntryId('people', '1', () => false)];
+    const withEntry = (e: typeof ana) => ({ ...s.state, collections: { ...s.state.collections, team: { ...s.state.collections.team, entries: { ...s.state.collections.team.entries, [e.id]: e } } } });
+    // The same record under a second ID (one synced since, where the first ID was taken).
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000002' }), ['team'])).toMatch(/two entries of the Team collection from the same record/);
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000003', source: { sourceId: 'people' } as never }), ['team'])).toMatch(/would leave “Ana”/);
+    // Only the collections it is asked about.
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000002' }), [])).toBeNull();
   });
 
   it('refuses a sync whose secret is not saved, before anything is read', async () => {

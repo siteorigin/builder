@@ -28,8 +28,6 @@ export interface GraphSection {
   heading: string;
   /** What the entity says, as one sentence. */
   statement: string;
-  /** What these facts are good for. */
-  use?: string;
   rows: SummaryRow[];
   lists: SummaryList[];
 }
@@ -139,7 +137,6 @@ function publisherSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'Publisher',
     statement: name ? `${name}, ${PUBLISHERS[type]}, publishes the site.` : `The site is published by ${PUBLISHERS[type]} with no name.`,
-    use: 'Says who stands behind the site.',
     ...g.rest()
   };
 }
@@ -160,7 +157,6 @@ function websiteSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'Website',
     statement: name ? `This page is part of the website ${name}.` : 'This page is part of a website with no name.',
-    use: 'Names the website its pages belong to.',
     ...g.rest()
   };
 }
@@ -193,7 +189,6 @@ function pageSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'This page',
     statement: `This is ${kinds.length ? joined(kinds) : 'a web page'}.`,
-    use: 'What search engines and AI answer engines read about this page itself.',
     ...g.rest()
   };
 }
@@ -205,7 +200,6 @@ function breadcrumbSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'Breadcrumb trail',
     statement: steps.length ? steps.map((s) => s.text).join(' › ') : 'The trail is empty.',
-    use: 'Shows where this page sits in the site.',
     ...g.rest()
   };
 }
@@ -225,17 +219,16 @@ function articleSection(node: GraphNode, text: Text, type: 'BlogPosting' | 'Arti
   return {
     heading: type === 'BlogPosting' ? 'Blog post' : 'Article',
     statement: headline ? `The page is about ${what}, “${headline}”.` : `The page is about ${what} with no headline.`,
-    use: 'Identifies the piece of writing and who publishes it.',
     ...g.rest()
   };
 }
 
 /** A page's own service, product, event or guide: what each is called, and the sentence that says it. */
-const ENTITIES: Record<string, { heading: string; what: string; use: string }> = {
-  Service: { heading: 'Service', what: 'the service', use: 'The facts people compare services by.' },
-  Product: { heading: 'Product', what: 'the product', use: 'The facts people compare products by: the price and who sells it.' },
-  Event: { heading: 'Event', what: 'the event', use: 'When and where the event takes place, and who organizes it.' },
-  HowTo: { heading: 'How-to guide', what: 'the how-to guide', use: 'The steps of the guide, in order.' }
+const ENTITIES: Record<string, { heading: string; what: string }> = {
+  Service: { heading: 'Service', what: 'the service' },
+  Product: { heading: 'Product', what: 'the product' },
+  Event: { heading: 'Event', what: 'the event' },
+  HowTo: { heading: 'How-to guide', what: 'the how-to guide' }
 };
 
 function entitySection(node: GraphNode, text: Text, type: string): Section {
@@ -278,8 +271,8 @@ function entitySection(node: GraphNode, text: Text, type: string): Section {
     if (steps.length) g.lists.push({ label: 'Steps', ordered: true, items: steps });
     g.say('Publisher', 'publisher');
   }
-  const { heading, what, use } = ENTITIES[type];
-  return { heading, statement: name ? `The page is about ${what} “${name}”.` : `The page is about ${what}, with no name.`, use, ...g.rest() };
+  const { heading, what } = ENTITIES[type];
+  return { heading, statement: name ? `The page is about ${what} “${name}”.` : `The page is about ${what}, with no name.`, ...g.rest() };
 }
 
 /** A section of the page, such as a contact section: the details it shows, each group in its own rows. */
@@ -303,7 +296,7 @@ function elementSection(node: GraphNode, text: Text, heading: string): Section {
       g.rows.push(...p.rest().rows);
     } else g.row('About', text(a));
   }
-  return { heading, statement: 'A section of this page that gives contact details.', use: 'Ties the contact details shown to the part of the page that shows them.', ...g.rest() };
+  return { heading, statement: 'A section of this page that gives contact details.', ...g.rest() };
 }
 
 function otherSection(node: GraphNode, text: Text): Section {
@@ -329,12 +322,13 @@ export function summarizeGraph(graph: SeoGraph): GraphSection[] {
     const types = typesOf(node);
     if (node['@id'] === publisherId) return { rank: 4, at: 0, section: publisherSection(node, text) };
     if (node === website) return { rank: 5, at: 0, section: websiteSection(node, text) };
-    if (types.includes('WebPage')) return { rank: 0, at: 0, section: pageSection(node, text) };
+    // What the page is about (a service, a product, a post) leads: it is what the owner chose; the page itself follows.
+    if (types.includes('WebPage')) return { rank: 1, at: 1, section: pageSection(node, text) };
     if (types.includes('BreadcrumbList')) return { rank: 3, at: 0, section: breadcrumbSection(node, text) };
     const article = types.includes('BlogPosting') ? 'BlogPosting' : types.includes('Article') ? 'Article' : null;
-    if (article) return { rank: 1, at: 0, section: articleSection(node, text, article) };
+    if (article) return { rank: 0, at: 0, section: articleSection(node, text, article) };
     const entity = types.find((t) => Object.hasOwn(ENTITIES, t));
-    if (entity) return { rank: 1, at: 0, section: entitySection(node, text, entity) };
+    if (entity) return { rank: 0, at: 0, section: entitySection(node, text, entity) };
     if (types.includes('WebPageElement')) {
       const at = contacts.indexOf(node);
       return { rank: 2, at, section: elementSection(node, text, contacts.length > 1 ? `Contact section ${at + 1}` : 'Contact section') };

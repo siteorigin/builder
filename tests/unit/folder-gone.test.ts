@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
   utilityProcess: {}
 }));
 
-const { Controller } = await import('../../src/main/controller');
+const { Controller, FOLDER_POLL_MS } = await import('../../src/main/controller');
 const { LOCK_HEARTBEAT_MS, ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 
@@ -43,12 +43,15 @@ afterEach(async () => {
 
 type Watching = { watchers: FolderWatch[]; stageWatchers: FolderWatch[]; watchStageSources(s: unknown): void; attach(s: unknown, workspace: object, runtime: object): Promise<void> };
 
+/** The look a watch asks for when it reports anything (the app's own timed look is not one). */
+const watchLook = (c: InstanceType<typeof Controller>) => vi.spyOn(c as unknown as { checkFolderSoon(s: unknown): void }, 'checkFolderSoon');
+
 /**
  * A watch just started may not report yet (macOS starts its events a moment later, much later on a busy machine), and
  * what happens before then is never told. So a file the app ignores is touched until a watch reports it.
  */
-async function untilWatching(dir: string, session: InstanceType<typeof ProjectSession>) {
-  const look = vi.spyOn(session, 'checkFolder');
+async function untilWatching(dir: string, c: InstanceType<typeof Controller>) {
+  const look = watchLook(c);
   let touched = 0;
   await vi.waitFor(
     () => {
@@ -81,7 +84,7 @@ async function openProject() {
   await inside.attach(session, {}, { state: 'error', message: 'No preview in this test.' });
   // The icons attach leaves publishing take the lock claim too: done here, they cannot be what notices a folder gone.
   await session.refreshSiteIcons().catch(() => null);
-  await untilWatching(dir, session);
+  await untilWatching(dir, c);
   return { dir, c, session, sent, inside, watchers: inside.watchers };
 }
 
@@ -94,12 +97,12 @@ async function expectReportedGone(c: InstanceType<typeof Controller>) {
 // Each opens a real project on disk and waits on real watches: room for a busy machine.
 describe('an open project whose folder goes away', { timeout: 30_000 }, () => {
   it('survives an error from any of its watches, closing it and looking for the folder', async () => {
-    const { session, inside, watchers } = await openProject();
+    const { c, session, inside, watchers } = await openProject();
     inside.watchStageSources(session);
     const all = [...watchers, ...inside.stageWatchers];
     expect(watchers).toHaveLength(3);
     expect(inside.stageWatchers.length).toBeGreaterThan(0);
-    const look = vi.spyOn(session, 'checkFolder');
+    const look = watchLook(c);
     for (const w of all) {
       const close = vi.spyOn(w, 'close');
       look.mockClear();
@@ -138,6 +141,23 @@ describe('an open project whose folder goes away', { timeout: 30_000 }, () => {
     await expect(session.refreshLock()).resolves.toBe('unknown');
     await expectReportedGone(c);
     await expect(session.stillOwner()).resolves.toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('is reported as gone within a second of a rename that no watch reports, well before the lock check', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { dir, c, session, watchers } = await openProject();
+    for (const w of watchers) w.close();
+    // The looks the watches last asked for (300 ms, 400 ms) have been and gone: only the app's own timing can notice.
+    await new Promise((r) => setTimeout(r, 800));
+    let lost = 0;
+    session.on('lock-lost', () => lost++);
+    renameSync(dir, `${dir}-moved`);
+    expect(FOLDER_POLL_MS).toBeLessThanOrEqual(1000);
+    vi.advanceTimersByTime(FOLDER_POLL_MS);
+    // What stops the preview (lock-lost), and the editor shows the folder gone, with no edit and no lock check.
+    await vi.waitFor(() => expect(lost).toBe(1), { timeout: 15_000, interval: 1 });
+    await expectReportedGone(c);
     expect(existsSync(dir)).toBe(false);
   });
 

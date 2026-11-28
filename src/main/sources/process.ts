@@ -33,3 +33,13 @@ export const sourceSecrets = createSecretStore(() => join(app.getPath('userData'
 
 /** The source settings the user approved to sign in with their secrets: `userData/source-approvals.json`. */
 export const sourceApprovals = createApprovalStore(() => join(app.getPath('userData'), 'source-approvals.json'));
+
+/**
+ * The secrets and approvals of the project open in `project.dir`: its own folder's, never those of a copy of it in
+ * another folder, which carries the same project ID (#1543). The folder is the real path the project was opened at
+ * (every opening resolves it first), never resolved again: a link put in its place while it is open never turns it
+ * into another folder's project.
+ */
+export function sourceStores(project: { readonly dir: string }) {
+  return { secrets: sourceSecrets.in(project.dir), approvals: sourceApprovals.in(project.dir) };
+}

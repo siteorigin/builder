@@ -1,9 +1,10 @@
 /**
  * Connect external source (#678): where a collection's entries are synced from (a REST or GraphQL API, Contentful,
- * Sanity, Strapi or WordPress), the secrets it signs in with (kept on this computer, never in the project), and how
- * each record becomes an entry: by path, detail by detail, or by the author's own converter.mjs. Test & Fetch Sample
- * reads the source as a sync would and shows the first records as it sent them and as entries, writing nothing. Save
- * is offered once the settings as they are now have passed that Test, and the main process tests them again as it saves.
+ * Sanity, Strapi or WordPress), the secrets it signs in with (kept on this computer for the project's folder, never in
+ * the project), and how each record becomes an entry: by path, detail by detail, or by the author's own converter.mjs.
+ * Test & Fetch Sample reads the source as a sync would and shows the first records as it sent them and as entries,
+ * writing nothing. Save is offered once the settings as they are now have passed that Test, and the main process tests
+ * them again as it saves.
  *
  * The form is cut into headed sections in the order the task runs (the source, where its records are, signing in,
  * how records become entries, records that go away), and the footer always says where the Test stands, so its result
@@ -84,7 +85,7 @@ function SecretRow({ id, name, saved, opening, onSaved }: { id: string; name: st
       <label htmlFor={id} className="sd-secret-name">
         <KeyRound aria-hidden="true" />
         <span className="sd-secret-key">{name}</span>
-        <span className={`badge ${saved ? 'green' : 'amber'}`}>{saved ? 'Saved on this computer' : 'Not saved yet'}</span>
+        <span className={`badge ${saved ? 'green' : 'amber'}`}>{saved ? 'Saved for this folder' : 'Not saved yet'}</span>
       </label>
       <div className="sd-secret-entry">
         <input
@@ -789,7 +790,7 @@ export function SourceDialog({ collectionId, onClose }: { collectionId: string; 
         </Part>
 
         {(Object.hasOwn(spec.credentials, 'token') || secretNames.length > 0) && (
-          <Part title="Signing in" hint="Tokens and passwords are kept on this computer, never in the project.">
+          <Part title="Signing in" hint="Tokens and passwords are kept on this computer for this project’s folder, never in the project. A copy of the project in another folder keeps its own.">
             {Object.hasOwn(spec.credentials, 'token') && (
               <Field
                 label={`Access token’s name${spec.credentials.token === 'optional' ? ' (optional)' : ''}`}
