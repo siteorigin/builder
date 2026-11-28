@@ -57,7 +57,7 @@ import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
-import { focusInspector } from '../lib/inspector-focus';
+import { focusInspector, pointerPickOnPage } from '../lib/inspector-focus';
 import { keyboardLeavesPage } from '../lib/clip-keys';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
@@ -964,7 +964,8 @@ export function Canvas() {
       const gated = gatedPick(m.type, s.mode);
       if (gated && pageBehind()) {
         if (gated === 'hold' && st && s.frameReady && !leavingForPage() && !canvasCovered(activeWorkspace(s))) {
-          const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s) };
+          // When the click was made is kept through every wait, for the Inspector focus it may set aside (#1476).
+          const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s), madeAt: held?.madeAt ?? performance.now() };
           // Taken after whatever opened the gate (a page's `ready`) has finished with the frame.
           gate.current!.hold(() => setTimeout(() => pageMessage.current?.(m, false, at)));
         }
@@ -1248,7 +1249,11 @@ export function Canvas() {
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
+          const before = JSON.stringify(s.selection ?? null);
           selectOnPage(next);
+          // A pick the pointer made on the page leaves no focus ring in the Inspector (#1476). Compared whole, as the
+          // Inspector keys its content (a part named in Component Studio is a new panel).
+          if (p.pointer === true) pointerPickOnPage({ changed: JSON.stringify(getState().selection ?? null) !== before, madeAt: held?.madeAt });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           // A press of the pointer on the page makes the selection the keyboard's target (lib/clip-keys, #1361). Blurred
           // rather than moved, as pagePick does: the window's last input was a key, so a moved focus would draw a ring.
@@ -4108,7 +4113,7 @@ function kindIcon(state: ProjectState, ref: ElementRef) {
 
 /** What a step of the selection chip is taken from: the selection, the project, and what the page shows. */
 /** Where a click the page gate held was made: the frame, the view and way of editing it, and what was selected then. */
-type HeldPick = { session: string; scene: string; selection: string | null };
+type HeldPick = { session: string; scene: string; selection: string | null; madeAt: number };
 const selectionKey = (s: ReturnType<typeof getState>): string | null => (s.selection ? refKey(s.selection) : null);
 const sceneKey = (s: ReturnType<typeof getState>): string => JSON.stringify([viewKey(s), s.mode, s.definitionMode?.definitionId ?? null, !!s.definitionMode?.studio]);
 
