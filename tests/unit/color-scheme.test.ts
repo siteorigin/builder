@@ -270,8 +270,10 @@ describe('what the site gets in each mode', () => {
     expect(layout).toContain('return startThemeToggle(() => text().themeToggle);');
     // Every page follows a choice made in another tab, a page that hides the header too (#1421): its own effect, never
     // behind the header's.
-    expect(layout).toContain('\t$effect(() => followThemeChoice());\n');
-    expect(layout).not.toMatch(/if \(!showHeader\) return;[^}]*followThemeChoice/);
+    expect(layout).toContain(
+      "\tconst showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());\n"
+    );
+    expect(layout.match(/followThemeChoice\(/g)).toHaveLength(1);
     expect(clean.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain('export function followThemeChoice()');
     // The browser's theme colour follows the visitor's choice as well as the device, on every page.
     const [light, dark] = [siteColors(effectiveTokens(s)).brand, siteColors(effectiveTokens(s, 'dark')).brand];

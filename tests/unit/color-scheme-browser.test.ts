@@ -233,7 +233,7 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       const html = (header: boolean) =>
         `<!doctype html><html lang="en"><head><meta charset="utf-8">${site.head}<style>${site.css}</style></head><body>${site.body}` +
         `${header ? '' : `<script>document.querySelector('header.so-header').remove();</script>`}` +
-        `<script type="module">${themeToggleJs(key)}\nfollowThemeChoice();\n${header ? `startThemeToggle(() => 'Dark mode');\n` : ''}window.__ready = true;</script></body></html>`;
+        `<script type="module">${themeToggleJs(key)}\nwindow.__stopFollowing = followThemeChoice();\n${header ? `startThemeToggle(() => 'Dark mode');\n` : ''}window.__ready = true;</script></body></html>`;
       await context.route(`${ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html(!route.request().url().endsWith('/about')) }));
       const home = await context.newPage();
       const about = await context.newPage();
@@ -257,6 +257,15 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       // A choice forgotten in another tab hands every page back to the device.
       await contact.evaluate('localStorage.clear()');
       for (const page of [home, about]) await page.waitForFunction(`!('soTheme' in document.documentElement.dataset)`);
+      // Only this site's choice, in local storage, counts: another project's on the same origin, or a session's, never.
+      const heard = (event: string) =>
+        about.evaluate(`(() => { localStorage.setItem(${JSON.stringify(key)}, 'dark'); dispatchEvent(new StorageEvent('storage', ${event})); const theme = document.documentElement.dataset.soTheme ?? null; localStorage.removeItem(${JSON.stringify(key)}); delete document.documentElement.dataset.soTheme; return theme; })()`);
+      expect(await heard(`{ key: 'so-theme:another-project', storageArea: localStorage }`)).toBeNull();
+      expect(await heard(`{ key: ${JSON.stringify(key)}, storageArea: sessionStorage }`)).toBeNull();
+      expect(await heard(`{ key: ${JSON.stringify(key)}, storageArea: localStorage }`)).toBe('dark');
+      // Stopped, it follows nothing.
+      await about.evaluate('window.__stopFollowing()');
+      expect(await heard(`{ key: ${JSON.stringify(key)}, storageArea: localStorage }`)).toBeNull();
     } finally {
       await context.close();
     }
