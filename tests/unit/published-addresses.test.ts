@@ -155,9 +155,18 @@ describe('addresses exported for a page that has left them some other way (#1382
 
   it('keeps nothing for a page removed since, or for a new Home page told not to keep its address', () => {
     expect(kept(applyOperations(undoneMove(), [{ type: 'page.remove', pageId: 'pg_services' }]).state)).toEqual([]);
-    const home = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state;
-    expect(kept(home)).toEqual([]);
-    expect(home.site.droppedAddresses).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
+    // Removed with a replacement, it leads there, as the redirects kept for the page do.
+    const undone = undoneMove();
+    const home = undone.site.homePageId;
+    expect(kept(applyOperations(undone, [{ type: 'page.remove', pageId: 'pg_services', replacementPageId: home }]).state)).toEqual([['/what-we-do/', home]]);
+    // The page replacing a removed Home leaves its own address behind: it is not moved, Home is removed.
+    const s = exported(withPage());
+    const replaced = applyOperations(s, [{ type: 'page.remove', pageId: s.site.homePageId, replacementPageId: 'pg_services' }]).state;
+    expect(replaced.pages.pg_services.route).toBe('/');
+    expect(kept(replaced)).toEqual([]);
+    const declined = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state;
+    expect(kept(declined)).toEqual([]);
+    expect(declined.site.droppedAddresses).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
   });
 
   it('is a redirect of the publication, which carries no record of exports or of the addresses dropped', () => {

@@ -1466,6 +1466,7 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
     const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id && state.pages[id]?.draft !== true);
     if (!next) fail('Every other page is a draft. Publish one before removing the Home page, or leave a new blank Home page.');
     if (state.pages[next].draft === true) fail(`"${state.pages[next].title}" is a draft and cannot become the Home page. Publish it first, or choose a published page.`);
+    dropAddress(state, state.pages[next].route, next);
     state.pages[next].route = '/';
     state.site.homePageId = next;
   }
@@ -1476,7 +1477,10 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
       if (anchor) link.anchor = anchor;
       else delete link.anchor;
     }
-  // Old addresses kept for the removed page follow its links to the replacement, or go with it.
+  // Old addresses kept for the removed page follow its links to the replacement, or go with it: those exports delivered
+  // for it that it has left too (see shared/published), which name no page once it is gone.
+  const left = keptPublishedAddresses(state).filter((r) => r.pageId === page.id);
+  if (heir && left.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...left];
   if (Array.isArray(state.site.redirects)) {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : heir ? [{ ...r, pageId: heir }] : []));
     if (!state.site.redirects.length) delete state.site.redirects;
