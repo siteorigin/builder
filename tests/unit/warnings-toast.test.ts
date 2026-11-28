@@ -44,3 +44,11 @@ describe("warnings after a code component is created or saved", () => {
     );
   });
 });
+
+describe("the same warnings said again", () => {
+  it("replace the earlier notice instead of stacking", () => {
+    store.warningsToast("Saved", ["a", "b"]);
+    store.warningsToast("Saved", ["a", "b"]);
+    expect(store.getState().toasts).toHaveLength(1);
+  });
+});

@@ -1017,7 +1017,7 @@ export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast
   const id = ++toastId;
   // An error stays until it is dismissed, so one said again takes the earlier one's place instead of stacking. One
   // with an action of its own stays beside it: that action can hold something else (the text for Copy text).
-  const repeats = (t: Toast) => kind === 'error' && t.kind === 'error' && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
+  const repeats = (t: Toast) => (kind === 'error' || stays) && t.kind === kind && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
   setState({ toasts: [...getState().toasts.filter((t) => !repeats(t)), { id, text, kind, action }] });
   if (kind !== 'error' && !stays) setTimeout(() => dismissToast(id), 4000);
 }
