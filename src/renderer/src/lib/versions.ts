@@ -42,7 +42,10 @@ export function describeReview(r: VersionReview): string[] {
   if (missing) lines.push(`Puts back ${plural(missing, 'file', 'files')} the site uses`);
   if (r.replaced.length) lines.push(`Replaces ${plural(r.replaced.length, 'file', 'files')} changed since it was saved: ${r.replaced.map(fileName).join(', ')}`);
   if (r.left.length) lines.push(leftLine(r.left));
-  if (r.others.length) lines.push(`Doesn’t copy ${plural(r.others.length, 'other file', 'other files')} from it, so the site won’t match it there: ${r.others.join(', ')}`);
+  if (r.others.length) {
+    const one = r.others.length === 1;
+    lines.push(`Doesn’t copy ${plural(r.others.length, 'other file', 'other files')} from it, which ${one ? 'stays as it is' : 'stay as they are'} now or as Builder generates ${one ? 'it' : 'them'}: ${r.others.join(', ')}`);
+  }
   return lines;
 }
 
@@ -70,7 +73,7 @@ export function restoredNotice(name: string, kept: boolean, replaced = 0, left: 
   if (kept && !replaced) parts.push('Your work from before is kept in Saved versions.');
   if (kept && replaced) parts.push(`Undo won’t bring back the ${plural(replaced, 'file', 'files')} it replaced, but your work from before, kept in Saved versions, has ${replaced === 1 ? 'it' : 'them'}.`);
   if (left.length) parts.push(`${leftLine(left)}.`);
-  if (others.length) parts.push(`${plural(others.length, 'other file', 'other files')} ${others.length === 1 ? 'wasn’t' : 'weren’t'} copied from it, so the site doesn’t match it there: ${paths(others)}.`);
+  if (others.length) parts.push(`${plural(others.length, 'other file', 'other files')} ${others.length === 1 ? 'wasn’t' : 'weren’t'} copied from it: ${paths(others)}.`);
   return parts.join(' ');
 }
 

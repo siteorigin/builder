@@ -1773,6 +1773,23 @@ describe('restoring with Git snapshots on (#1155)', () => {
     expect(review!.others).toEqual([]);
   });
 
+  it.runIf(!caseSensitive)('names a version’s hand-written file that Builder has taken over since under another spelling (#1396)', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const HAND = 'src/routes/Signup/+page.svelte';
+    mkdirSync(join(dir, 'src/routes/Signup'), { recursive: true });
+    writeFileSync(join(dir, HAND), '<p>By hand</p>\n');
+    const april = await ok(s.saveVersion('April'));
+    // The page's route written into the folder as the disk spells it: the same file, now the generator's.
+    rmSync(join(dir, HAND));
+    await ok(s.apply({ operations: [{ type: 'page.create', title: 'Signup' }] }, { label: 'Add page' }));
+    expect(JSON.parse(read(dir, 'siteorigin/generated-manifest.json').toString()).files['src/routes/signup/+page.svelte']).toBeDefined();
+    expect(readdirSync(join(dir, 'src/routes'))).toContain('Signup');
+    const { review } = await ok(s.reviewVersion(april.id!));
+    expect(review!.pages.gone).toEqual(['Signup']);
+    expect(review!.others).toEqual([HAND]);
+  });
+
   it('reviews and restores past a file no snapshot could hold, naming it (#1396)', async () => {
     git.enabled = true;
     const { dir, s } = await make();
@@ -1934,20 +1951,20 @@ describe('the saved version wording', () => {
     const routes = ['src/routes/a/+page.svelte', 'src/routes/b/+page.svelte', 'src/routes/c/+page.svelte', 'src/routes/d/+page.svelte', 'src/routes/e/+page.svelte'];
     expect(describeReview({ ...base, pages: { back: [], gone: [], changed: ['Home'] }, others: ['src/routes/volunteer/+page.svelte'] })).toEqual([
       'Changes 1 page: “Home”',
-      'Doesn’t copy 1 other file from it, so the site won’t match it there: src/routes/volunteer/+page.svelte'
+      'Doesn’t copy 1 other file from it, which stays as it is now or as Builder generates it: src/routes/volunteer/+page.svelte'
     ]);
     // A review names every one of them; a notice at most four.
-    expect(describeReview({ ...base, others: routes })).toEqual([`Doesn’t copy 5 other files from it, so the site won’t match it there: ${routes.join(', ')}`]);
+    expect(describeReview({ ...base, others: routes })).toEqual([`Doesn’t copy 5 other files from it, which stay as they are now or as Builder generates them: ${routes.join(', ')}`]);
     expect(othersOnly(['package.json'])).toEqual(['Your pages, settings and media already match this version.', '1 other file differs from it, and restoring doesn’t copy it: package.json.']);
     expect(othersOnly(routes)[1]).toBe(`5 other files differ from it, and restoring doesn’t copy them: ${routes.join(', ')}.`);
     expect(restoredNotice('April', true, 0, [], ['src/routes/volunteer/+page.svelte'])).toBe(
-      'Restored “April”. Your work from before is kept in Saved versions. 1 other file wasn’t copied from it, so the site doesn’t match it there: src/routes/volunteer/+page.svelte.'
+      'Restored “April”. Your work from before is kept in Saved versions. 1 other file wasn’t copied from it: src/routes/volunteer/+page.svelte.'
     );
     expect(restoredNotice('April', true, 0, [], routes.slice(0, 4))).toBe(
-      `Restored “April”. Your work from before is kept in Saved versions. 4 other files weren’t copied from it, so the site doesn’t match it there: ${routes.slice(0, 4).join(', ')}.`
+      `Restored “April”. Your work from before is kept in Saved versions. 4 other files weren’t copied from it: ${routes.slice(0, 4).join(', ')}.`
     );
     expect(restoredNotice('April', true, 2, [], routes)).toBe(
-      'Restored “April”. Undo won’t bring back the 2 files it replaced, but your work from before, kept in Saved versions, has them. 5 other files weren’t copied from it, so the site doesn’t match it there: src/routes/a/+page.svelte, src/routes/b/+page.svelte, src/routes/c/+page.svelte, src/routes/d/+page.svelte and 1 more.'
+      'Restored “April”. Undo won’t bring back the 2 files it replaced, but your work from before, kept in Saved versions, has them. 5 other files weren’t copied from it: src/routes/a/+page.svelte, src/routes/b/+page.svelte, src/routes/c/+page.svelte, src/routes/d/+page.svelte and 1 more.'
     );
   });
 });

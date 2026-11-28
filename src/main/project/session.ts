@@ -4892,7 +4892,7 @@ export class ProjectSession extends EventEmitter {
     let others: string[] = [];
     if (v.git) {
       try {
-        others = await this.otherFiles(v, state, docs, docs.size !== this.docs.size || [...docs].some(([p, c]) => this.docs.get(p) !== c));
+        others = await this.otherFiles(v, docs, docs.size !== this.docs.size || [...docs].some(([p, c]) => this.docs.get(p) !== c));
       } catch (e) {
         return refuse((e as Error).message);
       }
@@ -4906,10 +4906,10 @@ export class ProjectSession extends EventEmitter {
    * file counts where either side holds it as written by hand, not by the generator (each side's record of what it
    * generated says which of its files were): generated output follows the documents restored, and the media a restore
    * puts back are reviewed as ever. Compared by Git's name for the bytes, so only a file both sides hold is read.
-   * `state` and `docs` are the project the restore leaves; `retires`, whether its documents differ from the project's,
-   * so the generator may remove a file it writes now.
+   * `docs` are the documents the restore leaves; `retires`, whether they differ from the project's, so the generator
+   * may rewrite or remove a file it writes now.
    */
-  private async otherFiles(v: SavedVersion, state: ProjectState, docs: Map<string, string>, retires: boolean): Promise<string[]> {
+  private async otherFiles(v: SavedVersion, docs: Map<string, string>, retires: boolean): Promise<string[]> {
     const saved = await this.versions.gitFiles(v);
     const now = new Map((await listSnapshotFiles(this.dir)).map((f) => [f.path, f]));
     // Builder's own: the documents on every side, the media the version holds and either side's library.
@@ -4927,32 +4927,22 @@ export class ProjectSession extends EventEmitter {
       const [x, y] = await Promise.all([a, b].map((p) => fs.lstat(join(this.dir, p), { bigint: true }).catch(() => null)));
       return !!x && !!y && x.dev === y.dev && x.ino === y.ino;
     };
-    // What the generator writes for the project the restore leaves: worked out only for a file of the version's that the
-    // generator has taken over since, and might retire.
-    let produced: Set<string> | undefined;
-    const producesNow = (path: string) => {
-      if (!produced) {
-        try {
-          produced = new Set(generateProject(state, { instrument: false }).keys());
-        } catch {
-          produced = new Set();
-        }
-      }
-      return produced.has(path);
-    };
     const out: string[] = [];
     for (const path of new Set([...saved.files.keys(), ...now.keys()])) {
       if (path === MANIFEST_FILE || path.startsWith('siteorigin/') || builders.has(path)) continue;
       const was = saved.files.get(path);
       const is = now.get(path);
-      const ownedNow = generatedNow.has(path);
-      const alias = is && !ownedNow ? known.get(folded(path)) : undefined;
-      if (alias !== undefined && alias !== path && (await sameEntry(alias, path))) continue;
+      const alias = is && !generatedNow.has(path) ? known.get(folded(path)) : undefined;
+      const aliased = alias !== undefined && alias !== path && (await sameEntry(alias, path));
+      // Builder's own file under the disk's spelling, where the version has nothing by that spelling either.
+      if (aliased && !was) continue;
+      // Whether the file at this path now is Builder's: its generated output, or a file it knows by another spelling.
+      const buildersNow = !!is && (generatedNow.has(path) || aliased);
       const byHandThen = !!was && !generatedThen.has(path);
-      if (!byHandThen && !(is && !ownedNow)) continue;
-      // The version's own copy of a file the generator writes now and no longer would once restored: it goes, and the
-      // version's copy isn't put back, however alike the two are.
-      const retired = retires && byHandThen && ownedNow && !producesNow(path);
+      if (!byHandThen && !(is && !buildersNow)) continue;
+      // The version's own copy of a file Builder has taken over since: with other documents restored, the generator may
+      // rewrite or remove it, and the version's copy isn't put back, however alike the two are now.
+      const retired = retires && byHandThen && buildersNow;
       // Git's mode says whether a file runs, which Windows doesn't keep: there only the bytes are compared. A file too
       // large for a snapshot is none the version could hold, so it is never read.
       if (!retired && was && is && is.size <= MAX_SNAPSHOT_FILE && (process.platform === 'win32' || (was.mode === '100755') === is.executable) && (await is.blobOid()) === was.oid) continue;
