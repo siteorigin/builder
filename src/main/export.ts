@@ -87,7 +87,7 @@ import { withoutCodeMarkers } from './codecheck';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
-import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
 import { ownServerHook } from './project/server-hook';
 import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -298,8 +298,117 @@ export function exportedAssetFilter(state: ProjectState): (rel: string) => boole
   };
 }
 
+/** The eight hash characters the importer names a file by, which an original shares with all its responsive copies. */
+const importedToken = (name: string) => name.match(/-([a-f0-9]{8})(?:-\d+w)?\.[a-z0-9]+$/)?.[1] ?? name;
+
+/**
+ * Remove from a staged copy of the project (Duplicate project, #1378) the files the importer made that are there only
+ * for the original's undo and saved versions, which the copy does not take: a document replaced with a new edition, a
+ * deleted image. Built as a plain SvelteKit project, the copy would otherwise publish them at addresses the project has
+ * retired. Every file an asset record lists stays, used or not: as the copied asset document lists it, and as the
+ * project holds it. Any other file the importer made stays when something in the copy names it, hand-written or
+ * generated, public or an authoring document, drafts included; the brief (the author's notes) and the asset document
+ * (whose original names are files on the author's computer) never keep one. A picture or font is named by its eight
+ * hash characters, as the session finds it (an address built from its parts holds them), and stays too while a library
+ * file shares them; a document by its whole name. A document counts as the importer's only while its bytes still have
+ * the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one. Anything that can't
+ * be read for what it names leaves every file in place. Read from the copy, so it decides by exactly what was copied.
+ * Returns the files it removed; one that can't be removed fails the copy, which would otherwise publish it.
+ */
+export async function leaveOutRetiredAssets(copy: string, state: ProjectState): Promise<string[]> {
+  const library = libraryAssetFiles(state);
+  try {
+    const text = await fs.readFile(join(copy, 'siteorigin', 'assets.json'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+    const doc = text === null ? null : (JSON.parse(text) as { assets?: Record<string, { file?: unknown; variants?: Array<{ file?: unknown }> } | null> } | null);
+    for (const a of Object.values(doc?.assets ?? {})) for (const f of [a?.file, ...(Array.isArray(a?.variants) ? a.variants.map((v) => v?.file) : [])]) if (typeof f === 'string') library.add(f);
+  } catch {
+    return [];
+  }
+  // Without case, as the disk may read paths: a record of `static/Assets/…` keeps its file wherever the folder is.
+  const listed = new Set([...library].map((f) => f.toLowerCase()));
+  const shared = new Set([...listed].filter((f) => /^static\/assets\/[^/]+$/.test(f) && IMPORTED_MEDIA_FILE.test(basename(f))).map((f) => importedToken(basename(f))));
+  const dir = join(copy, 'static', 'assets');
+  const st = await fs.stat(dir).catch(() => null);
+  if (!st?.isDirectory()) return [];
+  // The copy's folders have their originals' modes: one this app, the copy's owner, could not read, write in or look
+  // into is opened while it is weighed, and closed again. Windows reports no such bits for a folder, nor needs them.
+  const mode = st.mode & 0o7777;
+  const closed = process.platform !== 'win32' && (mode & 0o700) !== 0o700;
+  if (closed && !(await fs.chmod(dir, mode | 0o700).then(() => true, () => false))) return [];
+  try {
+    return await leaveOutRetired(copy, dir, listed, shared);
+  } finally {
+    // Left open only to its owner, if at all: what the pass found, or why it failed, is what matters.
+    if (closed) await fs.chmod(dir, mode).catch(() => undefined);
+  }
+}
+
+/** leaveOutRetiredAssets, once the copy's static/assets/ can be read: `listed` and `shared` are its library's files and their hash characters. */
+async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, shared: Set<string>): Promise<string[]> {
+  const media = new Map<string, string>();
+  const documents = new Set<string>();
+  for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const rel = `static/assets/${e.name}`;
+    if (!e.isFile() || listed.has(rel.toLowerCase())) continue;
+    if (IMPORTED_MEDIA_FILE.test(e.name)) {
+      if (!shared.has(importedToken(e.name))) media.set(rel, importedToken(e.name));
+    } else if (IMPORTED_DOCUMENT_FILE.test(e.name)) {
+      const read = await hashFileAt(join(copy, rel), () => undefined);
+      if (typeof read === 'object' && read.hash.startsWith(importedToken(e.name))) documents.add(rel);
+    }
+  }
+  if (!media.size && !documents.size) return [];
+  const tokens = new Set(media.values());
+  const found = new Set<string>();
+  const named = new NameMatcher([...documents].map((rel) => basename(rel)));
+  const candidates = [...media.keys(), ...documents];
+  const kept = (rel: string) => (media.has(rel) ? found.has(media.get(rel)!) : named.whole(basename(rel)));
+  // What the copy carries, read as text: the files the website build reads, stylesheets and transforms it may be built
+  // from, and files with no extension (`_redirects`).
+  const searched = (name: string) => TEXT_FILE.test(name) || /\.(s[ac]ss|less|styl|xslt?)$/i.test(name) || !/.\.[^.]+$/.test(name);
+  let unreadable = false;
+  let done = false;
+  const look = async (rel: string) => {
+    const text = await fs.readFile(join(copy, rel), 'utf8').catch(() => null);
+    if (text === null) return void (unreadable = true);
+    for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
+    named.scan(text);
+    done = candidates.every(kept);
+  };
+  const walk = async (rel: string): Promise<void> => {
+    for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
+      if (unreadable || done) return;
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(child);
+      else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) await look(child);
+    }
+  };
+  await walk('').catch(() => (unreadable = true));
+  // A file that stays is read in turn for the files it names (a catalogue a page fetches, listing downloads), and so
+  // on through what those name, until no more stay.
+  const read = new Set<string>();
+  for (let more = true; more && !unreadable && !done; ) {
+    more = false;
+    for (const rel of candidates)
+      if (!read.has(rel) && kept(rel) && searched(basename(rel))) {
+        read.add(rel);
+        await look(rel);
+        more = true;
+      }
+  }
+  if (unreadable) return [];
+  const gone = candidates.filter((rel) => !kept(rel));
+  for (const rel of gone) {
+    // A read-only file can't be removed on Windows, nor one a virus scanner holds for a moment. One that won't go
+    // fails the copy, which would otherwise publish it.
+    if (process.platform === 'win32') await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
+    await fs.rm(join(copy, rel), { maxRetries: 5, retryDelay: 100 });
+  }
+  return gone;
+}
+
 /** Files the website build reads as text, searched for the asset file names they use. */
-const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
+const TEXT_FILE =/\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
 
 /** Does `text` name `file` as a whole file name, so that `a-1234abcd.svg` is not found inside `ba-1234abcd.svg`? */
 export function namesFile(text: string, file: string): boolean {
