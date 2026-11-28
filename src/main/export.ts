@@ -331,14 +331,15 @@ export async function leaveOutRetiredAssets(copy: string, state: ProjectState): 
   const st = await fs.stat(dir).catch(() => null);
   if (!st?.isDirectory()) return [];
   // The copy's folders have their originals' modes: one this app, the copy's owner, could not read, write in or look
-  // into is opened while it is weighed, and closed again.
+  // into is opened while it is weighed, and closed again. Windows reports no such bits for a folder, nor needs them.
   const mode = st.mode & 0o7777;
-  const closed = (mode & 0o700) !== 0o700;
-  if (closed) await fs.chmod(dir, mode | 0o700);
+  const closed = process.platform !== 'win32' && (mode & 0o700) !== 0o700;
+  if (closed && !(await fs.chmod(dir, mode | 0o700).then(() => true, () => false))) return [];
   try {
     return await leaveOutRetired(copy, dir, listed, shared);
   } finally {
-    if (closed) await fs.chmod(dir, mode);
+    // Left open only to its owner, if at all: what the pass found, or why it failed, is what matters.
+    if (closed) await fs.chmod(dir, mode).catch(() => undefined);
   }
 }
 
@@ -360,35 +361,47 @@ async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, s
   const tokens = new Set(media.values());
   const found = new Set<string>();
   const named = new NameMatcher([...documents].map((rel) => basename(rel)));
+  const candidates = [...media.keys(), ...documents];
+  const kept = (rel: string) => (media.has(rel) ? found.has(media.get(rel)!) : named.whole(basename(rel)));
   // What the copy carries, read as text: the files the website build reads, stylesheets and transforms it may be built
   // from, and files with no extension (`_redirects`).
   const searched = (name: string) => TEXT_FILE.test(name) || /\.(s[ac]ss|less|styl|xslt?)$/i.test(name) || !/.\.[^.]+$/.test(name);
   let unreadable = false;
   let done = false;
+  const look = async (rel: string) => {
+    const text = await fs.readFile(join(copy, rel), 'utf8').catch(() => null);
+    if (text === null) return void (unreadable = true);
+    for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
+    named.scan(text);
+    done = candidates.every(kept);
+  };
   const walk = async (rel: string): Promise<void> => {
     for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
       if (unreadable || done) return;
       const child = rel ? `${rel}/${e.name}` : e.name;
-      const key = child.toLowerCase();
       if (e.isDirectory()) await walk(child);
-      else if (e.isFile() && searched(e.name) && !media.has(key) && !documents.has(key) && key !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) {
-        const text = await fs.readFile(join(copy, child), 'utf8').catch(() => null);
-        if (text === null) unreadable = true;
-        else {
-          for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
-          named.scan(text);
-          done = found.size === tokens.size && [...documents].every((d) => named.whole(basename(d)));
-        }
-      }
+      else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) await look(child);
     }
   };
   await walk('').catch(() => (unreadable = true));
+  // A file that stays is read in turn for the files it names (a catalogue a page fetches, listing downloads), and so
+  // on through what those name, until no more stay.
+  const read = new Set<string>();
+  for (let more = true; more && !unreadable && !done; ) {
+    more = false;
+    for (const rel of candidates)
+      if (!read.has(rel) && kept(rel) && searched(basename(rel))) {
+        read.add(rel);
+        await look(rel);
+        more = true;
+      }
+  }
   if (unreadable) return [];
-  const gone = [...[...media].filter(([, t]) => !found.has(t)).map(([rel]) => rel), ...[...documents].filter((rel) => !named.whole(basename(rel)))];
+  const gone = candidates.filter((rel) => !kept(rel));
   for (const rel of gone) {
     // A read-only file can't be removed on Windows, nor one a virus scanner holds for a moment. One that won't go
     // fails the copy, which would otherwise publish it.
-    await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
+    if (process.platform === 'win32') await fs.chmod(join(copy, rel), 0o666).catch(() => undefined);
     await fs.rm(join(copy, rel), { maxRetries: 5, retryDelay: 100 });
   }
   return gone;
