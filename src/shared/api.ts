@@ -516,6 +516,27 @@ export type Unpacking = { name: string; dir: string; folder: string; done: numbe
  */
 export type WebsiteTools = 'local' | 'download' | 'unknown';
 
+/** One npm package a project's package.json declares (#1480). */
+export interface ProjectPackage {
+  name: string;
+  /** What package.json asks for: a version (`4.1.0`), a range or a tag. */
+  wanted: string;
+  section: 'dependencies' | 'devDependencies' | 'optionalDependencies' | 'peerDependencies';
+  /** The version set up in the project's website tools, or null when it is not set up there. */
+  installed: string | null;
+  /** One of the website's own tools (Svelte, SvelteKit, Vite), which Packages never changes or removes. */
+  tool: boolean;
+}
+
+/** The open project's npm packages, and why they can't be changed now (null when they can). */
+export interface ProjectPackages {
+  packages: ProjectPackage[];
+  locked: string | null;
+}
+
+/** A change to a project's npm packages: add or update one (`name` or `name@version`), or remove one by name. */
+export type PackageChange = { add: string } | { remove: string };
+
 export interface ProgressEvent {
   step: 'files' | 'dependencies' | 'preview' | 'done' | 'error';
   message: string;
@@ -1642,6 +1663,14 @@ export interface BuilderApi {
      */
     componentThumb(definitionId: string, workspaceKey: string, have?: string): Promise<ComponentThumb>;
     repairDependencies(): Promise<void>;
+    /** The open project's npm packages (#1480), as Project health lists them. */
+    packages(): Promise<ProjectPackages>;
+    /**
+     * Add or update (`{ add: 'zod@4.1.0' }`) or remove (`{ remove: 'zod' }`) one npm package of the project open as
+     * `opening` (its `workspaceKey`, #1480). Settles once the package files are changed and the preview has set the
+     * website tools up again for them, or with why nothing was changed.
+     */
+    changePackage(change: PackageChange, opening: string): Promise<{ ok: boolean; message?: string }>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;

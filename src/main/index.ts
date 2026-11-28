@@ -30,7 +30,7 @@ import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
-import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, projectTokenVars } from './codecheck';
+import { checkSvelteSource, codeContractNames, codePropsTaken, componentSources, importedPackages, projectTokenVars } from './codecheck';
 import { designCalled } from '@generator/index';
 import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -896,6 +896,8 @@ function registerIpc() {
   handle('project:releaseComponentPreview', (key: unknown) => controller.releaseComponentPreview(key));
   handle('project:componentThumb', (definitionId: unknown, opening: unknown, have?: unknown) => controller.componentThumb(definitionId, opening, have));
   handle('project:repairDependencies', () => controller.repairDependencies());
+  handle('project:packages', () => controller.projectPackages());
+  handle('project:changePackage', (change: unknown, opening: unknown) => controller.changeProjectPackage(change, opening));
   handle('project:readSource', (id: string) => controller.readSource(id));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
@@ -928,7 +930,9 @@ function registerIpc() {
     // Every project file it imports must be there: compiling it alone never notices one missing.
     const session = controller.session;
     const modules = session ? { modules: session.draftModules(String(source), typeof given.definitionId === 'string' ? given.definitionId : undefined) } : {};
-    const problems = await checkSvelteSource(String(source), { contract, ...held, ...modules, ...(state ? { tokens: projectTokenVars(state) } : {}) });
+    // The npm packages the project declares, which a developer's code may import (#1480).
+    const packages = session ? { packages: await session.declaredPackages() } : {};
+    const problems = await checkSvelteSource(String(source), { contract, ...held, ...modules, ...packages, ...(state ? { tokens: projectTokenVars(state) } : {}) });
     const errors = problems.filter((p) => p.severity === 'error');
     // What the code takes from $props(), so the editor can declare its properties from it.
     const props = await codePropsTaken(String(source), { variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) });
@@ -1061,6 +1065,11 @@ function registerIpc() {
     fixAbort?.abort();
     const abort = (fixAbort = new AbortController());
     try {
+      // The assistant's policy allows no npm package (#1480): a fix of code that uses one could only pass by dropping
+      // it, so the developer fixes it instead.
+      const used = await importedPackages(String(source));
+      if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Canceled' };
+      if (used.length) return { ok: false, message: `The assistant can’t fix code that imports npm packages (${used.map((n) => `“${n}”`).join(', ')}), so fix these problems by hand.` };
       const ad = await orchestratorAdapter(abort.signal);
       if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Canceled' };
       if ('error' in ad) return { ok: false, message: ad.error };

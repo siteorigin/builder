@@ -158,6 +158,11 @@
   .health-inline-result { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
   .health-inline-result > .health-hint { margin: 0; }
   .health-recheck { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; }
+  /* Packages (#1480): the name to add, with its button beside it. */
+  .packages-add { display: flex; flex-direction: column; gap: 4px; }
+  .packages-add .field-label { margin: 0; }
+  .packages-add-row { display: flex; align-items: center; gap: 6px; }
+  .packages-add-row .input { flex: 1; min-width: 0; max-width: 36ch; }
   /* A file conflict's two choices, each beside what it does, on equal footing: either version can be recovered. */
   .health-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
   .health-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 9px 10px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); }

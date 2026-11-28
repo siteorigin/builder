@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools, ProjectPackages } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
@@ -63,7 +63,7 @@ import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { heldDraftAssetFiles, heldDraftAssetsStop, holdDraftAssets } from './project/draft-assets';
-import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
+import { atomicWrite, readIfExists, safeJoin, sha, stageWrites, syncStaged, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
@@ -71,7 +71,8 @@ import { isValidFontAsset } from '@shared/fonts';
 import { LibraryImageReader } from './project/library-image';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageDependencies, starterTools, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies, resolvePackageFiles, stageDependencies, starterTools, type PackageFiles, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
+import { declaredVersion, listPackages, packageFailure, packageRequest } from './runtime/packages';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -170,6 +171,36 @@ const STOPPED = 'stopped';
 const BUILD_CALLED_OFF = 'The build was called off.';
 const REVIEW_STOPPED = 'The capture was stopped. No edition was kept; the editions captured before are unchanged.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
+/** A change to the project's packages asked for in an opening that has since closed (#1480). */
+const PACKAGES_CLOSED = 'The project was closed before its packages could be changed.';
+
+/** Why a package can't be removed: code components still import it, by name. */
+const packageInUse = (name: string, users: string[]): string =>
+  `“${name}” is still imported by ${users.length === 1 ? `the code component “${users[0]}”` : `${users.length} code components (${users.slice(0, 3).map((u) => `“${u}”`).join(', ')}${users.length > 3 ? ', …' : ''})`}. Remove the import from ${users.length === 1 ? 'it' : 'them'} first.`;
+
+/**
+ * Put a project's new package files in place together (#1480): both written out in full first, then the lock and the
+ * manifest renamed over the old ones. When the second rename fails, the old lock goes back, so the pair never disagree.
+ */
+async function writePackageFiles(dir: string, files: PackageFiles, before: ConfigFiles): Promise<void> {
+  const lockPath = join(dir, 'package-lock.json');
+  const [lock, pkg] = await stageWrites([
+    { path: lockPath, data: files['package-lock.json'] },
+    { path: join(dir, 'package.json'), data: files['package.json'] }
+  ]);
+  try {
+    await lock.replace();
+    try {
+      await pkg.replace();
+    } catch (e) {
+      await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json'])).catch(() => undefined);
+      throw e;
+    }
+  } finally {
+    await Promise.all([lock.discard(), pkg.discard()]);
+  }
+  await syncStaged([lock, pkg]);
+}
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
 
 /**
@@ -265,9 +296,19 @@ async function removeCreatedProject(dir: string, session: ProjectSession | null,
   return removed;
 }
 
+/** The files of a project's build configuration, which run as code: what the author trusts (configHash). */
+const CONFIG_FILES = ['package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js'] as const;
+type ConfigFiles = Record<(typeof CONFIG_FILES)[number], string | null>;
+
+async function readConfig(dir: string): Promise<ConfigFiles> {
+  const parts = await Promise.all(CONFIG_FILES.map((f) => readIfExists(join(dir, f))));
+  return Object.fromEntries(CONFIG_FILES.map((f, i) => [f, parts[i]])) as ConfigFiles;
+}
+
+const hashConfig = (files: ConfigFiles): string => sha(CONFIG_FILES.map((f) => files[f] ?? '').join('\n--\n'));
+
 async function configHash(dir: string): Promise<string> {
-  const parts = await Promise.all(['package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js'].map((f) => readIfExists(join(dir, f))));
-  return sha(parts.map((p) => p ?? '').join('\n--\n'));
+  return hashConfig(await readConfig(dir));
 }
 
 type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
@@ -2575,6 +2616,104 @@ export class Controller {
       }
       await this.startRuntimeNow();
     });
+  }
+
+  /** Why the open project's npm packages can't be changed now (#1480), or null when they can. */
+  private async packagesLocked(s: ProjectSession): Promise<string | null> {
+    if (s.readOnly) return s.readOnly.reason;
+    if (!(await loadSettings()).settings.developerMode) return 'Turn on Developer mode in Settings to change the project’s packages.';
+    // The package files are part of what the author trusted: changed outside the app, they are reviewed first.
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return TRUST_CHANGED;
+    return null;
+  }
+
+  /** The open project's npm packages (#1480), as Project health lists them, and why they can't be changed now. */
+  async projectPackages(): Promise<ProjectPackages> {
+    const s = this.session;
+    if (!s) return { packages: [], locked: 'No project is open.' };
+    const packages = await listPackages(s.dir, await readIfExists(join(s.dir, 'package.json')).catch(() => null));
+    return { packages, locked: await this.packagesLocked(s) };
+  }
+
+  /**
+   * Add or update (`{ add }`) or remove (`{ remove }`) one npm package of the project open as `opening` (#1480). npm
+   * works out the new package files in a private folder first, while the preview runs on, so a change it refuses leaves
+   * the project as it was. Then the preview stops, and the two files are written as every write into the project is
+   * (writeFence): only when the build settings are still the ones npm started from, and a package being removed is
+   * still imported by no code component. They are trusted as written, the author having made the change here, with the
+   * rest of the build settings as they were trusted, so one changed meanwhile outside the app is still reviewed. The
+   * preview then sets the website tools up for the new files, as for any changed lock, and starts again.
+   */
+  async changeProjectPackage(change: unknown, opening: unknown): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s || typeof opening !== 'string' || opening !== this.workspaceKey) return { ok: false, message: PACKAGES_CLOSED };
+    let result: { ok: boolean; message?: string } = { ok: false, message: PACKAGES_CLOSED };
+    await this.enqueue(async () => {
+      result = await this.changePackageNow(s, opening, change);
+    });
+    return result;
+  }
+
+  private async changePackageNow(s: ProjectSession, opening: string, change: unknown): Promise<{ ok: boolean; message?: string }> {
+    const closed = { ok: false, message: PACKAGES_CLOSED };
+    const gone = () => this.session !== s || this.workspaceKey !== opening || !!this.closing;
+    if (gone()) return closed;
+    const locked = await this.packagesLocked(s);
+    if (locked) return { ok: false, message: locked };
+    const before = await readConfig(s.dir);
+    // What npm starts from is what was trusted, byte for byte.
+    if (!(await isTrusted(s.dir, hashConfig(before)))) return { ok: false, message: TRUST_CHANGED };
+    const req = packageRequest(change, before['package.json']);
+    if (!req.ok) return req;
+    const users = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
+    if (users.length) return { ok: false, message: packageInUse(req.name, users) };
+    if (before['package.json'] === null) return { ok: false, message: 'The project has no package.json, so it has no packages to change.' };
+    // Closing the project or losing it to another app stops npm (prepareAbort), as it stops an install.
+    const abort = (this.prepareAbort = new AbortController());
+    let files: PackageFiles;
+    try {
+      const npmrc = await readIfExists(join(s.dir, '.npmrc')).catch(() => null);
+      files = await resolvePackageFiles({ 'package.json': before['package.json'], 'package-lock.json': before['package-lock.json'] ?? '', '.npmrc': npmrc }, req.command, req.options, req.spec, abort.signal);
+    } catch (e) {
+      if (gone()) return closed;
+      return { ok: false, message: abort.signal.aborted ? (s.readOnly?.reason ?? READ_ONLY) : packageFailure(req, e) };
+    } finally {
+      if (this.prepareAbort === abort) this.prepareAbort = null;
+    }
+    if (gone()) return closed;
+    if (files['package.json'] === before['package.json'] && files['package-lock.json'] === before['package-lock.json']) return { ok: true, message: `The project already has that version of “${req.name}”.` };
+    await this.stopPreview();
+    // Set in the write, which TypeScript does not follow into.
+    let result = null as { ok: boolean; message?: string } | null;
+    const done = this.changingTools();
+    try {
+      const wrote = await this.writeFence(s)(async () => {
+        if (gone()) return void (result = closed);
+        const now = await readConfig(s.dir);
+        if (CONFIG_FILES.some((f) => now[f] !== before[f])) return void (result = { ok: false, message: 'The project’s build settings changed while the package was being worked out, so nothing was changed. Try again.' });
+        const using = req.verb === 'remove' ? await s.packageUsers(req.name) : [];
+        if (using.length) return void (result = { ok: false, message: packageInUse(req.name, using) });
+        // The tools are no longer the ones set up for the files (#1395): the marker that says they are goes first.
+        await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+        await writePackageFiles(s.dir, files, before);
+        await trust(s.dir, hashConfig({ ...before, ...files }));
+        // Set up again for the new files, not missing, until the preview has looked at them once more.
+        this.toolsLooked.delete(s);
+        result = { ok: true };
+      });
+      if (!wrote) result ??= gone() ? closed : { ok: false, message: s.readOnly?.reason ?? READ_ONLY };
+    } catch (e) {
+      result = { ok: false, message: `The project’s package files couldn’t be written: ${friendlyError((e as Error).message)}` };
+    } finally {
+      done();
+    }
+    // The preview starts again either way: on the new files, setting the website tools up for them first, or as it was.
+    if (!gone()) await this.startRuntimeNow();
+    if (!result?.ok) return result ?? closed;
+    const version = declaredVersion(files['package.json'], req.name);
+    const what = req.verb === 'remove' ? `Removed “${req.name}”.` : `${req.verb === 'add' ? 'Added' : 'Updated'} “${req.name}”${version ? ` ${version}` : ''}.`;
+    if (gone()) return { ok: true, message: what };
+    return (await dependenciesReady(s.dir)) ? { ok: true, message: what } : { ok: true, message: `${what} The website tools couldn’t be set up for it yet: Project health says why.` };
   }
 
   /** The website tools in the project's folder are being changed until the function returned is called (toolsWork). */
@@ -5263,6 +5402,9 @@ export class Controller {
 
   private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean; held?: Array<() => void>; signal?: AbortSignal } = {}): Promise<ExportResult> {
     const project = join(staging, 'project');
+    // The tools copied below must be the ones set up for the package files this snapshot holds: a change to the
+    // project's packages that lands from here on (#1480) calls the build off, as a reinstall does (`changed`).
+    const begun = this.toolsWork.begun;
     // A review delivers nothing to visitors, so it saves no version either.
     const snap = await this.snapshotSource(s, project, { forBuild: true, ...(opts.review || !opts.held ? {} : { milestone: EXPORTED_SITE, held: opts.held }) });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
@@ -5302,7 +5444,6 @@ export class Controller {
     // taken over by the time the build starts. The copy is kept between exports, checked against the project's tools.
     // Only tools that are set up, copied while nothing was setting them up or reinstalling them (#1395): a copy made
     // while one of those ran may hold some files from before it and some from after, or none at all.
-    const begun = this.toolsWork.begun;
     const unready = await this.toolsUnready(s);
     if (unready) return { ok: false, message: unready, warnings: [] };
     const changed = () => this.toolsWork.begun !== begun || this.toolsWork.running > 0;
