@@ -1,6 +1,6 @@
 import type { ChoiceOption, ImageValue, LinkRel, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
 import { canonicalRels } from '@shared/link-rel';
-import { cleanBlocks, COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
+import { cleanBlocks, COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, linkQuery, entryTarget, MAX_LINK_QUERY, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
 import { collectionIndexRoutes } from '@shared/archives';
 import { readablePath } from '@shared/routes';
@@ -101,7 +101,11 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
       if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text or fields for now.`);
       if (!findEntry(state, target)) fail(`${label}: entry "${target.slice(0, 60)}" does not exist.`);
       // An entry has no sections to jump to yet.
-      return l.newTab ? { type, target, newTab: true } : { type, target };
+      const raw: unknown = l.query ?? '';
+      if (typeof raw !== 'string' || (raw && !raw.startsWith('?')) || raw.includes('#')) fail(`${label}: an entry link's query starts with "?" and holds no "#".`);
+      const query = linkQuery(raw as string);
+      if (query.length > MAX_LINK_QUERY) fail(`${label}: an entry link's query is at most ${MAX_LINK_QUERY} characters.`);
+      return { type, target, ...(query ? { query } : {}), ...(l.newTab ? { newTab: true } : {}) };
     }
     default:
       fail(`${label}: unknown link type "${type}".`);
@@ -152,6 +156,8 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string, s
 }
 
 export const MAX_RICH_CHARS = 20000;
+/** The most characters a plain text property takes when its schema sets no `maxLength`. */
+export const DEFAULT_TEXT_MAX = 2000;
 export const MAX_RICH_BLOCKS = 500;
 /** A collection entry's text is a whole article, so it has room for one: a long read of 20,000 words and more, with its pictures. */
 export const MAX_ENTRY_CHARS = 150_000;
@@ -169,7 +175,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   const link = (target: string, newTab: boolean, rel: LinkRel[] = []): LinkValue | null => {
     const t = target.trim();
     // An entry by its ID, refused where entry links are not kept, so it never stays behind as plain text.
-    if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', target: t.slice(ENTRY_LINK_PREFIX.length), newTab }, state, label, scope);
+    if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', ...entryTarget(t.slice(ENTRY_LINK_PREFIX.length)), newTab }, state, label, scope);
     // Or by its address (a path of this site, never a //host one), while no page has it.
     if (scope.entries && /^\/(?!\/)/.test(t)) {
       const route = `/${readablePath(t).replace(/^\/+|\/+$/g, '')}/`;
@@ -237,7 +243,11 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   const out = mergeLists(cleanBlocks(blocks!));
   // Every character counts, the line breaks inside a block included; the gaps between blocks do not.
   const chars = out.reduce((n, b) => n + (isImageBlock(b) ? b.alt.length + (b.caption?.length ?? 0) : spanRuns(b).flat().reduce((m, sp) => m + sp.text.length, 0)), 0);
-  if (out.length > (isArticle ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS) || chars > (isArticle ? MAX_ENTRY_CHARS : MAX_RICH_CHARS)) fail(`${label}: text is too long.`);
+  // Said with the limit, so text refused on the canvas says how far to shorten it (#1447).
+  const maxBlocks = isArticle ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS;
+  const maxChars = isArticle ? MAX_ENTRY_CHARS : MAX_RICH_CHARS;
+  if (out.length > maxBlocks) fail(`${label}: text is too long: it has more than ${maxBlocks} paragraphs, headings and lists.`);
+  if (chars > maxChars) fail(`${label}: text is too long: it is longer than ${maxChars} characters.`);
   return out;
 }
 
@@ -361,7 +371,7 @@ function scalarValue(schema: ScalarPropSchema, v: unknown, state: ProjectState, 
     case 'string': {
       if (typeof v !== 'string' && typeof v !== 'number') fail(`${label}: expected text.`);
       const s = String(v);
-      const max = schema.maxLength ?? 2000;
+      const max = schema.maxLength ?? DEFAULT_TEXT_MAX;
       if (s.length > max) fail(`${label}: text is longer than ${max} characters.`);
       return schema.multiline ? s : s.replace(/\s*\n\s*/g, ' ');
     }

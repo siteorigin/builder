@@ -1,6 +1,6 @@
 import type { ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
-import type { ElementRef, OwnerRef, ProjectState } from './types';
+import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
@@ -951,6 +951,8 @@ export interface ComponentImportResult {
   entryId?: string;
   /** The project's revision once it landed. */
   revision?: number;
+  /** What landed differently from the project it came from (a dark colour this site's own style keeps, say). */
+  notes?: string[];
   message?: string;
 }
 
@@ -1045,6 +1047,8 @@ export interface PostImportPreview {
   newTerms: { categories: string[]; tags: string[] };
   /** Old addresses kept working. */
   redirects: number;
+  /** Of those, the ones kept for a post that arrives as a draft: they start working once it is published. */
+  redirectsPending: number;
   /** Old addresses that can't keep working (each post's note says why). */
   redirectsLost?: number;
   /** What is not imported at all. */
@@ -1487,8 +1491,11 @@ export interface BuilderApi {
     makeWebCopy(assetId: string, opts: { replace: boolean; opening: string }): Promise<{ ok: boolean; assetId?: string; entryId?: string; revision?: number; message?: string }>;
     /** What private metadata an image asset's original carries, which website exports leave out. Null when it cannot be read. */
     photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null>;
-    /** Find the file of a library image whose original is missing (a dialog, unless `path` is given). */
-    locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }>;
+    /**
+     * Find the file of a library image whose original is missing (a dialog, unless `path` is given). A different
+     * picture is one step (`entryId`, `revision`), with the uses whose alt text it carried over to check (`altReview`).
+     */
+    locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string; entryId?: string; revision?: number; altReview?: AltReview[] }>;
     /** Make again the smaller copies a library image is missing. */
     regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }>;
     /** What the project of the opening `workspaceKey` takes on disk; null once another opening is current. */

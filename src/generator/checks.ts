@@ -13,7 +13,7 @@ import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
-import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
+import { SO_ID_ATTR, anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
@@ -22,7 +22,6 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
-import { shippedOutline } from './shipped-outlines';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
@@ -30,6 +29,8 @@ import { selectedVariants, selectedVariantStyles, startingVariants } from '@shar
 import { itemStylesOf, liveItemStyles } from '@shared/item-styles';
 import { CODE_TEXT_ATTR, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { findTheme } from '@catalogue/index';
+import { shippedAsIs } from '@engine/shipped-copy';
+import { headingInMarkdownOnly, shippedOutline, shownWhenChosen } from './shipped-outlines';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -295,7 +296,6 @@ export function effectiveProps(
  * evaluated properties, and the placement's slot content where the definition places that slot. Callbacks
  * report against the page node (the outermost instance for anything inside a component).
  */
-const SO_ID_ATTR = /\bid=\{\s*so_id\b/;
 
 /** Whether a property is a computed list (a News list, an article header). */
 const isFeed = (schema: PropSchema | undefined) => schema?.type === 'list' && !!schema.feed;
@@ -2716,11 +2716,13 @@ export function pageSections(state: ProjectState, pageId: string): PageSection[]
         if (label) list.push({ nodeId: n.id, label, anchor: idOf(n), nested: false, keep: true });
       }
     },
-    text: (n, scope) => {
+    text: (n, scope, _reportId, inDef) => {
       const top = open[open.length - 1];
       if (!top || top.label || !HEADING.test(String(evaluate(n.tag, scope) ?? ''))) return;
-      // A heading inside a nested section names that section, not the one around it.
-      if (top.children) return;
+      // A heading inside a nested section names that section, not the one around it. One placed on the page after it,
+      // back in the outer section's own content, names the outer one; one in a design's tree may be a section of its
+      // own that the page does not list, so it does not.
+      if (top.children && inDef) return;
       top.label = headingText(n, scope);
     },
     leave: (n) => {
@@ -2869,6 +2871,17 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
     const hiding: boolean[] = [];
     let hidden = 0;
     walkRendered(state, tree, {
+      // Foundation's sections, through the designs that stand for their markup (as the Markdown copies read them).
+      outline: (def) => shippedOutline(state, def),
+      // In the design read for a shipped section (not a stored definition): a part hidden at every size, by itself, a
+      // part around it or its placement's styles for those parts, and a tab's panel other than the one open at first.
+      prune: (n, scope, _reportId, def) => {
+        if (!def?.tree || def.tree.nodes[n.id] !== n || state.components[def.id] === def) return false;
+        const list = shownWhenChosen(def.componentId, n.id);
+        const items = list ? scope.props?.[list] : undefined;
+        if (list && (!Array.isArray(items) || !scope.item || items[0]?.id !== scope.item.id)) return true;
+        return hiddenInDesignEverywhere(def, n.id, scope);
+      },
       enter: (n) => {
         const hides = hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined);
         hiding.push(hides);
@@ -2889,6 +2902,9 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
       },
       text: (n, scope, reportId, inDef, def) => {
         if (hidden) return;
+        // The design read for a shipped section, not the definition itself: its markup is what the page shows.
+        const outlined = !!def && state.components[def.id] !== def;
+        if (outlined && headingInMarkdownOnly(def.componentId, n.id)) return;
         const where: Pick<OutlineHeading, 'owner' | 'nodeId' | 'defNodeId' | 'itemPath' | 'direct' | 'instancePath' | 'partId'> = { owner, nodeId: reportId };
         if (inDef) {
           where.defNodeId = n.id;
@@ -2897,7 +2913,8 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
           // A heading in a component inside the placed one is selected through the placements between, when no list
           // item is on the way (those are named by the item, not by the path).
           const trail = (scope.trail ?? '').split('/').filter(Boolean);
-          if (!scope.placement && trail.length > 1 && !trail.some((t) => t.includes('[')) && !scope.path?.length) where.instancePath = trail;
+          // A shipped section's code has none of the design's nodes to select: its placement is selected instead.
+          if (!outlined && !scope.placement && trail.length > 1 && !trail.some((t) => t.includes('[')) && !scope.path?.length) where.instancePath = trail;
           const partId = def && Object.entries(def.parts).find(([, part]) => part.nodeId === n.id)?.[0];
           if (partId) where.partId = partId;
         }
@@ -2925,16 +2942,38 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
         }
         add(heading, scope);
       },
-      code: (def, props, reportId, _placement, _n, scope, inDef) => {
+      code: (def, props, reportId, _placement, n, scope, inDef) => {
         if (hidden) return;
-        const which = shippedCode(state, def);
+        // As the app ships them: the plan comparison shows its heading at the level its placement chooses, and the
+        // layouts and compact video show no heading of their own.
+        const asShipped = shippedAsIs(def) ? def.componentId : undefined;
+        const compare = asShipped === 'pricing.compare';
+        if (asShipped === 'layout.section' || asShipped === 'layout.split' || asShipped === 'block.video') return;
+        const which = compare ? asShipped : shippedCode(state, def);
         // Other code's headings are not known here: the page's review cannot say it has no title.
         if (!which) uninspected ||= owner.kind === 'page';
+        const heading = (text: unknown, level: number, extra: Partial<OutlineHeading> = {}) => {
+          if (!level || typeof text !== 'string' || !text.trim()) return;
+          add({ level, text: text.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}), ...extra }, scope);
+        };
+        // The footer's two column headings, each shown with its words over a column that has something in it. Its
+        // one-row layout hides both at every size.
+        if (which === 'shell.footer') {
+          const layout = n.variants?.layout;
+          if ((isBinding(layout) ? evaluate(layout, scope) : layout) === 'minimal') return;
+          if (shown(props.links, state)) heading(props.linksHeading, 2);
+          if (shown(props.contact, state)) heading(props.contactHeading, 2);
+          return;
+        }
+        if (compare) {
+          // Left out with its part, or the whole section, where the placement hides it at every size.
+          if (codePartsHidden(def, n, ['root', 'heading'])) return;
+          const level = levelOf(props.headingLevel);
+          return heading(props.heading, level, inDef ? {} : { levelSource: { kind: 'prop', prop: 'headingLevel' }, levels: [1, 2, 3, 4, 5, 6] });
+        }
         // Packed Foundation introductions and content sections expose their heading level as a property.
         const packedHeading = which === 'intro.page' || which === 'content.text' || which === 'content.media';
-        const level = packedHeading ? levelOf(props.headingLevel) : which === 'block.signup' ? 3 : which === 'contact.form' || which === 'data.table' || which === 'media.video' ? 2 : 0;
-        if (!level || typeof props.heading !== 'string' || !props.heading.trim()) return;
-        add({ level, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
+        heading(props.heading, packedHeading ? levelOf(props.headingLevel) : which === 'block.signup' ? 3 : which === 'contact.form' || which === 'data.table' || which === 'media.video' ? 2 : 0);
       }
     });
   }

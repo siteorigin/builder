@@ -54,7 +54,7 @@ const STUBS: Record<string, string> = {
   '\0$app/state': 'export const page = { route: { id: "/" }, url: new URL("https://site.test/") };',
   // afterNavigate callbacks hear the visit's `enter` once the site has started, as they do when SvelteKit hydrates.
   '\0$app/navigation':
-    "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); } export function beforeNavigate() {} export function snapshot() {}"
+    "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); } export function beforeNavigate() {} export function onNavigate() {} export function snapshot() {}"
 };
 
 /** Every case's layout and home page, bundled for the server (`render`) or the browser (`window.startSite`). */

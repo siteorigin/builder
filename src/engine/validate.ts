@@ -14,7 +14,7 @@ import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, isCollectionLoop, conditionRef, is
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
-import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
+import { isLanguageCode, languageKey, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { codeAxisProblems, variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
 import { normalizeTable } from './table';
@@ -232,7 +232,7 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
   for (const clash of translationClashes(state)) {
     const published = translationMembers(state, clash.group)
       .filter((p) => !isDraftPage(state, p))
-      .map((p) => pageLanguage(state.site, p).toLowerCase());
+      .map((p) => languageKey(pageLanguage(state.site, p)));
     const live = new Set(published).size < published.length;
     const effect = live ? 'Until then, the website lists none of their translations.' : 'Publishing the draft as it is would stop the website listing their translations.';
     out.push({ severity: 'warning', code: 'TRANSLATION_LANGUAGE', message: `${translationClashMessage(clash)} ${effect}`, owner: { kind: 'page', id: clash.b.id } });
@@ -1192,7 +1192,9 @@ function styleChecker({ state, tokenIds, groupOf }: StyleContext, out: Diagnosti
         if (!style) continue;
         const groups: readonly string[] = style.tokenGroup === undefined ? [] : Array.isArray(style.tokenGroup) ? style.tokenGroup : [style.tokenGroup];
         const group = groupOf.get(token);
-        if (group !== undefined && !groups.includes(group))
+        if (group === 'container' && style.containerTokens && !style.containerTokens.includes(token))
+          out.push({ severity: 'error', code: 'TOKEN_GROUP', message: `${label}: ${style.label} uses the page width "${token}", which would push the page sideways; use the page gutter, or Max width for a page width.`, owner, nodeId });
+        else if (group !== undefined && !groups.includes(group))
           out.push({
             severity: 'error',
             code: 'TOKEN_GROUP',

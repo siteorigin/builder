@@ -83,7 +83,7 @@ export function ColorSchemeControls({
   if (mode !== 'single') lastDual.current = mode;
   const choose = (next: ColorSchemeMode) => {
     if (next === mode) return;
-    const first = next !== 'single' && !state.tokens.darkOverrides;
+    const first = next !== 'single' && (!state.tokens.darkOverrides || !!state.tokens.darkPending);
     const label = next === 'single' ? 'Use one palette' : mode === 'single' ? 'Add dark colors' : next === 'toggle' ? 'Add a Light/Dark switch' : 'Follow the visitor’s device';
     void commitOps([{ type: 'token.setColorScheme', mode: next }], label).then((r) => {
       if (!r?.ok) return;

@@ -8,11 +8,11 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { NOT_FOUND_DIR, SERVER_HOOK_FILE, generateAppHtml, generateProject, generateServerHook, pageAlternates, pageFile, publishedState } from '@generator/index';
+import { NOT_FOUND_DIR, SERVER_HOOK_FILE, generateAppHtml, generateProject, generateServerHook, pageAlternates, pageFile, publishedState, routeLanguages } from '@generator/index';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
 import { GenerationCache } from '@generator/cache';
-import { declaredLanguage, linkClash, pageLanguage, translationPeers } from '@shared/languages';
+import { declaredLanguage, languageKey, linkClash, pageLanguage, translationPeers } from '@shared/languages';
 import { pageLanguageWarning, rivalHookStop, settleServerHook } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
 
@@ -170,6 +170,85 @@ describe('page languages in the project', () => {
     const newcomer = create(t, 'Le studio');
     const french = apply(newcomer.s, { type: 'page.update', pageId: newcomer.id, language: 'fr' });
     expect(linkClash(french, french.pages[en3], french.pages[newcomer.id])?.language).toBe('fr');
+  });
+
+  it.each([
+    ['he', 'iw'],
+    ['id', 'in']
+  ])('reads “%s” and its deprecated code “%s” as one language (#1532)', (preferred, deprecated) => {
+    const s = fresh();
+    const en = byTitle(s, 'About').id;
+    const first = create(s, 'First');
+    const linked = apply(first.s, { type: 'page.update', pageId: first.id, route: '/first/', language: preferred, linkTranslationTo: en });
+    const second = create(linked, 'Second');
+    const tagged = apply(second.s, { type: 'page.update', pageId: second.id, route: '/second/', language: deprecated });
+    expect(linkClash(tagged, tagged.pages[second.id], tagged.pages[en])).not.toBeNull();
+    expect(() => apply(tagged, { type: 'page.update', pageId: second.id, linkTranslationTo: en })).toThrow(/would both be in/);
+    // A regional variant is a language of its own.
+    expect(apply(tagged, { type: 'page.update', pageId: second.id, language: `${deprecated}-${preferred.toUpperCase()}`, linkTranslationTo: en }).pages[second.id].translationGroup).toBeTruthy();
+    // Written by hand, the pair clashes as two copies of one code do: it is reported, and no alternates are listed.
+    const hand = structuredClone(tagged);
+    hand.pages[second.id].translationGroup = hand.pages[en].translationGroup;
+    expect(validateState(hand).find((d) => d.code === 'TRANSLATION_LANGUAGE')?.message).toMatch(/the website lists none of their translations/);
+    for (const id of [en, first.id, second.id]) expect(pageAlternates(hand, hand.pages[id])).toEqual([]);
+    const published = apply(hand, { type: 'site.update', baseUrl: 'https://example.com' });
+    const sitemap = generateProject(published).get('static/sitemap.xml') as string;
+    expect(sitemap).toContain('<loc>');
+    expect(sitemap).not.toContain('hreflang');
+  });
+
+  it('refuses a deprecated code however the clash comes about, and keeps it as written where there is none (#1532)', () => {
+    const s = fresh();
+    const en = byTitle(s, 'About').id;
+    const other = create(s, 'Other');
+    const hebrew = apply(other.s, { type: 'page.update', pageId: other.id, route: '/other/', language: 'iw', linkTranslationTo: en });
+    // Retagging a linked page, or changing the site language under a page that follows it.
+    expect(() => apply(hebrew, { type: 'page.update', pageId: en, language: 'he' })).toThrow(/both be in/);
+    expect(() => apply(hebrew, { type: 'site.update', language: 'he' })).toThrow(/both be in “he”.*use the site language/);
+    // A regional variant stays apart, and its deprecated spelling is still that variant.
+    const regional = apply(hebrew, { type: 'page.update', pageId: en, language: 'he-IL' });
+    expect(() => apply(regional, { type: 'page.update', pageId: other.id, language: 'iw-IL' })).toThrow(/both be in “iw-IL”/);
+    // The site's own language is found for x-default under either code, and the alternates name the code as written.
+    const published = apply(hebrew, { type: 'page.update', pageId: en, language: 'en' }, { type: 'site.update', language: 'he', baseUrl: 'https://example.com' });
+    const sitemap = generateProject(published).get('static/sitemap.xml') as string;
+    expect(sitemap).toContain('hreflang="iw" href="https://example.com/other/"');
+    expect(sitemap).toContain('hreflang="x-default" href="https://example.com/other/"');
+    expect(pageAlternates(published, published.pages[other.id]).map((a) => a.language)).toEqual(expect.arrayContaining(['en', 'iw']));
+    // Outside translation sets the page's own code still counts as another than the site's.
+    expect(routeLanguages(published).map(([, language]) => language)).toContain('iw');
+  });
+
+  it.each([
+    ['no-bok', 'nb'],
+    ['no-nyn', 'nn'],
+    ['zh-yue', 'yue'],
+    ['zh-cmn-Hans', 'zh-Hans'],
+    ['zh-min-nan', 'nan'],
+    ['zh-hakka', 'hak'],
+    ['zh-xiang', 'hsn'],
+    ['in-ID', 'id-ID']
+  ])('reads the registered spelling “%s” as “%s” (#1532)', (legacy, preferred) => {
+    expect(languageKey(legacy)).toBe(languageKey(preferred));
+  });
+
+  it('keeps languages that only look alike apart (#1532)', () => {
+    expect(languageKey('zh-min')).not.toBe(languageKey('min'));
+    expect(languageKey('zh-yue')).not.toBe(languageKey('zh'));
+    expect(languageKey('he-IL')).not.toBe(languageKey('he'));
+  });
+
+  it('lets the site language be respelled over a set that already clashed by hand (#1532)', () => {
+    const { s, fr } = bilingual();
+    const hand = structuredClone(s);
+    hand.site.language = 'iw';
+    hand.pages[fr].language = 'he';
+    expect(apply(hand, { type: 'site.update', language: 'he' }).site.language).toBe('he');
+  });
+
+  it('compares a code the platform cannot canonicalize as written, ignoring case', () => {
+    expect(languageKey('en-abcd-abcd')).toBe(languageKey('EN-abcd-ABCD'));
+    expect(languageKey('en-abcd-abcd')).not.toBe(languageKey('en'));
+    expect(languageKey('en-abcd-abcd')).not.toBe(languageKey('en-abcd-efgh'));
   });
 
   it('refuses a language change that would make two versions the same, wherever it comes from', () => {
@@ -443,7 +522,8 @@ describe('page languages in the website', () => {
       const files = generateProject(s, { instrument });
       // One hook, at the one path SvelteKit runs, made by the one generator; no other file is a server hook.
       expect([...files.keys()].filter((p) => /hooks\.server/.test(p))).toEqual([SERVER_HOOK_FILE]);
-      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(s));
+      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(s, instrument));
+      expect(files.get(SERVER_HOOK_FILE)!.includes('export function handleError(')).toBe(instrument);
       expect(files.get(SERVER_HOOK_FILE)).toContain('const SECTIONS = {};');
       expect(files.get(SERVER_HOOK_FILE)).toMatch(/const LANGUAGES = \{\n\t"\/de\/ueber-uns": "de",\n\t"\/fr\/a-propos": "fr"\n\};/);
     }
@@ -506,15 +586,15 @@ describe('page languages in the website', () => {
     made(s);
     // A page in another language: the hook appears, the layout follows, and that page says so; the others are kept.
     s = apply(s, { type: 'page.update', pageId: en, language: 'fr' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js', 'layout#clean', `page:${en}#clean`]));
+    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean', 'layout#clean', `page:${en}#clean`]));
     // Linking a translation remakes both versions, and a language change on one of them remakes the hook and layout.
     s = apply(s, { type: 'page.update', pageId: contact, language: 'de', linkTranslationTo: en });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js', 'layout#clean']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, `page:${contact}#clean`, 'hooks.server.js#clean', 'layout#clean']));
     s = apply(s, { type: 'page.update', pageId: contact, route: '/kontakt/' });
-    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js']));
+    expect(made(s)).toEqual(expect.arrayContaining([`page:${en}#clean`, 'hooks.server.js#clean']));
     // Back in one language: the hook is the not-found page's alone again and every file is as a full run makes it.
     s = apply(s, { type: 'page.update', pageId: contact, linkTranslationTo: null }, { type: 'page.update', pageId: contact, language: '' }, { type: 'page.update', pageId: en, language: '' });
-    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js']));
+    expect(made(s)).toEqual(expect.arrayContaining(['hooks.server.js#clean']));
     expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).toBe(generateServerHook(s));
     expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).not.toContain('LANGUAGES');
   });
@@ -566,11 +646,26 @@ describe('page languages in the website', () => {
       ['WebSite', 'en'],
       ['WebPage', 'en']
     ]);
-    // A page hidden from search engines is still a published version, with no structured data of its own.
-    const hidden = generateProject(apply(published, { type: 'page.update', pageId: fr, noindex: true }));
-    expect(alternatesIn(hidden.get(pageFile(s.pages[en]))!)).toEqual(full);
-    expect(alternatesIn(hidden.get(pageFile(s.pages[fr]))!)).toEqual(full);
+    // A page hidden from search engines is still a published version, with no structured data of its own, but the
+    // versions search engines read leave it out, as the sitemap does, and it lists none itself.
+    const hiddenState = apply(published, { type: 'page.update', pageId: fr, noindex: true });
+    const hidden = generateProject(hiddenState);
+    const rest = [full[0], full[2]];
+    expect(alternatesIn(hidden.get(pageFile(s.pages[en]))!)).toEqual(rest);
+    expect(alternatesIn(hidden.get(pageFile(s.pages[de]))!)).toEqual(rest);
+    expect(alternatesIn(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
+    // Open Graph still names every published language.
+    expect(hidden.get(pageFile(s.pages[en]))).toContain('og:locale:alternate');
+    expect(hidden.get(pageFile(s.pages[en]))).toContain('fr_FR');
+    expect(hidden.get(pageFile(s.pages[fr]))).toContain('noindex');
     expect(ld(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
+    // With one eligible version left, it has no alternates in the HTML or the sitemap.
+    const one = generateProject(apply(hiddenState, { type: 'page.update', pageId: de, noindex: true }));
+    expect(alternatesIn(one.get(pageFile(s.pages[en]))!)).toEqual([]);
+    expect(one.get('static/sitemap.xml') ?? '').not.toContain('xhtml:link');
+    // Showing it again restores the full set.
+    const again = generateProject(apply(hiddenState, { type: 'page.update', pageId: fr, noindex: false }));
+    expect(alternatesIn(again.get(pageFile(s.pages[fr]))!)).toEqual(full);
   });
 
   it('lists the versions at full addresses once a public address is set, with no relinking', () => {

@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compile } from 'svelte/compiler';
-import type { ElementNode, InstanceNode, ListItem, ProjectState, RepeatNode } from '@shared/types';
+import type { ElementNode, InstanceNode, ListItem, ListProp, ObjectProp, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { drafts } from '@engine/draft';
@@ -683,6 +683,36 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(r.ok).toBe(true);
     expect((await call(pricing({ definitionId: id, description: 'Prices.' }))).ok).toBe(true);
     expect(s.state.components[id].properties.heading).toMatchObject({ copyEditable: true });
+  });
+
+  it('keeps through a rebuild which defaults are sample content, on a property and on a list field (#1639)', async () => {
+    const { s, call } = await session();
+    const made = await call(pricing());
+    expect(made.ok).toBe(true);
+    const id = made.content.definitionId;
+    const was = s.state.components[id].properties;
+    const plans = was.plans as ListProp;
+    const note = was.note as ObjectProp;
+    const r = await s.apply(
+      {
+        operations: [
+          { type: 'component.setPropSchema', definitionId: id, prop: 'heading', schema: { ...was.heading, sampleDefault: true } },
+          { type: 'component.setPropSchema', definitionId: id, prop: 'plans', schema: { ...plans, sampleDefault: true, fields: { ...plans.fields, name: { ...plans.fields.name, sampleDefault: true } } } },
+          { type: 'component.setPropSchema', definitionId: id, prop: 'note', schema: { ...note, fields: { ...note.fields, text: { ...note.fields.text, sampleDefault: true } } } }
+        ]
+      },
+      { label: 'Mark' }
+    );
+    expect(r.ok).toBe(true);
+    expect((await call(pricing({ definitionId: id, description: 'Prices.' }))).ok).toBe(true);
+    // The rebuild really replaced the definition, rather than leaving it as it was.
+    expect(s.state.components[id].description).toBe('Prices.');
+    const now = s.state.components[id].properties;
+    expect(now.heading).toMatchObject({ sampleDefault: true });
+    expect(now.note).toMatchObject({ fields: { text: { sampleDefault: true } } });
+    expect((now.note as ObjectProp).fields.link.sampleDefault).toBeUndefined();
+    expect(now.plans).toMatchObject({ sampleDefault: true, fields: { name: { sampleDefault: true } } });
+    expect((now.plans as ListProp).fields.price.sampleDefault).toBeUndefined();
   });
 
   it('rebuilds a placed component whole, keeping its placement values, and places it again', async () => {

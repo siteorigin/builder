@@ -290,7 +290,12 @@ function normalizeField(name: string, raw: Record<string, unknown>, state: Proje
   checkPropName(name, 'Field');
   const type = raw?.type;
   if (!(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(type)) fail(`Field "${name}" needs a type of ${COLLECTION_FIELD_TYPES.join(', ')}.`);
-  if (type !== 'date' && type !== 'reference') return normalizePropSchema(raw, state, name, true) as CollectionFieldSchema;
+  if (type !== 'date' && type !== 'reference') {
+    // An entry's field has no sample content to mark: every entry is written by its author (shared/sample-defaults.ts).
+    const { sampleDefault: _sample, ...field } = normalizePropSchema(raw, state, name, true) as CollectionFieldSchema & { sampleDefault?: true };
+    void _sample;
+    return field as CollectionFieldSchema;
+  }
   const what = `Field "${name}"`;
   const description = words(raw.description, 300);
   const group = words(raw.group, 40);
@@ -874,14 +879,13 @@ function applyEntrySeo(state: ProjectState, entry: EntryDoc, op: EntryFields, la
 /**
  * Keeps `from`, an address the entry had on an earlier site (an imported post's old permalink), working for it: an
  * address the site can have, other than Home and the entry's own, that nothing else holds or keeps for its archives.
+ * A draft keeps it too: the website sends visitors there once the entry is published (see publishedState).
  */
 function keepOldAddress(state: ProjectState, c: Collection, entry: EntryDoc, from: string) {
   const label = `“${entry.title}”`;
   const route = entryRoute(c, entry);
   // Nor is an entry without a page of its own.
   if (route === undefined) fail(`${label}: entries of ${c.settings.name} have no pages, so no old address can send visitors to one.`);
-  // A draft is no destination: visitors at the old address would find nothing.
-  if (entry.draft !== false) fail(`${label}: an old address is kept working only for a published entry.`);
   const err = from === '/' ? 'the Home page keeps its own address.' : validateRoute(from);
   if (err) fail(`${label}: ${from.slice(0, 80)} cannot be kept as its old address: ${err}`);
   if (from.toLowerCase() === route!.toLowerCase()) fail(`${label}: ${from} is its own address, not an old one.`);
@@ -988,6 +992,8 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     link.type = to!.type;
     link.target = to!.target;
     delete link.anchor;
+    // A query stays with a post's address: a page link has none.
+    if (to!.type !== 'entry') delete link.query;
   }
   // Each reference names the replacement where it named the entry, once: a list already naming it keeps it where it was.
   for (const { entry: holder, field } of refs) {

@@ -80,21 +80,21 @@ import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@shared/icons';
-import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
+import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, HISTORY_SCROLL_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
 import { sha256Hex } from '@shared/sha256';
-import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
+import { NOT_FOUND_ENGLISH, NOT_FOUND_ROUTE, notFoundCopy, notFoundEnglish } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
-import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, linkQuery, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
@@ -117,7 +117,7 @@ import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
 import { derived, isTracked, type GenerationCache } from './cache';
-import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from './seo-metadata';
+import { createSeoResolver, entryMetadata, pageMetadata, sameAddress, type SeoMetadata } from './seo-metadata';
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
@@ -366,7 +366,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
-      href = entryRoute(found.collection, found.entry)!;
+      href = entryRoute(found.collection, found.entry)! + (typeof link.query === 'string' && link.query.startsWith('?') ? linkQuery(link.query) : '');
       break;
     }
     case 'collection': {
@@ -3674,7 +3674,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
     // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
     const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${renderErrorBoundary(ctx, def, indentBlock(markup), `${p}\t`)}\n${p}</div>`;
   }
   return markup;
 }
@@ -3801,6 +3801,36 @@ function editingState(ctx: EmitCtx): string {
  * comment before and after them. One native element already starts and ends on nodes of its own, so it is left
  * as it is. Editor variants only: the exported site is never hot-updated and stays free of it.
  */
+/** The editor's preview: the attribute that marks a code placement which threw while it rendered (see renderErrorBoundary). */
+export const RENDER_ERROR_ATTR = 'data-so-render-error';
+
+/**
+ * The editor's preview: a code placement that throws while it renders (on the server or in the browser) shows a note
+ * in its place, naming its file and the error, and the rest of the page goes on showing (#1526). Without it the throw
+ * reaches SvelteKit's own boundary and the whole page becomes the site's error page, which the editor never hears
+ * of. The bridge reports each note as the page's problem, and retries the component once the page takes a change, so a
+ * fixed component comes back. The message is the one the preview's error hooks keep (`soRenderError`: see
+ * generateServerHook and the dev plugin); the website has neither the note nor the hooks.
+ */
+function renderErrorBoundary(ctx: EmitCtx, def: ComponentDefinition, markup: string, p: string): string {
+  ctx.snippets = (ctx.snippets ?? 0) + 1;
+  const snippet = `${RENDER_ERROR_SNIPPET}_${ctx.snippets}`;
+  const message = `so_failure?.soRenderError || so_failure?.message || 'Something went wrong.'`;
+  const note =
+    `${p}\t<div ${RENDER_ERROR_ATTR}={${message}} data-so-error-file=${attrJs(defFile(def))} data-so-editor-only {@attach (el) => { el.__soRetry = so_retry; }}>` +
+    `<strong>{${js(`${def.name || 'This component'} couldn’t be shown`)}}</strong> <span>{${message}}</span></div>`;
+  // Declared beside the boundary under a name of the editor's own, one per placement in the file (Svelte lifts a
+  // snippet that uses nothing of the component's to the file), never as `failed` inside it, where it would stand in
+  // for a design's own property of that name in the placement's values.
+  return `${p}{#snippet ${snippet}(so_failure, so_retry)}\n${note}\n${p}{/snippet}\n${p}<svelte:boundary failed={${snippet}}>\n${indentBlock(markup)}\n${p}</svelte:boundary>`;
+}
+
+/** The header a live session guest's preview requests carry: LIVE_GUEST_HEADER in src/runtime/policy.ts (Node only). */
+const GUEST_HEADER = 'x-siteorigin-live-guest';
+
+/** The snippet a code placement's boundary shows when it throws (see renderErrorBoundary). */
+const RENDER_ERROR_SNIPPET = 'so_render_failed';
+
 function hotBoundary(markup: string, roots: number): string {
   if (roots === 1 && /^<[a-z][a-z0-9-]*[\s/>]/.test(markup.trimStart())) return markup;
   return `{#key 'siteorigin'}\n${markup}\n{/key}`;
@@ -4302,7 +4332,8 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   const article = pageArticle(page);
   const base = publicUrl(site);
   const alternates = pageAlternates(state, page);
-  const head = seoHead(state, meta, { article: !!article, alternates: alternates.map((a) => a.language) });
+  // Open Graph names every published language, whether or not search engines may list that version.
+  const head = seoHead(state, meta, { article: !!article, alternates: translationVersions(state, page).map((a) => a.language) });
   // The first section's main picture, asked for straight after the title so it starts loading first.
   const hero = heroPreload(ctx);
   if (hero) head.splice(1, 0, hero);
@@ -4455,7 +4486,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
-	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${searchImport}${toggleImport}
+	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
+	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';${appearImport}${searchImport}${toggleImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4464,7 +4496,9 @@ ${imports}${languages}${devBridge}
 	const textLang = visitorTextLang();${HEAD_ASSET_SCRIPT}
 	// A message typed into a form and not sent comes back when the visitor returns with Back, which says whether one
 	// they left while it was sending went.
-	keepDrafts(text);${appearStart}${searchStart}
+	keepDrafts(text);
+	// Back and Forward put the page back where the visitor left it at once, even with a theme's smooth scrolling.
+	keepHistoryScroll();${appearStart}${searchStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
@@ -4656,18 +4690,32 @@ export function fillParts(text, values) {
 }
 
 /**
- * The versions of a published page in each language it has, itself among them, in page order: what its
- * alternate-language links name. None for a draft, for a page without translations, and for a set whose pages
- * clash on language (which the editor never lets happen).
+ * The versions of a published page in each language it has, itself among them, in page order. None for a draft, for a
+ * page without translations, and for a set whose pages clash on language (which the editor never lets happen).
  */
-export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
+function translationVersions(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
   const group = translationGroup(page);
   if (!group || isDraftPage(state, page)) return [];
   const members = translationMembers(state, group)
     .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
     .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
-  const languages = new Set(members.map((m) => m.language.toLowerCase()));
+  const languages = new Set(members.map((m) => languageKey(m.language)));
   return members.length < 2 || languages.size < members.length ? [] : members;
+}
+
+/**
+ * The versions a page's alternate-language links name, as the sitemap's do: the published versions that search engines
+ * may list. A version hidden from search engines or a copy of another address is named by none, and a page that is one
+ * lists none, so a set left with one version has no links.
+ */
+export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
+  const searchable = (id: string) => {
+    const meta = pageMetadata(state, id);
+    return !!meta && !meta.noindex && (!meta.url || sameAddress(meta.canonical, meta.url));
+  };
+  if (!searchable(page.id)) return [];
+  const members = translationVersions(state, page).filter((m) => searchable(m.pageId));
+  return members.length < 2 ? [] : members;
 }
 
 export type { LiveRedirect } from '@shared/redirects';
@@ -4922,8 +4970,12 @@ export function redirectFile(from: string): string {
 /**
  * The page at an old address: it sends visitors on to the page's current address. It is written where a page
  * at that address would be, so a page given the address back simply replaces it. Read with scripts on, it goes
- * at once and keeps the query and the section the old link asked for; without them, a meta refresh goes to the
- * page. Either way it works from the prerendered HTML alone, on any static host.
+ * as soon as its link has been read, and keeps the query and the section the old link asked for; without them, a
+ * meta refresh goes to the page. Either way it works from the prerendered HTML alone, on any static host.
+ *
+ * The script that goes sits in the body, after the link, never in the head (#1502): WebKit can stop reading the old
+ * document once the navigation starts, so a script in the head could leave a page with no body at all while the new
+ * page was slow to come. The link it leaves behind already carries the query and the section.
  */
 export function generateRedirect(state: ProjectState, from: string, page: Pick<PageDoc, 'route'>): string {
   const base = publicUrl(state.site);
@@ -4936,19 +4988,24 @@ export function generateRedirect(state: ProjectState, from: string, page: Pick<P
 	import { resolve } from '$app/paths';
 
 	const to = resolve(${js(page.route)});
-	// Runs while the HTML is read, before anything renders.
-	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
+	/** @type {HTMLAnchorElement} */
+	let link;
+	// Runs while the HTML is read, just after the link: the link takes the query and section, then the page goes.
+	const go = '<' + 'script>var u = ' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</' + 'script>';
 	// Reached by a link inside the running site instead, the script above never runs: go from here.
-	onMount(() => location.replace(to + location.search + location.hash));
+	onMount(() => {
+		const u = to + location.search + location.hash;
+		link.href = u;
+		location.replace(u);
+	});
 </script>
 
 <svelte:head>
-	{@html go}
 	<meta http-equiv="refresh" content={'0; url=' + to} />
 	<meta name="robots" content="noindex" />${canonical}
 </svelte:head>
 
-<p><a href={to}>{${js(siteVisitorText(state.site).redirect)}}</a></p>
+<p><a bind:this={link} href={to}>{${js(siteVisitorText(state.site).redirect)}}</a>{@html go}</p>
 `
   );
 }
@@ -5008,9 +5065,9 @@ function sitemapAlternates(state: ProjectState, listed: Array<EffectiveSeo & { u
   }
   const out = new Map<string, Array<{ language: string; url: string }>>();
   for (const members of groups.values()) {
-    const languages = new Set(members.map((m) => m.language.toLowerCase()));
+    const languages = new Set(members.map((m) => languageKey(m.language)));
     if (members.length < 2 || languages.size < members.length) continue;
-    const fallback = members.find((m) => sameLanguage(m.language, siteLanguage(state.site)));
+    const fallback = members.find((m) => languageKey(m.language) === languageKey(siteLanguage(state.site)));
     const links = [...members.map(({ language, url }) => ({ language, url })), ...(fallback ? [{ language: 'x-default', url: fallback.url }] : [])];
     for (const m of members) out.set(m.pageId, links);
   }
@@ -5043,6 +5100,9 @@ export const ERROR_PAGE_FILE = 'src/routes/+error.svelte';
 export function generateNotFound(state: ProjectState): string {
   const { heading, message, linkLabel } = notFoundCopy(state.site);
   const title = `${heading} · ${state.site.name}`;
+  // Built-in English is marked on a span of its own, so its block still lines up the way the page runs.
+  const english = notFoundEnglish(state.site);
+  const phrase = (text: string, isEnglish: boolean) => (isEnglish ? `<span lang="${NOT_FOUND_ENGLISH.lang}" dir="${NOT_FOUND_ENGLISH.dir}">{${js(text)}}</span>` : `{${js(text)}}`);
   // The sections the header and footer link to "on this page": the build sends those links to the page that has
   // each (see generateServerHook), and these targets keep the page buildable for a project with a hook of its own.
   const targets = Object.keys(notFoundSections(state))
@@ -5061,9 +5121,9 @@ export function generateNotFound(state: ProjectState): string {
 
 <section class="so-not-found">
 	<div class="so-container so-not-found__inner">${targets}
-		<h1 class="so-not-found__heading">{${js(heading)}}</h1>
-		<p class="so-not-found__message">{${js(message)}}</p>
-		<a class="so-btn so-btn--primary" href={resolve('/')}>{${js(linkLabel)}}</a>
+		<h1 class="so-not-found__heading">${phrase(heading, english.heading)}</h1>
+		<p class="so-not-found__message">${phrase(message, english.message)}</p>
+		<a class="so-btn so-btn--primary" href={resolve('/')}>${phrase(linkLabel, english.linkLabel)}</a>
 	</div>
 </section>
 
@@ -5174,7 +5234,21 @@ export const SERVER_HOOK_FILE = 'src/hooks.server.js';
  * instead, and its dir when that language runs the other way from the site's. The hook carries its own list of languages, so it never depends on another generated file for them. A
  * site in one language has the not-found part alone.
  */
-export function generateServerHook(state: ProjectState): string {
+export function generateServerHook(state: ProjectState, instrument = false): string {
+  // The editor's preview only: an error a page meets while it renders keeps its own message beside SvelteKit's
+  // "Internal Error", for the note a code placement shows in its place and the editor's page problem (#1526). A live
+  // session's guest is given SvelteKit's own words.
+  const handleError = instrument
+    ? `
+/** The editor's preview only: what went wrong while a page rendered, for the editor to say. */
+export function handleError({ error, event, kind }) {
+	// A guest of a live session is shown the site, not what went wrong on the host's machine. A page the server fetches
+	// for another while rendering it is sent without the guest's mark, so says nothing either.
+	if (kind !== 'unknown' || event?.isSubRequest || event?.request?.headers?.has(${js(GUEST_HEADER)})) return;
+	return { soRenderError: String((error && error.message) || error).slice(0, 2000) };
+}
+`
+    : '';
   const sections = `/** Sections the shared header and footer link to "on this page", with the page that has each. */
 const SECTIONS = ${js(notFoundSections(state))};
 `;
@@ -5191,7 +5265,7 @@ export function handle({ event, resolve }) {
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
 	return resolve(event, { transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
 }
-`;
+${handleError}`;
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. Makes 404.html, the
 // not-found page, work at any missing address, and gives each page's <html lang> the language the page is written
 // in, and its dir the way that language runs: pages not listed in LANGUAGES are in the site's language, and pages not
@@ -5246,7 +5320,7 @@ export function handle({ event, resolve }) {
 		}
 	});
 }
-`;
+${handleError}`;
 }
 
 /** Served path of the generated favicon used until a favicon image is chosen. */
@@ -5311,6 +5385,7 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   put(`${RUNTIME_DIR}/icons.js`, () => file('icons.js', iconsJs));
   put(`${RUNTIME_DIR}/util.js`, () => UTIL_JS);
   put(`${RUNTIME_DIR}/drafts.js`, () => DRAFTS_JS);
+  put(`${RUNTIME_DIR}/history-scroll.js`, () => HISTORY_SCROLL_JS);
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
   // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
   // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.
@@ -5453,7 +5528,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, NOT_FOUND_ROUTE_SVELTE);
   files.set(ERROR_PAGE_FILE, ERROR_PAGE_SVELTE);
   files.set(`${NOT_FOUND_DIR}/+page.js`, NOT_FOUND_PAGE_JS);
-  files.set(SERVER_HOOK_FILE, file('hooks.server.js', generateServerHook));
+  files.set(SERVER_HOOK_FILE, file(`hooks.server.js${mode}`, (s) => generateServerHook(s, !!opts.instrument)));
   files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
   if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', (s) => generateFaviconSvg(s)));
   // The web app manifest; the PNG icons it names are pictures the editor renders (siteIconSet).

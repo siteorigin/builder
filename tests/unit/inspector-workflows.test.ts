@@ -2,19 +2,20 @@ import { describe, expect, it } from 'vitest';
 import type { ElementNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, captureClipboard } from '@engine/apply';
-import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
+import { EngineError, anchorCapable, codeTakesOverrides, enclosingRepeatProp, entranceCapable } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
+import { pageSections, planSectionPick } from '@generator/checks';
 import { columnLayoutPart } from '@shared/styles';
 import { P, item, prop } from '@catalogue/dsl';
-import { foundationDesign } from './fixtures/packs';
+import { foundationDesign, projectDesign } from './fixtures/packs';
 import { contentSection, installThemeDesigns, placeOnHome, servicesGrid, splitHero, statsRow } from './fixtures/inspector-workflows-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 /**
  * The business starter with designs built in the editor installed as Foundation's own and placed first on Home, in
  * this order: a Split hero (test.hero), a Services grid (test.grid) and Statistics (test.stats); and an empty Section
- * (test.section) installed. Foundation's own sections are code components, which take no anchor and have no design to
+ * (test.section) installed. Foundation's own sections are code components, which have no design to
  * paste into, so what copy and paste do with a design's tree is checked on these.
  */
 const managed = () => {
@@ -85,8 +86,7 @@ describe('section anchors', () => {
     expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }])).not.toThrow();
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
+  it('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
     let s = fresh();
     const hero = firstInstance(s, 'hero.split');
     expect(s.components[hero.definitionId].source).toMatch(/id=\{so_id\}/);
@@ -95,18 +95,96 @@ describe('section anchors', () => {
     expect(generateProject(s).get('src/routes/+page.svelte')).toContain('so_id={"pricing"}');
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('puts a section anchor on the shipped theme’s footer', () => {
+  it('puts a section anchor on the shipped theme’s footer', () => {
     const s = fresh();
     const footer = s.site.shell.footer.rootIds[0];
     expect(applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state.site.shell.footer.nodes[footer].anchor).toBe('contact');
   });
 
-  it('refuses anchors on code components', () => {
+  it('puts an anchor on code that places id={so_id}, and refuses it on code that places none', () => {
     let s = managed();
     const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id }]).state;
+    // A design converted to code places the placement's id on its root, as the theme's sections do.
+    const def = s.components[(home(s).nodes[hero.id] as InstanceNode).definitionId];
+    expect(def.source).toMatch(/id=\{so_id/);
+    expect(applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'x' }]).state.pages[s.site.homePageId].nodes[hero.id].anchor).toBe('x');
+    def.source = def.source!.replace(/\s+id=\{\s*so_id[^}]*\}/g, '');
+    expect(def.source).not.toMatch(/id=\{\s*so_id/);
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'x' }]), /code components/);
+  });
+});
+
+describe('which components take an anchor', () => {
+  it('reads code for an element placing id={so_id}, and never takes an entrance on it', () => {
+    const s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const def = s.components[hero.definitionId];
+    const as = (source: string) => ({ ...def, source });
+    expect(anchorCapable(s, def)).toBe(true);
+    expect(anchorCapable(s, as('<section class="x" id={so_id}></section>'))).toBe(true);
+    expect(anchorCapable(s, as('<section id={ so_id ?? "top" }></section>'))).toBe(true);
+    // Another attribute holding it, or code that never places it, gives links nothing to jump to.
+    expect(anchorCapable(s, as('<section id = {so_id}></section>'))).toBe(true);
+    expect(anchorCapable(s, as("<section id={so_id || 'top'}></section>"))).toBe(true);
+    // Another attribute holding it, another value made from it, or code that never places it: nothing to jump to. Code
+    // that hands it on to a component it places cannot say whether that one renders it.
+    expect(anchorCapable(s, as('<section data-id={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<section myid={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<Inner so_id={so_id} />'))).toBe(false);
+    expect(anchorCapable(s, as('<section id={so_id_suffix}></section>'))).toBe(false);
+    expect(anchorCapable(s, as("<section id={so_id + '-x'}></section>"))).toBe(false);
+    expect(anchorCapable(s, as('<section id={sectionId}></section>'))).toBe(false);
+    expect(anchorCapable(s, as(''))).toBe(false);
+    expect(entranceCapable(s, def)).toBe(false);
+  });
+
+  it('clears an anchor that code no longer places, and refuses a new one', () => {
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'top' }]).state;
+    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id }]);
+    s = r.state;
+    const def = s.components[(home(s).nodes[hero.id] as InstanceNode).definitionId];
+    expect(def).toMatchObject({ kind: 'code', owner: 'project' });
+    def.source = def.source!.replace(/\s+id=\{\s*so_id[^}]*\}/g, '');
+    rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'other' }]), /code components/);
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '' }]).state;
+    expect(Object.hasOwn(home(s).nodes[hero.id], 'anchor')).toBe(false);
+  });
+
+  it('names a theme Section by its own heading after a theme block inside it, with the block under it', () => {
+    const s0 = fresh();
+    const page: OwnerRef = { kind: 'page', id: s0.site.homePageId };
+    const r = applyOperations(s0, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const section = r.results[0].nodeId as string;
+    const inner = applyOperations(r.state, [
+      { type: 'node.insert', owner: page, parentId: section, slot: 'content', index: 0, componentId: 'block.callout' },
+      { type: 'node.insert', owner: page, parentId: section, slot: 'content', index: 1, primitive: 'heading', text: 'Opening hours' }
+    ]);
+    const s = inner.state;
+    const callout = inner.results[0].nodeId as string;
+    const listed = pageSections(s, page.id);
+    expect(listed.find((x) => x.nodeId === section)).toMatchObject({ label: 'Opening hours', nested: false });
+    expect(listed.find((x) => x.nodeId === callout)).toMatchObject({ nested: true });
+    expect(planSectionPick(s, page.id, section)?.anchor).toBe('opening-hours');
+  });
+
+  it('never names a wrapper by a heading its own design shows after a theme block placed in it', () => {
+    let s = fresh();
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const wrap = projectDesign(s, {
+      componentId: 'project.wrap',
+      name: 'Wrap',
+      properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'div', {}, [b.slot('content-slot', 'content'), b.el('inner', 'section', {}, [b.text('heading', 'h2', 'Inner heading')])])
+    });
+    const r = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: null, index: 0, definitionId: wrap.id }]);
+    const wrapper = r.results[0].nodeId as string;
+    s = applyOperations(r.state, [{ type: 'node.insert', owner: page, parentId: wrapper, slot: 'content', index: 0, componentId: 'block.callout' }]).state;
+    expect(pageSections(s, page.id).find((x) => x.nodeId === wrapper)).toBeUndefined();
   });
 });
 
@@ -374,7 +452,9 @@ describe('paste what was copied (#62)', () => {
     expect(id).not.toBe(stats.id);
     expect((tree(r.state).nodes[id] as InstanceNode).definitionId).toBe(stats.definitionId);
     expect(r.state.pages[s.site.homePageId].nodes[stats.id]).toBeDefined();
-    expect(validateState(r.state)).toEqual([]);
+    // The paste adds no problem: the only one is the fixture's own, the starter's hero and the placed one both Heading 1s.
+    expect(validateState(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    expect(validateState(r.state)).toEqual(validateState(s));
     // Beside the root, where the component's one designated root would be joined by another, it is refused.
     rejects(() => paste(s, clip, inComponent), /inside the component, not beside its root/);
     // The shared header and footer take no pasted content.

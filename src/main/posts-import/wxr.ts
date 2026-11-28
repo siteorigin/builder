@@ -9,11 +9,11 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText, type HtmlImage } from './html';
+import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
-import { reportNotes } from './notes';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { linkNotes, pageLink, postLink, reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
 /** The longest title, name or label read: the plan shortens what it keeps, and says so. */
@@ -51,6 +51,26 @@ function statusDraft(status: string, password: string): { draft: boolean; reason
 }
 
 const metaValue = (item: XmlElement, key: string) => childElements(item, 'wp:postmeta').find((m) => childText(m, 'wp:meta_key') === key);
+
+/**
+ * A block-editor post's footnotes (WordPress 6.3 and later), which it keeps in its `footnotes` meta rather than its
+ * HTML: each note's ID and text, in order. Empty when it has none, or they can't be read.
+ */
+function footnotesOf(item: XmlElement): Footnote[] {
+  const m = metaValue(item, 'footnotes');
+  if (!m) return [];
+  let list: unknown;
+  try {
+    list = JSON.parse(childText(m, 'wp:meta_value'));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((f: unknown) => {
+    const { id, content } = (f && typeof f === 'object' ? f : {}) as Partial<Record<string, unknown>>;
+    return typeof id === 'string' && id && typeof content === 'string' ? [{ id, content }] : [];
+  });
+}
 
 /** Query keys WordPress reads a post, page, category or tag by, whatever the path, when they have a value. */
 const WORDPRESS_SELECTORS = ['p', 'page_id', 'cat', 'tag'];
@@ -198,8 +218,17 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     } catch {
       // The site's root, then.
     }
+    const links = linkNotes();
+    /** Links named above whose words alone are kept, which the report's count then leaves out. */
+    let namedLost = 0;
+    const lost = (href: string): null => {
+      namedLost++;
+      links.add(href, 'was left as plain words: its address could not be kept.');
+      return null;
+    };
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
+      if (t.startsWith('#') && t.length > 1) return linkFromTarget(t, pages, newTab) ?? lost(t);
       if (!t || /^(mailto|tel):/i.test(t) || t.startsWith('#')) return linkFromTarget(t, pages, newTab);
       let url: URL;
       try {
@@ -210,19 +239,22 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const onSite = url.protocol === 'relative:' || (!!siteOrigin && url.origin === siteOrigin);
       // What the post said about another site (a sponsored link) stays with it; a link to this site says nothing.
       if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab, rel) : null;
-      const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
-      const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
+      const selector = url.searchParams.has('p') ? 'p' : 'page_id';
+      const p = url.searchParams.get(selector);
       // An address WordPress read by its query (`/?p=88`, `/?cat=8`) named something other than what is at its path.
       const selected = WORDPRESS_SELECTORS.some((k) => !!url.searchParams.get(k)?.trim());
       const post = p !== null ? byId.get(p) : selected ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
-      if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
+      const section = url.hash.length > 1 ? url.hash : '';
+      // The ID has done its work once the post is found; the rest of the query goes on to its new address.
+      const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(`&${pair}`).has(selector)).join('&')}`;
+      if (post) return postLink(post, t, query, section, newTab, links);
       // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
-      const page = selected ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
+      const page = selected ? null : pageLink(sitePath(url.pathname), t, url.search, section, pages, newTab, links);
       if (page) return page;
       // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
       // (see planPostImport), since the new site may replace the old one there.
-      if (url.protocol === 'relative:') return null;
+      if (url.protocol === 'relative:') return url.search || section ? lost(t) : null;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
@@ -230,13 +262,14 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const blocks = content.includes('<!-- wp:');
     // A web address alone on a line of a classic post is one WordPress shows embedded.
     const prose = blocks ? content : content.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
+    const oldPath = oldPathOf(childText(item, 'link').trim(), siteOrigin);
     let body;
     try {
       const postId = childText(item, 'wp:post_id').trim();
       const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
-      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery }, report);
+      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery, wordpress: { footnotes: footnotesOf(item) } }, report);
     } catch (e) {
-      add(failedPost(item, key, (e as Error).message));
+      add(failedPost(item, key, (e as Error).message, oldPath));
       continue;
     }
     const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
@@ -245,17 +278,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const thumbUrl = thumbId ? attachments.get(thumbId)?.src : undefined;
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
-    const linkUrl = childText(item, 'link').trim();
-    const notes = reportNotes(report);
+    report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
+    const notes = [...reportNotes(report), ...links.list()];
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
-    let oldPath: string | undefined;
-    try {
-      const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
-      // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).
-      if (!url.search && (!siteOrigin || url.origin === siteOrigin) && url.pathname.length <= MAX_OLD_PATH) oldPath = sitePath(url.pathname);
-    } catch {
-      oldPath = undefined;
-    }
     add({
       key,
       from: title,
@@ -300,10 +325,27 @@ function isImageAttachment(item: XmlElement): boolean {
   return !ext || [...PICTURE_EXTENSIONS, 'svg', 'bmp', 'tif', 'tiff', 'heic', 'ico'].includes(ext);
 }
 
-/** A post whose text could not be read: imported with its details and no text, the reason in its notes. */
-function failedPost(item: XmlElement, key: string, why: string): SourcePost {
+/** The address a post's `<link>` gives it on the old site, when it is one of the site's own that can be kept. */
+function oldPathOf(linkUrl: string, siteOrigin: string | undefined): string | undefined {
+  // No link is no address: read against the site's own, it would be taken for the Home page's.
+  if (!linkUrl) return undefined;
+  try {
+    const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
+    // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).
+    if (!url.search && (!siteOrigin || url.origin === siteOrigin) && url.pathname.length <= MAX_OLD_PATH) return sitePath(url.pathname);
+  } catch {
+    // No address at all.
+  }
+  return undefined;
+}
+
+/**
+ * A post whose text could not be read: imported with its details and no text, the reason in its notes, and its old
+ * address kept for when the author publishes it.
+ */
+function failedPost(item: XmlElement, key: string, why: string, oldPath: string | undefined): SourcePost {
   const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
-  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
+  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`], ...(oldPath ? { oldPath } : {}) };
 }
 
 function decodeSlug(s: string): string {

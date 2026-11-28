@@ -11,10 +11,18 @@ import type { ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateOperation } from '@shared/ops';
+import { normalizeLink, normalizeRichText } from '@engine/values';
+import { linkToTarget, richTextToMarkdown } from '@shared/richtext';
+import type { EditOperation } from '@shared/ops';
+import { siteHref } from '../../src/generator/llms';
+import { pageIds } from '../../src/generator/checks';
+import { articleLinks } from '../../src/renderer/src/lib/article-links';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
+import { publishedState } from '@generator/index';
 import { MAX_ENTRY_CHARS } from '@engine/values';
+import { resolveLink } from '../../src/generator/index';
 import { runSeoAudit } from '@engine/seo-audit';
 import { resolveRedirects } from '@shared/redirects';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
@@ -546,6 +554,123 @@ const item = (id: number, fields: Record<string, string>, body = '') =>
     .map(([k, v]) => `<${k}><![CDATA[${v}]]></${k}>`)
     .join('')}<content:encoded><![CDATA[${body}]]></content:encoded>`;
 
+const meta = (key: string, value: string) => `<wp:postmeta><wp:meta_key>${key}</wp:meta_key><wp:meta_value><![CDATA[${value}]]></wp:meta_value></wp:postmeta>`;
+const published = { title: 'Nitrate', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' };
+const sectionLinks = (state: ProjectState) => validateState(state).filter((d) => d.code === 'LINK_SECTION_MISSING');
+
+describe('reading footnotes (#1505)', () => {
+  it('brings a block-editor post’s footnotes in from its meta as a numbered list, and its numbers stop linking to anchors it lost', async () => {
+    const body =
+      '<!-- wp:paragraph --><p>Nitrate leaching peaked in October<sup data-fn="fn-14-a" class="fn"><a href="#fn-14-a" id="fn-14-a-link">1</a></sup> and fell by spring<sup data-fn="fn-14-b" class="fn"><a href="#fn-14-b" id="fn-14-b-link">2</a></sup>.</p><!-- /wp:paragraph -->\n<!-- wp:footnotes /-->';
+    const notes = JSON.stringify([
+      { id: 'fn-14-a', content: 'Measured at 30 cm with <em>suction lysimeters</em>.' },
+      { id: 'fn-14-b', content: 'See <a href="https://journal.example/paper">the paper</a>.' }
+    ]);
+    const source = await readWordPress(wxr([item(14, published, body) + meta('footnotes', notes)]), {});
+    const [post] = source.posts;
+    expect(text(post.body)).toEqual(['Nitrate leaching peaked in October[1] and fell by spring[2].', 'Footnotes', 'Measured at 30 cm with suction lysimeters. | See the paper.']);
+    expect(post.body[1]).toEqual({ type: 'h2', spans: [{ text: 'Footnotes' }] });
+    expect(post.body[2]).toMatchObject({ type: 'ol' });
+    // The numbers are words now: no link left to a place the post no longer has.
+    expect(JSON.stringify(post.body[0])).not.toContain('anchor');
+    // A link inside a note is kept.
+    expect(JSON.stringify(post.body[2])).toContain('https://journal.example/paper');
+    expect(post.notes).toEqual(['Its 2 footnotes are a numbered list under a Footnotes heading, and their numbers no longer link to them.']);
+    const { after } = commit(site(), source);
+    expect(sectionLinks(after)).toEqual([]);
+  });
+
+  it('puts the footnotes at the end when the post has no footnotes block, and says so when the export lost their text', async () => {
+    const marker = '<p>Peaked<sup data-fn="fn-1" class="fn"><a href="#fn-1" id="fn-1-link">1</a></sup>.</p>';
+    const kept = await readWordPress(wxr([item(1, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph -->`) + meta('footnotes', JSON.stringify([{ id: 'fn-1', content: 'A note.' }]))]), {});
+    expect(text(kept.posts[0].body)).toEqual(['Peaked[1].', 'Footnotes', 'A note.']);
+    expect(kept.posts[0].notes).toEqual(['Its footnote is under a Footnotes heading, and its number no longer links to it.']);
+    for (const lost of ['', meta('footnotes', '[{"id":'), meta('footnotes', '[]')]) {
+      const source = await readWordPress(wxr([item(2, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph --><!-- wp:footnotes /-->`) + lost]), {});
+      const [post] = source.posts;
+      expect(text(post.body)).toEqual(['Peaked[1].']);
+      expect(post.notes).toEqual(['The text of its footnote was not in the export: its number is left without a note.']);
+      expect(sectionLinks(commit(site(), source).after)).toEqual([]);
+    }
+  });
+
+  it('keeps the footnotes a list of their own when a list comes just before them, so their numbers stay theirs', async () => {
+    const body = `<!-- wp:paragraph -->${'<p>Bring<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>:</p>'}<!-- /wp:paragraph --><!-- wp:list {"ordered":true} --><ol><li>Boots</li><li>Gloves</li></ol><!-- /wp:list --><!-- wp:footnotes /-->`;
+    const source = await readWordPress(wxr([item(4, published, body) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'Waterproof.' }]))]), {});
+    expect(text(source.posts[0].body)).toEqual(['Bring[1]:', 'Boots | Gloves', 'Footnotes', 'Waterproof.']);
+  });
+
+  it('puts the footnotes at the post’s end when it has a footnotes block, never for one its words or code only mention', async () => {
+    const body = `<div title="<!-- wp:footnotes /-->"><p>Intro<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>.</p></div><pre>Code <!-- wp:footnotes /--> shown</pre><!-- wp:footnotes /--><p>After.</p>`;
+    const source = await readWordPress(wxr([item(5, published, `<!-- wp:paragraph -->${body}`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
+    expect(text(source.posts[0].body)).toEqual(['Intro[1].', 'Code shown', 'After.', 'Footnotes', 'A note.']);
+    // Only a real block shows them: a post that mentions one in code and never numbers its notes shows none.
+    const code = await readWordPress(wxr([item(10, published, `<!-- wp:paragraph --><pre><!-- wp:footnotes /--></pre>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
+    expect(text(code.posts[0].body)).toEqual([]);
+    // A footnotes block inside a link, a list, or before a list: the notes are a list of their own, never linked or
+    // numbered with another, as the entry keeps them.
+    const inside = await readWordPress(
+      wxr([item(8, published, `<!-- wp:paragraph --><p><a href="#contact">Reach us<!-- wp:footnotes /--></a></p><ol><li>One<!-- wp:footnotes /--></li></ol><p>Peaked<sup data-fn="fn-a"><a href="#fn-a">1</a></sup>.</p><!-- wp:footnotes /--><ol><li>Two</li></ol>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]),
+      {}
+    );
+    const [post] = inside.posts;
+    expect(text(post.body)).toEqual(['Reach us', 'One', 'Peaked[1].', 'Two', 'Footnotes', 'A note.']);
+    expect(JSON.stringify(post.body.slice(4))).not.toContain('link');
+    const { after } = commit(site(), inside);
+    const [entry] = Object.values(after.collections.posts.entries);
+    expect(text(entry.body).slice(-3)).toEqual(['Two', 'Footnotes', 'A note.']);
+  });
+
+  it('keeps one item per footnote, whatever a note holds, so each number still names its note', async () => {
+    const marks = ['a', 'b', 'c'].map((id, i) => `<sup data-fn="fn-${id}" class="fn"><a href="#fn-${id}">${i + 1}</a></sup>`).join(' ');
+    const notes = JSON.stringify([
+      { id: 'fn-a', content: '<p>First.</p>\n<p>Second.</p>Third.' },
+      { id: 'fn-b', content: '  ' },
+      { id: 'fn-c', content: 'Watch [embed]https://video.example/1[/embed]' }
+    ]);
+    const source = await readWordPress(wxr([item(6, published, `<!-- wp:paragraph --><p>Claims ${marks}</p><!-- /wp:paragraph --><!-- wp:footnotes /-->`) + meta('footnotes', notes)]), {});
+    const list = source.posts[0].body[2];
+    expect(list).toMatchObject({ type: 'ol' });
+    expect(text([list])).toEqual(['First.\nSecond.\nThird. | — | Watch\nhttps://video.example/1']);
+    // A note's shortcodes are read as the post's are.
+    expect(JSON.stringify(list)).toContain('"target":"https://video.example/1"');
+  });
+
+  it('reads a post’s numbers and places as its markup has them, never from its words', async () => {
+    const body = '<!-- wp:paragraph --><p>Write id="contact" and data-fn="x" in the HTML<span name="contact"></span>. <a href="#contact">Contact us</a>. Peaked<sup data-fn=fn-1><a href=#fn-1>1</a></sup>, see <a href="#n2">[2]</a>.</p><!-- /wp:paragraph --><ol><li class="note"id="n2">Two.</li></ol>';
+    const source = await readWordPress(wxr([item(7, published, body)]), {});
+    const [post] = source.posts;
+    expect(text(post.body)[0]).toBe('Write id="contact" and data-fn="x" in the HTML. Contact us. Peaked[1], see [2].');
+    const links = JSON.stringify(post.body);
+    expect(links).toContain('"target":"contact"');
+    expect(links).not.toContain('fn-1');
+    expect(links).not.toContain('n2');
+    expect(post.notes).toEqual(['The text of its footnote was not in the export: its number is left without a note.', 'A link to a place in the post itself (a note number, say) is plain words now: an imported post can’t link within itself.']);
+    expect(sectionLinks(commit(site(), source).after).map((d) => d.message)).toEqual([expect.stringContaining('#contact')]);
+    // A note the post never shows names no place of it.
+    const unshown = await readWordPress(wxr([item(9, published, '<!-- wp:paragraph --><p><a href="#contact">Contact us</a></p>') + meta('footnotes', JSON.stringify([{ id: 'fn-z', content: '<span id="contact">Old.</span>' }]))]), {});
+    expect(JSON.stringify(unshown.posts[0].body)).toContain('"target":"contact"');
+    expect(unshown.posts[0].notes).toEqual([]);
+  });
+
+  it('keeps hand-written notes, and unlinks the numbers that went to places in the post itself', async () => {
+    const body = '<p>Yields rose<sup id="ref1"><a href="#note1">[1]</a></sup>. <a href="#contact">Write to us</a>. <a href="javascript:alert(1)">Not this</a>. <a href="javascript:void(0)">Nor this</a>. <a href="#form">The form</a>.</p><form id="form"><input></form>\n\n<ol><li id="note1">From the 2019 survey. <a href="#ref1">↩</a></li></ol>';
+    const source = await readWordPress(wxr([item(3, published, body)]), {});
+    const [post] = source.posts;
+    // A hand-written note's number is a superscript like any other (see scriptForm): only a block-editor footnote's reads "[1]".
+    expect(text(post.body)).toEqual(['Yields rose^([1]). Write to us. Not this. Nor this. The form.', 'From the 2019 survey. ↩']);
+    const links = JSON.stringify(post.body);
+    expect(links).not.toContain('note1');
+    expect(links).not.toContain('ref1');
+    // A place the import leaves out (a form) is still one the post named.
+    expect(links).not.toContain('"target":"form"');
+    // A section the post never had (the site's own, perhaps) is still linked to.
+    expect(links).toContain('"target":"contact"');
+    // A link dropped for its address is still said as one.
+    expect(post.notes).toEqual(['Removed a form.', 'A superscript or subscript became ordinary text on the line.', '3 links to places in the post itself (its note numbers, say) are plain words now: an imported post can’t link within itself.', 'Kept the words of 2 links whose address could not be kept.']);
+  });
+});
+
 describe('reading posts in batches', () => {
   it('hands a WordPress export’s posts over as it reads them: the same posts, in the same order, and the rest of the source the same', async () => {
     const file = wxr(Array.from({ length: 2 * POSTS_PER_BATCH + 20 }, (_, i) => item(i + 1, { title: `Post ${i}`, 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, `<p>Text ${i}</p>`)), '<item><wp:post_type>page</wp:post_type><title>About</title></item>');
@@ -572,6 +697,18 @@ describe('reading posts in batches', () => {
 });
 
 describe('reading a WordPress export: statuses, dates and links', () => {
+  it('keeps the old address of a post whose text could not be read, which arrives as a draft (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Big', link: 'https://old.example/2020/01/big/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, '<b></b>'.repeat(200_001))]), {});
+    expect(source.posts[0]).toMatchObject({ title: 'Big', draft: true, draftReason: 'its text could not be read', oldPath: '/2020/01/big/' });
+  });
+
+  it('gives a post with no link no old address, never the Home page’s (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Unlinked', link: ' ', 'wp:status': 'future', 'wp:post_date': '2030-01-02 00:00:00' }, '<p>Soon</p>'), item(2, { title: 'Bare', 'wp:status': 'draft' }, '<p>Later</p>')]), {});
+    expect(source.posts.map((p) => [p.title, p.oldPath])).toEqual([
+      ['Unlinked', undefined],
+      ['Bare', undefined]
+    ]);
+  });
   it('keeps a post a draft when it was private, password-protected or has no date', async () => {
     const source = await readWordPress(
       wxr([
@@ -661,7 +798,7 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(postImportPreview('r', plan).posts.map((p) => p.notes)).toEqual([[], [], [], []]);
     const first = Object.values(after.collections.posts.entries).find((e) => e.title === 'First')!;
     const second = Object.values(after.collections.posts.entries).find((e) => e.title === 'Second')!;
-    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}"}}`);
+    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}","query":"?m=spring&s="}}`);
     expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
       { from: '/category/clay/', custom: true, to: '/blog/category/clay/' },
       { from: '/category/page/', custom: true, to: '/blog/category/page/' },
@@ -969,15 +1106,17 @@ describe('planning an import: limits, drafts and the review', () => {
   const post = (key: string, over: Partial<SourcePost> = {}): SourcePost => ({ key, from: key, title: key, slug: '', date: '2020-01-01', draft: false, categories: [], tags: [], body: [{ type: 'p', spans: [{ text: 'Words' }] }], notes: [], ...over });
   const src = (posts: SourcePost[], media: ParsedSource['media'] = []): ParsedSource => ({ kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts, media, skipped: [] });
 
-  it('keeps no old address for a draft, numbers two posts that want one slug, and reuses a term whatever its case', () => {
+  it('keeps a draft’s old address too, numbers two posts that want one slug, and reuses a term whatever its case', () => {
     const s = site();
     const first = commit(s, src([post('a', { slug: 'news', categories: [{ label: 'Local News' }] })])).after;
     const { plan, after } = commit(first, src([post('b', { slug: 'same', draft: true, oldPath: '/old-b/' }), post('c', { slug: 'same', categories: [{ label: 'local news' }] })]));
     expect(plan.posts.map((p) => [p.slug, p.wantedSlug, p.redirectFrom])).toEqual([
-      ['same', undefined, undefined],
+      ['same', undefined, '/old-b/'],
       ['same-2', 'same', undefined]
     ]);
-    expect(after.site.redirects).toBeUndefined();
+    const b = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same')!;
+    expect(b.draft).toBe(true);
+    expect(after.site.redirects).toEqual([{ from: '/old-b/', entryId: b.id }]);
     const c = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same-2')!;
     expect(c.terms.categories).toEqual(['local-news']);
     // Nothing new to the collection: the review still names the term.
@@ -1015,6 +1154,47 @@ describe('planning an import: limits, drafts and the review', () => {
     expect(plan.posts[0]).toMatchObject({ draft: true, draftReason: 'its text was longer than a post holds, so it was cut', body: [] });
     expect(plan.media).toEqual([]);
     expect(plan.problems).toEqual([]);
+  });
+
+  it('keeps every draft’s old address, which starts working once the post is published (#1501)', () => {
+    const big = 'x'.repeat(MAX_ENTRY_CHARS + 1);
+    const posts = [
+      post('live', { slug: 'live', oldPath: '/2025/11/live/' }),
+      post('scheduled', { slug: 'scheduled', draft: true, draftReason: 'it was scheduled', oldPath: '/2025/11/why-sorghum-in-a-dry-decade-2/' }),
+      post('long', { slug: 'long', body: [{ type: 'p', spans: [{ text: big }] }], oldPath: '/2025/10/long-read/' })
+    ];
+    const { plan, after } = commit(site(), src(posts));
+    expect(plan.posts.map((p) => [p.draft, p.redirectFrom, p.lostAddress])).toEqual([
+      [false, '/2025/11/live/', undefined],
+      [true, '/2025/11/why-sorghum-in-a-dry-decade-2/', undefined],
+      [true, '/2025/10/long-read/', undefined]
+    ]);
+    // The review counts every address kept, and says how many wait for their post to be published.
+    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 3, redirectsPending: 2 });
+    const id = (slug: string) => Object.values(after.collections.posts.entries).find((e) => e.slug === slug)!.id;
+    expect(after.site.redirects).toEqual([
+      { from: '/2025/11/live/', entryId: id('live') },
+      { from: '/2025/11/why-sorghum-in-a-dry-decade-2/', entryId: id('scheduled') },
+      { from: '/2025/10/long-read/', entryId: id('long') }
+    ]);
+    expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
+    // The website sends visitors only to what it has: the drafts' old addresses wait for them.
+    expect(publishedState(after).site.redirects).toEqual([{ from: '/2025/11/live/', entryId: id('live') }]);
+    const { state: published } = applyOperations(after, [{ type: 'entry.update', collectionId: 'posts', entryId: id('scheduled'), draft: false }]);
+    expect(publishedState(published).site.redirects).toEqual([
+      { from: '/2025/11/live/', entryId: id('live') },
+      { from: '/2025/11/why-sorghum-in-a-dry-decade-2/', entryId: id('scheduled') }
+    ]);
+  });
+
+  it('says when a draft’s old address can’t be kept, as for a published post (#1501)', () => {
+    const plan = planPostImport(site(), src([post('a', { slug: 'a', oldPath: '/same/' }), post('b', { slug: 'b', draft: true, oldPath: '/same/' })]), '2026-11-24');
+    expect(plan.posts.map((p) => [p.redirectFrom, p.lostAddress])).toEqual([
+      [undefined, '/same/'],
+      [undefined, '/same/']
+    ]);
+    expect(plan.posts[1].notes.join(' ')).toMatch(/Its old address \(\/same\/\) can’t keep working, because another imported post had it too/);
+    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 0, redirectsPending: 0, redirectsLost: 2 });
   });
 
   it('says what it shortened', () => {
@@ -1362,5 +1542,121 @@ describe('reading a static site folder (#1517)', () => {
     const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
     const source = await readMarkdownFolder(dir, {});
     expect(source.posts.map((p) => p.from)).toEqual(['one.md']);
+  });
+});
+
+describe('what a link between imported posts says after its file (#1545)', () => {
+  const dated = (title: string, body: string) => `---\ntitle: ${title}\ndate: 2024-01-01\n---\n${body}`;
+  const spans = (body: RichText) => body.flatMap((b) => ('spans' in b ? b.spans : [])).filter((s) => s.link);
+
+  it('keeps a query on the entry’s new address, and names a section it cannot carry', async () => {
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'first.md': dated('First', '[plain](./intake.md) [briefing](./intake.md?mode=briefing) [steps](./intake.md?step=1#next-steps)'),
+        'intake.md': dated('Intake', '## Next steps\n\nText.')
+      }),
+      {}
+    );
+    const { plan, after } = commit(site(), source);
+    const entries = Object.values(after.collections.posts.entries);
+    const first = entries.find((e) => e.title === 'First')!;
+    const hrefs = spans(first.body).map((s) => resolveLink(s.link, { state: after } as Parameters<typeof resolveLink>[1])?.href);
+    expect(hrefs).toEqual(['/blog/intake/', '/blog/intake/?mode=briefing', '/blog/intake/?step=1']);
+    const notes = plan.posts.find((p) => p.title === 'First')!.notes;
+    expect(notes.filter((n) => n.includes('./intake.md?step=1#next-steps'))).toHaveLength(1);
+    expect(notes.some((n) => n.includes('mode=briefing'))).toBe(false);
+  });
+
+  it('names each link that loses part of its address, as the post wrote it', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'first.md': dated(
+          'First',
+          '[spaced](<./intake.md?file=a%2Fb&tag=(one)&tag=two words>) [by slug](/blog/intake/?x=1) [page](/about/?x=1#nowhere) [odd](/about/#1st) [here](#intro) [bad](#1st) [gone](./missing.md?x=1) [plain gone](./missing.md)'
+        ),
+        'intake.md': dated('Intake', 'Text.')
+      }),
+      pages(s)
+    );
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'entry', target: 'post:md:intake.md', query: '?file=a%2Fb&tag=(one)&tag=two%20words' },
+      { type: 'entry', target: 'post:md:intake.md', query: '?x=1' },
+      { type: 'page', target: about.id, anchor: 'nowhere' },
+      { type: 'page', target: about.id },
+      { type: 'anchor', target: 'intro' }
+    ]);
+    const notes = commit(s, source).plan.posts[0].notes;
+    for (const [href, count] of [['/about/?x=1#nowhere', 1], ['/about/#nowhere', 1], ['/about/#1st', 1], ['#intro', 1], ['#1st', 1], ['./missing.md?x=1', 1], ['intake.md', 0], ['/blog/intake/', 0]] as const)
+      expect(notes.filter((n) => n.startsWith(`The link “${href}”`)), href).toHaveLength(count);
+    // The link without a query or section is counted with the others whose address could not be kept, once.
+    expect(notes).toContain('Kept the words of a link whose address could not be kept.');
+  });
+
+  it('says nothing of a section the page has, or of a mark the Markdown escapes', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const section = [...pageIds(s, about.id)].at(-1)!;
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', `[there](/about/#${section}) [both](./intake.md?a=1\\&b=2) [literal](./intake.md?c=&amp\\;d=3)`), 'intake.md': dated('Intake', 'Text.') }), pages(s));
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'page', target: about.id, anchor: section },
+      { type: 'entry', target: 'post:md:intake.md', query: '?a=1&b=2' },
+      { type: 'entry', target: 'post:md:intake.md', query: '?c=&amp;d=3' }
+    ]);
+    expect(commit(s, source).plan.posts[0].notes).toEqual([]);
+  });
+
+  it('names no more than twenty links of one post, shortened, and counts the rest', async () => {
+    const long = 'x'.repeat(300);
+    const body = Array.from({ length: 23 }, (_, i) => `[l](./intake.md?${long}#s${i})`).join(' ');
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', body), 'intake.md': dated('Intake', 'Text.') }), {});
+    expect(source.posts[0].notes).toHaveLength(21);
+    expect(source.posts[0].notes[0]).toContain(`“${`./intake.md?${long}`.slice(0, 200)}…”`);
+    expect(source.posts[0].notes[20]).toBe('3 more links also need checking.');
+  });
+
+  it('keeps a WordPress link’s query, less the ID that found the post', async () => {
+    const source = await readWordPress(
+      wxr([
+        item(10, { title: 'First', link: 'https://old.example/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<a href="/second/?a=1&amp;a=%23&amp;b=">pretty</a> <a href="/?p=11&amp;utm_source=mail">by id</a> <a href="/?page_id=11">selector only</a> <a href="/?page_id=11&amp;view=compact&amp;?page_id=keep">page selector</a> <a href="/second/#more">section</a> <a href="https://elsewhere.example/?p=11#x">out</a>'),
+        item(11, { title: 'Second', link: 'https://old.example/second/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' })
+      ]),
+      {}
+    );
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'entry', target: 'post:wp:11', query: '?a=1&a=%23&b=' },
+      { type: 'entry', target: 'post:wp:11', query: '?utm_source=mail' },
+      { type: 'entry', target: 'post:wp:11' },
+      { type: 'entry', target: 'post:wp:11', query: '?view=compact&?page_id=keep' },
+      { type: 'entry', target: 'post:wp:11' },
+      { type: 'url', target: 'https://elsewhere.example/?p=11#x' }
+    ]);
+    expect(source.posts[0].notes.filter((n) => n.includes('“/second/#more”'))).toHaveLength(1);
+    expect(source.posts[0].notes.filter((n) => n.startsWith('The link '))).toHaveLength(1);
+  });
+
+  it('keeps the query through the text form, the writer, a replaced post and the Markdown mirror', async () => {
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', '[b](<./intake.md?file=a%2Fb&t=(1)>)'), 'intake.md': dated('Intake', 'Text.'), 'other.md': dated('Other', 'Text.') }), {});
+    const { after } = commit(site(), source);
+    const [first, intake, other] = ['First', 'Intake', 'Other'].map((t) => Object.values(after.collections.posts.entries).find((e) => e.title === t)!);
+    const link = { type: 'entry', target: intake.id, query: '?file=a%2Fb&t=(1)' };
+    expect(spans(first.body)[0].link).toEqual(link);
+
+    const written = richTextToMarkdown(first.body, after.pages);
+    expect(written).toContain(`(<entry:${intake.id}?file=a%2Fb&t=(1)>)`);
+    expect(normalizeRichText(written, after, 'Body', undefined, { entries: true })).toEqual(first.body);
+    expect(articleLinks(after).link(linkToTarget(spans(first.body)[0].link!, after.pages), false, [])).toEqual(link);
+    for (const query of ['x=1', '?x#y', 5])
+      expect(() => normalizeLink({ ...link, query }, after, 'Link', { entries: true })).toThrow(/query/);
+    expect(() => normalizeRichText(`[b](entry:${intake.id}?x#y)`, after, 'Body', undefined, { entries: true })).toThrow(/does not exist/);
+
+    expect(siteHref(after, '/', `/blog/café/${link.query}`)).toBe(`./blog/caf%C3%A9/${link.query}`);
+    expect(siteHref({ ...after, site: { ...after.site, baseUrl: 'https://example.com' } }, '/', `/blog/café/${link.query}`)).toBe(`https://example.com/blog/caf%C3%A9/${link.query}`);
+
+    const replaced = (replacement: object) =>
+      spans(applyOperations(after, [{ type: 'entry.remove', collectionId: 'posts', entryId: intake.id, ...replacement } as EditOperation]).state.collections.posts.entries[first.id].body)[0].link;
+    expect(replaced({ replacementEntryId: other.id })).toEqual({ ...link, target: other.id });
+    expect(replaced({ replacementPageId: after.site.homePageId })).toEqual({ type: 'page', target: after.site.homePageId });
   });
 });

@@ -812,9 +812,20 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
   const asset = named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  // The value as it is now, for work that finishes later (an import).
+  // A description saved on leaving its field, and the value shown then (#1393). Leaving the description for the
+  // Decorative switch, or Remove, saves it, and that change is made before the save comes back from the project: until
+  // the value shown moves on (the save came back, or something else changed the image), changes build on it.
+  const saving = useRef<{ alt: string; from: ImageValue; field?: string } | null>(null);
+  if (saving.current && (!sameImage(saving.current.from, v) || saving.current.field !== home?.key)) saving.current = null;
+  // The value as it is now, for work that finishes later (an import) and for each change made from here.
   const latest = useRef(v);
-  latest.current = v;
+  latest.current = saving.current ? { ...v, alt: saving.current.alt } : v;
+  // The same, as this render has it: what a description typed from here is saved onto. The field may save it with the
+  // callback it had when typing began (the AI ran meanwhile), and then it must be saved onto the image shown then.
+  const shownNow = latest.current;
+  // The value shown when the description began to be typed. Its save is checked against where typing began, and held
+  // when the image changed since (another window replaced it): then nothing builds on it (see commitDraft).
+  const typedOn = useRef<ImageValue | null>(null);
   // A description carried over from the previous image may no longer be true; say so until it is checked or edited.
   const [, redraw] = useState(0);
   const project = snapshot?.workspaceKey;
@@ -1021,7 +1032,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
                 onClick={() => {
                   if (!picture) setCarried(false);
                   removedAt.current = Date.now();
-                  onChange({ assetId: null, alt: v.alt, decorative: v.decorative });
+                  onChange({ assetId: null, alt: latest.current.alt, decorative: latest.current.decorative });
                 }}
               >
                 {picture ? picture.back : 'Remove'}
@@ -1081,7 +1092,19 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             limit={TEXT_LIMITS.imageAlt}
             keep={home ? `${home.key}|alt` : undefined}
             keepWhile={home?.alive}
-            onCommit={(alt) => (setCarried(false), onChange({ ...v, alt }))}
+            onDirty={(dirty) => {
+              if (!dirty) typedOn.current = null;
+              else typedOn.current ??= v;
+            }}
+            onCommit={(alt) => {
+              setCarried(false);
+              // Built on only when the save will be made: typed on the image shown, with the AI idle.
+              if ((!typedOn.current || sameImage(typedOn.current, v)) && !useStore.getState().snapshot?.aiBusy) {
+                saving.current = { alt, from: v, field: home?.key };
+                latest.current = { ...latest.current, alt };
+              }
+              onChange({ ...shownNow, alt });
+            }}
           />
         </Field>
       )}
@@ -1097,10 +1120,12 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
           It still fits
         </button>
       )}
-      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
+      {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...latest.current, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
     </div>
   );
 }
+
+const sameImage = (a: ImageValue, b: ImageValue) => a.assetId === b.assetId && a.alt === b.alt && !!a.decorative === !!b.decorative;
 
 /** An image's name as the library shows it (with its ID when another image has the same name). */
 const labels = (state: ProjectState, id: string) => {

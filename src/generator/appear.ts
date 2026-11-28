@@ -1,7 +1,7 @@
 import type { ComponentDefinition, NodeTree, ProjectState } from '@shared/types';
 import { isAppearPreset } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
-import { anchorCapable } from '@engine/tree';
+import { entranceCapable } from '@engine/tree';
 
 /**
  * Entrances: a section or container with an `appear` preset fades, lifts or scales in the first time it scrolls into
@@ -226,7 +226,7 @@ export function usesAppear(state: ProjectState): boolean {
       if (n.kind !== 'instance') continue;
       // A design's root takes its placement's choice first.
       const choice = n.id === rootId ? 'none' : n.appear;
-      if (isAppearPreset(choice) && anchorCapable(state, entranceTaker(state, n.definitionId))) return true;
+      if (isAppearPreset(choice) && entranceCapable(state, entranceTaker(state, n.definitionId))) return true;
       if (placesAppear(n.definitionId, choice === 'none')) return true;
     }
     return false;

@@ -14,7 +14,9 @@ export { blocksFromDom, type ArticleRead, type RichDomImage, type RichDomNode } 
 
 const MAX_NODES = 5000;
 const MAX_DEPTH = 16;
-const MAX_TEXT = 20000;
+/** Any run the page can send (its commit budget): the field's own limit judges the length, and offers back what it
+ *  refuses (#1447). */
+const MAX_TEXT = 150000;
 const MAX_HREF = 2100;
 
 /** Validate an untrusted copy from the preview; null when it is malformed or too large. */

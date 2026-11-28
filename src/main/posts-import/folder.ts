@@ -14,8 +14,8 @@ import { emptyReport, htmlToPlain, htmlToRichText } from './html';
 import { markdownToHtml, readFrontmatter, type FrontValue } from './markdown';
 import { MediaTable, segmentsWithin } from './media';
 import { isInsideRoot, readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, MAX_MARKDOWN_FILE_BYTES, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
-import { reportNotes } from './notes';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, MAX_MARKDOWN_FILE_BYTES, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { linkNotes, pageLink, postLink, reportNotes, splitHref } from './notes';
 
 const MARKDOWN = /\.(md|markdown)$/i;
 /** Jekyll names a post's file after its date: `2019-03-01-winter-workshop.md`. */
@@ -200,27 +200,37 @@ export async function readMarkdownFolder(root: string, pages: RichPages, emit?: 
     const report = emptyReport();
     const notes: string[] = notUtf8 ? ['It is not saved as UTF-8 text, so some of its letters may have come out wrong. Check its text, or save the file as UTF-8 and import it again.'] : [];
     if (fm.problems.length) notes.push(`Some of its settings could not be read (${fm.problems.slice(0, 3).join('; ')}).`);
+    const links = linkNotes();
+    /** Links named above whose words alone are kept, which the report's count then leaves out. */
+    let namedLost = 0;
+    const lost = (href: string): null => {
+      namedLost++;
+      links.add(href, 'was left as plain words: its address could not be kept.');
+      return null;
+    };
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
-      const tab = newTab ? { newTab: true } : {};
       // A link to a collection's index by its ID names a collection of the project it was written for, not this one.
       if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('#') || t.startsWith('//')) {
         const link = linkFromTarget(t.startsWith('//') ? `https:${t}` : t, pages, newTab, rel);
+        if (!link && t.startsWith('#')) return lost(t);
         return link?.type === 'collection' ? null : link;
       }
-      const path = t.split(/[?#]/)[0];
+      const { path, query, section } = splitHref(t);
+      const toPost = (post: string) => postLink(post, t, query, section, newTab, links);
+      const gone = () => (query || section ? lost(t) : null);
       // Another post of the folder, by its file.
       if (MARKDOWN.test(path)) {
         const segs = segmentsWithin(f.dir, path);
         const post = segs && byFile.get(segs.join('/').toLowerCase());
-        return post ? { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab } : null;
+        return post ? toPost(post) : gone();
       }
-      const page = path.startsWith('/') ? linkFromTarget(t, pages, newTab) : null;
+      const page = path.startsWith('/') ? pageLink(path, t, query, section, pages, newTab, links) : null;
       if (page) return page;
       // An address ending in another post's slug (`/blog/winter-workshop/`, `../winter-workshop/`).
       const last = path.split('/').filter(Boolean).pop()?.toLowerCase();
       const post = last ? slugs.get(last) : undefined;
-      return post ? { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab } : null;
+      return post ? toPost(post) : gone();
     };
     let body = fm.body;
     let title = text(fm.data.title);
@@ -246,7 +256,8 @@ export async function readMarkdownFolder(root: string, pages: RichPages, emit?: 
       unread = true;
       notes.push(`Its text could not be read: ${(e as Error).message}`);
     }
-    notes.push(...reportNotes(report));
+    report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
+    notes.push(...reportNotes(report), ...links.list());
     const date = DATE_KEYS.map((k) => day(fm.data[k])).find((d) => d !== null) ?? dated;
     const badDate = date ? undefined : unreadDate(fm.data, fm.unreadable);
     const { draft, reason } = unread ? { draft: true, reason: 'its text could not be read' } : draftOf(fm.data, fm.unreadable);

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
-import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
+import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
@@ -33,7 +33,7 @@ import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import type { PageCheck } from './page-check';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames, blankPageWarnings, assetSizeWarnings } from './export';
+import { answeredAddressFile, assetSizeWarnings, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -3558,7 +3558,16 @@ export class Controller {
         }
         const last = r.results?.at(-1);
         const definitionId = last?.definitionId;
-        return { ok: true, definitionId: typeof definitionId === 'string' ? definitionId : undefined, name, entryId: r.entryId, revision: r.revision, ...(nodeId && last?.nodeId === nodeId ? { nodeId } : {}) };
+        const notes = Array.isArray(last?.notes) ? last.notes.filter((n): n is string => typeof n === 'string') : [];
+        return {
+          ok: true,
+          definitionId: typeof definitionId === 'string' ? definitionId : undefined,
+          name,
+          entryId: r.entryId,
+          revision: r.revision,
+          ...(notes.length ? { notes } : {}),
+          ...(nodeId && last?.nodeId === nodeId ? { nodeId } : {})
+        };
       })
     );
   }
@@ -4156,7 +4165,7 @@ export class Controller {
    * image's file (one step that can be undone), so every use, with its alt text, shows it. A font takes only its very
    * file, put back the same way (#1425). `path` skips the dialog.
    */
-  async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }> {
+  async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string; entryId?: string; revision?: number; altReview?: AltReview[] }> {
     const s = this.session;
     if (!s) return { ok: false };
     if (s.readOnly) return { ok: false, message: s.readOnly.reason };
@@ -4207,7 +4216,10 @@ export class Controller {
         if (r.error?.code === 'STALE_REVISION' && still?.file === record.file && still.hash === record.hash) r = await relink(s.revision);
         if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
-        return { ok: true, message: document ? `Every link to ${name} now downloads ${basename(file)}.` : `${basename(file)} now shows wherever ${name} is used.` };
+        if (document) return { ok: true, message: `Every link to ${name} now downloads ${basename(file)}.` };
+        // Every use now shows the new picture with the alt text it had: those are listed for the author to check.
+        const altReview = (r.results?.[0]?.altReview ?? []) as AltReview[];
+        return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.`, entryId: r.entryId, revision: r.revision, altReview };
       } catch (e) {
         if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
         return { ok: false, message: (e as Error).message };
@@ -5106,7 +5118,7 @@ export class Controller {
           unsaved = `This export couldn’t be saved in Saved versions as “${opts.milestone}”: ${(e as Error).message}`;
         }
       }
-      await timed('export.copySource', () => copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) }))();
+      await timed('export.copySource', () => copyProjectSource(s.dir, dest))();
       // The files the fingerprints don't cover (the project's own setup files) are copied as the milestone holds them.
       if (milestone?.version.git && !(await copiedAsCaptured(s.dir, dest, milestone.files, new Set(Object.keys(milestone.version.docs))))) return stop('The project changed on disk while it was being exported. Export again.');
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
@@ -5122,6 +5134,10 @@ export class Controller {
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       const drafts = opts.forBuild ? undefined : new Map<string, string>();
       await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state, undefined, drafts))();
+      // Not the files kept only for the project's undo and saved versions (#1391), as Duplicate project leaves them out
+      // (#1378): an imported file no record lists goes out while what the published site is built from names it, the
+      // author's own pages and routes included. The authoring documents carry the drafts, so they keep none.
+      await timed('export.retiredAssets', () => leaveOutRetiredAssets(dest, s.state, { authoring: false }))();
       // What the editor finds in code components by their markers: neither export carries a marker, whoever owns the code.
       await timed('export.markers', () => stripCodeMarkers(dest, s.state))();
       if (opts.forBuild) {

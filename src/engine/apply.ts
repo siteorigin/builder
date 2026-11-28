@@ -74,7 +74,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, dropOwnMenuLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, entranceCapable, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -613,7 +613,20 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);
       if (op.originalName) a.originalName = op.originalName;
-      return {};
+      if (a.kind !== 'image') return {};
+      // Another picture now shows wherever the image is used, so its suggested alt text, written for the old one, goes.
+      // Every description a use carries over is listed for the author to check against the new picture (one with none
+      // too), as a replacement lists them; a decorative use and a background describe nothing. Collections' uses have no
+      // place in the list yet.
+      delete a.altSuggestion;
+      const altReview: AltReview[] = [];
+      for (const u of imageUses(state, op.assetId)) {
+        const v = u.value;
+        if (!u.place || !v || u.background || v.decorative) continue;
+        const alt = typeof v.alt === 'string' ? v.alt : '';
+        altReview.push({ ...u.place, reason: alt.trim() ? 'custom' : 'missing', alt });
+      }
+      return { altReview };
     }
   }
   fail(`Unsupported operation "${(op as { type: string }).type}".`);
@@ -2766,9 +2779,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'anchor': {
       if (node.kind === 'repeat' || node.kind === 'slot') fail('Anchors can be set on sections, elements, text, images, buttons, icons and dividers.');
-      // A section's anchor becomes the id of its component's root element, which only managed components place.
-      if (node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, not on code components.');
       const a = String(v ?? '').replace(/^#/, '');
+      // A section's anchor becomes the id of its component's root element, or where its code places id={so_id}. One
+      // its code no longer places can still be cleared.
+      if (a && node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, or on code components whose markup places id={so_id}.');
       if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) fail('Anchors start with a letter and use letters, numbers, - and _.');
       if (a && anchorsInUse(state, owner, node.id).has(a)) fail(RESERVED_ANCHORS.has(a) ? `"${a}" is used by the site itself. Choose another anchor.` : `Another element on this page already uses the anchor "${a}".`);
       if (a) node.anchor = a;
@@ -2795,7 +2809,7 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       const a = v === null || v === undefined || v === '' ? null : v;
       // A section's entrance lands on its component's root element, which only managed components place. One left
       // behind when the component changed can still be cleared.
-      if (a !== null && node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Entrances can only be set on sections built in the editor, not on code components.');
+      if (a !== null && node.kind === 'instance' && !entranceCapable(state, state.components[node.definitionId])) fail('Entrances can only be set on sections built in the editor, not on code components.');
       if (a !== null && a !== 'none' && !isAppearPreset(a)) fail(`An entrance is ${APPEAR_PRESETS.join(', ')} or none.`);
       // A placement keeps `none`, which turns its design's own entrance off; clearing it goes back to the design's.
       if (a === null) delete node.appear;
@@ -3088,10 +3102,13 @@ function tokenSetColorScheme(state: ProjectState, op: Op<'token.setColorScheme'>
     return {};
   }
   t.colorSchemeMode = op.mode;
-  if (op.regenerate || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
+  const staged = t.darkPending && t.darkOverrides && typeof t.darkOverrides === 'object' ? t.darkOverrides : null;
+  if (op.regenerate || staged || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
     const theme = getTheme(state.site.themeId);
-    t.darkOverrides = deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []);
+    // The dark colours imported components brought before it was ever on are their own, beside the theme's made ones.
+    t.darkOverrides = { ...deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []), ...staged };
   }
+  delete t.darkPending;
   assertNoTokenCycles(state);
   return {};
 }
@@ -3247,10 +3264,13 @@ function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
         fail(`"${t.label}" has a different color in the dark palette${hasDarkPalette(state.tokens) ? '' : ' (kept for when it is turned back on)'}, so the places that use it cannot keep one color for both. Choose a replacement color.`);
     }
     const darkMap = state.tokens.darkOverrides;
+    // A dark palette never made yet makes the theme's own colours when it is first turned on: none is kept for them.
+    const theme = state.tokens.darkPending ? new Set(getTheme(state.site.themeId).tokens.map((x) => x.id)) : null;
     forEachTokenRef(state, (id, site) => {
       if (id !== t.id) return;
       // A colour whose light value followed it, and has no dark value of its own, followed it in the dark palette too.
-      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId)) darkMap[site.tokenId] = dark;
+      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId) && !theme?.has(site.tokenId))
+        darkMap[site.tokenId] = dark;
       site.replace(clone(site.scheme === 'dark' ? dark : literal));
     });
   }
@@ -3269,6 +3289,8 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
   let replaced = 0;
   forEachTokenRef(state, (id, site) => {
     if (id !== from.id) return;
+    const only = site.kind === 'style' && site.property && Object.hasOwn(STYLE_PROP_MAP, site.property) ? STYLE_PROP_MAP[site.property].containerTokens : undefined;
+    if (only && to.group === 'container' && !only.includes(to.id)) fail(`"${to.label}" is a page width, and ${STYLE_PROP_MAP[site.property!].label} uses "${from.label}" in ${site.label}: padding of that size would push the page sideways. Replace it with another spacing size or the page gutter.`);
     site.replace({ token: to.id });
     replaced++;
   });

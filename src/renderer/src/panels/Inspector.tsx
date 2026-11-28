@@ -68,7 +68,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@shared/form-contract';
-import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
+import { anchorCapable, codeImportantProps, entranceCapable, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { stateActionRuns } from '@engine/schema';
 import { inferredRole, placementRole, type InsertRole } from '@engine/insert-role';
@@ -103,7 +103,7 @@ import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, openSiteStyles, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
-import { isLanguageCode, linkClash, linkedGroup, pageLanguage, sameLanguage, siteLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, languageKey, linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { languageCodeFor } from './site-details';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -1131,7 +1131,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   // An entrance lands on the design's root element, which only a design built in the editor places.
-  const entrance = anchorCapable(state, def);
+  const entrance = entranceCapable(state, def);
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   // Inside a column, container or slot, or made to go inside layouts, a placement is a component, not a section (#661).
   const noun = placementNoun(state, selection);
@@ -1478,7 +1478,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], editLabel(state, 'Rename', here, v.trim() ? `to ${v.trim()}` : undefined))} />
         </Field>
-        {def.kind === 'managed' && (
+        {(anchorCapable(state, def) || !!node.anchor) && (
           <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell && noun === 'section' ? 'part of every page that shows it' : noun}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], forLabel(state, v.trim() ? 'Set anchor' : 'Clear anchor', here))} />
           </Field>
@@ -2905,7 +2905,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           <FormToolFields state={state} owner={owner} node={node} def={placedDef} />
         </Section>
       )}
-      {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
+      {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && entranceCapable(state, placedDef))) && (
         <Section
           title="Entrance"
           id="def-entrance"
@@ -3153,7 +3153,7 @@ function clashReason(state: ProjectState, page: PageDoc, other: PageDoc, mine: S
   const theirs = ours === clash.a ? clash.b : clash.a;
   const here = ours.id === page.id ? 'this page' : ours.title;
   // `direct`: the page itself is in a language this set has, the one refusal a single line can speak for.
-  if (theirs.id === other.id) return { reason: `${lang}, like ${here}`, direct: clash.language.toLowerCase() };
+  if (theirs.id === other.id) return { reason: `${lang}, like ${here}`, direct: languageKey(clash.language) };
   if (!mine.has(theirs.id)) return { reason: `Its ${lang} version, ${theirs.title}, would clash with ${here}`, direct: null };
   return { reason: `${lang} twice already: ${clash.a.title} and ${clash.b.title}`, direct: null };
 }
@@ -3195,7 +3195,7 @@ function PageLanguageField({ page, state }: { page: PageDoc; state: ProjectState
           if (code && !isLanguageCode(code)) return { message: 'Type a language, such as French, or a code, such as fr-CA.' };
           if (code.length > PAGE_LANGUAGE_MAX) return { message: `A language code can be at most ${PAGE_LANGUAGE_MAX} characters.` };
           // A language one of its translations already has (or, cleared, the site's) would be there twice.
-          const twin = peers.find((p) => sameLanguage(pageLanguage(state.site, p), code || site));
+          const twin = peers.find((p) => languageKey(pageLanguage(state.site, p)) === languageKey(code || site));
           return twin ? { message: `${twin.title} is already the ${languageName(code || site)} version. Give it another language first, or unlink it.` } : null;
         }}
         onProblem={(p) => setError(p?.message ?? null)}

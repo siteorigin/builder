@@ -22,6 +22,14 @@
   .editor.defining .layers-tree .layer-row.selected.member { background: linear-gradient(color-mix(in srgb, var(--plum) 4%, transparent), color-mix(in srgb, var(--plum) 4%, transparent)), var(--panel); }
   /* A selected row's chevron and buttons take its scope colour with the rest of it. */
   .layers-tree .layer-row.selected :is(.tree-toggle, .actions .icon-btn) { color: inherit; }
+  /* Forced colours drop the row's gradient fill, so a selected row is marked by an outline in the system's selected
+     colour (text and glyphs keep the forced palette's own pairing): solid on the one the inspector follows, dashed on
+     the others selected with it. :where() keeps them level with the focus ring and the drag and drop outlines below,
+     which come later and win. */
+  @media (forced-colors: active) {
+    .layers-tree .layer-row.selected { outline: 2px solid SelectedItem; outline-offset: -2px; }
+    .layers-tree .layer-row.selected:where(.member) { outline-style: dashed; }
+  }
   .layers-tree .layer-row.contains-sel .grow { font-weight: 500; }
   .layers-tree .layer-row.contains-sel .layer-kind.shell, .layers-tree .layer-row[data-owner^='shell:'].contains-sel .layer-kind { color: var(--green); }
   .editor.defining .layers-tree .layer-row.contains-sel .layer-kind { color: var(--plum); }

@@ -429,11 +429,29 @@ export function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?
   return out;
 }
 
-/** A managed definition places a placement's anchor on its root, unless that root is a code component. */
+/**
+ * Code that places the id its placement gives it (`so_id`) as an element's id, as every theme section does, alone or
+ * with a fallback (`so_id ?? 'top'`, `so_id || 'top'`).
+ */
+export const SO_ID_ATTR = /(?<![\w-])id\s*=\s*\{\s*so_id\s*(?:\}|\?\?|\|\|)/;
+
+/**
+ * Whether a placement's anchor reaches the page: a managed definition places it on its root (through a root that
+ * places another definition, which must take it in turn), and code places it where its markup puts `id={so_id}`.
+ */
 export function anchorCapable(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): boolean {
-  if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
+  if (!def || depth > 10) return false;
+  if (def.kind === 'code') return SO_ID_ATTR.test(def.source ?? '');
+  if (def.kind !== 'managed' || !def.tree) return false;
   const root = def.tree.nodes[def.tree.rootIds[0]];
   return root?.kind !== 'instance' || anchorCapable(state, state.components[root.definitionId], depth + 1);
+}
+
+/** A managed definition places a placement's entrance on its root, unless that root is a code component. */
+export function entranceCapable(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): boolean {
+  if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
+  const root = def.tree.nodes[def.tree.rootIds[0]];
+  return root?.kind !== 'instance' || entranceCapable(state, state.components[root.definitionId], depth + 1);
 }
 
 /**

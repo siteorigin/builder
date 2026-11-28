@@ -112,13 +112,163 @@ describe('heading outline', () => {
     expect(main[1]).toMatchObject({ owner: { kind: 'page', id: pageId }, nodeId: heroId, defNodeId: 'heading', direct: true, levelSource: { kind: 'prop', prop: 'headingLevel' }, levels: [1, 2, 3, 4, 5, 6] });
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists the release’s page introduction and centered hero by their headings', () => {
+  it('lists the release’s page introduction and centered hero by their headings', () => {
     const { s, pageId } = releaseContactWithHero();
     expect(rows(s, pageId).slice(0, 2)).toEqual([
       [1, 'Let’s talk'],
       [1, HERO_HEADING]
     ]);
+    // Both are read through the designs standing for their markup, each level its placement's choice.
+    for (const h of own(s, pageId).slice(0, 2)) expect(h).toMatchObject({ defNodeId: 'heading', direct: true, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+  });
+
+  it('flags the release’s centered hero as a second page title (#1404)', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroId = s.pages[pageId].rootIds[1];
+    const outline = pageOutline(s, pageId);
+    // Foundation's sections are read through their markup: nothing on the page is unknown code.
+    expect(outline.uninspected).toBe(false);
+    expect(outline.review.extraTitles).toBe(true);
+    // The hero's level is its placement's choice, changed from the outline on the placement itself.
+    const hero = own(s, pageId)[1];
+    expect(hero).toMatchObject({ level: 1, nodeId: heroId, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+    expect(headingTarget(s, hero)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [], nodeId: heroId });
+    expect(headingLevelOps(hero, 2)).toEqual([{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'headingLevel', value: 'h2' }]);
+    expect(headingWarnings(s)).toEqual([expect.objectContaining({ code: 'HEADING_MULTIPLE_H1', owner: { kind: 'page', id: pageId }, nodeId: heroId })]);
+    // The outline's row offers the fix in one step.
+    const row = outline.rows[outline.review.titles[1]];
+    expect(row).toMatchObject({ extraTitle: true, fix: 2 });
+    // At Heading 2, the page has one title again.
+    const fixed = applyOperations(s, headingLevelOps(row.heading, row.fix!)!).state;
+    expect(rows(fixed, pageId).slice(0, 2)).toEqual([
+      [1, 'Let’s talk'],
+      [2, HERO_HEADING]
+    ]);
+    expect(headingWarnings(fixed)).toEqual([]);
+  });
+
+  it('leaves out the release hero’s heading where its words are only spaces or its part is hidden at every size', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroId = s.pages[pageId].rootIds[1];
+    const owner = { kind: 'page' as const, id: pageId };
+    const firsts = (st: ProjectState) => rows(st, pageId).filter(([level]) => level === 1);
+    // `{#if has(heading)}`: a heading of spaces renders nothing.
+    const blank = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: heroId, prop: 'heading', value: '   ' }]).state;
+    expect(firsts(blank)).toEqual([[1, 'Let’s talk']]);
+    expect(headingWarnings(blank)).toEqual([]);
+    // Its heading part hidden at every size by the placement: no screen reader reaches it.
+    const hero = s.pages[pageId].nodes[heroId] as InstanceNode;
+    hero.overrides = { ...hero.overrides, heading: { base: { hidden: true } } };
+    expect(firsts(s)).toEqual([[1, 'Let’s talk']]);
+    // Shown again on phones, it is in the outline.
+    hero.overrides = { ...hero.overrides, heading: { base: { hidden: true }, phone: { hidden: false } } };
+    expect(firsts(s)).toEqual([
+      [1, 'Let’s talk'],
+      [1, HERO_HEADING]
+    ]);
+  });
+
+  it('reads the release’s step tour titles as the buttons they are, and its layouts as holding no headings', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const owner = { kind: 'page' as const, id: about.id };
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner, componentId: 'content.steps-media', props: { heading: 'Our process', steps: [{ id: 'a', title: 'Plan', description: 'First.' }] } },
+      { type: 'node.insert', owner, componentId: 'content.steps', props: { heading: 'Steps', steps: [{ id: 'b', title: 'Visit', description: 'Then.' }, { id: 'c', title: 'Build', description: 'Last.' }] } },
+      { type: 'node.insert', owner, componentId: 'layout.section', props: {} },
+      { type: 'node.insert', owner, componentId: 'layout.split', props: {} }
+    ]).state;
+    // The tour's step titles are buttons; the steps section's are headings.
+    expect(rows(r, about.id)).toEqual([
+      [1, 'About'],
+      [2, 'Our process'],
+      [2, 'Steps'],
+      [3, 'Visit'],
+      [3, 'Build']
+    ]);
+    expect(headingWarnings(r)).toEqual([]);
+    expect(pageOutline(r, about.id).uninspected).toBe(false);
+    // A layout whose code was changed from the release's decides in that code what it shows.
+    const split = r.pages[about.id].nodes[r.pages[about.id].rootIds.at(-1)!] as InstanceNode;
+    r.components[split.definitionId] = { ...r.components[split.definitionId], source: `${r.components[split.definitionId].source}\n<h1>Changed</h1>` };
+    expect(pageOutline(r, about.id).uninspected).toBe(true);
+  });
+
+  it('reads the release’s tabs as they open, with only the first tab’s panel shown', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const tabs = [
+      { id: 'a', label: 'One', heading: '', copy: '' },
+      { id: 'b', label: 'Two', heading: 'Second tab', copy: '' }
+    ];
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'tabs.showcase', props: { heading: '', tabs } }]).state;
+    // The second tab's heading is hidden until it is chosen, so it leaves no skipped level after the page's title.
+    expect(rows(r, about.id)).toEqual([[1, 'About']]);
+    expect(headingWarnings(r)).toEqual([]);
+    const [, placed] = r.pages[about.id].rootIds;
+    const first = applyOperations(r, [{ type: 'instance.setProp', owner: { kind: 'page', id: about.id }, nodeId: placed, prop: 'tabs', value: [{ ...tabs[0], heading: 'First tab' }, tabs[1]] }]).state;
+    expect(rows(first, about.id)).toEqual([
+      [1, 'About'],
+      [3, 'First tab']
+    ]);
+  });
+
+  it('selects a shipped section placed inside a design through that design’s placement', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroDef = s.components[(s.pages[pageId].nodes[s.pages[pageId].rootIds[1]] as InstanceNode).definitionId];
+    const wrapper = projectDef(s, 'wrap_hero', {}, [makeInstance(heroDef, { heading: 'Inner title', headingLevel: 'h2' })]);
+    const placed = makeInstance(wrapper, {});
+    s.pages[pageId].nodes[placed.id] = placed;
+    s.pages[pageId].rootIds.push(placed.id);
+    const inner = own(s, pageId).find((h) => h.text === 'Inner title')!;
+    expect(inner).toMatchObject({ level: 2, nodeId: placed.id, direct: false });
+    expect(inner.instancePath).toBeUndefined();
+    expect(headingTarget(s, inner)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [], nodeId: placed.id });
+  });
+
+  it('lists the release footer’s column headings only over columns with something in them', () => {
+    const s = fresh();
+    const [placed] = s.site.shell.footer.rootIds;
+    const owner = { kind: 'shell' as const, id: 'footer' };
+    const footerWords = (st: ProjectState) => headingOutline(st, pageAt(st, '/about/').id).filter((h) => h.owner.kind === 'shell').map((h) => h.text);
+    expect(footerWords(applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: placed, prop: 'contact', value: [] }]).state)).toEqual(['Explore']);
+    expect(footerWords(applyOperations(s, [{ type: 'instance.setProp', owner, nodeId: placed, prop: 'links', value: [] }, { type: 'instance.setProp', owner, nodeId: placed, prop: 'contactHeading', value: 'Find us' }]).state)).toEqual(['Find us']);
+    // Its one-row layout hides both headings at every size.
+    (s.site.shell.footer.nodes[placed] as InstanceNode).variants = { layout: 'minimal' };
+    expect(footerWords(s)).toEqual([]);
+  });
+
+  it('lists the headings of the release’s feature grid, FAQ and plan comparison', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const owner = { kind: 'page' as const, id: about.id };
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner, componentId: 'features.grid', props: { heading: 'Services', items: [{ id: 'a', title: 'Design', description: 'Pages.' }, { id: 'b', title: 'Build', description: 'Sites.' }] } },
+      { type: 'node.insert', owner, componentId: 'faq.list', props: { heading: 'Questions' } },
+      { type: 'node.insert', owner, componentId: 'pricing.compare', props: { heading: 'Compare plans', headingLevel: 'h1' } }
+    ]).state;
+    expect(rows(r, about.id).slice(-5)).toEqual([
+      [2, 'Services'],
+      [3, 'Design'],
+      [3, 'Build'],
+      [2, 'Questions'],
+      [1, 'Compare plans']
+    ]);
+    expect(pageOutline(r, about.id).uninspected).toBe(false);
+    expect(headingWarnings(r).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // The comparison's level is its placement's choice, set from the outline.
+    const compare = own(r, about.id).at(-1)!;
+    expect(compare.levels).toEqual([1, 2, 3, 4, 5, 6]);
+    // Its heading part hidden at every size leaves it out.
+    const hidden = structuredClone(r);
+    (hidden.pages[about.id].nodes[compare.nodeId] as InstanceNode).overrides = { heading: { base: { hidden: true } } };
+    expect(rows(hidden, about.id).at(-1)).toEqual([2, 'Questions']);
+    const fixed = applyOperations(r, headingLevelOps(compare, 2)!).state;
+    expect(rows(fixed, about.id).at(-1)).toEqual([2, 'Compare plans']);
+    expect(headingWarnings(fixed)).toEqual([]);
   });
 
   it('reads the shared header and footer around the page, unless the page leaves them out', () => {
@@ -135,10 +285,17 @@ describe('heading outline', () => {
     expect(headingOutline(s, about.id).map((h) => h.owner.kind)).toEqual(['page']);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('reads the headings of the release’s footer', () => {
+  it('reads the headings of the release’s footer', () => {
     const s = fresh();
-    expect(headingOutline(s, pageAt(s, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer').length).toBeGreaterThan(0);
+    const footer = headingOutline(s, pageAt(s, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer');
+    expect(footer.map((h) => [h.level, h.text])).toEqual([
+      [2, 'Explore'],
+      [2, 'Contact']
+    ]);
+    // A column heading cleared of its words is left out, as the footer's markup leaves it out.
+    const [placed] = s.site.shell.footer.rootIds;
+    const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: placed, prop: 'linksHeading', value: ' ' }]).state;
+    expect(headingOutline(r, pageAt(r, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer').map((h) => h.text)).toEqual(['Contact']);
   });
 
   it('leaves out a heading whose words are cleared, as the site does', () => {
@@ -167,14 +324,13 @@ describe('heading outline', () => {
     expect(pageOutline(r.state, about.id).uninspected).toBe(false);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists subheadings written in the release’s text section', () => {
+  it('lists subheadings written in the release’s text section', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
-    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
-    expect(rows(r.state, about.id).slice(-2)).toEqual([
-      [2, 'How we work'],
-      [3, 'Listening first']
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How the studio works', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
+    expect(own(r.state, about.id).slice(-2).map((h) => [h.level, h.text, !!h.rich])).toEqual([
+      [2, 'How the studio works', false],
+      [3, 'Listening first', true]
     ]);
   });
 

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import type { ComponentDefinition } from '@shared/types';
 import { BUNDLED_PACK_IDS, type AuthoredPack, type PackManifest } from '@catalogue/pack';
-import { createPack } from '@catalogue/dsl';
+import { P, createPack } from '@catalogue/dsl';
 import { builtinFont } from '@catalogue/builtin-fonts';
 import { buildPack, fileSource, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
@@ -70,12 +70,12 @@ const asManaged = (c: ComponentDefinition): ComponentDefinition => {
  * A third-party pack: Foundation's components, as the app loads them, under another identity, with one font. `reuse`
  * keeps Foundation's own code components as they are; otherwise the pack brings data only.
  */
-function studio(id = 'studio', reuse = false): AuthoredPack {
+function studio(id = 'studio', reuse = false, change: (c: ComponentDefinition) => ComponentDefinition = (c) => c): AuthoredPack {
   // Foundation itself, never the default theme standing in for it when another load has replaced the registry.
   const foundation = findTheme('foundation');
   if (!foundation) throw new Error('Foundation is not registered.');
   const author = createPack(metaOf(foundation, { id, name: 'Studio', version: '1.0.0', license: 'MIT', devOnly: undefined, fonts: [builtinFont('Lora')] }));
-  return author.define(foundation.components.map((c) => author.adopt(c.kind === 'code' && !reuse ? asManaged(c) : c)));
+  return author.define(foundation.components.map((c) => author.adopt(change(c.kind === 'code' && !reuse ? asManaged(c) : c))));
 }
 /** Copy a release the app ships (Foundation, or the development fixture) into `root`, as it is committed. */
 function shipped(root: string, packId: 'foundation' | 'foundation-alt'): void {
@@ -115,6 +115,39 @@ function replaceListed(dir: string, file: string, bytes: Buffer) {
 }
 const firstFont = (dir: string) => manifestOf(dir).fonts[0].faces[0].file;
 
+/**
+ * Properties marking sample content at every place a mark can stand (shared/sample-defaults.ts): a text, a rich text,
+ * a list's starting items and its fields' new-item values, an object's text field (beside a link that is not), and a
+ * table, with a label ready to publish left unmarked.
+ */
+const sampleProperties = () => ({
+  sampleHeadline: P.sample(P.str('Headline', 'Gardens planted to last')),
+  sampleIntro: P.sample(P.rich('Intro', ['Tell visitors what you grow and where.'])),
+  searchLabel: P.str('Search label', 'Search'),
+  samplePlans: P.sample(P.list('Plans', 'Plan', { name: P.sample(P.str('Name', 'New plan')), period: P.str('Period', 'Monthly') }, [{ name: 'Starter', period: 'Monthly' }])),
+  sampleAction: P.object('Action', { label: P.sample(P.str('Label', 'Book a visit')), link: P.link('Link') }),
+  sampleSpecs: P.sample({ type: 'table' as const, label: 'Specs', default: { columns: [{ id: 'col_a', label: 'Size' }], rows: [{ id: 'row_a', cells: { col_a: 'Large' } }] } })
+});
+/** A computed list of the site's articles (or the page it is on), with fields the feed fills and none marked. */
+const computedList = (feed: 'articles' | 'currentPage'): Record<string, unknown> => ({
+  type: 'list',
+  label: 'Posts',
+  itemLabel: 'Post',
+  feed,
+  fields: { title: { type: 'string', label: 'Title', default: '' }, pageLink: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } },
+  default: []
+});
+/** Add the sample-marked properties to a release's centered hero, then change them (and nothing else). */
+function editSampled(dir: string, change: (props: Record<string, Record<string, unknown>>) => void) {
+  edit(dir, (m) => {
+    const hero = m.components.find((c) => c.componentId === 'hero.centered')!;
+    hero.properties = { ...hero.properties, ...structuredClone(sampleProperties()) };
+    change(hero.properties as unknown as Record<string, Record<string, unknown>>);
+  });
+}
+/** Studio, its centered hero authored with the sample-marked properties. */
+const sampled = (): AuthoredPack => studio('studio', false, (c) => (c.componentId === 'hero.centered' ? { ...c, properties: { ...c.properties, ...sampleProperties() } } : c));
+
 describe('loading a theme pack release', () => {
   it('loads a pack whose design and article layout draw decorative dividers (issue #356)', async () => {
     const root = tmp();
@@ -146,6 +179,38 @@ describe('loading a theme pack release', () => {
     expect(pack.articleTemplate).toEqual(studio().articleTemplate);
     expect([...files.keys()].sort()).toEqual(Object.keys(manifestOf(dir).files).sort());
     expect(files.get(firstFont(dir))!.sha256).toBe(fileSource(join(dir, firstFont(dir))).sha256);
+  });
+
+  it('loads sample-content marks exactly as the author wrote them (issue #1639)', async () => {
+    const root = tmp();
+    const dir = await release(root, sampled());
+    const { pack } = await loadPackDir(dir, user(root));
+    const hero = pack.components.find((c) => c.componentId === 'hero.centered')!;
+    expect(JSON.stringify(pack.components)).toBe(JSON.stringify(sampled().components));
+    // Every mark the author wrote, as written, through define, build and load.
+    const written = sampleProperties() as Record<string, unknown>;
+    expect(Object.fromEntries(Object.keys(written).map((k) => [k, hero.properties[k]]))).toEqual(written);
+    const props = hero.properties as Record<string, { sampleDefault?: true; fields?: Record<string, { sampleDefault?: true }> }>;
+    for (const name of ['sampleHeadline', 'sampleIntro', 'samplePlans', 'sampleSpecs']) expect(props[name].sampleDefault, name).toBe(true);
+    expect(props.searchLabel.sampleDefault).toBeUndefined();
+    expect(props.samplePlans.fields!.name.sampleDefault).toBe(true);
+    expect(props.samplePlans.fields!.period.sampleDefault).toBeUndefined();
+    expect(props.sampleAction.sampleDefault).toBeUndefined();
+    expect(props.sampleAction.fields!.label.sampleDefault).toBe(true);
+    expect(props.sampleAction.fields!.link.sampleDefault).toBeUndefined();
+  });
+
+  it('loads a computed list with no sample-content marks beside the marked properties (issue #1639)', async () => {
+    const root = tmp();
+    const dir = await release(root, sampled());
+    for (const feed of ['articles', 'currentPage'] as const) {
+      // A field the pages leave alone shows its own default on every row, so it may be marked.
+      const list = computedList(feed);
+      (list.fields as Record<string, unknown>).readMore = { type: 'string', label: 'Read more', default: 'Keep reading', sampleDefault: true };
+      editSampled(dir, (props) => (props.posts = list));
+      const { pack } = await loadPackDir(dir, user(root));
+      expect(pack.components.find((c) => c.componentId === 'hero.centered')!.properties.posts).toEqual(list);
+    }
   });
 
   const refusals: Array<[string, (dir: string) => void | Promise<void>, RegExp]> = [
@@ -344,6 +409,61 @@ describe('loading a theme pack release', () => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { overlay?: string }).overlay = 'dialog';
     }), /node "caption" shows over the page as a dialog or drawer, which only a container can/],
+    ['a sample-content mark not true (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleHeadline.sampleDefault = 'yes';
+    }), /the property "sampleHeadline" is marked wrongly: sampleDefault must be true, or left out/],
+    ['a sample-content mark written as a string (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleHeadline.sampleDefault = 'true';
+    }), /the property "sampleHeadline" is marked wrongly: sampleDefault must be true, or left out/],
+    ['a sample-content mark written as null (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleHeadline.sampleDefault = null;
+    }), /the property "sampleHeadline" is marked wrongly: sampleDefault must be true, or left out/],
+    ['a sample-content mark written as false (issue #1639)', (d) => editSampled(d, (props) => {
+      props.searchLabel.sampleDefault = false;
+    }), /the property "searchLabel" is marked wrongly: sampleDefault must be true/],
+    ['a sample-content mark on a whole object (issue #1639)', (d) => editSampled(d, (props) => {
+      props.plainAction = { type: 'object', label: 'Plain', fields: { label: { type: 'string', label: 'Label', default: 'Go' } }, default: { label: 'Go' }, sampleDefault: true };
+    }), /the property "plainAction" is marked wrongly: an object cannot have a sample default; mark its text fields instead/],
+    ['a sample-content mark on a whole object with a marked field (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleAction.sampleDefault = true;
+    }), /the property "sampleAction" is marked wrongly: an object cannot have a sample default; mark its text fields instead/],
+    ['a sample-content mark on a property that holds no copy (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleNumber = { type: 'number', label: 'Count', default: 3, sampleDefault: true };
+    }), /the property "sampleNumber" is marked wrongly: only a text, rich text, list or table property/],
+    ['a sample-content mark on a switch (issue #1639)', (d) => editSampled(d, (props) => {
+      props.sampleSwitch = { type: 'boolean', label: 'Show', default: true, sampleDefault: true };
+    }), /the property "sampleSwitch" is marked wrongly: only a text, rich text, list or table property/],
+    ['a sample-content mark on a computed list of articles (issue #1639)', (d) => editSampled(d, (props) => {
+      props.posts = { ...computedList('articles'), sampleDefault: true };
+    }), /the property "posts" is marked wrongly: a computed list has no items of its own/],
+    ['a sample-content mark on a field of a computed list of articles (issue #1639)', (d) => editSampled(d, (props) => {
+      const list = computedList('articles');
+      (list.fields as Record<string, Record<string, unknown>>).title.sampleDefault = true;
+      props.posts = list;
+    }), /the property "posts" is marked wrongly: the field "title" of a computed list is filled from the site's pages/],
+    ['a sample-content mark on a computed list of currentPage (issue #1639)', (d) => editSampled(d, (props) => {
+      props.posts = { ...computedList('currentPage'), sampleDefault: true };
+    }), /the property "posts" is marked wrongly: a computed list has no items of its own/],
+    ['a sample-content mark on a field of a computed list of currentPage (issue #1639)', (d) => editSampled(d, (props) => {
+      const list = computedList('currentPage');
+      (list.fields as Record<string, Record<string, unknown>>).title.sampleDefault = true;
+      props.posts = list;
+    }), /the property "posts" is marked wrongly: the field "title" of a computed list is filled from the site's pages/],
+    ['a sample-content mark on a link field of an object (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.sampleAction.fields as Record<string, Record<string, unknown>>).link.sampleDefault = true;
+    }), /the field "link" of "sampleAction" is marked wrongly: only a text or rich text field/],
+    ['a list whose fields are written as an array, so no field is checked (issue #1639)', (d) => editSampled(d, (props) => {
+      props.samplePlans.fields = [{ type: 'string', label: 'Name', default: 'Plan', sampleDefault: false }];
+    }), /the list property "samplePlans" has no fields or no default items/],
+    ['a sample-content mark on a link field of a list (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.samplePlans.fields as Record<string, Record<string, unknown>>).link = { type: 'link', label: 'Link', default: { type: 'none', target: '' }, sampleDefault: true };
+    }), /the field "link" of "samplePlans" is marked wrongly: only a text or rich text field/],
+    ['a malformed sample-content mark on an object field (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.sampleAction.fields as Record<string, Record<string, unknown>>).label.sampleDefault = 'yes';
+    }), /the field "label" of "sampleAction" is marked wrongly: sampleDefault must be true/],
+    ['a malformed sample-content mark on a list field (issue #1639)', (d) => editSampled(d, (props) => {
+      (props.samplePlans.fields as Record<string, Record<string, unknown>>).name.sampleDefault = 1;
+    }), /the field "name" of "samplePlans" is marked wrongly: sampleDefault must be true/],
     ['a WOFF2 file cut short', (d) => {
       const f = firstFont(d);
       replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));

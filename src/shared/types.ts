@@ -98,6 +98,11 @@ export interface LinkValue {
   target: string;
   /** Optional in-page anchor for page links. */
   anchor?: string;
+  /**
+   * What follows an entry's address, from its "?" on ("?mode=briefing"): kept on `entry` links only, as the address
+   * spells it (see linkQuery), and left out when there is none.
+   */
+  query?: string;
   newTab?: boolean;
   /**
    * What a web address link says about where it goes (a paid placement, an untrusted citation): kept on `url` links
@@ -238,6 +243,13 @@ interface PropBase {
    * placement or a binding. What counts as empty for each type is set out in shared/required.ts.
    */
   required?: boolean;
+  /**
+   * The default is sample content (see shared/sample-defaults.ts), which an author is expected to replace or knowingly
+   * keep before publishing, unlike a default ready to publish as it is ("Search", "Send message"). Only a text, rich
+   * text, list (its starting items) or table property, or a text or rich text field of a list (what a new item holds)
+   * or of an object, can be marked.
+   */
+  sampleDefault?: true;
 }
 export interface StringProp extends PropBase {
   type: 'string';
@@ -938,6 +950,12 @@ export interface TokensDoc {
    * Absent: never made.
    */
   darkOverrides?: Record<string, DarkColorValue>;
+  /**
+   * The dark palette was never turned on, and `darkOverrides` holds only the dark colours imported components brought
+   * with them. Turning it on for the first time makes the theme's dark colours from the light palette as it is then, and
+   * keeps these beside them. Absent: `darkOverrides` is the palette as made (or there is none).
+   */
+  darkPending?: true;
 }
 
 // ---------------------------------------------------------------------------
