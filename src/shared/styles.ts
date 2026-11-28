@@ -18,6 +18,8 @@ export interface StylePropDef {
   kind: StyleValueKind;
   /** Token group whose tokens can be linked. */
   tokenGroup?: TokenGroup | TokenGroup[];
+  /** Of the container tokens, only these may be linked: padding takes the page gutter, never a page width. */
+  containerTokens?: string[];
   options?: Array<{ value: string; label: string }>;
   min?: number;
   max?: number;
@@ -59,7 +61,8 @@ const GRID_AUTO_ROWS_HELP =
   'How tall the rows a grid makes for its items are. A preset, or one row size: a length, auto, min-content, max-content, 1fr or minmax(min, max) with a min that is not fr, ' +
   'such as "minmax(12rem, auto)", which keeps every row at least 12rem and lets it grow with its content. A fixed length lets taller content spill out of its row.';
 
-const edge = (id: string, label: string, group: StylePropDef['group'], kind: 'length' | 'border', tokenGroup: TokenGroup | TokenGroup[], placeholder: string): StylePropDef => ({ id, label, group, kind, tokenGroup, placeholder, advanced: true });
+const GUTTER_ONLY = ['container.gutter'];
+const edge = (id: string, label: string, group: StylePropDef['group'], kind: 'length' | 'border', tokenGroup: TokenGroup | TokenGroup[], placeholder: string, containerTokens?: string[]): StylePropDef => ({ id, label, group, kind, tokenGroup, ...(containerTokens ? { containerTokens } : {}), placeholder, advanced: true });
 
 export const STYLE_PROPS: StylePropDef[] = [
   { id: 'layout', label: 'Layout', group: 'layout', kind: 'enum', options: [
@@ -112,11 +115,11 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'flexGrow', label: 'Grow', group: 'layout', kind: 'number', min: 0, max: 12, step: 1, advanced: true, description: 'How much of the spare room in a stack this takes.' },
   { id: 'flexShrink', label: 'Shrink', group: 'layout', kind: 'number', min: 0, max: 12, step: 1, advanced: true, description: 'How much this gives up when a stack runs out of room.' },
   { id: 'paddingBlock', label: 'Vertical padding', description: 'Space inside, above and below the content.', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '64px' },
-  { id: 'paddingInline', label: 'Side padding', description: 'Space inside, left and right of the content.', group: 'spacing', kind: 'length', tokenGroup: ['space', 'container'], placeholder: '24px' },
+  { id: 'paddingInline', label: 'Side padding', description: 'Space inside, left and right of the content.', group: 'spacing', kind: 'length', tokenGroup: ['space', 'container'], containerTokens: GUTTER_ONLY, placeholder: '24px' },
   edge('paddingBlockStart', 'Padding top', 'spacing', 'length', 'space', '64px'),
   edge('paddingBlockEnd', 'Padding bottom', 'spacing', 'length', 'space', '64px'),
-  edge('paddingInlineStart', 'Padding left', 'spacing', 'length', ['space', 'container'], '24px'),
-  edge('paddingInlineEnd', 'Padding right', 'spacing', 'length', ['space', 'container'], '24px'),
+  edge('paddingInlineStart', 'Padding left', 'spacing', 'length', ['space', 'container'], '24px', GUTTER_ONLY),
+  edge('paddingInlineEnd', 'Padding right', 'spacing', 'length', ['space', 'container'], '24px', GUTTER_ONLY),
   { id: 'marginBlockStart', label: 'Space above', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   { id: 'marginBlockEnd', label: 'Space below', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   edge('marginInlineStart', 'Space left', 'spacing', 'length', 'space', '0'),
@@ -739,10 +742,11 @@ export function gridTemplateShares(value: unknown): number[] | null {
  * Undefined when a link names a style that does not exist, or the links loop.
  */
 /** The Site styles a style menu lists: the property's token groups, leaving out any shadow that resolves to none (the menu's own None covers it). */
-export function menuTokens(tokens: TokenDef[], group: StylePropDef['tokenGroup']): TokenDef[] {
+export function menuTokens(tokens: TokenDef[], group: StylePropDef['tokenGroup'], containerTokens?: string[]): TokenDef[] {
   const groups = Array.isArray(group) ? group : group ? [group] : [];
   return tokens.filter((t) => {
     if (!groups.includes(t.group)) return false;
+    if (t.group === 'container' && containerTokens && !containerTokens.includes(t.id)) return false;
     if (t.group !== 'shadow') return true;
     const v = followToken(tokens, t.id);
     return !(typeof v === 'string' && v.trim().toLowerCase() === 'none');
@@ -1072,6 +1076,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
     const groups = Array.isArray(def.tokenGroup) ? def.tokenGroup : [def.tokenGroup];
     if (!groups.some((g) => value.token.startsWith(g + '.'))) return `${def.label} needs a ${groups.join(' or ')} token, not "${value.token}".`;
+    if (def.containerTokens && value.token.startsWith('container.') && !def.containerTokens.includes(value.token)) return `${def.label} takes ${def.containerTokens.join(' or ')} from the container styles, not "${value.token}": a page width as padding would push the page sideways. Use Max width for page widths.`;
     return linkShapeError(propId, value);
   }
   const s = String(value).trim();
