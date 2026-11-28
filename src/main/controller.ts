@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, nativeTheme, shell, type OpenDialogOptions,
 import { markdownMirrorRoute } from '@shared/llms';
 import { PREVIEW_PROJECT_STYLES } from '@shared/component-preview';
 import { firstStepsStart } from '@shared/first-steps';
+import { sampleFixtures } from '@engine/sample-content';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
@@ -1251,8 +1252,11 @@ export class Controller {
       const hidden = seed && !!(await loadSettings().catch(() => null))?.getStartedHidden;
       const colorIds = (findTheme(staged.state.site.themeId)?.tokens ?? []).filter((t) => t.group === 'color').map((t) => t.id);
       const firstSteps = seed ? { firstSteps: { start: firstStepsStart(staged.state, colorIds), ...(hidden ? { hidden: true } : {}) } } : {};
-      await this.attach(staged, firstSteps, toolsMissing);
-      if (seed) {
+      // The showcase's sections show their designs' defaults and the sample photos on purpose: Project health names
+      // only what the author adds to it.
+      const fixtures = opts.starter === 'showcase' ? { sampleFixtures: sampleFixtures(staged.state) } : {};
+      await this.attach(staged, { ...firstSteps, ...fixtures }, toolsMissing);
+      if (seed || opts.starter === 'showcase') {
         this.localDirty = true;
         void this.flushLocalState();
       }
@@ -1666,6 +1670,7 @@ export class Controller {
     if (runtimeError) this.pendingStatus = runtimeError;
     this.localState = workspace;
     this.localDirty = false;
+    session.keepSamples(workspace.keptSampleContent, workspace.sampleFixtures);
     // A live session belongs to the opening it was started in, never the next one (closing has already ended it).
     if (this.live.running) void this.live.end();
     // A project of this computer's is open now: the editor shows it, not another computer's (#766).
@@ -2943,6 +2948,11 @@ export class Controller {
     this.localDirty = true;
     if (this.localTimer) clearTimeout(this.localTimer);
     this.localTimer = setTimeout(() => void this.flushLocalState(), 300);
+    // Sample content kept as it is leaves Project health (and what the AI is told) at once.
+    if (state.keptSampleContent !== undefined || state.sampleFixtures !== undefined) {
+      this.session.keepSamples(this.localState.keptSampleContent, this.localState.sampleFixtures);
+      this.sendSnapshot();
+    }
   }
 
   /**

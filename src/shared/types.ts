@@ -1287,6 +1287,11 @@ export interface ProjectManifest {
    * toolbar show it in place of the site's name, through every rename of the site. Visitors never see it.
    */
   workingCopyName?: string;
+  /**
+   * The site's name when the Business starter made it, which its sample text was written with ("Meet the team behind
+   * …"): Project health still knows that text as the starter's after the site is renamed.
+   */
+  starterSiteName?: string;
   createdAt: string;
   template: { id: string; version: string };
   generator: string;

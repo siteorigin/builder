@@ -45,6 +45,7 @@ vi.mock('../../src/main/runtime/manager', () => ({
 }));
 
 const { Controller } = await import('../../src/main/controller');
+const { keptSampleKey } = await import('@engine/sample-content');
 
 const dirs: string[] = [];
 const controllers: InstanceType<typeof Controller>[] = [];
@@ -426,3 +427,37 @@ describe('a deleted conversation’s workspace state (#235)', () => {
     expect(c.snapshot()!.localState).toBe(before);
   });
 });
+
+describe('sample content kept as it is (#1640)', () => {
+  const samples = (c: InstanceType<typeof Controller>) => c.snapshot()!.diagnostics.filter((d) => d.code.startsWith('SAMPLE_'));
+
+  it('leaves the snapshot once kept, and stays kept when the project opens again', async () => {
+    const { c, parent } = setup();
+    expect(await c.create({ name: 'Keep Studio', parentDir: parent, starter: 'business', sampleImages: false })).toEqual({ ok: true });
+    const dir = c.session!.dir;
+    const [first, second] = samples(c);
+    expect(first && second).toBeTruthy();
+    c.saveLocalState({ keptSampleContent: [keptSampleKey(first)] }, opening(c));
+    // At once, in what Project health and the AI read, before anything is written.
+    expect(samples(c)).not.toContainEqual(first);
+    expect(samples(c)).toContainEqual(second);
+    expect(c.session!.diagnostics()).not.toContainEqual(first);
+    await c.flushLocalState();
+    expect(onDisk(dir).keptSampleContent).toEqual([keptSampleKey(first)]);
+    await c.close();
+    expect(await c.open(dir)).toEqual({ ok: true });
+    expect(samples(c).map(keptSampleKey)).not.toContain(keptSampleKey(first));
+    expect(samples(c).map(keptSampleKey)).toContain(keptSampleKey(second));
+  });
+
+  it('remembers what the Component showcase placed, so none of it is named', async () => {
+    const { c, parent } = setup();
+    expect(await c.create({ name: 'Showcase', parentDir: parent, starter: 'showcase', sampleImages: false })).toEqual({ ok: true });
+    const fixtures = c.snapshot()!.localState.sampleFixtures ?? [];
+    const home = c.session!.state.pages[c.session!.state.site.homePageId];
+    expect(fixtures).toContain(`page:${home.id}:${home.rootIds[0]}`);
+    await c.flushLocalState();
+    expect(onDisk(c.session!.dir).sampleFixtures).toEqual(fixtures);
+  });
+});
+

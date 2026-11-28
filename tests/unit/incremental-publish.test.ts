@@ -7,6 +7,8 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { isSampleFinding } from '@engine/sample-content';
+import type { Diagnostic } from '@engine/validate';
 import { generateProject, packFileCopies, pageFile } from '@generator/index';
 import { ProjectSession, statTrusted, type SessionEvent } from '../../src/main/project/session';
 import { stateToAuthoredSources } from '../../src/main/project/documents';
@@ -504,9 +506,13 @@ describe('publishing only what an edit changes (#183)', () => {
     expect(s.diagnostics()).toBe(diagnostics);
     expect(s.assetUsages()).toBe(usages);
     expect(s.themeUpdates()).toBe(updates);
-    await s.apply({ operations: [headingEdit(s.state, about, 'Changed')] }, { label: 'Edit heading' });
+    const edit = headingEdit(s.state, about, 'Changed') as Extract<EditOperation, { type: 'instance.setProp' }>;
+    await s.apply({ operations: [edit] }, { label: 'Edit heading' });
     expect(s.diagnostics()).not.toBe(diagnostics);
-    expect(s.diagnostics()).toEqual(diagnostics);
+    // The edit writes over the starter's sample text in that field (#1640), and changes nothing else Project health says.
+    const at = (d: Diagnostic) => isSampleFinding(d) && d.nodeId === edit.nodeId && d.site?.includes(`"prop":"${edit.prop}"`);
+    expect(diagnostics.some(at)).toBe(true);
+    expect(s.diagnostics()).toEqual(diagnostics.filter((d) => !at(d)));
     expect(s.assetUsages()).not.toBe(usages);
     // With no theme update to offer, an edit that changed only a page keeps the answer it had (#966).
     expect(s.themeUpdates()).toBe(updates);
