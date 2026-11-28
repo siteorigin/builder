@@ -63,7 +63,23 @@ export const page = {
 window.navigateTo = (to) => {
 	history.pushState({}, '', to);
 	path = to;
-};`;
+};
+export function moveTo(to, replace) {
+	const at = new URL(to, location.href);
+	if (replace) history.replaceState(history.state, '', at);
+	else history.pushState({}, '', at);
+	path = at.pathname + at.search;
+}`;
+
+/** `$app/navigation`: a shallow replace moves the address, and `page` with it, without leaving the page. */
+const NAVIGATION_STUB = `import { moveTo } from '$app/state';
+export async function goto(url, opts = {}) {
+	if (!opts.shallow) throw new Error('Only shallow moves are stubbed');
+	moveTo(url, opts.replace);
+}
+export function replaceState(url) {
+	moveTo(url === '' ? location.href : url, true);
+}`;
 
 /** `$app/paths` for a site published under a sub-path. */
 const PATHS_STUB = `export const base = ${JSON.stringify(BASE)};
@@ -84,7 +100,8 @@ window.mountSearch = (props) => {
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
     '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
     '$app/state': compileModule(STATE_STUB, { filename: 'state.svelte.js', generate: 'client' }).js.code,
-    '$app/paths': PATHS_STUB
+    '$app/paths': PATHS_STUB,
+    '$app/navigation': NAVIGATION_STUB
   };
   const out = (await build({
     configFile: false,
@@ -135,13 +152,15 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       });
       await page.goto(`${ORIGIN}${at}`);
-      await page.evaluate(`window.mountSearch(${JSON.stringify({ heading: 'Find a project' })})`);
+      await mount(page);
       await body(page, visited);
     } finally {
       await context.close();
     }
   }
 
+  /** Starts the search on the page as the page's scripts do, as a visit or a Back to it does. */
+  const mount = (page: Page) => page.evaluate(`window.mountSearch(${JSON.stringify({ heading: 'Find a project' })})`);
   const box = (page: Page) => page.getByRole('searchbox', { name: 'Search for' });
   const status = (page: Page) => page.getByRole('status');
   const results = (page: Page) => page.locator('.so-search__result');
@@ -243,6 +262,38 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect(box(page).inputValue()).resolves.toBe('commission 105');
       await expect(results(page).first().getByRole('link').getAttribute('href')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
     }, `${AT}?q=commission+105`);
+  });
+
+  it('brings the search and its results back when the visitor returns with Back from a result (#1436)', async () => {
+    await withSearch(async (page) => {
+      await box(page).fill('commission 105');
+      await box(page).press('Enter');
+      await expect.poll(() => status(page).innerText()).toBe('1 page matches “commission 105”.');
+      await results(page).first().getByRole('link').click();
+      await page.waitForURL(`${ORIGIN}${BASE}/portfolio/workshop-commission-105/`);
+      await page.goBack();
+      await page.waitForURL((url) => url.pathname === AT);
+      await mount(page);
+      await expect.poll(() => status(page).innerText()).toBe('1 page matches “commission 105”.');
+      await expect(box(page).inputValue()).resolves.toBe('commission 105');
+      await expect(results(page).first().getByRole('link').getAttribute('href')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
+    });
+  });
+
+  it('forgets a cleared search, so Back from the next page finds the box empty', async () => {
+    await withSearch(async (page) => {
+      await box(page).fill('commission 105');
+      await box(page).press('Enter');
+      await expect.poll(() => results(page).count()).toBe(1);
+      await box(page).press('Escape');
+      await expect.poll(() => new URL(page.url()).search).toBe('');
+      await page.goto(`${ORIGIN}${BASE}/about/`);
+      await page.goBack();
+      await page.waitForURL((url) => url.pathname === AT);
+      await mount(page);
+      await expect(box(page).inputValue()).resolves.toBe('');
+      await expect(results(page).count()).resolves.toBe(0);
+    });
   });
 
   it('fits a phone screen with targets big enough to tap', async () => {
