@@ -74,6 +74,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   newTerms: { categories: [], tags: [] },
   redirects: 0,
   skipped: [],
+  oldSiteLinks: [],
   problems: [],
   ...more
 });
@@ -181,6 +182,28 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
     expect(await importing()).toEqual(['review-1', 'w', false]);
+  });
+
+  it('issue 1518: lists the old site’s addresses the posts still link to, with how many posts link to each', async () => {
+    await mount(
+      site,
+      preview(true, {
+        site: 'https://old.example',
+        oldSiteLinks: [
+          { url: 'https://old.example/about/team/', posts: 2 },
+          { url: 'https://old.example/category/clay/', posts: 1, to: '/blog/category/clay/', pending: true },
+          { url: 'https://old.example/category/soil/', posts: 1, to: '/blog/category/soil/' }
+        ]
+      })
+    );
+    const dialog = page.getByRole('dialog');
+    await dialog.getByText('The posts link to 3 addresses of the old site').waitFor();
+    expect(await dialog.getByText('Once this site is published at https://old.example,').count()).toBe(1);
+    expect(await page.getByTestId('post-import-old-links').locator('li').allInnerTexts()).toEqual([
+      'https://old.example/about/team/ · 2 posts',
+      'https://old.example/category/clay/ · 1 post · sends visitors to /blog/category/clay/ once a post filed under that category is published',
+      'https://old.example/category/soil/ · 1 post · kept working: it sends visitors to /blog/category/soil/'
+    ]);
   });
 
   it('is not offered for posts that can’t be imported', async () => {
