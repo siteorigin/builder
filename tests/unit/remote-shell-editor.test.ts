@@ -497,6 +497,22 @@ describe('following the session', () => {
     expect(calls.remoteApply).toEqual([]);
   });
 
+  it('offers back what a copy editor typed when it is refused, on the page or in the Inspector (#1318)', async () => {
+    const actions = await import(/* @vite-ignore */ PATHS.actions);
+    const owner = { kind: 'page' as const, id: home };
+    const r = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph', text: 'Opening hours vary.' }]);
+    const paragraph = r.results[0].nodeId as string;
+    // Editing paused as the edit is made: the host's AI started.
+    await shown({ role: 'copy-editor' }, live(7, { state: r.state as never, aiBusy: true }));
+    const lastToast = () => store.getState().toasts.at(-1);
+    expect(await actions.commitText({ owner, instancePath: [], nodeId: paragraph }, 'Open every day.')).toBe('restore');
+    expect(lastToast()).toMatchObject({ kind: 'error', text: expect.stringMatching(/AI is making changes/), action: { label: 'Copy text', copies: { text: 'Open every day.' } } });
+    const op = { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open on Sundays.' };
+    await store.commitDraft(store.getState().snapshot, () => store.commitOps([op], 'Edit text'), 'Open on Sundays.');
+    expect(lastToast()).toMatchObject({ kind: 'error', action: { label: 'Copy text', copies: { text: 'Open on Sundays.' } } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
   it('sends nothing before the host’s project has arrived (#1318)', async () => {
     remoteSnapshot = null;
     session.applyRemoteState(admitted({ role: 'copy-editor' }));

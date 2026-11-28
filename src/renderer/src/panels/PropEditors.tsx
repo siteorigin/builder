@@ -858,6 +858,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     onChange(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
+  // Locked meanwhile (editing paused): the library closes, and stays closed when editing resumes.
+  useEffect(() => {
+    if (!choosable) setBrowsing(false);
+  }, [choosable]);
   const [over, setOver] = useState(false);
   const [importing, setImporting] = useState(false);
   const browseId = useId();

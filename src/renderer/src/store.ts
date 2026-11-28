@@ -1233,7 +1233,9 @@ export async function commitOps(operations: EditOperation[], label: string, coal
         r.error?.code === 'BUSY' ? refuseWhileAiBusy(typed, operations, label) : r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
       // The field the edit was made in may say why itself (see claimRefusals).
       const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
-      if (r.error?.code !== 'BUSY' && !claimed && !saidElsewhere(r.error)) toast(message, 'error');
+      // Refused by a live session's host or its pause (#1318): what was typed is offered back to copy, never only dropped.
+      const copy = r.error?.code === 'CANCELLED' && typed?.text?.trim() ? copyTextAction(typed.text, label) : undefined;
+      if (r.error?.code !== 'BUSY' && !claimed && !saidElsewhere(r.error)) toast(message, 'error', copy);
       // Not written to the project's folder: what was typed is kept, to copy (or try again), never only put back. One
       // whose documents landed is on the page already.
       const save = saveKind(r.error);
