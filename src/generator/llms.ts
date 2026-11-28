@@ -90,9 +90,12 @@ export function hasMarkdownMirror(state: ProjectState, subject: SeoSubject): boo
  */
 export function siteHref(state: ProjectState, from: string, path: string): string {
   const base = publicUrl(state.site);
-  if (base) return base + routeUrl(path);
+  // A link's query is already spelled as an address holds it: only the route (no route has a "?") is encoded here.
+  const at = path.indexOf('?');
+  const [route, query] = at < 0 ? [path, ''] : [path.slice(0, at), path.slice(at)];
+  if (base) return base + routeUrl(route) + query;
   const up = from.split('/').filter(Boolean).length;
-  return routeUrl((up ? '../'.repeat(up) : './') + path.replace(/^\/+/, ''));
+  return routeUrl((up ? '../'.repeat(up) : './') + route.replace(/^\/+/, '')) + query;
 }
 
 /** A document's own words about itself: a page's description, an entry's excerpt. None when it has none of its own. */

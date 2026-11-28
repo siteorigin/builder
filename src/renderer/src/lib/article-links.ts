@@ -2,7 +2,7 @@
  * How the Posts writer reads back the links it shows, apart from its DOM so it can be checked without one.
  */
 import type { LinkValue, ProjectState } from '@shared/types';
-import { ENTRY_LINK_PREFIX, linkFromTarget } from '@shared/richtext';
+import { ENTRY_LINK_PREFIX, entryTarget, linkFromTarget } from '@shared/richtext';
 import { findEntry } from '@shared/collections';
 import { withRels } from '@shared/link-rel';
 import type { ArticleRead } from '@shared/richtext-tree';
@@ -41,8 +41,8 @@ export function articleLinks(state: ProjectState): ArticleRead {
         return kept && withRels(kept, rel);
       }
       if (t.startsWith(ENTRY_LINK_PREFIX)) {
-        const id = t.slice(ENTRY_LINK_PREFIX.length);
-        return findEntry(state, id) ? { type: 'entry', target: id, ...(newTab ? { newTab: true } : {}) } : null;
+        const to = entryTarget(t.slice(ENTRY_LINK_PREFIX.length));
+        return findEntry(state, to.target) ? { type: 'entry', ...to, ...(newTab ? { newTab: true } : {}) } : null;
       }
       // A collection's index named by its ID is kept only while the project has that collection.
       const link = linkFromTarget(t, state.pages, newTab, rel);

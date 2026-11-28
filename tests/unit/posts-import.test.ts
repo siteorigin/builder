@@ -11,10 +11,17 @@ import type { ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateOperation } from '@shared/ops';
+import { normalizeLink, normalizeRichText } from '@engine/values';
+import { linkToTarget, richTextToMarkdown } from '@shared/richtext';
+import type { EditOperation } from '@shared/ops';
+import { siteHref } from '../../src/generator/llms';
+import { pageIds } from '../../src/generator/checks';
+import { articleLinks } from '../../src/renderer/src/lib/article-links';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
 import { MAX_ENTRY_CHARS } from '@engine/values';
+import { resolveLink } from '../../src/generator/index';
 import { runSeoAudit } from '@engine/seo-audit';
 import { resolveRedirects } from '@shared/redirects';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
@@ -478,6 +485,8 @@ describe('planning an import', () => {
     const entry = `{"type":"entry","target":"${spring.id}"}`;
     expect(await withLink('https://riverside.example/a/?p=13')).toContain(entry);
     expect(await withLink('https://riverside.example/a/index.php?p=13')).toContain(entry);
+    // Its query goes with it, as a link to a post the export brings keeps its own.
+    expect(await withLink('https://riverside.example/a/?p=13&amp;utm_source=news')).toContain(`{"type":"entry","target":"${spring.id}","query":"?utm_source=news"}`);
     // Another installation on the same host, beside it or under it, has a post 13 of its own.
     expect(await withLink('https://riverside.example/b/?p=13')).not.toContain(entry);
     expect(await withLink('https://riverside.example/a/team/?p=13')).not.toContain(entry);
@@ -873,7 +882,7 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(postImportPreview('r', plan).posts.map((p) => p.notes)).toEqual([[], [], [], []]);
     const first = Object.values(after.collections.posts.entries).find((e) => e.title === 'First')!;
     const second = Object.values(after.collections.posts.entries).find((e) => e.title === 'Second')!;
-    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}"}}`);
+    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}","query":"?m=spring&s="}}`);
     expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
       { from: '/category/clay/', custom: true, to: '/blog/category/clay/' },
       { from: '/category/page/', custom: true, to: '/blog/category/page/' },
@@ -1612,5 +1621,121 @@ describe('reading a static site folder (#1517)', () => {
     const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
     const source = await readMarkdownFolder(dir, {});
     expect(source.posts.map((p) => p.from)).toEqual(['one.md']);
+  });
+});
+
+describe('what a link between imported posts says after its file (#1545)', () => {
+  const dated = (title: string, body: string) => `---\ntitle: ${title}\ndate: 2024-01-01\n---\n${body}`;
+  const spans = (body: RichText) => body.flatMap((b) => ('spans' in b ? b.spans : [])).filter((s) => s.link);
+
+  it('keeps a query on the entry’s new address, and names a section it cannot carry', async () => {
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'first.md': dated('First', '[plain](./intake.md) [briefing](./intake.md?mode=briefing) [steps](./intake.md?step=1#next-steps)'),
+        'intake.md': dated('Intake', '## Next steps\n\nText.')
+      }),
+      {}
+    );
+    const { plan, after } = commit(site(), source);
+    const entries = Object.values(after.collections.posts.entries);
+    const first = entries.find((e) => e.title === 'First')!;
+    const hrefs = spans(first.body).map((s) => resolveLink(s.link, { state: after } as Parameters<typeof resolveLink>[1])?.href);
+    expect(hrefs).toEqual(['/blog/intake/', '/blog/intake/?mode=briefing', '/blog/intake/?step=1']);
+    const notes = plan.posts.find((p) => p.title === 'First')!.notes;
+    expect(notes.filter((n) => n.includes('./intake.md?step=1#next-steps'))).toHaveLength(1);
+    expect(notes.some((n) => n.includes('mode=briefing'))).toBe(false);
+  });
+
+  it('names each link that loses part of its address, as the post wrote it', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'first.md': dated(
+          'First',
+          '[spaced](<./intake.md?file=a%2Fb&tag=(one)&tag=two words>) [by slug](/blog/intake/?x=1) [page](/about/?x=1#nowhere) [odd](/about/#1st) [here](#intro) [bad](#1st) [gone](./missing.md?x=1) [plain gone](./missing.md)'
+        ),
+        'intake.md': dated('Intake', 'Text.')
+      }),
+      pages(s)
+    );
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'entry', target: 'post:md:intake.md', query: '?file=a%2Fb&tag=(one)&tag=two%20words' },
+      { type: 'entry', target: 'post:md:intake.md', query: '?x=1' },
+      { type: 'page', target: about.id, anchor: 'nowhere' },
+      { type: 'page', target: about.id },
+      { type: 'anchor', target: 'intro' }
+    ]);
+    const notes = commit(s, source).plan.posts[0].notes;
+    for (const [href, count] of [['/about/?x=1#nowhere', 1], ['/about/#nowhere', 1], ['/about/#1st', 1], ['#intro', 1], ['#1st', 1], ['./missing.md?x=1', 1], ['intake.md', 0], ['/blog/intake/', 0]] as const)
+      expect(notes.filter((n) => n.startsWith(`The link “${href}”`)), href).toHaveLength(count);
+    // The link without a query or section is counted with the others whose address could not be kept, once.
+    expect(notes).toContain('Kept the words of a link whose address could not be kept.');
+  });
+
+  it('says nothing of a section the page has, or of a mark the Markdown escapes', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const section = [...pageIds(s, about.id)].at(-1)!;
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', `[there](/about/#${section}) [both](./intake.md?a=1\\&b=2) [literal](./intake.md?c=&amp\\;d=3)`), 'intake.md': dated('Intake', 'Text.') }), pages(s));
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'page', target: about.id, anchor: section },
+      { type: 'entry', target: 'post:md:intake.md', query: '?a=1&b=2' },
+      { type: 'entry', target: 'post:md:intake.md', query: '?c=&amp;d=3' }
+    ]);
+    expect(commit(s, source).plan.posts[0].notes).toEqual([]);
+  });
+
+  it('names no more than twenty links of one post, shortened, and counts the rest', async () => {
+    const long = 'x'.repeat(300);
+    const body = Array.from({ length: 23 }, (_, i) => `[l](./intake.md?${long}#s${i})`).join(' ');
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', body), 'intake.md': dated('Intake', 'Text.') }), {});
+    expect(source.posts[0].notes).toHaveLength(21);
+    expect(source.posts[0].notes[0]).toContain(`“${`./intake.md?${long}`.slice(0, 200)}…”`);
+    expect(source.posts[0].notes[20]).toBe('3 more links also need checking.');
+  });
+
+  it('keeps a WordPress link’s query, less the ID that found the post', async () => {
+    const source = await readWordPress(
+      wxr([
+        item(10, { title: 'First', link: 'https://old.example/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<a href="/second/?a=1&amp;a=%23&amp;b=">pretty</a> <a href="/?p=11&amp;utm_source=mail">by id</a> <a href="/?page_id=11">selector only</a> <a href="/?page_id=11&amp;view=compact&amp;?page_id=keep">page selector</a> <a href="/second/#more">section</a> <a href="https://elsewhere.example/?p=11#x">out</a>'),
+        item(11, { title: 'Second', link: 'https://old.example/second/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' })
+      ]),
+      {}
+    );
+    expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
+      { type: 'entry', target: 'post:wp:11', query: '?a=1&a=%23&b=' },
+      { type: 'entry', target: 'post:wp:11', query: '?utm_source=mail' },
+      { type: 'entry', target: 'post:wp:11' },
+      { type: 'entry', target: 'post:wp:11', query: '?view=compact&?page_id=keep' },
+      { type: 'entry', target: 'post:wp:11' },
+      { type: 'url', target: 'https://elsewhere.example/?p=11#x' }
+    ]);
+    expect(source.posts[0].notes.filter((n) => n.includes('“/second/#more”'))).toHaveLength(1);
+    expect(source.posts[0].notes.filter((n) => n.startsWith('The link '))).toHaveLength(1);
+  });
+
+  it('keeps the query through the text form, the writer, a replaced post and the Markdown mirror', async () => {
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', '[b](<./intake.md?file=a%2Fb&t=(1)>)'), 'intake.md': dated('Intake', 'Text.'), 'other.md': dated('Other', 'Text.') }), {});
+    const { after } = commit(site(), source);
+    const [first, intake, other] = ['First', 'Intake', 'Other'].map((t) => Object.values(after.collections.posts.entries).find((e) => e.title === t)!);
+    const link = { type: 'entry', target: intake.id, query: '?file=a%2Fb&t=(1)' };
+    expect(spans(first.body)[0].link).toEqual(link);
+
+    const written = richTextToMarkdown(first.body, after.pages);
+    expect(written).toContain(`(<entry:${intake.id}?file=a%2Fb&t=(1)>)`);
+    expect(normalizeRichText(written, after, 'Body', undefined, { entries: true })).toEqual(first.body);
+    expect(articleLinks(after).link(linkToTarget(spans(first.body)[0].link!, after.pages), false, [])).toEqual(link);
+    for (const query of ['x=1', '?x#y', 5])
+      expect(() => normalizeLink({ ...link, query }, after, 'Link', { entries: true })).toThrow(/query/);
+    expect(() => normalizeRichText(`[b](entry:${intake.id}?x#y)`, after, 'Body', undefined, { entries: true })).toThrow(/does not exist/);
+
+    expect(siteHref(after, '/', `/blog/café/${link.query}`)).toBe(`./blog/caf%C3%A9/${link.query}`);
+    expect(siteHref({ ...after, site: { ...after.site, baseUrl: 'https://example.com' } }, '/', `/blog/café/${link.query}`)).toBe(`https://example.com/blog/caf%C3%A9/${link.query}`);
+
+    const replaced = (replacement: object) =>
+      spans(applyOperations(after, [{ type: 'entry.remove', collectionId: 'posts', entryId: intake.id, ...replacement } as EditOperation]).state.collections.posts.entries[first.id].body)[0].link;
+    expect(replaced({ replacementEntryId: other.id })).toEqual({ ...link, target: other.id });
+    expect(replaced({ replacementPageId: after.site.homePageId })).toEqual({ type: 'page', target: after.site.homePageId });
   });
 });

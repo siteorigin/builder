@@ -389,6 +389,36 @@ describe('a guest whose socket drops', () => {
     room.host.close();
   });
 
+  it('answers a page going away with Going Away, never the code that says the session ended, and keeps its place (#1528)', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann');
+    room.host.discard('room:roster');
+    // A browser closes the socket of a page it is leaving or reloading with 1001. Firefox still tells the page what the
+    // relay answered, so an answer of 1000 (ENDED) would read to the viewer as the host having ended the session.
+    ann.guest.close(1001);
+    expect((await ann.guest.closed()).code).toBe(1001);
+    expect((await room.host.next('room:roster')).participants).toEqual([expect.objectContaining({ guestId: ann.guestId, status: 'admitted', connected: false })]);
+
+    const back = await relay.socket(`/s/${room.roomId}/ws`);
+    back.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Ann', resumeToken: ann.resumeToken });
+    expect(await back.next('guest:status')).toMatchObject({ status: 'admitted', guestId: ann.guestId });
+    // The same seat, back: the host is never asked to let anyone in again.
+    expect((await room.host.next('room:roster')).participants).toEqual([expect.objectContaining({ guestId: ann.guestId, status: 'admitted', connected: true })]);
+
+    // A normal close and an application's own code are sent back as they came; any other code is answered with none,
+    // which says nothing about the session either.
+    for (const [sent, answered] of [
+      [1000, 1000],
+      [4000, 4000],
+      [1011, 1005]
+    ]) {
+      const other = await admittedGuest(relay, room, `Guest ${sent}`);
+      other.guest.close(sent);
+      expect((await other.guest.closed()).code, `the answer to ${sent}`).toBe(answered);
+    }
+    room.host.close();
+  });
+
   it('gives way to a second socket that resumes the same place', async () => {
     const room = await openRoom(relay);
     const ann = await admittedGuest(relay, room, 'Ann');

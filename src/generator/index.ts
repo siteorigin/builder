@@ -88,13 +88,13 @@ import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
-import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, linkQuery, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
@@ -366,7 +366,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
-      href = entryRoute(found.collection, found.entry)!;
+      href = entryRoute(found.collection, found.entry)! + (typeof link.query === 'string' && link.query.startsWith('?') ? linkQuery(link.query) : '');
       break;
     }
     case 'collection': {
@@ -4666,7 +4666,7 @@ export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ lang
   const members = translationMembers(state, group)
     .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
     .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
-  const languages = new Set(members.map((m) => m.language.toLowerCase()));
+  const languages = new Set(members.map((m) => languageKey(m.language)));
   return members.length < 2 || languages.size < members.length ? [] : members;
 }
 
@@ -4922,8 +4922,12 @@ export function redirectFile(from: string): string {
 /**
  * The page at an old address: it sends visitors on to the page's current address. It is written where a page
  * at that address would be, so a page given the address back simply replaces it. Read with scripts on, it goes
- * at once and keeps the query and the section the old link asked for; without them, a meta refresh goes to the
- * page. Either way it works from the prerendered HTML alone, on any static host.
+ * as soon as its link has been read, and keeps the query and the section the old link asked for; without them, a
+ * meta refresh goes to the page. Either way it works from the prerendered HTML alone, on any static host.
+ *
+ * The script that goes sits in the body, after the link, never in the head (#1502): WebKit can stop reading the old
+ * document once the navigation starts, so a script in the head could leave a page with no body at all while the new
+ * page was slow to come. The link it leaves behind already carries the query and the section.
  */
 export function generateRedirect(state: ProjectState, from: string, page: Pick<PageDoc, 'route'>): string {
   const base = publicUrl(state.site);
@@ -4936,19 +4940,24 @@ export function generateRedirect(state: ProjectState, from: string, page: Pick<P
 	import { resolve } from '$app/paths';
 
 	const to = resolve(${js(page.route)});
-	// Runs while the HTML is read, before anything renders.
-	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
+	/** @type {HTMLAnchorElement} */
+	let link;
+	// Runs while the HTML is read, just after the link: the link takes the query and section, then the page goes.
+	const go = '<' + 'script>var u = ' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</' + 'script>';
 	// Reached by a link inside the running site instead, the script above never runs: go from here.
-	onMount(() => location.replace(to + location.search + location.hash));
+	onMount(() => {
+		const u = to + location.search + location.hash;
+		link.href = u;
+		location.replace(u);
+	});
 </script>
 
 <svelte:head>
-	{@html go}
 	<meta http-equiv="refresh" content={'0; url=' + to} />
 	<meta name="robots" content="noindex" />${canonical}
 </svelte:head>
 
-<p><a href={to}>{${js(siteVisitorText(state.site).redirect)}}</a></p>
+<p><a bind:this={link} href={to}>{${js(siteVisitorText(state.site).redirect)}}</a>{@html go}</p>
 `
   );
 }
@@ -5008,9 +5017,9 @@ function sitemapAlternates(state: ProjectState, listed: Array<EffectiveSeo & { u
   }
   const out = new Map<string, Array<{ language: string; url: string }>>();
   for (const members of groups.values()) {
-    const languages = new Set(members.map((m) => m.language.toLowerCase()));
+    const languages = new Set(members.map((m) => languageKey(m.language)));
     if (members.length < 2 || languages.size < members.length) continue;
-    const fallback = members.find((m) => sameLanguage(m.language, siteLanguage(state.site)));
+    const fallback = members.find((m) => languageKey(m.language) === languageKey(siteLanguage(state.site)));
     const links = [...members.map(({ language, url }) => ({ language, url })), ...(fallback ? [{ language: 'x-default', url: fallback.url }] : [])];
     for (const m of members) out.set(m.pageId, links);
   }
