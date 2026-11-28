@@ -87,6 +87,29 @@ export function shippedAsIs(def: ComponentDefinition): boolean {
   return JSON.stringify(def) === json;
 }
 
+/**
+ * An editor marker attribute in a code component's markup (shared/code-markers.ts), with the space before it, as the
+ * exports take it out (withoutCodeMarkers, src/main/codecheck.ts). Read only from a bundled definition's own code, whose
+ * markers are all written this way: tests/unit/shipped-copy.test.ts holds every one to what the exports leave.
+ */
+export const MARKER_ATTRIBUTE = /\s*\bdata-so-(?:part|text)\s*=\s*(?:"[^"]*"|'[^']*'|\{[^{}]*\})/gi;
+const shippedUnmarked = new WeakMap<ComponentDefinition, string>();
+
+/**
+ * Whether `def` renders exactly as a definition the app bundles: it is that definition (shippedAsIs), or that
+ * definition with the editor's markers taken out of its code and nothing else changed, as a publication carries it
+ * (src/main/publication.ts), which shows visitors the same. For reading what a section shows visitors; what the editor
+ * may do with one still needs shippedAsIs.
+ */
+export function rendersAsShipped(def: ComponentDefinition): boolean {
+  if (shippedAsIs(def)) return true;
+  const shipped = bundled(def);
+  if (!shipped || typeof shipped.source !== 'string') return false;
+  let json = shippedUnmarked.get(shipped);
+  if (json === undefined) shippedUnmarked.set(shipped, (json = JSON.stringify({ ...shipped, source: shipped.source.replace(MARKER_ATTRIBUTE, '') })));
+  return JSON.stringify(def) === json;
+}
+
 /** Whether Builder vouches for `prop` of `def` as copy; the definition must still be checked to be as shipped. */
 export function shippedCopyListed(def: ComponentDefinition, prop: string): boolean {
   const props = Object.hasOwn(SHIPPED_COPY, def.componentId) ? SHIPPED_COPY[def.componentId] : undefined;

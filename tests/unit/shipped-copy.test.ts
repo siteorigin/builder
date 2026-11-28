@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, PropSchema } from '@shared/types';
 import { findTheme } from '@catalogue/index';
-import { SHIPPED_COPY } from '@engine/shipped-copy';
+import { MARKER_ATTRIBUTE, SHIPPED_COPY, rendersAsShipped } from '@engine/shipped-copy';
 import { copyUses, type CopyUse } from './fixtures/svelte-copy-uses';
 
 const PACKS = ['foundation', 'foundation-alt'];
@@ -168,5 +168,32 @@ describe('reading how a section uses a property', () => {
     expect(copyUses(renamed, 'heading', properties).problems).toContainEqual(expect.stringMatching(/under another name/));
     expect(problems('<p>{heading}</p>', 'nothing')).toEqual([expect.stringMatching(/not taken from \$props\(\)/)]);
     expect(problems('<p>{heading}</p>', 'heading', 'let { ...rest } = $props();')).toContainEqual(expect.stringMatching(/more than once/));
+  });
+});
+
+describe('a section as a publication carries it', () => {
+  it('is read as shipped with its editor markers taken out exactly as the exports take them out, and only then (#1351)', async () => {
+    const { withoutCodeMarkers } = await import('../../src/main/codecheck');
+    let checked = 0;
+    for (const pack of ['foundation', 'foundation-alt']) {
+      for (const def of findTheme(pack)?.components ?? []) {
+        if (def.kind !== 'code' || typeof def.source !== 'string') continue;
+        const clean = await withoutCodeMarkers(def.source);
+        // What the check expects of a publication is what the export writes, to the byte.
+        expect(def.source.replace(MARKER_ATTRIBUTE, ''), `${pack} ${def.componentId}`).toBe(clean);
+        expect(rendersAsShipped({ ...def, source: clean }), `${pack} ${def.componentId}`).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(40);
+    const bento = findTheme('foundation')!.components.find((c) => c.componentId === 'features.bento')!;
+    const clean = await withoutCodeMarkers(bento.source!);
+    // Words that only look like a marker are the section's own, and any other change is the definition's own code.
+    const title = clean.indexOf('{featured?.title}') + '{featured?.title}'.length;
+    expect(title).toBeGreaterThan(20);
+    expect(rendersAsShipped({ ...bento, source: clean.slice(0, title) + ' data-so-text="sample"' + clean.slice(title) })).toBe(false);
+    expect(rendersAsShipped({ ...bento, source: clean.replace('{featured?.title}', '{featured?.description}') })).toBe(false);
+    expect(rendersAsShipped({ ...bento, source: clean, name: 'Bento (mine)' })).toBe(false);
+    expect(rendersAsShipped({ ...bento, source: clean, properties: { ...bento.properties, heading: { ...bento.properties.heading, default: 'Mine' } as PropSchema } })).toBe(false);
   });
 });

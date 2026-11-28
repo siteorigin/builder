@@ -334,6 +334,91 @@ describe('site search index', () => {
     expect(index.some((e) => e.route === '/portfolio/workshop-commission-3/')).toBe(false);
     expect(() => generateProject(s)).not.toThrow();
   });
+
+  it('lists every word Foundation’s sections show, the ones their canvas cannot type over included (#1351)', async () => {
+    let s = withSearch();
+    s = apply(
+      s,
+      ['features.bento', 'pricing.toggle', 'pricing.compare', 'data.table', 'content.media'].map((componentId) => ({
+        type: 'node.insert',
+        owner: home(s),
+        componentId,
+        ...(componentId === 'content.media' ? { props: { points: [{ id: 'p1', text: 'Cinnabar freight acoustic calibration' }] } } : {})
+      })) as EditOperation[]
+    );
+    const index = generateProject(s).get(INDEX)!;
+    const { loadPages, searchPages } = await runtime(index);
+    const pages = await loadPages();
+    const homeText = pages.find((e) => e.route === '/')!.text;
+    for (const words of [
+      // The bento's featured card, an object rather than a list item.
+      'One designer, start to finish',
+      // Both of the billing switch's prices and notes: the page ships both, one shown at a time.
+      '$29',
+      'per year, billed once',
+      // The comparison's plans, with their prices.
+      'Consultation',
+      '$350',
+      'One session',
+      // The table's column headings and cells.
+      'Start time',
+      'Wheel throwing',
+      // Content with image's points, which its canvas marks.
+      'Cinnabar freight acoustic calibration'
+    ])
+      expect(homeText).toContain(words);
+    expect(searchPages(pages, 'wheel throwing').results.map((r) => r.route)).toContain('/');
+    // In the order the page shows them: a table's heading over its cells, every named plan of the comparison.
+    expect(homeText.indexOf('Workshop timetable')).toBeLessThan(homeText.indexOf('Wheel throwing'));
+    expect(homeText).toContain('Full service');
+    expect(homeText).toContain('Quoted after the visit');
+    // A publication carries the sections with the editor's markers taken out of their code: they show the same.
+    const { withoutCodeMarkers } = await import('../../src/main/codecheck');
+    const published = structuredClone(s);
+    for (const def of Object.values(published.components)) if (def.kind === 'code' && typeof def.source === 'string') def.source = await withoutCodeMarkers(def.source);
+    expect(buildSearchIndex(published).find((e) => e.route === '/')!.text).toBe(homeText);
+    // A button that goes nowhere is no part of the site.
+    expect(homeText.split('\n')).not.toContain('Book a session');
+    // Prices the comparison's placement hides at every size are not found; its plans' names still are.
+    const compare = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance' && s.components[(n as InstanceNode).definitionId]?.componentId === 'pricing.compare')!;
+    const noPrices = apply(s, [{ type: 'node.setStyle', owner: home(s), nodeId: compare.id, partId: 'price', scope: 'base', property: 'hidden', value: true }]);
+    const priced = pageText(noPrices, noPrices.pages[noPrices.site.homePageId]).split('\n');
+    expect(priced).toContain('Consultation');
+    expect(priced).not.toContain('$350');
+  });
+
+  it('keeps the words of a design around the page’s own content in the order they show (#1351)', () => {
+    let s = withSearch();
+    const spec: DesignSpec = {
+      componentId: 'project.wrap',
+      name: 'Wrap',
+      properties: { before: P.str('Before', 'Design before'), after: P.str('After', 'Design after') },
+      parts: { root: { nodeId: 'root', label: 'Wrap' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'section', { name: 'Wrap' }, [b.text('before', 'p', prop('before')), b.slot('body', 'body'), b.text('after', 'p', prop('after'))])
+    } as DesignSpec;
+    const def = foundationDesign(spec);
+    projectDesign((s = structuredClone(s)), spec);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), definitionId: def.id } as EditOperation]);
+    s = apply(r.state, [{ type: 'node.insert', owner: home(s), parentId: r.results[0].nodeId, slot: 'body', primitive: 'paragraph', text: 'Page slot words' } as EditOperation]);
+    const text = pageText(s, s.pages[s.site.homePageId]);
+    expect(text).toContain('Page slot words');
+    const at = ['Design before', 'Page slot words', 'Design after'].map((w) => text.indexOf(w));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect(at).toEqual([...at].sort((a, b) => a - b));
+  });
+
+  it('reads a table of any size (#1351)', () => {
+    const base = withSearch();
+    const s = apply(base, [{ type: 'node.insert', owner: home(base), componentId: 'data.table' } as EditOperation]);
+    const page = s.pages[s.site.homePageId];
+    const table = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.components[(n as InstanceNode).definitionId]?.componentId === 'data.table') as InstanceNode;
+    const columns = Array.from({ length: 12 }, (_, c) => ({ id: `c${c}`, label: `Column ${c}` }));
+    table.props.table = { columns, rows: Array.from({ length: 15000 }, (_, r) => ({ id: `r${r}`, cells: Object.fromEntries(columns.map((c) => [c.id, `Cell ${r}-${c.id}`])) })) };
+    const text = pageText(s, page);
+    expect(text).toContain('Cell 14999-c11');
+    expect(text.indexOf('Column 0')).toBeLessThan(text.indexOf('Cell 0-c0'));
+  });
 });
 
 describe('site search as the website runs it', () => {
