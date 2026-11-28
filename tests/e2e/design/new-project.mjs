@@ -182,6 +182,15 @@ await fresh({ recents: RECENTS, tools: 'download' });
 await openNew();
 await nameIt();
 await shot('new-download', '#new-project-tools-note', { ready: ART });
+// At the ordinary window the offline note sits whole above the footer: the body neither scrolls nor cuts it.
+{
+  const m = await win.locator('.modal-body').evaluate((b) => {
+    const n = document.getElementById('new-project-tools-note').getBoundingClientRect();
+    const r = b.getBoundingClientRect();
+    return { over: b.scrollHeight - b.clientHeight, cut: n.bottom - r.bottom };
+  });
+  if (m.over > 1 || m.cut > 0.5) throw new Error(`the offline note is cut or scrolls at 1440x900 (${JSON.stringify(m)})`);
+}
 
 await fresh({ recents: RECENTS, tools: 'hold' });
 await openNew();
