@@ -79,8 +79,10 @@ describe('the editor computes the keys the exported form sends', () => {
     mkdirSync(join(dir, 'runtime'));
     const files = generateProject(fresh());
     for (const name of ['util.js', 'visitor-text.js']) writeFileSync(join(dir, 'runtime', name), files.get(`${RUNTIME_DIR}/${name}`)!);
+    writeFileSync(join(dir, 'app-state.js'), "export const page = { url: new URL('https://site.test/contact/') };\n");
     for (const [name, def] of [['current', contactForm], ['legacy', LEGACY]] as const) {
-      writeFileSync(join(dir, 'components', `${name}.js`), compile(def.source!, { filename: `${name}.svelte`, generate: 'server', runes: true }).js.code);
+      const code = compile(def.source!, { filename: `${name}.svelte`, generate: 'server', runes: true }).js.code;
+      writeFileSync(join(dir, 'components', `${name}.js`), code.replace(/(["'])\$app\/state\1/g, JSON.stringify(join(dir, 'app-state.js'))));
       forms[name] = (await import(/* @vite-ignore */ join(dir, 'components', `${name}.js`))).default;
     }
   });

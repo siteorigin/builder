@@ -6,7 +6,8 @@ import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { BUDGETED_KINDS, KIND_NAMES, bytesText, type PagePerformance, type PerformanceFinding, type PerformanceStatus } from '@shared/performance';
 import { diagnosticKey } from '@engine/validate';
-import { api, applyOps, confirmDialog, getState, keepSamples, setState, toast, useStore } from '../store';
+import { isSampleFinding, keptSampleKey } from '@engine/sample-content';
+import { api, applyOps, confirmDialog, getState, keepSamples, saveLocal, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { saveFailureNotice } from '../lib/savestate';
@@ -381,6 +382,16 @@ function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null
   const tree = kind === 'page' && Object.hasOwn(state.pages, id) ? state.pages[id] : kind === 'shell' && (id === 'header' || id === 'footer') ? state.site.shell[id] : null;
   if (!tree || !Object.hasOwn(tree.nodes, d.nodeId)) return null;
   return { owner: d.owner as ElementRef['owner'], instancePath: [], nodeId: d.nodeId };
+}
+
+/** Keep one piece of sample content as it is (LocalWorkspaceState.keptSampleContent): that value at that place alone. */
+function keepSampleContent(d: Diagnostic) {
+  const key = keptSampleKey(d);
+  const was = getState().keptSampleContent;
+  if (was.includes(key)) return;
+  const next = [...was, key];
+  setState({ keptSampleContent: next });
+  saveLocal({ keptSampleContent: next });
 }
 
 function showPage(pageId: string) {
@@ -1184,15 +1195,22 @@ export function HealthModal() {
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
-    return (
-      <HealthRow
-        key={sample ? d.site : `${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
-        tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
-        icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
-        actions={
-          sample ? (
-            <SampleActions kind={sample} state={st} readOnly={readOnly} onKept={(value) => setStatus(`${value} is kept as you chose.`)} />
-          ) : asset ? (
+    // Sample content can be kept as it is, here alone: another value, or the same one elsewhere, is named again.
+    const keep =
+      isSampleFinding(d) && !readOnly ? (
+        <button
+          className="btn btn-sm btn-ghost"
+          onClick={() => {
+            keepSampleContent(d);
+            setStatus('Kept as it is. Project health no longer lists it.');
+          }}
+        >
+          Keep as is
+        </button>
+      ) : null;
+    const open = sample ? (
+      <SampleActions kind={sample} state={st} readOnly={readOnly} onKept={(value) => setStatus(`${value} is kept as you chose.`)} />
+    ) : asset ? (
             <button className="btn btn-sm" onClick={() => openAsset(asset)}>
               Open in Assets
             </button>
@@ -1212,7 +1230,23 @@ export function HealthModal() {
             <button className="btn btn-sm" onClick={() => showElement(target)}>
               Show on page
             </button>
-          ) : undefined
+          ) : undefined;
+    return (
+      <HealthRow
+        // A sample finding by its own place and value: several on one section, one kept, never hand the next its row
+        // (and its focused Keep as is) by their order.
+        key={sample ? d.site : isSampleFinding(d) ? keptSampleKey(d) : `${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
+        tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
+        icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
+        actions={
+          keep ? (
+            <>
+              {open}
+              {keep}
+            </>
+          ) : (
+            open
+          )
         }
       >
         {rest !== undefined ? (

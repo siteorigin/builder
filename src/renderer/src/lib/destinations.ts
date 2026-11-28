@@ -9,6 +9,7 @@ import { treeFor } from './model';
 import { requiredSite } from '@engine/required';
 import { CONTRAST_CODE, contrastPlaceOf } from '@engine/accessibility';
 import { getTheme } from '@catalogue/index';
+import { samplePlace, type SamplePlace } from '@engine/sample-content';
 
 type FormDestination = Extract<EditorDestination, { kind: 'form' }>;
 
@@ -28,6 +29,9 @@ const isContactForm = (def: ComponentDefinition | undefined) => !!def && def.kin
  * same places an export's notes lead to. Null for any other finding, which keeps its own action (Show on page).
  */
 export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): EditorDestination | null {
+  // Sample content: the field or element that holds it, or the site's or page's setting.
+  const sample = samplePlace(d);
+  if (sample) return sampleDestination(d, sample);
   // The site's icon and sharing image are set in Site details, not on any page.
   if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage' || d.site === 'logo')) return { kind: 'site', field: d.site };
   // A theme colour pair too faint to read is fixed in Colors, in its palette, at the text colour a fix changes.
@@ -64,6 +68,16 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
   const dest: EditorDestination = { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting, ...(row ? { itemId: row } : {}) };
   // A clash found at a placement whose design holds the form has no form settings there: it is shown on the page.
   return formDestinationField(state, dest) ? dest : null;
+}
+
+/** Where a sample finding (engine/sample-content.ts) is fixed. */
+function sampleDestination(d: Diagnostic, at: SamplePlace): EditorDestination | null {
+  if (at.kind === 'site') return { kind: 'site', field: at.field };
+  if (at.kind === 'pageSeo') return { kind: 'pageSeo', pageId: at.pageId, field: at.field };
+  const owner = d.owner && ['page', 'shell', 'template', 'archive'].includes(d.owner.kind) ? (d.owner as OwnerRef) : null;
+  if (!owner) return null;
+  if (at.kind === 'element') return { kind: 'element', owner, nodeId: at.nodeId };
+  return { kind: 'prop', owner, nodeId: at.nodeId, prop: at.prop, ...(at.itemId !== undefined ? { itemId: at.itemId } : {}), ...(at.field !== undefined ? { field: at.field } : {}) };
 }
 
 /** Where a form destination lands, found in the project as it is now (see formDestinationField). */

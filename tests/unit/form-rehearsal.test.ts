@@ -53,7 +53,9 @@ window.mountForm = (props) => {
 };`,
     '\0form': compile(source, { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code,
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
-    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!
+    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
+    // The page the router is on, which a hidden field sends when it has no value of its own.
+    '$app/state': 'export const page = { get url() { return new URL(location.href); } };'
   };
   const out = (await build({
     configFile: false,
@@ -209,9 +211,9 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       },
       preview: () => form.setMode('preview'),
       /** Adds a form of the page's own code that posts with `send` (JavaScript run in the page, given the form as `form`). */
-      addCustomForm: (id: string, action: string, send: string) =>
+      addCustomForm: (id: string, action: string, send: string, fields = '<input name="q" value="Hello">') =>
         frame.evaluate(`(() => {
-          document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="${id}" method="post" action="${action}"><input name="q" value="Hello"></form>');
+          document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="${id}" method="post" action="${action}">${fields}</form>');
           const form = document.getElementById('${id}');
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -460,6 +462,16 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await addCustomForm('custom', `${SERVICE}/f/custom`, `await new Promise((r) => setTimeout(r, 300)); return (await fetch('${SERVICE}/relay', { method: 'POST', body: new FormData(form) })).status;`);
       await submitCustom('custom');
       await expect.poll(() => customResult('custom'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('practises a form whose only answers are a date and a time, sent somewhere other than its action (issue #1337)', async () => {
+    await withPreview(async ({ service, preview, addCustomForm, submitCustom, customResult }) => {
+      await preview();
+      await addCustomForm('dated', `${SERVICE}/f/dated`, `return (await fetch('${SERVICE}/relay', { method: 'POST', body: new FormData(form) })).status;`, '<input type="date" name="day" value="2026-03-14"><input type="time" name="at" value="09:30">');
+      await submitCustom('dated');
+      await expect.poll(() => customResult('dated'), { timeout: 5000 }).toBe(200);
       expect(service.requests).toHaveLength(0);
     });
   }, 30_000);

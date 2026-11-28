@@ -98,8 +98,10 @@ describe('the contact form’s code', () => {
     expect(adapted).toContain('toolname={so_webmcpName}');
     expect(adapted).toContain('tooldescription={so_webmcp?.description}');
     expect(adapted).not.toContain('toolautosubmit');
-    // Short text, long text, a single-choice question's answers and its group, and a checkbox: each from its label.
-    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
+    // Short text, long text, a dropdown, a single-choice question's answers and its group, and a checkbox: each from its
+    // label. A hidden field gets none, so agents are never asked to fill it in (issue #1337).
+    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(6);
+    expect(adapted).toMatch(/\n\t+<input type="hidden" name=\{names\[i\]\} value=\{String\(field\.value \?\? ''\)\.trim\(\) \|\| page\.url\.pathname\} \/>\n/);
     expect(adapted).toMatch(/<fieldset class="so-form__field so-form__choices" toolparamdescription=\{so_webmcp \? String\(field\.label/);
     // The spam trap tells agents to leave it empty. The service's hidden fields get no description, which keeps them out
     // of what agents may fill in (an access key decides whose inbox a message reaches).
@@ -108,12 +110,15 @@ describe('the contact form’s code', () => {
     expect(adapted).toMatch(/name="access_key" value/);
     // A field the browser sees change would change the tool under it: they stay as they are while an agent waits.
     expect(adapted.match(/readonly=\{status === 'sending' && !so_answering\}/g)).toHaveLength(2);
-    expect(adapted.match(/disabled=\{status === 'sending' && !so_answering\}/g)).toHaveLength(2);
+    expect(adapted.match(/disabled=\{status === 'sending' && !so_answering\}/g)).toHaveLength(3);
     expect(adapted).not.toMatch(/(?:readonly|disabled)=\{status === 'sending'\}/);
     // Sending tells the agent how it went, and empties the form only after that.
     expect(adapted).toContain('\tfunction submit(event) {');
     expect(adapted).toContain('\tasync function so_send(event) {\n\t\tevent.preventDefault();');
     expect(adapted.match(/so_reset\(form\);/g)!.length).toBe(FORM_SOURCE_FOR_TESTS.match(/HTMLFormElement\.prototype\.reset\.call\(form\);/g)!.length);
+    // Whether the form still holds what was sent reads only what was filled in: a hidden field follows the page, and a
+    // visitor who moved to another page while it sent still has the sent answers emptied (issue #1337).
+    expect(adapted).toContain("so_controls(form).filter((el) => el.type !== 'hidden')");
     // The one place left that empties the form, inside so_reset.
     expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(1);
   });
@@ -122,8 +127,10 @@ describe('the contact form’s code', () => {
     const adapted = adaptFormSource(SIGNUP_SOURCE)!;
     expect(adapted).not.toBeNull();
     expect(adapted).toContain('toolname={so_webmcpName}');
-    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
-    expect(adapted.match(/(?:readonly|disabled)=\{status === 'sending' && !so_answering\}/g)).toHaveLength(4);
+    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(6);
+    expect(adapted.match(/(?:readonly|disabled)=\{status === 'sending' && !so_answering\}/g)).toHaveLength(5);
+    // Its hidden field, as the contact form's, takes no description.
+    expect(adapted).toMatch(/\n\t+<input type="hidden" name=\{names\[i\]\} value=\{String\(field\.value \?\? ''\)\.trim\(\) \|\| page\.url\.pathname\} \/>\n/);
     // The snippet is written once, wherever the one-row layout places it.
     expect(adapted.match(/\{#snippet control\(field, i\)\}/g)).toHaveLength(1);
   });
@@ -175,6 +182,12 @@ describe('the contact form’s code', () => {
     // A field named another way in the snippet, or a checkbox added to the loop, would go undescribed.
     expect(changed(/(\{#snippet control\(field, i\)\}[\s\S]*?)name=\{names\[i\]\}/, '$1name={field.name}')).toBeNull();
     expect(changed('\t\t\t\t\t{:else if field.type === \'checkbox\'}', "\t\t\t\t\t{:else if field.type === 'consent'}\n\t\t\t\t\t\t<input type=\"checkbox\" name=\"consent\" />\n\t\t\t\t\t{:else if field.type === 'checkbox'}")).toBeNull();
+    // Only the theme's own hidden field goes undescribed, and only once: a visible control written on its line, or a
+    // second hidden field beside it, would be left out of what agents fill in (issue #1337).
+    const HIDDEN = `<input type="hidden" name={names[i]} value={String(field.value ?? '').trim() || page.url.pathname} />`;
+    expect(changed(HIDDEN, HIDDEN.replace('type="hidden"', 'type="text"'))).toBeNull();
+    expect(changed(HIDDEN, `${HIDDEN}\n${HIDDEN}`)).toBeNull();
+    expect(changed(HIDDEN, HIDDEN.replace("String(field.value ?? '').trim() || page.url.pathname", 'field.secret'))).toBeNull();
     // No snippet, no loop, or either twice: the form is not the theme's.
     expect(changed('{#snippet control(field, i)}', '{#snippet field(field, i)}')).toBeNull();
     expect(changed('{#each fields as field, i (field.id)}', '{#each fields as field, i}')).toBeNull();
