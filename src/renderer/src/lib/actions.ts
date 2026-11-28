@@ -7,12 +7,12 @@ import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
 import { tooLongMessage } from '@shared/text-limits';
 import { isBinding, refKey, sameRef } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
-import { copiesWrong, type ProjectSnapshot } from '@shared/api';
+import { copiesWrong, type EditorOpening, type ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setEditorOpener, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
@@ -1635,13 +1635,62 @@ export function openSeoViewFrom(subject: SeoSubject, place: SeoSettingsPlace): b
  * to bring that picture of its text into view, as Show in Assets does. False when the post open now has text that
  * could not be saved, which keeps it open.
  */
-export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<boolean> {
+export async function openPost(collectionId: string, entryId: string, picture?: number, still?: () => boolean): Promise<boolean> {
   const s = getState();
   // Never over text the open post could not save: it stays, with its note above the text.
   if (s.post?.entryId !== entryId && !(await flushOpenPost())) {
     toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
     return false;
   }
+  // Asked for by something that may have moved on while the open post saved (Chat, #1406): only if it still holds.
+  if (still && !still()) return false;
   setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
   return true;
 }
+
+/**
+ * Bring a placed section into view on its page, selected, as the command menu's "On the site" results do: the page
+ * opens first when it is out of sight, and the section is scrolled to even when it is selected already (#902).
+ */
+export function revealSection(pageId: string, ref: ElementRef) {
+  if (pageOutOfSight(getState(), pageId)) selectPage(pageId);
+  setState({ mode: 'edit', selection: ref, rightTab: 'inspect', dockOpen: true, showSelection: getState().showSelection + 1 });
+}
+
+/**
+ * Open what the author asked Chat to open (#1406), as the editor's own control for it does. `still` says whether the
+ * request is still the one to follow; an entry checks it again once the post open now has saved its text.
+ */
+export function openFromChat(opening: EditorOpening, still: () => boolean) {
+  if (opening.kind === 'entry') return void openPost(opening.collectionId, opening.entryId, undefined, still);
+  if (opening.kind === 'section') return revealSection(opening.pageId, opening.ref);
+  switch (opening.view) {
+    case 'site_styles':
+      return openSiteStyles();
+    case 'seo':
+      return void openSeoView();
+    case 'content':
+      return setState({ leftTab: 'posts' });
+    case 'pages':
+      return setState({ leftTab: 'pages' });
+    case 'layers':
+      return setState({ leftTab: 'layers' });
+    case 'assets':
+      return setState({ leftTab: 'assets' });
+    case 'settings':
+      return setState({ modal: { kind: 'settings' } });
+    case 'project_health':
+      return setState({ modal: { kind: 'health' } });
+    case 'history':
+      return setState({ modal: { kind: 'history' } });
+    case 'versions':
+      return setState({ modal: { kind: 'history', tab: 'versions' } });
+    case 'project_brief':
+      return setState({ rightTab: 'project', dockOpen: true });
+    case 'export':
+      return setState({ modal: { kind: 'export' } });
+    case 'share':
+      return setState({ shareOpen: true });
+  }
+}
+setEditorOpener(openFromChat);

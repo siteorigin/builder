@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AssetRecord, ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
-import type { ChatImageRef, FieldLocation, InspectLayoutOptions } from '@shared/api';
+import { EDITOR_VIEWS, type ChatImageRef, type EditorOpening, type EditorView, type FieldLocation, type InspectLayoutOptions } from '@shared/api';
+import { findEntryToOpen, findSectionToOpen, GO_TO, namedIn } from './editor-nav';
 import type { EditOperation, ToolError } from '@shared/ops';
 import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, propertiesHash, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
@@ -146,6 +147,13 @@ export const TOOL_ARGS = {
     field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
   }),
   open_page: z.object({ page: z.string().min(1).max(600).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
+  open_in_editor: z.object({
+    view: z.enum(['entry', 'section', ...EDITOR_VIEWS]).describe('What to open: an entry of a collection in Content, a section on a page, or one of the editor views.'),
+    target: z.string().min(1).max(600).optional().describe('For entry: its ID, address, title or slug. For section: its node ID or its name. Nothing else takes it.'),
+    collection: z.string().min(1).max(200).optional().describe('For entry, optional: the collection it is in, by ID or name.'),
+    page: z.string().min(1).max(600).optional().describe('For section, optional: the page it is on (ID, route or title) when the author names one; otherwise the page they are on.')
+  }),
+  save_version: z.object({ name: z.string().min(1).max(200).describe('The name the author gave the version, as they wrote it.') }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   update_page_seo: PAGE_SEO_ARGS,
@@ -217,6 +225,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   open_page:
     'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. When no page is found, nothing opens: tell the author. When more than one page has the title, nothing opens: ask the author which one they meant. Say it was opened only after this succeeds.',
+  open_in_editor:
+    'Open something in the editor for the author, as its own control does, when they ask to go to, open, show or select it: an entry of a collection in Content (view "entry", target its ID, address or title, collection to narrow it), a section on a page, selected and scrolled into view (view "section", target its node ID or name, page when they name another page), or a view: site_styles, seo (the SEO view), content, pages, layers, assets, settings, project_health, history, versions, project_brief, export (the Export dialog) or share (the Share menu). It changes nothing in the site. Export and Share only open: the author chooses the folder, publishes or starts sharing there. When nothing is found, or several things fit, nothing opens: say so, or ask which one. Say it was opened only after this succeeds.',
+  save_version:
+    'Save the site as it is now as a named version (History, Versions), when the author asks to save a version or snapshot. name is the name they gave; ask for one if they gave none. It changes nothing in the site and adds no Undo step. Call it before any change this request makes: once the request has changed the site it is refused. Say it was saved only after this succeeds.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   update_page_seo: PAGE_SEO_DESCRIPTION,
@@ -264,6 +276,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
   open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found: say so. Several match: ask which.',
+  open_in_editor: 'Open an entry (view "entry", target, collection), a section (view "section", target, page) or an editor view (site_styles, seo, content, pages, layers, assets, settings, project_health, history, versions, project_brief, export, share) when the author asks; changes nothing. Not found or several fit: say so or ask.',
+  save_version: 'Save a named version of the site, when the author asks; before any change, and never an Undo step. name: theirs.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
   update_page_seo: PAGE_SEO_BRIEF,
@@ -521,7 +535,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout', 'update_project_brief']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'open_in_editor', 'save_version', 'update_theme_component', 'read_layout', 'edit_collection_layout', 'update_project_brief']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -699,8 +713,8 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
  * has no room left for them).
  */
-export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean }): RunTools {
-  const all = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
+export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean; openRequest?: boolean; versionRequest?: boolean }): RunTools {
+  const all = withEditorTools(withEditorNav(runTools(opts), { page: !!opts.pageRequest, open: !!opts.openRequest, version: !!opts.versionRequest && !opts.ask }), opts.editor, !!opts.ask);
   // The export's measurements are the author's: never a collaborator's to read. A small window keeps its room for the
   // edit itself unless the request is about speed (as Project health's Improve with AI is).
   const dropped = opts.delegated || (all.focused && all.mode !== 'ask' && !opts.performanceRequest);
@@ -891,15 +905,28 @@ function runTools(opts: {
 }
 
 /**
- * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357), in every mode a
- * request can be typed in, as Pages can be clicked from any of them. It changes nothing in the site, so it widens no
- * run; a request that never asks to go anywhere is never offered it, so no edit moves the editor. Create component
- * keeps its own set. Ambiguity is asked about in the same run, which a set without the question tool could not do.
+ * The editor's navigation beside a run's own tools, each only when the request asks for it, in every mode a request
+ * can be typed in, as the editor's own controls can be clicked from any of them: open_page when it asks to go to a page
+ * (asksToOpenPage, #1357), open_in_editor when it asks to open an entry, a section or a view (asksToOpenInEditor), and
+ * save_version, from a request that may change the site, when it asks to save a version (asksToSaveVersion, #1406).
+ * None changes the site, so none widens a run; a request that never asks for them is never offered them, so no edit
+ * moves the editor. Create component keeps its own set. Ambiguity is asked about in the same run, which a set without
+ * the question tool could not do.
  */
-function withPageOpener(run: RunTools, asked: boolean): RunTools {
-  if (!asked || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
-  const ask = run.tools.some((t) => t.name === 'request_clarification') ? [] : [narrowQuestion()];
-  return { ...run, tools: [...run.tools, plainTool('open_page'), ...ask] };
+function withEditorNav(run: RunTools, asked: { page: boolean; open: boolean; version: boolean }): RunTools {
+  if (run.task) return run;
+  const has = (name: ToolName) => run.tools.some((t) => t.name === name);
+  const extra = (
+    [
+      ['open_page', asked.page],
+      ['open_in_editor', asked.open],
+      ['save_version', asked.version]
+    ] as const
+  )
+    .filter(([name, wanted]) => wanted && !has(name))
+    .map(([name]) => plainTool(name));
+  if (!extra.length) return run;
+  return { ...run, tools: [...run.tools, ...extra, ...(has('request_clarification') ? [] : [narrowQuestion()])] };
 }
 
 /** request_clarification without widenScope: asking which page widens nothing. */
@@ -909,11 +936,6 @@ function narrowQuestion(): ToolDefinition {
   return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
 }
 
-// "Open" is going somewhere, but not a link that opens in a new tab or on a click; "show" and "display" are going
-// there when they are "show me", or say a page within a few words ("show the About page", never "show the phone
-// number on the Contact page").
-const GO_TO =
-  /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
 const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
 
 /**
@@ -924,20 +946,8 @@ const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\
 export function asksToOpenPage(text: string, state?: ProjectState): boolean {
   if (!GO_TO.test(text)) return false;
   if (NAMES_A_PAGE.test(text)) return true;
-  const fold = (v: string) => v.normalize('NFKC').toLowerCase();
-  const words = fold(text);
-  const named = (n: string) => {
-    if (!n) return false;
-    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
-    // One Latin letter is a word of the request ("a"), never a page's name in it.
-    if (n.length < 2) return false;
-    return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
-  };
-  return Object.values(state?.pages ?? {}).some((p) => {
-    const title = typeof p?.title === 'string' ? fold(p.title.trim()) : '';
-    const route = typeof p?.route === 'string' ? fold(p.route.replace(/^\/+|\/+$/g, '')) : '';
-    return named(title) || named(route);
-  });
+  const named = namedIn(text);
+  return Object.values(state?.pages ?? {}).some((p) => (typeof p?.title === 'string' && named(p.title)) || (typeof p?.route === 'string' && named(p.route.replace(/^\/+|\/+$/g, ''))));
 }
 
 /**
@@ -1134,9 +1144,62 @@ export interface ToolHost {
   controlPreview?(settings: PreviewControlSettings): Promise<PreviewControlResult>;
   /** Step the project's History for this run (step_history); without it the tool says it cannot run. */
   stepHistory?(direction: 'undo' | 'redo', steps: number): Promise<{ ok: boolean; revision: number; label?: string; error?: ToolError }>;
+  /** Save a named version of the site for this run (save_version, #1406); without it the tool says it cannot run. */
+  saveVersion?(name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>;
+  /** The page the editor showed when the request was sent, for a section open_in_editor looks for (#1406). */
+  shownPageId?(): string;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
+
+/** What each editor view is called on screen, for open_in_editor's answer. */
+const VIEW_LABELS: Record<EditorView, string> = {
+  site_styles: 'Site styles',
+  seo: 'the SEO view',
+  content: 'the Content panel',
+  pages: 'the Pages panel',
+  layers: 'the Layers panel',
+  assets: 'the Assets panel',
+  settings: 'Settings',
+  project_health: 'Project health',
+  history: 'History',
+  versions: 'History, Versions',
+  project_brief: 'the Project brief',
+  export: 'the Export dialog',
+  share: 'the Share menu'
+};
+
+/**
+ * open_in_editor (#1406): what the author asked to open, found in the site the request reads. The editor is asked to
+ * show it once the call succeeds (the orchestrator's open-editor event); nothing in the site changes.
+ */
+function runOpenInEditor(a: z.infer<(typeof TOOL_ARGS)['open_in_editor']>, state: ProjectState, host: ToolHost): ToolOutcome {
+  const stray = (['target', 'collection', 'page'] as const).filter((k) => a[k] !== undefined && !((k === 'target' && (a.view === 'entry' || a.view === 'section')) || (k === 'collection' && a.view === 'entry') || (k === 'page' && a.view === 'section')));
+  if (stray.length) return toolError('INVALID_ARGUMENT', `view "${a.view}" takes no ${stray.join(' or ')}. Only entry takes target and collection; only section takes target and page.`);
+  const opened = (opening: EditorOpening, shown: Record<string, unknown>, note: string): ToolOutcome => ({ ok: true, openEditor: opening, content: { revision: host.revision(), opened: shown, note: `${note} Nothing in the site changed.` } });
+  const asked = 'The editor has been asked to show it, as its own control does.';
+  if (a.view === 'entry' || a.view === 'section') {
+    if (!a.target?.trim()) return toolError('INVALID_ARGUMENT', `view "${a.view}" needs target: the ${a.view === 'entry' ? "entry's ID, address or title" : "section's node ID or name"}.`);
+    if (a.view === 'entry') {
+      const found = findEntryToOpen(state, a.target, a.collection);
+      if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
+      const c = state.collections[found.value.collectionId];
+      const entry = c.entries[found.value.entryId];
+      return opened({ kind: 'entry', ...found.value }, { collection: c.settings.name, entryId: entry.id, title: entry.title }, `${asked} It opens in Content's writer, unless the entry open there now has text the author has not saved: the editor tells them so.`);
+    }
+    const page = a.page ? findPageToOpen(state, a.page) : null;
+    if (page && !page.ok) return toolError('INVALID_ARGUMENT', page.message);
+    const shown = host.shownPageId?.() ?? state.site.homePageId;
+    const found = findSectionToOpen(state, a.target, shown, page?.ok ? { pageId: page.pageId } : undefined);
+    if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
+    const tree = found.value.ref.owner.kind === 'page' ? state.pages[found.value.ref.owner.id] : state.site.shell[found.value.ref.owner.id as 'header' | 'footer'];
+    const node = tree.nodes[found.value.ref.nodeId];
+    return opened({ kind: 'section', ...found.value }, { pageId: found.value.pageId, page: state.pages[found.value.pageId].title, nodeId: found.value.ref.nodeId, name: displayName(state, node) }, `${asked} It is selected on its page and scrolled into view.`);
+  }
+  const view = a.view;
+  const only = view === 'export' ? ' Nothing was exported: the author chooses where it goes and starts it there.' : view === 'share' ? ' Nothing was shared: the author starts sharing there.' : '';
+  return opened({ kind: 'view', view }, { view, label: VIEW_LABELS[view] }, `${asked}${only}`);
+}
 
 /** set_preview: what the editor shows after, and what it could not change. A call that changes nothing it asked fails. */
 async function runSetPreview(a: z.infer<(typeof TOOL_ARGS)['set_preview']>, host: ToolHost): Promise<ToolOutcome> {
@@ -1675,6 +1738,19 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
         ok: true,
         openPage: found.pageId,
         content: { revision: host.revision(), opened: { pageId: page.id, title: page.title, route: page.route }, note: 'The editor now shows this page. Nothing in the site changed.' }
+      };
+    }
+    case 'open_in_editor':
+      return runOpenInEditor(args as z.infer<(typeof TOOL_ARGS)['open_in_editor']>, state, host);
+    case 'save_version': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['save_version']>;
+      if (!host.saveVersion) return toolError('SCOPE_MISMATCH', 'A version cannot be saved from this request. The author can save one from History, Versions.', { recoverable: false });
+      const r = await host.saveVersion(a.name);
+      if (!r.ok) return toolError('CONFLICT', `The version was not saved: ${r.message ?? 'it could not be saved.'}`, { recoverable: false });
+      const missing = r.missing?.length ? ` ${r.missing.length} image ${r.missing.length === 1 ? 'file it names is' : 'files it names are'} missing from the project folder, so the version records ${r.missing.length === 1 ? 'it' : 'them'} as missing: tell the author.` : '';
+      return {
+        ok: true,
+        content: { revision: host.revision(), saved: { name: r.name ?? a.name, id: r.id }, note: `Saved the version "${r.name ?? a.name}". It is listed in History, Versions; nothing in the site changed, and there is nothing to undo.${missing}` }
       };
     }
     case 'request_clarification': {

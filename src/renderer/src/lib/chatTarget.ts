@@ -132,6 +132,9 @@ export function withGrant(ctx: ChatContext, wholeSite: boolean): ChatContext {
 }
 
 /** The context a message is sent with, frozen at send time. `enabled` holds the composer's page switch and its scope choice. */
+/** The page on screen, sent when the request names another (its page context left out), for a section it asks to go to (#1406). */
+const shown = (scope: ComposerScope, sent: string) => (scope.page && scope.page.id !== sent ? { shownPageId: scope.page.id } : {});
+
 export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: { enabled: { page: boolean; scope: ChatEditScope }; viewport: number; assetIds?: string[]; ask?: boolean }): ChatContext {
   const home = state.site.homePageId;
   const page = opts.enabled.page ? scope.page : null;
@@ -143,6 +146,7 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
       selection: null,
       selectionLabel: null,
       post: { ...scope.post },
+      ...shown(scope, page ? page.id : home),
       viewport: opts.viewport,
       ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
       ...(opts.ask ? { mode: 'ask' as const } : {})
@@ -155,6 +159,7 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
       selection: null,
       selectionLabel: null,
       template: { ...scope.template },
+      ...shown(scope, page ? page.id : home),
       viewport: opts.viewport,
       ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
       ...(opts.ask ? { mode: 'ask' as const } : {})
@@ -170,6 +175,7 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
     // An edit on a page says how far it may reach. A question changes nothing, and a component edited everywhere says
     // it by what it carries.
     ...(!opts.ask && !scope.component ? { scope: chosen } : {}),
+    ...shown(scope, page ? page.id : home),
     viewport: opts.viewport,
     // The images go by asset ID only; the app checks they are still in Assets before anything is sent.
     ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),

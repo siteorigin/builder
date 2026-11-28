@@ -22,6 +22,8 @@ import { describeOps, InspectionLog, pagesTouched, type Viewport } from './repor
 import { narrowedInspection } from './layout-targets';
 import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool, withoutBriefAsks } from './brief-tools';
 import type { BriefWriteGrant } from '@shared/brief';
+import { asksToOpenInEditor, asksToSaveVersion } from './editor-nav';
+import { openingInSite } from '@shared/editor-opening';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPerformance, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
@@ -153,6 +155,8 @@ export interface RunSession {
    * author's own. Only a run that has changed nothing can; afterwards it holds nothing and may change nothing more.
    */
   stepHistoryForRun?(runId: string, direction: 'undo' | 'redo', steps: number): Promise<{ ok: boolean; revision: number; label?: string; error?: ToolError }>;
+  /** Save a named version for the run, which the author asked for (#1406): only while the run has changed nothing. */
+  saveVersionForRun?(runId: string, name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>;
   /** `undoLabel` and `redoLabel`: what Undo and Redo would step now, as History names it. */
   historyInfo(): TurnHistory & { undoLabel?: string; redoLabel?: string };
 }
@@ -781,8 +785,17 @@ function editorGuidance(run: RunTools): string {
 
 /** The instructions for a run, by what it may do and the model it goes to. */
 function instructions(state: ProjectState, run: RunTools, constrained: boolean): string {
-  return modeInstructions(state, run, constrained) + (run.tools.some((t) => t.name === 'open_page') ? OPEN_PAGE_GUIDANCE : '');
+  const offered = (name: string) => run.tools.some((t) => t.name === name);
+  return modeInstructions(state, run, constrained) + (offered('open_page') ? OPEN_PAGE_GUIDANCE : '') + (offered('open_in_editor') ? OPEN_EDITOR_GUIDANCE : '') + (offered('save_version') ? SAVE_VERSION_GUIDANCE : '');
 }
+
+/** Opening an entry, a section or one of the editor's views the author asked for (#1406): it moves the editor, never the site. */
+const OPEN_EDITOR_GUIDANCE =
+  "\n\nWhen the author asks to open, go to, show or select an entry of a collection, a section on a page, or one of the editor's views (Site styles, the SEO view, Content, Pages, Layers, Assets, Settings, Project health, History, Versions, the Project brief, Export or Share), call open_in_editor for it, and confirm in one short sentence what is open. Asked for several, open each in the order they named them; asked for one or another, open the first that exists. The panel that lists a site's collections and their entries is called Content. Export and Share only open their controls: never say the site was exported, published or shared. If nothing matches, say so; if more than one could, ask which. Never call open_in_editor for a request that only asks to change something.";
+
+/** Saving a named version the author asked for (#1406): no change to the site, and nothing to undo. */
+const SAVE_VERSION_GUIDANCE =
+  '\n\nWhen the author asks to save a version or snapshot of the site, call save_version with the name they gave, before any change this request makes, and once it succeeds say it was saved under that name. If they gave no name, ask for one. Never say a version was saved unless save_version succeeded.';
 
 /** Going to a page the author asked for (#1357): it moves the editor, never the site, and only when asked. */
 const OPEN_PAGE_GUIDANCE =
@@ -1834,6 +1847,9 @@ export class Orchestrator {
     // The brief is the author's own (#518): only their own message, asking in so many words, lets a run change it
     // (#1407). Never a guest's, a question, a layout's run (which never widens), or the request a "Continue" carries on.
     const briefAllowance = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : null;
+    /** The author asks to open an entry, a section or an editor view, or to save a version (#1406): the same, for those tools. */
+    const openAsked = !run.delegation && asksToOpenInEditor(userMsg.text, session.state);
+    const versionAsked = !run.delegation && asksToSaveVersion(userMsg.text);
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1895,6 +1911,8 @@ export class Orchestrator {
     let briefShown = !delegation;
     /** The History step this request took, when the author asked it to undo or redo (#1405): its one change. */
     let stepped: { direction: 'undo' | 'redo'; steps: number; label?: string } | null = null;
+    /** The versions this request saved (#1406), by name: the same one asked for twice is saved once. */
+    const savedVersions = new Map<string, { ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>();
     /**
      * The editor's own controls (#1405), for the author's own requests: a guest's request never moves the host's view
      * or History. Undo and Redo only for a request that may change the site, from a session that can run them.
@@ -1938,6 +1956,8 @@ export class Orchestrator {
         ...(performanceAsked ? { performanceRequest: true } : {}),
         ...(delegation ? { delegated: true } : {}),
         ...(pageAsked ? { pageRequest: true } : {}),
+        ...(openAsked ? { openRequest: true } : {}),
+        ...(versionAsked && !!session.saveVersionForRun ? { versionRequest: true } : {}),
         attachedImages: !!userMsg.images?.length,
         ask,
         focused: onlyFocused,
@@ -2290,6 +2310,21 @@ export class Orchestrator {
       // A question reads the problems the project had as it was asked about.
       diagnostics: () => (ask ? startDiagnostics : projectDiagnostics()),
       ...(editor.preview ? { controlPreview: (settings: PreviewControlSettings) => this.deps.controlPreview!(settings, signal) } : {}),
+      // The page on screen when the request was sent, for a section it asks to go to; never the model's to read (#1406).
+      shownPageId: () => (typeof ctx?.shownPageId === 'string' && Object.hasOwn(readState().pages, ctx.shownPageId) ? ctx.shownPageId : (ctx?.pageId ?? readState().site.homePageId)),
+      ...(versionAsked && !delegation && !ask && session.saveVersionForRun
+        ? {
+            saveVersion: async (name: string) => {
+              if (signal.aborted) return { ok: false, message: 'Canceled' };
+              const key = name.replace(/\s+/g, ' ').trim().toLowerCase();
+              const earlier = savedVersions.get(key);
+              if (earlier) return { ...earlier };
+              const r = await session.saveVersionForRun!(runId, name);
+              if (r.ok) savedVersions.set(key, r);
+              return r;
+            }
+          }
+        : {}),
       ...(editor.history
         ? {
             stepHistory: async (direction: 'undo' | 'redo', count: number) => {
@@ -3225,7 +3260,9 @@ export class Orchestrator {
           const outcome: ResultOutcome =
             reached.ok && reached.openPage && !Object.hasOwn(session.state.pages, reached.openPage)
               ? stamp(toolError('INVALID_ARGUMENT', 'That page was deleted while you answered. Nothing was opened: tell the author so.'), readRevision())
-              : reached;
+              : reached.ok && reached.openEditor && !openingInSite(session.state, reached.openEditor)
+                ? stamp(toolError('INVALID_ARGUMENT', `That ${reached.openEditor.kind === 'entry' ? 'entry' : 'section'} was deleted while you answered. Nothing was opened: tell the author so.`), readRevision())
+                : reached;
           // Kept before a repeated failure can end the run with this result never sent. A call Stop cut short is not,
           // unless its change landed first: the outcome says whether it was rolled back.
           if (!signal.aborted || outcome.mutated) learnResult(call, outcome);
@@ -3242,6 +3279,10 @@ export class Orchestrator {
           // A page the author asked to go to opens now. The editor moves, the site does not: nothing is recorded as a change.
           if (outcome.ok && outcome.openPage) {
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'open-page', pageId: outcome.openPage });
+          }
+          // So does an entry, a section or an editor view it asked to open (#1406).
+          if (outcome.ok && outcome.openEditor) {
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'open-editor', opening: outcome.openEditor });
           }
           if (outcome.ok && outcome.location) {
             const l = outcome.location;
@@ -3344,6 +3385,9 @@ const steppedName = (s: { steps: number; label?: string }) => (s.label ? `"${s.l
 /** The step, said on the result card (#1405). */
 const steppedText = (s: { direction: 'undo' | 'redo'; steps: number; label?: string }) => `${s.direction === 'undo' ? 'Undid' : 'Redid'} ${steppedName(s)}`;
 
+/** The editor's views as the activity line names them (open_in_editor, #1406). */
+const EDITOR_VIEW_NAMES: Record<string, string> = { site_styles: 'Site styles', seo: 'the SEO view', content: 'Content', pages: 'Pages', layers: 'Layers', assets: 'Assets', settings: 'Settings', project_health: 'Project health', history: 'History', versions: 'Versions', project_brief: 'the Project brief', export: 'Export', share: 'Share' };
+
 /** What a set_preview call is switching to, in the toolbar's words. */
 function previewLabel(args: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -3404,6 +3448,14 @@ function labelFrom(call: ToolCall, args: Record<string, unknown>, state: Project
       return 'Finding the field in the Inspector';
     case 'open_page':
       return `Opening ${typeof args.page === 'string' && args.page.trim() ? args.page.trim().slice(0, 80) : 'a page'}`;
+    case 'open_in_editor': {
+      const target = typeof args.target === 'string' && args.target.trim() ? args.target.trim().slice(0, 80) : '';
+      if (args.view === 'entry') return `Opening ${target || 'an entry'} in Content`;
+      if (args.view === 'section') return `Showing ${target || 'a section'}`;
+      return `Opening ${typeof args.view === 'string' ? (EDITOR_VIEW_NAMES[args.view] ?? 'the editor view') : 'the editor view'}`;
+    }
+    case 'save_version':
+      return `Saving the version ${typeof args.name === 'string' && args.name.trim() ? `"${args.name.trim().slice(0, 80)}"` : ''}`.trim();
     case 'request_clarification':
     case 'request_wider_scope':
       return 'Waiting for your answer';
