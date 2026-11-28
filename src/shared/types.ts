@@ -943,6 +943,12 @@ export interface TokensDoc {
    * Absent: never made.
    */
   darkOverrides?: Record<string, DarkColorValue>;
+  /**
+   * The dark palette was never turned on, and `darkOverrides` holds only the dark colours imported components brought
+   * with them. Turning it on for the first time makes the theme's dark colours from the light palette as it is then, and
+   * keeps these beside them. Absent: `darkOverrides` is the palette as made (or there is none).
+   */
+  darkPending?: true;
 }
 
 // ---------------------------------------------------------------------------

@@ -3101,10 +3101,13 @@ function tokenSetColorScheme(state: ProjectState, op: Op<'token.setColorScheme'>
     return {};
   }
   t.colorSchemeMode = op.mode;
-  if (op.regenerate || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
+  const staged = t.darkPending && t.darkOverrides && typeof t.darkOverrides === 'object' ? t.darkOverrides : null;
+  if (op.regenerate || staged || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
     const theme = getTheme(state.site.themeId);
-    t.darkOverrides = deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []);
+    // The dark colours imported components brought before it was ever on are their own, beside the theme's made ones.
+    t.darkOverrides = { ...deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []), ...staged };
   }
+  delete t.darkPending;
   assertNoTokenCycles(state);
   return {};
 }

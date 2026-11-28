@@ -3553,7 +3553,16 @@ export class Controller {
         }
         const last = r.results?.at(-1);
         const definitionId = last?.definitionId;
-        return { ok: true, definitionId: typeof definitionId === 'string' ? definitionId : undefined, name, entryId: r.entryId, revision: r.revision, ...(nodeId && last?.nodeId === nodeId ? { nodeId } : {}) };
+        const notes = Array.isArray(last?.notes) ? last.notes.filter((n): n is string => typeof n === 'string') : [];
+        return {
+          ok: true,
+          definitionId: typeof definitionId === 'string' ? definitionId : undefined,
+          name,
+          entryId: r.entryId,
+          revision: r.revision,
+          ...(notes.length ? { notes } : {}),
+          ...(nodeId && last?.nodeId === nodeId ? { nodeId } : {})
+        };
       })
     );
   }
