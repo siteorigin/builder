@@ -122,7 +122,7 @@ export function ColorSchemeControls({
           { value: 'dual', label: 'Light and dark' }
         ]}
         onChange={(v) => choose(v === 'single' ? 'single' : lastDual.current)}
-        hint={mode === 'single' ? MODE_HINTS.single : undefined}
+        info="One palette: every visitor sees the same colors. Light and dark: the site also has dark colors, for visitors who prefer them."
       />
       {/* The site's own colors, as they stand: a proposal below is judged on its own, under its preview. */}
       {mode === 'single' && (
@@ -141,7 +141,7 @@ export function ColorSchemeControls({
               { value: 'toggle', label: 'A header switch' }
             ]}
             onChange={choose}
-            hint={MODE_HINTS[mode]}
+            info={MODE_HINTS[mode]}
           />
           <div className="ss-palette-editing" ref={editing}>
             <ChoiceField

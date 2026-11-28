@@ -124,7 +124,9 @@ describe('sharingView', () => {
     const s = apply(state, { type: 'site.update', socialImage: 'a_table' }, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_kitchen' });
     const v = sharingView(s, s.pages[byTitle('Kitchens').id]);
     expect(v).toMatchObject({ imageSource: 'page', imageName: 'Kitchen', host: 'studio.example', addressNote: null });
-    expect(v.imageNote).toBe('This page’s own choice. Pages without their own image show the site’s sharing image, Studio table. Page lists that follow this page show it on this page’s card.');
+    expect(v.imageNote).toBe('Shown in link previews, and on this page’s card in page lists that follow it.');
+    // The picker shows the page's own image itself: no line under it.
+    expect(v.imageStatus).toBeNull();
     // Returning to the site's image is offered by name, with the site's picture to stand in for it.
     expect(v.picker).toEqual({ inherited: 'a_table', from: 'The site’s sharing image.', none: 'No sharing image', back: 'Use the site’s image' });
   });
@@ -134,12 +136,15 @@ describe('sharingView', () => {
     const kitchens = byTitle('Kitchens');
     const bare = sharingView(state, kitchens);
     expect(bare).toMatchObject({ imageSource: 'none', imageName: undefined });
-    expect(bare.imageNote).toBe('Neither this page nor the site has a sharing image, so a shared link to this page shows no picture.');
+    expect(bare.imageNote).toBe('Shown in link previews, and on this page’s card in page lists that follow it. Without one, shared links show no picture.');
+    expect(bare.imageStatus).toBeNull();
     expect(bare.picker.inherited).toBeNull();
     const inherited = apply(state, { type: 'site.update', socialImage: 'a_table' });
     const v = sharingView(inherited, inherited.pages[kitchens.id]);
     expect(v).toMatchObject({ imageSource: 'site', imageName: 'Studio table' });
-    expect(v.imageNote).toBe('This page has no image of its own, so a shared link shows the site’s sharing image. Choose one to use a different image for this page.');
+    expect(v.imageNote).toBe('Shown in link previews, and on this page’s card in page lists that follow it. Choose an image to use a different one for this page.');
+    // The picker can't say the image it stands in with is the site's: one line under it does.
+    expect(v.imageStatus).toBe('Using the site’s sharing image');
     expect(v.picker.inherited).toBe('a_table');
   });
 
@@ -148,7 +153,7 @@ describe('sharingView', () => {
     const own = apply(state, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_kitchen' });
     const v = sharingView(own, own.pages[byTitle('Kitchens').id]);
     expect(v.picker.back).toBe('Remove image');
-    expect(v.imageNote).toContain('Pages without their own image are shared without one.');
+    expect(v.imageStatus).toBeNull();
     // A page's choice that has gone from the library stays its own, with no picture, and returning to the site's image is offered.
     // Changed by hand below: a copy, since the state applyOperations gives shares what it did not change.
     const dangling = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
@@ -156,12 +161,14 @@ describe('sharingView', () => {
     const d = sharingView(dangling, dangling.pages[byTitle('Kitchens').id]);
     expect(d).toMatchObject({ imageSource: 'page', imageName: undefined });
     expect(d.imageNote).toBe('The image chosen for this page is no longer in Assets, so a shared link to it shows no picture. Choose another image, or return to the site’s image.');
+    expect(d.imageStatus).toBe('The chosen image is no longer in Assets');
     expect(d.picker).toMatchObject({ inherited: 'a_table', back: 'Use the site’s image' });
     // One that is a file but no picture says so, rather than that it has gone.
     const pdf = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
     pdf.assets.assets['a_menu'] = image('a_menu', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
     pdf.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
     expect(sharingView(pdf, pdf.pages[byTitle('Kitchens').id]).imageNote).toMatch(/^The file chosen for this page is not an image, so/);
+    expect(sharingView(pdf, pdf.pages[byTitle('Kitchens').id]).imageStatus).toBe('The chosen file is not an image');
     const noSite = structuredClone(apply(state, { type: 'site.update', socialImage: null }));
     noSite.assets.assets['a_menu'] = pdf.assets.assets['a_menu'];
     noSite.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
@@ -176,6 +183,7 @@ describe('sharingView', () => {
     expect(g.imageSource).toBe('site');
     expect(g.picker.inherited).toBeNull();
     expect(g.imageNote).toMatch(/no longer in Assets/);
+    expect(g.imageStatus).toBe('The site’s sharing image is no longer in Assets');
     gone.assets.assets['a_table'] = image('a_table', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
     expect(sharingView(gone, gone.pages[byTitle('Kitchens').id]).imageNote).toMatch(/^The site’s sharing image is not an image, so/);
   });

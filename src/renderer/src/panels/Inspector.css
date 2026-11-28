@@ -271,7 +271,9 @@
   .insp-image { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
   .insp-group .insp-image { padding: 0; border: 0; background: none; }
   /* Its own name under a group's ("Media" › "Image"), as a button inside a declared group is. */
-  .insp-group .insp-image > .insp-group-title { font-weight: 500; color: var(--text-2); }
+  .insp-group .insp-image > :is(.insp-group-title, .field-head > .insp-group-title) { font-weight: 500; color: var(--text-2); }
+  .field-head > .insp-group-title { float: none; width: auto; }
+  .insp-image > .field-head { width: 100%; }
   .insp-image-top { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; }
   /* With what is wrong said under the name, the name starts level with the picture's top. */
   .insp-image-top:has(.insp-image-state) { align-items: flex-start; }

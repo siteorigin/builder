@@ -53,7 +53,7 @@ await eventually(async () => assert.equal(await frame.locator('main h1', { hasTe
 await expectShown({ header: 1, footer: 1 }, 'a new page shows both');
 const section = win.locator('#dock-panel-inspect .section', { hasText: 'Header & footer' });
 assert.match(await section.locator('.scope').innerText(), /Both shown/, 'the heading says the page shows both');
-assert.match(await section.locator('.field-hint').innerText(), /For this page only/, 'the settings say they apply to this page only');
+assert.equal(await section.locator('[role="group"]').getAttribute('aria-label'), 'Shared header and footer on this page', 'the settings say they apply to this page only');
 assert.equal(await checked(headerSwitch()), true);
 assert.equal(await checked(footerSwitch()), true);
 

@@ -7,22 +7,24 @@ import './ProjectBrief.css';
  * visitor-facing one, and stays where it is.
  */
 import { useRef } from 'react';
-import { EyeOff, NotebookPen } from 'lucide-react';
+import { NotebookPen } from 'lucide-react';
 import { briefText } from '@shared/brief';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { applyOps, useStore } from '../store';
 import { BlockedNote, BlockedStatus, readOnlyBlock } from '../components/BlockedNote';
 import { DraftInput, Field } from '../components/ui';
 
+/** One line under each field: where the description shows, and the one rule for notes worth knowing before writing them. */
 const HINTS = {
-  description: 'What the site is and who it’s for, in a line or two. For example: “A pottery studio in Leeds, with evening classes for beginners.” It shows under the project’s name in Recent projects.',
-  notes: 'The client, the audience, what the site should achieve. The AI reads only the start of long notes, so put what matters most first.'
-};
-/** A locked brief is read, not written: only what each field is for. */
-const LOCKED_HINTS = {
-  description: 'It shows under the project’s name in Recent projects.',
+  description: 'Shown in Recent projects',
   notes: 'The AI reads only the start of long notes.'
 };
+/** What to write, as each empty field's placeholder. */
+const PLACEHOLDERS = {
+  description: 'What the site is and who it’s for',
+  notes: 'Client, audience and goals'
+};
+const LOCKED_HINTS = HINTS;
 const HELD_NOTE = 'brief-held';
 
 export function ProjectBrief() {
@@ -57,13 +59,9 @@ function BriefFields() {
           </span>
           <div className="insp-name">
             <h3>Project brief</h3>
-            <span className="insp-kind-label">Private to this project</span>
+            <span className="insp-kind-label">Guides every AI request · never exported</span>
           </div>
         </div>
-        <p className="brief-private">
-          <EyeOff aria-hidden="true" />
-          <span>The AI reads it on every request, to guide the tone, sections and copy it writes. Visitors never see it: the website and every export leave it out.</span>
-        </p>
         <BlockedStatus block={block} lifted="You can edit the brief again." />
         {/* Said before anything is typed, so nothing typed here is lost to a save that cannot happen. */}
         {block && <BlockedNote block={block} id={HELD_NOTE} live={false} />}
@@ -82,10 +80,10 @@ function BriefFields() {
         ) : (
           <>
             <Field label="Description" hint={hints.description}>
-              <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
+              <DraftInput multiline rows={3} placeholder={PLACEHOLDERS.description} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
             </Field>
             <Field label="Working notes" hint={hints.notes}>
-              <DraftInput multiline quietCount className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
+              <DraftInput multiline quietCount placeholder={PLACEHOLDERS.notes} className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
             </Field>
           </>
         )}

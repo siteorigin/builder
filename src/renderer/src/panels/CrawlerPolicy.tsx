@@ -60,7 +60,7 @@ const extraTokens = (rules: CrawlerRules) =>
  * A field of lines that saves as one part of the policy, checked as it is typed against the policy it would leave:
  * text it can't take stays in it with the reason, unsaved.
  */
-function CheckedLines({ id, label, hint, value, placeholder, toPatch, toLines, onLive, onSave }: { id: string; label: string; hint: string; value: string; placeholder: string; toPatch: (v: string) => Checked<CrawlerPolicyPatch>; toLines: (v: string) => Checked<CrawlerPolicyPatch>; onLive: (v: string | null) => void; onSave: (patch: CrawlerPolicyPatch) => unknown }) {
+function CheckedLines({ id, label, hint, info, value, placeholder, toPatch, toLines, onLive, onSave }: { id: string; label: string; hint?: string; info?: string; value: string; placeholder: string; toPatch: (v: string) => Checked<CrawlerPolicyPatch>; toLines: (v: string) => Checked<CrawlerPolicyPatch>; onLive: (v: string | null) => void; onSave: (patch: CrawlerPolicyPatch) => unknown }) {
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const settled = useCallback((dirty: boolean) => void (dirty || onLive(null)), [onLive]);
   const error = problem && (
@@ -69,7 +69,7 @@ function CheckedLines({ id, label, hint, value, placeholder, toPatch, toLines, o
     </span>
   );
   return (
-    <Field label={label} hint={hint} error={error}>
+    <Field label={label} hint={hint} info={info} error={error}>
       <DraftInput
         id={id}
         multiline
@@ -137,7 +137,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
   const origin = url ? new URL(url).origin : '';
   return (
     <>
-      <Field label="Crawler policy" hint={PRESET_HINTS[rules.preset]}>
+      <Field label="Crawler policy" info={PRESET_HINTS[rules.preset]}>
         <select id="site-crawler-preset" className="select" value={rules.preset} onChange={(e) => isPreset(e.target.value) && save({ preset: e.target.value })}>
           {CRAWLER_PRESETS.map((p) => (
             <option key={p} value={p}>
@@ -148,7 +148,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
       </Field>
       {custom && (
         <>
-          <Field label="Starts from" hint={`Custom starts from this preset. Crawlers left on Default follow it. ${PRESET_HINTS[rules.base]}`}>
+          <Field label="Starts from" info={`Custom starts from this preset. Crawlers left on Default follow it. ${PRESET_HINTS[rules.base]}`}>
             <select id="site-crawler-base" className="select" value={rules.base} onChange={(e) => isFixed(e.target.value) && save({ base: e.target.value })}>
               {FIXED_CRAWLER_PRESETS.map((p) => (
                 <option key={p} value={p}>
@@ -195,7 +195,8 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
           <CheckedLines
             id="site-crawler-extra"
             label="Also block"
-            hint="Other crawlers to keep out of the whole site, by the name robots.txt gives them, one per line. Those listed above are chosen on their own rows."
+            hint="One crawler name per line"
+            info="Other crawlers to keep out of the whole site, by the name robots.txt gives them. Those listed above are chosen on their own rows."
             value={extraTokens(rules)}
             placeholder="ExampleBot"
             toPatch={(v) => linesPatch('alsoBlock', v)}
@@ -206,7 +207,8 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
           <CheckedLines
             id="site-crawler-paths"
             label="Closed paths"
-            hint="Paths of the site no crawler may fetch, one per line, from the site’s root: /private/ closes everything under it, /*.pdf$ every PDF. Pages hidden from search engines need none: they already say so."
+            hint="One path per line"
+            info="Paths of the site no crawler may fetch, from the site’s root: /private/ closes everything under it, /*.pdf$ every PDF. Pages hidden from search engines need none: they already say so."
             value={rules.paths.join('\n')}
             placeholder="/private/"
             toPatch={(v) => linesPatch('disallowPaths', v)}
@@ -221,11 +223,13 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
         checked={rules.noAiMeta}
         onChange={(v) => save({ noAiMeta: v })}
         label="Ask AI services not to train on pages"
-        hint={`Adds ${NOAI_META} to every page. Some AI services honor it; it keeps no crawler out.`}
+        hint={rules.noAiMeta ? 'A request · keeps no crawler out' : undefined}
+        info={rules.noAiMeta ? `Adds ${NOAI_META} to every page. Some AI services honor it.` : `Adds ${NOAI_META} to every page. A request: some AI services honor it, and it keeps no crawler out.`}
       />
       <Field
         label="robots.txt preview"
-        hint={
+        hint={mount ? 'Applies once merged into the domain’s own robots.txt' : undefined}
+        info={
           mount
             ? `Crawlers read robots.txt only at the root of the domain (${origin}/robots.txt), so these lines apply once they are merged into that file. A crawler named there follows only its own group: give each group here the domain’s own rules for that crawler too.`
             : undefined

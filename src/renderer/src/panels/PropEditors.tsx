@@ -10,7 +10,7 @@ import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
-import { DisclosureMark, DraftInput, Field, FieldHome, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { DisclosureMark, DraftInput, Field, FieldHome, InfoTip, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, refusedWithin, registerUnsent, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -798,7 +798,7 @@ const carryKey = (x: ImageValue | null | undefined, project: string | undefined,
  * imported and used. The rule the pickers share: a tall grid that commits on one click opens in a popover (icons, one
  * image); a short list (a page) or a choice that is reviewed before it is added (a gallery's images) opens in the flow.
  */
-export function ImageEditor({ value, onChange, state, title, plain, picture, mark, describedBy }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn; /** Said after the title (that the component requires a picture). */ mark?: ReactNode; describedBy?: string }) {
+export function ImageEditor({ value, onChange, state, title, plain, picture, mark, info, describedBy }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn; /** Said after the title (that the component requires a picture). */ mark?: ReactNode; /** The picture's explanation, behind an info button beside the title (see InfoTip). */ info?: ReactNode; describedBy?: string }) {
   const runtime = useStore((s) => s.runtime);
   // The project as this editor shows it: an import checks its placement against it.
   const snapshot = useStore((s) => s.snapshot);
@@ -969,18 +969,31 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
       className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}${shownAsset ? ' filled' : ''}`}
       role={title ? 'group' : undefined}
       aria-labelledby={title ? titleId : undefined}
-      aria-describedby={title ? describedBy : undefined}
+      aria-describedby={title ? [describedBy ?? '', info ? `${titleId}-info` : ''].filter(Boolean).join(' ') || undefined : undefined}
       onKeyDown={(e) => {
         if (e.key === 'Escape' && browsing && !e.defaultPrevented) (e.stopPropagation(), closeBrowser());
       }}
       {...dropProps}
     >
-      {title && (
-        <div className="insp-group-title" id={titleId}>
-          {title}
-          {mark}
-        </div>
-      )}
+      {title &&
+        (info ? (
+          // Beside the title, not in it: the title names the group.
+          <div className="field-head">
+            <div className="insp-group-title" id={titleId}>
+              {title}
+              {mark}
+            </div>
+            <InfoTip label={title}>{info}</InfoTip>
+            <span id={`${titleId}-info`} hidden>
+              {info}
+            </span>
+          </div>
+        ) : (
+          <div className="insp-group-title" id={titleId}>
+            {title}
+            {mark}
+          </div>
+        ))}
       <span className="sr-only" role="status">
         {carriedSaid.text}
       </span>
@@ -2477,7 +2490,10 @@ export interface FieldAction {
 export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere, notedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; notedBy?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
-  const note = hint ?? schema.description;
+  // A hint the caller gives is what the field is doing now, under it; the schema's description says what the field is
+  // for, behind the info button beside its label. A given hint replaces the description, as it always has.
+  const note = hint;
+  const info = hint === undefined ? schema.description : undefined;
   // A value the component requires says so in its name, and while it is empty, that it needs one.
   const mark = schema.required ? <RequiredMark /> : null;
   const named = (
@@ -2489,7 +2505,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
   error ??= missingNote(schema, value);
   // A set of choices names itself and says what it is under its own rows.
   if (schema.type === 'choices') return <ChoicesEditor schema={schema} value={value} onChange={onChange} read={read} label={shown} error={error} />;
-  if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
+  if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} info={schema.description} />;
   if (schema.type === 'image')
     return hint || error ? (
       <div className="col" style={{ gap: 4 }}>
@@ -2504,10 +2520,19 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
   // A link is two controls (kind and destination) that name themselves; the label names the pair.
   if (schema.type === 'link')
     return (
-      <div className="field" role="group" aria-labelledby={`${id}-l`} aria-describedby={error || note ? `${id}-note` : undefined}>
-        <div className="field-label" id={`${id}-l`}>
-          {named}
-        </div>
+      <div className="field" role="group" aria-labelledby={`${id}-l`} aria-describedby={[error || note ? `${id}-note` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined}>
+        {info ? (
+          <div className="field-head">
+            <div className="field-label" id={`${id}-l`}>
+              {named}
+            </div>
+            <InfoTip label={shown}>{info}</InfoTip>
+          </div>
+        ) : (
+          <div className="field-label" id={`${id}-l`}>
+            {named}
+          </div>
+        )}
         <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} everywhere={everywhere} invalid={!!error} describedBy={[error ? `${id}-note` : '', notedBy ?? ''].filter(Boolean).join(' ') || undefined} />
         {error ? (
           <div className="field-error" id={`${id}-note`}>
@@ -2523,11 +2548,16 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
             {action.label}
           </button>
         )}
+        {info && (
+          <span id={`${id}-info`} hidden>
+            {info}
+          </span>
+        )}
       </div>
     );
   return (
-    <Field label={named} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
+    <Field label={named} infoLabel={shown} hint={note} info={info} error={error} controlId={id}>
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={[note || error ? `${id}-note` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
     </Field>
   );
 }
