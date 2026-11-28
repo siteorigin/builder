@@ -87,7 +87,7 @@ describe('a build that stops at an endpoint', () => {
     const r = explainBuildFailure(starter(), failed);
     expect(r.message).toBe('The website is built as a static website, which cannot answer API endpoints that need a server: src/routes/api/search and src/routes/api/posts/[id]. Choose Node.js server under Deployment in Site settings (with Developer mode on) to export them, then export again.');
     // Another failure of a static build is said as before.
-    expect(explainBuildFailure(starter(), { ok: false, error: 'Something else broke', logs: ['  - src/routes/api/search'] }).message).not.toContain('Node.js server');
+    expect(explainBuildFailure(starter(), { error: 'Something else broke', logs: ['  - src/routes/api/search'] }).message).not.toContain('Node.js server');
     expect(r.warnings[0]).toContain('export const prerender = true');
     expect(r.details).toContain(r.message);
   });
