@@ -353,7 +353,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
     });
   });
 
-  it('never hands one search’s words to another, and gives a search that shows later its own', async () => {
+  it('never hands one search’s words to another, and starts a search that shows later afresh', async () => {
     const first = { heading: 'Find a project' };
     const second = { heading: 'Search again', label: 'Search the series' };
     await withSearch(
@@ -371,10 +371,11 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
         await mount(page, [second], [first]);
         await expect.poll(() => other.inputValue()).toBe('commission 7');
         await expect(page.getByRole('status').first().innerText()).resolves.toMatch(/“commission 7”/);
-        // Shown later in the same visit, the first takes its own back.
+        await expect(results(page).count()).resolves.toBeGreaterThan(1);
+        // Shown later in the visit, the first starts afresh.
         await page.evaluate('window.openLater()');
-        await expect.poll(() => box(page).inputValue()).toBe('commission 105');
-        await expect(page.getByRole('status').nth(1).innerText()).resolves.toBe('1 page matches “commission 105”.');
+        await expect(box(page).inputValue()).resolves.toBe('');
+        await expect(page.getByRole('status').nth(1).innerText()).resolves.toBe('');
       },
       AT,
       [first, second]

@@ -1179,16 +1179,13 @@ export const SEARCH_HISTORY_JS = `/**
  *
  * One snapshot serves the whole site. Each search is known by where it is (the header, the footer, the page) and by
  * its name, and among searches alike by their order on the page, so a search in the header and one in the page each
- * get their own back, and one that is not showing when the entry comes back never hands its words to another. A
- * search that shows later in the same visit to the entry (one inside a part that opens) takes its own back then.
- * The layout mounts after the searches inside it, so on a fresh load every one showing is here to restore. Nothing
- * here imports SvelteKit, so a search shows wherever its component does.
+ * get their own back, and one that is not showing when the entry comes back never hands its words to another: it
+ * starts afresh when it shows. The layout mounts after the searches inside it, so on a fresh load every one showing
+ * is here to restore. Nothing here imports SvelteKit, so a search shows wherever its component does.
  */
 
 // The searches on screen, by the box each one searches from.
 const searches = new Map();
-// What the entry on screen kept for searches that were not showing when it came back, until another entry shows.
-let unclaimed = [];
 
 /** Which search a box is, the same each time its entry is shown: where it is on the page, and its name. */
 function keyOf(box) {
@@ -1207,33 +1204,23 @@ function inOrder() {
 		.map(([box, search]) => ({ key: keyOf(box), search }));
 }
 
-/** Gives a search what was kept for the first search alike in the entry, once. */
-function claim(key, search) {
-	const at = unclaimed.findIndex((kept) => kept.key === key);
-	if (at < 0) return;
-	const [kept] = unclaimed.splice(at, 1);
-	search.restore(kept.state);
-}
-
 /** The snapshot the root layout keeps for every search on the page. */
 export const keptSearches = {
 	id: 'siteorigin-searches',
-	// What a search not showing has yet to claim stays the entry's, however often the entry is captured.
-	capture: () => [...inOrder().map(({ key, search }) => ({ key, state: search.capture() })), ...unclaimed],
+	capture: () => inOrder().map(({ key, search }) => ({ key, state: search.capture() })),
+	// Each search showing takes what was kept for the first search alike in the entry not yet given back.
 	restore: (kept) => {
-		unclaimed = Array.isArray(kept) ? kept.filter((one) => one && typeof one.key === 'string' && one.state) : [];
-		for (const { key, search } of inOrder()) claim(key, search);
-	},
-	// An entry that kept nothing (a new one): nothing from the last is left to claim.
-	reset: () => {
-		unclaimed = [];
+		const left = Array.isArray(kept) ? kept.filter((one) => one && typeof one.key === 'string' && one.state) : [];
+		for (const { key, search } of inOrder()) {
+			const at = left.findIndex((one) => one.key === key);
+			if (at >= 0) search.restore(left.splice(at, 1)[0].state);
+		}
 	}
 };
 
 /** A search on screen, from its box: what it keeps for the entry, and how it takes that back. Returns its removal. */
 export function rememberSearch(box, search) {
 	searches.set(box, search);
-	if (unclaimed.length) claim(keyOf(box), search);
 	return () => {
 		if (searches.get(box) === search) searches.delete(box);
 	};
