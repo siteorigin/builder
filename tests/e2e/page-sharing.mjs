@@ -125,7 +125,7 @@ assert.equal(await section().locator('.seo-image-status > span').count(), 0, 'no
 assert.match(await section().locator('[data-seo-field="socialImage"] [id$="-info"]').first().textContent(), /on this page’s card in page lists/, 'its explanation says where the image shows');
 assert.equal(await picker().getByLabel('Image description').count(), 0, 'a sharing image has no description to write');
 assert.equal(await picker().getByRole('switch', { name: 'Decorative image' }).count(), 0, 'and is never decorative');
-assert.match(await sharePreview().innerText(), /no usable public URL/, 'it says the image address needs a public URL');
+assert.match(await sharePreview().innerText(), /Shared links can show this picture once the site has a public URL/, 'it says the image address needs a public URL');
 assert.equal(await back().innerText(), 'Remove image', 'with no site image there is nothing to return to, so it offers Remove');
 await section().scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'page-sharing-own.png') });
@@ -205,7 +205,7 @@ assert.equal(await imageName().innerText(), 'Kitchen');
 await loaded(cardImage(), /kitchen/);
 assert.equal(await back().innerText(), 'Use the site’s image', 'Kitchens can return to the site’s image');
 assert.equal(await section().locator('.seo-image-status .link-btn').innerText(), 'Change site image', 'the site’s image is a link away from a page with its own');
-assert.equal(await sharePreview().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
+assert.equal(await sharePreview().getByText(/Shared links can show this picture once the site has a public URL/).count(), 0, 'the address note goes once the site has a public URL');
 
 step('replacing a page’s own photo with another from the library');
 await choose('Dining room');

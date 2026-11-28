@@ -58,9 +58,11 @@ const savedAlt = heroAlt(homeId);
 const long = sentence(342);
 const longAlt = sentence(328);
 
-step('the page description shows its limit before anything is typed');
+step('the page description shows its limit on focus, before anything is typed');
 await openPage('About', '/about/');
 await description().waitFor();
+assert.equal(await countOf(description()).isVisible(), false, 'the quiet count stays hidden until the field is focused');
+await description().focus();
 assert.equal(await countOf(description()).innerText(), `${savedAbout.length} / 320`, 'the count is there before typing');
 
 step('a pasted 342-character description stays whole, refused beside the field, and nothing is saved');

@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { waitForPreviewPage } from '../../src/runtime/preview-ready';
 
 describe('preview page readiness', () => {
+  it('waits until the browser manifest has a loader for every server-rendered node', async () => {
+    const page = '<script>const app = await import("../@fs/site/.svelte-kit/generated/dev/client/app.js"); hydrate({ node_ids: [0, 6] });</script>';
+    const oldApp = 'export const nodes = [() => import("./nodes/0.js"), () => import("./nodes/1.js")];';
+    const newApp = 'export const nodes = [() => import("./nodes/0.js?t=123"), () => import("./nodes/6.js?t=456")];';
+    const request = vi.fn().mockImplementation((url: URL) =>
+      Promise.resolve(new Response(url.pathname.endsWith('/app.js') ? (request.mock.calls.filter(([u]) => (u as URL).pathname.endsWith('/app.js')).length === 1 ? oldApp : newApp) : page))
+    );
+    await waitForPreviewPage('http://127.0.0.1:12345', '/about/', request);
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(request.mock.calls[1][0].pathname).toBe('/@fs/site/.svelte-kit/generated/dev/client/app.js');
+  });
+
   it('waits through a temporary server error before exposing the preview', async () => {
     const request = vi.fn().mockResolvedValueOnce(new Response('Internal Server Error', { status: 500 })).mockResolvedValueOnce(new Response('<h1>Home</h1>', { status: 200 }));
     await waitForPreviewPage('http://127.0.0.1:12345', '/home/', request);

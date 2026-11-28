@@ -476,7 +476,7 @@ const seoBox = win.locator('.post-seo');
 await seoBox.locator('.section-head').first().click();
 const postMeter = (kind) => seoBox.locator(`.seo-meter[data-meter="${kind}"]`);
 const postTitleBox = seoBox.getByLabel('Search title');
-const postCanonical = seoBox.getByLabel('Canonical URL');
+const postCanonical = seoBox.getByRole('textbox', { name: 'Canonical URL' });
 const openInView = seoBox.getByRole('button', { name: 'Open in SEO view' });
 const seoView = win.getByRole('region', { name: 'SEO view' });
 const savedSeo = () => entryFile(entryId).seo ?? {};
