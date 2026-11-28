@@ -77,7 +77,7 @@ export function hiddenLayers(tree: NodeTree): Set<string> {
     const inside = n?.kind === 'element' ? n.children : n?.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [];
     for (const c of inside) hide(c);
   };
-  for (const n of Object.values(tree.nodes)) if (hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);
+  for (const n of Object.values(tree.nodes)) if (n && typeof n === 'object' && hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);
   return out;
 }
 
@@ -118,8 +118,8 @@ export function entrySearchHidden(entry: EntryDoc): boolean {
 }
 
 /**
- * The entry fields a record's layout shows that search does not read from its page: the title and excerpt, found as
- * the entry's own, and the links to the entries before and after it, which name other records.
+ * The entry fields a record's layout shows that search does not read from its page: the title, excerpt and text, found
+ * as the entry's own, and the links to the entries before and after it, which name other records.
  */
 const FOUND_OTHERWISE: ReadonlySet<string> = new Set(['title', 'excerpt', 'body', 'prevEntry', 'prevEntry.title', 'prevEntry.label', 'nextEntry', 'nextEntry.title', 'nextEntry.label', 'entryNavLabel']);
 
@@ -140,7 +140,9 @@ function readsEntry(template: NodeTree | undefined, c: RenderedContent): string 
  * and the layout's own words, less what a condition or a hide leaves off its page.
  */
 export function entryText(state: ProjectState, collection: Collection, entry: EntryDoc): string {
-  const article = entryArticle(state, collection, entry);
+  // The page in full, its text included, so a section that shows something only beside the text shows it here too;
+  // the text itself is read once, from the entry.
+  const article = entryArticle(state, collection, entry, { body: true });
   const lines = [oneLine(entry.excerpt), showsBody(collection, article) ? oneLine(plain(entry.body)) : ''];
   if (collectionKind(collection.settings) === 'structured') {
     const template = collection.settings.template;

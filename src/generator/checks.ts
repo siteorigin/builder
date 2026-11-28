@@ -3008,10 +3008,10 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
 
 /**
  * An entry's page as the website has it, around its own text: its collection's layout read for the entry. The text
- * itself is left out, since its links are checked as the entry's own.
+ * itself is left out, since its links are checked as the entry's own, unless `body` asks for the page in full.
  */
-export function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
-  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+export function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc, opts: { body?: boolean } = {}): NodeTree {
+  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: opts.body === true });
   entryTrees.set(tree, { collectionId: collection.settings.id, entryId: entry.id });
   return tree;
 }
