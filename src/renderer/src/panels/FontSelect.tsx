@@ -68,7 +68,7 @@ export function FontSelect({
   const fallbackId = `${useId()}-fallback`;
   // An imported font whose files do not say what kind of face it is: the author says which fallback it ends in (#1490).
   // A bare keyword ("serif") is no font, even beside an imported family of that name.
-  const askFallback = !follows && !!selected && 'unknownKind' in selected && selected.unknownKind && !FAMILY_KEYWORDS.has(stack.split(',')[0].trim().toLowerCase());
+  const askFallback = !follows && !!selected && 'unknownKind' in selected && selected.unknownKind === true && !FAMILY_KEYWORDS.has(stack.split(',')[0].trim().toLowerCase());
   const fallback = askFallback ? stackFallback(stack) : undefined;
   /** Bring in a web font and use it straight away. */
   const importFont = async () => {
