@@ -33,6 +33,7 @@ const FIELDS = [
 const CHOICE = { id: 'f4', label: 'Service', name: 'service', type: 'choice', required: true, placeholder: '', options: [{ id: 'o1', label: 'Kitchen' }, { id: 'o2', label: 'Lighting' }] };
 const SENT = 'Thank you. Your message has been sent.';
 const FAILED = 'Sorry, your message could not be sent. Please try again or contact us directly.';
+const UNCONFIRMED = 'Your message may not have been sent. What you entered is still here, so you can send it again.';
 
 /** An exported site with a contact form on its home page. */
 function exportedSite() {
@@ -94,7 +95,7 @@ async function bundleForm(): Promise<string> {
   const compiled = (source: string, filename: string) => compile(source, { filename, generate: 'client', css: 'injected', runes: true }).js.code;
   const layout = files.get('src/routes/+layout.svelte') ?? '';
   // The keeper exactly as the export ships it, and only if the exported layout really runs it.
-  if (!layout.includes("import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';") || !/^\tkeepDrafts\(\);$/m.test(layout)) throw new Error('The exported layout does not keep drafts');
+  if (!layout.includes("import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';") || !/^\tkeepDrafts\(text\);$/m.test(layout)) throw new Error('The exported layout does not keep drafts');
   const modules: Record<string, string> = {
     '\0entry': `import { flushSync, mount, unmount } from 'svelte'; import Form from '\0form'; import Layout from '\0layout';
 mount(Layout, { target: document.body.appendChild(document.createElement('div')) });
@@ -111,7 +112,8 @@ window.unmountForms = () => {
 	document.getElementById('app').replaceChildren();
 };`,
     '\0form': compiled(files.get(formFile)!, 'ContactForm.svelte'),
-    '\0layout': compiled(`<script>\n\timport { keepDrafts } from '\\0drafts';\n\tkeepDrafts();\n</script>\n`, 'Layout.svelte'),
+    // With the site's wording, as the exported layout passes it.
+    '\0layout': compiled(`<script>\n\timport { keepDrafts } from '\\0drafts';\n\timport { visitorText } from '../runtime/visitor-text.js';\n\tkeepDrafts(visitorText());\n</script>\n`, 'Layout.svelte'),
     '\0drafts': files.get(`${RUNTIME_DIR}/drafts.js`)!,
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
     '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
@@ -690,7 +692,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     type Kept = Record<string, string>;
     /** What the layout's registration kept for an entry: the page, and a draft per form that had one. */
     const kept = (snapshot: Kept) =>
-      JSON.parse(snapshot['siteorigin-drafts'] ?? 'null') as { path: string; drafts: Array<{ key: string; n: number; message: string; values: string[][] }> } | null;
+      JSON.parse(snapshot['siteorigin-drafts'] ?? 'null') as { path: string; drafts: Array<{ key: string; n: number; message: string; values: string[][]; sending?: true; receipt?: true }> } | null;
     /** Everything the page keeps in storage, as text, to search for answers. */
     const stored = (page: Page) => page.evaluate<string>('JSON.stringify({ session: { ...sessionStorage }, local: { ...localStorage } })');
     const fillEnquiry = async (field: (label: string) => ReturnType<Page['getByLabel']>) => {
@@ -759,14 +761,15 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         const hidden = await capture();
         await button.click();
         const post = await nextPost();
-        // A message on its way is no longer a draft, whatever the reply.
-        expect(kept(await capture())).toBeNull();
+        // A message on its way stays with its entry until the form says it went.
+        const onItsWay = await capture();
+        expect(kept(onItsWay)?.drafts).toEqual([expect.objectContaining({ sending: true, values: [['f1', 'Ada'], ['f2', 'ada@example.com'], ['f3', 'A question about materials']] })]);
         await post.respond(200);
         await expect.poll(status).toBe(SENT);
 
         const sentIn = await leave();
         expect(kept(sentIn)).toBeNull();
-        for (const older of [typedIn, hidden]) {
+        for (const older of [typedIn, hidden, onItsWay]) {
           await arrive([PROPS], older);
           expect(await values()).toEqual(EMPTY);
           await leave();
@@ -779,20 +782,105 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       });
     }, 20_000);
 
-    it('does not bring back a message the visitor left while it was sending, once it has been sent', async () => {
-      await withForm(PROPS, async ({ field, button, values, capture, leave, arrive, nextPost }) => {
+    it('does not bring back a message the visitor left while it was sending, once it has been sent, and says it went (issue #1415)', async () => {
+      await withForm(PROPS, async ({ page, field, button, values, capture, leave, arrive, nextPost }) => {
+        const note = () => page.locator('.so-draft-note').innerText();
         await fillEnquiry(field);
         const beforeSending = await capture();
         await button.click();
         const post = await nextPost();
+        // Kept with its entry in case it does not go, under the id every copy of it carries.
         const leftWhileSending = await leave();
-        expect(kept(leftWhileSending)).toBeNull();
+        const { message } = kept(leftWhileSending)!.drafts[0];
+        expect(kept(leftWhileSending)?.drafts).toEqual([expect.objectContaining({ sending: true, message: kept(beforeSending)!.drafts[0].message })]);
+        // The form resets once it is sent, though it has left the page, and that retires the message.
         await post.respond(200);
+        await expect.poll(() => stored(page)).toContain(message);
         await arrive([PROPS], leftWhileSending);
         expect(await values()).toEqual(EMPTY);
+        // The visitor did not stay to see it go: the entry says so, and goes on saying so on the next Back to it.
+        await expect.poll(note).toBe(SENT);
+        await expect.poll(() => page.locator('.so-draft-announce').textContent()).toBe(SENT);
+        const receipt = await leave();
+        expect(kept(receipt)?.drafts).toEqual([{ key: 'page f1 f2 f3', n: 0, message, values: [], sending: true, receipt: true }]);
+        await arrive([PROPS], receipt);
+        await expect.poll(note).toBe(SENT);
         await leave();
         await arrive([PROPS], beforeSending);
         expect(await values()).toEqual(EMPTY);
+        expect(await page.locator('.so-draft-note').count()).toBe(0);
+        // Nothing the visitor typed went into storage of the site's own.
+        expect(await stored(page)).not.toMatch(/Ada|example\.com|materials/);
+      });
+    }, 20_000);
+
+    it('gives a message back when its send fails after the visitor has left, says it may not have gone, and retires it once sent again (issue #1415)', async () => {
+      const CHOICES = { ...PROPS, fields: [...FIELDS, { ...CHOICE, required: false }, { id: 'f5', label: 'Send me a copy', name: 'copy', type: 'checkbox', required: false, placeholder: '' }] };
+      await withForm(CHOICES, async ({ page, field, button, status, values, leave, arrive, nextPost }) => {
+        const note = () => page.locator('.so-draft-note').innerText();
+        const ticked = () => page.evaluate<string[]>(`[...document.querySelectorAll('main input:checked')].map((i) => i.value)`);
+        await fillEnquiry(field);
+        await page.getByLabel('Lighting').check();
+        await page.getByLabel('Send me a copy').check();
+        await button.click();
+        const failing = await nextPost();
+        // The visitor follows a link while it is still sending, and the service refuses it once they have gone.
+        const leftWhileSending = await leave();
+        await failing.respond(503);
+        await arrive([CHOICES], leftWhileSending);
+        expect(await values()).toEqual(ENQUIRY);
+        expect(await ticked()).toEqual(['Lighting', 'yes']);
+        // Beside the form, as plain text, and read out by the site's one polite live region.
+        await expect.poll(note).toBe(UNCONFIRMED);
+        expect(await page.locator('.so-draft-note').getAttribute('role')).toBeNull();
+        await expect.poll(() => page.locator('.so-draft-announce[role="status"]').textContent()).toBe(UNCONFIRMED);
+        // Sent again from there: the note gives way to the form's own progress, the same answers go, and no copy returns.
+        await button.click();
+        expect(await page.locator('.so-draft-note').count()).toBe(0);
+        const retried = await nextPost();
+        expect(retried.body).toMatchObject({ name: 'Ada', email: 'ada@example.com', message: 'A question about materials', service: 'Lighting', copy: 'yes' });
+        await retried.respond(200);
+        await expect.poll(status).toBe(SENT);
+        await leave();
+        await arrive([CHOICES], leftWhileSending);
+        expect(await values()).toEqual(EMPTY);
+        expect(await ticked()).toEqual([]);
+      });
+    }, 20_000);
+
+    it('empties a copy given back before the reply once the message turns out to have gone, unless the visitor has changed it (issue #1415)', async () => {
+      await withForm(PROPS, async ({ page, field, button, values, leave, arrive, nextPost }) => {
+        const note = () => page.locator('.so-draft-note').innerText();
+        await fillEnquiry(field);
+        await button.click();
+        const first = await nextPost();
+        // Back before the service has answered: it may yet go, so the answers come back and the note says so.
+        const left = await leave();
+        await arrive([PROPS], left);
+        expect(await values()).toEqual(ENQUIRY);
+        await expect.poll(note).toBe(UNCONFIRMED);
+        await first.respond(200);
+        await expect.poll(values).toEqual(EMPTY);
+        await expect.poll(note).toBe(SENT);
+        await leave();
+
+        // Changed before the reply: a message of its own, which the first one going never empties, retires or calls sent.
+        await arrive([PROPS]);
+        await fillEnquiry(field);
+        await button.click();
+        const second = await nextPost();
+        const leftAgain = await leave();
+        await arrive([PROPS], leftAgain);
+        await field('Message').fill('A question about materials, and timber');
+        expect(await page.locator('.so-draft-note').count()).toBe(0);
+        await second.respond(200);
+        await expect.poll(() => stored(page)).toContain(kept(leftAgain)!.drafts[0].message);
+        expect(await values()).toEqual(['Ada', 'ada@example.com', 'A question about materials, and timber']);
+        expect(await page.locator('.so-draft-note').count()).toBe(0);
+        const changed = await leave();
+        expect(kept(changed)?.drafts[0].message).not.toBe(kept(leftAgain)!.drafts[0].message);
+        await arrive([PROPS], changed);
+        expect(await values()).toEqual(['Ada', 'ada@example.com', 'A question about materials, and timber']);
       });
     }, 20_000);
 
@@ -830,6 +918,32 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await leave();
         await arrive([PROPS], typedIn);
         expect(await values()).toEqual(ENQUIRY);
+      });
+    }, 20_000);
+
+    it('reads out the notes of two forms given back at once in one update, each by its heading (issue #1415)', async () => {
+      const ENQUIRY_FORM = { ...PROPS, heading: 'Ask about a project' };
+      const CALLBACK_FORM = { ...PROPS, heading: 'Book a callback', fields: FIELDS.map((f) => ({ ...f, id: `cb-${f.id}` })) };
+      await withForm(ENQUIRY_FORM, async ({ page, leave, arrive, nextPost }) => {
+        await arrive([CALLBACK_FORM]);
+        const posts: Post[] = [];
+        for (const n of [0, 1]) {
+          const form = page.locator('main form').nth(n);
+          await form.getByLabel('Name').fill('Ada');
+          await form.getByLabel('Email').fill('ada@example.com');
+          await form.getByLabel('Message').fill('A question about materials');
+          await form.getByRole('button').click();
+          posts.push(await nextPost());
+        }
+        const left = await leave();
+        for (const post of posts) await post.respond(503);
+        await arrive([ENQUIRY_FORM, CALLBACK_FORM], left);
+        await expect.poll(() => page.locator('.so-draft-note').allInnerTexts()).toEqual([UNCONFIRMED, UNCONFIRMED]);
+        await expect.poll(() => page.locator('.so-draft-announce').textContent()).toBe(`Ask about a project: ${UNCONFIRMED} Book a callback: ${UNCONFIRMED}`);
+        // One ends when the visitor types in its form; the other's stands, and nothing is read out again.
+        await page.locator('main form').nth(0).getByLabel('Name').fill('Ada Lovelace');
+        expect(await page.locator('.so-draft-note').allInnerTexts()).toEqual([UNCONFIRMED]);
+        expect(await page.locator('.so-draft-announce').textContent()).toBe(`Ask about a project: ${UNCONFIRMED} Book a callback: ${UNCONFIRMED}`);
       });
     }, 20_000);
 

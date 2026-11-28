@@ -80,7 +80,7 @@ import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@shared/icons';
-import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
+import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
@@ -1602,7 +1602,8 @@ export function generateSiteCss(state: ProjectState): string {
   const appear = derived(state, 'usesAppear', usesAppear) ? `\n${APPEAR_CSS}` : '';
   // The visitor's Light/Dark switch, while the site has one.
   const toggle = usesThemeToggle(state) ? `\n${THEME_TOGGLE_CSS}` : '';
-  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n${appear}${toggle}`;
+  // The draft keeper's note, which every site has with the keeper (see DRAFTS_JS).
+  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n${appear}${toggle}\n${DRAFT_NOTE_CSS}`;
 }
 
 /** The cards that must render as their plain container, in a stable order so an unchanged answer compares equal. */
@@ -4454,8 +4455,9 @@ ${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	const text = visitorText();
-	// A message typed into a form and not sent comes back when the visitor returns with Back.
-	keepDrafts();${appearStart}${searchStart}
+	// A message typed into a form and not sent comes back when the visitor returns with Back, which says whether one
+	// they left while it was sending went.
+	keepDrafts(text);${appearStart}${searchStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
