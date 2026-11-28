@@ -13,7 +13,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { autoTitle, byRecentActivity, cleanTitle, matchConversation, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import { ProjectSession } from '../../src/main/project/session';
-import { activityHint, activityPhrase, matchExcerpt } from '../../src/renderer/src/lib/conversations';
+import { activityHint, activityPhrase, matchExcerpt, runLabel } from '../../src/renderer/src/lib/conversations';
 
 describe('conversation titles', () => {
   it('cuts a long first request at the end of a word, never mid-word', () => {
@@ -875,5 +875,15 @@ describe('reading a conversation by its ID (#1123)', () => {
     expect(read.conversation.messages).toHaveLength(2);
     env.adapter.release();
     await until(() => !env.orch.busy, 'the request to finish');
+  });
+});
+
+describe('runLabel', () => {
+  it('marks only the conversation that owns the active run, by its state', () => {
+    expect(runLabel('a', { status: 'running', conversationId: 'a' })).toBe('Working');
+    expect(runLabel('a', { status: 'awaiting-input', conversationId: 'a' })).toBe('Needs your answer');
+    expect(runLabel('a', { status: 'stopping', conversationId: 'a' })).toBe('Stopping');
+    expect(runLabel('b', { status: 'running', conversationId: 'a' })).toBeNull();
+    expect(runLabel('a', { status: null, conversationId: null })).toBeNull();
   });
 });

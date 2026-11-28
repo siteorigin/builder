@@ -38,3 +38,82 @@ export function focusInspector(ms = 1000): () => void {
   frame = requestAnimationFrame(step);
   return () => cancelAnimationFrame(frame);
 }
+
+/** The recoveries installed now, each told of a pointer pick on the page by `pointerPickOnPage`. */
+const recoveries = new Set<(pick: PagePick) => void>();
+const NAME = '.insp-name h3';
+
+/**
+ * A press of the pointer on the page that the canvas took: `changed` when it changed the selection (as the Inspector
+ * keys its content: the whole reference), `madeAt` (performance.now) for a click taken after a wait.
+ */
+export type PagePick = { changed: boolean; madeAt?: number };
+
+/**
+ * When the control that had focus is taken out of the Inspector (a selection change, an undo, a row removed) and
+ * nothing else took focus, it goes to the selection's name rather than back to the start of the window. Focus that
+ * moved to the canvas, Layers or a dialog is left where it is, and so is focus a pointer pick on the page set aside
+ * (`pointerPickOnPage`): the page is where the author is working then. Returns the cleanup.
+ */
+export function recoverInspectorFocus(panel: HTMLElement): () => void {
+  // The Inspector control focus was last on, and only while focus stays in the Inspector: focus that has moved to
+  // Layers, the canvas or a menu clears it, so their own handoffs are never overruled.
+  let last: Element | null = null;
+  let lastAt = 0;
+  let frame = 0;
+  // While this recovery puts focus on the name itself: that is no newer focus of the author's (see `picked`).
+  let recovering = false;
+  const onIn = (e: FocusEvent) => {
+    const inside = e.target instanceof Element && panel.contains(e.target);
+    last = inside ? (e.target as Element) : null;
+    // When focus last came to the Inspector by the author's hand: focus elsewhere sets nothing here aside.
+    if (inside && !recovering) lastAt = performance.now();
+  };
+  const idle = () => !document.activeElement || document.activeElement === document.body;
+  const mo = new MutationObserver(() => {
+    if (!last || last.isConnected || !idle()) return;
+    last = null;
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      if (!idle()) return;
+      recovering = true;
+      try {
+        panel.querySelector<HTMLElement>(NAME)?.focus();
+      } finally {
+        recovering = false;
+      }
+    });
+  });
+  const forget = () => {
+    last = null;
+    cancelAnimationFrame(frame);
+  };
+  const picked = ({ changed, madeAt }: PagePick) => {
+    // Focus the author moved into the Inspector while the click waited is the keyboard's, and stays as it is.
+    if (madeAt !== undefined && lastAt > madeAt) return;
+    if (changed) forget();
+    // The name is only where focus lands: ringed, it would say the keyboard was there.
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && panel.contains(a) && a.matches(NAME)) a.blur();
+  };
+  document.addEventListener('focusin', onIn);
+  mo.observe(panel, { childList: true, subtree: true });
+  recoveries.add(picked);
+  return () => {
+    recoveries.delete(picked);
+    forget();
+    document.removeEventListener('focusin', onIn);
+    mo.disconnect();
+  };
+}
+
+/**
+ * The pointer made a pick on the page (#1476). The click reached only the page's frame, so the editor's window would
+ * count focus moved in the Inspector as the keyboard's and ring the selection's name. When the pick changed the
+ * selection, the control focus was on before it is not brought back to the new selection's name; either way a name
+ * holding focus lets it go. Focus then rests on the body, where Delete and the other selection keys reach the
+ * selection (#1361).
+ */
+export function pointerPickOnPage(pick: PagePick): void {
+  for (const picked of recoveries) picked(pick);
+}

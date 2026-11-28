@@ -14,7 +14,7 @@ import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, openRunThread, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, openRunThread, questionShownInChat, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { bindDescOf, chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
@@ -50,6 +50,7 @@ import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
 import { CanvasSkeleton } from '../components/EditorSkeleton';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { isRemoteOpening } from '../lib/remote-snapshot';
 import { outlinesFirstPage } from '../lib/first-page';
 import { projectDisplayName } from '@shared/project-name';
@@ -57,7 +58,7 @@ import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
-import { focusInspector } from '../lib/inspector-focus';
+import { focusInspector, pointerPickOnPage } from '../lib/inspector-focus';
 import { keyboardLeavesPage } from '../lib/clip-keys';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
@@ -167,6 +168,11 @@ export function Canvas() {
   // The question waits in the thread that asked it: Answer in chat goes back to that thread, whichever the chat shows
   // (#1125). A request whose project closed mid-run belongs to no thread here.
   const asked = useStore((s) => s.runStatus === 'awaiting-input' && !!s.runConversationId);
+  // The chat already shows that question, so the notice would only repeat it over the page.
+  const askedInView = useStore(questionShownInChat);
+  // While the form-routing review is the dialog on screen, it is where the question is answered (#1322): the canvas's
+  // own prompt to answer in chat steps back, and comes back if the dialog is taken away with the question still open.
+  const reviewing = useRoutingReviewShown();
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -550,7 +556,7 @@ export function Canvas() {
   focusInRun.current = !!runRef.current?.contains(document.activeElement);
   useLayoutEffect(() => {
     if (focusInRun.current && !runRef.current?.contains(document.activeElement)) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
-  }, [runStatus]);
+  }, [runStatus, askedInView]);
   // When the bar closes with focus in it, focus moves to a control that stays. Read while rendering, because the
   // bar has already left the page by the time an effect runs.
   const focusInIssue = useRef(false);
@@ -962,7 +968,8 @@ export function Canvas() {
       const gated = gatedPick(m.type, s.mode);
       if (gated && pageBehind()) {
         if (gated === 'hold' && st && s.frameReady && !leavingForPage() && !canvasCovered(activeWorkspace(s))) {
-          const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s) };
+          // When the click was made is kept through every wait, for the Inspector focus it may set aside (#1476).
+          const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s), madeAt: held?.madeAt ?? performance.now() };
           // Taken after whatever opened the gate (a page's `ready`) has finished with the frame.
           gate.current!.hold(() => setTimeout(() => pageMessage.current?.(m, false, at)));
         }
@@ -1246,7 +1253,11 @@ export function Canvas() {
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
+          const before = JSON.stringify(s.selection ?? null);
           selectOnPage(next);
+          // A pick the pointer made on the page leaves no focus ring in the Inspector (#1476). Compared whole, as the
+          // Inspector keys its content (a part named in Component Studio is a new panel).
+          if (p.pointer === true) pointerPickOnPage({ changed: JSON.stringify(getState().selection ?? null) !== before, madeAt: held?.madeAt });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           // A press of the pointer on the page makes the selection the keyboard's target (lib/clip-keys, #1361). Blurred
           // rather than moved, as pagePick does: the window's last input was a key, so a moved focus would draw a ring.
@@ -2049,7 +2060,7 @@ export function Canvas() {
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
+        { label: 'Edit with AI…', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
         // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
         ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
@@ -3572,7 +3583,7 @@ export function Canvas() {
             maxHeight={practiceMax}
           />
         )}
-        {runStatus && (
+        {runStatus && !askedInView && !(runStatus === 'awaiting-input' && reviewing) && (
           // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
           // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
           // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
@@ -4106,7 +4117,7 @@ function kindIcon(state: ProjectState, ref: ElementRef) {
 
 /** What a step of the selection chip is taken from: the selection, the project, and what the page shows. */
 /** Where a click the page gate held was made: the frame, the view and way of editing it, and what was selected then. */
-type HeldPick = { session: string; scene: string; selection: string | null };
+type HeldPick = { session: string; scene: string; selection: string | null; madeAt: number };
 const selectionKey = (s: ReturnType<typeof getState>): string | null => (s.selection ? refKey(s.selection) : null);
 const sceneKey = (s: ReturnType<typeof getState>): string => JSON.stringify([viewKey(s), s.mode, s.definitionMode?.definitionId ?? null, !!s.definitionMode?.studio]);
 
@@ -4142,7 +4153,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
     current.current = 0;
   }, [key]);
   /** Too narrow for everything (a phone frame, many actions), the selection's name is the last thing to give way.
-   *  First Ask AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
+   *  First Edit with AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
    *  icon; if the name is still cut, the parent link goes too (Escape still selects the parent). */
   const [compact, setCompact] = useState(0);
   useLayoutEffect(() => setCompact(0), [key, frameWidth, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -4298,7 +4309,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
       )}
       {(!compact || onReveal || inspectorHidden) && <span className="chip-sep" aria-hidden="true" />}
       {!compact && (
-        <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" title={`Edit with AI… (${keys(askKeys.hint)})`} aria-label="Edit with AI…" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

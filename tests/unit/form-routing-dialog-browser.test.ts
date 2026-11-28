@@ -18,9 +18,11 @@ const ENTRY = [
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
   `import { ConfirmHost } from ${renderer('components/ConfirmDialog')};`,
-  `import { FormRoutingHost } from ${renderer('components/FormRoutingHost')};`,
+  `import { FormRoutingHost, useRoutingReviewShown } from ${renderer('components/FormRoutingHost')};`,
   `import { useStore } from ${renderer('store')};`,
-  "const App = () => h('div', null, h('button', { id: 'behind' }, 'Behind'), h(ConfirmHost), h(FormRoutingHost));",
+  // What the canvas, the chat and the toolbar read to step back while the review is open (#1322).
+  "const Shown = () => h('output', { id: 'reviewing' }, String(useRoutingReviewShown()));",
+  "const App = () => h('div', null, h('button', { id: 'behind' }, 'Behind'), h(Shown), h(ConfirmHost), h(FormRoutingHost));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(App)));",
   'window.so = { setState: (patch) => flushSync(() => useStore.setState(patch)) };'
 ].join('\n');
@@ -170,6 +172,23 @@ describe.skipIf(!browserInstalled)('the app’s dialog for where forms send (#11
     expect(await dialog().count()).toBe(1);
     await dialog().getByRole('button', { name: 'Allow this change' }).click();
     await expect.poll(answers).toEqual(['run_1 | q_1 | Allow this change']);
+  });
+
+  it('tells the editor’s other prompts it is open, and that it is gone once dismissed or taken back (#1322)', async () => {
+    const reviewing = () => page.locator('#reviewing').textContent();
+    expect(await reviewing()).toBe('false');
+    await setState(waiting({ formRouting: REVIEW }));
+    await expect.poll(() => dialog().isVisible()).toBe(true);
+    await expect.poll(reviewing).toBe('true');
+    // Taken back with the request stopped: the prompts come back with whatever the run says next.
+    await setState({ runStatus: null, activeRunId: null });
+    await expect.poll(reviewing).toBe('false');
+    // Waiting again and dismissed: Keep is sent and the prompts are back.
+    await setState(waiting({ formRouting: REVIEW }));
+    await expect.poll(reviewing).toBe('true');
+    await page.keyboard.press('Escape');
+    await expect.poll(answers).toEqual(['run_1 | q_1 | Keep it as it is']);
+    await expect.poll(reviewing).toBe('false');
   });
 
   it('opens nothing for a question the model asks', async () => {

@@ -58,7 +58,12 @@ try {
   step('while it waits, the editor says who must act and nothing keeps moving (issue #267)');
   const toolbarState = win.locator('.toolbar .save-state');
   assert.match(await toolbarState.innerText(), /AI is waiting for you/);
+  // The chat shows the question, so the canvas does not repeat it (#1328); on another tab it points back.
+  assert.equal(await win.locator('.canvas-notice.ai-run').count(), 0, 'no canvas notice while the chat shows the question');
+  await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
   assert.match(await win.locator('.canvas-notice.ai-run').innerText(), /question for you/);
+  await win.locator('.dock-tab', { hasText: 'AI' }).click();
+  await card().getByText(audience.question).waitFor();
   assert.equal(await win.locator('.dock-tab .live').getAttribute('aria-label'), 'Waiting for your answer');
   assert.equal(await win.locator('.chat .spinner').count(), 0, 'no spinner in the chat while it waits');
   assert.equal(await log().getAttribute('aria-busy'), null, 'the log is ready while the question waits for the author');

@@ -78,7 +78,7 @@ const textSelected = () => {
 };
 
 /**
- * Global editor shortcuts. Also called for keys forwarded from the preview frame. `askAi`: the press is Ask AI's,
+ * Global editor shortcuts. Also called for keys forwarded from the preview frame. `askAi`: the press is Edit with AI's,
  * on the key the author gave it in Settings (#750). It is looked at first, so a binding such as Cmd/Ctrl+Shift+K
  * never also opens what Cmd/Ctrl+K does.
  */
@@ -539,7 +539,7 @@ export function Editor() {
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
       const askAi = isAskAiKey({ key: e.key, code: e.code, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
-      // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) and Ask AI type nothing, so they work from a field too.
+      // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) and Edit with AI type nothing, so they work from a field too.
       // Escape in a checkbox or other button-like input is no typing: it leaves the SEO view all the same. Held down, it
       // acts once, so the repeats never reach the page the view has just given back.
       if (e.key === 'Escape' && e.repeat) return;

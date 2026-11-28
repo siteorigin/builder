@@ -116,8 +116,12 @@ export function offeredImages(q: Pick<ChatQuestion, 'images'>): ChatImageRef[] {
   return Array.isArray(q.images) ? q.images.filter((i) => !!i && typeof i.assetId === 'string' && typeof i.name === 'string') : [];
 }
 
-/** What the hint under a waiting question says the author can do. */
-export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images' | 'formRouting'>): string {
+/**
+ * What the hint under a waiting question says the author can do. `reviewing`: the form-routing review is open over the
+ * chat (#1322), so the hint points at it rather than at an answer field the dialog covers.
+ */
+export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images' | 'formRouting'>, reviewing = false): string {
+  if (q.formRouting && reviewing) return 'Allow the change or keep your forms as they are in the review that is open.';
   if (q.formRouting) return 'Review the change to allow it or keep your forms as they are. A typed “yes” allows it too.';
   if (q.widen) return 'Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.';
   const images = offeredImages(q).length;

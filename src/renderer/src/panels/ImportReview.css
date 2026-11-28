@@ -36,6 +36,7 @@
   .import-review-name b { overflow-wrap: anywhere; font-weight: 600; color: var(--text); }
   .import-review-name .muted { font-size: 12px; font-variant-numeric: tabular-nums; }
   /* Draft reads at the reviews' 12px meta size, not the badge's default 11px. */
+  .import-review-name .import-review-from { flex-basis: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
   .import-review-name .badge, .post-import-line .badge { align-self: center; height: 18px; font-size: 12px; }
   .import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
   .import-review-what .muted { font-size: 12px; }

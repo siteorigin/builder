@@ -1275,11 +1275,12 @@ export function goToShellPart(part: string): boolean {
 }
 
 export function askAiAbout(ref: ElementRef | null) {
-  // Asking about a specific element scopes the message to it; opening the chat generically keeps the
-  // scope the user chose.
+  // Edit with AI on a specific element is an edit scoped to it, whatever mode the chat was in; opening the chat
+  // generically keeps the mode and scope the user chose.
   // Only a specific element is selected for it: the chat opened generically leaves the selection (and the layers
   // selected with it) as they are.
-  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatContextEnabled: { page: true, scope: 'selection' } } : {}) });
+  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatMode: 'edit', chatContextEnabled: { page: true, scope: 'selection' } } : {}) });
+  if (ref) saveLocal({ chatMode: 'edit' });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 

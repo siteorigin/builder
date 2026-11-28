@@ -1,4 +1,4 @@
-import type { VersionReview } from '@shared/api';
+import type { SavedVersionInfo, VersionReview } from '@shared/api';
 import { plural } from './storage';
 import { dayAndTime } from './when';
 
@@ -6,6 +6,33 @@ import { dayAndTime } from './when';
  *  year only when it is another), since versions are kept for long. */
 export function savedAt(iso: string, locale?: string, now: Date = new Date()): string {
   return dayAndTime(iso, now, locale);
+}
+
+/** What tells a saved version from others of the same name (#1457): its place among them and the second it was saved. */
+export interface Twin {
+  /** “2 of 3 with this name, oldest first”. */
+  place: string;
+  /** The time of day with seconds: “2:34:07 PM”. */
+  precise: string;
+}
+
+const nameKey = (name: string) => name.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** The versions sharing their name with another, by id. The list is newest first; the place counts from the oldest. */
+export function twinsOf(list: SavedVersionInfo[], locale?: string): Map<string, Twin> {
+  const groups = new Map<string, SavedVersionInfo[]>();
+  for (const v of list) groups.set(nameKey(v.name), [...(groups.get(nameKey(v.name)) ?? []), v]);
+  const out = new Map<string, Twin>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    group.forEach((v, i) =>
+      out.set(v.id, {
+        place: `${group.length - i} of ${group.length} with this name, oldest first`,
+        precise: new Date(v.time).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+      })
+    );
+  }
+  return out;
 }
 
 /** At most this many page titles are named on a line; the rest are counted. */
