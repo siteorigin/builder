@@ -258,7 +258,7 @@ describe('structuredPreview', () => {
     expect(hidden.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/hidden from search engines/) });
     expect(Object.fromEntries(hidden.status.map((l) => [l.id, l.on]))).toMatchObject({ search: false, sitemap: false, structured: false, llms: false, siteSearch: true });
     const bare = structuredPreview(run(state, { type: 'site.update', baseUrl: '' }), PAGE)!;
-    expect(bare.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/Public URL/) });
+    expect(bare.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/until the site has one\.$/) });
     expect(bare.status.find((l) => l.id === 'canonical')).toMatchObject({ on: false, value: 'None: the site has no public URL' });
     const noLlms = structuredPreview(run(state, { type: 'site.update', llmsTxt: false }), PAGE)!;
     expect(noLlms.status.find((l) => l.id === 'llms')).toMatchObject({ on: false, value: 'The site writes no llms.txt' });
