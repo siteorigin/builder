@@ -259,18 +259,24 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
     return el ? { text: el.value, start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0, plainAs } : null;
   };
   // The buttons follow the selection in the field, which stays put while a button has focus.
+  const read = () => {
+    const now = current();
+    if (!now) return;
+    // A note stays until the text or the selection it was about changes, not on the release of a shortcut's keys.
+    const was = atNow.current;
+    if (now.text !== was.text || now.start !== was.start || now.end !== was.end) setNote('');
+    setAt(now);
+  };
+  const readRef = useRef(read);
+  readRef.current = read;
+  // Typing is followed from the field's own change, never from its input event: the browser runs a listener there
+  // before React has read the keystroke, and a state change made then draws the field again with the text from before
+  // it, so the keystroke is lost (#1369).
   useEffect(() => {
     const el = field.current;
     if (!el) return;
-    const read = () => {
-      const now = current();
-      if (!now) return;
-      // A note stays until the text or the selection it was about changes, not on the release of a shortcut's keys.
-      const was = atNow.current;
-      if (now.text !== was.text || now.start !== was.start || now.end !== was.end) setNote('');
-      setAt(now);
-    };
-    const events = ['select', 'input', 'keyup', 'mouseup', 'focus'];
+    const read = () => readRef.current();
+    const events = ['select', 'keyup', 'mouseup', 'focus'];
     for (const t of events) el.addEventListener(t, read);
     const now = current();
     if (now) setAt(now);
@@ -606,7 +612,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
           </div>
         </div>
       )}
-      <DraftInput id={id} aria-describedby={describedBy} aria-invalid={invalid} multiline rows={rows} value={value} onCommit={onCommit} handle={handle} inputRef={field} ariaLabel={ariaLabel} placeholder={placeholder} />
+      <DraftInput id={id} aria-describedby={describedBy} aria-invalid={invalid} multiline rows={rows} value={value} onCommit={onCommit} onLive={read} handle={handle} inputRef={field} ariaLabel={ariaLabel} placeholder={placeholder} />
     </div>
   );
 }
