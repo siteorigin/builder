@@ -132,6 +132,12 @@ describe('the contact form’s code', () => {
     const adapted = adaptFormSource(FORM_SOURCE_FOR_TESTS)!;
     expect(adapted).toContain("controlOf(form, first)?.focus();\n\t\t\treturn 'invalid';");
     expect(adapted).toMatch(/if \(data\.get\(honeypot\)\) \{\n\t+so_reset\(form\);\n\t+status = 'sent';\n\t+return 'trapped';/);
+    // A form that cannot send, or a send that throws, answers for itself, never with an earlier send's status.
+    expect(adapted).toContain("if (!ready || status === 'sending') return 'unready';");
+    expect(adapted).toContain("so_send(event).then(done, () => done('failed'));");
+    // The service's hidden fields are never described, so agents leave them alone.
+    expect(adapted).toMatch(/name="form-name" value=\{netlifyName\} \/>/);
+    expect(adapted).toMatch(/name="access_key" value=\{key\} \/>/);
   });
 
   it('leaves code that no longer reads as the theme’s form alone', () => {
@@ -178,6 +184,14 @@ describe('the contact form’s code', () => {
     expect(changed(/name=\{honeypot\}/g, 'name={trap}')).toBeNull();
     expect(changed('controlOf(form, first)?.focus();', 'controlOf(form, first)?.focus({ preventScroll: true });')).toBeNull();
     expect(changed("status = 'sent';\n\t\t\treturn;", "status = 'sent';\n\t\t\treturn false;")).toBeNull();
+    expect(changed("if (!ready || status === 'sending') return;", "if (!ready) return;")).toBeNull();
+    // A field outside both, which would go undescribed or change under an agent.
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name="company" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', "\t\t\t\t<input class=\"x\" disabled={status === 'sending'} />\n\t\t\t</form>")).toBeNull();
+    // A list inside the loop closing at the loop's own indentation ends the loop early, leaving the checkbox outside it.
+    expect(changed('\t\t\t\t\t\t\t\t{/each}', '\t\t\t\t{/each}')).toBeNull();
+    // The button outside them is the form's own.
+    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS)).toMatch(/aria-disabled=\{status === 'sending' \? 'true' : undefined\}/);
   });
 
   it('changes only the form’s markup and code, whatever else the code says, and either quote', () => {
@@ -252,6 +266,19 @@ describe('the exported website with WebMCP on', () => {
     expect([...html.matchAll(/toolname="([^"]+)"/g)].map((m) => m[1])).toEqual(['signup', 'contact', 'signup_2']);
     expect(html).toMatch(/toolparamdescription="Email"/);
     expect(await compileProject(s)).toEqual([]);
+  });
+
+  it('has a signup form in a section’s content area name itself from its own ID', async () => {
+    let s = fresh();
+    s = run(s, { type: 'node.insert', newNodeId: 'n_section', owner: home(s), parentId: null, index: 0, componentId: 'layout.section' } as EditOperation);
+    s = run(s, { type: 'node.insert', owner: home(s), parentId: 'n_section', slot: 'content', componentId: 'block.signup' } as EditOperation);
+    s = on(s);
+    const files = generateProject(s);
+    expect(toolsIn(files.get('src/routes/+page.svelte')!)).toEqual([expect.objectContaining({ name: 'signup', unique: true })]);
+    const html = await serverHtml(files, 'webmcp-slot-');
+    const names = [...html.matchAll(/toolname="([^"]+)"/g)].map((m) => m[1]);
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(/^signup\.[A-Za-z0-9_-]+$/);
   });
 
   it('declares the Netlify contact form of a Contact page, beside the page’s FAQ and contact details', async () => {
@@ -756,6 +783,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     try {
       await page.fill('input[name="email"]', 'not an address');
       await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = 'spam'");
+      await page.focus('button[type="submit"]');
       expect(await page.evaluate(agentSubmit(true))).toBe(true);
       expect(await page.evaluate('window.claimed')).toBe(true);
       await page.waitForFunction(told);
@@ -764,6 +792,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
       // Nothing was emptied, and the field to put right has the focus.
       expect(await page.inputValue('input[name="name"]')).toBe('Ana');
       expect(await page.evaluate('document.activeElement?.getAttribute("name")')).toBe('email');
+      expect(await page.locator('.so-form__error').count()).toBe(1);
       await page.fill('input[name="email"]', 'ana@example.com');
       await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = ''");
       await page.evaluate(agentSubmit(true));

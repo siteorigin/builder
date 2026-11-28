@@ -26,7 +26,7 @@ import { entryNeighbours, materializeTemplate, showsBody } from './entry-templat
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
 import { selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
-import { itemStylesOf } from '@shared/item-styles';
+import { itemStylesOf, liveItemStyles } from '@shared/item-styles';
 import { CODE_TEXT_ATTR, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { findTheme } from '@catalogue/index';
 
@@ -600,11 +600,16 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
   const seen = new Set<string>();
   for (let id: string | null | undefined = nodeId; id && !seen.has(id); id = findParent(def.tree, id)?.parentId) {
     seen.add(id);
-    const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
-    const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
-    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...(variants ? selectedVariantStyles(def, scope.chosen ?? inst?.variants, id) : []), ...own]));
+    out.push(ownHiddenInDesign(def, id, scope, variants, inst, itemId));
   }
   return out;
+}
+
+/** The sizes at which a design's node is hidden by itself alone (see hiddenInDesign), its ancestors aside. */
+function ownHiddenInDesign(def: ComponentDefinition, id: string, scope: Scope, variants: boolean, inst = scope.instance, itemId = typeof scope.item?.id === 'string' ? scope.item.id : undefined): Set<Size> {
+  const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
+  const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
+  return hiddenSizes([def.tree?.nodes[id]?.styles, ...(variants ? selectedVariantStyles(def, scope.chosen ?? inst?.variants, id) : []), ...own]);
 }
 
 /**
@@ -735,14 +740,17 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
   };
   for (const tree of trees) {
     // The sizes each node on the way down hides what is inside it at, from the outermost one in: page nodes, and the
-    // nodes of every design around (a design that wraps an FAQ hides it with its own part).
-    const hiding: Array<Set<Size>> = [];
-    const shown = () => !hiddenEverySize(hiding);
+    // nodes of every design around (a design that wraps an FAQ hides it with its own part), with the options its
+    // placement chose. Content placed in a slot inside a design's list shows in every row but is walked once
+    // (`multiple`): there a row's node hides it only as it hides every row (`every`), never by one row's own styles.
+    const hiding: Array<{ sizes: Set<Size>; every: Set<Size> }> = [];
+    const shown = (scope: Scope) => !hiddenEverySize(hiding.map((h) => (scope.multiple ? h.every : h.sizes)));
+    const NONE = new Set<Size>();
     walkRendered(state, tree, {
       // The theme's FAQ and Contact details are code: read through the designs that stand for what they show.
       outline: (def) => (isComponent(def, 'faq.list') || isComponent(def, 'contact.details') ? shippedOutline(state, def) : undefined),
       text: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown()) return;
+        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown(scope)) return;
         // One entry per item of each rendering: its question and answer render together.
         const byItem = faqIn.get(scope.props) ?? new Map<string, Partial<FaqEntry>>();
         faqIn.set(scope.props, byItem);
@@ -756,8 +764,17 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
         entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
       },
       node: (n, scope, _reportId, inDef, def) => {
-        hiding.push(def ? (hiddenInDesign(def, n.id, scope)[0] ?? new Set()) : hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
-        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown()) return;
+        if (!def) {
+          const sizes = hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]);
+          hiding.push({ sizes, every: sizes });
+        } else {
+          const sizes = ownHiddenInDesign(def, n.id, scope, true);
+          const inst = scope.instance;
+          // A row's node, read as every row has it: unknown (none) where the placement styles its rows one at a time.
+          const perRow = !!inst && Object.entries(def.parts).some(([part, p]) => p.nodeId === n.id && !!liveItemStyles(def, inst, part));
+          hiding.push({ sizes, every: scope.multiple || !scope.item ? sizes : perRow ? NONE : ownHiddenInDesign(def, n.id, scope, true, inst, undefined) });
+        }
+        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown(scope)) return;
         // A method's value: a design's link, or the theme's own as its outline shows it (a link, or its words alone
         // while it goes nowhere).
         if (n.kind === 'link' && (n.id === 'method-value' || n.id === 'md-value')) contactFact(scope, evaluate(n.link, scope) as LinkValue | undefined, plainText(evaluate(n.label, scope)));

@@ -1217,13 +1217,21 @@ describe('structured data on a page with contact details and an FAQ', () => {
     const faq = firstOf(s, contact, 'faq.list');
     const details = firstOf(s, contact, 'contact.details');
     const items = faq.props.items as ListItem[];
-    expect(structuredContent(s, contact).faq).toHaveLength(items.length);
+    const pairs = (list: ListItem[]) => list.map((i) => ({ question: i.question, answer: i.answer }));
+    const facts = { email: ['hello@example.com'], telephone: ['+1 555 0134'], address: ['12 Harbor Lane, Millbrook'] };
+    expect(structuredContent(s, contact)).toEqual({ faq: pairs(items), businesses: [facts] });
     // One question hidden at every size by its own item styles, and a contact method by the placement's part.
     faq.itemOverrides = { item: { list: 'items', items: { [String(items[0].id)]: { base: { hidden: true } } } } };
-    expect(structuredContent(s, contact).faq.map((e) => e.question)).toEqual(items.slice(1).map((i) => i.question));
+    expect(structuredContent(s, contact).faq).toEqual(pairs(items.slice(1)));
     details.overrides = { method: { base: { hidden: true } } };
     expect(structuredContent(s, contact).businesses).toEqual([]);
     delete details.overrides;
+    // One method hidden by its own item styles: the others stay.
+    const methods = details.props.items as ListItem[];
+    details.itemOverrides = { method: { list: 'items', items: { [String(methods[1].id)]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).businesses).toEqual([{ ...facts, telephone: [] }]);
+    delete details.itemOverrides;
+    expect(structuredContent(s, contact).businesses).toEqual([facts]);
     // The FAQ placed in a design's slot whose box the placement hides: none of it shows.
     const box: ComponentSpec = {
       componentId: 'test.box',
@@ -1246,9 +1254,51 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(structuredContent(s, contact).faq.map((e) => e.question)).toEqual(items.slice(1).map((i) => i.question));
     wrapper.overrides = { panel: { base: { hidden: true } } };
     expect(structuredContent(s, contact).faq).toEqual([]);
+    // What follows the hidden design is still read.
+    expect(structuredContent(s, contact).businesses).toEqual([facts]);
     // Hidden only on phones, the rest of the way it shows.
     wrapper.overrides = { panel: { phone: { hidden: true } } };
-    expect(structuredContent(s, contact).faq).toHaveLength(items.length - 1);
+    expect(structuredContent(s, contact).faq).toEqual(pairs(items.slice(1)));
+  });
+
+  it('reads an FAQ placed in a slot a design shows in every row of its list, whichever rows it hides', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    const faq = firstOf(s, contact, 'faq.list');
+    const count = (faq.props.items as ListItem[]).length;
+    const rows: ComponentSpec = {
+      componentId: 'test.rows',
+      name: 'Rows',
+      category: 'layout',
+      tags: [],
+      icon: 'square',
+      description: '',
+      properties: { rows: P.list('Rows', 'Row', { title: P.str('Title', 'Row') }, [{ title: 'One' }, { title: 'Two' }]) },
+      parts: { root: { label: 'Rows', nodeId: 'root' }, row: { label: 'Row', nodeId: 'row' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.repeat('rows-list', 'rows', [b.el('row', 'div', {}, [b.slot('body-slot', 'body')])])])
+    };
+    const def = { ...FOUNDATION_AUTHOR.managed(rows), owner: 'project' as const };
+    s.components[def.id] = def;
+    const wrapper = makeInstance(def, {});
+    wrapper.slots = { body: [faq.id] };
+    contact.rootIds = contact.rootIds.map((id) => (id === faq.id ? wrapper.id : id));
+    contact.nodes[wrapper.id] = wrapper;
+    const ids = (wrapper.props.rows as ListItem[]).map((r) => String(r.id));
+    const hide = (...which: string[]) => (wrapper.itemOverrides = { row: { list: 'rows', items: Object.fromEntries(which.map((id) => [id, { base: { hidden: true } }])) } });
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // The second row still shows it, and so does the first.
+    hide(ids[0]);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    hide(ids[1]);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // Each row hidden by its own styles: which rows show is the placement's to say, so it stays, in doubt.
+    hide(...ids);
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // Every row hidden by the placement's style for all of them: no row shows it.
+    delete wrapper.itemOverrides;
+    wrapper.overrides = { row: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toEqual([]);
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {

@@ -38,6 +38,8 @@ const SUBMIT = '\n\tasync function submit(event) {\n\t\tevent.preventDefault();'
 const RESET = 'HTMLFormElement.prototype.reset.call(form);';
 /** Where the form's own checks stop a send: the first field with something wrong is focused, and nothing is sent. */
 const INVALID = '\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn;';
+/** Where a form that cannot send yet (or is sending already) turns a send away. */
+const UNREADY = "\n\t\tif (!ready || status === 'sending') return;";
 /** Where a message a bot filled the trap of is dropped as though it were sent. */
 const TRAPPED = `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn;`;
 /** The form's opening tag, its class on the line after it. */
@@ -55,6 +57,11 @@ const REGIONS = [
 const FIELD_NAME = /\n(\t+)(name=\{names\[i\]\})/g;
 /** A single-choice question's group, whose description agents read for all of its answers. */
 const CHOICES_OPEN = '<fieldset class="so-form__field so-form__choices"';
+/**
+ * The names the form's markup may give outside the field regions: the form's own (Netlify's form name), the service's
+ * hidden fields, which agents never fill in, and the spam trap.
+ */
+const OTHER_NAMES = ["name={provider === 'netlify' ? netlifyName : undefined}", 'name="form-name"', 'name="access_key"', 'name={honeypot}'];
 /** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
 /** What makes a field read-only, or a question unanswerable, while a message sends. */
@@ -108,7 +115,7 @@ export function adaptFormSource(source: string): string | null {
   if (cut < 0) return null;
   const script = source.slice(0, cut);
   const markup = source.slice(cut);
-  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT, INVALID, TRAPPED].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
+  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT, UNREADY, INVALID, TRAPPED].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
   if (count(markup, FORM_OPEN) !== 1 || count(markup, TRAP) < 1) return null;
   const regions = fieldRegions(markup);
   if (!regions) return null;
@@ -120,6 +127,10 @@ export function adaptFormSource(source: string): string | null {
   if (!named || named !== count(all, /\bname=/g)) return null;
   if (count(all, WHILE_SENDING) !== count(all, /\b(?:readonly|disabled)=/g)) return null;
   if (count(all, CHOICES_OPEN) !== 1) return null;
+  // Outside them, nothing an agent fills in: only the form's own name, the service's hidden fields and the trap, and
+  // nothing that locks itself while sending.
+  const outside = [markup.slice(0, regions[0][0]), markup.slice(regions[0][1], regions[1][0]), markup.slice(regions[1][1])].join('\n');
+  if (count(outside, /\bname=/g) !== OTHER_NAMES.reduce((n, name) => n + count(outside, name), 0) || /(?<![\w-])(?:readonly=|disabled=\{status ===)/.test(outside)) return null;
   const adaptFields = (text: string) =>
     text
       .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
@@ -134,6 +145,7 @@ export function adaptFormSource(source: string): string | null {
   marked += markup.slice(from);
   const code = script
     // Each way a send ends without sending says so, for the agent's answer (see submit).
+    .replace(UNREADY, "\n\t\tif (!ready || status === 'sending') return 'unready';")
     .replace(INVALID, "\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn 'invalid';")
     .replace(TRAPPED, `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn 'trapped';`)
     // Then, so the emptying the agent's answer waits for is not itself made to wait.
@@ -181,8 +193,11 @@ export function adaptFormSource(source: string): string | null {
 \t\tso_told = told;
 \t\tso_sent = so_values(form);
 \t\tso_answering = true;
-\t\t// How the send ended: what the form's own checks or its spam trap stopped, else what its status says.
+\t\t// How this send ended: what turned it away, the form's own checks, its spam trap or an error, else what the status
+\t\t// it left says.
 \t\tconst answer = (outcome) => {
+\t\t\tif (outcome === 'unready') return { sent: false, message: 'The form cannot be sent yet.' };
+\t\t\tif (outcome === 'failed') return { sent: false, message: 'The message could not be sent. The visitor can try again.' };
 \t\t\tif (outcome === 'invalid') return { sent: false, message: 'Some fields are missing or not valid. The form shows what is wrong with each; correct them and send again.' };
 \t\t\tif (outcome === 'trapped') return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
 \t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };
@@ -192,7 +207,7 @@ export function adaptFormSource(source: string): string | null {
 \t\t\tso_answering = false;
 \t\t\ttell(answer(outcome));
 \t\t};
-\t\tso_send(event).then(done, () => done());
+\t\tso_send(event).then(done, () => done('failed'));
 \t\tevent.respondWith(told);
 \t\ttold.then(() => {
 \t\t\tif (so_told !== told) return;
