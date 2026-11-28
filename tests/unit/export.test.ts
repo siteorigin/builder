@@ -345,6 +345,20 @@ describe('website export assets', () => {
     expect(alone(photo.file)).toBe(true);
     expect(alone('static/assets/house-22222222-480w.webp')).toBe(true);
     expect(alone(offer.file)).toBe(false);
+    // A field named by hand to read like a picture's address in the index names nothing either.
+    const forged = structuredClone(state);
+    const homes = forged.collections.homes;
+    homes.settings.fields['note"src'] = { type: 'string', label: 'Forged', default: '' };
+    homes.settings.browse = { sort: ['field.note"src'] };
+    homes.entries.en_house.values['note"src'] = 'offer-33333333.pdf';
+    const forgedIndex = generateProject(forged).get(index)!;
+    expect(forgedIndex).toContain('"field.note\\"src":"offer-33333333.pdf"');
+    const dir = temp();
+    write(dir, index, forgedIndex);
+    for (const f of [photo.file, offer.file]) write(dir, f, 'x');
+    await pruneWebsiteAssets(dir, forged);
+    expect(existsSync(join(dir, offer.file))).toBe(false);
+    expect(existsSync(join(dir, photo.file))).toBe(true);
   });
 
   it('lists every asset it left out, and says nothing when it left none out', () => {

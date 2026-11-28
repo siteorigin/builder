@@ -1237,13 +1237,19 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
   const { collectionId, name, settings, designed } = props;
   const now = storedBrowse(settings) ?? {};
   const { filters, sorts } = browseChoices(settings);
-  // Each change replaces the whole setting, so it is made from the project as it is when chosen, and only to that
-  // project: a second click before the first lands is refused (choose again) rather than undoing the first.
+  // Each change replaces the whole setting, so one made before the last has landed builds on the last one sent, never
+  // on the project as it was: two quick clicks keep both. Once the project shows a change, it is what changes build on.
+  const sent = useRef<{ base: string; browse: CollectionBrowse } | null>(null);
+  const shownKey = JSON.stringify(now);
+  if (sent.current && sent.current.base !== shownKey) sent.current = null;
   const commit = (change: (was: CollectionBrowse) => CollectionBrowse, label: string) => {
-    const snapshot = getState().snapshot;
-    const latest = snapshot?.state.collections[collectionId]?.settings ?? settings;
-    const stored = storedBrowse({ ...latest, browse: change(storedBrowse(latest) ?? {}) });
-    return commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label, undefined, snapshot?.revision);
+    const was = sent.current?.browse ?? now;
+    const stored = storedBrowse({ ...settings, browse: change(was) });
+    sent.current = { base: shownKey, browse: stored ?? {} };
+    return commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label).then((r) => {
+      if (!r?.ok) sent.current = null;
+      return r;
+    });
   };
   // Each list keeps the order the fields are offered in.
   const toggle = (list: 'filters' | 'sort', offered: Array<{ key: string }>, key: string, on: boolean, label: string) =>

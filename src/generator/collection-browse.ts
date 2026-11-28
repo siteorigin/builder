@@ -362,8 +362,10 @@ export const BROWSE_SVELTE = String.raw`<script>
 	// The index loads the first time a control is used. A load that failed is tried again by Try again, or once every
 	// control is cleared, by the next one used.
 	$effect(() => {
-		if (!active) failed = false;
-		else if (!entries && !loading && !failed) fetchEntries();
+		// Read either way, so a load that fails once every control is cleared is forgotten too.
+		if (!active) {
+			if (failed) failed = false;
+		} else if (!entries && !loading && !failed) fetchEntries();
 	});
 
 	function fetchEntries() {
