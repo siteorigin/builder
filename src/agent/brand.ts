@@ -108,7 +108,7 @@ export function installedFontNames(state: ProjectState): string[] {
 export function fontStackFor(state: ProjectState, input: string): { stack: string } | { error: string } {
   const name = input.trim().replace(/^['"]|['"]$/g, '');
   const imported = projectFontFamilies(state).find((f) => f.family.toLowerCase() === name.toLowerCase());
-  return imported ? { stack: importedFontStack(imported.family) } : resolveFontStack(state, name);
+  return imported ? { stack: importedFontStack(imported.family, imported.category) } : resolveFontStack(state, name);
 }
 
 // ---------------------------------------------------------------------------

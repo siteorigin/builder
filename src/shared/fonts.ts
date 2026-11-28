@@ -2,7 +2,7 @@
  * Web fonts imported into a project. Each imported file is a font asset with a family, weight and style;
  * the generator turns them into @font-face rules, and a font token uses one by naming its family.
  */
-import type { AssetRecord, OwnerRef, ProjectState } from './types';
+import type { AssetRecord, FontCategory, OwnerRef, ProjectState } from './types';
 
 /** A family becomes a quoted CSS name, so only plain characters are allowed. */
 export const FONT_FAMILY_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,59}$/u;
@@ -22,6 +22,8 @@ export function isValidFontAsset(a: AssetRecord): boolean {
 export interface ProjectFontFamily {
   family: string;
   faces: AssetRecord[];
+  /** The kind of face the family is, as its files say (the first that says); absent when none does. */
+  category?: FontCategory;
 }
 
 /** Compared by code unit, never by locale: generated CSS must be byte-identical on every machine. */
@@ -38,12 +40,32 @@ export function projectFontFamilies(state: ProjectState): ProjectFontFamily[] {
     if (entry) entry.faces.push(a);
     else byFamily.set(key, { family: a.font!.family, faces: [a] });
   }
+  for (const entry of byFamily.values()) {
+    const category = entry.faces.map((a) => a.font!.category).find((c) => !!c && c in FALLBACK_STACKS);
+    if (category) entry.category = category;
+  }
   return [...byFamily.values()].sort((a, b) => byText(a.family, b.family));
 }
 
-/** The font stack a token uses for an imported family, with a generic fallback while it loads. */
-export function importedFontStack(family: string): string {
-  return `'${family}', system-ui, sans-serif`;
+/**
+ * What a stack ends in after an imported family, by the kind of face it is: a fallback of the same kind shows while
+ * the file loads and for any character it lacks. The serif and monospace ones are the built-in fonts' own.
+ */
+export const FALLBACK_STACKS: Readonly<Record<FontCategory, string>> = {
+  'sans-serif': 'system-ui, sans-serif',
+  serif: "Georgia, 'Times New Roman', serif",
+  monospace: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+};
+
+/** The font stack a token uses for an imported family, ending in a fallback of its kind (sans-serif when unknown). */
+export function importedFontStack(family: string, category: FontCategory = 'sans-serif'): string {
+  return `'${family}', ${FALLBACK_STACKS[category] ?? FALLBACK_STACKS['sans-serif']}`;
+}
+
+/** The stack for a project's imported family, by its name (any case): its own fallback, or sans-serif when it has no files. */
+export function projectFontStack(state: ProjectState, family: string): string {
+  const own = projectFontFamilies(state).find((f) => f.family.toLowerCase() === family.toLowerCase());
+  return importedFontStack(own?.family ?? family, own?.category);
 }
 
 const unquote = (s: string) => s.trim().replace(/^['"]|['"]$/g, '').trim();
