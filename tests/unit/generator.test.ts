@@ -10,7 +10,7 @@ import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, g
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { externalLink } from '@shared/links';
 import { GenerationCache } from '@generator/cache';
-import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
+import { DRAFT_NOTE_CSS, DRAFTS_JS, usedIcons } from '@generator/runtime-files';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 import { withPublished } from '@shared/published';
@@ -224,7 +224,9 @@ describe('unsent form drafts (issue #274)', () => {
       }>;
       expect(body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === '../lib/siteorigin/runtime/drafts.js').map((n) => n.specifiers?.map((sp) => [sp.imported?.name, sp.local.name]))).toEqual([[['keepDrafts', 'keepDrafts']]]);
       const calls = body.filter((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression' && n.expression.callee?.type === 'Identifier' && n.expression.callee.name === 'keepDrafts');
-      expect(calls.map((n) => n.expression?.arguments)).toEqual([[]]);
+      // With the wording of the page, which its note after a form it gave a message back to is in.
+      expect(calls.map((n) => n.expression?.arguments)).toEqual([[expect.objectContaining({ type: 'Identifier', name: 'text' })]]);
+      expect(files.get(`${STYLES_DIR}/site.css`)).toContain(DRAFT_NOTE_CSS);
     }
     // Plain SvelteKit: no editor instrumentation, and nothing imported but Svelte and SvelteKit.
     expect(DRAFTS_JS).not.toMatch(/data-so-|__so|siteorigin-bridge/);

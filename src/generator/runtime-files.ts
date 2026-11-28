@@ -813,6 +813,13 @@ export const DRAFTS_JS = `/**
  * a radio button may name its choice with data-draft-choice), aria-busy="true" from the moment it submits (before
  * anything in its submit handler waits) until the reply, and a reset once the message has been sent.
  *
+ * A message stays the visitor's until its form resets to say it went, and a form still does that after it has left
+ * the page. A visitor who follows a link while their message is sending therefore finds it again with Back unless
+ * it went, and the entry says which, in a note after the form: that it was sent (the form is empty), or that it may
+ * not have been (the answers are back). A form that has left the page cannot say that its send failed, so the note
+ * says only what is known. It is the one thing drawn here, in the wording the layout passes in; site.css styles it
+ * with rules a theme's own outweigh.
+ *
  * SvelteKit's snapshot() holds the drafts, in memory and in the tab's session storage, never in the address or in
  * anything sent to a server. Besides them, the tab keeps only an opaque id for each message it has sent.
  */
@@ -825,16 +832,44 @@ const SENT = 'siteorigin-drafts-sent';
 // Forms that show the visitor's latest answers since they appeared: typed in, sent from, or given a draft back.
 // An older draft never replaces those, so Back between two entries of one page cannot undo typing.
 const settled = new WeakSet();
-// The message each form holds, as an opaque id. Sending retires the id, so no copy of that message comes back.
+// The message each form holds, as an opaque id, until the form resets to say it went. Every copy of a message, in
+// every entry, carries its id, so one that went never comes back.
 const messages = new WeakMap();
-// Messages on their way. The form resets once one is sent; if it keeps its answers instead, the send failed or was
-// refused, and the message is a draft again.
+// Messages on their way, by the form sending them. One that is no longer busy without the reset was not sent.
 const sending = new WeakMap();
+// Forms listened to for that reset on the form itself: once a form has left the page, it no longer reaches the document.
+const heard = new WeakSet();
+// Forms given back a message that left while it was sending, with the answers that message holds. A copy is that
+// message only while the form shows exactly those: changed, it is a message of its own, which nothing retires.
+const returned = new WeakMap();
+// The note after a form that says how the message it was given back went.
+const notes = new WeakMap();
+// Forms whose note says the message went, with its id: the next Back to the entry says so again, though the form is
+// empty. Only the id is kept, never the answers.
+const receipts = new WeakMap();
 const sent = new Set();
+// What the site says, in the language of the page (visitor-text.js).
+let wording = () => ({});
+// One polite live region for the whole site, there from the start so that what a note says is announced when it is
+// set; the note itself is plain text beside the form. It reads out the notes on the page, and is empty once the page goes.
+let announcer = null;
+// What each form's note says, in the order they were given: a page can give more than one form back at once.
+const spoken = new Map();
+let speaking = false;
+
+// The theme's marks for a sent message and for one that did not go: a tick, and a circle with an exclamation mark.
+const MARKS = {
+	sent: '<path d="M13.25 4.75 6.5 11.5 2.75 7.75"/>',
+	unconfirmed: '<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v3.75"/><circle cx="8" cy="11.1" r="0.9" fill="currentColor" stroke="none"/>'
+};
 
 // A field can shadow a form's own methods (one named "matches"), so the DOM's are called directly.
 function call(node, method, ...args) {
 	return (node instanceof Document ? Document : Element).prototype[method].call(node, ...args);
+}
+
+function newMessage() {
+	return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 function sentBefore() {
@@ -850,12 +885,10 @@ function wasSent(id) {
 	return sent.has(id) || sentBefore().includes(id);
 }
 
-function markSent(id, isSent) {
-	if (isSent) sent.add(id);
-	else sent.delete(id);
+function markSent(id) {
+	sent.add(id);
 	try {
-		const ids = sentBefore().filter((other) => other !== id);
-		sessionStorage.setItem(SENT, JSON.stringify(isSent ? [...ids, id] : ids));
+		sessionStorage.setItem(SENT, JSON.stringify([...sentBefore().filter((other) => other !== id), id]));
 	} catch {}
 }
 
@@ -891,6 +924,21 @@ function answered(form) {
 	return [...out.values()];
 }
 
+const valuesOf = (form) => JSON.stringify(answered(form).map((a) => [a.field, a.value]));
+
+// Whether a form given back a message still shows exactly that message.
+function unchanged(form) {
+	const given = returned.get(form);
+	return !!given && valuesOf(form) === given.values;
+}
+
+// A form given back a message whose answers have since changed holds a message of its own.
+function moveOn(form) {
+	if (!returned.has(form)) return;
+	if (!unchanged(form)) messages.set(form, newMessage());
+	returned.delete(form);
+}
+
 // Every form on the page, known by where it is (the page itself or the header and footer around it), its fields,
 // and its place among forms with the same fields there.
 function forms() {
@@ -904,22 +952,98 @@ function forms() {
 	});
 }
 
+// The name a form goes by (its heading, as aria-labelledby gives it, or its aria-label), to tell two notes apart.
+function nameOf(form) {
+	const ids = (call(form, 'getAttribute', 'aria-labelledby') ?? '').split(/\\s+/).filter(Boolean);
+	const named = ids.map((id) => document.getElementById(id)?.textContent.trim() ?? '').filter(Boolean).join(' ');
+	return named || (call(form, 'getAttribute', 'aria-label') ?? '').trim();
+}
+
+// Reads out the notes given in this frame together: emptied first and filled a frame later, so the same words said
+// again are announced again, and notes ended or left behind before then are never said.
+function announce() {
+	if (!announcer || speaking) return;
+	speaking = true;
+	announcer.textContent = '';
+	requestAnimationFrame(() => {
+		speaking = false;
+		if (!announcer) return;
+		const all = [...spoken];
+		announcer.textContent = all.map(([form, words]) => (all.length > 1 && nameOf(form) ? nameOf(form) + ': ' + words : words)).join(' ');
+	});
+}
+
+// Says after the form, outside it (it is busy while it sends), how the message it was given back went, and has it
+// announced. Politely: the visitor has just arrived, and the page's own announcement comes first.
+function note(form, kind, message) {
+	unnote(form);
+	const words = kind === 'sent' ? wording().formSent : wording().formUnconfirmed;
+	if (!words) return;
+	const line = document.createElement('p');
+	line.className = 'so-draft-note so-draft-note--' + kind;
+	line.innerHTML = '<svg class="so-draft-note__mark" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + MARKS[kind] + '</svg>';
+	line.appendChild(document.createElement('span')).textContent = words;
+	call(form, 'after', line);
+	notes.set(form, line);
+	if (kind === 'sent') receipts.set(form, message);
+	spoken.set(form, words);
+	announce();
+}
+
+// The note describes what happened before the visitor did anything more; sending or changing an answer ends it, as
+// the form's own outcome does.
+function unnote(form) {
+	if (!notes.has(form)) return;
+	notes.get(form).remove();
+	notes.delete(form);
+	receipts.delete(form);
+	// Quietly: what the other notes said still stands.
+	spoken.delete(form);
+	if (!spoken.size && announcer && !speaking) announcer.textContent = '';
+}
+
+// The form says its message went. A copy of it given back to a form on the page since is emptied, and the form says
+// it went; one the visitor has changed is a message of its own, and is left as it is.
+function delivered(form) {
+	const message = sending.get(form);
+	if (!message) return;
+	sending.delete(form);
+	messages.delete(form);
+	markSent(message);
+	for (const { form: other } of forms()) {
+		if (returned.get(other)?.message !== message) continue;
+		if (!unchanged(other)) {
+			moveOn(other);
+			continue;
+		}
+		returned.delete(other);
+		messages.delete(other);
+		// The prototype method, in case a field is named "reset".
+		HTMLFormElement.prototype.reset.call(other);
+		note(other, 'sent', message);
+	}
+}
+
 function capture() {
+	// What the notes said belongs to the page being left.
+	spoken.clear();
+	if (announcer) announcer.textContent = '';
 	const drafts = [];
 	for (const { form, key, n } of forms()) {
-		// A message on its way is no longer a draft, whatever the reply.
-		if (call(form, 'getAttribute', 'aria-busy') === 'true') continue;
-		const pending = sending.get(form);
-		if (pending) {
-			sending.delete(form);
-			markSent(pending, false);
-			messages.set(form, pending);
-		}
+		const busy = call(form, 'getAttribute', 'aria-busy') === 'true';
+		// Done without the reset that says it went: it was not sent, and is a draft again.
+		if (!busy) sending.delete(form);
+		if (!unchanged(form)) moveOn(form);
 		const values = answered(form).map((a) => [a.field, a.value]);
-		if (!values.some(([, value]) => value)) continue;
+		if (!values.some(([, value]) => value)) {
+			// An empty form that says its message went: the entry keeps saying so, and holds no answers.
+			if (receipts.has(form)) drafts.push({ key, n, message: receipts.get(form), values: [], sending: true, receipt: true });
+			continue;
+		}
 		let message = messages.get(form);
-		if (!message) messages.set(form, (message = Date.now().toString(36) + Math.random().toString(36).slice(2)));
-		drafts.push({ key, n, message, values });
+		if (!message) messages.set(form, (message = newMessage()));
+		// A message on its way, or given back since and still not known to have gone, is kept too: Back says how it went.
+		drafts.push(busy || returned.has(form) ? { key, n, message, values, sending: true } : { key, n, message, values });
 	}
 	// The page the drafts were typed on: an entry SvelteKit reuses for another page never hands them over.
 	return drafts.length ? { path: pagePath(), drafts } : null;
@@ -929,7 +1053,18 @@ function restore(kept) {
 	if (!kept || kept.path !== pagePath() || !Array.isArray(kept.drafts)) return;
 	for (const { form, key, n } of forms()) {
 		const draft = kept.drafts.find((d) => d?.key === key && d.n === n);
-		if (!draft || settled.has(form) || wasSent(draft.message)) continue;
+		if (!draft || settled.has(form)) continue;
+		const left = draft.sending === true;
+		if (wasSent(draft.message)) {
+			// The visitor left before it went: the empty form is the message gone, and the note says so.
+			if (left) {
+				settled.add(form);
+				note(form, 'sent', draft.message);
+			}
+			continue;
+		}
+		// A receipt for a message this tab no longer knows went (its storage was cleared) has nothing to give back.
+		if (draft.receipt === true) continue;
 		settled.add(form);
 		messages.set(form, draft.message);
 		const controls = answers(form);
@@ -944,44 +1079,79 @@ function restore(kept) {
 				if (choice) choice.checked = true;
 			}
 		}
+		if (left) {
+			// An answer the form already had, kept over the message's, makes what it shows a message of its own.
+			const values = JSON.stringify(draft.values);
+			if (valuesOf(form) === values) returned.set(form, { message: draft.message, values });
+			else messages.set(form, newMessage());
+			note(form, 'unconfirmed');
+		}
 	}
 }
 
-/** Called once, from the root layout. */
-export function keepDrafts() {
+/** Called once, from the root layout, with the wording of the page the visitor is on (visitor-text.js). */
+export function keepDrafts(text) {
+	wording = text;
 	snapshot({ id: 'siteorigin-drafts', capture, restore });
 	onMount(() => {
 		const draftForm = (event) => (event.target instanceof Element ? call(event.target, 'closest', FORMS) : null);
 		const typed = (event) => {
 			const form = draftForm(event);
-			if (form) settled.add(form);
+			if (!form) return;
+			settled.add(form);
+			unnote(form);
 		};
-		// Retired as the message leaves, so a reply that comes after the visitor has moved on still counts.
 		const submitted = (event) => {
 			const form = draftForm(event);
 			if (!form) return;
 			settled.add(form);
-			const message = messages.get(form);
-			messages.delete(form);
-			if (!message) return;
+			unnote(form);
+			// Sending again a message given back, unchanged, keeps its id: whichever send goes, every copy is retired.
+			moveOn(form);
+			let message = messages.get(form);
+			if (!message) messages.set(form, (message = newMessage()));
 			sending.set(form, message);
-			markSent(message, true);
+			if (heard.has(form)) return;
+			heard.add(form);
+			// After the form's own handlers, which it has from before any submit; on the page, the document hears it.
+			call(form, 'addEventListener', 'reset', (event) => {
+				if (!event.defaultPrevented && call(form, 'getRootNode') !== document) delivered(form);
+			});
 		};
 		// Heard once the form's own handlers have run, so a reset they cancel changes nothing.
 		const reset = (event) => {
 			const form = event.defaultPrevented ? null : draftForm(event);
-			if (form) sending.delete(form);
+			if (form) delivered(form);
 		};
 		document.addEventListener('input', typed, true);
 		document.addEventListener('submit', submitted, true);
 		document.addEventListener('reset', reset);
+		announcer = document.createElement('p');
+		announcer.className = 'so-draft-announce';
+		announcer.setAttribute('role', 'status');
+		document.body.append(announcer);
 		return () => {
+			announcer.remove();
+			announcer = null;
 			document.removeEventListener('input', typed, true);
 			document.removeEventListener('submit', submitted, true);
 			document.removeEventListener('reset', reset);
 		};
 	});
 }
+`;
+
+/**
+ * The note the draft keeper puts after a form whose message it gave back (DRAFTS_JS), in site.css: the size and ink
+ * of the text around it, with the weight of an outcome and a mark one line tall, a step below the form. Its class
+ * adds no weight (:where), so a theme's own rules for it win; as a paragraph it still outweighs a theme's reset of
+ * every paragraph's margin, which site.css comes after.
+ */
+export const DRAFT_NOTE_CSS = `/* The note after a form whose message came back with Back, saying whether it went (runtime/drafts.js). */
+p:where(.so-draft-note) { display: flex; align-items: flex-start; gap: var(--so-space-xs, 0.5rem); max-width: 38em; margin: var(--so-space-md, 1rem) 0 0; font-weight: 550; color: inherit; }
+:where(.so-draft-note__mark) { flex: none; width: 1.05em; height: 1.05em; margin-block-start: calc((1lh - 1.05em) / 2); }
+/* The live region that reads the note out: on the page for screen readers only. */
+.so-draft-announce { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 `;
 
 /**
