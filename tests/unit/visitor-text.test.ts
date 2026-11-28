@@ -534,7 +534,7 @@ async function prerender(files: Map<string, string>): Promise<(route: string) =>
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
           // The page being prerendered, which the test sets before each render.
           if (id === '\0$app/state') return "export const page = { get route() { return { id: globalThis.__route }; }, get url() { return new URL('https://site.test' + globalThis.__route); } };";
-          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const onNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
           if (!id.startsWith(GEN)) return null;
           const path = id.slice(GEN.length);
           if (path.endsWith('.css')) return { code: '', moduleType: 'js' };
