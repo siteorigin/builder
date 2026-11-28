@@ -688,6 +688,21 @@ export function syncedEntryChange(before: ProjectState, after: ProjectState, exc
   return null;
 }
 
+/**
+ * Why `state` leaves a synced collection among `ids` holding an entry its source never wrote, or null: an undo of a
+ * restore that takes the collection back to another source than the one that synced an entry since (#1474). Its next
+ * sync would refuse the collection. Worded to follow "it".
+ */
+export function foreignSyncedEntry(state: ProjectState, ids: Iterable<string>): string | null {
+  for (const id of ids) {
+    const c = own(state.collections ?? {}, id);
+    if (!c || !isSyncedCollection(c.settings)) continue;
+    const e = Object.values(c.entries).find((x) => x.source?.sourceId !== c.settings.sourceId);
+    if (e) return `would leave “${e.title}” in the ${c.settings.name} collection, which would be synced from a source that did not write it. Restore a saved version instead.`;
+  }
+  return null;
+}
+
 /** A stored reference to an entry: the entry naming it and its field. */
 export interface EntryReferenceUse {
   collection: Collection;

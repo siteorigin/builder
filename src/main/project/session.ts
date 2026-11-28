@@ -24,7 +24,7 @@ import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tre
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { syncedEntryChange } from '@engine/collections';
+import { foreignSyncedEntry, syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
@@ -5266,7 +5266,9 @@ export class ProjectSession extends EventEmitter {
     // except a collection only restores of saved versions on the way change (#1474): a restore may rewrite its entries,
     // so taking one back, or putting it back again, may too. Nor one that takes away what such an entry needs, or
     // leaves a collection synced from a source that is gone.
-    const synced = syncedEntryChange(this.state, next, restoredOnly(steps)) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
+    // A collection left out must still hold only entries its source wrote: one synced since from another, say.
+    const byRestore = restoredOnly(steps);
+    const synced = syncedEntryChange(this.state, next, byRestore) ?? foreignSyncedEntry(next, byRestore) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
     if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
