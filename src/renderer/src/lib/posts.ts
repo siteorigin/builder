@@ -5,7 +5,7 @@
 import { TEXT_LIMITS } from '@shared/text-limits';
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, entryRoute, isSyncedCollection, orderedEntries, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, entryRoute, hasDetailPages, isSyncedCollection, orderedEntries, siteEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { fold } from './fold';
@@ -323,11 +323,13 @@ export function deleteHolds(
   let choices: DeleteChoice[];
   if (refs.length) {
     const from = Object.hasOwn(all, ref.collectionId) ? all[ref.collectionId] : undefined;
-    // With links or old addresses as well, it must be somewhere visitors can go, as the engine asks (canReplaceEntry).
+    // With links or old addresses as well, it must be somewhere visitors can go, as the engine asks (canReplaceEntry):
+    // published, unless its collection has no pages, when no entry of it has one and any may take its place.
     const visitors = uses.length > 0 || keptN > 0;
+    const pageless = !!from && !hasDetailPages(from.settings);
     choices = from
       ? orderedEntries(from)
-          .filter((x) => x.id !== ref.entryId && (!visitors || (x.draft === false && canReplaceEntry(from, { collection: from, entry: x }, true))))
+          .filter((x) => x.id !== ref.entryId && (!visitors || ((x.draft === false || pageless) && canReplaceEntry(from, { collection: from, entry: x }, true))))
           .map((x): DeleteChoice => ({ kind: 'entry', id: x.id, label: x.draft === false ? x.title : `${x.title} (draft)`, group: from.settings.name }))
       : [];
   } else {

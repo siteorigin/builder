@@ -128,7 +128,7 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
     const now = getState().snapshot;
     if (!now) return;
     if (deleteFingerprint(now.state, target) !== checked || !deleteHolds(now.state, target).choices.some((x) => x.kind === kind && x.id === id))
-      return toast('That choice can no longer take its place. Choose again.', 'error');
+      return toast(deleteFingerprint(now.state, target) === checked ? 'That destination can no longer take its place. Choose another.' : 'What points to it has changed. Choose again.', 'error');
     setBusy(true);
     const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision, checked);
     setBusy(false);

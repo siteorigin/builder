@@ -244,4 +244,16 @@ describe.skipIf(!browserInstalled)('deleting an entry other entries name (#1461)
     expect(await dialog.getByLabel('Replace it with').count()).toBe(0);
     expect(await dialog.getByRole('button', { name: 'Delete venue' }).isDisabled()).toBe(true);
   });
+  it('with an old address kept for a venue of a collection with no pages, offers a draft as well', async () => {
+    const s = site(true);
+    s.collections.venues.settings.pages = { detail: false, archive: false };
+    s.site.redirects = [{ from: '/venues/reading-room/', entryId: 'en_oldroom' }];
+    await mount(s);
+    const dialog = await askDelete();
+    const select = dialog.getByLabel('Replace it with');
+    expect(await select.locator('option:not([disabled])').allTextContents()).toEqual(['Annexe (draft)', 'Garden', 'Lantern hall']);
+    await select.selectOption({ label: 'Annexe (draft)' });
+    await dialog.getByRole('button', { name: 'Delete venue' }).click();
+    await expect.poll(async () => (await project()).collections.tours.entries.en_tour.values.venues).toEqual(['en_annex', 'en_garden']);
+  });
 });
