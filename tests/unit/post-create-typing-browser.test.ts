@@ -340,6 +340,21 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     expect(await bodies()).toEqual({ ...BEFORE, 'Post 1 (copy)': 'The first post.' });
   });
 
+  it('shows every title whole from the list’s options, then two lines again', async () => {
+    await mountBlog();
+    const list = page.locator('#panel .posts-list');
+    const toggle = page.getByRole('menuitemcheckbox', { name: /Show full titles/ });
+    expect(await list.getAttribute('class')).not.toContain('full-titles');
+    await page.locator('#panel').getByRole('button', { name: 'Posts options' }).click();
+    expect(await toggle.getAttribute('aria-checked')).toBe('false');
+    await toggle.click();
+    await expect.poll(() => list.getAttribute('class')).toContain('full-titles');
+    await page.locator('#panel').getByRole('button', { name: 'Posts options' }).click();
+    expect(await toggle.getAttribute('aria-checked')).toBe('true');
+    await toggle.click();
+    await expect.poll(() => list.getAttribute('class')).not.toContain('full-titles');
+  });
+
   it('opens a new record at its first field, with what was typed while it was made', async () => {
     const team = starterCollectionOps(start, 'team')!;
     await mount(run(start, ...team.ops), null, team.collectionId);
