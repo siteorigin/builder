@@ -62,6 +62,20 @@ export function sameLanguage(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+/**
+ * What the versions in a translation set are told apart by: the canonical code in lower case, so a deprecated code
+ * ("iw", "in") is the language that replaced it ("he", "id"). A code the platform cannot canonicalize is compared
+ * as written. Only translation sets compare this way: the website keeps each code, and the wording filed under it,
+ * as the author wrote it (sameLanguage).
+ */
+export function languageKey(code: string): string {
+  try {
+    return Intl.getCanonicalLocales(code)[0].toLowerCase();
+  } catch {
+    return code.toLowerCase();
+  }
+}
+
 /** The translation group a page belongs to, if any. Only a string names one. */
 export function translationGroup(page: Pick<PageDoc, 'translationGroup'>): string | undefined {
   return typeof page.translationGroup === 'string' && page.translationGroup ? page.translationGroup : undefined;
@@ -103,9 +117,10 @@ function firstClash(site: Pick<SiteDoc, 'language'>, pages: PageDoc[], group: st
   const seen = new Map<string, PageDoc>();
   for (const p of pages) {
     const language = pageLanguage(site, p);
-    const first = seen.get(language.toLowerCase());
+    const key = languageKey(language);
+    const first = seen.get(key);
     if (first) return { group, a: first, b: p, language };
-    seen.set(language.toLowerCase(), p);
+    seen.set(key, p);
   }
   return null;
 }
@@ -165,11 +180,12 @@ export const declaredDirection = (html: string): string | null => rootAttribute(
  * versions in one language before are not this change's doing.
  */
 export function siteLanguageClash(state: Pick<ProjectState, 'site' | 'pages'>, language: string): TranslationClash | null {
-  if (sameLanguage(siteLanguage(state.site), language)) return null;
+  const key = languageKey(language);
+  if (languageKey(siteLanguage(state.site)) === key) return null;
   const groups = [...new Set(Object.values(state.pages).map((p) => p && translationGroup(p)).filter((g): g is string => !!g))];
   for (const group of groups) {
     const members = translationMembers(state, group);
-    const named = members.find((p) => isLanguageCode(p.language) && sameLanguage(p.language, language));
+    const named = members.find((p) => isLanguageCode(p.language) && languageKey(p.language) === key);
     const follows = members.find((p) => !isLanguageCode(p.language));
     if (named && follows) return { group, a: named, b: follows, language };
   }
