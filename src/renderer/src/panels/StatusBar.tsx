@@ -1361,7 +1361,7 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
   const asked = useRef(0);
   const load = () => {
     const ask = ++asked.current;
-    void api.project.packages().then(
+    return api.project.packages().then(
       (r) => {
         if (ask !== asked.current) return;
         setList(r);
@@ -1375,7 +1375,7 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
     );
   };
   // Read again as the tools finish being set up, so the versions shown are the ones the preview runs.
-  useEffect(load, [opening, runtimeState]);
+  useEffect(() => void load(), [opening, runtimeState]);
   /** Make a change; `typed` when it is what was typed to add, which goes once it is made. */
   const change = async (c: PackageChange, doing: string, typed = false) => {
     if (working) return;
@@ -1389,7 +1389,7 @@ function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boole
       setResult({ ok: false, message: (e as Error).message || String(e) });
     } finally {
       setWorking(null);
-      load();
+      await load();
       // A removed package's row goes with the button that removed it: focus moves to adding one, never to nowhere.
       requestAnimationFrame(() => {
         const at = document.activeElement;

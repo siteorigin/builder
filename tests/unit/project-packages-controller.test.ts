@@ -44,18 +44,21 @@ const npm = vi.hoisted(() => ({
   duringInstall: null as null | ((dir: string) => void)
 }));
 vi.mock('../../src/main/runtime/manager', async () => {
-  const { existsSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { existsSync, mkdirSync, readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { createRequire } = await import('node:module');
+  const { createHash } = await import('node:crypto');
   const marker = (dir: string) => join(dir, '.siteorigin', 'cache', 'deps.json');
+  const read = (dir: string, f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : '');
+  const lockHash = (dir: string) => createHash('sha256').update(read(dir, 'package-lock.json') + read(dir, 'package.json')).digest('hex');
   return {
-    // Set up while the marker the install leaves is there; installing writes it.
-    dependenciesReady: async (dir: string) => existsSync(marker(dir)),
+    // Set up while the marker the install leaves is for the package files as they are, as the real check has it.
+    dependenciesReady: async (dir: string) => existsSync(marker(dir)) && JSON.parse(readFileSync(marker(dir), 'utf8')).lockHash === lockHash(dir),
     prepareDependencies: async (dir: string) => {
       npm.installs++;
       npm.duringInstall?.(dir);
       mkdirSync(join(dir, '.siteorigin', 'cache'), { recursive: true });
-      writeFileSync(marker(dir), '{}');
+      writeFileSync(marker(dir), JSON.stringify({ lockHash: lockHash(dir) }));
     },
     resolvePackageFiles: async (files: Files & Record<string, unknown>, command: string, options: string[], spec: string, signal?: AbortSignal) => {
       npm.runs.push({ command, options, spec, files });
@@ -141,12 +144,12 @@ const addZod = (files: Files): Files => {
   return { 'package.json': `${JSON.stringify(pkg, null, 2)}\n`, 'package-lock.json': `${JSON.stringify(lock, null, 2)}\n` };
 };
 
-/** A project made from the starter, trusted and open in the editor with its preview ready. */
-async function opened() {
+/** A project made from the starter (`lock: false`, without its lock), trusted and open with its preview ready. */
+async function opened({ lock = true } = {}) {
   const dir = temp('project');
   const s = await ProjectSession.create(dir, createStarterState('blank', 'Tide Lines', false));
   await s.close();
-  for (const f of ['package.json', 'package-lock.json']) copyFileSync(join(starter, f), join(dir, f));
+  for (const f of lock ? ['package.json', 'package-lock.json'] : ['package.json']) copyFileSync(join(starter, f), join(dir, f));
   const c = new Controller(() => editor as never);
   controllers.push(c);
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
@@ -241,9 +244,11 @@ describe('changing the project’s npm packages (#1480)', () => {
       npm.answer = addZod;
       let release = () => {};
       npm.hold = new Promise<void>((r) => (release = r));
+      // The npm settings were there already: what they say changed, not whether there are any.
+      if (file === '.npmrc') writeFileSync(join(dir, '.npmrc'), 'registry=https://registry.npmjs.org/\n');
+      const edited = file === 'package.json' ? read('package.json').replace('"private": true', '"private": true, "description": "mine"') : 'registry=https://registry.example.com/\n';
       const changing = c.changeProjectPackage({ add: 'zod@4.1.0' }, opening);
       await until(() => npm.runs.length === 1);
-      const edited = file === 'package.json' ? read('package.json').replace('"private": true', '"private": true, "description": "mine"') : 'registry=https://registry.example.com/\n';
       writeFileSync(join(dir, file), edited);
       const lock = read('package-lock.json');
       release();
@@ -276,6 +281,14 @@ describe('changing the project’s npm packages (#1480)', () => {
     expect((await c.changeProjectPackage({ add: 'zod@4.1.0' }, opening)).ok).toBe(true);
     expect(c.snapshot()?.runtime).toMatchObject({ state: 'error', message: expect.stringMatching(/build settings changed outside SiteOrigin Builder/) });
     expect(existsSync(join(dir, 'vite.config.js'))).toBe(true);
+  });
+
+  it('starts the preview of a project whose lock npm writes as it sets the tools up, with no review asked', async () => {
+    npm.duringInstall = (d) => {
+      if (!existsSync(join(d, 'package-lock.json'))) copyFileSync(join(starter, 'package-lock.json'), join(d, 'package-lock.json'));
+    };
+    const { c } = await opened({ lock: false });
+    expect(c.snapshot()?.runtime.state).toBe('ready');
   });
 
   it('refuses a removal when code importing the package is saved while npm works it out', async () => {

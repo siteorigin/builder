@@ -201,6 +201,8 @@ function npmArgs(command: 'ci' | 'install' | 'uninstall', cache: string): string
     '--include=optional',
     '--include=peer',
     '--install-strategy=hoisted',
+    // A run that only pretends (`dry-run` in the author's settings) would leave the tools as they were, marked set up.
+    '--dry-run=false',
     `--cache=${cache}`
   ];
 }
@@ -296,8 +298,8 @@ export async function resolvePackageFiles(files: ProjectPackageFiles, command: '
     const cache = await seedCache();
     // An install asks the registry what is there now (`zod@latest` is the latest), where a removal needs nothing new.
     // Whatever the author's own npm settings say, the change is saved and made for real.
-    const fresh = command === 'install' ? '--prefer-online' : '--prefer-offline';
-    await runNpm([...npmArgs(command, cache), '--package-lock-only', fresh, '--save=true', '--dry-run=false', ...options, '--', spec], dir, () => undefined, signal);
+    const fresh = command === 'install' ? ['--prefer-online', '--prefer-offline=false'] : ['--prefer-offline'];
+    await runNpm([...npmArgs(command, cache), '--package-lock-only', ...fresh, '--save=true', ...options, '--', spec], dir, () => undefined, signal);
     const [pkg, lock] = await Promise.all(['package.json', 'package-lock.json'].map((f) => fs.readFile(join(dir, f), 'utf8')));
     return { 'package.json': pkg, 'package-lock.json': lock };
   } finally {

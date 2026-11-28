@@ -204,11 +204,13 @@ async function writePackageFiles(dir: string, files: PackageFiles, before: Confi
       failure = e;
     }
     if (landed) {
-      await syncStaged([lock, pkg]);
+      // Both are in place, whatever flushing their folder says: the change has landed.
+      await syncStaged([lock, pkg]).catch(() => undefined);
       return true;
     }
     try {
-      await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json']));
+      // Only the lock this wrote goes back: one written meanwhile by someone else is theirs.
+      if ((await readIfExists(lockPath)) === files['package-lock.json']) await (before['package-lock.json'] === null ? fs.rm(lockPath, { force: true }) : atomicWrite(lockPath, before['package-lock.json']));
     } catch (e) {
       throw new Error(`package-lock.json no longer matches package.json, and the old one couldn’t be put back (${(e as Error).message}). Reinstall the website tools once package.json is as you want it.`);
     }
@@ -1972,6 +1974,8 @@ export class Controller {
       // The lock is read again first: a takeover the heartbeat has not seen yet must not get an install.
       if (!(await session.stillOwner()) || this.session !== session) return;
       this.status({ state: 'preparing', message: 'Setting up website tools…' });
+      // Without a lock, npm writes one from the trusted package.json: that lock is the install's own, not an edit.
+      const locked = existsSync(join(session.dir, 'package-lock.json'));
       const abort = (this.prepareAbort = new AbortController());
       const done = this.changingTools();
       try {
@@ -1988,7 +1992,7 @@ export class Controller {
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
       // Setting the tools up takes a while: the configuration the preview is about to run must still be the one trusted.
-      if (!(await isTrusted(session.dir, await configHash(session.dir)))) {
+      if (locked && !(await isTrusted(session.dir, await configHash(session.dir)))) {
         if (this.session === session) this.status({ state: 'error', message: TRUST_CHANGED });
         return;
       }
@@ -2653,7 +2657,9 @@ export class Controller {
   async projectPackages(): Promise<ProjectPackages> {
     const s = this.session;
     if (!s) return { packages: [], locked: 'No project is open.' };
-    const packages = await listPackages(s.dir, await readIfExists(join(s.dir, 'package.json')).catch(() => null));
+    // A package.json that is there but can't be read is said so, never listed as one with no packages.
+    const pkg = await fs.readFile(join(s.dir, 'package.json'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(new Error(`package.json can’t be read: ${e.message}`))));
+    const packages = await listPackages(s.dir, pkg);
     return { packages, locked: await this.packagesLocked(s) };
   }
 
@@ -2737,13 +2743,12 @@ export class Controller {
         const changedMeanwhile = { ok: false, message: 'The project’s build settings changed while the package was being worked out, so nothing was changed. Try again.' };
         // The website tools are changing from here: a website build copying them meanwhile is called off (toolsWork).
         done = this.changingTools();
-        // Right before the files are replaced, the build settings and npm settings are still what npm started from, and
-        // the marker that says the tools are set up for them goes (#1395).
+        // Right before the files are replaced, the build settings and npm settings are still what npm started from. The
+        // tools' marker stays: it is for the files as they were, so it says nothing of the new ones, and the tools are
+        // still set up for the old ones should the change not land.
         const ready = async () => {
           const now = await readConfig(s.dir);
-          if (CONFIG_FILES.some((f) => now[f] !== before[f]) || (await readNpmrc(s.dir).catch(() => undefined)) !== npmrc) return false;
-          await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
-          return true;
+          return !CONFIG_FILES.some((f) => now[f] !== before[f]) && (await readNpmrc(s.dir).catch(() => undefined)) === npmrc;
         };
         if (!(await writePackageFiles(s.dir, files, before, ready))) return void (result = changedMeanwhile);
         // Set up again for the new files, not missing, until the preview has looked at them once more.
@@ -2752,7 +2757,7 @@ export class Controller {
           // Trusted as written, with the rest of the build settings as they were trusted.
           await trust(s.dir, hashConfig({ ...before, ...files }));
         } catch (e) {
-          return void (result = { ok: false, message: `The package files changed, but they couldn’t be marked as trusted (${(e as Error).message}). Close and reopen the project to review and trust them.` });
+          return void (result = { ok: false, message: `The package files changed, but saving them as trusted failed (${(e as Error).message}). They are used until SiteOrigin Builder restarts, which then asks to review them.` });
         }
         result = { ok: true };
       });

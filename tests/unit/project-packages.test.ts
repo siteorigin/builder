@@ -4,6 +4,7 @@
  * works a change out in a private copy of the package files, never in the project.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,15 +75,24 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     const pkg = pkgWith({ dependencies: { zod: '4.1.0' }, devDependencies: { ...JSON.parse(STARTER_PKG).devDependencies, chartist: '1.0.0' } });
     expect(packageRequest({ add: '  canvas-confetti ' }, pkg)).toEqual({ ok: true, verb: 'add', name: 'canvas-confetti', command: 'install', options: ['--save-exact', '--save-prod'], spec: 'canvas-confetti' });
     expect(packageRequest({ add: '@scope/charts@^2' }, pkg)).toMatchObject({ ok: true, verb: 'add', name: '@scope/charts', spec: '@scope/charts@^2' });
-    // One the project has is updated where package.json keeps it.
-    expect(packageRequest({ add: 'zod@latest' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact', '--save-prod'], spec: 'zod@latest' });
-    expect(packageRequest({ add: 'chartist@1.1.0' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact', '--save-dev'], spec: 'chartist@1.1.0' });
+    // One the project has is updated where package.json keeps it: npm, told no section, keeps it there.
+    expect(packageRequest({ add: 'zod@latest' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact'], spec: 'zod@latest' });
+    expect(packageRequest({ add: 'chartist@1.1.0' }, pkg)).toMatchObject({ ok: true, verb: 'update', options: ['--save-exact'], spec: 'chartist@1.1.0' });
     expect(packageRequest({ remove: 'chartist' }, pkg)).toEqual({ ok: true, verb: 'remove', name: 'chartist', command: 'uninstall', options: [], spec: 'chartist' });
-    // An optional one stays optional, a peer stays a peer, and an optional peer stays both.
+    // npm's own section options can't be combined (an optional peer has none of its own): none is given for an update.
     const more = pkgWith({ optionalDependencies: { fsevents: '2.3.3' }, peerDependencies: { leaflet: '1.9.4', three: '0.170.0' }, peerDependenciesMeta: { three: { optional: true } } });
-    expect(packageRequest({ add: 'fsevents@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-optional'] });
-    expect(packageRequest({ add: 'leaflet@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-peer'] });
-    expect(packageRequest({ add: 'three@latest' }, more)).toMatchObject({ options: ['--save-exact', '--save-peer', '--save-optional'] });
+    for (const name of ['fsevents', 'leaflet', 'three']) expect(packageRequest({ add: `${name}@latest` }, more)).toMatchObject({ verb: 'update', options: ['--save-exact'] });
+  });
+
+  it('keeps an optional peer optional, as the bundled npm saves an update told no section', () => {
+    const npmRequire = createRequire(join(__dirname, '../../node_modules/npm/package.json'));
+    const { add } = npmRequire('@npmcli/arborist/lib/add-rm-pkg-deps.js') as { add: (o: { pkg: Record<string, unknown>; add: Array<{ name: string; rawSpec: string }>; saveType?: string }) => Record<string, Record<string, unknown>> };
+    const pkg = { peerDependencies: { three: '0.170.0' }, peerDependenciesMeta: { three: { optional: true } }, devDependencies: { chartist: '1.0.0' } };
+    const saved = add({ pkg: structuredClone(pkg), add: [{ name: 'three', rawSpec: '0.171.0' }, { name: 'chartist', rawSpec: '1.1.0' }] });
+    expect(saved.peerDependencies).toEqual({ three: '0.171.0' });
+    expect(saved.peerDependenciesMeta).toEqual({ three: { optional: true } });
+    expect(saved.devDependencies).toEqual({ chartist: '1.1.0' });
+    expect(saved.dependencies).toBeUndefined();
   });
 
   it('refuses anything but a registry package, the website’s own tools, and removing one the project does not have', () => {
@@ -90,7 +100,7 @@ describe('what a change to the packages asks of npm (#1480)', () => {
     for (const add of ['demo@ .', 'demo@ ./x', 'github:sveltejs/svelte', 'file:../secrets', '../x', '/etc', 'https://example.com/x.tgz', 'zod@npm:evil@1', 'git+ssh://git@github.com/a/b.git', 'a b', '@scope', 'node:fs', '-g', `${'a'.repeat(300)}`])
       expect(packageRequest({ add }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/isn’t a package from npm/) });
     for (const blank of ['', '   ']) expect(packageRequest({ add: blank }, pkg)).toEqual({ ok: false, message: 'Type the name of a package, such as zod or zod@4.1.0.' });
-    for (const name of ['svelte', 'vite', '@sveltejs/kit']) {
+    for (const name of ['svelte', 'vite', '@sveltejs/kit', '@sveltejs/adapter-static', '@sveltejs/vite-plugin-svelte']) {
       expect(packageRequest({ add: `${name}@latest` }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/one of the website’s own tools/) });
       expect(packageRequest({ remove: name }, pkg)).toMatchObject({ ok: false, message: expect.stringMatching(/one of the website’s own tools/) });
     }
@@ -164,7 +174,7 @@ describe('working a change out away from the project (#1480)', () => {
     expect(args[0]).toBe('install');
     // The same settings as the install that follows (so its lock is the one `npm ci` installs), the change saved and
     // made for real whatever the author's npm settings say, and what the registry has now.
-    for (const flag of ['--package-lock-only', '--prefer-online', '--save=true', '--dry-run=false', '--ignore-scripts', '--install-strategy=hoisted', '--include=dev', '--include=optional', '--include=peer', `--os=${process.platform}`, `--cpu=${process.arch}`, '--save-exact', '--save-prod'])
+    for (const flag of ['--package-lock-only', '--prefer-online', '--prefer-offline=false', '--save=true', '--dry-run=false', '--ignore-scripts', '--install-strategy=hoisted', '--include=dev', '--include=optional', '--include=peer', `--os=${process.platform}`, `--cpu=${process.arch}`, '--save-exact', '--save-prod'])
       expect(args).toContain(flag);
     expect(args).not.toContain('--prefer-offline');
     // The package is given last, after `--`, so nothing in it is ever read as a setting.
@@ -182,7 +192,7 @@ describe('working a change out away from the project (#1480)', () => {
   it('needs nothing new from the registry to remove a package', async () => {
     npm.write = () => undefined;
     await resolvePackageFiles(files(), 'uninstall', [], 'zod');
-    expect(npm.runs[0].args.slice(1)).toEqual(expect.arrayContaining(['uninstall', '--prefer-offline', '--save=true']));
+    expect(npm.runs[0].args.slice(1)).toEqual(expect.arrayContaining(['uninstall', '--package-lock-only', '--prefer-offline', '--save=true', '--dry-run=false']));
     expect(npm.runs[0].args).not.toContain('--prefer-online');
   });
 

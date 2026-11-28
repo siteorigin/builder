@@ -14,8 +14,6 @@ import { npmModule } from './manager';
 export const STARTER_PACKAGES: ReadonlySet<string> = new Set(['@sveltejs/adapter-static', '@sveltejs/kit', '@sveltejs/vite-plugin-svelte', 'svelte', 'vite']);
 
 type Section = ProjectPackage['section'];
-/** How npm is told to keep a package in the section of package.json it is in already; a new one is a dependency. */
-const SAVE_FLAG: Record<Section, string> = { dependencies: '--save-prod', devDependencies: '--save-dev', optionalDependencies: '--save-optional', peerDependencies: '--save-peer' };
 
 /** A package.json's sections of packages, by name; empty when it can't be read. */
 function sections(packageJson: string | null): Partial<Record<Section, Record<string, unknown>>> {
@@ -92,15 +90,6 @@ function registrySpec(spec: string): ParsedSpec | null {
   return npmModule<(n: string) => { validForOldPackages: boolean }>('validate-npm-package-name')(name).validForOldPackages ? parsed : null;
 }
 
-/** Whether `packageJson` marks its peer `name` optional (peerDependenciesMeta). */
-function isOptionalPeer(packageJson: string | null, name: string): boolean {
-  try {
-    const meta = (JSON.parse(packageJson ?? '') as { peerDependenciesMeta?: Record<string, { optional?: unknown }> }).peerDependenciesMeta;
-    return !!meta && typeof meta === 'object' && Object.hasOwn(meta, name) && meta[name]?.optional === true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * What npm is asked to do for `change` (from the editor, so checked as it comes) to the packages `packageJson`
@@ -124,9 +113,9 @@ export function packageRequest(change: unknown, packageJson: string | null): Pac
     const refused = own(name);
     if (refused) return { ok: false, message: refused };
     const section = sectionOf(deps, name);
-    // An optional peer stays optional: npm saves `--save-peer` alone as a required one.
-    const optionalPeer = section === 'peerDependencies' && isOptionalPeer(packageJson, name);
-    return { ok: true, verb: section ? 'update' : 'add', name, command: 'install', options: ['--save-exact', SAVE_FLAG[section ?? 'dependencies'], ...(optionalPeer ? ['--save-optional'] : [])], spec };
+    // A new package is a dependency. One the project has stays where package.json keeps it (an optional peer stays an
+    // optional peer), as npm keeps it when told no section; its save options can't be combined.
+    return { ok: true, verb: section ? 'update' : 'add', name, command: 'install', options: ['--save-exact', ...(section ? [] : ['--save-prod'])], spec };
   }
   if (typeof c.remove === 'string') {
     const name = c.remove;

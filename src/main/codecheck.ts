@@ -299,12 +299,16 @@ export async function packagesUsed(source: string, resolve?: (path: string) => s
 /** The packages that import specifiers name (packageOf), each once; Svelte is no package here. */
 const packagesIn = (specs: string[]): string[] => [...new Set(specs.filter((s) => s !== 'svelte' && !s.startsWith('svelte/')).flatMap((s) => packageOf(s) ?? []))];
 
-/** A comment, wherever the grammar lets one go between the words of an import. */
-const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*`;
-/** An import of the code's (`from '…'`, `import '…'`, `import('…')`), as text, for code the compiler can't read. */
-const IMPORT_TEXT = new RegExp(String.raw`\b(?:from|import)${GAP}\(?${GAP}(['"])([^'"\n]+)\1`, 'g');
-/** A stylesheet's `@import '…'` or `@import url('…')`, which Vite resolves as it resolves the code's imports. */
-const CSS_IMPORT = /@import\s+(?:url\(\s*)?(['"])([^'"\n]+)\1/g;
+/**
+ * An import of the code's (`from '…'`, `import '…'`, `import('…')`), as text, for code the compiler can't read, with
+ * spaces, comments and the call's bracket between its words. Each thing between them starts with a character of its
+ * own, so the text is read once through, however it is written.
+ */
+const IMPORT_TEXT = /\b(?:from|import)(?:\s|\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/|\/\/[^\n]*|\()*(['"])([^'"\n]+)\1/g;
+/** A stylesheet's `@import '…'`, `@import url('…')` or `@import url(…)`, which Vite resolves as it resolves the code's. */
+const CSS_IMPORT = /@import\s+(?:url\(\s*(['"]?)([^'"()\s]+)\1\s*\)|(['"])([^'"\n]+)\3)/g;
+/** The imports of a stylesheet, its comments left out. */
+const cssImports = (css: string): string[] => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(CSS_IMPORT)].map((m) => m[2] ?? m[4]);
 
 /** Every module a component's code and styles import, by the specifier written. */
 async function importSpecs(source: string): Promise<string[]> {
@@ -323,11 +327,10 @@ async function importSpecs(source: string): Promise<string[]> {
       for (const [k, v] of Object.entries(node)) if (k !== 'parent' && v && typeof v === 'object') walk(v);
     };
     walk([ast.instance, ast.module, ast.fragment]);
-    const css = (ast.css as { content?: { styles?: string } } | null)?.content?.styles ?? '';
-    for (const m of css.matchAll(CSS_IMPORT)) specs.push(m[2]);
+    specs.push(...cssImports((ast.css as { content?: { styles?: string } } | null)?.content?.styles ?? ''));
   } catch {
     for (const m of source.matchAll(IMPORT_TEXT)) specs.push(m[2]);
-    for (const m of source.matchAll(CSS_IMPORT)) specs.push(m[2]);
+    specs.push(...cssImports(source));
   }
   return specs;
 }
