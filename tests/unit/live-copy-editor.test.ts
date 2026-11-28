@@ -262,7 +262,7 @@ describe('what a copy editor may change', () => {
     expect(editable(def.id, 'caption')).toBe(false);
   });
 
-  /** Each bundled theme's two heroes, with the copy each marks, and the lookup the copy editor reads for it. */
+  /** Each bundled theme's two heroes, with their copy (src/engine/shipped-copy.ts), and the lookup the copy editor reads for it. */
   const HEROES = [
     ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],
     ['hero.centered', ['eyebrow', 'heading', 'lead']]
@@ -286,8 +286,7 @@ describe('what a copy editor may change', () => {
     for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(false);
   });
 
-  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
-  it.fails.each(heroCases)('marks the copy of $theme’s $componentId', ({ theme, componentId, marked }) => {
+  it.each(heroCases)('lets a copy editor change the copy of $theme’s $componentId', ({ theme, componentId, marked }) => {
     const { id, editable } = heroLookup(theme, componentId);
     for (const prop of marked) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(true);
   });

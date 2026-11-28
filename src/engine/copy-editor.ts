@@ -1,7 +1,7 @@
 /**
  * What a live session's Copy Editor may change, checked against the project (#1148): the words of a page's own text
- * elements, and the copy and pictures a design marks `copyEditable` on the components placed on a page, with pictures
- * only from the asset library. Nothing structural (what is on a page and how it is arranged, styles, options, links),
+ * elements, and the copy and pictures a design marks `copyEditable` (or Foundation's sections show: #1344) on the
+ * components placed on a page, with pictures only from the asset library. Nothing structural (what is on a page and how it is arranged, styles, options, links),
  * nothing in the shared header and footer or in a design, and never where a contact form sends its messages.
  *
  * It is checked twice over, so neither half has to be right alone. Every operation is held to the project as it was
@@ -19,6 +19,7 @@ import { copyEditorOperationProblem } from '@shared/live/copy-editor';
 import { formDestinationProps } from './form-destinations';
 import { guestDestinationChange } from './guest-edits';
 import { bindingSites, type BindingSite } from './schema';
+import { shippedAsIs, shippedCopyListed } from './shipped-copy';
 import { shownOnceIn } from './slots';
 
 /** Why a Copy Editor's batch is refused, and the operation that was, when it is one operation's fault. */
@@ -45,14 +46,18 @@ export type CopyEditableLookup = (definitionId: string, prop: string) => boolean
  * words of a text element of the same kind, an image element's picture, a test of whether it is set (which a Copy
  * Editor's edit never changes: see `present`), or a whole property passed on to a nested component that qualifies
  * in turn, for the same kind. A design that passes it on is followed at every hop; any other use (a tag, a link, a
- * comparison, a variant, a list, one field of it), a code component, which decides in its source what it does with
- * it, or a property the design never uses, does not qualify. Nor does one a design's list filled from a collection
- * reads by its name to choose the entries it shows (ENTRY_QUERY_PROPS), whatever else the design does with it.
+ * comparison, a variant, a list, one field of it), or a property the design never uses, does not qualify. A code
+ * component decides in its source what it does with a property, so none of its properties qualifies, marked or not,
+ * but for the copy of a section Foundation ships, exactly as the app ships it (shipped-copy.ts). Nor does a property
+ * a design's list filled from a collection reads by its name to choose the entries it shows (ENTRY_QUERY_PROPS),
+ * whatever else the design does with it.
  */
 export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
   const known = new Map<string, boolean>();
   const visiting = new Set<string>();
   let destinations: Map<string, Set<string>> | undefined;
+  const shipped = new Map<ComponentDefinition, boolean>();
+  const asShipped = (def: ComponentDefinition) => shipped.get(def) ?? (shipped.set(def, shippedAsIs(def)), shipped.get(def)!);
   const qualifies = (definitionId: string, prop: string): boolean => {
     const key = `${definitionId}\u0000${prop}`;
     const seen = known.get(key);
@@ -64,11 +69,16 @@ export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
     const kind = kindOf(schema);
     let ok = false;
     const choosesEntries = () => (ENTRY_QUERY_PROPS as readonly string[]).includes(prop) && Object.values(def!.properties).some((p) => p.type === 'list' && p.feed === 'entries');
-    if (def?.kind === 'managed' && def.tree && kind && isCopySchema(schema) && schema.copyEditable === true && !choosesEntries() && !(destinations ??= formDestinationProps(state)).get(definitionId)?.has(prop)) {
-      visiting.add(key);
-      const uses = bindingSites(def).filter((s) => isBinding(s.binding) && '$prop' in s.binding && s.binding.$prop === prop);
-      ok = uses.length > 0 && uses.every((s) => shows(def, s, kind));
-      visiting.delete(key);
+    if (def && kind && isCopySchema(schema) && !choosesEntries() && !(destinations ??= formDestinationProps(state)).get(definitionId)?.has(prop)) {
+      if (def.kind === 'managed' && def.tree && schema.copyEditable === true) {
+        visiting.add(key);
+        const uses = bindingSites(def).filter((s) => isBinding(s.binding) && '$prop' in s.binding && s.binding.$prop === prop);
+        ok = uses.length > 0 && uses.every((s) => shows(def, s, kind));
+        visiting.delete(key);
+      } else if (def.kind === 'code') {
+        // Rich text reaches code as the blocks SoRichText shows, never as paragraphs worked out from them.
+        ok = shippedCopyListed(def, prop) && (schema.type !== 'richtext' || schema.codeForm === 'blocks') && asShipped(def);
+      }
     }
     known.set(key, ok);
     return ok;
