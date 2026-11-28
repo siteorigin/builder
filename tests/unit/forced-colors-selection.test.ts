@@ -28,13 +28,26 @@ describe("forced colours keep the selection visible", () => {
     expect(css).toMatch(/\.ov-hover \{[^}]*outline: 2px solid CanvasText/);
   });
 
-  it("fills the selected layer row in the system selected colours", () => {
+  it("outlines the selected layer row, dashed for the others selected with it", () => {
     const css = forcedBlocks("src/renderer/src/panels/LayersPanel.css");
     expect(css).toMatch(
-      /\.layer-row\.selected \{[^}]*background: SelectedItem; color: SelectedItemText/,
+      /\.layer-row\.selected \{[^}]*outline: 2px solid SelectedItem/,
     );
     expect(css).toMatch(
-      /\.layer-row\.selected\.member[^{]*\{[^}]*outline: 2px dashed SelectedItem/,
+      /\.layer-row\.selected:where\(\.member\) \{[^}]*outline-style: dashed/,
+    );
+  });
+
+  it("keeps the canvas ring while the page scrolls and while a move is dragged", () => {
+    const css = readFileSync("src/renderer/src/panels/Canvas.css", "utf8");
+    const forced = forcedBlocks("src/renderer/src/panels/Canvas.css");
+    expect(forced).not.toMatch(/paged/);
+    // Placed after the rule that sets the moving outline, so it wins the tie.
+    expect(css.indexOf("@media (forced-colors: active)")).toBeGreaterThan(
+      css.indexOf(".ov-selected.moving {"),
+    );
+    expect(forced).toMatch(
+      /\.ov-selected\.moving \{[^}]*outline-color: SelectedItem/,
     );
   });
 });
