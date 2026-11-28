@@ -39,6 +39,21 @@ const BRIDGE = `
     apply: (_, __, args) => (path === 'project.apply' ? (window.applied.push(args), Promise.resolve({ ok: true })) : path === 'on' ? () => {} : Promise.resolve(undefined))
   });
   window.builder = any('');
+  const text = () => document.querySelector('#writer .post-body');
+  window.t = {
+    // The caret, or the words from at to to, put in the text node that reads words.
+    select: (words, at, to) => {
+      text().focus();
+      const walker = document.createTreeWalker(text(), NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.nodeValue === words) return getSelection().setBaseAndExtent(n, at, n, to);
+      throw new Error('No text ' + words);
+    },
+    // The caret in the first link element itself, before its child offset.
+    inLink: (offset) => { text().focus(); getSelection().collapse(text().querySelector('a'), offset); },
+    // From the end of the first link, across the plain words, to the start of the second.
+    between: () => { const [a, b] = text().querySelectorAll('a'); getSelection().setBaseAndExtent(a.firstChild, a.textContent.length, b.firstChild, 0); },
+    caret: () => { const s = getSelection(); return { collapsed: s.isCollapsed, text: s.anchorNode.nodeValue, offset: s.anchorOffset }; }
+  };
 `;
 
 async function bundle(): Promise<string> {
@@ -84,27 +99,19 @@ describe.skipIf(!browserInstalled)('Remove link in the post writer’s toolbar (
   const tool = () => page.locator('#writer [data-tool="unlink"]');
   const html = () => page.locator('#writer .post-body').innerHTML();
   const links = () => page.locator('#writer .post-body a').allTextContents();
-  /** The caret, or the words from `at` to `to`, put in the first text node of the writer that reads `text`. */
-  const select = (text: string, at: number, to = at) =>
-    page.evaluate(
-      ([text, at, to]) => {
-        const root = document.querySelector<HTMLElement>('#writer .post-body')!;
-        root.focus();
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-        for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.nodeValue === text) return getSelection()!.setBaseAndExtent(n, at as number, n, to as number);
-        throw new Error(`No text ${text}`);
-      },
-      [text, at, to] as const
-    );
-  const caret = () =>
-    page.evaluate(() => {
-      const s = getSelection()!;
-      return { collapsed: s.isCollapsed, text: s.anchorNode?.nodeValue, offset: s.anchorOffset };
-    });
+  /** Runs `name` of the page's side of the test (BRIDGE's `t`). */
+  const t = <R = void>(name: string, ...args: unknown[]): Promise<R> => page.evaluate(([name, args]) => (globalThis as unknown as { t: Record<string, (...a: unknown[]) => unknown> }).t[name](...args), [name, args] as const) as Promise<R>;
+  const select = (words: string, at: number, to = at) => t('select', words, at, to);
+  const caret = () => t<{ collapsed: boolean; text: string | null; offset: number }>('caret');
   /** The edits the writer last sent to be saved. */
   const saved = () => page.evaluate(() => JSON.stringify((globalThis as unknown as { applied: unknown[] }).applied.at(-1) ?? null));
   const uses = async (href: string) => (await saved()).split(href).length - 1;
   const off = () => expect.poll(() => tool().getAttribute('aria-disabled'));
+
+  const mount = async () => {
+    await page.evaluate((state) => (globalThis as unknown as { mount(s: unknown): void }).mount(state), start as unknown);
+    await page.locator('#writer .post-body p').first().waitFor();
+  };
 
   beforeAll(async () => {
     [script, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
@@ -125,8 +132,7 @@ describe.skipIf(!browserInstalled)('Remove link in the post writer’s toolbar (
         : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}</script><script src="/app.js"></script>` })
     );
     await page.goto(`${SITE}/`);
-    await page.evaluate((state) => (globalThis as unknown as { mount(s: unknown): void }).mount(state), start as unknown);
-    await page.locator('#writer .post-body p').first().waitFor();
+    await mount();
   });
   afterEach(async () => {
     await context?.close();
@@ -157,36 +163,34 @@ describe.skipIf(!browserInstalled)('Remove link in the post writer’s toolbar (
     expect(await page.locator('#writer .post-body li').allTextContents()).toEqual(['Tides', 'New Harbour office']);
   });
 
-  it('unlinks the link when the caret is in the link element itself', async () => {
-    await page.evaluate(() => {
-      const a = document.querySelector<HTMLElement>('#writer .post-body a')!;
-      document.querySelector<HTMLElement>('#writer .post-body')!.focus();
-      getSelection()!.setBaseAndExtent(a, 1, a, 1);
-    });
-    await off().toBeNull();
-    await tool().click();
-    expect(await links()).toEqual(['the archive', 'Harbour office']);
-    await page.keyboard.type('!');
-    expect(await page.locator('#writer .post-body p').textContent()).toBe('Ask at the harbour desk! or read the archive.');
+  it('unlinks the link when the caret is in the link element itself, on the same side of its words', async () => {
+    for (const [offset, want] of [
+      [0, 'Ask at !the harbour desk or read the archive.'],
+      [1, 'Ask at the harbour desk! or read the archive.']
+    ] as const) {
+      await t('inLink', offset);
+      await off().toBeNull();
+      await tool().click();
+      expect(await links()).toEqual(['the archive', 'Harbour office']);
+      await page.keyboard.type('!');
+      expect(await page.locator('#writer .post-body p').textContent()).toBe(want);
+      await page.reload();
+      await mount();
+    }
   });
 
   it('unlinks only the words chosen', async () => {
     await select('the archive', 4, 11);
     await off().toBeNull();
     await tool().click();
-    expect(await links()).toContain('the ');
-    expect(await links()).not.toContain('the archive');
+    expect(await links()).toEqual(['the harbour desk', 'the ', 'Harbour office']);
     expect(await page.locator('#writer .post-body p').textContent()).toBe('Ask at the harbour desk or read the archive.');
   });
 
   it('is off for chosen words that only reach a link’s edge', async () => {
     await select('the archive', 0, 3);
     await off().toBeNull();
-    await page.evaluate(() => {
-      const [first, second] = document.querySelectorAll('#writer .post-body a');
-      // From the end of one link, across the plain words, to the start of the next.
-      getSelection()!.setBaseAndExtent(first.firstChild!, first.textContent!.length, second.firstChild!, 0);
-    });
+    await t('between');
     await off().toBe('true');
   });
 });
