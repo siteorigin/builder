@@ -5,14 +5,14 @@ import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownR
 import type { AssetRecord, ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
 import { ICONS } from '@shared/icons';
-import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
+import { api, copyTextAction, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
 import { DisclosureMark, DraftInput, Field, FieldHome, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { isSettling, refusedWithin, savesInFlight } from '../lib/pending';
+import { isSettling, refusedWithin, registerUnsent, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
 import { declaredTokens } from '@engine/tokens';
@@ -2085,20 +2085,28 @@ function ChoiceLabel({ choice, index, describedBy, onRename, clash, onClash }: {
   const mounted = useRef(true);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // A label being typed when a live session ends is offered back to copy (see registerUnsent).
+  useEffect(
+    () =>
+      registerUnsent(() => {
+        const over = from.current;
+        const text = choiceText(draftRef.current);
+        return over && text && text !== over.shown ? { key: draftKey, label: `Edit choice “${over.shown}”`, text } : null;
+      }),
+    [draftKey]
+  );
   // The field closes (its question was collapsed or removed) with a label typed in it that was not saved: the label
   // is offered once more, to copy.
   const offer = (text: string, other?: string) =>
-    toast(`Your label “${text}” for this choice was not saved${other !== undefined ? `, because the choice became “${other}” while you were typing` : ''}.`, 'error', {
-      label: 'Copy text',
-      run: () => void navigator.clipboard?.writeText(text).catch(() => undefined)
-    });
+    toast(`Your label “${text}” for this choice was not saved${other !== undefined ? `, because the choice became “${other}” while you were typing` : ''}.`, 'error', copyTextAction(text, 'Edit a choice’s label'));
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       const over = from.current;
       const text = choiceText(draftRef.current);
-      if (over && text && text !== over.shown) offer(text, kept.current ? over.shown : undefined);
+      // Only while a project is open: one that has just closed (a live session ending) kept the label itself.
+      if (over && text && text !== over.shown && useStore.getState().snapshot) offer(text, kept.current ? over.shown : undefined);
       markDraft(draftKey, false);
     };
   }, [draftKey]);
@@ -2193,6 +2201,10 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
   const addId = useId();
   const [draft, setDraft] = useState('');
   const [problem, setProblem] = useState('');
+  // A choice being added when a live session ends is offered back to copy (see registerUnsent).
+  const adding = useRef(draft);
+  adding.current = draft;
+  useEffect(() => registerUnsent(() => (adding.current.trim() ? { key: addId, label: `Add a choice${label ? ` to ${label}` : ''}`, text: adding.current } : null)), [addId, label]);
   // A rename refused because another choice has that label: which row, and the label it was refused.
   const [clashAt, setClashAt] = useState<{ id: string; label: string } | null>(null);
   // A duplicate the author was told about stops being one once the other choice is renamed or removed.

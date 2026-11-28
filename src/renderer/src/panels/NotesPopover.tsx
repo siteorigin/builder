@@ -10,6 +10,7 @@ import { hasRoom } from '../lib/live-session';
 import { isRemoteShell } from '../lib/remote-session';
 import { refLabel } from '../lib/model';
 import { refreshNotes } from '../lib/notes-feed';
+import { registerUnsent } from '../lib/pending';
 import { addNote, deleteNote, jumpToNote, noteAge, notePlaceLabel, notePlaceNow, noteRights, openNotes, resolveNote } from '../lib/notes';
 
 /**
@@ -186,6 +187,11 @@ function NoteForm() {
     const page = st.pages[place.pageId]?.title || 'Untitled page';
     return place.target ? `${refLabel(st, place.target)} on ${page}` : page;
   });
+  // A note being written when the live session ends is offered back to copy (see registerUnsent).
+  const unsent = useRef({ text, where, sending });
+  unsent.current = { text, where, sending };
+  // One being pinned may have reached the host.
+  useEffect(() => registerUnsent(() => (unsent.current.text.trim() ? { label: unsent.current.where ? `Note on ${unsent.current.where}` : 'Note', text: unsent.current.text, ...(unsent.current.sending ? { uncertain: true } : {}) } : null)), []);
   const length = [...text.normalize('NFC').replace(/\s+/gu, ' ').trim()].length;
   const usable = normalizeNoteText(text) !== null;
   const send = async () => {

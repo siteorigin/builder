@@ -6,7 +6,7 @@ import { validateOperation } from '@shared/ops';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateProject } from '@generator/index';
 import { IMAGE_SCHEMA } from '@agent/propschema';
-import { clearKeptDrafts, dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, pruneKeptDrafts, tooLongReport, unsavedReport } from '../../src/renderer/src/lib/kept-drafts';
+import { clearKeptDrafts, dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, notSentReport, pruneKeptDrafts, tooLongReport, unsavedReport } from '../../src/renderer/src/lib/kept-drafts';
 import { draftCount, refusedDraftCount, reportRefused, resetPendingForTests, setDraft, settle } from '../../src/renderer/src/lib/pending';
 import { projectDesign } from './fixtures/packs';
 import { splitHero } from './fixtures/inspector-workflows-designs';
@@ -251,6 +251,9 @@ describe('text kept for a field while it is too long to save', () => {
     expect(keptDraft(site)?.text).toHaveLength(330);
     expect(goneReport('Description')).toBe('What you typed in Description was not saved, and what it belonged to has been removed.');
     expect(unsavedReport('Image description')).toBe('What you typed in Image description has not been saved.');
+    // A live session's ending says why the text was not sent, or that it was on its way (#1462).
+    expect(notSentReport('The host ended the live session.')).toBe('Not sent: the host ended the live session. Copy it to keep it.');
+    expect(notSentReport('Your access to the live session has ended.', true)).toBe('Not confirmed: your access to the live session has ended. It was on its way, so the host may have it. Copy it to keep it.');
   });
 
   it('counts against the limit as the author types, and says by how much to shorten once refused', () => {

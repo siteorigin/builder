@@ -65,7 +65,8 @@ const PATHS = {
   transports: '../../src/renderer/src/lib/transport',
   liveHost: '../../src/renderer/src/lib/live-host',
   remoteChat: '../../src/renderer/src/panels/RemoteChat',
-  notesFeed: '../../src/renderer/src/lib/notes-feed'
+  notesFeed: '../../src/renderer/src/lib/notes-feed',
+  pending: '../../src/renderer/src/lib/pending'
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loaded = any;
@@ -76,6 +77,7 @@ let view: Loaded;
 let transports: Loaded;
 let liveHost: Loaded;
 let notesFeed: Loaded;
+let pending: Loaded;
 
 beforeAll(async () => {
   // Leaving settles what is being typed (lib/leave.ts), which looks for the focused field.
@@ -168,6 +170,7 @@ beforeAll(async () => {
   transports = await import(/* @vite-ignore */ PATHS.transports);
   liveHost = await import(/* @vite-ignore */ PATHS.liveHost);
   notesFeed = await import(/* @vite-ignore */ PATHS.notesFeed);
+  pending = await import(/* @vite-ignore */ PATHS.pending);
 });
 
 const offs: Array<() => void> = [];
@@ -183,7 +186,7 @@ afterEach(() => {
   remoteSnapshot = null;
   remoteStateAnswer = { phase: 'idle', ended: null };
   remoteApplyAnswer = APPLIED;
-  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null, notes: null });
+  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null, notes: null, heldEdits: [], unsentTexts: [] });
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -503,6 +506,70 @@ describe('following the session', () => {
     store.setState({ modal: { kind: 'delete-page', pageId: home } });
     session.applyRemoteState({ phase: 'idle', ended: { reason: 'ended', message: 'The host ended the live session.' } });
     expect(store.getState().modal).toBeNull();
+  });
+});
+
+describe('text the guest typed when the session ends without them (#1462)', () => {
+  const HOST_ENDED = { reason: 'ended', message: 'The host ended the live session.' } as const;
+  const kept = () => store.getState().unsentTexts.map((u: { label: string; text: string; project: string; why: string; uncertain?: boolean }) => ({ label: u.label, text: u.text, project: u.project, why: u.why, ...(u.uncertain ? { uncertain: true } : {}) }));
+
+  it('keeps a held edit, a field being typed in and a Copy text offer to copy, with why, in place of the notice', async () => {
+    await shown();
+    const off = pending.registerUnsent(() => ({ key: 'field-1', label: 'Edit Eyebrow in Split hero on Home', text: 'Open Saturdays 9 till 1' }));
+    offs.push(off);
+    store.setState({ heldEdits: [{ id: 1, key: 'k', workspace: 'remote:join-1', operations: [], label: 'Edit Heading in Split hero on Home', base: [], place: 'Home', text: 'Bring your radios', phase: 'changed', seq: 1 }] });
+    store.toast('What you were typing was not saved, because the field went away.', 'error', store.copyTextAction('A line about valves', 'Edit Text'));
+    session.applyRemoteState({ phase: 'idle', ended: HOST_ENDED });
+    expect(kept()).toEqual([
+      { label: 'Edit Heading in Split hero on Home', text: 'Bring your radios', project: 'Acme', why: HOST_ENDED.message },
+      { label: 'Edit Eyebrow in Split hero on Home', text: 'Open Saturdays 9 till 1', project: 'Acme', why: HOST_ENDED.message },
+      { label: 'Edit Text', text: 'A line about valves', project: 'Acme', why: HOST_ENDED.message }
+    ]);
+    // The cards say why it ended, so the ending's notice is not said as well.
+    expect(store.getState().toasts.map((t: { text: string }) => t.text)).not.toContain(HOST_ENDED.message);
+    // They stay through whatever opens next, until each is discarded.
+    store.setState({ snapshot: { workspaceKey: '/sites/other#1', state } as unknown as ProjectSnapshot });
+    expect(store.getState().unsentTexts).toHaveLength(3);
+    store.discardUnsent(store.getState().unsentTexts[0].id);
+    expect(kept().map((k: { text: string }) => k.text)).toEqual(['Open Saturdays 9 till 1', 'A line about valves']);
+  });
+
+  it('counts the same words for the same field once, and keeps another version of that field', async () => {
+    await shown();
+    offs.push(pending.registerUnsent(() => ({ key: 'field-1', label: 'Edit Heading in Split hero on Home', text: 'Same words' })));
+    offs.push(pending.registerUnsent(() => ({ key: 'field-1', label: 'Edit Heading', text: 'Same words' })));
+    offs.push(pending.registerUnsent(() => ({ key: 'field-2', label: 'Edit Heading in Split hero on Home', text: 'Same words' })));
+    offs.push(pending.registerUnsent(() => ({ key: 'field-1', label: 'Edit Heading in Split hero on Home', text: 'Newer words' })));
+    session.applyRemoteState({ phase: 'idle', ended: HOST_ENDED });
+    expect(kept().map((k: { text: string }) => k.text)).toEqual(['Same words', 'Same words', 'Newer words']);
+  });
+
+  it('says an edit on its way may have reached the host, and says it only once', async () => {
+    await shown();
+    let answer: (r: unknown) => void = () => undefined;
+    remoteApplyAnswer = new Promise((r) => (answer = r));
+    // Handed over as typed text, as a typed commit is (store's sendEdit); a toggle or a drag carries none.
+    const applying = pending.sendTyped('Repairs while you wait', () => store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Repairs while you wait' }] }, { opening: 'remote:join-1', label: 'Rename Home' }));
+    const toggled = store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, noindex: true }] }, { opening: 'remote:join-1', label: 'Hide Home from search' });
+    await flush();
+    session.applyRemoteState({ phase: 'idle', ended: { reason: 'expired-guest', message: 'Your access to the live session has ended.' } });
+    expect(kept()).toEqual([{ label: 'Rename Home', text: 'Repairs while you wait', project: 'Acme', why: 'Your access to the live session has ended.', uncertain: true }]);
+    answer({ ok: false, error: { code: 'CANCELLED', message: 'The live session ended.', recoverable: false } });
+    void toggled;
+    // Its late answer carries that it has been said already, so no notice repeats the card.
+    expect(await applying).toMatchObject({ ok: false, error: { code: 'CANCELLED', details: store.SAID_ELSEWHERE } });
+  });
+
+  it('keeps nothing when the guest chose to leave, and only the notice when nothing was typed', async () => {
+    await shown();
+    offs.push(pending.registerUnsent(() => ({ key: 'field-1', label: 'Edit Heading', text: 'Typed then left' })));
+    session.applyRemoteState({ phase: 'idle', ended: { reason: 'left', message: 'You left the live session.' } });
+    expect(kept()).toEqual([]);
+    offs.splice(0).forEach((f) => f());
+    await shown();
+    session.applyRemoteState({ phase: 'idle', ended: HOST_ENDED });
+    expect(kept()).toEqual([]);
+    expect(store.getState().toasts.map((t: { text: string }) => t.text)).toEqual([HOST_ENDED.message]);
   });
 });
 
