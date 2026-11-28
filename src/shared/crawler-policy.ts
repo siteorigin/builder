@@ -73,13 +73,20 @@ const PRESET_BLOCKS: Record<FixedCrawlerPreset, readonly CrawlerKind[]> = {
   'search-engines-only': ['ai-search', 'ai-assistant', 'ai-training']
 };
 
-/** The most named crawlers and paths a policy keeps, and the longest of each: far inside what crawlers read of a robots.txt. */
-export const CRAWLER_LIMITS = { overrides: 64, paths: 64, token: 128, path: 512 } as const;
 /**
- * The most a hand-edited policy is read with, well past what an edit may save, so a crawler kept out or a path closed
- * is never dropped from one that went over, while robots.txt stays inside the 500 KiB crawlers read.
+ * The most named crawlers and paths a policy keeps, and the longest of each, inside what crawlers read of a robots.txt.
+ * A path is counted as robots.txt writes it, percent-encoded, and has room for the exact address of any page: four
+ * levels of 120 bytes each are about 1,450 characters once encoded (see shared/routes.ts).
  */
-const READ_LIMITS = { overrides: 256, paths: 256 } as const;
+export const CRAWLER_LIMITS = { overrides: 64, paths: 64, token: 128, path: 1600 } as const;
+/**
+ * The most a hand-edited policy is read with, past what an edit may save, so a crawler kept out or a path closed is not
+ * dropped from one that went over, while robots.txt stays inside the 500 KiB crawlers read. `pathBytes` is what the
+ * paths' own lines may come to (see pathCost): all an edit may save fits.
+ */
+const READ_LIMITS = { overrides: 256, paths: 256, pathBytes: 456 * 1024 } as const;
+/** A sub-path as long as the longest public address (200 characters) can name. */
+const LONGEST_MOUNT = `/${'m'.repeat(199)}`;
 
 /** The policy as the site keeps it: only what differs from the default, the rules of its own only for Custom. */
 export interface CrawlerPolicy {
@@ -211,7 +218,8 @@ export function checkCrawlerPath(input: string): Checked<string> {
   if (dollar !== -1 && dollar !== path.length - 1) return no(`“${raw}” has a “$” before its end: “$” only marks where the address ends. Write a “$” itself as %24.`);
   const segments = path.split('?')[0].split('/');
   if (segments.some((s) => s === '.' || s === '..' || s === '.$' || s === '..$')) return no(`“${raw}” has a “.” or “..” part, which browsers resolve away: give the path it leads to.`);
-  if (path.length > CRAWLER_LIMITS.path) return no(`A path is at most ${CRAWLER_LIMITS.path} characters.`);
+  if (path.length > CRAWLER_LIMITS.path)
+    return no(`A path is at most ${CRAWLER_LIMITS.path} characters as robots.txt writes it, where a letter of another alphabet is percent-encoded and takes several (“é” takes 6, “あ” 9). This one takes ${path.length}.`);
   return ok(path);
 }
 
@@ -282,11 +290,13 @@ export function crawlerRules(site: Pick<SiteDoc, 'crawlerPolicy'>): CrawlerRules
       const c = typeof p === 'string' ? checkCrawlerPath(p) : null;
       if (c?.ok) found.add(c.value);
     }
-  // Past the limit, a pattern closing the whole site comes first.
+  // Past the limits, a pattern closing the whole site comes first.
+  let bytes = 0;
   const ascii = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
   const paths = [...found]
     .sort((a, b) => Number(isWholeSitePattern(b)) - Number(isWholeSitePattern(a)) || ascii(a, b))
     .slice(0, READ_LIMITS.paths)
+    .filter((p) => (bytes += pathCost(p)) <= READ_LIMITS.pathBytes)
     .sort(ascii);
   const set = typeof raw.noAiMeta === 'boolean';
   return { preset, base, overrides, paths, noAiMeta: set ? (raw.noAiMeta as boolean) : presetNoAiMeta(base), noAiMetaSet: set };
@@ -408,6 +418,11 @@ function sitePattern(path: string, mount: string): string[] {
   if (!mount) return [path];
   if (isWholeSitePattern(path)) return wholeSite(mount);
   return path.startsWith('/$') || path.startsWith('/?') ? [mount + path.slice(1), mount + path] : [mount + path];
+}
+
+/** The most a path's lines take of robots.txt: under the longest sub-path, in both groups that list Custom's paths. */
+function pathCost(path: string): number {
+  return 2 * sitePattern(path, LONGEST_MOUNT).reduce((n, p) => n + `Disallow: ${p}\n`.length, 0);
 }
 
 /**
