@@ -3,7 +3,7 @@
  * own visitor-facing name; the destination is checked before anything is written.
  */
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -81,6 +81,13 @@ function controller() {
   c.send = () => undefined;
   controllers.push(c);
   return c;
+}
+
+/** A file chosen from outside the project, in a folder of its own. */
+function sourceFile(name: string, text: string): string {
+  const file = join(temp('source'), name);
+  writeFileSync(file, text);
+  return file;
 }
 
 const recentName = async (dir: string) => (await recents()).find((r) => r.dir === dir)?.name;
@@ -177,6 +184,40 @@ describe('a duplicated project (#176)', () => {
     await c.close();
     expect(read(copy, 'siteorigin/brief.json')).toMatchObject({ description: 'The autumn campaign.', notes: brief.notes });
     expect(read(original, 'siteorigin/brief.json')).toMatchObject(brief);
+  });
+
+  it('carries the current Assets and the files the site’s own source uses, never a replaced file kept for undo (#1378)', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    const s = c.session!;
+    const imported = await c.importAssets([sourceFile('Guide.txt', 'First edition.'), sourceFile('Briefing.txt', 'Press briefing.')], 'document');
+    expect(imported).toMatchObject({ ok: true });
+    const [guide, briefing] = imported.assetIds;
+    const retired = s.state.assets.assets[guide].file;
+    // A new edition of the guide (Replace file…): the first stays in the original, for undo and its saved versions.
+    expect(await c.locateAsset(guide, sourceFile('Guide.txt', 'Second edition.'))).toMatchObject({ ok: true });
+    const current = s.state.assets.assets[guide].file;
+    expect(current).not.toBe(retired);
+    expect(existsSync(join(original, retired))).toBe(true);
+    // A file the owner put among the assets, and one only hand-written source names, are the site’s own.
+    writeFileSync(join(original, 'static/assets/price-list.txt'), 'Prices.');
+    writeFileSync(join(original, 'static/assets/map-0a1b2c3d.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    mkdirSync(join(original, 'src/routes/visit'), { recursive: true });
+    writeFileSync(join(original, 'src/routes/visit/+page.svelte'), '<img src="/assets/map-0a1b2c3d.svg" alt="Map" />\n');
+    expect(await c.flush()).toBe(true);
+
+    expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true });
+    const copy = join(sites, 'fall-campaign');
+    // Every document in Assets, linked or not, with the edition it holds now.
+    expect(readFileSync(join(copy, current), 'utf8')).toBe('Second edition.');
+    expect(readFileSync(join(copy, s.state.assets.assets[briefing].file), 'utf8')).toBe('Press briefing.');
+    expect(existsSync(join(copy, 'static/assets/price-list.txt'))).toBe(true);
+    expect(existsSync(join(copy, 'static/assets/map-0a1b2c3d.svg'))).toBe(true);
+    // The copy has none of the original’s history, so the old edition would only be published from it.
+    expect(existsSync(join(copy, retired))).toBe(false);
+    expect(existsSync(join(original, retired))).toBe(true);
   });
 
   it('explains a name or destination it cannot use, and writes nothing', async () => {
