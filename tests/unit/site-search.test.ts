@@ -368,6 +368,13 @@ describe('site search index', () => {
     ])
       expect(homeText).toContain(words);
     expect(searchPages(pages, 'wheel throwing').results.map((r) => r.route)).toContain('/');
+    // A publication carries the sections with the editor's markers taken out of their code: they show the same.
+    const { withoutCodeMarkers } = await import('../../src/main/codecheck');
+    const published = structuredClone(s);
+    for (const def of Object.values(published.components)) if (def.kind === 'code' && typeof def.source === 'string') def.source = await withoutCodeMarkers(def.source);
+    expect(buildSearchIndex(published).find((e) => e.route === '/')!.text).toBe(homeText);
+    // A table with nothing to show adds no words, and a button that goes nowhere is no part of the site.
+    expect(homeText.split('\n')).not.toContain('Book a session');
   });
 });
 
