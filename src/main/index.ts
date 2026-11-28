@@ -1133,7 +1133,7 @@ async function createWindow() {
   // so content inside the previewed site cannot fake them.
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type !== 'keyDown') return;
-    const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt, repeat: input.isAutoRepeat };
+    const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt };
     if (forwardsKey(chord, currentShortcuts().askAi, process.platform === 'darwin')) controller.send('input:key', chord);
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,

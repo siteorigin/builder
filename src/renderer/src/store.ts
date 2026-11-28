@@ -13,7 +13,7 @@ import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
-import { draftCount, HELD_DRAFT, isLeaving, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { sendHeldPicks } from './lib/pick-gate';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
@@ -763,31 +763,23 @@ export function setPageOpener(open: (pageId: string) => void) {
 
 /** How long an Undo or Redo waits for the editor to show it before asking for the whole project again (projectHistory). */
 const HISTORY_SHOWN_MS = 3000;
-/** The Undo or Redo on its way (projectHistory): sent, and not yet shown. */
-let historyStep: object | null = null;
-/** A press made while that one was on its way, taken once it is shown, in the opening it was pressed in. */
-let historyHeld: { action: 'undo' | 'redo'; opening: string | undefined } | null = null;
+/** An Undo or Redo is on its way (projectHistory): sent, and not yet shown. */
+let historyBusy = false;
 
 /**
  * Undo or redo the project, from any button, shortcut or menu. A failure is said at once. One whose change is not on
  * the page shown says what it changed and where, and offers that page (#903): the author sees nothing happen otherwise.
  *
  * One step goes at a time, until the editor shows it (#1452). Held down, the key repeats far faster than a step is
- * saved and shown: a repeat that arrives meanwhile is dropped, so letting go stops within a step of what is shown, never
- * seconds later. A press of its own meanwhile (a quick second tap) is kept, one at most, and taken once that step
- * shows; one the other way cancels it.
+ * saved and shown: a press made meanwhile, in either direction, is dropped, never kept for later, so letting go stops
+ * within a step of what the editor shows instead of undoing on for seconds, and nothing pressed before an edit is
+ * taken after it.
  */
-export function projectHistory(action: 'undo' | 'redo', press: { repeat?: boolean } = {}) {
-  if (historyStep) {
-    if (press.repeat) return;
-    const opening = getState().snapshot?.workspaceKey;
-    historyHeld = historyHeld?.opening === opening ? (historyHeld.action === action ? historyHeld : null) : { action, opening };
-    return;
-  }
+export function projectHistory(action: 'undo' | 'redo') {
+  if (historyBusy) return;
   const before = getState().snapshot;
   const run = trackHistory(() => (action === 'redo' ? api.project.redo() : api.project.undo()));
-  const step = {};
-  historyStep = step;
+  historyBusy = true;
   void run.then(
     (r) => {
       if (r && !r.ok && r.error) toast(r.error.message, 'error');
@@ -800,15 +792,7 @@ export function projectHistory(action: 'undo' | 'redo', press: { repeat?: boolea
       (r) => (r?.ok && before ? caughtUp(r.revision, before.workspaceKey, HISTORY_SHOWN_MS) : undefined),
       () => undefined
     )
-    .then(() => {
-      if (historyStep !== step) return;
-      historyStep = null;
-      const held = historyHeld;
-      historyHeld = null;
-      // Only in the opening it was pressed in, and never once the project is being left.
-      const s = getState();
-      if (held && held.opening === s.snapshot?.workspaceKey && !s.leaving && !isLeaving()) projectHistory(held.action);
-    });
+    .then(() => void (historyBusy = false));
 }
 
 /** Resolves once the editor shows `revision` of the opening `workspaceKey`, or that opening is no longer shown. Not shown

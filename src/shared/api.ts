@@ -1682,8 +1682,7 @@ export interface BuilderApi {
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
-  /** `repeat`: the key is held down and this is its auto-repeat. */
-  on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean; repeat?: boolean }) => void): () => void;
+  on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   /** The host's live session changed: started, a guest joined or left, it dropped or came back, or it ended. */
   on(channel: 'live:state', cb: (state: LiveHostState) => void): () => void;
   /** A guest started waiting to join the live session. */

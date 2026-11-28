@@ -547,15 +547,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return false;
   };
 
-  /** Undo or Redo the project, with what was typed saved first as its own step. `repeat`: the key's auto-repeat. */
-  async function history(action: 'undo' | 'redo', repeat = false) {
+  /** Undo or Redo the project, with what was typed saved first as its own step. */
+  async function history(action: 'undo' | 'redo') {
     if (draft.isComposing) return;
     const el = root.current;
     caretAfterHistory.current = el ? caretIn(el) : null;
     const saved = await draft.flush();
     if (!saved && draft.dirty) return;
     draft.newStep();
-    projectHistory(action, { repeat });
+    projectHistory(action);
   }
 
   /**
@@ -850,7 +850,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (mod && !e.altKey && (k === 'z' || k === 'y')) {
       e.preventDefault();
       e.stopPropagation();
-      void history(k === 'y' || e.shiftKey ? 'redo' : 'undo', e.repeat);
+      void history(k === 'y' || e.shiftKey ? 'redo' : 'undo');
       return;
     }
     if (mod && !e.shiftKey && !e.altKey && k === 'b') return void (e.preventDefault(), command(() => document.execCommand('bold')));
