@@ -373,6 +373,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     postView: 'write',
     postPreviewAt: null,
     postReveal: null,
+    postOpening: null,
     // The SEO view opens with no document chosen: a page or post of the last opening is never this one's.
     seoSubject: null,
     definitionMode: null,

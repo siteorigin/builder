@@ -14,7 +14,7 @@ import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { api, applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
-import { ChoiceField, DraftInput, Field, Modal, Section, SwitchRow } from '../components/ui';
+import { ChoiceField, DraftInput, Field, Modal, Section, Spinner, SwitchRow } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
@@ -147,15 +147,25 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   const key = post ? `${post.collectionId}/${post.entryId}` : null;
   const keep = key !== null && (exists || shown.current === key);
   shown.current = keep ? key : null;
+  // An entry the Content panel is making or copying (#1394): until it opens, the one shown takes nothing typed (what is
+  // typed is held for the new one), and the writer says what it is waiting for.
+  const opening = useStore((s) => s.postOpening);
   return (
-    <div className="post-writer" hidden={hidden}>
-      {post && keep ? (
-        <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
-      ) : (
-        <div className="post-none">
-          {!listed ? <Library aria-hidden="true" /> : isArticleCollection(listed) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
-          <p>{nothingOpenNote(listed)}</p>
-        </div>
+    <div className="post-writer" hidden={hidden} aria-busy={opening ? true : undefined}>
+      <div className="post-hold" inert={!!opening}>
+        {post && keep ? (
+          <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
+        ) : (
+          <div className="post-none">
+            {!listed ? <Library aria-hidden="true" /> : isArticleCollection(listed) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
+            <p>{nothingOpenNote(listed)}</p>
+          </div>
+        )}
+      </div>
+      {opening && (
+        <p className="post-opening" role="status">
+          <Spinner decorative /> <span className="ellipsis">{opening.label}</span>
+        </p>
       )}
     </div>
   );
@@ -244,6 +254,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   /** The latest `command`, for the editor's own input listener. */
   const commandRef = useRef<(run: () => void) => void>(() => {});
+  /** The latest `start`, for the Content panel opening the post it has just made (see setOpenWriter). */
+  const startRef = useRef<(typed: string) => boolean>(() => false);
   /** Why the stored text cannot be edited here, if it cannot. */
   const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
@@ -400,7 +412,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       () => saveAllRef.current(),
       { collectionId: post.collectionId, entryId: post.entryId },
       // A change to the post's fields made in the SEO view is followed as one of the writer's own.
-      (change) => void follow(change)
+      (change) => void follow(change),
+      (typed) => startRef.current(typed)
     );
     const offHistory = setWriterHistory((action) => void history(action));
     return () => {
@@ -530,6 +543,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     draft.checkpoint(true);
   };
   commandRef.current = command;
+  /**
+   * Just made, and opened (#1394): straight into the text, or the first field of a record without any (the title is
+   * already written), where what was typed while it was made goes in, as typed. False when it had nowhere to go.
+   */
+  const start = (typed: string): boolean => {
+    const el = root.current?.isContentEditable ? root.current : null;
+    const at = el ?? pageRef.current?.querySelector<HTMLElement>('.post-record .entry-values :is(input, textarea, select):not(:disabled)');
+    if (!at) return !typed;
+    at.focus();
+    if (!typed) return true;
+    if (el) return document.execCommand('insertText', false, typed);
+    if (!at.matches('textarea, input:is(:not([type]), [type="text"], [type="url"], [type="email"], [type="search"], [type="tel"])')) return false;
+    // One line, in a field of one line.
+    return document.execCommand('insertText', false, at.matches('input') ? typed.replace(/\s*\n\s*/g, ' ') : typed);
+  };
+  startRef.current = start;
   // Blocks and lists change in the DOM directly: the browser's own commands can nest a list in a paragraph.
   const block = (tag: ArticleBlockTag) => command(() => void setBlock(root.current!, tag));
   const list = (kind: ArticleListKind) => command(() => void toggleList(root.current!, kind));
