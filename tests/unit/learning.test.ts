@@ -359,6 +359,33 @@ describe('learning mode recording a chat (#1566)', () => {
     expect(JSON.parse(text[3])).toMatchObject({ type: 'user', text: 'again' });
   });
 
+  it("refuses the chat's own project folder even while it lacks the file that marks it a project", async () => {
+    const project = scratch('so-learning-unmarked');
+    const learning = recorder(join(project, 'static', 'learning'));
+    learning.record('c_1', { type: 'user', project });
+    learning.record('c_1', { type: 'outcome' });
+    await learning.flush();
+    expect(existsSync(join(project, 'static'))).toBe(false);
+  });
+
+  it('records an undo or redo of a run once, however many History changes saw it', async () => {
+    const dir = scratch('so-learning');
+    const learning = recorder(dir);
+    learning.record('c_1', { type: 'user', runId: 'run_a' });
+    learning.recordRun('run_a', { type: 'undo', via: 'chat' });
+    learning.recordRun('run_a', { type: 'undo', via: 'undo' });
+    learning.recordRun('run_a', { type: 'redo', via: 'redo' });
+    learning.recordRun('run_a', { type: 'undo', via: 'undo' });
+    await learning.flush();
+    expect(lines(join(dir, files(dir)[0])).map((r) => [r.type, r.via])).toEqual([
+      ['header', undefined],
+      ['user', undefined],
+      ['undo', 'chat'],
+      ['redo', 'redo'],
+      ['undo', 'undo']
+    ]);
+  });
+
   it('adds to a whole file without a blank line', async () => {
     const dir = scratch('so-learning');
     writeFileSync(join(dir, '20261101T000000000Z-c_ok.jsonl'), '{"type":"header","conversationId":"c_ok"}\n');
@@ -473,6 +500,8 @@ describe('learning mode reading a change of History (#1566)', () => {
     expect(historyChanges(at(3), at(2))).toEqual([{ type: 'undo', runId: 'run_b' }]);
     // The author's own step crossed: no AI run changed.
     expect(historyChanges(at(2), at(1))).toEqual([]);
+    // A request that ended meanwhile adds its step: not a redo.
+    expect(historyChanges(at(3), [...at(3), step('e4', true, { runId: 'run_c' })])).toEqual([]);
   });
 
   it('reads a reviewed undo of one turn as that turn undone, and stepping back over it as the turn brought back', () => {

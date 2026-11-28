@@ -438,27 +438,19 @@ const compileCacheFor = (session: object): CompileCache => {
 /** Learning mode's recorder (#1566), made at launch once the log is open (below); null while learning mode is off. */
 let learning: LearningRecorder | null = null;
 
-/** History changes made while learning mode is on, one after another, so each compares only what it changed itself. */
-let historyChain: Promise<unknown> = Promise.resolve();
-
 /**
  * `act`, a change of History, with learning mode told of each AI run it took back or brought back (#1566), however it
- * was asked for: the chat's Undo, the toolbar, History, or a reviewed undo of one turn (learning.ts historyChanges).
+ * was asked for: the chat's Undo, the toolbar, History, or a reviewed undo of one turn (learning.ts historyChanges). It
+ * runs at once, as it would with learning mode off; two that overlap may both see a change, which is recorded once.
  */
-function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
-  if (!learning) return Promise.resolve(act()) as Promise<Awaited<T>>;
-  const step = async (): Promise<Awaited<T>> => {
-    const session = controller.session;
-    const steps = (): HistoryStep[] => (session ? session.historyInfo().entries.map((e) => ({ id: e.id, applied: e.applied, ...(e.source === 'ai' && e.runId ? { runId: e.runId } : {}), ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })) : []);
-    const before = steps();
-    const result = await act();
-    // A step refused (another one got there first) changed nothing of its own.
-    if (learning && session && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) for (const c of historyChanges(before, steps())) learning.recordRun(c.runId, { type: c.type, via });
-    return result;
-  };
-  const done = historyChain.then(step, step);
-  historyChain = done.catch(() => undefined);
-  return done;
+async function learnHistory<T>(via: string, act: () => T): Promise<Awaited<T>> {
+  const session = learning ? controller.session : null;
+  const steps = (): HistoryStep[] => (session ? session.historyInfo().entries.map((e) => ({ id: e.id, applied: e.applied, ...(e.source === 'ai' && e.runId ? { runId: e.runId } : {}), ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })) : []);
+  const before = session ? steps() : null;
+  const result = await act();
+  // A step refused (another one got there first) changed nothing of its own.
+  if (learning && session && before && controller.session === session && (result as { ok?: unknown } | undefined)?.ok !== false) for (const c of historyChanges(before, steps())) learning.recordRun(c.runId, { type: c.type, via });
+  return result;
 }
 
 const orchestrator = new Orchestrator({

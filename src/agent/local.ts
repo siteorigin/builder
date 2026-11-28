@@ -697,7 +697,12 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       corrections.push({ role: 'assistant', content: result.raw.slice(0, 2000) || '(empty reply)' }, { role: 'user', content: `Your last reply could not be used: ${result.problem}. ${constrained ? 'Reply with exactly one JSON object in the required format, and nothing else.' : 'Send your whole reply again, in the same format.'}` });
-      note?.({ kind: 'resend', reason: 'correction', problem: result.problem, reply: result.raw, corrections: corrections.slice(-2) });
+      if (note) {
+        // The key in use never goes into a note, even from a server that echoes it.
+        const key = this.endpoint.apiKey;
+        const clean = (text: string) => (key ? text.split(key).join('…') : text);
+        note({ kind: 'resend', reason: 'correction', problem: clean(result.problem), reply: clean(result.raw), corrections: corrections.slice(-2).map((c) => ({ ...c, content: clean(String(c.content)) })) });
+      }
     }
   }
 

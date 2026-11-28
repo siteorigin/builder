@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { redact } from '@agent/types';
 import type { ChatRecorder, ChatRecord } from '@agent/learning';
 import { stableHash } from '@shared/ids';
@@ -124,6 +124,12 @@ export function projectHolding(path: string): string | null {
   }
 }
 
+/** Whether `path` is `folder` or inside it, symbolic links followed. */
+export function isWithin(path: string, folder: string): boolean {
+  const rel = relative(realPath(folder), realPath(path));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
 /** A folder learning mode will not write to, said as the log says it. */
 class RefusedFolder extends Error {}
 
@@ -132,6 +138,10 @@ export class LearningRecorder implements ChatRecorder {
   private files = new Map<string, string>();
   /** The conversation each run recorded in this launch belongs to, for an undo that names only the run. */
   private runs = new Map<string, string>();
+  /** Conversations of a project that holds the folder, whatever it is marked with: never recorded. */
+  private refused = new Set<string>();
+  /** What was last recorded of each run's changes (undone or redone), so the same change is never recorded twice. */
+  private standing = new Map<string, string>();
   /** Files whose last write failed, which may end part way through a line: the next write starts a line of its own. */
   private torn = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
@@ -155,7 +165,13 @@ export class LearningRecorder implements ChatRecorder {
 
   record(conversationId: string, record: ChatRecord): void {
     try {
-      if (!conversationId) return;
+      if (!conversationId || this.refused.has(conversationId)) return;
+      // The chat's own project, as the run names it: refused even while it lacks the file that marks it a project.
+      if (typeof record.project === 'string' && isWithin(this.opts.dir, record.project)) {
+        this.refused.add(conversationId);
+        this.fail(new RefusedFolder(`Learning mode does not write to ${this.opts.dir}: it is inside the project ${record.project}, and its recordings must stay outside every project. Chats go on unrecorded.`), this.opts.dir);
+        return;
+      }
       if (typeof record.runId === 'string') this.runs.set(record.runId, conversationId);
       const time = this.now();
       const line = this.line(conversationId, record, time);
@@ -173,6 +189,11 @@ export class LearningRecorder implements ChatRecorder {
    */
   recordRun(runId: string, record: ChatRecord): void {
     try {
+      // An undo or redo already recorded (two History changes that both saw it) is recorded once.
+      if (record.type === 'undo' || record.type === 'redo') {
+        if (this.standing.get(runId) === record.type) return;
+        this.standing.set(runId, record.type);
+      }
       const known = this.runs.get(runId);
       if (known) return this.record(known, { ...record, runId });
       const time = this.now();
@@ -313,12 +334,12 @@ export interface HistoryStep {
 /**
  * The AI runs whose changes a change of History took back or brought back, in the order History crossed their steps:
  * back from the newest, forward from the oldest. Crossing a run's own step undoes or redoes it; crossing a step that
- * took it back on its own does the opposite. A step that is new and applied (a reviewed undo, just made) is crossed
- * forward.
+ * took it back on its own does the opposite. A new step counts only when it is a reviewed undo, just made: a run's own
+ * new step is a request that ended meanwhile, not a redo.
  */
 export function historyChanges(before: HistoryStep[], after: HistoryStep[]): Array<{ type: 'undo' | 'redo'; runId: string }> {
   const was = new Map(before.map((s) => [s.id, s.applied]));
-  const crossed = after.filter((s) => (was.get(s.id) ?? false) !== s.applied);
+  const crossed = after.filter((s) => (was.has(s.id) ? was.get(s.id) !== s.applied : s.applied && !!s.revertsRunId));
   const back = crossed.some((s) => !s.applied);
   const out: Array<{ type: 'undo' | 'redo'; runId: string }> = [];
   for (const s of back ? crossed.reverse() : crossed) {
