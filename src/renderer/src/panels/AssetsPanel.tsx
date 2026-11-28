@@ -1631,7 +1631,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </span>
           ) : devUrl ? (
             <Picture
-              key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
+              key={gone ? `missing-${gone.original}-${gone.variants.join('|')}` : 'present'}
               a={sel}
               devUrl={devUrl}
               maxHeight={176}

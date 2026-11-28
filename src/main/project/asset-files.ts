@@ -2,14 +2,14 @@
  * Library images, documents and fonts whose files are no longer in the project folder (moved, deleted or never copied
  * along). The library entry and every use of it stay as they are, so the author can locate the file or choose another.
  */
-import { promises as fs } from 'node:fs';
+import { constants, promises as fs } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { Diagnostic, MissingAssetFiles } from '@shared/api';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { assetUsages } from '@engine/apply';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { copyMime } from '@shared/picture-formats';
-import { imageProblem } from './media';
+import { heifHasImageData, imageProblem } from './media';
 
 /** A picture or font as the asset importer names it in static/assets/: a slug, eight hash characters, `-480w` for a responsive copy. */
 export const IMPORTED_MEDIA_FILE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
@@ -54,7 +54,8 @@ export async function findMissingAssetFiles(projectDir: string, assets: Record<s
       for (const v of a.variants ?? []) {
         if (typeof v?.file !== 'string') continue;
         if (!(await present(v.file))) variants.push(v.file);
-        else if (await damaged(v.file)) variants.push(v.file), hurt.push(v.file);
+        // Only a picture's copies are pictures: a copy listed on a document (assets.json edited by hand) is not judged.
+        else if (a.kind === 'image' && (await damaged(v.file))) variants.push(v.file), hurt.push(v.file);
       }
     if (original || variants.length) out.push({ assetId: a.id, original, variants, damaged: hurt });
   }
@@ -75,17 +76,27 @@ const COPY_READ_LIMIT = 64 * 1024 * 1024;
 export async function damagedCopy(path: string): Promise<boolean> {
   const mime = copyMime(path);
   if (!mime) return false;
-  const st = await fs.lstat(path, { bigint: true }).catch(() => null);
-  if (!st?.isFile() || st.size > COPY_READ_LIMIT) return false;
-  const key = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
-  const known = copyVerdicts.get(key);
-  if (known !== undefined) return known;
-  const buf = await fs.readFile(path).catch(() => null);
-  if (!buf) return false;
-  const verdict = imageProblem(buf, mime) !== null;
-  if (copyVerdicts.size >= COPY_VERDICTS) copyVerdicts.delete(copyVerdicts.keys().next().value!);
-  copyVerdicts.set(key, verdict);
-  return verdict;
+  // One handle, never through a link, for both what the file is and what it holds: a file put in its place meanwhile is
+  // judged as itself.
+  const handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)).catch(() => null);
+  if (!handle) return false;
+  try {
+    const st = await handle.stat({ bigint: true });
+    if (!st.isFile() || st.size > BigInt(COPY_READ_LIMIT)) return false;
+    const key = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+    const known = copyVerdicts.get(key);
+    if (known !== undefined) return known;
+    const buf = await handle.readFile();
+    // A copy cut short just before its image data is still whole box by box.
+    const verdict = imageProblem(buf, mime) !== null || (mime === 'image/avif' && !heifHasImageData(buf));
+    if (copyVerdicts.size >= COPY_VERDICTS) copyVerdicts.delete(copyVerdicts.keys().next().value!);
+    copyVerdicts.set(key, verdict);
+    return verdict;
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 const copies = (n: number) => (n === 1 ? 'a smaller copy' : `${n} smaller copies`);

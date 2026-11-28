@@ -474,6 +474,13 @@ describe('a smaller copy that is there but damaged (#1459)', () => {
     expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [avif], damaged: [avif] }]);
     writeFileSync(join(dir, avif), whole);
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
+    // Cut just before its image data, every box left is whole: it is still damaged.
+    const mdat = whole.indexOf('mdat') - 4;
+    expect(mdat).toBeGreaterThan(0);
+    writeFileSync(join(dir, avif), whole.subarray(0, mdat));
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [avif], damaged: [avif] }]);
+    writeFileSync(join(dir, avif), whole);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     // A whole copy found whole, then overwritten with as many bytes that are no picture, is looked at again.
     const webp = record.variants!.find((v) => v.file.endsWith('.webp'))!.file;
     writeFileSync(join(dir, webp), Buffer.alloc(readFileSync(join(dir, webp)).length));

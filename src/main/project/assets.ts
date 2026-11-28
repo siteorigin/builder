@@ -470,13 +470,14 @@ const isFile = (path: string) => fs.lstat(path).then((s) => s.isFile(), () => fa
 
 /**
  * Write prepared files into the project, never through a link that leads out of it. `onlyMissing` leaves a file
- * that is already there alone (one put back meanwhile), unless it is one to `replace`. Returns the files written.
+ * that is already there alone (one put back meanwhile), unless it is one to `replace` that is still damaged. Returns
+ * the files written.
  */
 async function writeFiles(projectDir: string, files: PendingFile[], onlyMissing = false): Promise<string[]> {
   const written: string[] = [];
   for (const f of files) {
     const at = safeJoin(projectDir, f.rel);
-    if (onlyMissing && !f.replace && (await isFile(at))) continue;
+    if (onlyMissing && (await isFile(at)) && !(f.replace && (await damagedCopy(at)))) continue;
     await atomicWrite(at, f.data);
     written.push(f.rel);
   }
