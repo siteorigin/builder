@@ -75,7 +75,7 @@ interface ReadInfo {
 }
 
 /** What read_project adds to the summary on request; pages and the shared header and footer come with every read. */
-export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components'] as const;
+export const PROJECT_SECTIONS = ['tokens', 'catalogue', 'components', 'siteCode'] as const;
 const PROJECT_EXTRAS: readonly string[] = PROJECT_SECTIONS;
 
 function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, index: number, args: Record<string, any>): ReadInfo | null {

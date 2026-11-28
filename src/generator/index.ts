@@ -128,6 +128,8 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
+import { siteGlobalCss, siteHeadCode } from '@shared/site-code';
+import { integrationHead } from '@shared/integrations';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
@@ -4478,6 +4480,12 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     ? `${follow ? `\n\t// Every page, header or not, follows a choice made in another tab of the site.\n\t$effect(() => followThemeChoice());` : ''}\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
+  // The site's own head code and its integrations' tags (shared/site-code.ts, shared/integrations.ts), on the published
+  // website alone: never in the editor's preview, and never under `vite dev`, which the editor's canvas runs, so the
+  // author's scripts never run while they edit and their analytics never count their own visits.
+  const published = opts.instrument ? '' : publishedHead(state);
+  const publishedImport = published ? `\n\timport { dev } from '$app/env';` : '';
+  const publishedTags = published ? `\n\t{#if !dev}{@html ${js(published)}}{/if}` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginLiveViewer && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\tif (!window.__siteoriginLiveViewer) import('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => { if (!window.__siteoriginLiveViewer) window.dispatchEvent(new CustomEvent('siteorigin:navigated')); });`
     : '';
@@ -4488,12 +4496,13 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/theme.css';
 	import '../lib/siteorigin/styles/components.css';
 	import '../lib/siteorigin/styles/site.css';
+	import '../lib/siteorigin/styles/${GLOBAL_CSS_FILE}';
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
 	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';
 	import { snapshot } from '$app/navigation';
-	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
+	import { keptSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}${publishedImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4518,7 +4527,7 @@ ${editing}</script>
 	<link rel="icon" href={${HEAD_ASSET}(${js(iconHref)})} type=${js(iconType)} />
 	${siteIconLinks()}
 	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
-	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
+	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}${publishedTags}
 </svelte:head>
 
 <a class="so-skip-link" href="#main" lang={textLang('skipLink')}>{text().skipLink}</a>
@@ -4533,6 +4542,20 @@ ${footer}
 {/if}
 `
   );
+}
+
+/** The author's own stylesheet, beside the generated ones, imported after them all (see SiteDoc.globalCss). */
+export const GLOBAL_CSS_FILE = 'global.css';
+
+/** The site's own stylesheet as a file: a line that says where it comes from, then the author's CSS as typed. */
+export function generateGlobalCss(state: ProjectState): string {
+  const css = siteGlobalCss(state.site);
+  return `/* The site's own CSS, from Site settings > Custom code (siteorigin/site.json). Loaded after every other stylesheet. */\n${css}${css && !css.endsWith('\n') ? '\n' : ''}`;
+}
+
+/** What the published website adds to every page's <head>: its integrations' tags, then the author's head code. */
+export function publishedHead(state: ProjectState): string {
+  return [integrationHead(state.site), siteHeadCode(state.site).trim()].filter(Boolean).join('\n');
 }
 
 export const LAYOUT_TS = `// Generated by SiteOrigin Builder. Every page is prerendered to static HTML.
@@ -5419,6 +5442,8 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   put(`${STYLES_DIR}/theme.css`, () => theme.baseCss);
   put(`${STYLES_DIR}/components.css`, () => file('components.css', generateComponentsCss));
   put(`${STYLES_DIR}/site.css`, () => file('site.css', generateSiteCss));
+  // The author's own stylesheet, after every other (empty while there is none, so adding one changes no imports).
+  put(`${STYLES_DIR}/${GLOBAL_CSS_FILE}`, () => file(GLOBAL_CSS_FILE, generateGlobalCss));
   for (const def of sortedDefs(state)) {
     if (def.kind === 'managed' && def.tree) put(defFile(def), () => file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     // A theme component installed before links had relationships renders them too (see withAuthoredRel).

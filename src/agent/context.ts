@@ -1,6 +1,8 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
+import { hasCode } from '@shared/site-code';
+import { fathomSiteId } from '@shared/integrations';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
 import type { CollectionFieldSchema, ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, SlotDef } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
@@ -185,6 +187,19 @@ function agentDiscoverySummary(site: ProjectState['site']): { agentDiscovery?: R
   return { agentDiscovery: { llmsTxt, llmsFull, markdownMirrors, ...(summary ? { summary } : {}), ...(webmcp ? { webmcp } : {}) } };
 }
 
+/**
+ * The site's own code and integrations, only while it has some: how long each piece of code is (read_project with the
+ * siteCode section gives it in full) and each integration's settings.
+ */
+function siteCodeSummary(site: ProjectState['site']): { siteCode?: Record<string, unknown> } {
+  const out: Record<string, unknown> = {};
+  if (hasCode(site.headCode)) out.headCode = { characters: site.headCode.length };
+  if (hasCode(site.globalCss)) out.globalCss = { characters: site.globalCss.length };
+  const fathom = fathomSiteId(site);
+  if (fathom) out.integrations = { fathom: { siteId: fathom } };
+  return Object.keys(out).length ? { siteCode: out } : {};
+}
+
 /** The site's crawler policy as the website follows it, only while it differs from the default (every crawler let in). */
 function crawlerPolicySummary(site: ProjectState['site']): { crawlerPolicy?: ReturnType<typeof storedCrawlerPolicy> } {
   const policy = storedCrawlerPolicy(crawlerRules(site));
@@ -213,7 +228,9 @@ export function projectSummary(state: ProjectState, revision: number) {
       // Which crawlers robots.txt keeps out, as the website reads the policy, once it differs from the default (site.update crawlerPolicy).
       ...crawlerPolicySummary(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
-      ...visitorTextSummary(state)
+      ...visitorTextSummary(state),
+      // The site's own head code and CSS, and its integrations (site.update headCode, globalCss, integrations).
+      ...siteCodeSummary(state.site)
     },
     theme: { id: theme.id, name: theme.name },
     homePageId: state.site.homePageId,

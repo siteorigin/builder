@@ -68,7 +68,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
   article: ['article']
 };
-const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp', 'redirectHost', 'headerMenuOrder'];
+const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp', 'redirectHost', 'headerMenuOrder', 'headCode', 'globalCss'];
 
 /** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
 function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {
@@ -251,6 +251,11 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       }
       // The crawler policy part by part: paths typed during an AI turn never wait on, or replace, crawlers named meanwhile.
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
+      // Each integration on its own: a site ID typed for one never waits on, or replaces, a change to another.
+      if (op.integrations) {
+        const own: unknown = state.site.integrations;
+        fields.integrations = Object.fromEntries(Object.keys(op.integrations).map((k) => [k, own && typeof own === 'object' ? has(own as Record<string, unknown>, k) : undefined]));
+      }
       return found(fields);
     }
     case 'collection.update': {
