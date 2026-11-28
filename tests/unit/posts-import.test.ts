@@ -585,26 +585,33 @@ describe('reading footnotes (#1505)', () => {
   });
 
   it('puts the footnotes where the post’s footnotes block is, never where its words only mention one', async () => {
-    const body = `<div title="<!-- wp:footnotes /-->"><p>Intro<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>.</p></div><pre><!-- wp:footnotes /--></pre><!-- wp:footnotes /--><p>After.</p>`;
+    const body = `<div title="<!-- wp:footnotes /-->"><p>Intro<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>.</p></div><pre>Code <!-- wp:footnotes /--> shown</pre><!-- wp:footnotes /--><p>After.</p>`;
     const source = await readWordPress(wxr([item(5, published, `<!-- wp:paragraph -->${body}`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
-    expect(text(source.posts[0].body)).toEqual(['Intro[1].', 'Footnotes', 'A note.', 'After.']);
+    expect(text(source.posts[0].body)).toEqual(['Intro[1].', 'Code shown', 'Footnotes', 'A note.', 'After.']);
+    // A footnotes block inside a link or a list: the notes are a list of their own, never linked or numbered with it.
+    const inside = await readWordPress(wxr([item(8, published, `<!-- wp:paragraph --><p><a href="#contact">Reach us<!-- wp:footnotes /--></a></p><ol><li>One<!-- wp:footnotes /--></li></ol><p>Peaked<sup data-fn="fn-a"><a href="#fn-a">1</a></sup>.</p>`) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'A note.' }]))]), {});
+    const [post] = inside.posts;
+    expect(text(post.body)).toEqual(['Reach us', 'Footnotes', 'A note.', 'One', 'Peaked[1].']);
+    expect(JSON.stringify(post.body.slice(1, 3))).not.toContain('link');
   });
 
   it('keeps one item per footnote, whatever a note holds, so each number still names its note', async () => {
     const marks = ['a', 'b', 'c'].map((id, i) => `<sup data-fn="fn-${id}" class="fn"><a href="#fn-${id}">${i + 1}</a></sup>`).join(' ');
     const notes = JSON.stringify([
-      { id: 'fn-a', content: '<p>First.</p><p>Second.</p>' },
-      { id: 'fn-b', content: '' },
-      { id: 'fn-c', content: 'Third.' }
+      { id: 'fn-a', content: '<p>First.</p>\n<p>Second.</p>Third.' },
+      { id: 'fn-b', content: '  ' },
+      { id: 'fn-c', content: 'Watch [embed]https://video.example/1[/embed]' }
     ]);
     const source = await readWordPress(wxr([item(6, published, `<!-- wp:paragraph --><p>Claims ${marks}</p><!-- /wp:paragraph --><!-- wp:footnotes /-->`) + meta('footnotes', notes)]), {});
     const list = source.posts[0].body[2];
     expect(list).toMatchObject({ type: 'ol' });
-    expect(text([list])).toEqual(['First.\nSecond. | — | Third.']);
+    expect(text([list])).toEqual(['First.\nSecond.\nThird. | — | Watch\nhttps://video.example/1']);
+    // A note's shortcodes are read as the post's are.
+    expect(JSON.stringify(list)).toContain('"target":"https://video.example/1"');
   });
 
   it('reads a post’s numbers and places as its markup has them, never from its words', async () => {
-    const body = '<!-- wp:paragraph --><p>Write id="contact" and data-fn="x" in the HTML. <a href="#contact">Contact us</a>. Peaked<sup data-fn=fn-1><a href=#fn-1>1</a></sup>, see <a href="#n2">[2]</a>.</p><!-- /wp:paragraph --><ol><li class="note"id="n2">Two.</li></ol>';
+    const body = '<!-- wp:paragraph --><p>Write id="contact" and data-fn="x" in the HTML<span name="contact"></span>. <a href="#contact">Contact us</a>. Peaked<sup data-fn=fn-1><a href=#fn-1>1</a></sup>, see <a href="#n2">[2]</a>.</p><!-- /wp:paragraph --><ol><li class="note"id="n2">Two.</li></ol>';
     const source = await readWordPress(wxr([item(7, published, body)]), {});
     const [post] = source.posts;
     expect(text(post.body)[0]).toBe('Write id="contact" and data-fn="x" in the HTML. Contact us. Peaked[1], see [2].');
@@ -614,20 +621,26 @@ describe('reading footnotes (#1505)', () => {
     expect(links).not.toContain('n2');
     expect(post.notes).toEqual(['The text of its footnote was not in the export: its number is left without a note.', 'A link to a place in the post itself (a note number, say) is plain words now: an imported post can’t link within itself.']);
     expect(sectionLinks(commit(site(), source).after).map((d) => d.message)).toEqual([expect.stringContaining('#contact')]);
+    // A note the post never shows names no place of it.
+    const unshown = await readWordPress(wxr([item(9, published, '<!-- wp:paragraph --><p><a href="#contact">Contact us</a></p>') + meta('footnotes', JSON.stringify([{ id: 'fn-z', content: '<span id="contact">Old.</span>' }]))]), {});
+    expect(JSON.stringify(unshown.posts[0].body)).toContain('"target":"contact"');
+    expect(unshown.posts[0].notes).toEqual([]);
   });
 
   it('keeps hand-written notes, and unlinks the numbers that went to places in the post itself', async () => {
-    const body = '<p>Yields rose<sup id="ref1"><a href="#note1">[1]</a></sup>. <a href="#contact">Write to us</a>. <a href="javascript:alert(1)">Not this</a>.</p>\n\n<ol><li id="note1">From the 2019 survey. <a href="#ref1">↩</a></li></ol>';
+    const body = '<p>Yields rose<sup id="ref1"><a href="#note1">[1]</a></sup>. <a href="#contact">Write to us</a>. <a href="javascript:alert(1)">Not this</a>. <a href="javascript:void(0)">Nor this</a>. <a href="#form">The form</a>.</p><form id="form"><input></form>\n\n<ol><li id="note1">From the 2019 survey. <a href="#ref1">↩</a></li></ol>';
     const source = await readWordPress(wxr([item(3, published, body)]), {});
     const [post] = source.posts;
-    expect(text(post.body)).toEqual(['Yields rose[1]. Write to us. Not this.', 'From the 2019 survey. ↩']);
+    expect(text(post.body)).toEqual(['Yields rose[1]. Write to us. Not this. Nor this. The form.', 'From the 2019 survey. ↩']);
     const links = JSON.stringify(post.body);
     expect(links).not.toContain('note1');
     expect(links).not.toContain('ref1');
+    // A place the import leaves out (a form) is still one the post named.
+    expect(links).not.toContain('"target":"form"');
     // A section the post never had (the site's own, perhaps) is still linked to.
     expect(links).toContain('"target":"contact"');
     // A link dropped for its address is still said as one.
-    expect(post.notes).toEqual(['2 links to places in the post itself (its note numbers, say) are plain words now: an imported post can’t link within itself.', 'Kept the words of a link whose address could not be kept.']);
+    expect(post.notes).toEqual(['Removed a form.', '3 links to places in the post itself (its note numbers, say) are plain words now: an imported post can’t link within itself.', 'Kept the words of 2 links whose address could not be kept.']);
   });
 });
 
