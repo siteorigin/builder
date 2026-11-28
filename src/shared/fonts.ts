@@ -22,7 +22,7 @@ export function isValidFontAsset(a: AssetRecord): boolean {
 export interface ProjectFontFamily {
   family: string;
   faces: AssetRecord[];
-  /** The kind of face the family is, as its files say (the first that says); absent when none does. */
+  /** The kind of face the family is, when its files that say agree on it; absent when none says, or they differ. */
   category?: FontCategory;
 }
 
@@ -41,7 +41,7 @@ export function projectFontFamilies(state: ProjectState): ProjectFontFamily[] {
     else byFamily.set(key, { family: a.font!.family, faces: [a] });
   }
   for (const entry of byFamily.values()) {
-    const category = entry.faces.map((a) => a.font!.category).find((c) => !!c && c in FALLBACK_STACKS);
+    const category = familyCategory(entry.faces);
     if (category) entry.category = category;
   }
   return [...byFamily.values()].sort((a, b) => byText(a.family, b.family));
@@ -57,9 +57,42 @@ export const FALLBACK_STACKS: Readonly<Record<FontCategory, string>> = {
   monospace: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
 };
 
+const FONT_CATEGORIES: readonly FontCategory[] = ['sans-serif', 'serif', 'monospace'];
+/** Is this one of the kinds of face (a hand-edited assets.json can hold anything)? */
+export const isFontCategory = (v: unknown): v is FontCategory => typeof v === 'string' && (FONT_CATEGORIES as readonly string[]).includes(v);
+
+/**
+ * The kind of face a family's files are: the one kind those that say agree on, so an italic that says nothing takes
+ * its upright's, while files that disagree leave it unknown, in whatever order they are listed.
+ */
+export function familyCategory(faces: readonly AssetRecord[]): FontCategory | undefined {
+  const kinds = new Set(faces.map((a) => a.font?.category).filter(isFontCategory));
+  return kinds.size === 1 ? [...kinds][0] : undefined;
+}
+
+/**
+ * Which standard fallback a stack ends in after its first family: a kind of face, `null` for a tail of its own
+ * ("'Acme', Arial, serif"), or undefined for a stack with nothing after its first family.
+ */
+export function stackFallback(stack: string): FontCategory | null | undefined {
+  const at = stack.indexOf(',');
+  if (at < 0) return undefined;
+  const tail = stack
+    .slice(at + 1)
+    .split(',')
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .join(', ');
+  return FONT_CATEGORIES.find((c) => FALLBACK_STACKS[c] === tail) ?? null;
+}
+
+/** A stack's first family followed by the standard fallback of a kind of face, in place of whatever followed it. */
+export function withFallback(stack: string, category: FontCategory): string {
+  return `${stack.split(',')[0].trim()}, ${FALLBACK_STACKS[category]}`;
+}
+
 /** The font stack a token uses for an imported family, ending in a fallback of its kind (sans-serif when unknown). */
 export function importedFontStack(family: string, category: FontCategory = 'sans-serif'): string {
-  return `'${family}', ${FALLBACK_STACKS[category] ?? FALLBACK_STACKS['sans-serif']}`;
+  return `'${family}', ${FALLBACK_STACKS[isFontCategory(category) ? category : 'sans-serif']}`;
 }
 
 /** The stack for a project's imported family, by its name (any case): its own fallback, or sans-serif when it has no files. */

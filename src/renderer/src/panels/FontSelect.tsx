@@ -1,5 +1,6 @@
-import type { ProjectState } from '@shared/types';
-import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { useId } from 'react';
+import type { FontCategory, ProjectState } from '@shared/types';
+import { importedFontStack, isFontCategory, projectFontFamilies, projectFontStack, stackFallback, withFallback } from '@shared/fonts';
 import { fontFamilies, installedFonts } from '@catalogue/fonts';
 import { Upload } from 'lucide-react';
 import { api, getState, toast } from '../store';
@@ -12,6 +13,13 @@ const SYSTEM_FONT_CHOICES = [
   { label: 'Georgia (serif)', value: "Georgia, 'Times New Roman', serif" },
   { label: 'Helvetica / Arial', value: "'Helvetica Neue', Helvetica, Arial, sans-serif" },
   { label: 'Monospace', value: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace" }
+];
+
+/** The fallbacks an imported font whose files do not say what kind of face it is can end in. */
+const FALLBACK_CHOICES: ReadonlyArray<{ label: string; value: FontCategory }> = [
+  { label: 'Sans-serif', value: 'sans-serif' },
+  { label: 'Serif', value: 'serif' },
+  { label: 'Monospace', value: 'monospace' }
 ];
 
 /** The first family in a font stack, as a person would name it ("Fraunces", not "'Fraunces Variable'"). */
@@ -49,7 +57,7 @@ export function FontSelect({
 }) {
   const imported = projectFontFamilies(state)
     .filter((f) => f.family.toLowerCase() !== exclude?.toLowerCase())
-    .map((f) => ({ label: f.family, value: importedFontStack(f.family) }));
+    .map((f) => ({ label: f.family, value: importedFontStack(f.family, f.category), unknownKind: !f.category }));
   // A family being removed is left out wherever it leads a stack, built-in choices included ("Georgia (serif)" for an imported Georgia).
   const leads = (value: string) => fontFamilies(value)[0]?.toLowerCase() === exclude?.toLowerCase();
   const builtIn = [...installedFonts(state).map((f) => ({ label: `${f.name} (${f.category})`, value: f.stack })), ...SYSTEM_FONT_CHOICES].filter((f) => !exclude || !leads(f.value));
@@ -57,6 +65,10 @@ export function FontSelect({
   // An equivalent stack (same first family) shows as that font; the stored value stays until a new choice.
   const primary = fontFamilies(stack)[0]?.toLowerCase();
   const selected = all.find((f) => f.value === stack) ?? all.find((f) => fontFamilies(f.value)[0]?.toLowerCase() === primary);
+  const fallbackId = `${useId()}-fallback`;
+  // An imported font whose files do not say what kind of face it is: the author says which fallback it ends in (#1490).
+  const askFallback = !follows && !!selected && 'unknownKind' in selected && selected.unknownKind;
+  const fallback = askFallback ? stackFallback(stack) : undefined;
   /** Bring in a web font and use it straight away. */
   const importFont = async () => {
     const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(undefined, 'font').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The font couldn’t be added: ${e.message}` }));
@@ -64,7 +76,9 @@ export function FontSelect({
     if (said) toast(said, r.message && !r.assetIds.length ? 'error' : 'info');
     const doc = getState().snapshot?.state.assets.assets ?? {};
     const font = r.assetIds.map((a) => doc[a]).find((a) => a?.kind === 'font' && a.font);
-    if (font?.font) onChoose(importedFontStack(font.font.family));
+    // Its family as the project has it now, with any files it joined, so its fallback is the family's kind.
+    const now = getState().snapshot?.state;
+    if (font?.font) onChoose(now ? projectFontStack(now, font.font.family) : importedFontStack(font.font.family, font.font.category));
     else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2 or WOFF file.', 'error');
   };
   const select = (
@@ -97,13 +111,40 @@ export function FontSelect({
       </optgroup>
     </select>
   );
-  if (!importable) return select;
-  return (
+  const control = importable ? (
     <div className="font-select">
       {select}
       <button type="button" className="icon-btn sm" title="Add a font file and use it here" aria-label={`Add a font file for ${importable}`} onClick={() => void importFont()}>
         <Upload />
       </button>
+    </div>
+  ) : (
+    select
+  );
+  if (!askFallback) return control;
+  return (
+    <div className="font-select-group">
+      {control}
+      <div className="font-select-fallback">
+        <label htmlFor={fallbackId}>Fallback</label>
+        <select
+          id={fallbackId}
+          className="select sm"
+          title="Shown while the font loads, and for any character its file lacks"
+          value={fallback ?? ''}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (isFontCategory(v)) onChoose(withFallback(stack, v));
+          }}
+        >
+          {!fallback && <option value="">{fallback === null ? 'Custom fallback' : 'None'}</option>}
+          {FALLBACK_CHOICES.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 import { FileSearch, Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { MissingAssetFiles } from '@shared/api';
-import { familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
+import { familyCategory, familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
 import { scriptLabels } from '@shared/font-scripts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
@@ -277,7 +277,7 @@ function FontFamily({
           <h4>
             <button type="button" className="font-family-toggle" aria-expanded={open} aria-controls={`${uid}-body`} onClick={onToggle}>
               <DisclosureMark />
-              <span id={`${uid}-name`} style={{ fontFamily: shownStack(importedFontStack(family, faces.map((a) => a.font?.category).find(Boolean))) }}>
+              <span id={`${uid}-name`} style={{ fontFamily: shownStack(importedFontStack(family, familyCategory(faces))) }}>
                 {family}
               </span>
             </button>
