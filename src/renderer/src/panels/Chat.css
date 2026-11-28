@@ -293,7 +293,7 @@
   .composer .scope-where { flex: 0 1000000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
   /* A long name (an entry's title) is the part that gives way when the suffix says what the scope is ("this post"). */
   .composer .scope-chip.keep-where > .ellipsis:not(.scope-where) { flex: 0 1000000 auto; }
-  .composer .scope-chip.keep-where .scope-where { flex: none; min-width: 0; }
+  .composer .scope-chip.keep-where .scope-where { flex: 0 1 auto; }
   .composer .scope-where::before { content: '·'; margin-right: 5px; }
   .composer .scope-chip.def .scope-where { color: inherit; }
   .composer .chip.scope-chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
