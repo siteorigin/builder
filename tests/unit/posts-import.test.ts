@@ -552,13 +552,14 @@ describe('reading footnotes (#1505)', () => {
     ]);
     const source = await readWordPress(wxr([item(14, published, body) + meta('footnotes', notes)]), {});
     const [post] = source.posts;
-    expect(text(post.body)).toEqual(['Nitrate leaching peaked in October[1] and fell by spring[2].', 'Measured at 30 cm with suction lysimeters. | See the paper.']);
-    expect(post.body[1]).toMatchObject({ type: 'ol' });
+    expect(text(post.body)).toEqual(['Nitrate leaching peaked in October[1] and fell by spring[2].', 'Footnotes', 'Measured at 30 cm with suction lysimeters. | See the paper.']);
+    expect(post.body[1]).toEqual({ type: 'h2', spans: [{ text: 'Footnotes' }] });
+    expect(post.body[2]).toMatchObject({ type: 'ol' });
     // The numbers are words now: no link left to a place the post no longer has.
     expect(JSON.stringify(post.body[0])).not.toContain('anchor');
     // A link inside a note is kept.
-    expect(JSON.stringify(post.body[1])).toContain('https://journal.example/paper');
-    expect(post.notes).toEqual(['Its 2 footnotes are a numbered list at its end, and their numbers no longer link to them.']);
+    expect(JSON.stringify(post.body[2])).toContain('https://journal.example/paper');
+    expect(post.notes).toEqual(['Its 2 footnotes are a numbered list under a Footnotes heading, and their numbers no longer link to them.']);
     const { after } = commit(site(), source);
     expect(sectionLinks(after)).toEqual([]);
   });
@@ -566,7 +567,8 @@ describe('reading footnotes (#1505)', () => {
   it('puts the footnotes at the end when the post has no footnotes block, and says so when the export lost their text', async () => {
     const marker = '<p>Peaked<sup data-fn="fn-1" class="fn"><a href="#fn-1" id="fn-1-link">1</a></sup>.</p>';
     const kept = await readWordPress(wxr([item(1, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph -->`) + meta('footnotes', JSON.stringify([{ id: 'fn-1', content: 'A note.' }]))]), {});
-    expect(text(kept.posts[0].body)).toEqual(['Peaked[1].', 'A note.']);
+    expect(text(kept.posts[0].body)).toEqual(['Peaked[1].', 'Footnotes', 'A note.']);
+    expect(kept.posts[0].notes).toEqual(['Its footnote is under a Footnotes heading, and its number no longer links to it.']);
     for (const lost of ['', meta('footnotes', '[{"id":'), meta('footnotes', '[]')]) {
       const source = await readWordPress(wxr([item(2, published, `<!-- wp:paragraph -->${marker}<!-- /wp:paragraph --><!-- wp:footnotes /-->`) + lost]), {});
       const [post] = source.posts;
@@ -574,6 +576,12 @@ describe('reading footnotes (#1505)', () => {
       expect(post.notes).toEqual(['The text of its footnote was not in the export: its number is left without a note.']);
       expect(sectionLinks(commit(site(), source).after)).toEqual([]);
     }
+  });
+
+  it('keeps the footnotes a list of their own when a list comes just before them, so their numbers stay theirs', async () => {
+    const body = `<!-- wp:paragraph -->${'<p>Bring<sup data-fn="fn-a" class="fn"><a href="#fn-a" id="fn-a-link">1</a></sup>:</p>'}<!-- /wp:paragraph --><!-- wp:list {"ordered":true} --><ol><li>Boots</li><li>Gloves</li></ol><!-- /wp:list --><!-- wp:footnotes /-->`;
+    const source = await readWordPress(wxr([item(4, published, body) + meta('footnotes', JSON.stringify([{ id: 'fn-a', content: 'Waterproof.' }]))]), {});
+    expect(text(source.posts[0].body)).toEqual(['Bring[1]:', 'Boots | Gloves', 'Footnotes', 'Waterproof.']);
   });
 
   it('keeps hand-written notes, and unlinks the numbers that went to places in the post itself', async () => {

@@ -268,9 +268,10 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     // A web address alone on a line of a classic post is one WordPress shows embedded.
     let html = content;
     // The footnotes as a numbered list where the post shows them, or at its end when it numbers them but has no block.
+    // Under a heading of their own: a list just before them would otherwise take them in, and renumber them.
     const placed = footnotes.length && (FOOTNOTES_BLOCK.test(html) || footnotes.some((f) => numbered.has(f.id)));
     if (placed) {
-      const list = `<ol>${footnotes.map((f) => `<li>${f.content}</li>`).join('')}</ol>`;
+      const list = `<h2>Footnotes</h2><ol>${footnotes.map((f) => `<li>${f.content}</li>`).join('')}</ol>`;
       html = FOOTNOTES_BLOCK.test(html) ? html.replace(FOOTNOTES_BLOCK, () => list) : `${html}\n${list}`;
     }
     const prose = blocks ? html : html.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
@@ -293,7 +294,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const notes = reportNotes(report);
     if (placed) {
       const n = footnotes.length;
-      notes.push(n === 1 ? 'Its footnote is a numbered list at its end, and its number no longer links to it.' : `Its ${n} footnotes are a numbered list at its end, and their numbers no longer link to them.`);
+      notes.push(n === 1 ? 'Its footnote is under a Footnotes heading, and its number no longer links to it.' : `Its ${n} footnotes are a numbered list under a Footnotes heading, and their numbers no longer link to them.`);
     }
     const lost = [...numbered].filter((id) => !noteIds.has(id)).length;
     if (lost) notes.push(lost === 1 ? 'The text of its footnote was not in the export: its number is left without a note.' : `The text of ${lost} of its footnotes was not in the export: their numbers are left without notes.`);
