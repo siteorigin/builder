@@ -459,6 +459,27 @@ describe('documents in an open project', () => {
     expect(await c.locateAsset(id, sourceFile('copy.pdf', pdf()))).toEqual({ ok: true, message: 'Exhibitor Guide already has that file.' });
   });
 
+  it('names a file that matched another one in the same batch', async () => {
+    const { c } = await openProject();
+    const r = await c.importAssets([sourceFile('Spring menu.pdf', pdf()), sourceFile('Summer menu.pdf', pdf())], 'document');
+    expect(r.ok).toBe(true);
+    expect(r.assetIds).toHaveLength(1);
+    expect(r.note).toBe('Spring menu.pdf and Summer menu.pdf match, so Assets keeps only one file for them: Spring menu.pdf.');
+    expect(Object.values(c.session!.state.assets.assets).filter((x) => x.kind === 'document')).toHaveLength(1);
+  });
+
+  it('names the file the library keeps when files added together match one already in it', async () => {
+    const { c } = await openProject();
+    const [first] = (await c.importAssets([sourceFile('Catering.pdf', pdf())], 'document')).assetIds;
+    // One match of a library file is counted by the notice as already here; there is nothing more to say.
+    const one = await c.importAssets([sourceFile('Spring menu.pdf', pdf())], 'document');
+    expect(one).toEqual({ ok: true, assetIds: [first] });
+    const r = await c.importAssets([sourceFile('Spring menu.pdf', pdf()), sourceFile('Hall plan.pdf', pdf('hall')), sourceFile('Summer menu.pdf', pdf()), sourceFile('Autumn menu.pdf', pdf())], 'document');
+    expect(r.assetIds).toHaveLength(2);
+    expect(r.assetIds[0]).toBe(first);
+    expect(r.note).toBe('Spring menu.pdf, Summer menu.pdf and Autumn menu.pdf match, so Assets keeps only one file for them: Catering.pdf.');
+  });
+
   it('makes one library entry of the same document imported twice at once', async () => {
     const { c } = await openProject();
     const [a, b] = await Promise.all([c.importAssets([sourceFile('Guide.pdf', pdf())], 'document'), c.importAssets([sourceFile('Guide.pdf', pdf())])]);

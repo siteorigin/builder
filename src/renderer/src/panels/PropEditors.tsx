@@ -239,8 +239,9 @@ function DocumentPicker({ state, value, label, importFor, onPick, details, inval
     const selection = JSON.stringify(at.selection ?? null);
     setImporting(true);
     try {
-      const r = await api.project.importAssets(undefined, 'document').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The document couldn’t be added: ${e.message}` }));
-      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+      const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(undefined, 'document').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The document couldn’t be added: ${e.message}` }));
+      const said = [r.note, r.message].filter(Boolean).join(' ');
+      if (said) toast(said, r.message && !r.ok ? 'error' : 'info');
       const id = r.assetIds[0];
       // The new record reaches this window with the next snapshot, which may come after the reply.
       if (!id || !opening || !(await assetArrived(id, opening))) return;
