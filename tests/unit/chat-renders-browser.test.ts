@@ -24,7 +24,7 @@ const ENTRY = [
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
   `import { Chat } from ${src('renderer/src/panels/Chat')};`,
-  `import { applyAiEvent, getConfirm, useStore } from ${src('renderer/src/store')};`,
+  `import { applyAiEvent, getConfirm, pendingConfirms, useStore } from ${src('renderer/src/store')};`,
   "const time = '2026-11-24T00:00:00.000Z';",
   'window.mount = (state) => {',
   "const context = { pageId: state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, mode: 'ask' };",
@@ -68,6 +68,7 @@ const ENTRY = [
   // The app's own question, as the dialog host shows it, and the answer given to it.
   "  confirming: () => getConfirm()?.title ?? null,",
   "  confirm: (ok) => getConfirm()?.resolve(ok),",
+  "  confirms: () => pendingConfirms().length,",
   "  toasts: () => useStore.getState().toasts.map((t) => t.text),",
   "  shown: () => useStore.getState().conversation?.id,",
   '};'
@@ -258,9 +259,11 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('once the AI finishes'));
     expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
     await page.evaluate('so.done()');
-    // Cancelled: the chat and the box are as they were.
+    // Cancelled: the chat and the box are as they were. A second Enter while it is asked asks nothing more.
     await box.press('Enter');
     await page.waitForFunction('so.confirming() !== null');
+    await box.press('Enter');
+    expect(await page.evaluate('so.confirms()')).toBe(1);
     await page.evaluate('so.confirm(false)');
     await page.waitForFunction('so.confirming() === null');
     expect(await page.evaluate('so.shown()')).toBe('c_r');
@@ -280,6 +283,18 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('already empty'));
     expect(await page.evaluate('so.confirming()')).toBeNull();
     expect(await page.evaluate("so.calls('ai.send')")).toEqual([]);
+  });
+
+  it('never sends `/clear` as the answer to the AI’s question (#1356)', async () => {
+    await page.evaluate('so.ask()');
+    const box = page.getByRole('textbox', { name: 'Your answer', exact: true });
+    await box.fill('/clear');
+    await page.getByRole('button', { name: 'Send answer' }).click();
+    await box.press('Enter');
+    expect(await page.evaluate("so.calls('ai.answer')")).toEqual([]);
+    expect(await page.evaluate('so.confirming()')).toBeNull();
+    expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('waiting for your answer'));
+    expect(await box.inputValue()).toBe('/clear');
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

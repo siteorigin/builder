@@ -43,7 +43,7 @@ describe('the question the composer answers', () => {
   it('takes `/clear` on its own as the command, never as a message or an answer (#1356)', () => {
     expect(isClearCommand('/clear')).toBe(true);
     expect(isClearCommand('  /clear \n')).toBe(true);
-    expect(isClearCommand('/CLEAR')).toBe(true);
+    expect(isClearCommand('/CLEAR')).toBe(false);
     // Anything else that starts with `/` is an ordinary message.
     expect(isClearCommand('/clear the footer')).toBe(false);
     expect(isClearCommand('/clearer')).toBe(false);
@@ -60,6 +60,7 @@ describe('the question the composer answers', () => {
     const ready = { loaded: true, configured: true, clearingHistory: false, sending: false, running: false, messages: 2 };
     expect(clearRefusal(ready)).toBeNull();
     expect(clearRefusal({ ...ready, running: true })).toMatch(/once the AI finishes/);
+    expect(clearRefusal({ ...ready, running: true, waiting: true })).toMatch(/waiting for your answer/);
     expect(clearRefusal({ ...ready, sending: true })).toMatch(/still being sent/);
     expect(clearRefusal({ ...ready, clearingHistory: true })).toMatch(/history is being cleared/);
     expect(clearRefusal({ ...ready, messages: 0 })).toMatch(/already empty/);

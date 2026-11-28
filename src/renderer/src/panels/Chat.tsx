@@ -1111,6 +1111,8 @@ export function Chat() {
 
   /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */
   const answer = async (q: WaitingQuestion, value: string | ChatImageRef, typed: boolean) => {
+    // `/clear` is never an answer either, from Enter or Send answer (#1356): the chat says why it can't clear now.
+    if (typed && typeof value === 'string' && isClearCommand(value)) return void clearCommand();
     const key = `${q.runId}:${q.question.id}`;
     if ((typeof value === 'string' && !value.trim()) || answering.current === key) return;
     answering.current = key;
@@ -1360,31 +1362,46 @@ export function Chat() {
    * running, the chat says why and the text stays in the box.
    */
   const composerNow = useRef({ configured, clearingHistory, sending });
+  /** A `/clear` being confirmed or opening its conversation: a second one meanwhile asks nothing more. */
+  const clearing = useRef(false);
   const clearCommand = async () => {
     const refusal = () => {
       const s = getState();
       const shown = s.conversation;
-      return clearRefusal({ ...composerNow.current, loaded: !!shown, running: !!s.runStatus, messages: shown?.messages.length ?? 0 });
+      return clearRefusal({ ...composerNow.current, loaded: !!shown, running: !!s.runStatus, waiting: !!waitingQuestion(shown, s.activeRunId, s.runStatus), messages: shown?.messages.length ?? 0 });
     };
+    if (clearing.current) return;
     const why = refusal();
     if (why) return toast(why, 'info');
-    const from = conversation!.id;
-    const ok = await confirmDialog({
-      title: 'Start a new conversation?',
-      body: 'The chat is cleared so the AI starts fresh, without this conversation’s messages.',
-      details: [
-        { kind: 'keep', text: 'This conversation stays under Earlier conversations.' },
-        { kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }
-      ],
-      confirmLabel: 'Clear chat'
-    });
-    // Cancelled, or the project, the conversation or what the chat is doing changed while the question was open.
-    if (ok !== true || !stillOpen() || getState().conversation?.id !== from) return;
-    const late = refusal();
-    if (late) return toast(late, 'info');
-    // The command itself is not left behind as the earlier conversation's unsent message.
-    if (isClearCommand(draftFor(getState().chatDrafts, from))) setChatDraft(from, '');
-    show(api.ai.newConversation());
+    const from = getState().conversation!.id;
+    clearing.current = true;
+    try {
+      const ok = await confirmDialog({
+        title: 'Start a new conversation?',
+        body: 'The chat is cleared so the AI starts fresh, without this conversation’s messages.',
+        details: [
+          { kind: 'keep', text: 'This conversation stays under Earlier conversations.' },
+          { kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }
+        ],
+        confirmLabel: 'Clear chat'
+      });
+      // Cancelled, or the project or the conversation changed while the question was open.
+      if (ok !== true || !stillOpen() || getState().conversation?.id !== from) return;
+      // A request started, or history began to clear, while it was open.
+      const late = refusal();
+      if (late) return toast(late, 'info');
+      // Once the new conversation shows, the command is not left behind as the earlier one's unsent message; its
+      // images stay with it. A failed open leaves the box as it was.
+      await openThread(api.ai.newConversation(), opening, () => {
+        const drafts = getState().chatDrafts;
+        return { chatDrafts: isClearCommand(draftFor(drafts, from)) ? withDraft(drafts, from, '') : drafts };
+      }).then(
+        (shown) => shown && focusComposer(),
+        (e: Error) => stillOpen() && toast(e.message || 'Could not start a new conversation.', 'error')
+      );
+    } finally {
+      clearing.current = false;
+    }
   };
 
 
