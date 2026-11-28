@@ -196,8 +196,15 @@ export function readFrontmatter(text: string): Frontmatter {
 // Markdown body
 // ---------------------------------------------------------------------------
 
-/** A link destination as Markdown means it: its character references read once, as CommonMark reads them. */
-const destination = (s: string) => decodeEntities(s.replace(/\\([!-/:-@[-`{-~])/g, '$1'), true);
+/**
+ * A link destination as Markdown means it: its escaped marks and character references read once, as CommonMark reads
+ * them. An escaped mark is itself, never part of a reference (`&amp\;` stays as written).
+ */
+const destination = (s: string) =>
+  s
+    .split(/\\([!-/:-@[-`{-~])/)
+    .map((part, i) => (i % 2 ? part : decodeEntities(part, true)))
+    .join('');
 
 const escapeHtml = (s: string) => s.replace(/&(?!#?[A-Za-z0-9]{1,32};)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

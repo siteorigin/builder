@@ -175,9 +175,9 @@ line two</pre><iframe src="https://example.com"></iframe><a href="so-link:{&quot
   });
 
   it('keeps the query of a post’s link copied from the preview', async () => {
-    const clip = '<p><a href="http://127.0.0.1:5199/posts/spring/?mode=briefing">post</a> <a href="/about/?x=1">page</a></p><p>x</p>';
+    const clip = '<p><a href="http://127.0.0.1:5199/posts/spring/?mode=briefing">post</a> <a href="/about/?x=1">page</a> <a href="/posts/spring/?x=' + 'y'.repeat(2000) + '">long</a></p><p>x</p>';
     const { body } = await paste('<p><br></p>', clip, 0);
-    expect(body[0]).toEqual({ type: 'p', spans: [{ text: 'post', link: { type: 'entry', target: 'e1', query: '?mode=briefing' } }, { text: ' page' }] });
+    expect(body[0]).toEqual({ type: 'p', spans: [{ text: 'post', link: { type: 'entry', target: 'e1', query: '?mode=briefing' } }, { text: ' page long' }] });
   });
 
   it('pastes nothing as blocks when the copy is more than a post can hold', async () => {

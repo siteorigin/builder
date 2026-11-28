@@ -5,7 +5,7 @@
  * around: they are chosen and described in a dialog, never typed into.
  */
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
-import { isImageBlock, isListBlock, isRichBlock, linkQuery, linkToTarget } from '@shared/richtext';
+import { isImageBlock, isListBlock, isRichBlock, linkQuery, MAX_LINK_QUERY, linkToTarget } from '@shared/richtext';
 import { linkRels, relsFromAttribute } from '@shared/link-rel';
 import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
 import { collectionIndexRoutes } from '@shared/archives';
@@ -312,7 +312,8 @@ function pastedLinks(state: ProjectState): ArticleRead {
       const found = siteRoutes().get(path.endsWith('/') ? path : `${path}/`);
       const query = at < 0 ? '' : linkQuery(t.slice(at));
       // Only a link to a post keeps a query.
-      if (!found || (query && found.type !== 'entry')) return null;
+      // One too long to keep would stop the post from saving.
+      if (!found || (query && (found.type !== 'entry' || query.length > MAX_LINK_QUERY))) return null;
       return { ...found, ...(query ? { query } : {}), ...(newTab ? { newTab: true } : {}) };
     }
   };

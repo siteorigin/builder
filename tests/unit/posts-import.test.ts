@@ -1343,10 +1343,11 @@ describe('what a link between imported posts says after its file (#1545)', () =>
     const s = site();
     const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
     const section = [...pageIds(s, about.id)].at(-1)!;
-    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', `[there](/about/#${section}) [both](./intake.md?a=1\\&b=2)`), 'intake.md': dated('Intake', 'Text.') }), pages(s));
+    const source = await readMarkdownFolder(mdFolder({ 'first.md': dated('First', `[there](/about/#${section}) [both](./intake.md?a=1\\&b=2) [literal](./intake.md?c=&amp\\;d=3)`), 'intake.md': dated('Intake', 'Text.') }), pages(s));
     expect(spans(source.posts[0].body).map((x) => x.link)).toEqual([
       { type: 'page', target: about.id, anchor: section },
-      { type: 'entry', target: 'post:md:intake.md', query: '?a=1&b=2' }
+      { type: 'entry', target: 'post:md:intake.md', query: '?a=1&b=2' },
+      { type: 'entry', target: 'post:md:intake.md', query: '?c=&amp;d=3' }
     ]);
     expect(commit(s, source).plan.posts[0].notes).toEqual([]);
   });
