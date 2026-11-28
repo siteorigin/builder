@@ -6,6 +6,7 @@ import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
 import type { FirstStepsRecord } from './first-steps';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
+import type { PreviewControlRequest, PreviewControlResult } from './preview-control';
 import type { ComponentThumb } from './component-thumbs';
 import type { ProjectChange } from './project-feed';
 import type { ThemePack } from '@catalogue/pack';
@@ -1794,6 +1795,8 @@ export interface BuilderApi {
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number; revision?: number } & InspectLayoutOptions) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
   on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) => void): () => void;
+  /** The assistant's set_preview (#1405): change the preview controls, and answer with previewControlResult. */
+  on(channel: 'preview-control:request', cb: (req: PreviewControlRequest) => void): () => void;
   /** The main process no longer waits for this batch: start no more of its steps. */
   on(channel: 'component-preview:cancel', cb: (req: { requestId: string }) => void): () => void;
   /** A File menu command: confirm it with menuReceived(id); the same id may be offered again until then. */
@@ -1828,6 +1831,7 @@ export interface BuilderApi {
   on(channel: 'notes:changed', cb: (notes: LiveNotes) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
+  previewControlResult(requestId: string, result: PreviewControlResult): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */

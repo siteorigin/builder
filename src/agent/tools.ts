@@ -34,6 +34,7 @@ import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION
 import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import type { PreviewControlResult, PreviewControlSettings } from '@shared/preview-control';
 import type { LayoutOwner } from '@shared/collection-grant';
 import { LAYOUT_TARGET, MAX_LAYOUT_TARGETS, resolveLayoutTargets, targetRef } from './layout-targets';
 import { answered, applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ResultOutcome, type ToolOutcome } from './result';
@@ -47,6 +48,11 @@ const REQUESTED_SCOPE = z.object({
   targetIds: z.array(z.string()).optional().describe('One pageId, definitionId or node ID; none for site.')
 });
 const SCOPE_NOTE = 'What this call changes. Wider than the request may change is refused; narrower limits the call.';
+
+/** The preview widths the toolbar takes (renderer lib/layout VIEWPORT_LIMITS). */
+const VIEWPORT_WIDTHS = { min: 240, max: 2560 };
+/** The most History steps one step_history call takes. */
+const MAX_HISTORY_STEPS = 10;
 
 /** The most operations one apply_operations call takes. */
 export const MAX_BATCH_OPERATIONS = 30;
@@ -141,6 +147,16 @@ export const TOOL_ARGS = {
   write_source_converter: WRITE_SOURCE_ARGS,
   read_layout: z.object({ nodeId: z.string().optional().describe('Optional subtree to read.') }),
   update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
+  set_preview: z.object({
+    viewport: z.enum(['desktop', 'tablet', 'phone']).optional().describe('A width preset: desktop 1280px, tablet 834px, phone 390px.'),
+    width: z.number().int().min(VIEWPORT_WIDTHS.min).max(VIEWPORT_WIDTHS.max).optional().describe('Or a width in CSS px.'),
+    scheme: z.enum(['light', 'dark', 'system']).optional().describe("Preview colors: the site's light or dark palette, or this computer's setting."),
+    mode: z.enum(['edit', 'preview']).optional().describe('edit: click to select and change; preview: use the site as a visitor would.')
+  }),
+  step_history: z.object({
+    direction: z.enum(['undo', 'redo']),
+    steps: z.number().int().min(1).max(MAX_HISTORY_STEPS).optional().describe('How many History steps, 1 unless the user asks for more.')
+  }),
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
 } as const;
@@ -186,6 +202,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   write_source_converter: WRITE_SOURCE_DESCRIPTION,
   read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
   update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
+  set_preview:
+    "Change the editor's own preview controls, as the toolbar does: the canvas width (viewport preset or width), the preview colors (scheme; dark needs a site with a dark palette) and Edit or Preview mode (mode). Name only the settings the user asks for. It changes nothing on the site and records nothing in History. Returns what the controls now show (now) and any setting the editor could not change, with why (refused). It is not a measurement: inspect_layout checks a page at a width.",
+  step_history:
+    "Undo or redo the author's recent changes in the editor's History, exactly as the toolbar's Undo and Redo do: undo takes back the latest change (the author's own or an AI request's), redo puts back the latest undone one; steps takes several at once. <editor_context> history says which change each would step now: when the user names a different change, do not call it, and say which change Undo would take back. Call it only when the user asks to undo, redo, revert or put back a change, and before changing anything else: it is the request's one change, and nothing more can be changed after it. Returns the step's label. To take back an older change with later ones left in place, do not use it: make that change again with the editing tools.",
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
 };
@@ -224,6 +244,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   write_source_converter: WRITE_SOURCE_BRIEF,
   read_layout: 'The layout this request may change, as it is now, or one node of it.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
+  set_preview: "The editor's preview controls: canvas width (viewport or width), preview colors (scheme) and Edit or Preview (mode). Changes nothing on the site.",
+  step_history: "The toolbar's Undo or Redo, when the user asks to undo or redo: the request's only change.",
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
 };
@@ -421,7 +443,9 @@ const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Reads and writes of the project's external sources (#680), offered while it has one and the run may change the site. */
 const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_converter'];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
+/** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
+const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -431,7 +455,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
 /** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
 const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'step_history', 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
@@ -553,12 +577,36 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
  * has no room left for them).
  */
-export function toolsForRun(opts: Parameters<typeof runTools>[0]): RunTools {
-  const run = runTools(opts);
+export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools }): RunTools {
+  const run = withEditorTools(runTools(opts), opts.editor, !!opts.ask);
   if (!run.focused || !run.tools.some((t) => t.name === 'validate_project')) return run;
   const schema = z.toJSONSchema(z.object({ profile: VALIDATE_ARGS.shape.profile.unwrap().extract(['schema', 'component']).optional() }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete schema.$schema;
   return { ...run, tools: run.tools.map((t) => (t.name === 'validate_project' ? { ...t, description: VALIDATE_FOCUSED_BRIEF, brief: VALIDATE_FOCUSED_BRIEF, parameters: schema } : t)) };
+}
+
+/** Which of the editor's own controls a run may use (#1405): the app must be able to run them, for the author's own request. */
+export interface EditorTools {
+  /** The preview controls: every request, a question too, since they change nothing on the site. */
+  preview?: boolean;
+  /** Undo and Redo: a request that may change the site, never a question. */
+  history?: boolean;
+  /** What the request typed into the chat asks for (asksForPreview, asksForHistory): a small model is offered only that, keeping its window for the rest. */
+  asked?: { preview: boolean; history: boolean };
+}
+
+/** Whether a request asks to see the preview another way: at a device's width or a number of pixels, in light or dark colors, or in Edit or Preview. */
+export const asksForPreview = (text: string): boolean =>
+  /\b(?:phones?|mobiles?|smartphones?|iphones?|android|tablets?|ipads?|desktops?|laptops?|viewport|widths?|\d{3,4}\s?px|pixels?|dark|light|colou?r scheme|night mode|preview|edit mode|screen sizes?|small screens?|wide screens?)\b/i.test(text);
+/** Whether a request asks to undo or redo a change. */
+export const asksForHistory = (text: string): boolean =>
+  /\b(?:undo|undid|redo|redid|revert|roll\s?back|put (?:it |that |this )?back|take (?:it |that |this )?back|(?:go|step) back (?:a |one )?(?:step|change)|last (?:change|edit)s?|previous (?:change|edit|version))\b/i.test(text);
+
+/** The run's tools with the editor's controls after them, whatever task chose the rest. */
+function withEditorTools(run: RunTools, editor: EditorTools | undefined, ask: boolean): RunTools {
+  const wanted = (k: 'preview' | 'history') => !!editor?.[k] && (!run.focused || !!editor.asked?.[k]);
+  const extra = [...(wanted('preview') ? [plainTool('set_preview')] : []), ...(wanted('history') && !ask ? [plainTool('step_history')] : [])];
+  return extra.length ? { ...run, tools: [...run.tools, ...extra] } : run;
 }
 
 function runTools(opts: {
@@ -866,9 +914,27 @@ export interface ToolHost {
   signal?: AbortSignal;
   /** The project's external sources as the source tools read and test them (#680), ended with the run. */
   sources?: SourceToolHost;
+  /** Change the editor's preview controls (set_preview); without it the tool says it cannot run. */
+  controlPreview?(settings: PreviewControlSettings): Promise<PreviewControlResult>;
+  /** Step the project's History for this run (step_history); without it the tool says it cannot run. */
+  stepHistory?(direction: 'undo' | 'redo', steps: number): Promise<{ ok: boolean; revision: number; label?: string; error?: ToolError }>;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
+
+/** set_preview: what the editor shows after, and what it could not change. A call that changes nothing it asked fails. */
+async function runSetPreview(a: z.infer<(typeof TOOL_ARGS)['set_preview']>, host: ToolHost): Promise<ToolOutcome> {
+  if (!host.controlPreview) return toolError('SCOPE_MISMATCH', "The editor's preview controls cannot be changed from this request. The author can change them in the toolbar.", { recoverable: false });
+  if (a.viewport === undefined && a.width === undefined && a.scheme === undefined && a.mode === undefined) return toolError('INVALID_ARGUMENT', 'Name at least one of viewport, width, scheme or mode.');
+  if (a.viewport !== undefined && a.width !== undefined) return toolError('INVALID_ARGUMENT', 'Give viewport or width, not both.');
+  const r = await host.controlPreview({ ...(a.viewport ? { viewport: a.viewport } : {}), ...(a.width !== undefined ? { width: a.width } : {}), ...(a.scheme ? { scheme: a.scheme } : {}), ...(a.mode ? { mode: a.mode } : {}) });
+  if ('error' in r) return toolError('CONFLICT', `The preview controls could not be changed: ${r.error}`, { recoverable: false });
+  if (!r.now || typeof r.now.width !== 'number' || !Array.isArray(r.changed) || !Array.isArray(r.refused)) return toolError('CONFLICT', 'The preview controls could not be changed: the editor gave no answer.', { recoverable: false });
+  const asked = (['viewport', 'width', 'scheme', 'mode'] as const).filter((k) => a[k] !== undefined);
+  // Every setting asked for refused: nothing the user wanted happened, which the reply must say.
+  if (r.refused.length && r.refused.length >= asked.length) return toolError('CONFLICT', r.refused.map((x) => x.reason).join(' '), { recoverable: false, details: { now: r.now } });
+  return { ok: true, content: { revision: host.revision(), now: r.now, changed: r.changed, ...(r.refused.length ? { refused: r.refused } : {}) } };
+}
 
 /**
  * Measure a page in the live preview at a width, for the model's inspect_layout and the application's own check
@@ -1346,6 +1412,29 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
           // A choice is stored by its value; the Inspector shows its label.
           ...(found.shown !== undefined ? { shownAs: found.shown } : {}),
           note: `Give the author this path exactly as written. The chat shows an "Open in inspector" button for it.`
+        }
+      };
+    }
+    case 'set_preview':
+      return runSetPreview(args as z.infer<(typeof TOOL_ARGS)['set_preview']>, host);
+    case 'step_history': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['step_history']>;
+      if (!host.stepHistory) return toolError('SCOPE_MISMATCH', 'Undo and Redo cannot be run from this request. The author can use Undo and Redo in the toolbar.', { recoverable: false });
+      const steps = a.steps ?? 1;
+      const r = await host.stepHistory(a.direction, steps);
+      if (!r.ok) return applyFailure({ revision: r.revision, error: r.error ?? { code: 'CONFLICT', message: `Could not ${a.direction}.`, recoverable: false } });
+      const did = a.direction === 'undo' ? 'Undid' : 'Redid';
+      // It changed the project, as the toolbar's step does, but no operation of the run's: History holds the step.
+      return {
+        ok: true,
+        mutated: true,
+        ops: [],
+        content: {
+          revision: r.revision,
+          direction: a.direction,
+          steps,
+          ...(r.label ? { label: r.label } : {}),
+          note: `${did} ${r.label ? `"${r.label}"` : `${steps} changes`}. This request can change nothing more: tell the user what was ${a.direction === 'undo' ? 'undone' : 'redone'}, and that ${a.direction === 'undo' ? 'Redo puts it back' : 'Undo takes it back again'}.`
         }
       };
     }
