@@ -994,13 +994,16 @@ export function Chat() {
           if (conversation) starterWidened.current.delete(conversation.id);
           widenedHere.current = null;
           setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
-          // Choosing the page by hand narrows a conversation that allowed the whole site, for good (#1412).
-          const grants = getState().chatSiteGrants;
-          const narrows = o.value === 'page' && !!conversation;
-          if (narrows) narrowings.current.set(conversation.id, (narrowings.current.get(conversation.id) ?? 0) + 1);
-          const narrowed = narrows ? withoutKey(grants, conversation.id) : grants;
-          const setting = { ...ctxChosen, scope: o.value };
-          pagePick.current = narrows ? { setting, conversationId: conversation.id, order: ++order.current } : null;
+          // Choosing the page by hand narrows a conversation that allowed the whole site, for good (#1412): the one shown
+          // when it is chosen, which a menu left open across a switch may not have been opened on.
+          const now = getState();
+          const here = now.conversation;
+          const grants = now.chatSiteGrants;
+          const narrows = o.value === 'page' && !!here;
+          if (narrows) narrowings.current.set(here.id, (narrowings.current.get(here.id) ?? 0) + 1);
+          const narrowed = narrows ? withoutKey(grants, here.id) : grants;
+          const setting = { ...now.chatContextEnabled, scope: o.value };
+          pagePick.current = narrows ? { setting, conversationId: here.id, order: ++order.current } : null;
           setState({ chatContextEnabled: setting, ...(narrowed !== grants ? { chatSiteGrants: narrowed } : {}) });
           focusComposer();
         } }))

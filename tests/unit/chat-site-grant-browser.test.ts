@@ -211,6 +211,21 @@ describe.skipIf(!browserInstalled)('a whole site allowed for the rest of the con
     expect(await page.evaluate('so.scope()')).toBe('page');
   });
 
+  it('narrows the conversation shown when This page is chosen, even from a menu opened on another', async () => {
+    await mount();
+    await answerWith('click yes');
+    await page.evaluate('so.finish()');
+    await page.evaluate('so.keep()');
+    // Opened on c_2, chosen once c_1 (which allowed the whole site) is shown: c_1 is the one narrowed.
+    await page.evaluate("so.show('c_2')");
+    await chip().click();
+    await page.getByRole('menuitemradio', { name: /^This page/ }).waitFor();
+    await page.evaluate("so.show('c_1')");
+    await page.getByRole('menuitemradio', { name: /^This page/ }).click();
+    expect(await page.evaluate('so.grants()')).toEqual({});
+    await expect.poll(async () => chip().getAttribute('aria-label')).toMatch(/^What the AI may change: Home/);
+  });
+
   it('lets a Yes win over This page chosen before it, but not over a page scope a handoff set', async () => {
     // This page chosen from the menu while the run works, then the run asks and the author allows the whole site.
     await mount({ idle: true });
