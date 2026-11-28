@@ -2968,9 +2968,10 @@ export class ProjectSession extends EventEmitter {
     const prev = this.generated.files;
     const inflight = this.generated.pending ?? {};
     const known = (path: string) => !!prev[path] || !!inflight[path];
-    // SvelteKit runs one server hook: a project with its own keeps it, and the generated one is left out (the
-    // not-found page then keeps the addresses it was built with, and the export says so or, for a site with pages in
-    // another language, stops).
+    // SvelteKit runs one server hook: a project with its own keeps it, and the generated one is left out. The site's
+    // server hook is still written to the library, for the project's own to run (see generateServerHook); one that
+    // does not leaves the not-found page with the addresses it was built with, and pages without their languages, which
+    // the export of the website says.
     if (ownServerHook(this.dir, known(SERVER_HOOK_FILE))) for (const files of [clean, dev]) files.delete(SERVER_HOOK_FILE);
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
