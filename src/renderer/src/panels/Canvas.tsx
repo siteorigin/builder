@@ -57,7 +57,7 @@ import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
-import { focusInspector, forgetInspectorFocus, releaseInspectorName } from '../lib/inspector-focus';
+import { focusInspector, pointerPickOnPage } from '../lib/inspector-focus';
 import { keyboardLeavesPage } from '../lib/clip-keys';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
@@ -1246,15 +1246,11 @@ export function Canvas() {
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
-          const before = selectionKey(s);
+          const before = JSON.stringify(s.selection ?? null);
           selectOnPage(next);
-          // A selection the pointer made on the page leaves no focus ring in the Inspector (#1476): the control focus
-          // was on there before the click is not brought back to the new selection's name, and a name holding focus
-          // lets it go. Focus taken in the Inspector while the click was held is recovered as before.
-          if (p.pointer === true) {
-            if (selectionKey(getState()) !== before) forgetInspectorFocus(held?.madeAt);
-            releaseInspectorName();
-          }
+          // A pick the pointer made on the page leaves no focus ring in the Inspector (#1476). Compared whole, as the
+          // Inspector keys its content (a part named in Component Studio is a new panel).
+          if (p.pointer === true) pointerPickOnPage({ changed: JSON.stringify(getState().selection ?? null) !== before, madeAt: held?.madeAt });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           // A press of the pointer on the page makes the selection the keyboard's target (lib/clip-keys, #1361). Blurred
           // rather than moved, as pagePick does: the window's last input was a key, so a moved focus would draw a ring.

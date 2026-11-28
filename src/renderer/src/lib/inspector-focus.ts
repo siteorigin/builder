@@ -39,15 +39,21 @@ export function focusInspector(ms = 1000): () => void {
   return () => cancelAnimationFrame(frame);
 }
 
-/** The recoveries installed now, each told to stand down by `forgetInspectorFocus`. */
-const recoveries = new Set<(before?: number) => void>();
+/** The recoveries installed now, each told of a pointer pick on the page by `pointerPickOnPage`. */
+const recoveries = new Set<(pick: PagePick) => void>();
 const NAME = '.insp-name h3';
+
+/**
+ * A press of the pointer on the page that the canvas took: `changed` when it changed the selection (as the Inspector
+ * keys its content: the whole reference), `madeAt` (performance.now) for a click taken after a wait.
+ */
+export type PagePick = { changed: boolean; madeAt?: number };
 
 /**
  * When the control that had focus is taken out of the Inspector (a selection change, an undo, a row removed) and
  * nothing else took focus, it goes to the selection's name rather than back to the start of the window. Focus that
- * moved to the canvas, Layers or a dialog is left where it is, and so is focus a selection the pointer made on the
- * page set aside (`forgetInspectorFocus`): the page is where the author is working then. Returns the cleanup.
+ * moved to the canvas, Layers or a dialog is left where it is, and so is focus a pointer pick on the page set aside
+ * (`pointerPickOnPage`): the page is where the author is working then. Returns the cleanup.
  */
 export function recoverInspectorFocus(panel: HTMLElement): () => void {
   // The Inspector control focus was last on, and only while focus stays in the Inspector: focus that has moved to
@@ -68,16 +74,23 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
       if (idle()) panel.querySelector<HTMLElement>(NAME)?.focus();
     });
   });
-  const forget = (before?: number) => {
-    if (before !== undefined && lastAt > before) return;
+  const forget = () => {
     last = null;
     cancelAnimationFrame(frame);
   };
+  const picked = ({ changed, madeAt }: PagePick) => {
+    // Focus that came to the Inspector while the click waited is the keyboard's, and stays as it is.
+    if (madeAt !== undefined && lastAt > madeAt) return;
+    if (changed) forget();
+    // The name is only where focus lands: ringed, it would say the keyboard was there.
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && panel.contains(a) && a.matches(NAME)) a.blur();
+  };
   document.addEventListener('focusin', onIn);
   mo.observe(panel, { childList: true, subtree: true });
-  recoveries.add(forget);
+  recoveries.add(picked);
   return () => {
-    recoveries.delete(forget);
+    recoveries.delete(picked);
     forget();
     document.removeEventListener('focusin', onIn);
     mo.disconnect();
@@ -85,21 +98,12 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
 }
 
 /**
- * A press of the pointer on the page changed the selection (#1476): the Inspector control focus was on is not brought
- * back to the new selection's name. The click reached only the page's frame, so the editor's window would count that
- * focus as the keyboard's and ring the name; and with focus left on the body, Delete and the other selection keys go
- * on reaching the selection (#1361). `before`, for a click taken after a wait, is when it was made: focus that came to
- * the Inspector since is still recovered.
+ * The pointer made a pick on the page (#1476). The click reached only the page's frame, so the editor's window would
+ * count focus moved in the Inspector as the keyboard's and ring the selection's name. When the pick changed the
+ * selection, the control focus was on before it is not brought back to the new selection's name; either way a name
+ * holding focus lets it go. Focus then rests on the body, where Delete and the other selection keys reach the
+ * selection (#1361).
  */
-export function forgetInspectorFocus(before?: number): void {
-  for (const forget of recoveries) forget(before);
-}
-
-/**
- * The selection's name in the Inspector gives up focus to a press of the pointer on the page (#1476), even one that
- * leaves the selection as it was: it is only where focus lands, and ringed, it would say the keyboard was there.
- */
-export function releaseInspectorName(): void {
-  const a = document.activeElement;
-  if (a instanceof HTMLElement && a.matches(`#dock-panel-inspect ${NAME}`)) a.blur();
+export function pointerPickOnPage(pick: PagePick): void {
+  for (const picked of recoveries) picked(pick);
 }

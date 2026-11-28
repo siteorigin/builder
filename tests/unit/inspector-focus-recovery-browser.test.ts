@@ -17,15 +17,17 @@ const ENTRY = [
   `import * as focus from ${JSON.stringify(resolve('src/renderer/src/lib/inspector-focus'))};`,
   "window.focusLib = focus;",
   "window.stop = focus.recoverInspectorFocus(document.getElementById('dock-panel-inspect'));",
-  // Takes a field out of the Inspector, as a new selection's panel does, and says where focus rests two frames later;
-  // `then` runs in between, in the frame the recovery queued its focus for.
-  'window.remove = (id, then) => new Promise((done) => { document.getElementById(id).remove(); then?.(); requestAnimationFrame(() => requestAnimationFrame(() => done(document.activeElement.id || document.activeElement.tagName))); });'
+  "window.pick = (changed, madeAt) => focus.pointerPickOnPage({ changed, madeAt });",
+  // Takes a field out of the Inspector, as a new selection's panel does, and says where focus rests two frames later.
+  // `then` runs once the recovery has seen the field go and queued its focus for the next frame.
+  'window.remove = (id, then) => new Promise((done) => { document.getElementById(id).remove(); if (then) queueMicrotask(then); requestAnimationFrame(() => requestAnimationFrame(() => done(document.activeElement.id || document.activeElement.tagName))); });'
 ].join('\n');
 
 const PAGE = `<!doctype html><meta charset="utf-8"><body>
   <div id="dock-panel-inspect"><div class="insp-name"><h3 id="name" tabindex="-1">Heading</h3></div>
     <div><input id="a" aria-label="A"><input id="b" aria-label="B"></div></div>
   <button id="outside">Outside</button>
+  <div class="insp-name"><h3 id="other-name" tabindex="-1">Another panel's heading</h3></div>
   <script src="/app.js"></script>`;
 
 async function bundle(): Promise<string> {
@@ -76,56 +78,70 @@ describe.skipIf(!browserInstalled)('Inspector focus recovery', { timeout: 30_000
     await page.getByLabel('A').focus();
     // A click on the status bar: focus leaves the field for the body, with no focus event for the Inspector to see.
     await run('document.activeElement.blur()');
-    await run('focusLib.forgetInspectorFocus()');
+    await run('pick(true)');
     expect(await run("remove('a')")).toBe('BODY');
   });
 
   it('gives up a recovery already waiting for its frame when the pick is taken', async () => {
     await page.getByLabel('A').focus();
-    expect(await run("remove('a', () => focusLib.forgetInspectorFocus())")).toBe('BODY');
+    expect(await run("remove('a', () => pick(true))")).toBe('BODY');
+  });
+
+  it('keeps the recovery of a field a pick that changed nothing left focused', async () => {
+    await page.getByLabel('A').focus();
+    await run('pick(false)');
+    expect(await active()).toBe('a');
+    expect(await run("remove('a')")).toBe('name');
   });
 
   it('leaves a field the pick did not take where it is', async () => {
     await page.getByLabel('A').focus();
-    await run('focusLib.forgetInspectorFocus()');
+    await run('pick(true)');
     expect(await run("remove('b')")).toBe('a');
   });
 
-  it('recovers focus that came to the Inspector after the click, when the pick is taken later', async () => {
+  it('keeps focus that came to the Inspector after the click, when the pick is taken later', async () => {
     await page.getByLabel('A').focus();
     const madeAt = await page.evaluate<number>('performance.now()');
     await page.waitForTimeout(20);
     await page.getByLabel('B').focus();
-    await run(`focusLib.forgetInspectorFocus(${madeAt})`);
+    await run(`pick(true, ${madeAt})`);
     expect(await run("remove('b')")).toBe('name');
+    // The name, focused after the click too, keeps focus.
+    await run(`pick(false, ${madeAt})`);
+    expect(await active()).toBe('name');
   });
 
-  it('forgets focus from before the click when the pick is taken later', async () => {
+  it('sets aside focus from before the click when the pick is taken later', async () => {
+    await run("document.getElementById('name').focus()");
     await page.getByLabel('A').focus();
     await page.waitForTimeout(20);
     const madeAt = await page.evaluate<number>('performance.now()');
-    await run(`focusLib.forgetInspectorFocus(${madeAt})`);
+    await run(`pick(true, ${madeAt})`);
     expect(await run("remove('a')")).toBe('BODY');
   });
 
-  it('takes focus off the selection’s name on a pick that leaves the selection as it was, and off nothing else', async () => {
+  it('takes focus off the selection’s name on any pick, and off nothing else', async () => {
     await run("document.getElementById('name').focus()");
-    await run('focusLib.releaseInspectorName()');
+    await run('pick(false)');
     expect(await active()).toBe('BODY');
     await page.getByLabel('A').focus();
-    await run('focusLib.releaseInspectorName()');
+    await run('pick(false)');
     expect(await active()).toBe('a');
+    await run("document.getElementById('other-name').focus()");
+    await run('pick(true)');
+    expect(await active()).toBe('other-name');
   });
 
-  it('recovers nothing once it is stopped, and a later pick reaches no stopped recovery', async () => {
+  it('does nothing once it is stopped, and a reinstalled recovery alone answers', async () => {
     await page.getByLabel('A').focus();
     await run('stop()');
-    // Installed again (the Inspector mounted anew): only the new one is told, and it alone recovers.
+    expect(await run("remove('a')")).toBe('BODY');
+    await run("document.getElementById('name').focus()");
+    await run('pick(true)');
+    expect(await active()).toBe('name');
     await run("window.stop = focusLib.recoverInspectorFocus(document.getElementById('dock-panel-inspect'))");
     await page.getByLabel('B').focus();
     expect(await run("remove('b')")).toBe('name');
-    await page.getByLabel('A').focus();
-    await run('stop()');
-    expect(await run("remove('a')")).toBe('BODY');
   });
 });
