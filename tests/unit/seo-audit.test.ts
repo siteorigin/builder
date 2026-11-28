@@ -468,7 +468,9 @@ describe('issue 1635: placeholder addresses, canonical URLs, collection indexes 
     ]);
     for (const target of ['https://example.com/', 'https://www.example.net/a', 'https://kilns.test/', 'https://x.invalid', 'http://localhost:3000/', 'https://dev.localhost/', 'https://[::1]:8080/']) expect(codes(withLink(state, { type: 'url', target })), target).toContain('SEO_LINK_PLACEHOLDER');
     // A real host, one that only names an example in its query, an email address and a draft's link are not judged.
-    for (const link of [{ type: 'url', target: 'https://notexample.com/?next=https://example.org' }, { type: 'email', target: 'hello@example.com' }]) expect(codes(withLink(state, link)), link.target).toEqual([]);
+    expect(local[0].explanation).toMatch(/^An address on this computer works only while/);
+    expect(only(withLink(state, { type: 'url', target: 'https://kilns.test/' }), 'SEO_LINK_PLACEHOLDER')[0].explanation).toMatch(/^Example and test addresses are reserved/);
+    for (const link of [{ type: 'url', target: 'https://notexample.com/?next=https://example.org' }, { type: 'email', target: 'hello@example.com' }, { type: 'tel', target: '+27215550134' }]) expect(codes(withLink(state, link)), link.target).toEqual([]);
     expect(codes(run(withLink(state, { type: 'url', target: 'https://example.com/' }), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true }))).not.toContain('SEO_LINK_PLACEHOLDER');
     // The shared header's link leads to its element.
     const menu = copy(state);
@@ -510,7 +512,14 @@ describe('issue 1635: placeholder addresses, canonical URLs, collection indexes 
     // A page search engines are not to list, or a draft, is not judged.
     expect(on(run(canonical(state, 'not a url'), { type: 'page.update', pageId: services, noindex: true }))).toEqual([]);
     expect(on(run(canonical(state, `${SITE}/nowhere/`), { type: 'page.update', pageId: services, draft: true }))).toEqual([]);
-    // A post's leads to its own canonical URL field.
+    // A folder is judged whatever its name; a file is not.
+    expect(on(canonical(state, `${SITE}/release-1.2/`)).map((f) => f.code)).toEqual(['SEO_CANONICAL_TARGET_MISSING']);
+    // A post's leads to its own canonical URL field, for each kind of problem.
+    for (const [url, code] of [['not a url', 'SEO_CANONICAL_INVALID'], ['http://magazine.co.za/classes/', 'SEO_CANONICAL_INSECURE'], [`${SITE}/`, null]] as const) {
+      const p = copy(state);
+      p.collections.posts.entries.en_spring.seo = { canonical: url };
+      expect(on(p).map((f) => f.code), url).toEqual(code ? [code] : []);
+    }
     const post = copy(state);
     post.collections.posts.entries.en_spring.seo = { canonical: `${SITE}/gone/` };
     expect(on(post)).toEqual([expect.objectContaining({ code: 'SEO_CANONICAL_TARGET_MISSING', owner: { kind: 'entry', id: 'en_spring' }, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'canonical' } })]);
@@ -547,10 +556,54 @@ describe('issue 1635: placeholder addresses, canonical URLs, collection indexes 
       addMenuItem(linked, 'Journal', link);
       expect(codes(linked), JSON.stringify(link)).not.toContain('SEO_ARCHIVE_UNLINKED');
     }
-    // A collection without an index page is not judged.
-    const noIndex = copy(empty);
-    noIndex.collections.posts.settings.pages = { ...noIndex.collections.posts.settings.pages, archive: false };
-    expect(codes(noIndex).filter((c) => c.startsWith('SEO_ARCHIVE'))).toEqual([]);
+    // A collection without an index page is not judged, with entries or without.
+    for (const base of [empty, unlinked]) {
+      const noIndex = copy(base);
+      noIndex.collections.posts.settings.pages = { detail: true, archive: false };
+      expect(codes(noIndex).filter((c) => c.startsWith('SEO_ARCHIVE'))).toEqual([]);
+    }
+    // A link in a page's own content counts; one in the collection's own entry layout does not.
+    const fromPage = run(unlinked, { type: 'node.insert', newNodeId: 'n_journal', owner: { kind: 'page', id: unlinked.site.homePageId }, parentId: null, componentId: 'cta.banner' }, { type: 'instance.setProp', owner: { kind: 'page', id: unlinked.site.homePageId }, nodeId: 'n_journal', prop: 'primaryLink', value: { type: 'collection', target: 'posts' } });
+    expect(codes(fromPage)).not.toContain('SEO_ARCHIVE_UNLINKED');
+    const layout = { kind: 'template', id: 'posts' } as const;
+    const fromLayout = run(unlinked, { type: 'node.insert', newNodeId: 'n_journal', owner: layout, parentId: null, componentId: 'cta.banner' }, { type: 'instance.setProp', owner: layout, nodeId: 'n_journal', prop: 'primaryLink', value: { type: 'collection', target: 'posts' } });
+    expect(codes(fromLayout)).toContain('SEO_ARCHIVE_UNLINKED');
+    // A header only the collection's own pages show (every page hides it) brings no one in.
+    const hidden = copy(unlinked);
+    addMenuItem(hidden, 'Journal', { type: 'collection', target: 'posts' });
+    for (const p of Object.values(hidden.pages)) p.showHeader = false;
+    expect(codes(hidden)).toContain('SEO_ARCHIVE_UNLINKED');
+  });
+
+  it('counts a collection loop on a page that links each row to its entry, and an index layout’s links', () => {
+    const { state } = auditSite();
+    const unlinked = copy(state);
+    const header = headerOf(unlinked);
+    header.props.links = (header.props.links as Array<{ id: string }>).filter((i) => i.id !== 'i_journal');
+    const owner = { kind: 'page', id: unlinked.site.homePageId } as const;
+    const looped = (bound: boolean) => {
+      let s = run(unlinked, { type: 'node.insert', newNodeId: 'n_box', owner, parentId: null, primitive: 'container' }, { type: 'node.insert', newNodeId: 'n_loop', owner, parentId: 'n_box', primitive: 'repeat', query: { collectionId: 'posts' } }, { type: 'node.insert', newNodeId: 'n_view', owner, parentId: 'n_loop', primitive: 'button', text: 'Read the post' });
+      if (bound) s = run(s, { type: 'node.setBinding', owner, nodeId: 'n_view', field: 'link', binding: { $item: 'entryLink' } });
+      return s;
+    };
+    expect(codes(looped(true))).not.toContain('SEO_ARCHIVE_UNLINKED');
+    // A loop that lists the posts without linking to them leads nowhere.
+    expect(codes(looped(false))).toContain('SEO_ARCHIVE_UNLINKED');
+    // The index's own layout: its placeholder link is reported, and its link to another collection reaches it.
+    const archive = { kind: 'archive', id: 'posts' } as const;
+    const s = run(
+      state,
+      { type: 'collection.create', collectionId: 'work', name: 'Work' },
+      { type: 'entry.create', collectionId: 'work', entryId: 'en_mill', title: 'The old mill', publishedAt: '2027-01-02', draft: false, excerpt: 'Restoring the old mill by the river, one beam at a time.' },
+      { type: 'collection.update', collectionId: 'posts', archiveTemplate: 'start' },
+      { type: 'node.insert', newNodeId: 'n_shop', owner: archive, parentId: null, componentId: 'cta.banner' },
+      { type: 'instance.setProp', owner: archive, nodeId: 'n_shop', prop: 'primaryLink', value: { type: 'url', target: 'https://shop.example/' } },
+      { type: 'node.insert', newNodeId: 'n_work', owner: archive, parentId: null, componentId: 'cta.banner' },
+      { type: 'instance.setProp', owner: archive, nodeId: 'n_work', prop: 'primaryLink', value: { type: 'collection', target: 'work' } }
+    );
+    expect(only(s, 'SEO_LINK_PLACEHOLDER')).toEqual([expect.objectContaining({ owner: archive, nodeId: 'n_shop', message: expect.stringMatching(/^The .+ index layout links to https:\/\/shop\.example\/, /), destination: { kind: 'element', owner: archive, nodeId: 'n_shop' } })]);
+    expect(only(s, 'SEO_ARCHIVE_UNLINKED')).toEqual([]);
+    for (const f of runSeoAudit(s)) expectValidDestination(s, f);
   });
 
   it('says when a local business has no address, or no telephone number or opening hours, leading to Site details', () => {
@@ -559,6 +612,10 @@ describe('issue 1635: placeholder addresses, canonical URLs, collection indexes 
     expect(local({})).toEqual([expect.objectContaining({ severity: 'warning', pillar: 'entity', site: 'identity.local', aiFixable: false, destination: { kind: 'site', field: 'identity' }, message: 'The site is published by a local business with no address, and no telephone number or opening hours.' })]);
     expect(local({ address: '12 River Road, Riverside' }).map((f) => f.message)).toEqual(['The site is published by a local business with no telephone number or opening hours.']);
     expect(local({ telephone: '+27 21 555 0134', openingHours: ['Mo-Fr 09:00-17:00'] }).map((f) => f.message)).toEqual(['The site is published by a local business with no address.']);
+    expect(local({ address: '12 River Road, Riverside', email: 'hello@riverside-pottery.co.za' }).map((f) => f.message)).toEqual(['The site is published by a local business with no telephone number or opening hours.']);
+    const malformed = copy(state);
+    malformed.site.identity = { kind: 'LocalBusiness', name: 'Riverside Studio', address: '12 River Road, Riverside', telephone: 'call us', openingHours: ['whenever'] } as never;
+    expect(codes(malformed)).toContain('SEO_LOCAL_BUSINESS_DETAILS_MISSING');
     expect(local({ address: '12 River Road, Riverside', telephone: '+27 21 555 0134' })).toEqual([]);
     expect(local({ address: '12 River Road, Riverside', openingHours: ['Mo-Fr 09:00-17:00'] })).toEqual([]);
     // An organization or a person needs neither.

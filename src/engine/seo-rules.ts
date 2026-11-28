@@ -11,7 +11,7 @@
 import type { EditorDestination } from '@shared/api';
 import type { EffectiveSeo, SeoFinding, SeoPillar } from '@shared/seo';
 import { checkCanonicalUrl, seoLength, seoText } from '@shared/seo';
-import type { Collection, EntryDoc, OwnerRef, ProjectState } from '@shared/types';
+import type { Collection, EntryDoc, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
 import { isDraftEntry, siteEntries } from '@shared/collections';
@@ -26,6 +26,7 @@ import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
 import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
 import { liveRedirects, publishedState } from '@generator/index';
+import { loopEntries } from '@generator/collection-loops';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
 
@@ -329,8 +330,8 @@ const genericLinkText: SeoAuditRule = {
           code: 'SEO_LINK_TEXT_GENERIC',
           message: `A link says only “${seoText(l.label)}”${l.owner.kind === 'shell' ? ` in the shared ${l.owner.id}` : ''}.`,
           explanation: 'Search engines, screen readers and AI agents read a link’s words to learn where it goes; words that name the destination say so where “read more” cannot.',
-          // A page's or the shared header's or footer's link is the AI's to reword; an entry's text and a collection's layout are the editor's for now.
-          aiFixable: l.owner.kind !== 'entry' && l.owner.kind !== 'template',
+          // A page's or the shared header's or footer's link is the AI's to reword; an entry's text and a collection's layouts are the editor's for now.
+          aiFixable: l.owner.kind === 'page' || l.owner.kind === 'shell',
           ...linkFix(state, l)
         })
       );
@@ -349,6 +350,7 @@ function linkPlace(state: ProjectState, l: SiteLink): string {
   if (l.owner.kind === 'shell') return `the shared ${l.owner.id}`;
   if (l.owner.kind === 'page') return `“${seoText(state.pages[l.owner.id]?.title) || state.pages[l.owner.id]?.route}”`;
   if (l.owner.kind === 'template') return `the ${seoText(state.collections[l.owner.id]?.settings.name) || l.owner.id} layout`;
+  if (l.owner.kind === 'archive') return `the ${seoText(state.collections[l.owner.id]?.settings.name) || l.owner.id} index layout`;
   const at = Object.values(state.collections).find((c) => Object.hasOwn(c.entries, l.owner.id));
   return `“${seoText(at?.entries[l.owner.id]?.title) || l.owner.id}”`;
 }
@@ -817,7 +819,8 @@ const canonicalOverrides: SeoAuditRule = {
       }
       const at = ownSiteAddress(state, url);
       if (!at) continue;
-      const last = at.route.slice(0, -1).split('/').pop() ?? '';
+      // A file's address (a PDF) is not judged; a folder's, whatever its name ("/release-1.2/"), is.
+      const last = at.url.pathname.endsWith('/') ? '' : (at.url.pathname.split('/').pop() ?? '');
       if (last.includes('.') && !PAGE_FILE.test(last)) continue;
       answer ??= lookup();
       const found = answer(at.route);
@@ -836,6 +839,18 @@ const canonicalOverrides: SeoAuditRule = {
     return out;
   }
 };
+
+/** Whether the nodes under a collection loop link each row to its entry's page (a binding to the row's `entryLink`). */
+function linksEntries(nodes: Record<string, GraphNode>, children: readonly string[], seen = new Set<string>()): boolean {
+  return children.some((id) => {
+    if (seen.has(id) || !Object.hasOwn(nodes, id)) return false;
+    seen.add(id);
+    const n = nodes[id] as GraphNode & { children?: unknown };
+    // A binding is kept where the value it fills is (a button's `link`, a placement's prop).
+    if (/"\$item":"entryLink"/.test(JSON.stringify({ ...n, children: undefined }))) return true;
+    return Array.isArray(n.children) && linksEntries(nodes, n.children as string[], seen);
+  });
+}
 
 /**
  * Collections whose index the website publishes (shared/archives.ts) with nothing on it, or with entries no link
@@ -859,6 +874,27 @@ const collectionArchives: SeoAuditRule = {
       const routeCollection = new Map<string, string>([...entries.map((e) => [e.route.toLowerCase(), e.collection.settings.id] as const), ...pages.map((p) => [p.route.toLowerCase(), p.collectionId] as const)]);
       const kept = new Map(liveRedirects(live).map((r) => [r.from.toLowerCase(), r.to.toLowerCase()]));
       const found = new Set<string>();
+      // The shared header and footer bring visitors in from wherever else they show: a page that shows them, or another
+      // collection's pages.
+      const pagesWith = Object.fromEntries(SHELL_PARTS.map((part) => [part, pagesShowing(live, part).some((p) => Object.hasOwn(live.pages, p.id))]));
+      const collectionsShown = new Set([...entries.map((e) => e.collection.settings.id), ...pages.map((p) => p.collectionId)]);
+      const shownOutside = (part: string, collectionId: string) => pagesWith[part] || [...collectionsShown].some((id) => id !== collectionId);
+      // A collection loop (a repeat over a query, outside any component) on a page or the header or footer links to the
+      // entries it lists when its rows carry their links: siteLinks reads only components' lists.
+      const loopSources: Array<{ tree: NodeTree; part?: string }> = [
+        ...live.site.pageOrder.flatMap((id) => (Object.hasOwn(live.pages, id) && typeof live.pages[id]?.route === 'string' ? [{ tree: live.pages[id] as NodeTree }] : [])),
+        ...SHELL_PARTS.map((part) => ({ tree: live.site.shell[part], part }))
+      ];
+      for (const { tree, part } of loopSources) {
+        const nodes = tree?.nodes && typeof tree.nodes === 'object' ? tree.nodes : {};
+        for (const n of Object.values(nodes)) {
+          if (n?.kind !== 'repeat' || !n.list || typeof n.list !== 'object' || !Object.hasOwn(n.list, '$query')) continue;
+          const { collection, entries: listed } = loopEntries(live, n, {});
+          const id = collection?.settings.id;
+          if (!id || !listed.length || (part && !shownOutside(part, id)) || !linksEntries(nodes, n.children)) continue;
+          found.add(id);
+        }
+      }
       for (const l of links()) {
         let to: string | undefined;
         if (l.link.type === 'collection') to = l.link.target;
@@ -869,8 +905,10 @@ const collectionArchives: SeoAuditRule = {
           if (route) to = routeCollection.get(route) ?? routeCollection.get(kept.get(route) ?? '');
         }
         if (!to) continue;
-        const from = l.owner.kind === 'template' ? l.owner.id : l.owner.kind === 'entry' ? entryCollection.get(l.owner.id) : undefined;
-        if (from !== to) found.add(to);
+        // The collection's own layouts and entries' text bring no one in from elsewhere.
+        if (l.owner.kind === 'template' || l.owner.kind === 'archive' ? l.owner.id === to : l.owner.kind === 'entry' ? entryCollection.get(l.owner.id) === to : false) continue;
+        if (l.owner.kind === 'shell' && !shownOutside(l.owner.id, to)) continue;
+        found.add(to);
       }
       return found;
     };

@@ -2909,9 +2909,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
 export interface SiteLink {
   /**
    * Where it is: a published page, the shared header or footer (when anything published shows it), a collection's
-   * layout as a published entry's page shows it, or a published entry's text.
+   * layout as a published entry's page shows it, a collection's archive layout as its archive pages show it, or a
+   * published entry's text.
    */
-  owner: { kind: 'page' | 'shell' | 'template' | 'entry'; id: string };
+  owner: { kind: 'page' | 'shell' | 'template' | 'archive' | 'entry'; id: string };
   /** The node that holds it (the instance, for a link inside a component); empty in an entry's text. */
   nodeId: string;
   /** Tells apart the links one node holds. */
@@ -2932,7 +2933,8 @@ export interface SiteLink {
 /**
  * Every link the published website shows, as `publicationPlan` reads them: the published pages, the shared header
  * and footer while a published page (or entry, or collection index) shows them, each collection's layout as each
- * published entry's page shows it, and published entries' text where their layout shows it. A link reached by
+ * published entry's page shows it, each archive layout an archive page shows (its fixed links: the entries an archive
+ * page lists are linked by the website's own cards), and published entries' text where their layout shows it. A link reached by
  * choosing a tab or opening a disclosure counts as one shown at first. A link the walk reaches twice is listed once.
  */
 export function siteLinks(state: ProjectState): SiteLink[] {
@@ -2954,7 +2956,9 @@ export function siteLinks(state: ProjectState): SiteLink[] {
   const sources: Array<{ owner: SiteLink['owner']; tree: NodeTree; entryId?: string }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part] })),
-    ...entries.map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(live, e.collection, e.entry), entryId: e.entry.id }))
+    ...entries.map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(live, e.collection, e.entry), entryId: e.entry.id })),
+    // Each archive layout an archive page shows, once: a collection's index shows it with no entry published yet.
+    ...shownArchiveLayouts(live).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree }))
   ];
   const out: SiteLink[] = [];
   const seen = new Set<string>();
