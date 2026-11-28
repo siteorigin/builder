@@ -68,7 +68,15 @@ export const HEAD_ASSET_SCRIPT = `
 	$effect(() => {
 		started = true;
 	});
-	const ${HEAD_ASSET} = (file) => (started ? new URL(asset(file), location.href).href : asset(file));`;
+	const ${HEAD_ASSET} = (file) => {
+		if (!started) return asset(file);
+		// A page with no address of its own (about:blank) has nothing to resolve it from.
+		try {
+			return new URL(asset(file), location.href).href;
+		} catch {
+			return asset(file);
+		}
+	};`;
 
 /** The head links to the icon iOS puts on the home screen and to the manifest, beside the favicon's. */
 export function siteIconLinks(): string {
