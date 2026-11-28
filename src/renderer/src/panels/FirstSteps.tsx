@@ -131,7 +131,10 @@ export function FirstSteps() {
   // The step that finished the list (Preview, pressed from the keyboard) goes with the list: focus lands on Hide this
   // list rather than on nothing. Focus anywhere else (the Inspector, Site styles, Export) stays where it is.
   useLayoutEffect(() => {
-    if (allDone && (!document.activeElement || document.activeElement === document.body)) closeRef.current?.focus({ preventScroll: true });
+    if (!allDone || (document.activeElement && document.activeElement !== document.body)) return;
+    closeRef.current?.focus({ preventScroll: true });
+    // In a short sidebar the card's body scrolls: the button is brought into it, the sidebar itself left where it is.
+    closeRef.current?.scrollIntoView({ block: 'nearest' });
   }, [allDone]);
   if (!record || record.hidden || !done) return null;
   const folded = !!record.folded;
@@ -167,7 +170,7 @@ export function FirstSteps() {
       <div className="get-started-meter" aria-hidden="true">
         <span style={{ width: `${(count / FIRST_STEPS.length) * 100}%` }} />
       </div>
-      <div id={`${listId}-body`} hidden={folded}>
+      <div id={`${listId}-body`} className="get-started-body" hidden={folded}>
         {all ? (
           <div className="get-started-done">
             <p>You’ve done all five steps, including a website export. Hiding this list also hides it in new projects.</p>
