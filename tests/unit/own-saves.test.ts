@@ -465,6 +465,8 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     const { id, path, source } = ids.Greeting;
     const revision = session.revision;
     const undo = session.historyInfo().undoLabel;
+    const { checkSvelteSource } = await import('../../src/main/codecheck');
+    const [problem] = (await checkSvelteSource(broken)).filter((p) => p.severity === 'error');
     sent.length = 0;
     writeFileSync(join(dir, path), broken);
     tell(path);
@@ -473,7 +475,8 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     expect(refusal.owner).toEqual({ kind: 'component', id });
     expect(refusal.severity).toBe('error');
     expect(refusal.site).toBe(path);
-    expect(refusal.message).toMatch(new RegExp(`^The edited code for "Greeting" has problems, so it was not loaded \\(${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, line \\d+\\): .+`));
+    expect(problem.line).toBeGreaterThan(1);
+    expect(refusal.message).toBe(`The edited code for "Greeting" has problems, so it was not loaded (${path}, line ${problem.line}): ${problem.message}`);
     // Sent to the editor at once, though the project did not change.
     expect(sent).toContain('project:changed');
     expect(session.revision).toBe(revision);
@@ -540,13 +543,16 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     writeFileSync(join(dir, path), '<p>Fixed</p>\n');
     tell(path, SITE);
     await vi.waitFor(() => expect(refusals().map((d) => d.severity)).toEqual(['warning']), { timeout: 5000, interval: 20 });
-    expect(refusals()[0].message).toMatch(new RegExp(`^The edited code for "Greeting" \\(${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\) has not loaded yet: it waits with the other changed files\\. .+`));
+    // It says why: the reason the read was refused, as a read now gives it.
+    const why = await session.reloadFromDisk();
+    expect(why.ok).toBe(false);
+    expect(refusals()[0].message).toBe(`The edited code for "Greeting" (${path}) has not loaded yet: it waits with the other changed files. ${why.message}`);
     expect(session.state.components[id].source).toBe(source);
     // The site put right: everything loads, and nothing is refused.
     write(dir, SITE, goodSite);
     tell(SITE);
-    await vi.waitFor(() => expect(session.state.components[id].source).toBe('<p>Fixed</p>\n'), { timeout: 5000, interval: 20 });
-    expect(refusals()).toEqual([]);
+    await vi.waitFor(() => expect(refusals()).toEqual([]), { timeout: 5000, interval: 20 });
+    expect(session.state.components[id].source).toBe('<p>Fixed</p>\n');
   });
 
   it('looks at a file edited while an AI request held the project once the request ends', async () => {
@@ -560,5 +566,25 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     busy.mockReturnValue(false);
     c.aiEnded();
     await vi.waitFor(() => expect(refusals()).toHaveLength(1), { timeout: 5000, interval: 20 });
+  });
+
+  it('keeps a refusal whose fix failed to be published, and clears it at the next read', async () => {
+    const { dir, session, sent, ids, refusals } = await withCode('Greeting');
+    const { id, path } = ids.Greeting;
+    writeFileSync(join(dir, path), broken);
+    expect((await session.reloadChanged([path])).ok).toBe(false);
+    expect(refusals()).toHaveLength(1);
+    // The fixed code is read, but the step that records it fails: the editor is not told it loaded.
+    writeFileSync(join(dir, path), '<p>Fixed</p>\n');
+    const saving = vi.spyOn(session as unknown as { saveLocalState(): Promise<void> }, 'saveLocalState').mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    await expect(session.reloadChanged([path])).rejects.toThrow('EACCES');
+    saving.mockRestore();
+    expect(refusals()).toHaveLength(1);
+    // The next read finds the code loaded, and tells the editor the refusal has gone.
+    sent.length = 0;
+    expect(await session.reloadChanged([path])).toEqual({ ok: true });
+    expect(refusals()).toEqual([]);
+    expect(sent).toContain('project:changed');
+    expect(session.state.components[id].source).toBe('<p>Fixed</p>\n');
   });
 });

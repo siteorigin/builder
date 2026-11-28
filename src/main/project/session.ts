@@ -1687,6 +1687,8 @@ export class ProjectSession extends EventEmitter {
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'Keep external change', source: 'system' });
       await this.saveLocalState();
+      // Kept, the external version brought every edited code with it (code with errors refuses the choice): nothing waits.
+      if (choice !== 'restore') this.setRefusedSources(new Map(), { quiet: true });
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
     }));
@@ -6121,9 +6123,9 @@ export class ProjectSession extends EventEmitter {
       }
       // Only the stored format differs (a file put back from an older copy): store it in the current one.
       if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
-      if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
-      // Nothing changed: a refused file was put back as it was loaded.
+      // Nothing changed: a refused file was put back as it was loaded. Cleared before a settled conflict tells of it.
       this.setRefusedSources(new Map(), { quiet: settled });
+      if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
       return { ok: true };
     }
     // Treat the external change as a normal committed edit.
@@ -6141,13 +6143,14 @@ export class ProjectSession extends EventEmitter {
     // Read again from the files, every document is a new object: those that read the same are the project's own.
     this.state = shareUnchanged(this.state, prevDocs, next, nextDocs);
     this.docs = nextDocs;
-    // The edited code is loaded: its notices go with the change that brings it, never in a snapshot of their own.
-    this.setRefusedSources(new Map(), { quiet: true });
     const changedFiles = await this.publishInstalled();
     this.revision++;
     if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
     await this.saveLocalState();
     if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
+    // The edited code is loaded: its notices go with the change that brings it, never in a snapshot of their own. Kept
+    // until then, so a step above that fails leaves them for the next read to clear, and tell of.
+    this.setRefusedSources(new Map(), { quiet: true });
     this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
     return { ok: true };
   }
