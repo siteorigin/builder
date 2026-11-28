@@ -183,6 +183,57 @@ describe('old addresses of entries', () => {
     expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
   });
 
+  it('refuses to hand links and old addresses to a record with no page of its own (#1495)', () => {
+    const s = run(
+      blog(),
+      rename('en_winter', 'glazing-evenings'),
+      { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: false, archive: false } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false }
+    );
+    const remove = (entryId: string) => ({ type: 'entry.remove' as const, collectionId: 'posts', entryId, replacementEntryId: 'en_ruiz' });
+    // Linked from another post, with an old address: neither could reach the record.
+    expect(() => run(s, remove('en_winter'))).toThrow(/“Ana Ruiz” has no page of its own/);
+    // An old address alone is refused too.
+    const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
+    expect(() => run(unlinked, remove('en_winter'))).toThrow(/has no page of its own/);
+    // With nothing to hand over, the replacement is never used.
+    expect(run(unlinked, remove('en_secret')).collections.posts.entries).not.toHaveProperty('en_secret');
+  });
+
+  it('refuses a record with no page for an address the same change takes back (#1495)', () => {
+    const s = run(
+      blog(),
+      rename('en_winter', 'glazing-evenings'),
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: false, archive: false } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false }
+    );
+    // Taken back, and the spare address's own redirect removed: only the reclaimed address is left to hand over.
+    expect(() =>
+      run(
+        s,
+        rename('en_winter', 'winter-workshop'),
+        { type: 'site.update', redirects: [] },
+        { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_ruiz' }
+      )
+    ).toThrow(/has no page of its own/);
+  });
+
+  it('lets a record with no page take over where reference fields leave no other choice, and brings its address back with the pages (#1495)', () => {
+    const s = run(
+      blog(),
+      { type: 'collection.update', collectionId: 'posts', fields: { next: { type: 'reference', label: 'Next', collection: 'posts' } } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', values: { next: 'en_winter' } },
+      rename('en_winter', 'glazing-evenings'),
+      { type: 'collection.update', collectionId: 'posts', pages: { detail: false, archive: false } }
+    );
+    const gone = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' });
+    expect(gone.collections.posts.entries.en_secret.values.next).toBe('en_spring');
+    expect(kept(gone)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_spring' }]);
+    const back = run(gone, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: true } });
+    expect(liveRedirects(back).map((r) => [r.from, r.to])).toContainEqual(['/blog/winter-workshop/', '/blog/spring-open-studio/']);
+  });
+
   it('reports an old address that names no entry, or both a page and an entry', () => {
     const s = blog();
     const home = s.site.homePageId;
