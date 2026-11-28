@@ -16,7 +16,7 @@ import { EngineError } from '@engine/tree';
 import { normalizePropSchema } from '@engine/schema';
 import { TABLE_LIMITS, editTable, normalizeTable } from '@engine/table';
 import { validateState } from '@engine/validate';
-import { isSampleFinding } from '@engine/sample-content';
+import { isSampleFinding, samplePlace } from '@engine/sample-content';
 import { generateProject, defFile } from '@generator/index';
 import { compactPropsSchema, hasOpenSchema, propJsonSchema } from '@agent/propschema';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
@@ -150,9 +150,11 @@ describe('table edits by ID', () => {
     const removed = applyOperations(withColumn.state, [edit(nodeId, owner, { action: 'removeRow', rowId: 'row_2' })]).state;
     expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
     // The starter's sections still waiting for their pictures aside, and the Business starter's own sample text (#1640),
-    // the edits leave no problem; nothing about the table is named.
+    // the edits leave no problem. The edited table is no longer its design's sample; the heading and caption, left as
+    // Foundation marks them (#1641), still are.
     expect(validateState(removed).filter((d) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d))).toEqual([]);
-    expect(validateState(removed).filter((d) => isSampleFinding(d) && d.nodeId === nodeId)).toEqual([]);
+    const named = validateState(removed).filter((d) => isSampleFinding(d) && d.nodeId === nodeId);
+    expect(named.map((d) => (samplePlace(d) as { prop: string }).prop).sort()).toEqual(['caption', 'heading']);
   });
 
   it('keeps a cell typed just before its column was moved: each step names its cell, never the whole table', () => {
