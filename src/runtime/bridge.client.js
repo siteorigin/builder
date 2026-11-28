@@ -5866,9 +5866,10 @@ function reportRenderErrors() {
     renderErrorsAt = navigationId;
     renderErrorsSent.clear();
   }
-  // An isolated component preview has said whether its component got on the page when it said it was ready (see
-  // previewEntry): the notes there then are not said again; one that appears later is.
-  const told = !!window.__siteoriginPreview && !renderErrorsReady;
+  // An isolated component preview that said with its `ready` that its component did not get on the page (see
+  // previewEntry) has said the notes there then: they are not said again, and one that appears later is. One that
+  // said it was shown, then threw before the bridge ran, says its notes here.
+  const told = !!window.__siteoriginPreview && window.__siteoriginPreview.mounted === false && !renderErrorsReady;
   renderErrorsReady = true;
   /** The notes on the page now: one gone and back is a problem again. */
   const shown = new Set();

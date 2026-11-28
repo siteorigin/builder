@@ -144,6 +144,12 @@ describe.skipIf(!browserInstalled)('a code component that threw while the page r
     await o.page.close();
   });
 
+  it('in an isolated component preview that said it was shown, says a note already there when the bridge starts', async () => {
+    const o = await open('/frame', [{ status: 200, body: BROKEN }], `window.__siteoriginPreview = { key: 'k', mounted: true };`);
+    await expect.poll(async () => (await o.errors()).map((e) => e.file), { timeout: 10000 }).toEqual(['src/lib/siteorigin/custom/Broken.svelte']);
+    await o.page.close();
+  });
+
   it('retries each note when the page takes a change, and reports one still there before the change is said to be shown', async () => {
     const o = await open('/frame', [{ status: 500, body: BROKEN }]);
     await expect.poll(async () => (await o.errors()).length, { timeout: 10000 }).toBe(1);
