@@ -242,10 +242,10 @@ describe('the Business starter’s copy and photos', () => {
     const s = business();
     const copy = samples(s, 'SAMPLE_STARTER_COPY');
     const photos = samples(s, 'SAMPLE_STARTER_PHOTO');
-    expect(copy.map((d) => d.message)).toContain('Home: Split hero’s Heading is still the Business starter’s sample text, “Calm, considered spaces for everyday life”. Write your own, or keep it as it is.');
+    expect(copy.map((d) => d.message)).toContain('Home: Split hero’s Heading still shows sample text, “Calm, considered spaces for everyday life”. Write your own, or keep it as it is.');
     // Copy the starter gives a section even where it is the section's own default, a team member's name, and the footer's tagline.
-    expect(copy.some((d) => /Eyebrow is still the Business starter’s sample text, “Interior design studio”/.test(d.message))).toBe(true);
-    expect(copy.some((d) => /Person 1 of Team’s People is still the Business starter’s sample, “Hannah Wells”/.test(d.message))).toBe(true);
+    expect(copy.some((d) => /Eyebrow still shows sample text, “Interior design studio”/.test(d.message))).toBe(true);
+    expect(copy.some((d) => /Person 1 of Team’s People still shows sample text, “Hannah Wells”/.test(d.message))).toBe(true);
     expect(copy.some((d) => d.message.startsWith('Footer: Footer’s Tagline'))).toBe(true);
     // Not the site's own name, its menus or its copyright line.
     expect(copy.filter((d) => ['siteName', 'links', 'copyright'].includes((placeOf(d) as { prop?: string }).prop ?? ''))).toEqual([]);
@@ -256,9 +256,9 @@ describe('the Business starter’s copy and photos', () => {
     ]);
     expect(destinationForDiagnostic(s, copy.find((d) => placeOf(d)?.kind === 'site')!)).toEqual({ kind: 'site', field: 'description' });
     // Every photo it places: the hero's, the studio's, the gallery's three and the team's three portraits.
-    expect(photos.map((d) => d.message.match(/starter photo “([^”]+)”/)![1]).sort()).toEqual(STARTER_ASSETS.map((a) => a.name).sort());
+    expect(photos.map((d) => d.message.match(/sample photo “([^”]+)”/)![1]).sort()).toEqual(STARTER_ASSETS.map((a) => a.name).sort());
     const hero = photos.find((d) => d.message.includes('“Hero interior”'))!;
-    expect(hero.message).toBe('Home: Split hero’s Image still shows the starter photo “Hero interior”. Replace it with a picture of your own, or keep it as it is.');
+    expect(hero.message).toBe('Home: Split hero’s Image still shows the sample photo “Hero interior”. Replace it with a picture of your own, or keep it as it is.');
     const portrait = photos.find((d) => d.message.includes('“Portrait 1”'))!;
     expect(placeOf(portrait)).toMatchObject({ kind: 'prop', prop: 'people', field: 'portrait' });
   });
@@ -277,7 +277,7 @@ describe('the Business starter’s copy and photos', () => {
     expect(samples(s, 'SAMPLE_STARTER_PHOTO').some((d) => d.message.includes('“Studio table”'))).toBe(false);
     // Unused, the photos in the library say nothing; a sharing image that is one does.
     s.site.socialImage = 'a_kitchen';
-    expect(samples(s, 'SAMPLE_STARTER_PHOTO').filter((d) => placeOf(d)?.kind === 'site').map((d) => d.message)).toEqual(['The site’s sharing image is still the starter photo “Kitchen”. Choose a picture of your own in Site details, or keep it as it is.']);
+    expect(samples(s, 'SAMPLE_STARTER_PHOTO').filter((d) => placeOf(d)?.kind === 'site').map((d) => d.message)).toEqual(['The site’s sharing image is still the sample photo “Kitchen”. Choose a picture of your own in Site details, or keep it as it is.']);
   });
 
   it('still knows the copy that names the site after the site is renamed, and stops once it is written over', () => {

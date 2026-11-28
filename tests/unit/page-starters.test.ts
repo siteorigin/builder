@@ -12,6 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { pageStarterComponents, type PageStarter } from '@engine/page-starters';
 import { validateState } from '@engine/validate';
+import { isSampleFinding } from '@engine/sample-content';
 import { toRichText } from '@shared/richtext';
 import { validateOperation } from '@shared/ops';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
@@ -255,7 +256,8 @@ describe('a starter in a saved project', () => {
 describe('page starters and project health (#873)', () => {
   const STARTERS: PageStarter[] = ['intro', 'services', 'about', 'contact', 'pricing', 'faq', 'article'];
   // The Contact starter's form is left unconnected on purpose until the author adds a form service (see its section).
-  const counted = (s: ProjectState) => validateState(s).filter((d) => d.severity !== 'info' && d.code !== 'FORM_UNCONNECTED');
+  // Its sample text, which a page starter fills in to be replaced, is named until it is (#1640), and checked below.
+  const counted = (s: ProjectState) => validateState(s).filter((d) => d.severity !== 'info' && d.code !== 'FORM_UNCONNECTED' && !isSampleFinding(d));
   const codes = (s: ProjectState) => counted(s).map((d) => d.code).sort();
 
   for (const project of ['business', 'blank'] as const) {
@@ -272,4 +274,11 @@ describe('page starters and project health (#873)', () => {
       }
     });
   }
+
+  it('names the sample text a page starter fills in, until it is replaced (#1640)', () => {
+    const { state, page } = created(createStarterState('blank', 'Starter Studio', false), 'about');
+    const named = validateState(state).filter((d) => isSampleFinding(d) && d.owner?.kind === 'page' && d.owner.id === page.id);
+    expect(named.map((d) => d.message)).toContain('Our work: Person 1 of Team’s People still shows sample text, “Hannah Wells”. Write your own, or keep it as it is.');
+    expect(named.every((d) => d.severity === 'warning')).toBe(true);
+  });
 });

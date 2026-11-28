@@ -105,6 +105,9 @@ const own = <T>(map: Record<string, T> | undefined, k: string | undefined): T | 
 // ---------------------------------------------------------------------------
 // The Business starter's copy
 // ---------------------------------------------------------------------------
+// The same words reach a page in other ways too: a page starter fills in some of them, and some are a section's own
+// defaults the starter gives again (the team, a hero's eyebrow). Wherever they came from they are sample text, which is
+// what a finding calls them.
 
 /** The site's name in the starter's copy as it is read: replaced by the names the site may have had. */
 const NAME = 'Starter-Site-Name-9d41';
@@ -228,7 +231,7 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     const at: SamplePlace = { kind: 'prop', nodeId: c.nodeId, prop, ...(field !== undefined ? { field } : {}) };
     const name = field === undefined ? where : `${where} → ${f.label}`;
     if (isStarterCopy(copy?.fields.get(`${p.def.componentId}|${prop}|${field ?? ''}`), c.value, names)) {
-      found('SAMPLE_STARTER_COPY', `${name} is still the Business starter’s sample text, ${quoted(words)}. Write your own, or keep it as it is.`, c.nodeId, at, c.value);
+      found('SAMPLE_STARTER_COPY', `${name} still shows sample text, ${quoted(words)}. Write your own, or keep it as it is.`, c.nodeId, at, c.value);
       continue;
     }
     // An object's field starts as the object's own default gives it, or else as the field's.
@@ -272,7 +275,7 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     const starter = row.fields.filter((f) => isStarterCopy(copy?.fields.get(`${p.def.componentId}|${row.prop}|${f.field}`), f.value, names));
     if (starter.length) {
       const first = starter.find((f) => f === lead) ?? starter[0];
-      found('SAMPLE_STARTER_COPY', `${item} is still the Business starter’s sample, ${quoted(first.words)}. Write your own, or keep it as it is.`, row.nodeId, at(first.field), starter.map((f) => [f.field, f.value]));
+      found('SAMPLE_STARTER_COPY', `${item} still shows sample text, ${quoted(first.words)}. Write your own, or keep it as it is.`, row.nodeId, at(first.field), starter.map((f) => [f.field, f.value]));
       continue;
     }
     if (schema.sampleDefault && seededRows(row.nodeId, row.prop, schema, list).has(row.itemId)) {
@@ -334,7 +337,7 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
         where = `${schema.itemLabel?.trim() || 'Item'} ${index + 1} of ${whose(p.def.name)} ${schema.label}`;
       }
     }
-    found('SAMPLE_STARTER_PHOTO', `${where} still shows the starter photo “${asset.name}”. Replace it with a picture of your own, or keep it as it is.`, nodeId, at, [asset.id, path]);
+    found('SAMPLE_STARTER_PHOTO', `${where} still shows the sample photo “${asset.name}”. Replace it with a picture of your own, or keep it as it is.`, nodeId, at, [asset.id, path]);
     void value;
   }
 
@@ -373,18 +376,18 @@ export function sampleContentDiagnostics(state: ProjectState, live: ProjectState
   for (const t of trees) for (const d of keep.tree(t, 'sample-content', () => treeFindings(live, t, copy, names, photos))) out.push(d);
   const description = live.site.description;
   if (copy && isStarterCopy(copy.descriptions, description, names))
-    out.push({ severity: 'warning', code: 'SAMPLE_STARTER_COPY', message: 'The site description is still the Business starter’s sample text. Write your own in Site details, or keep it as it is.', site: siteOf({ kind: 'site', field: 'description' }, description) });
+    out.push({ severity: 'warning', code: 'SAMPLE_STARTER_COPY', message: 'The site description is still sample text. Write your own in Site details, or keep it as it is.', site: siteOf({ kind: 'site', field: 'description' }, description) });
   const social = live.site.socialImage ? photos.get(live.site.socialImage) : undefined;
-  if (social) out.push({ severity: 'warning', code: 'SAMPLE_STARTER_PHOTO', message: `The site’s sharing image is still the starter photo “${social.name}”. Choose a picture of your own in Site details, or keep it as it is.`, site: siteOf({ kind: 'site', field: 'socialImage' }, social.id) });
+  if (social) out.push({ severity: 'warning', code: 'SAMPLE_STARTER_PHOTO', message: `The site’s sharing image is still the sample photo “${social.name}”. Choose a picture of your own in Site details, or keep it as it is.`, site: siteOf({ kind: 'site', field: 'socialImage' }, social.id) });
   for (const id of live.site.pageOrder) {
     const page = own(live.pages, id);
     if (!page) continue;
     const owner = { kind: 'page', id };
     const text = page.seo?.description;
     if (copy && typeof text === 'string' && isStarterCopy(copy.descriptions, text, names))
-      out.push({ severity: 'warning', code: 'SAMPLE_STARTER_COPY', message: `${page.title}: its search description is still the Business starter’s sample text. Write your own in its Search & sharing settings, or keep it as it is.`, owner, site: siteOf({ kind: 'pageSeo', pageId: id, field: 'description' }, text) });
+      out.push({ severity: 'warning', code: 'SAMPLE_STARTER_COPY', message: `${page.title}: its search description is still sample text. Write your own in its Search & sharing settings, or keep it as it is.`, owner, site: siteOf({ kind: 'pageSeo', pageId: id, field: 'description' }, text) });
     const shared = page.seo?.socialImage ? photos.get(page.seo.socialImage) : undefined;
-    if (shared) out.push({ severity: 'warning', code: 'SAMPLE_STARTER_PHOTO', message: `${page.title}: its sharing image is still the starter photo “${shared.name}”. Choose a picture of your own in its Search & sharing settings, or keep it as it is.`, owner, site: siteOf({ kind: 'pageSeo', pageId: id, field: 'socialImage' }, shared.id) });
+    if (shared) out.push({ severity: 'warning', code: 'SAMPLE_STARTER_PHOTO', message: `${page.title}: its sharing image is still the sample photo “${shared.name}”. Choose a picture of your own in its Search & sharing settings, or keep it as it is.`, owner, site: siteOf({ kind: 'pageSeo', pageId: id, field: 'socialImage' }, shared.id) });
   }
   return out;
 }

@@ -103,7 +103,7 @@ describe.skipIf(!browserInstalled)('sample content in Project health (#1640)', {
     const heading = 'Calm, considered spaces for everyday life';
     const kept = found.find((d) => d.message.includes(heading))!;
     await expect.poll(() => row(heading).getByRole('button').allTextContents()).toEqual(['Go to field', 'Keep as is']);
-    expect(await row('The site description is still').getByRole('button').allTextContents()).toEqual(['Go to Default description', 'Keep as is']);
+    expect(await row('The site description is still sample text').getByRole('button').allTextContents()).toEqual(['Go to Default description', 'Keep as is']);
     await row(heading).getByRole('button', { name: 'Keep as is' }).click();
     expect(await page.evaluate('window.__saved')).toEqual([[{ keptSampleContent: [keptSampleKey(kept)] }, 'w1']]);
     expect(await page.evaluate('window.__kept()')).toEqual([keptSampleKey(kept)]);
@@ -116,7 +116,7 @@ describe.skipIf(!browserInstalled)('sample content in Project health (#1640)', {
 
   it('offers no keeping in a project open read-only', async () => {
     await open(true);
-    expect(await warnings().filter({ hasText: 'Business starter' }).count()).toBe(found.length);
+    expect(await warnings().filter({ hasText: 'still' }).count()).toBe(found.length);
     expect(await page.getByRole('button', { name: 'Keep as is' }).count()).toBe(0);
   });
 });

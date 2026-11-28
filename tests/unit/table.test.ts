@@ -16,6 +16,7 @@ import { EngineError } from '@engine/tree';
 import { normalizePropSchema } from '@engine/schema';
 import { TABLE_LIMITS, editTable, normalizeTable } from '@engine/table';
 import { validateState } from '@engine/validate';
+import { isSampleFinding } from '@engine/sample-content';
 import { generateProject, defFile } from '@generator/index';
 import { compactPropsSchema, hasOpenSchema, propJsonSchema } from '@agent/propschema';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
@@ -148,7 +149,8 @@ describe('table edits by ID', () => {
     expect(grown.rows.every((r) => r.cells[columnId] === '' && r.cells.col_day && r.cells.col_time)).toBe(true);
     const removed = applyOperations(withColumn.state, [edit(nodeId, owner, { action: 'removeRow', rowId: 'row_2' })]).state;
     expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
-    expect(validateState(removed).filter((d) => d.severity !== 'info')).toEqual([]);
+    // The Business starter's own sample text is named (#1640); nothing about the table is.
+    expect(validateState(removed).filter((d) => d.severity !== 'info' && !isSampleFinding(d))).toEqual([]);
   });
 
   it('keeps a cell typed just before its column was moved: each step names its cell, never the whole table', () => {
