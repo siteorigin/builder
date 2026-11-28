@@ -12,6 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { catalogueEntries } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
+import { GenerationCache } from '@generator/cache';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, buildSearchIndex, pageText, usesSiteSearch, type SearchEntry } from '@generator/search';
 import { readField } from '../../src/renderer/src/lib/held';
 import { describeOps } from '@agent/report';
@@ -486,6 +487,75 @@ describe('site search as the website runs it', () => {
     expect(read(searchPages([{ route: '/a/', title: 'Kitchens', description: 'Fitted kitchens in oak.', text: 'Our work.' }], 'kitchens').results[0].excerpt)).toBe('Fitted kitchens in oak.');
     expect(read(searchPages([{ route: '/a/', title: 'Kitchens', text: 'Our work.' }], 'kitchens').results[0].excerpt)).toBe('Our work.');
     expect(searchPages([{ route: '/a/', title: 'Kitchens', text: '' }], 'kitchens').results[0].excerpt).toEqual([]);
+  });
+});
+
+describe('records in site search', () => {
+  const FIELDS = {
+    price: { type: 'number', label: 'Guide price', default: 0 },
+    region: { type: 'string', label: 'Region', default: '' },
+    status: { type: 'enum', label: 'Sale', default: 'open', options: [{ value: 'open', label: 'Open market' }, { value: 'private', label: 'Private Sale' }] },
+    reserve: { type: 'string', label: 'Reserve', default: '' }
+  };
+  /** A Properties collection of records with two listings, one in the category Mallorca and one tagged Coastal. */
+  function listings(): ProjectState {
+    const s = apply(withSearch(), [
+      { type: 'collection.create', collectionId: 'properties', name: 'Properties', kind: 'structured', hasBody: true, pages: { detail: true, archive: true }, route: '/properties/' } as EditOperation,
+      { type: 'collection.update', collectionId: 'properties', fields: structuredClone(FIELDS) as never } as EditOperation,
+      { type: 'collection.createTerm', collectionId: 'properties', taxonomyId: 'categories', label: 'Mallorca', termId: 'mallorca' },
+      { type: 'collection.createTerm', collectionId: 'properties', taxonomyId: 'tags', label: 'Coastal', termId: 'coastal' },
+      { type: 'entry.create', collectionId: 'properties', entryId: 'en_sonvida', title: 'Son Vida estate', draft: false, publishedAt: '2026-10-20', excerpt: 'A finca above Palma.', body: ['Terraced gardens.'], terms: { categories: ['mallorca'], tags: ['coastal'] }, values: { price: 8400000, region: 'Serra de Tramuntana', status: 'private', reserve: 'Quietly 7,900,000' } } as EditOperation,
+      { type: 'entry.create', collectionId: 'properties', entryId: 'en_lighthouse', title: 'Lighthouse cottage', draft: false, publishedAt: '2026-10-19', excerpt: 'A keeper\u2019s cottage.', values: { price: 650000, region: 'Cornwall' } } as EditOperation
+    ]);
+    // The author takes the reserve off the listing's page.
+    const t = s.collections.properties.settings.template;
+    const reserve = Object.values(t.nodes).find((n) => n.name === 'Reserve')!;
+    return apply(s, [{ type: 'node.remove', owner: { kind: 'template', id: 'properties' }, nodeId: reserve.id } as EditOperation]);
+  }
+  const routes = (found: Found) => found.results.map((r) => r.route);
+
+  it('finds a record by the custom fields and categories its page shows, as the page writes them', async () => {
+    const s = listings();
+    const { loadPages, searchPages } = await runtime(generateProject(s).get(INDEX)!);
+    const pages = await loadPages();
+    for (const q of ['8,400,000', 'Private Sale', 'Mallorca', 'Tramuntana', 'Guide price 8,400,000']) expect(routes(searchPages(pages, q)), q).toEqual(['/properties/son-vida-estate/']);
+    expect(routes(searchPages(pages, 'Cornwall'))).toEqual(['/properties/lighthouse-cottage/']);
+    // Its text and excerpt still come first.
+    const entry = buildSearchIndex(s).find((e) => e.route === '/properties/son-vida-estate/')!;
+    expect(entry.text.split('\n').slice(0, 2)).toEqual(['A finca above Palma.', 'Terraced gardens.']);
+    expect(entry.text).toContain('Private Sale');
+    // A choice is found by its label, never by the value it stores.
+    expect(searchPages(pages, 'private').results.map((r) => r.route)).toEqual(['/properties/son-vida-estate/']);
+    expect(entry.text).not.toMatch(/\bprivate\b/);
+  });
+
+  it('never finds a record by what its page leaves off, or by the records it links to', async () => {
+    const s = listings();
+    const { loadPages, searchPages } = await runtime(generateProject(s).get(INDEX)!);
+    const pages = await loadPages();
+    // A field the layout no longer shows, and a grouping it never placed.
+    expect(searchPages(pages, '7,900,000').total).toBe(0);
+    expect(searchPages(pages, 'Coastal').total).toBe(0);
+    // The links to the entries before and after it name the other record, which alone is found by its title.
+    expect(routes(searchPages(pages, 'Lighthouse'))).toEqual(['/properties/lighthouse-cottage/']);
+    expect(routes(searchPages(pages, 'Son Vida'))).toEqual(['/properties/son-vida-estate/']);
+    // A field whose condition does not hold for the record shows nothing: the cottage is in no category.
+    expect(routes(searchPages(pages, 'Mallorca'))).toEqual(['/properties/son-vida-estate/']);
+    // The title and excerpt are the record's own fields, listed once.
+    const entry = buildSearchIndex(s).find((e) => e.route === '/properties/son-vida-estate/')!;
+    expect(entry.text.split('\n').filter((l) => l === 'A finca above Palma.')).toHaveLength(1);
+    expect(entry.text).not.toContain('Son Vida estate');
+  });
+
+  it('follows a renamed category in a cached run', () => {
+    const s = listings();
+    const renamed = apply(s, [{ type: 'collection.renameTerm', collectionId: 'properties', taxonomyId: 'categories', termId: 'mallorca', label: 'Majorca' } as EditOperation]);
+    const cache = new GenerationCache();
+    expect(generateProject(s, {}, cache).get(INDEX)).toContain('Mallorca');
+    const warm = generateProject(renamed, {}, cache).get(INDEX)!;
+    expect(warm).toEqual(generateProject(renamed).get(INDEX));
+    expect(warm).toContain('Majorca');
+    expect(warm).not.toContain('Mallorca');
   });
 });
 
