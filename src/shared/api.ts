@@ -132,6 +132,13 @@ export interface Diagnostic {
 }
 
 /**
+ * The code of a Diagnostic for a code component's file edited outside the app and not loaded (#1533): the project keeps
+ * the version that last loaded, and `site` is the file. An error is code with errors (its message names the first, and
+ * its line when the compiler gives one); a warning is edited code that is fine but held back with the rest of the read.
+ */
+export const EXTERNAL_SOURCE_REFUSED = 'EXTERNAL_SOURCE_REFUSED';
+
+/**
  * What a web-sized copy of a large library image would be, measured by making it: its format and size, `lighter:
  * false` when it would hardly be lighter than the original (so none is offered), or null when none can be made.
  */

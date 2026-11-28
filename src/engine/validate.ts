@@ -25,7 +25,7 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
+import { blankPages, emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -663,10 +663,20 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  const rest: Diagnostic[] = [...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
   return [links, rest];
+}
+
+/** Published pages with nothing on them (see blankPages). */
+function blankPageDiagnostics(state: ProjectState): Diagnostic[] {
+  return blankPages(state).map((p) => ({
+    severity: 'warning',
+    code: 'PAGE_EMPTY',
+    message: `${p.title}: this page has nothing on it, so visitors find it blank. ${p.id === state.site.homePageId ? 'Add content to it.' : 'Add content to it, keep it as a draft, or remove it.'}`,
+    owner: { kind: 'page', id: p.id }
+  }));
 }
 
 /** How reusable each of the project's own components is, as adviceValidation reports it last. */

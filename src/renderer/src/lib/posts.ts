@@ -254,13 +254,27 @@ export interface FuturePublishQuestion {
   details: Array<{ kind: 'risk' | 'keep'; text: string }>;
 }
 
+/** Whether `publishedAt` is a calendar date after `today`. Days compare as YYYY-MM-DD text, which orders them. */
+function isFutureDay(publishedAt: unknown, today: string): publishedAt is string {
+  return isArticleDate(publishedAt) && isArticleDate(today) && publishedAt > today;
+}
+
+/**
+ * What the Publication date of an entry already on the website says when it is after `today` (#1317): moving the date
+ * ahead holds nothing back. Null for a draft, which Publish asks about itself, and for a date today or earlier.
+ */
+export function futureDateWarning(entry: Pick<EntryDoc, 'draft' | 'publishedAt'>, noun: string, language: string | undefined, today: string): string | null {
+  if (entry.draft !== false || !isFutureDay(entry.publishedAt, today)) return null;
+  return `This ${noun} is published, so it is still in the next export, dated ${formatArticleDate(entry.publishedAt, language)}.`;
+}
+
 /**
  * What Publish asks first when the post is dated after `today` (#1115): nothing makes the website wait for that day,
  * so a post published now is included in the next export. Null for a post dated today or earlier,
- * or without a valid date. Days compare as YYYY-MM-DD text, which orders them.
+ * or without a valid date.
  */
 export function futurePublishQuestion(publishedAt: unknown, noun: string, language: string | undefined, today: string): FuturePublishQuestion | null {
-  if (!isArticleDate(publishedAt) || !isArticleDate(today) || publishedAt <= today) return null;
+  if (!isFutureDay(publishedAt, today)) return null;
   const day = formatArticleDate(publishedAt, language);
   return {
     title: `Publish this ${noun} dated ${day}?`,
