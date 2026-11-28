@@ -19,32 +19,60 @@ export const DEFAULT_FORM_TOOL = 'contact';
 export const WEBMCP_SEARCH_FILE = 'webmcp-search.js';
 
 /**
- * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form
- * with its fields' names on lines of their own writes it. Code that writes any of them differently (a copy the author
- * changed, or the very first form) is left as it is, and its form declares no tool.
+ * The pieces of the theme's forms (the Contact form and the Signup form, written alike) the tool attributes are added
+ * at, each exactly as the theme writes it. Code that writes any of them differently (a copy the author changed) is
+ * left as it is, and its form declares no tool.
  */
 const PROPS_END = "\n\t\tclass: className = ''\n\t} = $props();";
 const UID = '\n\tconst uid = $props.id();';
 const STATUS = "\n\tlet status = $state('idle');";
 const HONEYPOT = '\n\tconst honeypot = $derived(';
-const FORM_OPEN = '\n\t\t<form\n\t\t\tclass="so-form__form"';
-const FIELD_LOOP = '\t\t\t{#each fields as field, i (field.id)}';
-const FIELD_LOOP_END = '\n\t\t\t{/each}';
 const SUBMIT = '\n\tasync function submit(event) {\n\t\tevent.preventDefault();';
 const RESET = 'HTMLFormElement.prototype.reset.call(form);';
-/** The name each field the visitor fills in is sent under, on a line of its own: today's form, and the first ones. */
-const FIELD_NAME = /\n(\t+)(name=\{(?:names\[i\]|fieldName\(field, i\))\})/g;
+/** Where the form's own checks stop a send: the first field with something wrong is focused, and nothing is sent. */
+const INVALID = '\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn;';
+/** Where a message a bot filled the trap of is dropped as though it were sent. */
+const TRAPPED = `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn;`;
+/** The form's opening tag, its class on the line after it. */
+const FORM_OPEN = /\n(\t+)<form\n(\t+)class="so-form__form"/g;
+/**
+ * The two places the form writes the fields the visitor fills in: the snippet that writes a short or long text field,
+ * and the loop over the fields (single-choice questions and checkboxes, and where the snippet is placed). Each runs to
+ * its closing line at its own indentation, so a list inside it never ends it.
+ */
+const REGIONS = [
+  { open: /\n(\t*)\{#snippet control\(field, i\)\}/g, close: '{/snippet}' },
+  { open: /\n(\t+)\{#each fields as field, i \(field\.id\)\}/g, close: '{/each}' }
+];
+/** The name each field the visitor fills in is sent under, on a line of its own. */
+const FIELD_NAME = /\n(\t+)(name=\{names\[i\]\})/g;
 /** A single-choice question's group, whose description agents read for all of its answers. */
-const CHOICES_OPEN = '<fieldset class="so-form__field so-form__field--wide so-form__choices"';
+const CHOICES_OPEN = '<fieldset class="so-form__field so-form__choices"';
 /** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
 /** What makes a field read-only, or a question unanswerable, while a message sends. */
 const WHILE_SENDING = /(readonly|disabled)=\{status === (['"])sending\2\}/g;
 
-const count = (text: string, piece: string) => text.split(piece).length - 1;
+const count = (text: string, piece: string | RegExp) => (typeof piece === 'string' ? text.split(piece).length - 1 : (text.match(piece)?.length ?? 0));
 const LABEL = "so_webmcp ? String(field.label ?? '').trim() || undefined : undefined";
 /** Every module path the code imports, statically or not. */
 const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
+
+/** Where each of the field regions is in the markup, as [start, end) pairs in order; null unless each is there once. */
+function fieldRegions(markup: string): Array<[number, number]> | null {
+  const out: Array<[number, number]> = [];
+  for (const { open, close } of REGIONS) {
+    const found = [...markup.matchAll(open)];
+    if (found.length !== 1) return null;
+    const at = found[0].index!;
+    const end = markup.indexOf(`\n${found[0][1]}${close}`, at + found[0][0].length);
+    if (end < 0) return null;
+    out.push([at, end]);
+  }
+  out.sort((a, b) => a[0] - b[0]);
+  // One after the other, never one inside the other.
+  return out[0][1] <= out[1][0] ? out : null;
+}
 
 /**
  * The form's code with the tool attributes added: `toolname` and `tooldescription` on the form; on each field the
@@ -54,9 +82,10 @@ const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
  * the `so_webmcp` the placement hands the form, and render nothing without it.
  *
  * No `toolautosubmit`: the browser fills the form in, and the visitor checks and sends it. Once they do, the agent is
- * told whether the message was sent (`respondWith`). While it waits, the fields stay as they are (a field the browser
- * sees change would change the tool under it), and the form is emptied only once the agent has its answer, since
- * emptying it first would tell the agent its request was cancelled.
+ * told whether the message was sent (`respondWith`), or why not: the form's own checks found something wrong, or the
+ * spam trap was filled in. While it waits, the fields stay as they are (a field the browser sees change would change
+ * the tool under it), and the form is emptied only once the agent has its answer, since emptying it first would tell
+ * the agent its request was cancelled.
  *
  * Null when the code is not the theme's form as it is written (see the pieces above); already speaks of WebMCP, or
  * spreads attributes from elsewhere that might (an existing `toolautosubmit` would send without the visitor); or
@@ -72,17 +101,35 @@ export function adaptFormSource(source: string): string | null {
   if (cut < 0) return null;
   const script = source.slice(0, cut);
   const markup = source.slice(cut);
-  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
-  if ([FORM_OPEN, FIELD_LOOP].some((piece) => count(markup, piece) !== 1)) return null;
-  // Every field the loop places names itself on a line of its own, and locks itself while sending only as the form
-  // does, so none is left without its description or changes under an agent.
-  const at = markup.indexOf(FIELD_LOOP);
-  const loop = markup.slice(at, markup.indexOf(FIELD_LOOP_END, at));
-  const fields = loop.match(FIELD_NAME)?.length ?? 0;
-  if (!fields || fields !== (loop.match(/\bname=/g)?.length ?? 0)) return null;
-  if ((loop.match(WHILE_SENDING)?.length ?? 0) !== (loop.match(/\b(?:readonly|disabled)=/g)?.length ?? 0)) return null;
+  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT, INVALID, TRAPPED].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
+  if (count(markup, FORM_OPEN) !== 1 || count(markup, TRAP) < 1) return null;
+  const regions = fieldRegions(markup);
+  if (!regions) return null;
+  // Every field the visitor fills in names itself on a line of its own, and locks itself while sending only as the
+  // form does, so none is left without its description or changes under an agent.
+  const fields = regions.map(([a, b]) => markup.slice(a, b));
+  const all = fields.join('\n');
+  const named = count(all, FIELD_NAME);
+  if (!named || named !== count(all, /\bname=/g)) return null;
+  if (count(all, WHILE_SENDING) !== count(all, /\b(?:readonly|disabled)=/g)) return null;
+  if (count(all, CHOICES_OPEN) !== 1) return null;
+  const adaptFields = (text: string) =>
+    text
+      .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
+      .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+      .replace(WHILE_SENDING, (_m, attr: string, q: string) => `${attr}={status === ${q}sending${q} && !so_answering}`);
+  let marked = '';
+  let from = 0;
+  for (const [a, b] of regions) {
+    marked += markup.slice(from, a) + adaptFields(markup.slice(a, b));
+    from = b;
+  }
+  marked += markup.slice(from);
   const code = script
-    // First, so the emptying the agent's answer waits for is not itself made to wait.
+    // Each way a send ends without sending says so, for the agent's answer (see submit).
+    .replace(INVALID, "\n\t\t\tcontrolOf(form, first)?.focus();\n\t\t\treturn 'invalid';")
+    .replace(TRAPPED, `\n\t\tif (data.get(honeypot)) {\n\t\t\t${RESET}\n\t\t\tstatus = 'sent';\n\t\t\treturn 'trapped';`)
+    // Then, so the emptying the agent's answer waits for is not itself made to wait.
     .replaceAll(RESET, 'so_reset(form);')
     .replace(PROPS_END, "\n\t\tclass: className = '',\n\t\tso_webmcp = null\n\t} = $props();")
     .replace(
@@ -127,18 +174,18 @@ export function adaptFormSource(source: string): string | null {
 \t\tso_told = told;
 \t\tso_sent = so_values(form);
 \t\tso_answering = true;
-\t\t// Read from the fields as the form's data would hold them, so nothing that adds to that data runs twice for one send.
-\t\tconst trapped = so_controls(form).some((el) => el.name === honeypot && !el.matches(':disabled') && (el.type === 'checkbox' || el.type === 'radio' ? el.checked : !!el.value));
-\t\tconst answer = () => {
-\t\t\tif (trapped) return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
+\t\t// How the send ended: what the form's own checks or its spam trap stopped, else what its status says.
+\t\tconst answer = (outcome) => {
+\t\t\tif (outcome === 'invalid') return { sent: false, message: 'Some fields are missing or not valid. The form shows what is wrong with each; correct them and send again.' };
+\t\t\tif (outcome === 'trapped') return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
 \t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };
 \t\t\treturn { sent: false, message: status === 'error' ? 'The message could not be sent. The visitor can try again.' : 'The form cannot be sent yet.' };
 \t\t};
-\t\tconst done = () => {
+\t\tconst done = (outcome) => {
 \t\t\tso_answering = false;
-\t\t\ttell(answer());
+\t\t\ttell(answer(outcome));
 \t\t};
-\t\tso_send(event).then(done, done);
+\t\tso_send(event).then(done, () => done());
 \t\tevent.respondWith(told);
 \t\ttold.then(() => {
 \t\t\tif (so_told !== told) return;
@@ -152,12 +199,9 @@ export function adaptFormSource(source: string): string | null {
     );
   return (
     code +
-    markup
-      .replace(FORM_OPEN, `${FORM_OPEN}\n\t\t\ttoolname={so_webmcpName}\n\t\t\ttooldescription={so_webmcp?.description}`)
-      .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
-      .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+    marked
+      .replace(FORM_OPEN, (open, _tabs: string, inner: string) => `${open}\n${inner}toolname={so_webmcpName}\n${inner}tooldescription={so_webmcp?.description}`)
       .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
-      .replace(WHILE_SENDING, (_m, attr: string, q: string) => `${attr}={status === ${q}sending${q} && !so_answering}`)
   );
 }
 
