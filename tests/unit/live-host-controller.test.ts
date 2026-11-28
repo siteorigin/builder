@@ -60,6 +60,7 @@ const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
 const { copyProjectSource } = await import('../../src/main/export');
 const { HERO, SECTION, heroDesign, sectionDesign } = await import('./fixtures/live-copy-editor-designs');
+const { installComponent } = await import('@engine/install');
 
 let relay: Relay;
 let vite: Server;
@@ -411,7 +412,8 @@ describe('a live session hosted by the open project', () => {
   });
 
   it('lets a copy editor reword the shipped theme’s own sections over the live protocol, and leaves their settings and buttons to the host', async () => {
-    const dir = await makeProject('acme');
+    // Installed before the project is written, so the hero's design is the one read back from disk.
+    const dir = await makeProject('acme', (state) => void installComponent(state, 'hero.split'));
     const { c, sent } = controller();
     const { guest } = await hosting(c, sent, dir, 'copy-editor');
     const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
@@ -421,9 +423,11 @@ describe('a live session hosted by the open project', () => {
       return r.results!;
     };
     // The release's own Split hero, placed by the host.
+    const read = c.session!.state.components['foundation.hero.split'];
+    expect(read).toMatchObject({ kind: 'code', owner: 'theme' });
     const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
-    const placed = c.session!.state.pages[owner.id].nodes[hero] as { definitionId: string };
-    expect(c.session!.state.components[placed.definitionId]).toMatchObject({ kind: 'code', owner: 'theme' });
+    expect(c.session!.state.pages[owner.id].nodes[hero]).toMatchObject({ definitionId: 'foundation.hero.split' });
+    expect(c.session!.state.components['foundation.hero.split']).toBe(read);
     const file = join(dir, `siteorigin/pages/${owner.id}.json`);
     const setProp = (prop: string, value: unknown) => ({ type: 'instance.setProp', owner, nodeId: hero, prop, value });
 
