@@ -42,6 +42,7 @@ const { syncSource } = await import('../../src/main/sources/sync');
 const { syncedEntryId } = await import('../../src/main/sources/reconcile');
 const { copyProjectSource, exportedSourcesProblem, inProjectSource, writeExportedSources } = await import('../../src/main/export');
 const { isPrivateFileName } = await import('../../src/main/project/private-files');
+const { foreignSyncedEntry } = await import('../../src/engine/collections');
 import type { SyncHandle, SyncResult, SyncRunner } from '../../src/main/sources/client';
 import { spoolFile, type NormalizedRecord, type SyncReply, type SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
@@ -422,6 +423,20 @@ describe('syncing a source into a project', () => {
     expect(undo.ok).toBe(false);
     expect(undo.error?.message).toMatch(/would leave “Cy” in the Team collection/);
     expect(s.state.collections.team).toEqual(kept);
+  });
+
+  it('finds a synced collection an undo of a restore would leave as its next sync could not read it (#1474)', async () => {
+    const { s, world, deps } = await setup();
+    world.records = [person('1', 'Ana')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 1 });
+    expect(foreignSyncedEntry(s.state, ['team'])).toBeNull();
+    const ana = s.state.collections.team.entries[syncedEntryId('people', '1', () => false)];
+    const withEntry = (e: typeof ana) => ({ ...s.state, collections: { ...s.state.collections, team: { ...s.state.collections.team, entries: { ...s.state.collections.team.entries, [e.id]: e } } } });
+    // The same record under a second ID (one synced since, where the first ID was taken).
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000002' }), ['team'])).toMatch(/two entries of the Team collection from the same record/);
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000003', source: { sourceId: 'people' } as never }), ['team'])).toMatch(/would leave “Ana”/);
+    // Only the collections it is asked about.
+    expect(foreignSyncedEntry(withEntry({ ...ana, id: 'en_0000000000000002' }), [])).toBeNull();
   });
 
   it('refuses a sync whose secret is not saved, before anything is read', async () => {

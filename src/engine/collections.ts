@@ -689,16 +689,24 @@ export function syncedEntryChange(before: ProjectState, after: ProjectState, exc
 }
 
 /**
- * Why `state` leaves a synced collection among `ids` holding an entry its source never wrote, or null: an undo of a
- * restore that takes the collection back to another source than the one that synced an entry since (#1474). Its next
- * sync would refuse the collection. Worded to follow "it".
+ * Why `state` leaves a synced collection among `ids` holding an entry its source never wrote, or two from one record,
+ * or null: an undo of a restore that takes the collection back to another source than the one that synced an entry
+ * since, or leaves beside an entry one synced since from the same record under another ID (#1474). Its next sync
+ * would refuse the collection. Worded to follow "it".
  */
 export function foreignSyncedEntry(state: ProjectState, ids: Iterable<string>): string | null {
   for (const id of ids) {
     const c = own(state.collections ?? {}, id);
     if (!c || !isSyncedCollection(c.settings)) continue;
-    const e = Object.values(c.entries).find((x) => x.source?.sourceId !== c.settings.sourceId);
-    if (e) return `would leave “${e.title}” in the ${c.settings.name} collection, which would be synced from a source that did not write it. Restore a saved version instead.`;
+    // As its next sync reads them (syncedIndex): each written by its source, and no two from one record.
+    const records = new Set<string>();
+    for (const e of Object.values(c.entries)) {
+      const src = e.source;
+      if (src?.sourceId !== c.settings.sourceId || typeof src?.externalId !== 'string')
+        return `would leave “${e.title}” in the ${c.settings.name} collection, which would be synced from a source that did not write it. Restore a saved version instead.`;
+      if (records.has(src.externalId)) return `would leave two entries of the ${c.settings.name} collection from the same record of its source. Restore a saved version instead.`;
+      records.add(src.externalId);
+    }
   }
   return null;
 }
