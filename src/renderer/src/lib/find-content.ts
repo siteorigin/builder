@@ -3,6 +3,7 @@
  * shared header and footer, each labelled by page, section and field. A replacement is one batch of ordinary edits,
  * reviewed against a dry run first, so it undoes in one step and shows every text and destination it changes.
  */
+import type { EditorDestination } from '@shared/api';
 import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
 import { cleanBlocks, cleanSpans, isImageBlock, isListBlock, toRichText } from '@shared/richtext';
@@ -16,7 +17,9 @@ import { pageShowing, pagesShowing } from '@shared/page-shell';
 import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
-import { isSyncedCollection, orderedEntries } from '@shared/collections';
+import { hasDetailPages, isSyncedCollection, orderedEntries } from '@shared/collections';
+import { TEXT_LIMITS } from '@shared/text-limits';
+import { brandLabel, brandPlacements, followsSiteName, siteNameText, BRAND_PROP } from '@shared/site-name';
 
 /** A collection entry, as the owner of its title and excerpt: `id` is the entry's. */
 export interface EntryOwner {
@@ -25,8 +28,23 @@ export interface EntryOwner {
   collectionId: string;
 }
 
-/** Where a field of the site is kept: a page, the shared header or footer, a layout, a component, or an entry. */
-export type ContentOwner = OwnerRef | EntryOwner;
+/** The site's own details (its name and default description), as the owner of the settings that hold them. */
+export interface SiteOwner {
+  kind: 'site';
+  id: 'site';
+}
+
+/** Where a field of the site is kept: a page, the shared header or footer, a layout, a component, an entry, or the site's details. */
+export type ContentOwner = OwnerRef | EntryOwner | SiteOwner;
+
+/**
+ * A setting that holds words visitors or search engines read outside the page itself, and the edit that changes it:
+ * the site's name and default description, or a page's search title and description. A post's are entry fields.
+ */
+export type ContentSetting = { kind: 'site'; field: 'name' | 'description' } | { kind: 'page'; pageId: string; field: 'seoTitle' | 'description' };
+
+/** The fields of an entry Find reads: its title and excerpt, and its own search title and description. */
+export type EntryField = 'title' | 'excerpt' | 'seoTitle' | 'seoDescription';
 
 /** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
 export interface ContentField {
@@ -58,8 +76,11 @@ export interface ContentField {
   section: string;
   /** The field, as the inspector names it: "Heading", "Contact links › Email › Destination". */
   label: string;
-  /** A collection entry's title or excerpt, changed with an entry edit (or, synced from a source, not here). */
-  entry?: { collectionId: string; entryId: string; field: 'title' | 'excerpt'; draft: boolean; synced: boolean };
+  /** A collection entry's title, excerpt or search setting, changed with an entry edit (or, synced from a source, not here). */
+  entry?: { collectionId: string; entryId: string; field: EntryField; draft: boolean; synced: boolean };
+  /** A site or page setting, changed with a site or page edit, and where it is changed by hand. */
+  setting?: ContentSetting;
+  destination?: EditorDestination;
 }
 
 /** A searchable run of one field: its text, a block or list item of rich text, a destination. */
@@ -172,15 +193,43 @@ function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { 
 }
 
 /**
- * Every field of the site that shows content, in reading order: the shared header, each page, the shared footer,
- * then each collection's entries, by their title and excerpt. The header or footer is left out when no page shows it.
+ * Every field of the site that shows content, in reading order: the site's name and description, the shared header,
+ * each page (its search title and description after its content), the shared footer, then each collection's entries,
+ * by their title, excerpt and search settings. The header or footer is left out when no page shows it.
  */
 export function contentFields(state: ProjectState): ContentField[] {
-  return [...pageFields(state), ...entryFields(state)];
+  return [...siteFields(state), ...pageFields(state, true), ...entryFields(state)];
 }
 
-/** The fields the pages and the shared header and footer show, in reading order. */
-function pageFields(state: ProjectState): ContentField[] {
+/** A setting's field: plain text, changed by a site or page edit and opened where it is set by hand. */
+function settingField(key: unknown[], owner: SiteOwner | OwnerRef, nodeId: string, value: string, where: string, section: string, label: string, setting: ContentSetting, destination: EditorDestination): ContentField {
+  return { key: JSON.stringify(key), owner, nodeId, kind: 'text', value, rich: false, richLinks: false, direct: false, where, section, label, setting, destination };
+}
+
+/** The site's name, which the browser tab and search results show, and the description pages without their own use. */
+function siteFields(state: ProjectState): ContentField[] {
+  const owner: SiteOwner = { kind: 'site', id: 'site' };
+  const fields: Array<['name' | 'description', string, string]> = [
+    ['name', state.site.name, 'Site name'],
+    ['description', state.site.description, 'Default description']
+  ];
+  return fields.filter(([, value]) => typeof value === 'string' && value.trim()).map(([field, value, label]) => settingField(['site', 'site', field], owner, 'site', value, 'Site details', 'Site details', label, { kind: 'site', field }, { kind: 'site', field }));
+}
+
+/** A page's own search title and description, as written: one it leaves empty shows a default, found where that is kept. */
+function pageSeoFields(state: ProjectState, id: string): ContentField[] {
+  const page = state.pages[id];
+  const fields: Array<['seoTitle' | 'description', string | undefined, string, 'title' | 'description']> = [
+    ['seoTitle', page.seo?.title, 'Search title', 'title'],
+    ['description', page.seo?.description, 'Search description', 'description']
+  ];
+  return fields
+    .filter(([, value]) => typeof value === 'string' && value.trim())
+    .map(([field, value, label, seoField]) => settingField(['page', id, 'seo', field], { kind: 'page', id }, id, value!, page.title, 'Search & sharing', label, { kind: 'page', pageId: id, field }, { kind: 'pageSeo', pageId: id, field: seoField }));
+}
+
+/** The fields the pages and the shared header and footer show, in reading order; `seo` adds each page's search settings. */
+function pageFields(state: ProjectState, seo = false): ContentField[] {
   const pages = state.site.pageOrder.filter((id) => own(state.pages, id));
   const headerPages = pagesShowing(state, 'header').length;
   const footerPages = pagesShowing(state, 'footer').length;
@@ -215,12 +264,15 @@ function pageFields(state: ProjectState): ContentField[] {
         label
       });
     }
+    if (seo && owner.kind === 'page') out.push(...pageSeoFields(state, owner.id));
   }
   return out;
 }
 
+const ENTRY_LABELS: Record<EntryField, string> = { title: 'Title', excerpt: 'Excerpt', seoTitle: 'Search title', seoDescription: 'Search description' };
+
 /**
- * The title and excerpt of every collection entry, collection by collection in the order their entries are listed.
+ * The title, excerpt and own search title and description of every collection entry, collection by collection in the order their entries are listed.
  * Drafts are included, as draft pages are; a synced collection's entries are found but changed only at their source.
  */
 function entryFields(state: ProjectState): ContentField[] {
@@ -229,10 +281,18 @@ function entryFields(state: ProjectState): ContentField[] {
   const collections = Object.values(state.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name) || a.settings.id.localeCompare(b.settings.id));
   for (const c of collections) {
     const synced = isSyncedCollection(c.settings);
+    // Search settings belong to an entry's own page: without detail pages nothing shows them, and the writer hides them.
+    const paged = hasDetailPages(c.settings);
     for (const e of orderedEntries(c)) {
-      const fields: Array<['title' | 'excerpt', string | undefined]> = [
+      const fields: Array<[EntryField, string | undefined]> = [
         ['title', e.title],
-        ['excerpt', e.excerpt]
+        ['excerpt', e.excerpt],
+        ...(paged
+          ? ([
+              ['seoTitle', e.seo?.title],
+              ['seoDescription', e.seo?.description]
+            ] as Array<[EntryField, string | undefined]>)
+          : [])
       ];
       for (const [field, value] of fields) {
         if (typeof value !== 'string' || !value.trim()) continue;
@@ -247,7 +307,7 @@ function entryFields(state: ProjectState): ContentField[] {
           direct: false,
           where: e.title.trim() || 'Untitled entry',
           section: c.settings.name,
-          label: field === 'title' ? 'Title' : 'Excerpt',
+          label: ENTRY_LABELS[field],
           entry: { collectionId: c.settings.id, entryId: e.id, field, draft: e.draft !== false, synced }
         });
       }
@@ -374,6 +434,7 @@ function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
 }
 
 function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
+  if (f.setting) return undefined;
   if (f.entry) return f.entry.synced ? `The ${f.section} collection is synced from an external source, so its entries are read-only here. Change this in the source, or detach the collection from it.` : undefined;
   if (f.computed) return 'This is shown from an article’s page settings or a collection entry. Change its title, date, byline or excerpt there.';
   if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
@@ -564,6 +625,8 @@ export interface ReplacePlan {
   error?: string;
   /** Chosen matches that cannot be replaced here. */
   skipped: number;
+  /** What the edits leave out of step that the author should know before replacing: a header no longer naming the site. */
+  notice?: string;
 }
 
 /** Replaces the ranges (right to left, so earlier offsets hold) in a string. */
@@ -727,25 +790,31 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   const planned = new Set<string>();
   // One patch per list item, so its fields (and a kept link) are set together.
   const patches = new Map<string, { owner: OwnerRef; nodeId: string; prop: string; itemId: string; value: Record<string, unknown> }>();
-  const entryEdits = new Map<string, { collectionId: string; entryId: string; value: { title?: string; excerpt?: string } }>();
+  const entryEdits = new Map<string, { collectionId: string; entryId: string; value: Partial<Record<EntryField, string>> }>();
+  const siteEdit: { name?: string; description?: string } = {};
+  const pageEdits = new Map<string, { seoTitle?: string; description?: string }>();
   for (const ms of groups.values()) {
     const f = ms[0].field;
     const s = f.source;
-    if (!s && !f.entry) continue;
+    if (!s && !f.entry && !f.setting) continue;
     const next = replaceIn(state, f, ms, replacement);
     if (!next) continue;
     if (next.error) return { operations: [], changes: [], error: next.error, skipped };
     planned.add(f.key);
     changes.push(...next.changes);
     const owner = f.owner;
-    if (owner.kind === 'entry') {
+    if (f.setting) {
+      const st = f.setting;
+      if (st.kind === 'site') siteEdit[st.field] = next.value as string;
+      else pageEdits.set(st.pageId, { ...pageEdits.get(st.pageId), [st.field]: next.value as string });
+    } else if (owner.kind === 'entry') {
       // One edit per entry, so its title and excerpt change together.
       const { collectionId, entryId, field } = f.entry!;
       const k = JSON.stringify([collectionId, entryId]);
       const edit = entryEdits.get(k) ?? { collectionId, entryId, value: {} };
       edit.value[field] = next.value as string;
       entryEdits.set(k, edit);
-    } else if (!s) continue;
+    } else if (!s || owner.kind === 'site') continue;
     else if (s.kind === 'node') operations.push({ type: 'node.setContent', owner, nodeId: f.nodeId, field: s.field, value: next.value });
     // One field of an object property is replaced alone; the object's other fields stay as they are.
     else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner, nodeId: f.nodeId, prop: s.prop, ...(!s.itemId && s.field !== undefined ? { field: s.field } : {}), value: next.value });
@@ -768,11 +837,41 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     }
     operations.push({ type: 'instance.setProp', owner: p.owner, nodeId: p.nodeId, prop: p.prop, itemId: p.itemId, value: p.value });
   }
+  /** A field that reads as it is stored already changes nothing, and is not listed as a change. */
+  const unplanned = (key: string) => {
+    planned.delete(key);
+    for (let i = changes.length - 1; i >= 0; i--) if (changes[i].field.key === key) changes.splice(i, 1);
+  };
+  const tooLong = (what: string, max: number) => `Replacing would make ${what} longer than ${max} characters. Use shorter words, or leave that match out.`;
+  // The site first: renaming it carries the new name into the header and footer that show it, and a header given the
+  // new name before the rename would be taken for a label of the author's own, which no later rename changes.
+  const site: { name?: string; description?: string } = {};
+  if (siteEdit.name !== undefined) {
+    const name = siteNameText(siteEdit.name);
+    if (!name) return { operations: [], changes: [], error: 'Replacing would leave the site without a name. Use other words, or leave that match out.', skipped };
+    if (name.length > SITE_NAME_MAX) return { operations: [], changes: [], error: tooLong('the site name', SITE_NAME_MAX), skipped };
+    if (name !== state.site.name) site.name = name;
+    else unplanned(JSON.stringify(['site', 'site', 'name']));
+  }
+  if (siteEdit.description !== undefined) {
+    if (siteEdit.description.length > TEXT_LIMITS.siteDescription) return { operations: [], changes: [], error: tooLong('the site’s default description', TEXT_LIMITS.siteDescription), skipped };
+    // Spaces alone are no description: pages without their own then have none, as the review says.
+    site.description = siteEdit.description.trim() ? siteEdit.description : '';
+  }
+  if (Object.keys(site).length) operations.unshift({ type: 'site.update', ...site });
+  for (const [pageId, edit] of pageEdits) {
+    const name = `“${clipped(state.pages[pageId]?.title ?? 'the page')}”`;
+    if ((edit.seoTitle?.length ?? 0) > TEXT_LIMITS.seoTitle) return { operations: [], changes: [], error: tooLong(`the search title of ${name}`, TEXT_LIMITS.seoTitle), skipped };
+    if ((edit.description?.length ?? 0) > TEXT_LIMITS.pageDescription) return { operations: [], changes: [], error: tooLong(`the search description of ${name}`, TEXT_LIMITS.pageDescription), skipped };
+    // Spaces alone are no search text: left empty, the page's default shows, as the review says.
+    const blank = (v: string | undefined) => (v !== undefined && !v.trim() ? '' : v);
+    operations.push({ type: 'page.update', pageId, ...(edit.seoTitle !== undefined ? { seoTitle: blank(edit.seoTitle) } : {}), ...(edit.description !== undefined ? { description: blank(edit.description) } : {}) });
+  }
   for (const e of entryEdits.values()) {
     const entry = own(state.collections ?? {}, e.collectionId)?.entries[e.entryId];
     const name = `“${clipped(entry?.title ?? 'the entry')}”`;
     // As the entry edit stores them: trimmed, and an excerpt left empty removed.
-    const edit: { title?: string; excerpt?: string | null } = {};
+    const edit: { title?: string; excerpt?: string | null; seoTitle?: string; description?: string } = {};
     if (e.value.title !== undefined) {
       const title = e.value.title.trim();
       if (!title) return { operations: [], changes: [], error: `Replacing would leave ${name} without a title. Use other words, or leave that match out.`, skipped };
@@ -784,13 +883,21 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
       if (excerpt.length > ENTRY_EXCERPT_MAX) return { operations: [], changes: [], error: `Replacing would make the excerpt of ${name} longer than ${ENTRY_EXCERPT_MAX} characters. Use shorter words, or leave that match out.`, skipped };
       if (excerpt !== (entry?.excerpt ?? '')) edit.excerpt = excerpt || null;
     }
-    // A field that reads as it is stored already changes nothing, and is not listed as a change.
-    for (const field of ['title', 'excerpt'] as const) {
-      if (Object.hasOwn(e.value, field) && !Object.hasOwn(edit, field)) {
-        const key = JSON.stringify(['entry', e.collectionId, e.entryId, 'text', field]);
-        planned.delete(key);
-        for (let i = changes.length - 1; i >= 0; i--) if (changes[i].field.key === key) changes.splice(i, 1);
-      }
+    // Its own search title and description, as written; left empty, the entry's defaults show again.
+    // Trimmed, as the entry edit stores them.
+    if (e.value.seoTitle !== undefined) {
+      const seoTitle = e.value.seoTitle.trim();
+      if (seoTitle.length > TEXT_LIMITS.seoTitle) return { operations: [], changes: [], error: tooLong(`the search title of ${name}`, TEXT_LIMITS.seoTitle), skipped };
+      if (seoTitle !== (entry?.seo?.title ?? '')) edit.seoTitle = seoTitle;
+    }
+    if (e.value.seoDescription !== undefined) {
+      const description = e.value.seoDescription.trim();
+      if (description.length > TEXT_LIMITS.pageDescription) return { operations: [], changes: [], error: tooLong(`the search description of ${name}`, TEXT_LIMITS.pageDescription), skipped };
+      if (description !== (entry?.seo?.description ?? '')) edit.description = description;
+    }
+    const stores: Record<EntryField, keyof typeof edit> = { title: 'title', excerpt: 'excerpt', seoTitle: 'seoTitle', seoDescription: 'description' };
+    for (const field of ['title', 'excerpt', 'seoTitle', 'seoDescription'] as const) {
+      if (Object.hasOwn(e.value, field) && !Object.hasOwn(edit, stores[field])) unplanned(JSON.stringify(['entry', e.collectionId, e.entryId, 'text', field]));
     }
     if (Object.keys(edit).length) operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...edit });
   }
@@ -816,7 +923,10 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     const b = now.get(c.field.key);
     if (c.field.rich) return [b ? c : { ...c, after: c.kind === 'link' ? 'No link' : 'Not shown' }];
     if (b && JSON.stringify(b.field.value) === JSON.stringify(c.field.value)) return [];
-    const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : 'Not shown';
+    // A setting left empty is still there: the site shows its default in its place.
+    // The site's own description is that default: pages without one of their own then have none.
+    const cleared = c.field.setting?.kind === 'site' ? 'Empty' : c.field.setting || (c.field.entry && c.field.entry.field.startsWith('seo')) ? 'Empty: the default shows' : 'Not shown';
+    const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : cleared;
     // Spaces a page collapses still change what is stored: say so rather than show two equal lines.
     return [{ ...c, after: after === c.before ? `${after} (spacing changed)` : after }];
   });
@@ -829,7 +939,30 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     if ((a?.text ?? '') !== (b?.text ?? '')) reviewed.push({ field, kind: 'text', before: a ? a.text : 'Not shown', after: b ? b.text : 'Not shown', knockOn: true });
     if (JSON.stringify(a?.links ?? []) !== JSON.stringify(b?.links ?? [])) reviewed.push({ field, kind: 'link', before: a?.links.join(', ') || 'No link', after: b?.links.join(', ') || 'No link', knockOn: true });
   }
-  return { operations, changes: reviewed, skipped };
+  const notice = renameNotice(state, after);
+  return { operations, changes: reviewed, skipped, ...(notice ? { notice } : {}) };
+}
+
+/** The most a site name holds (see site.update in @shared/ops). */
+const SITE_NAME_MAX = 80;
+
+/**
+ * Said when the edits change the name a shared header or footer shows for the site, and leave the site's own name as
+ * it is: the browser tab, search results and link previews would go on naming the site the old way.
+ */
+function renameNotice(state: ProjectState, after: ProjectState): string | undefined {
+  const now = brandPlacements(after);
+  for (const p of brandPlacements(state)) {
+    if (!followsSiteName(state, p.node, BRAND_PROP)) continue;
+    const q = now.find((x) => x.part === p.part && x.node.id === p.node.id);
+    const label = q ? brandLabel(q) : '';
+    // Compared as the rename compares it: a label spaced differently no longer follows the name.
+    if (!q || !label || label === after.site.name) continue;
+    return after.site.name === state.site.name
+      ? `The shared ${p.part} will show “${clipped(label)}” while the site is still named “${clipped(state.site.name)}” in the browser tab and search results. Choose the Site name match to rename the site too.`
+      : `The shared ${p.part} will show “${clipped(label)}” while the site is named “${clipped(after.site.name)}” in the browser tab and search results.`;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -853,8 +986,8 @@ export interface ContentTarget {
  * or the section with that field opened. Null when the field is no longer in the project.
  */
 export function contentTarget(state: ProjectState, field: ContentField, currentPageId: string | null): ContentTarget | null {
-  // An entry's title and excerpt open in the post writer instead (see entryTarget).
-  if (field.owner.kind === 'entry') return null;
+  // An entry's fields open in the post writer instead (see entryTarget), and a setting where it is set (its destination).
+  if (field.owner.kind === 'entry' || field.owner.kind === 'site' || field.setting) return null;
   const pageId = field.owner.kind === 'page' ? (own(state.pages, field.owner.id) ? field.owner.id : undefined) : pageShowing(state, field.owner.id, currentPageId);
   const tree = treeOf(state, field.owner);
   const node: GraphNode | undefined = tree && own(tree.nodes, field.nodeId);
@@ -879,7 +1012,7 @@ export function contentTarget(state: ProjectState, field: ContentField, currentP
 }
 
 /** Where an entry's title or excerpt opens: the entry in the writer, at that field. Null when the entry has gone. */
-export function entryTarget(state: ProjectState, field: ContentField): { collectionId: string; entryId: string; field: 'title' | 'excerpt' } | null {
+export function entryTarget(state: ProjectState, field: ContentField): { collectionId: string; entryId: string; field: EntryField } | null {
   const e = field.entry;
   if (!e) return null;
   const c = own(state.collections ?? {}, e.collectionId);
