@@ -423,11 +423,14 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
 /**
- * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
- * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
- * project.
+ * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
+ * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
+ * preview the editor already runs (inspect_layout), finding a field, and a plain question to the author. Nothing that
+ * changes the site.
  */
-export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification'];
+export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification'];
+/** inspect_layout as a small model's question has it: the whole page at a width, never chosen elements. */
+const ASK_FOCUSED_INSPECT_BRIEF = 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.';
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
@@ -451,15 +454,17 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true, focused = false): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
-    // A question can never widen what may change: nothing may.
-    const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : TOOL_ARGS[name];
+    // A question can never widen what may change: nothing may. A small model's question measures whole pages: the
+    // elements a check narrows to are what an edit fixes.
+    const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : name === 'inspect_layout' && focused ? TOOL_ARGS.inspect_layout.omit({ refs: true }) : TOOL_ARGS[name];
     const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
     delete schema.$schema;
     // A question asks back only when it is ambiguous, which the question's own instructions say.
-    return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
+    const brief = name === 'request_clarification' ? 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' : name === 'inspect_layout' && focused ? ASK_FOCUSED_INSPECT_BRIEF : undefined;
+    return { name, ...describe(name), ...(brief ? { brief } : {}), parameters: schema };
   });
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
   // A question about the post open in the Posts workspace reads that post, never another with a title like it.
@@ -599,7 +604,7 @@ function runTools(opts: {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   // A small model's question reads a source only when it asks about one.
-  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest), mode: 'ask', focused };
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest, focused), mode: 'ask', focused };
   // One collection layout, for every model: nothing else is in reach, and nothing widens it.
   if (opts.layout) return { tools: layoutTools(state, opts.layout.owner, focused), mode: 'layout', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing

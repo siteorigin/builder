@@ -437,7 +437,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -650,6 +650,91 @@ describe('read-only questions (#203)', () => {
       expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Checking site SEO', `Checking SEO for ${about.title}`]));
       expect(session.revision, mode).toBe(asked);
     }
+  });
+
+  it('validates the project and measures a page in the live preview in a question, changing nothing (#1409)', async () => {
+    const measured: number[] = [];
+    let compiles = 0;
+    let sessionRef: ProjectSession | null = null;
+    const { session, run, adapter } = await setup([() => [call('v1', 'validate_project', { profile: 'component' })], () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish('The home page is wider than a phone screen.')], {
+      compileAll: async () => {
+        compiles++;
+        return [];
+      },
+      inspectLayout: async (_pageId, width) => {
+        measured.push(width);
+        return { viewportWidth: 390, documentWidth: 520, issues: [{ kind: 'horizontal-overflow', message: 'The page is wider than the screen.' }], previewRevision: sessionRef!.revision };
+      }
+    });
+    sessionRef = session;
+    const lock = watchLock(session);
+    const asked = session.revision;
+    const diagnostics = session.diagnostics().filter((d) => d.severity === 'error' || d.severity === 'warning');
+    const { result } = await run('Check my site for problems and mobile overflow', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true, changes: [], canUndo: false });
+    expect(adapter.requests[0].system).toMatch(/validate_project lists the problems Project health shows/);
+    const validated = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(validated).toMatchObject({ ok: true, revision: asked });
+    // What Project health shows reaches the question, counted with the build's.
+    expect(JSON.stringify(validated)).toContain(diagnostics[0]?.code ?? '"ok":true');
+    expect(compiles).toBe(1);
+    const inspected = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+    expect(inspected).toMatchObject({ ok: true, revision: asked, viewport: 'phone', report: { issues: [{ kind: 'horizontal-overflow' }] } });
+    expect(measured).toEqual([390]);
+    // The card lists the layout check it ran, as an edit's does.
+    expect(result?.checks).toEqual(expect.arrayContaining([{ status: 'issue', text: 'Content is wider than the screen at phone width on Home.' }]));
+    expect(lock).toEqual([]);
+    expect(session.revision).toBe(asked);
+  });
+
+  it("offers every model's question both checks, a small model's for whole pages and the two document profiles (#1409)", () => {
+    const state = createStarterState('business', 'Test', false);
+    for (const capabilities of [{ toolCalling: 'native' as const, contextWindowTokens: 400_000 }, { toolCalling: 'native' as const, contextWindowTokens: 32_000 }, { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_768 }]) {
+      const label = `${capabilities.toolCalling} ${capabilities.contextWindowTokens}`;
+      const ask = toolsForRun({ state, selection: null, capabilities, codeEnabled: false, definitionOps: false, ask: true });
+      const tool = (name: string) => ask.tools.find((t) => t.name === name)!;
+      const props = (name: string) => Object.keys((tool(name).parameters as { properties: Record<string, unknown> }).properties).sort();
+      const profiles = (tool('validate_project').parameters as { properties: { profile: { enum: string[] } } }).properties.profile.enum;
+      if (ask.focused) {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'viewport']);
+        expect(tool('inspect_layout').brief, label).not.toContain('refs');
+        expect(profiles, label).toEqual(['schema', 'component']);
+      } else {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'refs', 'viewport']);
+        expect(profiles, label).toEqual(expect.arrayContaining(['schema', 'component', 'project', 'preview']));
+      }
+    }
+  });
+
+  it('never passes off a check of a site the author changed since the question, or of a preview behind it, as one of the site asked about (#1409)', async () => {
+    let sessionRef: ProjectSession | null = null;
+    let served = 0;
+    const { session, run, adapter } = await setup(
+      [
+        () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        async () => {
+          // The author renames the site while the question is answered.
+          expect((await sessionRef!.apply({ operations: [{ type: 'site.update', name: 'Renamed' }], expectedRevision: sessionRef!.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+          served = sessionRef!.revision;
+          return [calls(['l2', 'inspect_layout', { pageId: '/', viewport: 'tablet' }], ['v1', 'validate_project', {}])];
+        },
+        () => finish('Checked what I could.')
+      ],
+      { inspectLayout: async () => ({ viewportWidth: 390, documentWidth: 390, issues: [], ...(served ? { previewRevision: served } : {}) }) }
+    );
+    sessionRef = session;
+    const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true });
+    // A preview that never said which revision it served is no measurement of the site asked about.
+    const unsaid = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(unsaid).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED' } });
+    // Once the author has changed the site, neither check speaks for the site asked about.
+    const later = adapter.requests[2].items.filter((i) => i.kind === 'tool_result' && (i.callId === 'l2' || i.callId === 'v1')).map((i) => JSON.parse((i as { content: string }).content));
+    expect(later).toHaveLength(2);
+    for (const r of later) expect(r).toMatchObject({ ok: false, error: { code: 'STALE_REVISION', recoverable: false } });
+    // Its measurement, of the newer site, is never a pass on the card.
+    expect(result?.checks?.some((c) => c.status === 'pass')).toBe(false);
+    expect(result?.checks).toEqual(expect.arrayContaining([{ status: 'unverified', text: "Couldn't check the layout at phone width on Home." }, { status: 'unverified', text: "Couldn't check the layout at tablet width on Home." }]));
   });
 });
 
