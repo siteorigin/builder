@@ -213,7 +213,7 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
           const px = lengthPx(value);
           // A hairline adjustment is meant as it is, whatever the spacing scale holds; so is a chip's own padding.
           if ((px !== null && Math.abs(px) < MIN_SPACE_PX) || (PADDING_PROPS.has(prop) && isChip(n))) continue;
-          matches = ofGroups(groups).filter(({ value: tv }) => sameLength(value, tv));
+          matches = ofGroups(groups).filter(({ t, value: tv }) => (t.group !== 'container' || !style.containerTokens || style.containerTokens.includes(t.id)) && sameLength(value, tv));
           // A length a site style has exactly is always worth linking. Any other is judged as spacing: a size such as a
           // maximum width, or a negative pull, is often meant as it is.
           if (!matches.length && (prop === 'maxWidth' || !groups.includes('space') || px === null || px < MIN_SPACE_PX || !ofGroups(['space']).length)) continue;
