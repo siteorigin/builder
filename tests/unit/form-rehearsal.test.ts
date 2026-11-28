@@ -53,7 +53,9 @@ window.mountForm = (props) => {
 };`,
     '\0form': compile(source, { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code,
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
-    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!
+    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
+    // The page the router is on, which a hidden field sends when it has no value of its own.
+    '$app/state': 'export const page = { get url() { return new URL(location.href); } };'
   };
   const out = (await build({
     configFile: false,
