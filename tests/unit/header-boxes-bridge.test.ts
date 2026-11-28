@@ -76,6 +76,22 @@ describe.skipIf(!browserInstalled)('the header boxes the preview reports with it
     await frame.evaluate(`document.querySelector('[data-so-ctx="shell:header|banner"]').remove()`);
   });
 
+  it('cuts the sticky header out of the outline the page draws while it scrolls, wherever the header is (#1315)', async () => {
+    // The browser spaces the path its own way: compared without spaces.
+    const ghostClip = async () => ((await frame.evaluate(`document.getElementById('so-outline-ghost')?.style.clipPath ?? null`)) as string | null)?.replace(/\s/g, '') ?? null;
+    await frame.evaluate(`document.querySelector('header').style.position = 'sticky'; window.scrollTo(0, 0)`);
+    await expect.poll(async () => (await reported())?.selected[0]?.y).toBe(80);
+    await post('outlineGhost', { spec: { key: 'k1', color: '#1766c0', pad: 0, z: 1 } });
+    // The first section scrolled by hand under the header, which stays at the window's top: 50px down the document.
+    await frame.evaluate(`window.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 })); window.scrollTo(0, 50)`);
+    await expect.poll(ghostClip).toBe('path(evenodd,"M-100000-100000H100000V100000H-100000ZM050H700V130H0Z")');
+    await frame.evaluate(`window.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 })); window.scrollTo(0, 70)`);
+    await expect.poll(ghostClip).toBe('path(evenodd,"M-100000-100000H100000V100000H-100000ZM070H700V150H0Z")');
+    await post('outlineGhost', { spec: null });
+    await expect.poll(ghostClip).toBeNull();
+    await frame.evaluate(`window.scrollTo(0, 0)`);
+  });
+
   it('reports none for a page without the header', async () => {
     // A section's own <header>, and the shared footer, are neither.
     await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('afterend', '<footer data-so-ctx="shell:footer" data-so-node="f">Footer</footer>'); document.querySelector('section').innerHTML = '<header>Section title</header>'; document.querySelector('[data-so-ctx="shell:header"]').remove()`);

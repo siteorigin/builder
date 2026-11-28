@@ -540,7 +540,29 @@ function dropGhost() {
  * keylines of 1, 2 and 1 of its pixels, the room it gives the box, in its colour. In the document, so the compositor
  * carries it with the page, exactly where the page lays the boxes out (between pixels, as the page is, while it moves).
  */
-function placeGhost(boxes) {
+/** The headers' boxes as parts that never overlap one another (a band between each pair of their edges, cut at each
+ *  run of headers across it), as the editor's lib/header-clip has them. */
+function headerArea(headers) {
+  const hs = headers.filter((r) => r.width > 0 && r.height > 0);
+  const ys = [...new Set(hs.flatMap((r) => [r.y, r.y + r.height]))].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i + 1 < ys.length; i++) {
+    const [top, bottom] = [ys[i], ys[i + 1]];
+    const runs = hs.filter((r) => r.y <= top && r.y + r.height >= bottom).map((r) => [r.x, r.x + r.width]).sort((a, b) => a[0] - b[0]);
+    let run = null;
+    for (const [l, r] of runs) {
+      if (run && l <= run[1]) run[1] = Math.max(run[1], r);
+      else {
+        if (run) out.push({ x: run[0], y: top, width: run[1] - run[0], height: bottom - top });
+        run = [l, r];
+      }
+    }
+    if (run) out.push({ x: run[0], y: top, width: run[1] - run[0], height: bottom - top });
+  }
+  return out;
+}
+const headerCtx = (desc) => !!desc && typeof desc.ctx === 'string' && desc.ctx.split('|')[0] === 'shell:header';
+function placeGhost(boxes, headers) {
   if (!ghost || ghost.refused) return;
   if (!ghostWanted()) return dropGhost();
   // A dialog opened over the page meanwhile would cover the outline: the editor's goes over it.
@@ -567,7 +589,17 @@ function placeGhost(boxes) {
     const top = b.y - room - at.top;
     return { left, top, width: Math.max(0, Math.min(b.x + b.width + room - at.left, width) - left), height: Math.max(0, Math.min(b.y + b.height + room - at.top, height) - top) };
   });
-  // In the document's own pixels: unchanged while the document scrolls, so nothing is drawn again for it.
+  // Never on the site's header (#1315), as the editor draws it: a header that stays in view while the document scrolls
+  // is cut out where it is this frame. The header's own elements are outlined whole.
+  const n = (v) => String(Math.round(v * 100) / 100);
+  const holes = headerCtx(selected) ? [] : headerArea(headers).map((r) => `M${n(r.x - at.left)} ${n(r.y - at.top)}H${n(r.x + r.width - at.left)}V${n(r.y + r.height - at.top)}H${n(r.x - at.left)}Z`);
+  const clip = holes.length ? `path(evenodd, "M-100000 -100000H100000V100000H-100000Z${holes.join('')}")` : '';
+  // In the document's own pixels: unchanged while the document scrolls, so nothing is drawn again for it (but a cut
+  // for a header that stays in view moves with it).
+  if (clip !== (ghost.clip ?? '')) {
+    ghost.clip = clip;
+    ghost.host.style.clipPath = clip;
+  }
   const drawn = JSON.stringify([key, placed]);
   if (drawn !== ghost.drawn) {
     ghost.drawn = drawn;
@@ -656,7 +688,8 @@ function sendRects() {
   const selBoxes = selEls.map(rectOf);
   sampleSelection(selEls, selBoxes);
   const sel = selBoxes.filter(Boolean);
-  placeGhost(sel);
+  const headers = headerBoxes();
+  placeGhost(sel, headers);
   // A slot's placeholder is outlined where it first shows: a copy hidden at this width (a layout's mobile copy on
   // desktop) has no box to outline.
   const hovEls = hovered && mode === 'edit' ? findAll(hovered) : [];
@@ -678,7 +711,7 @@ function sendRects() {
     const box = (m.desc ? findAll(m.desc).map(rectOf).find((r) => r && (r.width || r.height)) : null) ?? (m.point ? pointBox(m.point) : null);
     return box ? [{ key: m.key, box }] : [];
   });
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY }, ...(ghost && ghost.shown && ghostSpec ? { ghost: ghostSpec.key } : {}) };
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers, viewport: { width: innerWidth, height: innerHeight, scrollY }, ...(ghost && ghost.shown && ghostSpec ? { ghost: ghostSpec.key } : {}) };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
