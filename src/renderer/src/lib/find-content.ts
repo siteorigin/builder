@@ -855,7 +855,8 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   }
   if (siteEdit.description !== undefined) {
     if (siteEdit.description.length > TEXT_LIMITS.siteDescription) return { operations: [], changes: [], error: tooLong('the site’s default description', TEXT_LIMITS.siteDescription), skipped };
-    site.description = siteEdit.description;
+    // Spaces alone are no description: pages without their own then have none, as the review says.
+    site.description = siteEdit.description.trim() ? siteEdit.description : '';
   }
   if (Object.keys(site).length) operations.unshift({ type: 'site.update', ...site });
   for (const [pageId, edit] of pageEdits) {
@@ -951,12 +952,12 @@ const SITE_NAME_MAX = 80;
  */
 function renameNotice(state: ProjectState, after: ProjectState): string | undefined {
   const now = brandPlacements(after);
-  const words = (t: string) => t.replace(/\s+/g, ' ');
   for (const p of brandPlacements(state)) {
     if (!followsSiteName(state, p.node, BRAND_PROP)) continue;
     const q = now.find((x) => x.part === p.part && x.node.id === p.node.id);
     const label = q ? brandLabel(q) : '';
-    if (!q || !label || words(label) === words(after.site.name)) continue;
+    // Compared as the rename compares it: a label spaced differently no longer follows the name.
+    if (!q || !label || label === after.site.name) continue;
     return after.site.name === state.site.name
       ? `The shared ${p.part} will show “${clipped(label)}” while the site is still named “${clipped(state.site.name)}” in the browser tab and search results. Choose the Site name match to rename the site too.`
       : `The shared ${p.part} will show “${clipped(label)}” while the site is named “${clipped(after.site.name)}” in the browser tab and search results.`;

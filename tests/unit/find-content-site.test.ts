@@ -141,6 +141,10 @@ describe('site details and search settings (#1494)', () => {
     expect([site.length, header.length]).toEqual([2, 2]);
     // Both renamed alike: the header goes on naming the site.
     expect(planReplace(s, [site[0], header[0]], 'Tide').notice).toBeUndefined();
+    // Spaced differently, the header stops following the name, and the dialog says so.
+    const plain = starter();
+    const plainHeader = findContent(plain, NAME).filter((m) => m.field.owner.kind === 'shell' && m.field.owner.id === 'header');
+    expect(planReplace(plain, plainHeader, 'Quill  Harbour').notice).toMatch(/shared header will show “Quill {2}Harbour”/);
     // The site's first word and the header's last: the rename carries, then the header's own edit wins.
     const { plan, after } = replaced(s, [site[0], header[1]], 'Tide');
     expect(after.site.name).toBe('Tide Harbour Quill');
@@ -158,6 +162,7 @@ describe('site details and search settings (#1494)', () => {
     s.site.description = NAME;
     const site = replaced(s, findContent(s, NAME).filter((m) => m.field.setting?.kind === 'site' && m.field.setting.field === 'description'), '');
     expect(site.plan.changes.map((c) => c.after)).toEqual(['Empty']);
+    expect(replaced(s, findContent(s, NAME).filter((m) => m.field.setting?.kind === 'site' && m.field.setting.field === 'description'), '  ').plan.operations).toEqual([{ type: 'site.update', description: '' }]);
   });
 
   it('leaves out the search settings of entries without pages of their own, and stores a post’s trimmed', () => {
