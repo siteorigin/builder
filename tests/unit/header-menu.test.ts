@@ -478,6 +478,61 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
     });
   }, 60_000);
 
+  it('folds the menu away and back out when only the links’ type changes, as styling the Menu links part does (#1492)', async () => {
+    await withSite('medium', { width: 1280, height: 800 }, 'now', async (page) => {
+      const compact = async () => ((await page.evaluate(ARRANGEMENT)) as Arrangement).compact;
+      await page.evaluate(SETTLED);
+      expect(await compact()).toBe(false);
+      // The editor's preview swaps the site's stylesheet in place: the window keeps its width, and no text changes.
+      const restyle = (css: string) =>
+        page.evaluate(`(() => { let el = document.getElementById('so-edit'); if (!el) { el = document.createElement('style'); el.id = 'so-edit'; document.head.append(el); } el.textContent = ${JSON.stringify(css)}; })()`);
+      await restyle('.so-header__link { letter-spacing: 0.4em !important; }');
+      await expect.poll(compact).toBe(true);
+      expect(await page.evaluate(ROW_FITS)).toBe(false);
+      await restyle('');
+      await expect.poll(compact).toBe(false);
+      expect(untidy((await page.evaluate(ARRANGEMENT)) as Arrangement)).toEqual([]);
+      // A stylesheet that arrives after it joins the page: the header measures again once it has loaded.
+      await restyle('.so-header__link { letter-spacing: 0.4em !important; }');
+      await expect.poll(compact).toBe(true);
+      let release = () => {};
+      const held = new Promise<void>((done) => (release = done));
+      await page.route(`${ORIGIN}/late.css`, async (route) => {
+        await held;
+        await route.fulfill({ contentType: 'text/css', body: '.so-header__link { letter-spacing: normal !important; }' });
+      });
+      await page.evaluate(`(() => { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/late.css'; document.head.append(link); })()`);
+      await page.evaluate(SETTLED);
+      expect(await compact()).toBe(true);
+      release();
+      await expect.poll(compact).toBe(false);
+    });
+  }, 60_000);
+
+  // Chromium only: a headless WebKit lays type sized to the window out at the new width a while after a resize, later
+  // than anything a test can wait on, though the header settles there in the end.
+  it.skipIf(engineName === 'webkit')('folds the menu as links sized to the window grow and shrink, while the row stays at its widest (#1492)', async () => {
+    await withSite('medium', { width: 1920, height: 800 }, 'now', async (page) => {
+      await page.evaluate(`(() => { const el = document.createElement('style'); el.textContent = '.so-header__link { font-size: 1.15vw !important; }'; document.head.append(el); })()`);
+      const seen: Array<[number, boolean]> = [];
+      const rows = new Set<number>();
+      for (const width of [1920, 1600, 2400, 1600, 1920]) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.evaluate(SETTLED);
+        // Folded exactly where the row cannot hold the menu on one line.
+        const crowded = !(await page.evaluate(ROW_FITS));
+        await page.waitForFunction(`document.querySelector('header.so-header').classList.contains('so-header--compact') === ${crowded}`);
+        const arrangement = (await page.evaluate(ARRANGEMENT)) as Arrangement;
+        rows.add(Math.round(arrangement.inner.width));
+        expect(arrangement.compact, `${width}px`).toBe(crowded);
+        seen.push([width, arrangement.compact]);
+      }
+      // The row is as wide at every one of these widths, so only the links' own size decides.
+      expect(rows.size).toBe(1);
+      expect(new Set(seen.map(([, compact]) => compact))).toEqual(new Set([true, false]));
+    });
+  }, 60_000);
+
   it('shows a short menu in the row beside the name at every width above a phone, from the first paint', async () => {
     for (const scripts of ['now', 'off'] as const)
       await withSite('short', { width: WIDTHS[0], height: 800 }, scripts, async (page) => {
