@@ -2459,14 +2459,20 @@ function onEditBlur(e) {
   if (editing && !linkEditor && !(toolbar && e.relatedTarget === toolbar.host)) commitEdit();
 }
 
+/**
+ * The link field's width, window allowing: one width for drawing it and for placing it, so it starts where the words
+ * do whichever way they run, and the reason it refuses a destination wraps inside it rather than past the window's edge.
+ */
+const LINK_EDITOR_ROOM = 336;
 const LINK_EDITOR_CSS = `
-  form { display: flex; gap: 4px; padding: 4px; border-radius: 8px; background: #1b1d21; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 13px/1.2 system-ui, sans-serif; }
-  input { width: 220px; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid #4a4e57; border-radius: 5px; background: #111316; color: #f4f5f7; font: inherit; outline: none; }
+  :host { display: block; width: min(${LINK_EDITOR_ROOM}px, calc(100vw - 16px)); }
+  form { display: flex; box-sizing: border-box; gap: 4px; padding: 4px; border-radius: 8px; background: #1b1d21; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 13px/1.2 system-ui, sans-serif; }
+  input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid #4a4e57; border-radius: 5px; background: #111316; color: #f4f5f7; font: inherit; outline: none; }
   input:focus { border-color: #7aa7ff; }
   input[aria-invalid='true'] { border-color: #ff7a7a; }
   button { height: 28px; padding: 0 9px; border: 0; border-radius: 5px; background: #2d3037; color: #f4f5f7; font: inherit; cursor: pointer; }
   button:hover, button:focus-visible { background: #40444d; outline: none; }
-  .error { box-sizing: border-box; max-width: 340px; margin: 4px 0 0; padding: 6px 8px; border-radius: 6px; background: #1b1d21; color: #ffb4b4; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 12px/1.35 system-ui, sans-serif; }
+  .error { box-sizing: border-box; margin: 4px 0 0; padding: 6px 8px; border-radius: 6px; background: #1b1d21; color: #ffb4b4; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 12px/1.35 system-ui, sans-serif; }
   .error[hidden] { display: none; }
 `;
 
@@ -2503,6 +2509,24 @@ function linkRun(anchor) {
   for (let m = next(last, 1); m; m = next(last, 1)) last = m;
   return [first, last];
 }
+/**
+ * A box for the editor's own controls drawn in the page. They are the editor's, in its language and direction: a page
+ * that runs right to left would otherwise turn their rows around, against the arrow keys that move along them.
+ */
+function editorHost() {
+  const host = document.createElement('div');
+  host.lang = 'en';
+  host.dir = 'ltr';
+  return host;
+}
+/**
+ * Where an editor control `width` wide starts under text whose box is `r`: lined up with where the text starts, which is
+ * its right edge in text running right to left. Kept inside the window.
+ */
+function atTextStart(el, r, width) {
+  const x = getComputedStyle(el).direction === 'rtl' ? r.right - width : r.left;
+  return Math.max(4, Math.min(x, innerWidth - width - 4));
+}
 /** ⌘K while editing rich text: a small field for the selected words' link, or the link under the caret. */
 function openLinkEditor() {
   if (!editing || !editing.rich || linkEditor) return;
@@ -2519,7 +2543,7 @@ function openLinkEditor() {
     range.setEnd(last, last.childNodes.length);
   } else if (range.collapsed) return;
   const box = range.getBoundingClientRect();
-  const host = document.createElement('div');
+  const host = editorHost();
   const top = box.bottom + 50 > innerHeight ? Math.max(8, box.top - 44) : box.bottom + 6;
   host.style.cssText = `position: fixed; z-index: 2147483647; left: ${Math.max(8, Math.min(box.left, innerWidth - 340))}px; top: ${top}px;`;
   const root = host.attachShadow({ mode: 'open' });
@@ -2562,6 +2586,9 @@ function openLinkEditor() {
   });
   linkEditor = { host, input, error, range, check: null };
   document.documentElement.appendChild(host);
+  // Measured once it is in the page (its width is LINK_EDITOR_ROOM, or the window's less a margin): it starts where the
+  // selected words do, whichever way they run.
+  host.style.left = `${Math.round(atTextStart(editing.el, box, host.getBoundingClientRect().width || LINK_EDITOR_ROOM))}px`;
   input.focus();
   input.select();
 }
@@ -2690,7 +2717,7 @@ const NEW_ITEM = 'New item';
 /** Shown while rich text is edited: link and list commands, reached with a press or with Tab from the text. */
 function openToolbar() {
   closeToolbar();
-  const host = document.createElement('div');
+  const host = editorHost();
   host.style.cssText = 'position: fixed; z-index: 2147483646; left: 0; top: 0;';
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>${TOOLBAR_CSS}</style><div role="toolbar" aria-label="Text formatting">${TOOLBAR_BUTTONS.map(
@@ -2741,7 +2768,7 @@ function placeToolbar() {
   const h = bar.height || 34;
   // No room below: the end of the window away from the text's top, where the chip is.
   const top = r.bottom + 6 + h <= innerHeight - 4 ? Math.max(4, r.bottom + 6) : r.top > innerHeight / 2 ? 4 : Math.max(4, innerHeight - h - 4);
-  const left = Math.max(4, Math.min(r.left, innerWidth - (bar.width || 260) - 4));
+  const left = atTextStart(editing.el, r, bar.width || 260);
   toolbar.host.style.top = `${Math.round(top)}px`;
   toolbar.host.style.left = `${Math.round(left)}px`;
 }

@@ -12,6 +12,7 @@ import { ISOLATED_DIR, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_META, PREV
 import bridgeSource from './bridge.client.js?raw';
 import { realFileInside } from './policy';
 import { isolatedPreviewPath, plainModuleId, projectSrcPath, wholeModuleId } from './paths';
+import { keepPageThroughAppTemplate, type TemplateServer } from './app-template';
 
 /**
  * Hashes of the project files the dev variants stand in for, written by the editor next to the variants
@@ -178,6 +179,8 @@ export function devPlugin(dir: string) {
     name: 'siteorigin-editor-instrumentation',
     enforce: 'pre' as const,
     configureServer(server: PreviewServer) {
+      // The site's language and direction live in src/app.html, and the open page takes them in place: no reload for them.
+      keepPageThroughAppTemplate(server as unknown as TemplateServer, names.map((name) => join(name, 'src', 'app.html')));
       /**
        * Drop what Vite keeps of the modules of previews that were released (their transformed code, sample values
        * and all), so showing one preview after another does not keep every earlier one in memory.

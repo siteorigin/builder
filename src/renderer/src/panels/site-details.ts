@@ -1,6 +1,6 @@
-import type { SiteDoc } from '@shared/types';
+import type { PageDoc, SiteDoc } from '@shared/types';
 import { checkPublicUrl } from '@shared/public-url';
-import { isLanguageCode, siteLanguage } from '@shared/languages';
+import { isLanguageCode, languageDirection, pageDirection, pageLanguage, sameLanguage, siteLanguage, type TextDirection } from '@shared/languages';
 import { showsNothing } from '@shared/not-found';
 import { ENTITY_KIND_LABELS, isEntityKind } from '@shared/site-identity';
 import { languageName } from './VisitorText';
@@ -67,4 +67,21 @@ export function namedLanguage(code: string): string | null {
   if (!isLanguageCode(code)) return null;
   const name = languageName(code);
   return name !== code ? name : null;
+}
+
+const runs = (dir: TextDirection) => (dir === 'rtl' ? 'right to left' : 'left to right');
+
+/**
+ * What Text direction says under its choice: the way the site's language reads while the choice is Automatic, or that
+ * pages in another language keep their own. When the page in the canvas is in another language, it also says which and
+ * which way that page reads, so a canvas running the other way from the site's setting is never left unexplained.
+ */
+export function directionHint(site: Pick<SiteDoc, 'language' | 'direction'>, shown?: Pick<PageDoc, 'title' | 'language'> | null): string {
+  const language = siteLanguage(site);
+  const explicit = site.direction === 'ltr' || site.direction === 'rtl';
+  const own = explicit ? 'Pages in another language keep that language’s direction.' : `${namedLanguage(language) ?? language} reads ${runs(languageDirection(language))}.`;
+  if (!shown) return own;
+  const page = pageLanguage(site, shown);
+  if (sameLanguage(page, language)) return own;
+  return `${own} “${shown.title}” is in ${namedLanguage(page) ?? page} and reads ${runs(pageDirection(site, shown))}.`;
 }
