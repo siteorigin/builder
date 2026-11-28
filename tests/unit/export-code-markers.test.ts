@@ -27,6 +27,8 @@ const filesIn = (dir: string): string[] =>
 // it places with them, as the static site ships it.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The project's website tools are set up, so the website is built (#1395).
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     const { serverHtml } = await import('./generated-site');
     const files = new Map(filesIn(join(dir, 'src')).map((f) => [`src/${f}`, readFileSync(join(dir, 'src', f), 'utf8')]));
@@ -48,7 +50,6 @@ const { editedGeneratedFile } = await import('../../src/main/export');
 const { componentDocPath } = await import('../../src/main/project/documents');
 const { sha } = await import('../../src/main/project/fsutil');
 const { removeRendered } = await import('./generated-site');
-const { withSupportedForm } = await import('./fixtures/webmcp-designs');
 
 const dirs: string[] = [];
 const controllers: Array<InstanceType<typeof Controller>> = [];
@@ -67,20 +68,16 @@ afterEach(async () => {
 });
 afterAll(() => removeRendered());
 
-/**
- * The element each form's code is marked at. With WebMCP on, the form is the one whose code the WebMCP copy is made
- * from (fixtures/webmcp-designs.ts), since the release's own contact form declares no tool yet (see webmcp.test.ts).
- */
-const marked = (webmcp: boolean) => {
-  const part = webmcp ? 'inner' : 'body';
+/** The element the form's code is marked at, with WebMCP on or off: the WebMCP copy of the code keeps the mark too. */
+const marked = () => {
+  const part = 'body';
   return { part, element: `<div class="so-form__${part}">`, marker: `data-so-part="${part}"` };
 };
 
 /** A project whose Home places the theme's contact form, its code marking an element as the editor's preview does. */
 async function projectWithThemeForm(webmcp: boolean) {
-  const { element, marker: MARKER } = marked(webmcp);
+  const { element, marker: MARKER } = marked();
   let state = createStarterState('blank', 'Bookshop', false);
-  if (webmcp) withSupportedForm(state);
   state.site.baseUrl = 'https://books.example';
   state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, componentId: 'contact.form' }, ...(webmcp ? [{ type: 'site.update' as const, webmcp: true }] : [])]).state;
   const form = Object.values(state.components).find((d) => d.componentId === 'contact.form')!;
@@ -104,7 +101,7 @@ async function projectWithThemeForm(webmcp: boolean) {
 
 describe('a theme code component’s editor markers', () => {
   for (const webmcp of [false, true]) {
-    const { part, marker: MARKER } = marked(webmcp);
+    const { part, marker: MARKER } = marked();
 
     it(`never reach the built website${webmcp ? ', the form’s WebMCP copy included' : ''}, while the project keeps them`, async () => {
       const { c, dir, files } = await projectWithThemeForm(webmcp);

@@ -4,6 +4,8 @@
  * an address in another folder. Home ("/") holds no pages: a page at "/about/" is at the top level. Nothing else
  * records the hierarchy, so a page's address and its place can never disagree.
  */
+import { addressesLeft } from './published';
+import type { PublishedDoc } from './types';
 
 type PageLike = { id: string; route: string };
 
@@ -80,7 +82,8 @@ export type RouteMove = { pageId: string; from: string; to: string };
 
 type MoveSite = {
   pages: Record<string, PageLike & { title: string; draft?: boolean }>;
-  site: { homePageId: string; redirects?: unknown };
+  site: { homePageId: string; redirects?: unknown; droppedAddresses?: unknown };
+  published?: PublishedDoc;
 };
 
 const quoteTitle = (p: { title: string }) => `“${p.title}”`;
@@ -103,7 +106,8 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
   const inBranch = new Set(branch.map((p) => p.id));
   // Where each page of the branch is now: a bookmark to one of those addresses must keep reaching that page.
   const was = new Map(branch.map((p) => [p.route.toLowerCase(), p]));
-  const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+  // With the addresses exports delivered for pages that have left them, which the site keeps working too (#1382).
+  const kept: unknown[] = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...addressesLeft(state)];
   const moves: RouteMove[] = [];
   for (const p of branch) {
     const next = p.id === pageId ? to : to + p.route.slice(page.route.length);

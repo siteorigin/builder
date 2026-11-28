@@ -14,7 +14,6 @@ import { describeDraftLink, netlifyFormClashes, publicationPlan } from '@generat
 import { generateProject } from '@generator/index';
 import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
 import { draftLinksStop, formNameWarnings } from '../../src/main/export';
-import { withSupportedForm } from './fixtures/webmcp-designs';
 import { destinationForDiagnostic, noteState } from '../../src/renderer/src/lib/destinations';
 import { P, item } from '@catalogue/dsl';
 import { projectDesign } from './fixtures/packs';
@@ -218,7 +217,7 @@ describe('contact forms in collection layouts that send to Netlify under one nam
 
 describe('Site search placed only in a collection’s archive layout', () => {
   it('is offered to agents from the website’s layout', () => {
-    let s = run(withSupportedForm(notes()), { type: 'node.insert', owner: ARCHIVE, componentId: 'site.search' }, { type: 'site.update', webmcp: true });
+    let s = run(notes(), { type: 'node.insert', owner: ARCHIVE, componentId: 'site.search' }, { type: 'site.update', webmcp: true });
     expect(showsSiteSearch(s)).toBe(true);
     expect(generateProject(s).get('src/routes/+layout.svelte')).toContain('onMount(() => offerSearch(resolve));');
     // Back to the ready-made cards, the box is on no page.
@@ -227,7 +226,7 @@ describe('Site search placed only in a collection’s archive layout', () => {
   });
 
   it('counts a contact form declaring a tool there too', () => {
-    const s = withForm(withSupportedForm(notes()), ARCHIVE, 'n_noteform');
+    const s = withForm(notes(), ARCHIVE, 'n_noteform');
     expect(showsFormTool(s)).toBe(true);
     const off = structuredClone(s);
     off.collections.notes.settings.pages = { detail: true, archive: false };

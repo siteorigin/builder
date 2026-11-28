@@ -52,6 +52,9 @@ function statusDraft(status: string, password: string): { draft: boolean; reason
 
 const metaValue = (item: XmlElement, key: string) => childElements(item, 'wp:postmeta').find((m) => childText(m, 'wp:meta_key') === key);
 
+/** Query keys WordPress reads a post, page, category or tag by, whatever the path, when they have a value. */
+const WORDPRESS_SELECTORS = ['p', 'page_id', 'cat', 'tag'];
+
 /** A path as a static site writes its addresses: decoded, with a slash at each end. */
 function sitePath(pathname: string): string {
   let p = pathname;
@@ -186,7 +189,6 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   while (accepted.length) {
     const { item, key, status } = accepted.shift()!;
     const report = emptyReport();
-    let oldSite = 0;
     // A relative address is read from the post's own address, as a browser on the old site read it.
     const ownLink = childText(item, 'link').trim();
     let base = siteOrigin ? `${siteOrigin}/` : 'relative://site/';
@@ -220,18 +222,19 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
       const selector = url.searchParams.has('p') ? 'p' : 'page_id';
       const p = url.searchParams.get(selector);
-      const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
+      // An address WordPress read by its query (`/?p=88`, `/?cat=8`) named something other than what is at its path.
+      const selected = WORDPRESS_SELECTORS.some((k) => !!url.searchParams.get(k)?.trim());
+      const post = p !== null ? byId.get(p) : selected ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
       const section = url.hash.length > 1 ? url.hash : '';
       // The ID has done its work once the post is found; the rest of the query goes on to its new address.
       const query = p === null ? url.search : `?${url.search.slice(1).split('&').filter((pair) => !new URLSearchParams(`&${pair}`).has(selector)).join('&')}`;
       if (post) return postLink(post, t, query, section, newTab, links);
-      // A page of the project at the same address, its section kept; never for an address that names something by ID
-      // (`/?p=88`), which is something other than the page at its path.
-      const page = p !== null ? null : pageLink(sitePath(url.pathname), t, url.search, section, pages, newTab, links);
+      // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
+      const page = selected ? null : pageLink(sitePath(url.pathname), t, url.search, section, pages, newTab, links);
       if (page) return page;
-      // Somewhere else on the old site: kept going there while it is still up.
+      // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
+      // (see planPostImport), since the new site may replace the old one there.
       if (url.protocol === 'relative:') return url.search || section ? lost(t) : null;
-      oldSite++;
       return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
@@ -257,7 +260,6 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const linkUrl = childText(item, 'link').trim();
     report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
     const notes = [...reportNotes(report), ...links.list()];
-    if (oldSite) notes.push(`${oldSite === 1 ? 'A link still goes' : `${oldSite} links still go`} to the old site.`);
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;
     try {
