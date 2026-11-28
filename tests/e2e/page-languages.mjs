@@ -28,6 +28,10 @@ const htmlLang = (html) => html.match(/<html[^>]*\slang="([^"]*)"/)?.[1] ?? null
 /** The alternates in a page's HTML, each with the path its address resolves to from the page itself. */
 const alternates = (html, pagePath) => [...html.matchAll(/<link rel="alternate" hreflang="([^"]+)" href="([^"]+)"/g)].map((m) => `${m[1]} ${new URL(m[2], `http://site${pagePath}`).pathname}`);
 const BOTH = ['en /about/', 'fr /fr/a-propos/'];
+const PUBLIC = 'https://harbour-lane.example';
+/** The raw addresses of a page's alternates, as search engines read them: full ones only. */
+const alternateHrefs = (html) => [...html.matchAll(/<link rel="alternate" hreflang="[^"]+" href="([^"]+)"/g)].map((m) => m[1]);
+const FULL = [`${PUBLIC}/about/`, `${PUBLIC}/fr/a-propos/`];
 
 /** Open Page settings for a page through its row in Pages, as an author does. */
 async function pageSettings(title) {
@@ -161,12 +165,26 @@ try {
     'Language links'
   );
 
-  step('the preview serves each page in its own language, listing both versions');
+  step('without a Public URL the versions are served in their languages but list no alternates, which need full addresses');
+  await eventually(
+    async () => {
+      const frHtml = await served('/fr/a-propos/');
+      assert.equal(htmlLang(frHtml), 'fr', 'the French page is served as French');
+      assert.match(frHtml, /Lire en français|Read in English/);
+      assert.deepEqual(alternates(frHtml, '/fr/a-propos/'), []);
+    },
+    60000,
+    500
+  );
+  await apply([{ type: 'site.update', baseUrl: `${PUBLIC}/` }], 'Public URL');
+
+  step('with a Public URL the preview serves each page in its own language, listing both versions at full addresses');
   await eventually(
     async () => {
       const frHtml = await served('/fr/a-propos/');
       assert.equal(htmlLang(frHtml), 'fr', 'the French page is served as French');
       assert.deepEqual(alternates(frHtml, '/fr/a-propos/'), BOTH);
+      assert.deepEqual(alternateHrefs(frHtml), FULL);
       assert.match(frHtml, /<title>À propos du studio<\/title>/);
     },
     60000,
@@ -200,8 +218,8 @@ try {
   assert.equal(htmlLang(exported('fr/a-propos/index.html')), 'fr');
   assert.equal(htmlLang(exported('about/index.html')), 'en');
   assert.equal(htmlLang(exported('index.html')), 'en');
-  assert.deepEqual(alternates(exported('fr/a-propos/index.html'), '/fr/a-propos/'), BOTH);
-  assert.deepEqual(alternates(exported('about/index.html'), '/about/'), BOTH);
+  assert.deepEqual(alternateHrefs(exported('fr/a-propos/index.html')), FULL);
+  assert.deepEqual(alternateHrefs(exported('about/index.html')), FULL);
   assert.deepEqual(alternates(exported('contact/index.html'), '/contact/'), []);
   assert.ok(out.previewUrl, 'the export starts a preview of itself');
   assertWalk(await walkIn(new URL('about/', out.previewUrl).href), 'export');

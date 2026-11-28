@@ -336,7 +336,7 @@ function HealthSummary({ notes, disabled }: { notes: HealthNotes; disabled: bool
 
 /** What an export note says once what it describes was put right after the export: the files need exporting again. */
 function fixedSince(note: ExportNote, state: 'fixed' | 'gone'): string {
-  if (note.destination?.kind === 'site') return 'Public URL set since this export. Export again to include canonical links and the sitemap.';
+  if (note.destination?.kind === 'site') return 'Public URL set since this export. Export again to publish with the new address.';
   return state === 'gone' ? 'This form is no longer on the website. Export again to update the files.' : 'Connected since this export. Export again so visitors can send it.';
 }
 
