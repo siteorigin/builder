@@ -929,7 +929,7 @@ async function runSetPreview(a: z.infer<(typeof TOOL_ARGS)['set_preview']>, host
   if (a.viewport !== undefined && a.width !== undefined) return toolError('INVALID_ARGUMENT', 'Give viewport or width, not both.');
   const r = await host.controlPreview({ ...(a.viewport ? { viewport: a.viewport } : {}), ...(a.width !== undefined ? { width: a.width } : {}), ...(a.scheme ? { scheme: a.scheme } : {}), ...(a.mode ? { mode: a.mode } : {}) });
   if ('error' in r) return toolError('CONFLICT', `The preview controls could not be changed: ${r.error}`, { recoverable: false });
-  if (!r.now || typeof r.now.width !== 'number' || !Array.isArray(r.changed) || !Array.isArray(r.refused)) return toolError('CONFLICT', 'The preview controls could not be changed: the editor gave no answer.', { recoverable: false });
+  if (!r.now || typeof r.now.width !== 'number' || !Array.isArray(r.changed) || !Array.isArray(r.refused) || !r.refused.every((x) => typeof x?.reason === 'string')) return toolError('CONFLICT', 'The preview controls could not be changed: the editor gave no answer.', { recoverable: false });
   const asked = (['viewport', 'width', 'scheme', 'mode'] as const).filter((k) => a[k] !== undefined);
   // Every setting asked for refused: nothing the user wanted happened, which the reply must say.
   if (r.refused.length && r.refused.length >= asked.length) return toolError('CONFLICT', r.refused.map((x) => x.reason).join(' '), { recoverable: false, details: { now: r.now } });

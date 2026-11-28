@@ -199,6 +199,7 @@ describe('Chat undoes and redoes (#1405)', () => {
     expect(session.historyInfo().canRedo).toBe(true);
     // The system prompt says to use the tool, not to point at a shortcut.
     expect(adapter.requests[0].system).toContain('call step_history');
+    expect(adapter.requests[0].system).toContain('when they name a different change, do not call it');
   });
 
   it('refuses for good a change sent beside the step in the same response, never asking for it again', async () => {
@@ -216,6 +217,20 @@ describe('Chat undoes and redoes (#1405)', () => {
     expect(result?.changes.map((c) => c.label)).toEqual(['Undid "Rename Home to Welcome"']);
     // The page the request also asked for is named as not made.
     expect(result?.checks?.map((c) => c.text).join(' ')).toMatch(/Contact.*was not created/);
+  });
+
+  it('names a page the page tool could not build after the step', async () => {
+    const session = await sessionFor();
+    await rename(session, 'Welcome');
+    const { run } = runner(session, [
+      () => [call('c1', 'step_history', { direction: 'undo' })],
+      () => [call('c2', 'upsert_page_with_sections', { slug: 'workshops', title: 'Workshops', sections: [{ componentId: 'intro.page', props: { heading: 'Make with us' } }] })],
+      () => finish('Undid the rename.')
+    ]);
+    const result = await run('Undo that, then build a Workshops page');
+    expect(result?.status).toBe('completed');
+    expect(result?.checks?.map((c) => c.text).join(' ')).toMatch(/workshops/i);
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Workshops')).toBe(false);
   });
 
   it('redoes in a later request', async () => {
