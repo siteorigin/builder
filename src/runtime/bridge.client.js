@@ -1724,9 +1724,10 @@ document.addEventListener(
       }
       scheduleRects();
     }
-    // `pointer`: a press of the mouse or a tap, not Enter or Space on a control reached with Tab (a click of no count),
-    // which keeps the keyboard where it is on the page.
-    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey, pointer: e.detail > 0 });
+    // `pointer`: a press of the mouse, a pen or a finger, which hands the keyboard back to the editor. Not Enter or Space
+    // on a control reached with Tab, a screen reader's activation (both clicks with no pointer type), or a click the
+    // page's own code made: those keep the keyboard where it is on the page.
+    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey, pointer: e.isTrusted && !!e.pointerType });
   },
   true
 );
@@ -1804,8 +1805,10 @@ document.addEventListener('keydown', (e) => {
     e.stopPropagation();
     return;
   }
-  // Forward editor shortcuts so they work while the preview has focus.
-  if (e.metaKey || e.ctrlKey || e.key === 'Escape' || e.key === 'Delete' || e.key === 'Backspace') {
+  // Forward editor shortcuts so they work while the preview has focus. Delete and Backspace are left to the page: they
+  // are never the editor's from here (#1361), and a field the page's own code made (in a shadow root, whose key reaches
+  // this listener from its host) keeps deleting what was typed in it.
+  if (e.metaKey || e.ctrlKey || e.key === 'Escape') {
     if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable))) {
       e.preventDefault();
       send('key', { key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
@@ -2431,6 +2434,7 @@ function onEditKey(e) {
     focusToolbar();
     return;
   }
+  const { editId } = editing;
   if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -2441,6 +2445,9 @@ function onEditKey(e) {
     e.preventDefault();
     commitEdit();
   }
+  // Ended from its own text, which keeps the focus: the editor takes the keyboard back for the selection (#1361). Sent
+  // after the commit or cancel, so the editor has closed the edit by then.
+  if (!editing) send('editLeftByKey', { editId });
 }
 function onEditBlur(e) {
   // Moving into the link editor or the toolbar is still the same edit.

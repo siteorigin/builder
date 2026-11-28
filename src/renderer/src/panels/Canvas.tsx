@@ -58,6 +58,7 @@ import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
 import { focusInspector } from '../lib/inspector-focus';
+import { keyboardLeavesPage } from '../lib/clip-keys';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
@@ -1246,12 +1247,9 @@ export function Canvas() {
           const next = pick(chain, !!p.alt || !!p.meta);
           selectOnPage(next);
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
-          // A pick made with the pointer while the page had the keyboard (a link reached with Tab, the text just edited)
-          // takes it from the page, where Delete and Backspace are never the selection's (lib/history, #1361), to the
-          // editor's body, where they are (lib/clip-keys). Blurred rather than moved, as pagePick does: the window's
-          // last input was a key, so a moved focus would draw a ring. A pick made from the keyboard (Enter on a link)
-          // leaves focus on the page, and one held for a save takes nothing from a panel the author has moved on to.
-          if (next && p.pointer === true && document.activeElement === frameRef.current) frameRef.current?.blur();
+          // A press of the pointer on the page makes the selection the keyboard's target (lib/clip-keys, #1361). Blurred
+          // rather than moved, as pagePick does: the window's last input was a key, so a moved focus would draw a ring.
+          if (keyboardLeavesPage(keyboardAt(s), { pointer: p.pointer, picked: !!next, held: !!held })) frameRef.current?.blur();
           break;
         }
         case 'dblclick': {
@@ -1376,6 +1374,10 @@ export function Canvas() {
           break;
         case 'textFocus':
           frameTextFocus.active = p.on === true;
+          break;
+        case 'editLeftByKey':
+          // Enter or Escape ended an edit of the page's text, which keeps the focus: it comes back for the selection.
+          if (keyboardLeavesPage(keyboardAt(s))) frameRef.current?.blur();
           break;
         case 'contextmenu': {
           if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
@@ -1525,6 +1527,11 @@ export function Canvas() {
     // Another entry of the same collection keeps what is selected in its layout; another collection's starts afresh.
     if (to && 'templateMode' in to) setState({ templateMode: to.templateMode, definitionMode: null, ...(to.templateMode.collectionId === s.templateMode?.collectionId ? {} : { selection: null }) });
     else if (to && (to.pageId !== s.pageId || s.templateMode)) setState({ pageId: to.pageId, templateMode: null, selection: null });
+  }
+
+  /** Where the keyboard is, for whether it comes back from the page (lib/clip-keys). */
+  function keyboardAt(s: ReturnType<typeof getState>) {
+    return { frameFocused: !!frameRef.current && document.activeElement === frameRef.current, mode: s.mode, inlineEdit: inlineEdit.active };
   }
 
   /** A click in the page is pointer input this window never sees: menus opened from it should not jump to
