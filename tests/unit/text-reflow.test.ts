@@ -125,10 +125,10 @@ interface Layout {
 }
 
 // Runs in the browser, so it is passed as text (the Node project has no DOM types). Deliberately hidden content
-// (the visually hidden utility, the off-screen spam trap) is left out.
+// (the visually hidden utility, the off-screen spam trap, the draft keeper's screen-reader-only live region) is left out.
 const MEASURE = `(() => {
   const vw = document.documentElement.clientWidth;
-  const hidden = (el) => !!el.closest('.so-visually-hidden, .so-form__trap, script, style');
+  const hidden = (el) => !!el.closest('.so-visually-hidden, .so-form__trap, .so-draft-announce, script, style');
   const name = (el) => (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).join('.') : el.tagName.toLowerCase());
   const past = (b) => b.left < -0.5 || b.right > vw + 0.5;
   const cuts = (v) => v === 'hidden' || v === 'clip';
