@@ -43,7 +43,11 @@ const ERROR_PAGE = `document.title = 'Error 500'; document.querySelector('main#m
 const script = (then: string) => `await import('/client/app.js');\n${then}\n`;
 
 beforeAll(async () => {
-  hold = createServer(() => undefined);
+  // It answers for SvelteKit's app files only, a moment late, as a slow CDN serving them would.
+  hold = createServer((req, res) => {
+    if (req.url !== '/_app/late.js') return;
+    setTimeout(() => res.writeHead(200, { 'content-type': 'text/javascript' }).end(`console.error(new Error('Failed in a late chunk')); ${ERROR_PAGE}`), 300);
+  });
   await new Promise<void>((r) => hold.listen(0, '127.0.0.1', r));
   const held = `http://127.0.0.1:${(hold.address() as AddressInfo).port}/hero.png`;
   root = mkdtempSync(join(tmpdir(), 'so-page-check-'));
@@ -73,6 +77,10 @@ beforeAll(async () => {
   route('text-only', `document.querySelector('main#main').textContent = 'Open every day'; ${STARTED}`, '<section class="hours"><p>Loading…</p></section>');
   // A healthy page that asks another host for a script that never arrives, once it has started: it works.
   route('slow-remote', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', 'widget.js')}'; document.head.append(s);`);
+  // A page whose app files come from another host (SvelteKit's paths.assets), one of which arrives late and fails.
+  route('cdn-chunk', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', '_app/late.js')}'; document.head.append(s);`);
+  // A healthy page that keeps asking for a script of its own: it is taken as working once it has had time to start.
+  route('polling', `${STARTED} setInterval(() => { const s = document.createElement('script'); s.src = '/client/app.js?' + Math.random(); document.head.append(s); }, 40);`);
   // A page that logs more errors than a check keeps before the one that broke it.
   route('chatty', `for (let i = 0; i < 30; i++) console.error('Could not load widget ' + i); console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
   // A page that logs an error of its own (a fetch it could not make) and goes on showing its content.
@@ -162,6 +170,14 @@ describe.skipIf(!browserInstalled)('opening a built page in a browser', () => {
 
   it('is not held up by another host’s script that never arrives', async () => {
     expect(await check('slow-remote', { timeoutMs: 2000 })).toEqual({ status: 'working' });
+  });
+
+  it('waits for SvelteKit’s app files from another host, and finds the error page one of them brings', async () => {
+    expect(await check('cdn-chunk', { timeoutMs: 3000 })).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Failed in a late chunk') });
+  });
+
+  it('takes a page that keeps asking for scripts of its own as working once it has had time to start', async () => {
+    expect(await check('polling', { timeoutMs: 4000 })).toEqual({ status: 'working' });
   });
 
   it('opens no print dialog for a page that asks to be printed', async () => {

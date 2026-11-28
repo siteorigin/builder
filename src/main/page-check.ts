@@ -35,6 +35,8 @@ const CHECK_MS = 8000;
  * asks for meanwhile starts the wait again, and SvelteKit shows its error page only once its error hook has answered.
  */
 const SETTLE_MS = 150;
+/** How long after it has started a page that keeps asking for scripts of its own (polling for them) is waited on, at most. */
+const STARTED_MS = 2000;
 /** What SvelteKit's start script in a built page names its globals by: a page without it runs no script of SvelteKit's. */
 const SVELTEKIT_START = '__sveltekit_';
 /** How many errors a check keeps (the latest), and how much of each. */
@@ -85,9 +87,13 @@ function described(arg: unknown): string {
 
 /** Open the page at `url` through the DevTools session `page` and say whether it still shows what was built once started. */
 export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheckOptions = {}): Promise<PageCheck> {
-  /** The website's own scripts on their way, by request ID: another host's, however slow, hold nothing up. */
+  /**
+   * The website's own scripts on their way, by request ID: the page's host's, and SvelteKit's app files wherever they
+   * are served from. Another host's, however slow, hold nothing up.
+   */
   const pending = new Set<string>();
   const origin = new URL(url).origin;
+  const own = (at: string) => at.startsWith(`${origin}/`) || /^https?:\/\/[^/]+(\/[^?#]*)?\/_app\//.test(at);
   /** The latest errors the page logged or threw, with when. */
   const logged: Array<{ at: number; text: string }> = [];
   let lastScript = 0;
@@ -106,7 +112,7 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     switch (method) {
       case 'Network.requestWillBeSent': {
         const at = String((p.request as { url?: string } | undefined)?.url ?? '');
-        if (p.type !== 'Script' || !at.startsWith(`${origin}/`)) return;
+        if (p.type !== 'Script' || !own(at)) return;
         pending.add(id);
         lastScript = Date.now();
         break;
@@ -217,7 +223,8 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
       // SvelteKit takes away what failed before an awaited error hook answers: a page built with content that shows
       // none is failing still, until the error page comes or the check runs out of time.
       if (built.content && now.empty) return false;
-      return pending.size === 0 && Date.now() - Math.max(startedAt, lastScript) >= SETTLE_MS;
+      const quiet = pending.size === 0 && Date.now() - Math.max(startedAt, lastScript) >= SETTLE_MS;
+      return quiet || Date.now() - startedAt >= STARTED_MS;
     });
     if (!seen) return { status: 'working' };
     const { heading, at } = seen as { heading: string; at: number };

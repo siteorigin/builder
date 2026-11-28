@@ -38,9 +38,11 @@ export function createPageChecker(): PageChecker {
     const generation = disposals;
     const lane = free.pop() ?? made++;
     const ses = guardedSession(`${PARTITION}-${lane}`);
-    // A page's frames are left out: another site's embed cannot change whether the page's own components start, and
-    // one that asks to be printed would open a print dialog the page's own guard never reaches.
-    ses.webRequest.onBeforeRequest((details, done) => done({ cancel: details.resourceType === 'subFrame' }));
+    // Another site's frames are left out: its embed cannot change whether the page's own components start, and one
+    // that asks to be printed would open a print dialog the page's guard (main/page-check) never reaches. The site's
+    // own frames run in the page's process, where the guard does.
+    const origin = new URL(url).origin;
+    ses.webRequest.onBeforeRequest((details, done) => done({ cancel: details.resourceType === 'subFrame' && !details.url.startsWith(`${origin}/`) }));
     const cleared = await within(ses.clearStorageData().then(() => true, () => false), false);
     if (!cleared) return { status: 'unchecked', detail: 'What an earlier page stored could not be cleared, so the page would not be opened as a first visit.' };
     try {

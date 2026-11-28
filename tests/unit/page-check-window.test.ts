@@ -12,7 +12,7 @@ const env = vi.hoisted(() => ({
   cleared: [] as string[],
   clearFails: false,
   clearMs: 0,
-  requests: [] as Array<(details: { resourceType: string }, done: (r: { cancel: boolean }) => void) => void>
+  requests: [] as Array<(details: { resourceType: string; url: string }, done: (r: { cancel: boolean }) => void) => void>
 }));
 
 type Listener = (e: unknown, method: string, params: Record<string, unknown>) => void;
@@ -118,11 +118,12 @@ describe('the export’s page check windows', () => {
     expect(w.steps.slice(0, 2)).toEqual(['load about:blank', 'attach']);
     expect(w.steps.indexOf('Page.addScriptToEvaluateOnNewDocument')).toBeLessThan(w.steps.indexOf('Page.navigate'));
     expect(w.steps.slice(-2)).toEqual(['detach', 'destroy']);
-    // The page's frames are never loaded; everything else it asks for is.
-    const answer = (resourceType: string) => new Promise<boolean>((r) => env.requests.at(-1)!({ resourceType }, ({ cancel }) => r(cancel)));
-    expect(await answer('subFrame')).toBe(true);
-    expect(await answer('script')).toBe(false);
-    expect(await answer('mainFrame')).toBe(false);
+    // Another site's frames are never loaded; the site's own, and everything else the page asks for, are.
+    const answer = (resourceType: string, url: string) => new Promise<boolean>((r) => env.requests.at(-1)!({ resourceType, url }, ({ cancel }) => r(cancel)));
+    expect(await answer('subFrame', 'https://maps.example/embed')).toBe(true);
+    expect(await answer('subFrame', 'http://127.0.0.1:1/menu/')).toBe(false);
+    expect(await answer('script', 'https://cdn.example/widget.js')).toBe(false);
+    expect(await answer('mainFrame', 'http://127.0.0.1:1/')).toBe(false);
   });
 
   it('opens no window for a check whose windows were disposed of while its session was emptied', async () => {
