@@ -19,7 +19,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
-import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
+import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
 import { inTurns, MEASURE_AT_ONCE, PreviewCheck, slots } from './preview-check';
@@ -775,6 +775,14 @@ function editorGuidance(run: RunTools): string {
 
 /** The instructions for a run, by what it may do and the model it goes to. */
 function instructions(state: ProjectState, run: RunTools, constrained: boolean): string {
+  return modeInstructions(state, run, constrained) + (run.tools.some((t) => t.name === 'open_page') ? OPEN_PAGE_GUIDANCE : '');
+}
+
+/** Going to a page the author asked for (#1357): it moves the editor, never the site, and only when asked. */
+const OPEN_PAGE_GUIDANCE =
+  '\n\nWhen the author asks to go to, open, show or switch to a page, call open_page with its ID, route or title, and confirm in one short sentence that it is open. That is not a change to the site. If no page matches, say so; if more than one could, ask which one. Never call open_page for a request that only asks to change a page: an edit leaves the editor where it is. Never say a page was opened unless open_page succeeded.';
+
+function modeInstructions(state: ProjectState, run: RunTools, constrained: boolean): string {
   if (run.mode === 'ask') return askPrompt(state, constrained);
   if (run.mode === 'source') return sourcePrompt(!!run.code, constrained);
   if (run.mode === 'entry') return entryPrompt(constrained);
@@ -1814,6 +1822,8 @@ export class Orchestrator {
     // So does a request for a collection: a small site run is then offered the tools that make and show one.
     const collectionAsked = !ask && (asksForCollection(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForCollection(request, session.state)));
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
+    /** The author asks to go to a page (#1357): only then is the run offered open_page. A collaborator's request never moves the host's editor. */
+    const pageAsked = !run.delegation && asksToOpenPage(userMsg.text, session.state);
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1908,6 +1918,7 @@ export class Orchestrator {
         ...(svelteAsked ? { svelteRequest: true } : {}),
         ...(collectionAsked ? { collectionRequest: true } : {}),
         ...(sourceAsked ? { sourceRequest: true } : {}),
+        ...(pageAsked ? { pageRequest: true } : {}),
         attachedImages: !!userMsg.images?.length,
         ask,
         focused: onlyFocused,
@@ -3194,6 +3205,11 @@ export class Orchestrator {
           }
           if (signal.aborted) throw new Error('Canceled');
           activity.status = outcome.ok ? 'done' : 'error';
+          // A page the author asked to go to opens now, if it is still there (a question read the site as it was asked
+          // about). The editor moves, the site does not: nothing is recorded as a change.
+          if (outcome.ok && outcome.openPage && Object.hasOwn(session.state.pages, outcome.openPage)) {
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'open-page', pageId: outcome.openPage });
+          }
           if (outcome.ok && outcome.location) {
             const l = outcome.location;
             const key = [l.owner.kind, l.owner.id, l.nodeId, l.prop, l.itemId ?? '', l.field ?? ''].join('\u0000');
@@ -3351,6 +3367,8 @@ function labelFrom(call: ToolCall, args: Record<string, unknown>, state: Project
     }
     case 'locate_field':
       return 'Finding the field in the Inspector';
+    case 'open_page':
+      return `Opening ${typeof args.page === 'string' && args.page.trim() ? args.page.trim().slice(0, 80) : 'a page'}`;
     case 'request_clarification':
     case 'request_wider_scope':
       return 'Waiting for your answer';

@@ -40,6 +40,7 @@ const store = (await load('../../src/renderer/src/store')) as {
   showConversation: (fallback: Conversation, opening: string, current: () => boolean) => Promise<void>;
   openThread: (pick: Promise<Conversation>, opening: string) => Promise<boolean>;
   openRunThread: (id?: string | null) => Promise<boolean>;
+  setPageOpener: (open: (pageId: string) => void) => void;
 };
 
 /**
@@ -724,5 +725,37 @@ describe('conversations switch while a request goes on in its own (#1125)', () =
     // Another opening by the time it answers.
     expect(await store.openThread(Promise.resolve(b), 'w0')).toBe(false);
     expect(store.getState().conversation?.id).toBe('c_a');
+  });
+});
+
+describe('a page the author asked Chat to go to (#1357)', () => {
+  const conv = (id: string): Conversation => ({ id, title: '', messages: [], createdAt: '', updatedAt: '' }) as unknown as Conversation;
+  const state = createStarterState('business', 'Pages', false);
+  const about = Object.values(state.pages).find((p) => p.title === 'About')!;
+  const opened: string[] = [];
+  const event = (over: Partial<AiEvent> = {}): AiEvent => ({ runId: 'r1', conversationId: 'c1', kind: 'open-page', pageId: about.id, ...over });
+  const prime = (over: Record<string, unknown> = {}) => {
+    opened.length = 0;
+    store.setPageOpener((id) => opened.push(id));
+    store.setState({ conversation: conv('c1'), activeRunId: 'r1', runStatus: 'running', snapshot: { state }, ...over } as Partial<ChatState>);
+  };
+  afterEach(() => store.setState({ snapshot: null } as Partial<ChatState>));
+
+  it('opens the page while its request runs in the conversation on screen', () => {
+    prime();
+    store.applyAiEvent(event());
+    expect(opened).toEqual([about.id]);
+  });
+
+  it('moves nothing for another conversation, a request that is not running, or a page the site no longer has', () => {
+    prime();
+    store.applyAiEvent(event({ conversationId: 'c2' }));
+    store.applyAiEvent(event({ runId: 'r0' }));
+    store.applyAiEvent(event({ pageId: 'pg_gone' }));
+    store.applyAiEvent(event({ conversationId: '' }));
+    expect(opened).toEqual([]);
+    prime({ activeRunId: null, runStatus: null });
+    store.applyAiEvent(event());
+    expect(opened).toEqual([]);
   });
 });
