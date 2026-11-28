@@ -110,7 +110,7 @@ describe("a listing's visitor browsing", () => {
     expect(refusal(s, { type: 'node.setRepeatSource', owner: home(s), nodeId: loop, source: { $query: { collectionId: 'nowhere' }, browse: true } })).toMatch(/nowhere|collection/i);
     const damaged = structuredClone(s);
     const nodes = damaged.pages[damaged.site.homePageId].nodes;
-    (nodes[grid] as InstanceNode).listSources!.people = { ...(nodes[grid] as InstanceNode).listSources!.people, browse: 'yes' as unknown as true };
+    (nodes[grid] as InstanceNode).listSources!.people = { ...(nodes[grid] as InstanceNode).listSources!.people, browse: false as unknown as true };
     (nodes[loop] as RepeatNode).list = { $query: DEAREST, browse: false as unknown as true };
     const found = errors(damaged).map((d) => d.message);
     expect(found.filter((m) => /visitor browsing that is not on/.test(m))).toHaveLength(2);
@@ -141,6 +141,33 @@ describe("a listing's visitor browsing", () => {
     expect(written).toMatch(/<section class=\{\["so-n-n_outer"\]\}>\n\t\{#snippet so_listing_1\(so_matches_1\)\}\n\t\t<div class=\{\["so-n-n_grid"\]\}>/);
     expect(written).toMatch(/\t<SoBrowse [^\n]*content=\{so_listing_1\} \/>\n<\/section>/);
     expect(warnings(written, 'src/routes/+page.svelte')).toEqual([]);
+  });
+
+  it('keeps its controls inside an element that shows only while a condition holds', () => {
+    const { s: base, loop } = site();
+    const s = structuredClone(base);
+    const nodes = s.pages[s.site.homePageId].nodes;
+    const holder = Object.values(nodes).find((n) => n.kind === 'element' && n.children.includes(loop))!;
+    holder.unless = { ref: { $item: 'title' }, eq: 'never' } as never;
+    const grid = { id: 'n_grid', kind: 'element', tag: 'div', children: [holder.id], styles: { base: { layout: 'grid' } } };
+    Object.assign(nodes, { n_grid: grid } as unknown as typeof nodes);
+    const page = s.pages[s.site.homePageId];
+    page.rootIds = page.rootIds.map((id) => (id === holder.id ? 'n_grid' : id));
+    // Its holder is wrapped, inside the grid, rather than the grid itself.
+    expect(homePage(s)).toMatch(/<div class=\{\["so-n-n_grid"\]\}>\n\t\{#snippet so_listing_1\(so_matches_1\)\}/);
+  });
+
+  it('declares a footer\'s listing with no header listing before it', () => {
+    let { s } = site();
+    const owner: OwnerRef = { kind: 'shell', id: 'footer' };
+    const placed = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, primitive: 'container' }]);
+    const looped = applyOperations(placed.state, [{ type: 'node.insert', owner, parentId: placed.results[0].nodeId as string, primitive: 'repeat', query: DEAREST }]);
+    const loop = looped.results[0].nodeId as string;
+    const heading = applyOperations(looped.state, [{ type: 'node.insert', owner, parentId: loop, primitive: 'heading', text: 'Title' }]);
+    s = run(heading.state, { type: 'node.setBinding', owner, nodeId: heading.results[0].nodeId as string, field: 'text', binding: { $item: 'title' } }, { type: 'node.setRepeatSource', owner, nodeId: loop, source: { $query: DEAREST, browse: true } });
+    const layout = generateProject(publishedState(s)).get('src/routes/+layout.svelte')!;
+    expect(declared(layout, 0).map((r) => r.id)).toEqual(['en_dune', 'en_orchard', 'en_cliff']);
+    expect(warnings(layout, 'src/routes/+layout.svelte')).toEqual([]);
   });
 
   it('declares the footer\'s listings beside the header\'s, numbered apart', () => {

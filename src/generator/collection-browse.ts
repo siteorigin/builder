@@ -549,7 +549,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 		if (had) {
 			// The first of them a keyboard can be on: one hidden at this size takes no focus.
 			for (const el of reachable()) {
-				if (had.has(el) || form?.contains(el) || el.classList.contains('so-browse__more') || el.disabled) continue;
+				if (had.has(el) || form?.contains(el) || el.classList.contains('so-browse__more') || el.disabled || el.tabIndex < 0) continue;
 				el.focus();
 				if (document.activeElement === el) return;
 			}
@@ -563,7 +563,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 </script>
 
 {#snippet bar()}
-<form class="so-browse" role="search" aria-label={fill(text().browseLabel, { collection: name })} bind:this={form} onsubmit={(e) => e.preventDefault()}>
+<div class="so-browse" role="search" aria-label={fill(text().browseLabel, { collection: name })} bind:this={form}>
 	<fieldset class="so-browse__controls" disabled={!ready}>
 		{#if controls.search}
 			<label class="so-browse__field so-browse__field--search">
@@ -651,7 +651,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 			<button type="button" class="so-browse__button" onclick={fetchEntries}>{text().browseRetry}</button>
 		{/if}
 	</div>
-</form>
+</div>
 {/snippet}
 
 {#snippet more_button()}
@@ -683,6 +683,8 @@ export const BROWSE_SVELTE = String.raw`<script>
 		display: flex;
 		flex-direction: column;
 		gap: var(--so-space-sm, 0.75rem);
+		/* Placed among a grid's items, the whole row. */
+		grid-column: 1 / -1;
 	}
 	.so-browse__controls {
 		display: flex;

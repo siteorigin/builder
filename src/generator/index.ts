@@ -2656,8 +2656,9 @@ const NO_FORM_INSIDE = new Set(['ul', 'ol', 'dl', 'p', 'span', 'summary']);
  * loop (`repeat:<node>`), or the loop itself when nothing holds it. From there the controls go up past whatever
  * cannot hold them beside it: a list, text, a summary, a row or grid (whose items they would become), a tag a
  * property chooses, and anything inside a linked card (a form inside a link). They never leave what shows and hides
- * the listing: a slot's own content, a dialog or drawer, a tab panel, another list's items. Held directly by one of
- * those, the loop itself is wrapped, so the controls show and hide with its rows.
+ * the listing: a slot's own content, a placement's slot content, a disclosure, a dialog or drawer, a tab panel,
+ * another list's items, or an element shown only while a condition holds. Held directly by one of those, the loop
+ * itself is wrapped, so the controls show and hide with its rows.
  */
 function browseListings(ctx: EmitCtx): Map<string, string[]> {
   if (ctx.browseHosts) return ctx.browseHosts;
@@ -2666,7 +2667,11 @@ function browseListings(ctx: EmitCtx): Map<string, string[]> {
   const nodes = ctx.tree.nodes && typeof ctx.tree.nodes === 'object' ? ctx.tree.nodes : {};
   const parents = new Map<string, GraphNode>();
   for (const n of Object.values(nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of cl.ids) parents.set(c, n);
-  const boundary = (n: GraphNode) => n.kind === 'slot' || n.kind === 'repeat' || !!ctx.widgets?.panels.has(n.id) || !!ctx.widgets?.overlays.has(n.id);
+  // What shows and hides what it holds on its own: a slot's own content, a placement's slot content (which its
+  // design places where it likes), a list's items, a disclosure, a dialog or drawer, a tab panel.
+  const boundary = (n: GraphNode) => n.kind === 'slot' || n.kind === 'repeat' || n.kind === 'instance' || (n.kind === 'element' && n.tag === 'details') || !!ctx.widgets?.panels.has(n.id) || !!ctx.widgets?.overlays.has(n.id);
+  // A node that shows only while a condition holds keeps the controls inside with it.
+  const gated = (n: GraphNode) => n.when !== undefined || n.unless !== undefined || (n.kind === 'element' && !!n.collapseEmpty);
   const holdsNoForm = (n: GraphNode) => n.kind === 'element' && (isBinding(n.tag) || NO_FORM_INSIDE.has(n.tag) || n.styles?.base?.layout === 'row' || n.styles?.base?.layout === 'grid');
   const inLink = (n: GraphNode) => {
     for (let at: GraphNode | undefined = n, hops = 0; at && !boundary(at) && hops < 200; at = parents.get(at.id), hops++) if (isCardLink(at)) return true;
@@ -2674,7 +2679,8 @@ function browseListings(ctx: EmitCtx): Map<string, string[]> {
   };
   const hostOf = (start: GraphNode): string => {
     let host = start;
-    for (let up = parents.get(host.id), hops = 0; up && !boundary(up) && (holdsNoForm(up) || inLink(up)) && hops < 200; up = parents.get(host.id), hops++) host = up;
+    // Never onto an item a list repeats, where the controls would be one more item each time.
+    for (let up = parents.get(host.id), hops = 0; up && !gated(host) && !boundary(up) && parents.get(up.id)?.kind !== 'repeat' && (holdsNoForm(up) || inLink(up)) && hops < 200; up = parents.get(host.id), hops++) host = up;
     return host.id;
   };
   for (const id of Object.keys(nodes).sort()) {
