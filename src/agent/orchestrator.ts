@@ -711,7 +711,16 @@ function blogGuidance(state: ProjectState, run: RunTools): string {
 
 /** What a site or page run is told about posts: the blog, and with collections how to read and write their entries. */
 function postsGuidance(state: ProjectState, run: RunTools): string {
-  return blogGuidance(state, run) + entryGuidance(run);
+  return blogGuidance(state, run) + entryGuidance(run) + collectionLayoutGuidance(run);
+}
+
+/**
+ * What a whole-site run offered the layout tool is told about a collection's own pages (#1408): its index and its
+ * entries' pages are no pages of the site, but its two layouts, read and changed with their own tools.
+ */
+function collectionLayoutGuidance(run: RunTools): string {
+  if (!run.tools.some((t) => t.name === 'edit_collection_layout')) return '';
+  return `\n- A collection's own pages are not in pages: its index at its address (read_project collections route; "/blog/" is the posts collection's), with the index's later pages and category pages, shows its index layout (owner { "kind": "archive", "id": collectionId }), and each entry's page its entry layout ("template"). To change one, read it with read_layout and change it with edit_collection_layout; an index still showing the ready-made cards gets its own layout with action "start" first. A change shows on every page that layout makes: say so when you finish.`;
 }
 
 /** What a site or page run with collections is told about entries: how to read and write them, and where a feed goes. */
@@ -2240,6 +2249,8 @@ export class Orchestrator {
       pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null),
       entryLimit: () => (authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId, label: authority.label } : null),
       layoutLimit: () => (authority.kind === 'template' ? { owner: authority.owner, label: authority.label } : null),
+      // A question changes nothing, whatever it was sent with.
+      siteWide: () => !ask && authority.kind === 'site',
       state: readState,
       revision: readRevision,
       // A question reads the problems the project had as it was asked about.
@@ -3384,6 +3395,13 @@ function labelFrom(call: ToolCall, args: Record<string, unknown>, state: Project
       const n = Number.isInteger(args.steps) && (args.steps as number) > 1 ? (args.steps as number) : 1;
       const what = n === 1 ? 'the latest change' : `the latest ${n} changes`;
       return args.direction === 'redo' ? `Redoing ${what.replace('latest', 'latest undone')}` : `Undoing ${what}`;
+    }
+    case 'edit_collection_layout': {
+      const o = args.owner as { kind?: unknown; id?: unknown } | undefined;
+      const id = typeof o?.id === 'string' ? o.id : '';
+      const name = Object.hasOwn(state.collections ?? {}, id) ? state.collections[id].settings.name : 'collection';
+      const which = o?.kind === 'archive' ? 'index layout' : 'layout';
+      return `${args.action === 'start' ? 'Starting' : 'Changing'} the ${String(name).slice(0, 60)} ${which}`;
     }
   }
   return call.name;

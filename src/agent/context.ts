@@ -292,6 +292,8 @@ export function collectionsSummary(state: ProjectState) {
         kind: collectionKind(s),
         ...(s?.singularName ? { singularName: s.singularName } : {}),
         pages: { detail: hasDetailPages(s), archive: hasArchivePages(s) },
+        // Its index has a layout of its own (read_layout reads it), in place of the ready-made cards.
+        ...(hasArchivePages(s) && s?.archiveTemplate && typeof s.archiveTemplate === 'object' ? { indexLayout: 'custom' } : {}),
         ...(pagesPrefix(c) !== undefined ? { route: pagesPrefix(c) } : {}),
         ...(!collectionHasBody(s) ? { hasBody: false } : {}),
         // Its entries are in the site's RSS feed: they have pages, and it says so or its kind does.
