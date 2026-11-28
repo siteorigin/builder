@@ -121,6 +121,16 @@ export function grantedScope(scope: Pick<ComposerScope, 'page' | 'selection' | '
   return chosen === 'selection' && !scope.selection ? 'site' : chosen;
 }
 
+/**
+ * A request carried on (Continue) in a conversation that has allowed the whole site since it was sent: an edit of its
+ * page, with nothing selected, goes on from the whole site, as the composer's next one would (#1412). Anything
+ * narrower, or a question, goes on as it was.
+ */
+export function withGrant(ctx: ChatContext, wholeSite: boolean): ChatContext {
+  if (!wholeSite || ctx.scope !== 'page' || ctx.mode === 'ask' || ctx.selection || ctx.component || ctx.post || ctx.template) return ctx;
+  return { ...ctx, scope: 'site' };
+}
+
 /** The context a message is sent with, frozen at send time. `enabled` holds the composer's page switch and its scope choice. */
 export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: { enabled: { page: boolean; scope: ChatEditScope }; viewport: number; assetIds?: string[]; ask?: boolean }): ChatContext {
   const home = state.site.homePageId;

@@ -398,6 +398,7 @@ export interface State {
   /**
    * The open project's conversations in which the author allowed the AI to change the whole site, by conversation ID
    * (#1412): their later edits start from the whole site (chatTarget.grantedScope) until the page is chosen by hand.
+   * Kept with the project's workspace state, so a conversation reopened later keeps it.
    */
   chatSiteGrants: Record<string, true>;
   /** What the next message is: a change for the AI to make, or a read-only question. */
@@ -1011,8 +1012,8 @@ export function attachToChat(opening: string, assetId: string) {
 /** Save drafts and the open conversation to the project they belong to, as they change. */
 export function persistChatState(s: State, prev: State) {
   const out = chatStatePatch(
-    { key: prev.snapshot?.workspaceKey ?? null, drafts: prev.chatDrafts, images: prev.chatImages, conversationId: prev.conversation?.id ?? null },
-    { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, images: s.chatImages, conversationId: s.conversation?.id ?? null }
+    { key: prev.snapshot?.workspaceKey ?? null, drafts: prev.chatDrafts, images: prev.chatImages, conversationId: prev.conversation?.id ?? null, grants: prev.chatSiteGrants },
+    { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, images: s.chatImages, conversationId: s.conversation?.id ?? null, grants: s.chatSiteGrants }
   );
   if (out) void api.project.saveLocalState(out.patch, out.key);
 }

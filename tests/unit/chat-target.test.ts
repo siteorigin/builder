@@ -5,7 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { grantsWider, type ChatContext, type ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, codeDesign, composerScope, editScope, requestTarget, retryView, targetOf, grantedScope } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, codeDesign, composerScope, editScope, requestTarget, retryView, targetOf, grantedScope, withGrant } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 import { makeInstance } from '@engine/install';
@@ -291,8 +291,32 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     expect(grantedScope(design, 'selection', true)).toBe('selection');
     const designPart = composerScope(state, { pageId: home, selection: { owner, instancePath: [], nodeId: 'heading' }, definitionMode: { definitionId: hero, returnPageId: home } });
     expect(grantedScope(designPart, 'selection', true)).toBe('selection');
-    // The writer with no post open already reaches the whole site; nothing to change.
-    expect(grantedScope({ page: null, selection: null, component: null, empty: true }, 'selection', true)).toBe('selection');
+    expect(designPart.selection).not.toBeNull();
+    // The writer with no post open already reaches the whole site, and a post or a layout keeps its own target.
+    const homePage = { id: home, title: 'Home' };
+    expect(grantedScope({ page: homePage, selection: null, component: null, empty: true }, 'selection', true)).toBe('selection');
+    expect(grantedScope({ page: homePage, selection: null, component: null, post: { collectionId: 'posts', entryId: 'en_1', title: 'Spring' } }, 'selection', true)).toBe('selection');
+    expect(grantedScope({ page: homePage, selection: null, component: null, template: { collectionId: 'posts', name: 'Posts' } }, 'selection', true)).toBe('selection');
+    // With no page shown, nothing is offered to widen.
+    expect(grantedScope({ page: null, selection: null, component: null }, 'selection', true)).toBe('selection');
+  });
+
+  it('carries on a page request from the whole site once its conversation allowed it (#1412)', () => {
+    const { state, about, home } = project();
+    const nothing = composerScope(state, { pageId: about, selection: null, definitionMode: null });
+    const onPage = chatContextFor(state, nothing, { enabled, viewport: 1280 });
+    expect(withGrant(onPage, true)).toEqual({ ...onPage, scope: 'site' });
+    expect(withGrant(onPage, false)).toBe(onPage);
+    // Anything narrower than the page, or a question, goes on as it was.
+    const sel: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    const picked = chatContextFor(state, composerScope(state, { pageId: home, selection: sel, definitionMode: null }), { enabled, viewport: 1280 });
+    expect(withGrant(picked, true)).toBe(picked);
+    const asked = { ...onPage, mode: 'ask' as const };
+    expect(withGrant(asked, true)).toBe(asked);
+    for (const extra of [{ component: { id: 'x', name: 'X' } }, { post: { collectionId: 'posts', entryId: 'e', title: 'T' } }, { template: { collectionId: 'posts', name: 'Posts' } }]) {
+      const ctx = { ...onPage, ...extra } as ChatContext;
+      expect(withGrant(ctx, true)).toBe(ctx);
+    }
   });
 
   it('reads a scope question as allowed by its first choice or a plain typed yes, and nothing else (#1412)', () => {
@@ -303,6 +327,9 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     // Only a scope question grants anything.
     expect(grantsWider({ choices: q.choices }, 'Yes, allow changes across the whole site')).toBe(false);
     expect(grantsWider(null, 'yes')).toBe(false);
+    // Only a string is an answer: nothing coerced into one.
+    expect(grantsWider(q, ['yes'])).toBe(false);
+    expect(grantsWider(q, { toString: () => 'yes' })).toBe(false);
   });
 
   it('sends a question and a component edited everywhere as before, without a scope', () => {

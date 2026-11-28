@@ -12,7 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, pastedImageFiles, type PastedData, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, pastedImageFiles, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, cleanGrants, type PastedData, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -93,6 +93,17 @@ describe('saving the composer state', () => {
     expect(chatStatePatch(st('/a#1', drafts, 'c_a'), st('/a#1', drafts, 'c_a'))).toBeNull();
     // No conversation shown (yet) is not a switch to remember.
     expect(chatStatePatch(st('/a#1', drafts, 'c_a'), st('/a#1', drafts, null))).toBeNull();
+  });
+
+  it('saves the conversations that allowed the whole site, and reads back only well-formed ones (#1412)', () => {
+    const before = st('/a#1', {}, 'c_a');
+    const grants = { c_a: true as const };
+    expect(chatStatePatch({ ...before, grants: {} }, { ...before, grants })).toEqual({ key: '/a#1', patch: { chatSiteGrants: grants } });
+    expect(chatStatePatch({ ...before, grants }, { ...before, grants })).toBeNull();
+    // Leaving the project writes none into it.
+    expect(chatStatePatch({ ...before, grants }, { ...st(null, {}, null), grants: {} })).toBeNull();
+    expect(cleanGrants({ c_a: true, c_b: 'yes', 'not-an-id': true, c_c: false })).toEqual({ c_a: true });
+    for (const raw of [undefined, null, ['c_a'], 'c_a']) expect(cleanGrants(raw)).toEqual({});
   });
 
   it('saves nothing when a project’s own state is loaded, or the project is left', () => {

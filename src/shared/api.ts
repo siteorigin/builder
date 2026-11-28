@@ -452,6 +452,8 @@ export interface LocalWorkspaceState {
   chatDrafts?: Record<string, string>;
   /** Library images attached to those unsent messages, by asset ID, keyed the same way. */
   chatImages?: Record<string, string[]>;
+  /** The AI conversations in which the author allowed the whole site, by ID (#1412): they keep it when reopened. */
+  chatSiteGrants?: Record<string, true>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
   chatConversation?: string;
   /** Whether the next AI message was set to be a read-only question, so an unsent question stays one. */

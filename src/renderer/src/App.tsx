@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, claimNavigation, toast, transport, useStore, whenThemesReady } from './store';
-import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
+import { cleanDrafts, cleanGrants, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
 import { UnpackingModal } from './components/ProjectDialogs';
@@ -359,7 +359,8 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     chatMode: local.chatMode === 'ask' ? 'ask' : 'edit',
     // A choice to change the whole site was made for the last project, never for this one.
     chatContextEnabled: { page: true, scope: 'selection' },
-    chatSiteGrants: {},
+    // The conversations that allowed the whole site are this project's own too (#1412).
+    chatSiteGrants: cleanGrants(local.chatSiteGrants),
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
     firstSteps: readFirstSteps(local.firstSteps),
     conversation: null,
