@@ -25,9 +25,12 @@ import type {
   OverlayMode,
   PartDef,
   PropSchema,
+  RichTextProp,
   ResponsiveStyles,
   ScalarPropSchema,
   SlotDef,
+  StringProp,
+  TableProp,
   RepeatFilter,
   StateAction,
   StateRef,
@@ -293,10 +296,15 @@ export const P = {
   required: <T extends PropSchema>(schema: T): T => ({ ...schema, required: true }),
   /** The same text or image property, which a live session's Copy Editor may change on a page (engine/copy-editor.ts). */
   copy: <T extends PropSchema>(schema: T): T => ({ ...schema, copyEditable: true }),
-  str:(label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
-    ({ type: 'string', label, default: def, ...extra }) as ScalarPropSchema,
-  text: (label: string, def: string): ScalarPropSchema => ({ type: 'string', label, default: def, multiline: true }),
-  rich: (label: string, def: string[], extra: { plainAs?: RichListType } = {}): ScalarPropSchema => ({ type: 'richtext', label, default: toRichText(def, extra.plainAs), ...extra }),
+  /**
+   * The same text, rich text, list or table property, its default marked as sample content: copy to replace or
+   * knowingly keep before publishing, not a label ready to publish (shared/sample-defaults.ts). On a list it marks the
+   * items the list starts with; on a field of a list or object, what the field holds in a new item or the object.
+   */
+  sample: <T extends StringProp | RichTextProp | ListProp | TableProp>(schema: T): T => ({ ...schema, sampleDefault: true }),
+  str: (label: string, def: string, extra: Partial<StringProp> = {}): StringProp => ({ type: 'string', label, default: def, ...extra }) as StringProp,
+  text: (label: string, def: string): StringProp => ({ type: 'string', label, default: def, multiline: true }),
+  rich: (label: string, def: string[], extra: { plainAs?: RichListType } = {}): RichTextProp => ({ type: 'richtext', label, default: toRichText(def, extra.plainAs), ...extra }),
   bool: (label: string, def: boolean): ScalarPropSchema => ({ type: 'boolean', label, default: def }),
   num: (label: string, def: number, min?: number, max?: number): ScalarPropSchema => ({ type: 'number', label, default: def, min, max }),
   choice: (label: string, def: string, options: Array<[string, string]>): ScalarPropSchema => ({

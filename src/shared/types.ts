@@ -245,6 +245,12 @@ export interface StringProp extends PropBase {
   multiline?: boolean;
   maxLength?: number;
   /**
+   * The default is sample content (see shared/sample-defaults.ts): copy that shows what the component is for, which
+   * an author is expected to replace or knowingly keep before publishing, unlike a default ready to publish as it is
+   * ("Search", "Send message").
+   */
+  sampleDefault?: true;
+  /**
    * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
    * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
    * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
@@ -264,6 +270,12 @@ export interface RichTextProp extends PropBase {
    * item, with **bold** and *italic*. Managed components always take blocks.
    */
   codeForm?: RichCodeForm;
+  /**
+   * The default is sample content (see shared/sample-defaults.ts): copy that shows what the component is for, which
+   * an author is expected to replace or knowingly keep before publishing, unlike a default ready to publish as it is
+   * ("Search", "Send message").
+   */
+  sampleDefault?: true;
   /**
    * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
    * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
@@ -361,6 +373,11 @@ export interface ListProp extends PropBase {
    * filled from it; the stored value is ignored.
    */
   feed?: ListFeed;
+  /**
+   * The items the list starts with are sample content (see shared/sample-defaults.ts). A field's own mark says the
+   * same of what it holds in a newly added item.
+   */
+  sampleDefault?: true;
 }
 /**
  * What a computed list holds: the site's dated articles, newest first; the page it is placed on; or the published
@@ -400,6 +417,8 @@ export interface TableValue {
 export interface TableProp extends PropBase {
   type: 'table';
   default: TableValue;
+  /** The columns and rows the table starts with are sample content (see shared/sample-defaults.ts). */
+  sampleDefault?: true;
 }
 /**
  * Related values kept together as one property (a button's label and link), each a named single value. A managed

@@ -8,6 +8,7 @@ import { PAGE_TEASER_TYPES, PAGE_TEASER_VALUES, type PageTeaserValue } from '@sh
 import { axesOf } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { requiredGap } from '@shared/required';
+import { sampleDefaultProblem } from '@shared/sample-defaults';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 import { declaredTokens } from './tokens';
@@ -135,6 +136,13 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
     if (r.copyEditable !== true) fail(`${label}: copyEditable must be true or false.`);
     if (inList || !COPY_EDITABLE_TYPES.includes(type)) fail(`${label}: only a component's own text, rich text or image property can be copyEditable.`);
     out.copyEditable = true;
+  }
+  if (r.sampleDefault !== undefined && r.sampleDefault !== false) {
+    // Sample content an author is to replace or keep (shared/sample-defaults.ts); false is the same as leaving it out.
+    if (r.sampleDefault !== true) fail(`${label}: sampleDefault must be true or false.`);
+    const problem = sampleDefaultProblem({ type, sampleDefault: true, feed: r.feed }, inList);
+    if (problem) fail(`${label}: ${problem}.`);
+    out.sampleDefault = true;
   }
   switch (type) {
     case 'string': {

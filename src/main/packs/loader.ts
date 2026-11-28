@@ -14,6 +14,7 @@ import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST,
 import { FONT_FAMILY_RE } from '@shared/fonts';
 import { codeAxisProblems, variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
+import { sampleDefaultProblem } from '@shared/sample-defaults';
 import { isCarouselTrack } from '@generator/card-links';
 import { boundSchema } from '@engine/schema';
 import { defKey, designHasMedia, slotIdent } from '@generator/index';
@@ -282,7 +283,10 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
     // A pack has no library of its own: a background image would name a picture no project it installs into has.
     if (def.kind === 'managed' && designHasMedia(def)) refuse(`${where} sets a background image, which can only name a picture in a project's own library.`);
     for (const [name, p] of Object.entries(def.properties)) {
-      const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown; tokenGroup?: unknown };
+      const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown; tokenGroup?: unknown; sampleDefault?: unknown; feed?: unknown };
+      // A mark of sample content (shared/sample-defaults.ts) is kept as written, so it must be one the app reads.
+      const sample = sampleDefaultProblem(prop);
+      if (sample) refuse(`${where}: the property "${name}" is marked wrongly: ${sample}.`);
       if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
       const isRecord = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
       // A token names its group and starts on a token; every field of a list or object is a typed value with a default.
@@ -294,6 +298,8 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
           const r = field as { type?: unknown; default?: unknown; tokenGroup?: unknown };
           if (!isRecord(field) || typeof r.type !== 'string' || r.default === undefined || (r.type === 'token' && !tokenOk(r))) refuse(`${where}: the field "${f}" of "${name}" has no type or no default.`);
           if (r.type === 'enum' && !Array.isArray((field as { options?: unknown }).options)) refuse(`${where}: the choice field "${f}" of "${name}" has no options.`);
+          const fieldSample = sampleDefaultProblem(field as { type?: unknown; sampleDefault?: unknown }, true);
+          if (fieldSample) refuse(`${where}: the field "${f}" of "${name}" is marked wrongly: ${fieldSample}.`);
         }
       if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
     }

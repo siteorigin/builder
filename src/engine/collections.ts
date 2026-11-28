@@ -290,7 +290,12 @@ function normalizeField(name: string, raw: Record<string, unknown>, state: Proje
   checkPropName(name, 'Field');
   const type = raw?.type;
   if (!(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(type)) fail(`Field "${name}" needs a type of ${COLLECTION_FIELD_TYPES.join(', ')}.`);
-  if (type !== 'date' && type !== 'reference') return normalizePropSchema(raw, state, name, true) as CollectionFieldSchema;
+  if (type !== 'date' && type !== 'reference') {
+    // An entry's field has no sample content to mark: every entry is written by its author (shared/sample-defaults.ts).
+    const { sampleDefault: _sample, ...field } = normalizePropSchema(raw, state, name, true) as CollectionFieldSchema & { sampleDefault?: true };
+    void _sample;
+    return field as CollectionFieldSchema;
+  }
   const what = `Field "${name}"`;
   const description = words(raw.description, 300);
   const group = words(raw.group, 40);
