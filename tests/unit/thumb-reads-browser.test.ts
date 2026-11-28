@@ -65,7 +65,7 @@ async function render(previews: Array<Map<string, string>>): Promise<Array<{ bod
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
           if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
-          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const onNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
           const file = at(id);
           if (!file) return null;
           if (file.path.endsWith('.css')) return { code: '', moduleType: 'js' };

@@ -130,7 +130,7 @@ async function renderRoute(files: Map<string, string>, route: string): Promise<s
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
           if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
-          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {};';
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const onNavigate = () => {}; export const beforeNavigate = () => {};';
           if (!id.startsWith(GEN)) return null;
           const path = id.slice(GEN.length);
           const source = files.get(path)!;

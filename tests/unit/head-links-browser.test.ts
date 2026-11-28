@@ -25,7 +25,7 @@ const ABOUT = `${ROOT}/about/`;
 const paths = (base: string) => `export const base = ${JSON.stringify(base)}; export const resolve = (p) => base + p; export const asset = (p) => base + "/" + p;`;
 const STUBS: Record<string, string> = {
   '\0$app/state': 'export const page = { route: { id: "/" }, url: new URL("https://quay.test/archive/paper.edition_1/") };',
-  '\0$app/navigation': 'export function afterNavigate() {} export function beforeNavigate() {} export function snapshot() {}'
+  '\0$app/navigation': 'export function afterNavigate() {} export function onNavigate() {} export function beforeNavigate() {} export function snapshot() {}'
 };
 
 /**

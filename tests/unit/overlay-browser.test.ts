@@ -26,7 +26,7 @@ const ORIGIN = 'http://dialogs.test';
 const SESSION = 'so-test';
 const NONE = { type: 'none' as const, target: '' };
 /** `$app/navigation` for these pages: what runs before leaving the page is kept, for a test to call. */
-const NAVIGATION = 'export const beforeNavigate = (fn) => (window.leaving ??= []).push(fn); export const afterNavigate = () => {};';
+const NAVIGATION = 'export const beforeNavigate = (fn) => (window.leaving ??= []).push(fn); export const afterNavigate = () => {}; export const onNavigate = () => {};';
 
 /**
  * A project whose Home places, twice, a design with a Book button that opens a booking dialog (its heading, which each
