@@ -20,6 +20,7 @@ import { articleLinks } from '../../src/renderer/src/lib/article-links';
 import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
+import { publishedState } from '@generator/index';
 import { MAX_ENTRY_CHARS } from '@engine/values';
 import { resolveLink } from '../../src/generator/index';
 import { runSeoAudit } from '@engine/seo-audit';
@@ -696,6 +697,18 @@ describe('reading posts in batches', () => {
 });
 
 describe('reading a WordPress export: statuses, dates and links', () => {
+  it('keeps the old address of a post whose text could not be read, which arrives as a draft (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Big', link: 'https://old.example/2020/01/big/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, '<b></b>'.repeat(200_001))]), {});
+    expect(source.posts[0]).toMatchObject({ title: 'Big', draft: true, draftReason: 'its text could not be read', oldPath: '/2020/01/big/' });
+  });
+
+  it('gives a post with no link no old address, never the Home page’s (#1501)', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Unlinked', link: ' ', 'wp:status': 'future', 'wp:post_date': '2030-01-02 00:00:00' }, '<p>Soon</p>'), item(2, { title: 'Bare', 'wp:status': 'draft' }, '<p>Later</p>')]), {});
+    expect(source.posts.map((p) => [p.title, p.oldPath])).toEqual([
+      ['Unlinked', undefined],
+      ['Bare', undefined]
+    ]);
+  });
   it('keeps a post a draft when it was private, password-protected or has no date', async () => {
     const source = await readWordPress(
       wxr([
@@ -1093,15 +1106,17 @@ describe('planning an import: limits, drafts and the review', () => {
   const post = (key: string, over: Partial<SourcePost> = {}): SourcePost => ({ key, from: key, title: key, slug: '', date: '2020-01-01', draft: false, categories: [], tags: [], body: [{ type: 'p', spans: [{ text: 'Words' }] }], notes: [], ...over });
   const src = (posts: SourcePost[], media: ParsedSource['media'] = []): ParsedSource => ({ kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts, media, skipped: [] });
 
-  it('keeps no old address for a draft, numbers two posts that want one slug, and reuses a term whatever its case', () => {
+  it('keeps a draft’s old address too, numbers two posts that want one slug, and reuses a term whatever its case', () => {
     const s = site();
     const first = commit(s, src([post('a', { slug: 'news', categories: [{ label: 'Local News' }] })])).after;
     const { plan, after } = commit(first, src([post('b', { slug: 'same', draft: true, oldPath: '/old-b/' }), post('c', { slug: 'same', categories: [{ label: 'local news' }] })]));
     expect(plan.posts.map((p) => [p.slug, p.wantedSlug, p.redirectFrom])).toEqual([
-      ['same', undefined, undefined],
+      ['same', undefined, '/old-b/'],
       ['same-2', 'same', undefined]
     ]);
-    expect(after.site.redirects).toBeUndefined();
+    const b = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same')!;
+    expect(b.draft).toBe(true);
+    expect(after.site.redirects).toEqual([{ from: '/old-b/', entryId: b.id }]);
     const c = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same-2')!;
     expect(c.terms.categories).toEqual(['local-news']);
     // Nothing new to the collection: the review still names the term.
@@ -1139,6 +1154,47 @@ describe('planning an import: limits, drafts and the review', () => {
     expect(plan.posts[0]).toMatchObject({ draft: true, draftReason: 'its text was longer than a post holds, so it was cut', body: [] });
     expect(plan.media).toEqual([]);
     expect(plan.problems).toEqual([]);
+  });
+
+  it('keeps every draft’s old address, which starts working once the post is published (#1501)', () => {
+    const big = 'x'.repeat(MAX_ENTRY_CHARS + 1);
+    const posts = [
+      post('live', { slug: 'live', oldPath: '/2025/11/live/' }),
+      post('scheduled', { slug: 'scheduled', draft: true, draftReason: 'it was scheduled', oldPath: '/2025/11/why-sorghum-in-a-dry-decade-2/' }),
+      post('long', { slug: 'long', body: [{ type: 'p', spans: [{ text: big }] }], oldPath: '/2025/10/long-read/' })
+    ];
+    const { plan, after } = commit(site(), src(posts));
+    expect(plan.posts.map((p) => [p.draft, p.redirectFrom, p.lostAddress])).toEqual([
+      [false, '/2025/11/live/', undefined],
+      [true, '/2025/11/why-sorghum-in-a-dry-decade-2/', undefined],
+      [true, '/2025/10/long-read/', undefined]
+    ]);
+    // The review counts every address kept, and says how many wait for their post to be published.
+    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 3, redirectsPending: 2 });
+    const id = (slug: string) => Object.values(after.collections.posts.entries).find((e) => e.slug === slug)!.id;
+    expect(after.site.redirects).toEqual([
+      { from: '/2025/11/live/', entryId: id('live') },
+      { from: '/2025/11/why-sorghum-in-a-dry-decade-2/', entryId: id('scheduled') },
+      { from: '/2025/10/long-read/', entryId: id('long') }
+    ]);
+    expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
+    // The website sends visitors only to what it has: the drafts' old addresses wait for them.
+    expect(publishedState(after).site.redirects).toEqual([{ from: '/2025/11/live/', entryId: id('live') }]);
+    const { state: published } = applyOperations(after, [{ type: 'entry.update', collectionId: 'posts', entryId: id('scheduled'), draft: false }]);
+    expect(publishedState(published).site.redirects).toEqual([
+      { from: '/2025/11/live/', entryId: id('live') },
+      { from: '/2025/11/why-sorghum-in-a-dry-decade-2/', entryId: id('scheduled') }
+    ]);
+  });
+
+  it('says when a draft’s old address can’t be kept, as for a published post (#1501)', () => {
+    const plan = planPostImport(site(), src([post('a', { slug: 'a', oldPath: '/same/' }), post('b', { slug: 'b', draft: true, oldPath: '/same/' })]), '2026-11-24');
+    expect(plan.posts.map((p) => [p.redirectFrom, p.lostAddress])).toEqual([
+      [undefined, '/same/'],
+      [undefined, '/same/']
+    ]);
+    expect(plan.posts[1].notes.join(' ')).toMatch(/Its old address \(\/same\/\) can’t keep working, because another imported post had it too/);
+    expect(postImportPreview('r', plan)).toMatchObject({ redirects: 0, redirectsPending: 0, redirectsLost: 2 });
   });
 
   it('says what it shortened', () => {

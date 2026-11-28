@@ -17,7 +17,7 @@ import { validateState } from '@engine/validate';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { orderedEntries, routeOwners } from '@shared/collections';
 import { todayArticleDate } from '@shared/articles';
-import { resolveLink } from '@generator/index';
+import { publishedState, resolveLink } from '@generator/index';
 import { linkToTarget } from '@shared/richtext';
 import { toolDefinitions } from '@agent/tools';
 
@@ -680,9 +680,17 @@ describe('an imported post keeps its old address (#399)', () => {
     expect(() => create(s, '/old/')).toThrow(/already the address/);
   });
 
-  it('is kept only for a published entry: a draft is no destination', () => {
-    expect(() => create(blog(), '/2019/03/winter-workshop/', { draft: true })).toThrow(/only for a published entry/);
-    expect(() => apply(blog(), [{ type: 'entry.create', collectionId: 'posts', title: 'Untold', redirectFrom: '/old/' } as EditOperation])).toThrow(/only for a published entry/);
+  it('is kept for a draft too, and the website sends visitors there once it is published (#1501)', () => {
+    const s = create(blog(), '/2019/03/winter-workshop/', { draft: true }).state;
+    expect(s.site.redirects).toEqual([{ from: '/2019/03/winter-workshop/', entryId: 'en_import' }]);
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    expect(publishedState(s).site.redirects ?? []).not.toContainEqual(expect.objectContaining({ entryId: 'en_import' }));
+    const live = apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_import', draft: false }]).state;
+    expect(publishedState(live).site.redirects).toContainEqual({ from: '/2019/03/winter-workshop/', entryId: 'en_import' });
+    // An entry created without saying is a draft, and keeps its old address the same way.
+    const untold = apply(blog(), [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_untold', title: 'Untold', redirectFrom: '/old/' } as EditOperation]).state;
+    expect(untold.collections.posts.entries.en_untold.draft).toBe(true);
+    expect(untold.site.redirects).toContainEqual({ from: '/old/', entryId: 'en_untold' });
   });
 
   it('is part of the batch: an entry created later cannot take the address it keeps', () => {
