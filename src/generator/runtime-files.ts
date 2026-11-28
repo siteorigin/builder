@@ -1295,7 +1295,8 @@ export function keepHistoryScroll() {
 			window.removeEventListener('scrollend', ended);
 			cancelCorrection();
 			settle();
-			unhold();
+			if (holds.size) unhold();
+			else putBack();
 		};
 	});
 }
