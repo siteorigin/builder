@@ -85,8 +85,9 @@ type Track = { from: number; size: number };
 const reach = (lo: number, hi: number, t: Track) => Math.min(hi, t.from + t.size) - Math.max(lo, t.from);
 
 /**
- * A grid gutter as it shows: the stretch from `from` to `to` along it, less where an item spans across it (reaches
- * into the tracks on both its sides). Each item takes out its own extent along the gutter, and what is left only
+ * A grid gutter as it shows: the stretch from `from` to `to` along it, less where an item covers part of the gap
+ * between tracks `a` and `b` (one spanning them, however it is aligned in its area, or one overflowing into it) or,
+ * with no gap, reaches into the tracks on both sides. Each item takes out its own extent along the gutter, and what is left only
  * where it passes a track of the other axis (`along`, when known): a stretch no longer than the crossing of two
  * gutters is part of the other gutter. Null where no item spans it.
  */
@@ -94,7 +95,8 @@ function openStretches(items: FrameRect[], axis: GapAxis, a: Track, b: Track, fr
   const cuts = items
     .filter((r) => {
       const [lo, hi] = axis === 'x' ? [r.x, r.x + r.width] : [r.y, r.y + r.height];
-      return reach(lo, hi, a) > 0.5 && reach(lo, hi, b) > 0.5;
+      const gap = { from: Math.min(a.from + a.size, b.from + b.size), size: Math.max(a.from, b.from) - Math.min(a.from + a.size, b.from + b.size) };
+      return reach(lo, hi, gap) > 0.5 || (reach(lo, hi, a) > 0.5 && reach(lo, hi, b) > 0.5);
     })
     .map((r): [number, number] => (axis === 'x' ? [r.y, r.y + r.height] : [r.x, r.x + r.width]))
     .sort((p, q) => p[0] - q[0]);

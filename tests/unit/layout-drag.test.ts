@@ -185,19 +185,26 @@ describe('gutters: where gap handles sit', () => {
   });
 
   it('splits a grid gutter around a card in its middle rows, and leaves none where cards span it all along', () => {
-    const cols = { kind: 'grid' as const, columnGap: 24, rowGap: 16, box: { x: 0, y: 0, width: 1000, height: 332 }, cols: [488, 488], rows: [100, 100, 100] };
-    const middle = [{ x: 0, y: 0, width: 488, height: 100 }, { x: 512, y: 0, width: 488, height: 100 }, { x: 0, y: 116, width: 1000, height: 100 }, { x: 0, y: 232, width: 488, height: 100 }, { x: 512, y: 232, width: 488, height: 100 }];
+    const cols = { kind: 'grid' as const, columnGap: 24, rowGap: 16, box: { x: 0, y: 0, width: 1000, height: 382 }, cols: [488, 488], rows: [100, 100, 150] };
+    const middle = [{ x: 0, y: 0, width: 488, height: 100 }, { x: 512, y: 0, width: 488, height: 100 }, { x: 0, y: 116, width: 1000, height: 100 }, { x: 0, y: 232, width: 488, height: 150 }, { x: 512, y: 232, width: 488, height: 150 }];
     const [gap] = gutters(layout({ ...cols, items: middle }), EDGES, false);
     expect(gap.pieces).toEqual([
       { x: 488, y: 0, width: 24, height: 116 },
-      { x: 488, y: 216, width: 24, height: 116 }
+      { x: 488, y: 216, width: 24, height: 166 }
     ]);
-    expect(gap.rect).toEqual({ x: 488, y: 0, width: 24, height: 116 });
+    // Its handle on the longer stretch, below the card.
+    expect(gap.rect).toEqual({ x: 488, y: 216, width: 24, height: 166 });
+    // A card spanning both columns but narrower than them, started in its area: it still covers part of the gap.
+    const narrow = middle.map((r, i) => (i === 2 ? { ...r, width: 500 } : r));
+    expect(gutters(layout({ ...cols, items: narrow }), EDGES, false)[0].pieces).toHaveLength(2);
+    // One card overflowing its column into the gap covers it there too.
+    const over = middle.map((r, i) => (i === 2 ? { x: 0, y: 116, width: 495, height: 100 } : r));
+    expect(gutters(layout({ ...cols, items: over }), EDGES, false)[0].pieces).toHaveLength(2);
     // Gap 0: cards that only meet at the line do not span it.
     const touching = [{ x: 0, y: 0, width: 500, height: 100 }, { x: 500, y: 0, width: 500, height: 100 }];
     expect(gutters(layout({ kind: 'grid', columnGap: 0, rowGap: 0, box: { x: 0, y: 0, width: 1000, height: 100 }, cols: [500, 500], rows: [100], items: touching }), EDGES, false)[0]).toEqual({ axis: 'x', index: 0, rect: { x: 500, y: 0, width: 0, height: 100 } });
     // Every row one card across both columns: the column gap shows nowhere, and the row gutters keep their numbers.
-    const wide = [0, 116, 232].map((y) => ({ x: 0, y, width: 1000, height: 100 }));
+    const wide = [0, 116, 232].map((y, i) => ({ x: 0, y, width: 1000, height: i === 2 ? 150 : 100 }));
     expect(gutters(layout({ ...cols, items: wide }), EDGES, false).map((x) => [x.axis, x.index])).toEqual([
       ['y', 0],
       ['y', 1]

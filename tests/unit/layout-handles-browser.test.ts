@@ -41,7 +41,7 @@ html > :not(head):not(body){max-width:300px;padding:7px}
 <div id="row" data-so-ctx="page:p" data-so-node="row"><span>1</span><span>2</span><span style="position:absolute">x</span><span>3</span></div>
 <div id="pct" data-so-ctx="page:p" data-so-node="pct"><i>a</i><i>b</i></div>
 <div id="fit" data-so-ctx="page:p" data-so-node="fit"><i>a</i><i>b</i></div>
-<div id="span" data-so-ctx="page:p" data-so-node="span"><i style="grid-column:span 2">a</i><i>b</i><i>c</i></div>
+<div id="span" data-so-ctx="page:p" data-so-node="span"><div style="display:contents"><i style="grid-column:span 2">a</i></div><i style="position:absolute">x</i><i>b</i><i>c</i></div>
 <div id="cards"><div id="item" data-so-ctx="page:p" data-so-node="item">x</div></div>
 <div id="flat" data-so-ctx="page:p" data-so-node="flat"><span>1</span><div style="display:contents"><span>2</span><span style="position:fixed">f</span><span>3</span></div></div>
 <div id="tall" data-so-ctx="page:p" data-so-node="tall"><i>a</i><i>b</i></div>
@@ -111,7 +111,7 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     expect(layout.width).toEqual({ centered: true, max: 800, content: true, basis: 1000 });
   });
 
-  it('reports a grid\u2019s items, so a gutter an item spans across is drawn only where it shows (#1478)', async () => {
+  it('reports a grid\u2019s items in flow, so a gutter an item spans across is drawn only where it shows (#1478)', async () => {
     await send('track', { selected: sel('span'), hovered: null });
     const layout = layoutOf((await lastReply('rects')).spacing.layout)!;
     const at = (r: { x: number; y: number; width: number; height: number }) => ({ x: Math.round(r.x - layout.box.x), y: Math.round(r.y - layout.box.y), width: Math.round(r.width), height: Math.round(r.height) });
