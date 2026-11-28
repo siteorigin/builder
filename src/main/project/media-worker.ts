@@ -7,4 +7,4 @@ import type { VariantReply, VariantRequest } from './media-client';
 
 const port = (process as unknown as { parentPort: { on: (e: 'message', cb: (ev: { data: VariantRequest }) => void) => void; postMessage: (m: VariantReply) => void } }).parentPort;
 
-port.on('message', async ({ data: m }) => port.postMessage(await handleVariantRequest(m)));
+port.on('message', async ({ data: m }) => port.postMessage(await handleVariantRequest(m, (early) => port.postMessage(early))));

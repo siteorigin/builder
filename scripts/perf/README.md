@@ -506,6 +506,29 @@ into Welcome (so its injected scripts are in both pages). Metrics: each reading'
 `memory.overEmpty.growth.*` (`welcome` − `empty`, role by role). The empty app's figures are a control: on one machine
 they should not move between two builds of the app, and a run where they do was disturbed.
 
+**`photoReads`** (after `open`, a memory scenario, on its own): whole photos read for small answers (#1046). Before the
+readings (untimed): the import's 20 photos of 12 megapixels (`photos.ts` `libraryPhotos`: the same JPEGs with an XMP
+packet added, the odd ones naming the city they were taken in) written into `static/assets/` and added to the library
+as originals kept as they were, and a 12-megapixel photo of its own chosen as the favicon, in one change; left until the
+site's icons are drawn from it, then, once its file is 3.5 s old, a first save that reads it, as any save after the
+favicon is written does. Then a reading at rest (`start`) and four windows, each sampled for its peak and followed by a
+reading at rest: `select` (each photo found by its name in Assets and chosen, until its details offer the web-sized
+copy its size says and the main process has answered what metadata it carries, then Back; the odd ones must say they
+record where they were taken and the even ones must not) and `selected`; `save` (the home hero's Heading changed in the
+Inspector until the preview shows it; the site keeps its favicon and none of its icons changes) and `saved`; `heic`
+(one of `importHeic`'s HEIC photos added in Assets, the review converting it, until it is a 2560-pixel JPEG with its
+copies, each file on disk as wide as its record says) and `imported`; `version` (a version saved, as History's Save
+version saves one; it must hold every library photo, the favicon and the imported photo as each is on disk, with an
+object of the same bytes) and `versioned`. Each reading's metrics as `memory`'s (`memory.<reading>…`, the peaks'
+`memory.<window>.peak…`); per window (`photoReads.<window>.*`, from its marks in the main process): `mediaReads` and
+`mediaReadBytes` (pictures and media files the main process read, `media.reads`), `faviconReads` and
+`faviconReadBytes`, `filesRead`, `hashedBytes`, `workerRequests`, `workerDecodes` and `workerReadBytes` (the media
+worker's requests answered, its pixel decodes, and the bytes of the files it was given by path, read or handed to its
+decoder: `media.request`'s `readBytes`), `ms` and `mainStallMax`; and for `select`, the questions answered (`metadataAnswers`,
+`planAnswers`, `controller.photoMetadata` and `controller.webCopyPlan` spans), those that found a place (`located`) and
+their median times (`metadataMs`, `planMs`). A build that never counts its media reads fails (the saves before the
+windows read the new favicon).
+
 **`previewImages`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: the page it measures is
 its own): the memory of the app's processes while frames other than the canvas show a page of photographs (#1037).
 Before the readings (untimed): 20 photographs written into `static/assets/` as an import stores them, each a web-sized
@@ -981,7 +1004,10 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
 (project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `favicon.read`,
 `favicon.readBytes` and `favicon.hashedBytes` (the site's favicon picture read and hashed to make its icons,
-`src/main/project/site-icons.ts`; not in `files.read`), `files.stats` (a
+`src/main/project/site-icons.ts`; not in `files.read`), `media.reads` and `media.readBytes` (a picture or other media
+file the main process read to answer about it or keep it: a library image's metadata or web-sized copy, `readLibraryImage`
+in `src/main/export.ts`; the favicon; a saved version's media and its objects, `src/main/project/versions.ts`; a file
+being imported or reviewed for import, `src/main/project/assets.ts`), `files.stats` (a
 project file looked at by its path without being read: a stat, an lstat, or a handle opened for its stat alone;
 `src/main/project/stable-read.ts` and the session's publication), `fs.syncCalls` (synchronous filesystem calls on the
 main process's event loop by path containment, `safeJoin`, the server-hook check and the publication), `docs.read` (canonical document files read from the project folder, also

@@ -35,7 +35,7 @@ import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEd
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSpoolRoot, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { gitClient, remoteGitClient } from './git/process';
@@ -64,7 +64,7 @@ import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/publ
 import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
-import { photoMetadata } from './project/photo-metadata';
+import { LibraryImageReader } from './project/library-image';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageDependencies, starterTools, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
@@ -414,6 +414,11 @@ function remoteFailed(e: unknown, secrets: readonly string[] = []): RemoteFailur
 
 export class Controller {
   session: ProjectSession | null = null;
+  /** What Assets asks about the library images it shows, read once for both questions and remembered under each file's stat. */
+  private libraryImages = new LibraryImageReader(
+    () => this.session?.settleMs ?? 3000,
+    (path, a, early) => inspectLibraryImage(path, a, true, early)
+  );
   dev: DevServer | null = null;
   /** The preview server started early for a project still opening, for its start to take over (see prepareRuntime). */
   private early: EarlyRuntime | null = null;
@@ -2982,11 +2987,14 @@ export class Controller {
   }
 
   /** What private metadata an image asset's original carries. Only a library file inside the project is read. */
-  async photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
+  photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
+    return timed('controller.photoMetadata', () => this.photoMetadataNow(assetId), (r) => ({ answered: !!r, location: r?.location ?? false, device: r?.device ?? false }))();
+  }
+
+  private async photoMetadataNow(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
     const s = this.session;
     const a = s?.state.assets.assets[assetId];
-    const buf = s && a ? await readLibraryImage(s.dir, a) : null;
-    return buf ? photoMetadata(buf) : null;
+    return (s && a && (await this.libraryImages.facts(s.dir, a))?.metadata) || null;
   }
 
   /** The file chooser for importing: images (HEIC photos included), fonts, documents, or all of them. Null when it was closed. */
@@ -3897,11 +3905,28 @@ export class Controller {
   }
 
   /** What a web-sized copy of a large library image would be (see libraryWebCopyPlan). */
-  async webCopyPlan(assetId: string): Promise<WebCopyPlan> {
+  webCopyPlan(assetId: string): Promise<WebCopyPlan> {
+    return timed('controller.webCopyPlan', () => this.webCopyPlanNow(assetId), (r) => ({ plan: !r ? 'none' : 'format' in r ? 'offer' : 'lighter' }))();
+  }
+
+  private async webCopyPlanNow(assetId: string): Promise<WebCopyPlan> {
     const s = this.session;
     const a = s?.state.assets.assets[assetId];
-    const buf = s && a ? await readLibraryImage(s.dir, a) : null;
-    return a && buf && sha(buf) === a.hash ? libraryWebCopyPlan(a, buf) : null;
+    if (!s || !a) return null;
+    // A plan for these very bytes, while the file is as it was read: nothing is read again.
+    const known = await this.libraryImages.remembered(s.dir, a);
+    if (known && known.hash !== a.hash) return null;
+    const plan = known && measuredWebCopyPlan(a, known.hash);
+    if (plan) return plan;
+    // Otherwise read (with the metadata question about the same picture, asked with this one) and measured: a large
+    // photo in the media worker, which never sends it here.
+    if (this.libraryImages.viaWorker(a)) {
+      const looked = await (await this.libraryImages.look(s.dir, a)).done;
+      if (looked) return looked.facts.hash === a.hash ? looked.plan : null;
+      // A worker that failed: read here, where a copy already weighed for the same bytes still answers.
+    }
+    const r = await this.libraryImages.read(s.dir, a);
+    return r && r.facts.hash === a.hash ? libraryWebCopyPlan(a, r.bytes, r.facts) : null;
   }
 
   /**

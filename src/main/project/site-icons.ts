@@ -17,7 +17,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { DRAWN_ICON_FILES } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
-import { perf } from '../perf';
+import { countMediaRead, perf } from '../perf';
 import { stampOf, statTrusted } from './stable-read';
 
 /**
@@ -158,6 +158,7 @@ async function readFavicon(dir: string, a: AssetRecord, seen: SeenPictures, sett
       bytes = await handle.readFile();
       perf.count('favicon.read');
       perf.count('favicon.readBytes', bytes.length);
+      countMediaRead(bytes.length);
       // Kept only when the path showed the very stat it was looked at with until the file was opened, and the file
       // did not change while it was read.
       trusted &&= stampOf(there) === stamp && stampOf(await handle.stat({ bigint: true })) === stampOf(st);

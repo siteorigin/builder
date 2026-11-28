@@ -5,7 +5,7 @@
  * author's own files are only ever read.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -32,17 +32,21 @@ class FakeRuntime extends EventEmitter {
 }
 
 /** While `held` is set, the copies an import makes once its pictures have landed (#979) wait for it to settle. */
-const later = vi.hoisted(() => ({ held: null as Promise<void> | null, asked: 0 }));
+const later = vi.hoisted(() => ({ held: null as Promise<void> | null, asked: 0, requests: [] as Array<{ kind: string; bytes: number; weighed?: boolean }>, failLibrary: false, copyHeld: null as Promise<void> | null, releaseCopy: null as (() => void) | null }));
 
 /** The media worker, run in this process by the code the real worker runs. */
 class InlineMediaWorker extends EventEmitter {
   postMessage(m: VariantRequest) {
+    later.requests.push({ kind: m.kind ?? 'variants', bytes: m.data.byteLength, ...(m.library ? { weighed: m.library.known.includes(m.library.expect) } : {}) });
+    if (m.kind === 'library' && later.failLibrary) return void queueMicrotask(() => this.emit('message', { id: m.id, ok: false, error: 'The worker failed.' }));
     // A picture's whole set of copies, with no check first and no copies named: what makePendingCopies asks for.
     const copies = (!m.kind || m.kind === 'variants') && !m.check && !m.targets;
     if (copies) later.asked++;
     void (copies && later.held ? later.held : Promise.resolve())
       .then(() => import('../../src/main/project/image-variants'))
-      .then(({ handleVariantRequest }) => handleVariantRequest(m))
+      .then(({ handleVariantRequest }) => handleVariantRequest(m, (early) => this.emit('message', early)))
+      // While `copyHeld` is set, a library image's copy is held back once what it says has gone ahead.
+      .then(async (r) => (m.kind === 'library' && later.copyHeld && r.ok && r.web ? (await later.copyHeld, r) : r))
       .then((r) => this.emit('message', r));
   }
   kill() {
@@ -85,6 +89,9 @@ beforeEach(() => {
   env.userData = temp('userdata');
 });
 afterEach(async () => {
+  // A copy held back by a test that did not finish is let go, so no later test waits behind it.
+  later.releaseCopy?.();
+  later.copyHeld = later.releaseCopy = null;
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -585,6 +592,115 @@ describe('making a web-sized copy of a large library image', () => {
     const r = await c.makeWebCopy(bigId, { replace: true, opening: c.openingKey! });
     expect(r).toMatchObject({ ok: true, assetId: first.assetId });
     expect(altsOf(first.assetId!)).toEqual(before);
+  }, 60_000);
+
+  it('answers both of Assets’ questions about a photo from one read, and again from none while its file is as it was (#1046)', async () => {
+    const { c, dir } = await openProject();
+    const id = (await c.importAssets([sourceFile('field.png', await noisy(3000, 2000, 'png'))])).assetIds[0];
+    await c.copiesMade();
+    const file = join(dir, c.session!.state.assets.assets[id].file);
+    // Its stat stands for its bytes once the file has been left alone this long.
+    c.session!.settleMs = 0;
+    await new Promise((r) => setTimeout(r, 20));
+    const opened = vi.spyOn(promises, 'open');
+    const reads = () => opened.mock.calls.filter(([p]) => p === file).length;
+    try {
+      const [meta, plan] = await Promise.all([c.photoMetadata(id), c.webCopyPlan(id)]);
+      expect(meta).toEqual(photoMetadata(readFileSync(file)));
+      expect(plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
+      expect(reads()).toBe(1);
+      // Shown again: the same answers, and nothing read.
+      expect(await Promise.all([c.photoMetadata(id), c.webCopyPlan(id)])).toEqual([meta, plan]);
+      expect(reads()).toBe(1);
+      // Replaced outside the app by other bytes of the same size, its times put back: read again, and no longer the
+      // picture the library recorded, so no copy is offered.
+      const st = statSync(file);
+      const other = readFileSync(file);
+      other[other.length - 20] ^= 0xff;
+      writeFileSync(file, other);
+      utimesSync(file, st.atime, st.mtime);
+      expect(await c.webCopyPlan(id)).toBeNull();
+      expect(reads()).toBe(2);
+      // A file still settling is read every time.
+      c.session!.settleMs = 60_000;
+      writeFileSync(file, readFileSync(file));
+      await c.photoMetadata(id);
+      await c.photoMetadata(id);
+      expect(reads()).toBe(4);
+    } finally {
+      opened.mockRestore();
+    }
+  }, 60_000);
+
+  it('looks at a large photo in the media worker, which is sent no bytes of it, and answers its metadata though the worker fails (#1046)', async () => {
+    const { c, dir } = await openProject();
+    const photo = await noisy(3000, 2000, 'jpeg');
+    const id = (await c.importAssets([sourceFile('field.jpg', photo)])).assetIds[0];
+    await c.copiesMade();
+    const file = join(dir, c.session!.state.assets.assets[id].file);
+    // Nothing remembered by the file's stat, so every question is put to the worker.
+    c.session!.settleMs = 60_000;
+    later.requests = [];
+    const [meta, plan] = await Promise.all([c.photoMetadata(id), c.webCopyPlan(id)]);
+    expect(meta).toEqual(photoMetadata(readFileSync(file)));
+    expect(plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
+    // One look for both questions, its copy made there: no picture crossed to the worker.
+    expect(later.requests).toEqual([{ kind: 'library', bytes: 0, weighed: false }]);
+    // The same picture under another record: the worker is told its copy was weighed, and the answer is the same.
+    later.requests = [];
+    const twin = { ...c.session!.state.assets.assets[id], id: 'a_twin', name: 'Twin' };
+    expect((await c.session!.apply({ operations: [{ type: 'asset.add', asset: twin }] }, { label: 'Twin', source: 'user' })).ok).toBe(true);
+    expect(await c.webCopyPlan('a_twin')).toEqual(plan);
+    expect(later.requests).toEqual([{ kind: 'library', bytes: 0, weighed: true }]);
+    // A worker that fails: both are answered from a read here, the copy already weighed for these bytes standing.
+    later.failLibrary = true;
+    try {
+      writeFileSync(file, readFileSync(file));
+      expect(await c.photoMetadata(id)).toEqual(meta);
+      expect(await c.webCopyPlan(id)).toEqual(plan);
+    } finally {
+      later.failLibrary = false;
+    }
+  }, 60_000);
+
+  it('looks again at a large photo replaced while a look at it was under way, rather than give the old answers (#1046)', async () => {
+    const { c, dir } = await openProject();
+    const photo = await noisy(3000, 2000, 'jpeg');
+    const id = (await c.importAssets([sourceFile('swap.jpg', photo)])).assetIds[0];
+    await c.copiesMade();
+    const file = join(dir, c.session!.state.assets.assets[id].file);
+    // The same picture, now saying where it was taken, put in its place as an editor saves: a new file renamed over it.
+    const xmp = Buffer.from('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" photoshop:City="Cape Town"/></rdf:RDF></x:xmpmeta>', 'utf8');
+    const payload = Buffer.concat([Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'), xmp]);
+    const segment = Buffer.concat([Buffer.from([0xff, 0xe1, (payload.length + 2) >> 8, (payload.length + 2) & 0xff]), payload]);
+    const placed = Buffer.concat([photo.subarray(0, 2), segment, photo.subarray(2)]);
+    later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    const plan = c.webCopyPlan(id);
+    expect(await c.photoMetadata(id)).toEqual(photoMetadata(photo));
+    writeFileSync(`${file}.new`, placed);
+    renameSync(`${file}.new`, file);
+    // Asked again while the first look still holds its copy back: a look of its own, about the file now there (with one
+    // worker slot it waits for the first look's copy, so that is let go before its answer is awaited).
+    const again = c.photoMetadata(id);
+    later.releaseCopy!();
+    expect(await again).toMatchObject({ location: true });
+    expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
+    // No longer the recorded picture: no copy is offered for it.
+    expect(await c.webCopyPlan(id)).toBeNull();
+  }, 60_000);
+
+  it('says what a large photo records as soon as the worker has read it, before its copy is made (#1046)', async () => {
+    const { c, dir } = await openProject();
+    const id = (await c.importAssets([sourceFile('later.jpg', await noisy(3000, 2000, 'jpeg'))])).assetIds[0];
+    await c.copiesMade();
+    const file = join(dir, c.session!.state.assets.assets[id].file);
+    later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    let planned = false;
+    const plan = c.webCopyPlan(id).then((p) => ((planned = true), p));
+    expect(await c.photoMetadata(id)).toEqual(photoMetadata(readFileSync(file)));
+    expect(planned).toBe(false);
+    later.releaseCopy!();
+    expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
   }, 60_000);
 
   it('never offers a lighter copy of its own web-sized copy, or of a photo a copy would hardly lighten', async () => {

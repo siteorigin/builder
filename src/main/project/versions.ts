@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import { basename, join } from 'node:path';
 import { atomicWrite, ensureDir, removeDurable, renameReplacing, sha, syncDir, toJson } from './fsutil';
+import { countMediaRead } from '../perf';
 import { isCanonicalPath } from './documents';
 import { SITE_ICON_FILES } from '@shared/site-icons';
 import { isPrivateFileName } from './private-files';
@@ -345,7 +346,7 @@ export class VersionStore {
     const st = await fs.stat(this.objectPath(h)).catch(() => null);
     if (!st?.isFile() || st.size !== bytes) return false;
     if (this.verified.has(h)) return true;
-    const ok = await fs.readFile(this.objectPath(h)).then((b) => sha(b) === h, () => false);
+    const ok = await fs.readFile(this.objectPath(h)).then((b) => (countMediaRead(b.length), sha(b) === h), () => false);
     if (ok) this.verified.add(h);
     return ok;
   }
@@ -383,6 +384,7 @@ export class VersionStore {
    */
   async putFile(abs: string): Promise<string> {
     const buf = await fs.readFile(abs);
+    countMediaRead(buf.length);
     const h = sha(buf);
     if (await this.has(h, buf.length)) return h;
     await ensureDir(this.objectDir);
@@ -391,7 +393,9 @@ export class VersionStore {
       let cloned = false;
       try {
         await fs.copyFile(abs, tmp, constants.COPYFILE_FICLONE_FORCE);
-        cloned = sha(await fs.readFile(tmp)) === h;
+        const copy = await fs.readFile(tmp);
+        countMediaRead(copy.length);
+        cloned = sha(copy) === h;
       } catch {
         cloned = false;
       }
@@ -422,6 +426,7 @@ export class VersionStore {
     let buf: Buffer;
     try {
       buf = await fs.readFile(this.objectPath(h));
+      countMediaRead(buf.length);
     } catch {
       throw new Error(VERSION_DAMAGED);
     }

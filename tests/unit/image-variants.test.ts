@@ -409,7 +409,7 @@ describe('media worker client', () => {
     await tick();
     const req = workers[1].sent[0];
     expect(req.stats).toBe(true);
-    const stats = { pid: 1, ms: 5, cpuMs: 9, cpuStartMs: 100, cpuEndMs: 109, peakRss: 1000, decodes: 2, encodes: 1, decodeMs: 1, webCopyMs: 3, formatMs: {} };
+    const stats = { pid: 1, ms: 5, cpuMs: 9, cpuStartMs: 100, cpuEndMs: 109, peakRss: 1000, decodes: 2, encodes: 1, decodeMs: 1, webCopyMs: 3, formatMs: {}, readBytes: 0 };
     workers[1].reply({ id: req.id, ok: false, error: 'no', unreadable: true, stats });
     expect(await web).toEqual({ ok: false, unreadable: true });
     expect(seen).toEqual([['web', 2, true]]);
@@ -848,6 +848,28 @@ describe('web-sized copies', () => {
     const solid = await sharp({ create: { width: 3000, height: 1000, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 1 } } }).png().toBuffer();
     expect((await renderWebCopy(solid, 2560)).mime).toBe('image/jpeg');
     expect([await isOpaque(clear), await isOpaque(solid), await isOpaque(await halves(100, 50, 'jpeg'))]).toEqual([false, true, true]);
+  });
+
+  it('makes the same web-sized copy of a converted photo’s TIFF from its file as from its bytes, holding none of it (#1046)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-tiff-'));
+    try {
+      // As sips leaves a HEIC photo: its pixels as stored, turned by its orientation, with a wide-gamut profile.
+      const tiff = await sharp(await halves(3000, 2000, 'png')).withIccProfile('p3').withMetadata({ orientation: 6 }).tiff().toBuffer();
+      const path = join(dir, 'photo.tiff');
+      writeFileSync(path, tiff);
+      const fromBytes = await renderWebCopy(tiff, 2560);
+      const fromFile = await renderWebCopy(path, 2560);
+      expect([fromFile.width, fromFile.height, fromFile.mime]).toEqual([fromBytes.width, fromBytes.height, fromBytes.mime]);
+      expect(fromFile.data.equals(fromBytes.data)).toBe(true);
+      expect(await isReadable(path, 'image/tiff')).toBe(true);
+      const r = await handleVariantRequest({ id: 3, kind: 'web', path, data: new Uint8Array(0), mime: '', width: 0, maxEdge: 2560, stats: true });
+      expect(r.ok && Buffer.from(r.web!.data).equals(fromBytes.data)).toBe(true);
+      expect(r.stats).toMatchObject({ readBytes: tiff.length, decodes: 2, encodes: 1 });
+      writeFileSync(path, tiff.subarray(0, 4000));
+      expect(await handleVariantRequest({ id: 4, kind: 'web', path, data: new Uint8Array(0), mime: '', width: 0, maxEdge: 2560 })).toMatchObject({ ok: false, unreadable: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('says what a request cost when asked: its decodes and encodes, and the time each format took', async () => {

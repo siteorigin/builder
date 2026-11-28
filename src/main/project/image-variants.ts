@@ -2,11 +2,15 @@
  * Responsive copies of an imported picture. Runs in the media worker (a utility process), never on the
  * editor's main process: decoding and resizing a large photo takes long enough to freeze the window.
  */
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import sharp, { type Sharp } from 'sharp';
-import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type MediaStats, type VariantReply, type VariantRequest } from './media-client';
-import { isAnimatedPng } from './media';
+import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type LibraryReply, type MediaStats, type VariantReply, type VariantRequest } from './media-client';
+import { imageInfo, imageProblem, isAnimatedPng } from './media';
 import { cleanPhoto, creditText, type CreditText } from './photo-metadata';
+import { MAX_LIBRARY_FILE, readLibraryFile } from './library-image';
+import { stampOf } from './stable-read';
 import { sanitizeSvg } from './svg';
 import { isCopyMime, type CopyMime } from '@shared/picture-formats';
 
@@ -30,8 +34,8 @@ export interface Variant extends VariantTarget {
 sharp.cache(false);
 
 /** What a request's pictures cost, counted as they are made (for MediaStats). */
-export type Tally = Pick<MediaStats, 'decodes' | 'encodes' | 'decodeMs' | 'webCopyMs' | 'formatMs'>;
-export const newTally = (): Tally => ({ decodes: 0, encodes: 0, decodeMs: 0, webCopyMs: 0, formatMs: {} });
+export type Tally = Pick<MediaStats, 'decodes' | 'encodes' | 'decodeMs' | 'webCopyMs' | 'formatMs' | 'readBytes'>;
+export const newTally = (): Tally => ({ decodes: 0, encodes: 0, decodeMs: 0, webCopyMs: 0, formatMs: {}, readBytes: 0 });
 
 /** `work`, timed into `tally` (when there is one) by `into`, as one decode of an encoded picture. */
 async function tallied<T>(tally: Tally | undefined, into: (t: Tally, ms: number) => void, work: () => Promise<T>): Promise<T> {
@@ -183,7 +187,7 @@ export interface WebCopy {
  * WEB_EDGE on its longest side (never enlarged), in sRGB and without metadata. A picture with see-through pixels
  * stays a PNG; any other becomes a JPEG at the quality of the responsive copies. Deterministic.
  */
-export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE, tally?: Tally): Promise<WebCopy> {
+export async function renderWebCopy(buf: Buffer | string, maxEdge = WEB_EDGE, tally?: Tally): Promise<WebCopy> {
   const open = () => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
   // An alpha channel that is fully opaque everywhere (screenshots, many exported photos) is no reason to stay a PNG.
   const clear = !(await isOpaque(buf, tally));
@@ -201,11 +205,11 @@ export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE, tally?: Tal
  * Whether the decoder can read the picture's image data, not just its header: a file whose structure is whole can
  * still hold pixel data no browser can decode. Decoded small, so a large photo costs little.
  */
-export async function isReadable(buf: Buffer, mime?: string, tally?: Tally): Promise<boolean> {
+export async function isReadable(buf: Buffer | string, mime?: string, tally?: Tally): Promise<boolean> {
   const decode = (pages?: number) => tallied(tally, asDecode, () => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer());
   // Too many pixels to decode here says nothing about the file. Nor does an AVIF the decoder does not recognise (an
   // image sequence, an unusual major brand); a file declaring no AVIF brand is not the picture it claimed to be.
-  const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && avifBrands(buf).some((b) => b === 'avif' || b === 'avis'));
+  const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && typeof buf !== 'string' && avifBrands(buf).some((b) => b === 'avif' || b === 'avis'));
   // Every frame of an animation, so a damaged later frame is found too. Frames that are too many pixels together
   // are checked by the first alone.
   if (mime === 'image/gif' || mime === 'image/webp') {
@@ -234,7 +238,7 @@ function avifBrands(buf: Buffer): string[] {
 }
 
 /** Whether every pixel is opaque: a picture without an alpha channel always is. */
-export async function isOpaque(buf: Buffer, tally?: Tally): Promise<boolean> {
+export async function isOpaque(buf: Buffer | string, tally?: Tally): Promise<boolean> {
   const img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
   if (!(await img.metadata()).hasAlpha) return true;
   return (await tallied(tally, asDecode, () => img.stats())).isOpaque;
@@ -306,24 +310,76 @@ function packIco(images: ReadonlyArray<{ size: number; png: Buffer }>): Buffer {
 }
 
 /**
+ * A library image's file read here, so the editor's main process never holds it (#1046): what Assets asks about the
+ * picture it shows, its private metadata and credits, and with `ask.plan` its web-sized copy, made as libraryWebCopyPlan
+ * makes one (assets.ts), when its bytes are the picture the library recorded and no copy of them has been weighed yet.
+ * Only a regular file is read, never through a link, and nothing implausibly large.
+ */
+async function lookAtLibraryImage(m: VariantRequest & { path: string; library: NonNullable<VariantRequest['library']> }, post?: (early: VariantReply) => void, tally?: Tally): Promise<{ library?: LibraryReply; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number } }> {
+  const { path, mime, library: ask } = m;
+  let buf: Buffer | null = null;
+  let stamp = '';
+  // A file that changes while it is read is read again (readLibraryFile): bytes read meanwhile are no picture's.
+  for (let attempt = 0; attempt < 3 && !buf; attempt++) {
+    const looked = await fs.lstat(path, { bigint: true }).catch(() => null);
+    if (!looked?.isFile() || looked.size > BigInt(MAX_LIBRARY_FILE)) return {};
+    const read = await readLibraryFile(path, looked, (n) => tally && (tally.readBytes += n));
+    if (read === null) return {};
+    if (read !== 'changed') {
+      buf = read;
+      // The path as it was looked at, as the main process looks at it: what it compares this answer with.
+      stamp = stampOf(looked);
+    }
+  }
+  if (!buf) return {};
+  const hash = createHash('sha256').update(buf).digest('hex');
+  const cleaned = cleanPhoto(buf);
+  const info = mime === 'image/jpeg' || mime === 'image/png' ? imageInfo(buf, mime) : null;
+  // libraryWebCopyPlan's checks, in its order.
+  const checked = !!info && !(mime === 'image/png' && isAnimatedPng(buf)) && !imageProblem(buf, mime) && info.width * info.height <= MAX_VARIANT_PIXELS;
+  const found: LibraryReply = { hash, bytes: buf.length, stamp, metadata: cleaned && { location: cleaned.location, device: cleaned.device }, ...(cleaned ? { credits: cleaned.credits } : {}), checked };
+  if (!ask.plan || !checked || hash !== ask.expect || ask.known.includes(hash)) return { library: found };
+  // What the file says goes ahead of its copy, which takes a decode and an encode.
+  post?.({ id: m.id, ok: true, early: true, variants: [], library: found });
+  try {
+    if (!(await isReadable(buf, mime, tally))) return { library: { ...found, unreadable: true } };
+    const web = await renderWebCopy(buf, m.maxEdge, tally);
+    return { library: found, web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
+  } catch {
+    // The copy failing is no reason to lose what the file says.
+    return { library: found };
+  }
+}
+
+/**
  * What the media worker does with one request; the worker process only carries messages to and from it. With `stats`
  * asked for, the reply says what the request cost (MediaStats).
  */
-export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
-  if (!m.stats) return handle(m);
+export async function handleVariantRequest(m: VariantRequest, post?: (early: VariantReply) => void): Promise<VariantReply> {
+  if (!m.stats) return handle(m, undefined, post);
   const tally = newTally();
   const start = performance.now();
   const cpu = process.cpuUsage();
-  const reply = await handle(m, tally);
+  const reply = await handle(m, tally, post);
   const used = process.cpuUsage();
   const ms = (u: NodeJS.CpuUsage) => (u.user + u.system) / 1000;
   const stats = { pid: process.pid, ms: performance.now() - start, cpuMs: ms(used) - ms(cpu), cpuStartMs: ms(cpu), cpuEndMs: ms(used), peakRss: process.resourceUsage().maxRSS * 1024, ...tally };
   return { ...reply, stats };
 }
 
-async function handle(m: VariantRequest, tally?: Tally): Promise<VariantReply> {
+async function handle(m: VariantRequest, tally?: Tally, post?: (early: VariantReply) => void): Promise<VariantReply> {
   try {
+    if (m.kind === 'library' && m.path && m.library) return { id: m.id, ok: true, variants: [], ...(await lookAtLibraryImage({ ...m, path: m.path, library: m.library }, post, tally)) };
+    if (m.kind === 'web' && m.path) {
+      // A converted photo's lossless intermediate, a TIFF the size of its pixels, is decoded from its file: never held
+      // whole here as well as by the decoder.
+      if (tally) tally.readBytes += (await stat(m.path)).size;
+      if (!(await isReadable(m.path, 'image/tiff', tally))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+      const web = await renderWebCopy(m.path, m.maxEdge, tally);
+      return { id: m.id, ok: true, variants: [], web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
+    }
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+    if (tally && m.path) tally.readBytes += buf.length;
     if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf, tally) };
     if (m.kind === 'icons') {
       // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's
@@ -337,7 +393,7 @@ async function handle(m: VariantRequest, tally?: Tally): Promise<VariantReply> {
     }
     if (m.kind === 'web') {
       // A picture the decoder refuses is said to be unreadable; anything failing after that is the copy failing.
-      if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime, tally))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+      if (!(await isReadable(buf, m.mime, tally))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
       const web = await renderWebCopy(buf, m.maxEdge, tally);
       return { id: m.id, ok: true, variants: [], web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
     }
