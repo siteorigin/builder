@@ -95,9 +95,21 @@ describe('word forms in Insert (#1360)', () => {
     expect(names('prices billing')).toEqual(['Pricing with billing switch']);
   });
 
-  it('ranks a name as typed ahead of another form, and a name starting with the form ahead of one only holding it', () => {
-    const items = ['Our pricing', 'Pricing', 'Price card'].map((name) => ({ name, hay: name.toLowerCase() }));
-    expect(searchItems(items, 'price').map((it) => it.name)).toEqual(['Price card', 'Pricing', 'Our pricing']);
+  it('ranks names: as typed, then named by another form, starting with it, holding it, and last a description', () => {
+    const item = (name: string, about = '') => ({ name, hay: `${name} ${about}`.toLowerCase() });
+    const ranked = (items: ReturnType<typeof item>[], q: string) => searchItems(items, q).map((it) => it.name);
+    // Listed worst first, so panel order alone would give the reverse.
+    expect(ranked([item('Rates', 'a price list'), item('All pricing options'), item('Pricing: seasonal'), item('Pricing'), item('Price card')], 'price')).toEqual(['Price card', 'Pricing', 'Pricing: seasonal', 'All pricing options', 'Rates']);
+    // A project's own component, listed first, does not displace the section named for the search.
+    expect(ranked([item('Pricing plans comparison'), item('Pricing comparison')], 'price comparison')).toEqual(['Pricing comparison', 'Pricing plans comparison']);
+  });
+
+  it('reads another form in any word, beside punctuation, and in the name an item shows', () => {
+    const items = [
+      { name: 'Rates', hay: 'rates dark pricing variant', shownAs: 'Rates Light' },
+      { name: 'Plans', hay: 'plans (pricing) dark variant', shownAs: 'Plans (pricing) Dark' }
+    ];
+    expect(searchItems(items, 'dark price', (it) => it.shownAs).map((it) => it.name)).toEqual(['Plans', 'Rates']);
   });
 
   it('finds the contact details by map', () => {
