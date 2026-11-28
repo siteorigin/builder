@@ -8,9 +8,9 @@ import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { detailPlaces, placeNote, publisherDetailNotes } from '@engine/business-details';
+import { detailPlaces, placeNote, publisherDetailNotes, renameDetailKeeps } from '@engine/business-details';
 import { visibleReach } from '@agent/preview-check';
-import { checkEmail, openingHoursText } from '@shared/site-identity';
+import { checkEmail, checkTelephone, openingHoursText } from '@shared/site-identity';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 
 const apply = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -103,7 +103,8 @@ describe('the site’s business details on its pages', () => {
     s = apply(s, identity({ address: '4 Bree Street' }));
     expect(details(s)[2][0]).toBe('4 Bree Street');
     s = apply(s, identity({ email: 'Orders@FernField.co.za' }));
-    expect(details(s)[0]).toEqual(['Orders@FernField.co.za', { type: 'email', target: 'orders@fernfield.co.za' }]);
+    expect(details(s)[0]).toEqual(['Orders@FernField.co.za', { type: 'email', target: 'Orders@FernField.co.za' }]);
+    expect(contactSection(s).props.actionLink).toEqual({ type: 'email', target: 'Orders@FernField.co.za?subject=Flowers', newTab: true });
   });
 
   it('leaves the places as they are when a detail is cleared', () => {
@@ -154,6 +155,34 @@ describe('the site’s business details on its pages', () => {
     expect(sections).toHaveLength(2);
     for (const section of sections) expect(rows(section, 'items')[0]).toMatchObject({ value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } });
     expect(footerRows(k)[0][0]).toBe('bookings@fernfield.co.za');
+    // Editing a row's label alone leaves its kept link kept; editing its address away and back releases the link that
+    // moved with it, so the row follows again as a whole.
+    let p = apply(business(), identity({ email: 'info@fernfield.co.za' }));
+    const pPage = { kind: 'page' as const, id: contactPage(p).id };
+    const pRow = rows(contactSection(p), 'items')[0];
+    p = apply(p, { type: 'instance.setProp', owner: pPage, nodeId: contactSection(p).id, prop: 'items', itemId: pRow.id, value: { value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } } });
+    p = apply(p, identity({ email: 'press@fernfield.co.za' }));
+    p = apply(p, { type: 'instance.setProp', owner: pPage, nodeId: contactSection(p).id, prop: 'items', itemId: pRow.id, value: { label: 'Press desk' } });
+    const pressed = apply(p, identity({ email: 'bookings@fernfield.co.za' }));
+    expect(rows(contactSection(pressed), 'items')[0]).toMatchObject({ label: 'Press desk', value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } });
+    p = apply(p, { type: 'instance.setProp', owner: pPage, nodeId: contactSection(p).id, prop: 'items', itemId: pRow.id, field: 'value', value: 'other@fernfield.co.za' });
+    p = apply(p, { type: 'instance.setProp', owner: pPage, nodeId: contactSection(p).id, prop: 'items', itemId: pRow.id, field: 'value', value: 'press@fernfield.co.za' });
+    p = apply(p, identity({ email: 'bookings@fernfield.co.za' }));
+    expect(rows(contactSection(p), 'items')[0]).toMatchObject({ value: 'bookings@fernfield.co.za', link: { type: 'email', target: 'bookings@fernfield.co.za' } });
+    // A row whose ID has brackets in it keeps its kept value through a copy too.
+    let q = apply(business(), identity({ email: 'info@fernfield.co.za' }));
+    const qPage = { kind: 'page' as const, id: contactPage(q).id };
+    const qSection = contactSection(q);
+    qSection.props.items = [{ ...rows(qSection, 'items')[0], id: 'sales]west.1', value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } }];
+    q = apply(q, identity({ email: 'press@fernfield.co.za' }));
+    q = apply(q, { type: 'node.duplicate', owner: qPage, nodeId: qSection.id } as EditOperation);
+    q = apply(q, identity({ email: 'bookings@fernfield.co.za' }));
+    const copies = Object.values(q.pages[qPage.id].nodes).filter((n): n is InstanceNode => n.kind === 'instance' && q.components[n.definitionId]?.componentId === 'contact.details');
+    expect(copies.map((c) => rows(c, 'items')[0].value)).toEqual(['press@fernfield.co.za', 'press@fernfield.co.za']);
+    // A property renamed in its design keeps its kept values under the new name; one kept under that name before goes.
+    const renamedNode = { ...structuredClone(contactSection(p)), keepsText: ['siteName', 'detail:email:actionLink', 'detail:email:items[a%5Db].value', 'detail:email:primary'] } as InstanceNode;
+    renameDetailKeeps(renamedNode, new Map([['actionLink', 'primary'], ['items', 'ways']]));
+    expect(renamedNode.keepsText).toEqual(['siteName', 'detail:email:primary', 'detail:email:ways[a%5Db].value']);
     // A detail the site fills in for the first time is taken up by the places that already show it.
     let t = business();
     const tPage = { kind: 'page' as const, id: contactPage(t).id };
@@ -169,7 +198,12 @@ describe('the site’s business details on its pages', () => {
     const fields = (s.pages[page.id].nodes.n_form as InstanceNode).props.fields as ListItem[];
     s = apply(s, { type: 'instance.setProp', owner: page, nodeId: 'n_form', prop: 'fields', itemId: fields[0].id, field: 'placeholder', value: SAMPLE_CONTACT.email } as EditOperation);
     const before = structuredClone((s.pages[page.id].nodes.n_form as InstanceNode).props);
-    // A copy of the theme's form, under a name of its own, is a form too.
+    // A copy of the theme's form, under a name of its own, is a form too, and so is any design whose code sends one.
+    const coded = { ...structuredClone(s.components[(s.pages[page.id].nodes.n_form as InstanceNode).definitionId]), id: 'project.coded-form', componentId: 'coded.form', owner: 'project' as const };
+    delete (coded as { provenance?: unknown }).provenance;
+    s.components[coded.id] = coded as never;
+    s.pages[page.id].nodes.n_coded = { ...structuredClone(s.pages[page.id].nodes.n_form as InstanceNode), id: 'n_coded', definitionId: coded.id };
+    s.pages[page.id].rootIds.push('n_coded');
     const form = s.pages[page.id].nodes.n_form as InstanceNode;
     const copy = { ...structuredClone(s.components[form.definitionId]), id: 'project.my-form', componentId: 'my.form', owner: 'project' as const, provenance: { pack: 'foundation', packVersion: '0', componentId: 'contact.form' } };
     s.components[copy.id] = copy as never;
@@ -178,6 +212,7 @@ describe('the site’s business details on its pages', () => {
     s = apply(s, identity({ address: '4 Bree Street', email: 'orders@fernfield.co.za' }), identity({ address: '9 Long Street' }));
     expect((s.pages[page.id].nodes.n_form as InstanceNode).props).toEqual(before);
     expect((s.pages[page.id].nodes.n_copy as InstanceNode).props).toEqual(before);
+    expect((s.pages[page.id].nodes.n_coded as InstanceNode).props).toEqual(before);
   });
 
   it('fills the details into a Contact section placed afterwards, and into a new Contact page', () => {
@@ -200,7 +235,7 @@ describe('the site’s business details on its pages', () => {
     expect(started.props.actionLink).toEqual({ type: 'email', target: 'orders@fernfield.co.za' });
   });
 
-  it('keeps the values an insert gives, and every sample of a section with a field too short for a detail', () => {
+  it('keeps the values an insert gives, and the samples of a detail a field has no room for', () => {
     let s = apply(business(), identity(FLORIST));
     const about = { kind: 'page' as const, id: Object.values(s.pages).find((p) => p.route === '/about/')!.id };
     s = apply(s, { type: 'node.insert', owner: about, componentId: 'cta.banner', newNodeId: 'n_sample', props: { primaryLink: { type: 'email', target: SAMPLE_CONTACT.email } } } as EditOperation);
@@ -211,7 +246,13 @@ describe('the site’s business details on its pages', () => {
     items.fields.value.maxLength = 20;
     s = apply(s, { type: 'node.insert', owner: about, componentId: 'contact.details', newNodeId: 'n_short' } as EditOperation);
     const short = s.pages[about.id].nodes.n_short as InstanceNode;
-    expect(rows(short, 'items').map((i) => i.value)).toEqual([SAMPLE_CONTACT.email, SAMPLE_CONTACT.phone, SAMPLE_CONTACT.address, SAMPLE_CONTACT.hours]);
+    // The email, address and hours do not fit in 20 characters: each keeps its sample, its links too. The number fits.
+    expect(rows(short, 'items').map((i) => [i.value, i.link])).toEqual([
+      [SAMPLE_CONTACT.email, { type: 'email', target: SAMPLE_CONTACT.email }],
+      ['+27 21 555 0199', { type: 'tel', target: '+27215550199' }],
+      [SAMPLE_CONTACT.address, { type: 'none', target: '' }],
+      [SAMPLE_CONTACT.hours, { type: 'none', target: '' }]
+    ]);
     expect(short.props.actionLink).toEqual({ type: 'email', target: SAMPLE_CONTACT.email });
   });
 
@@ -333,6 +374,13 @@ describe('the site’s business details on its pages', () => {
     expect(sample(s, 'openingHours')).toEqual([['Contact', 'items', 'text', 'sample']]);
   });
 
+  it('lets one detail change a place another detail already shows as it is', () => {
+    let s = apply(business(), identity({ telephone: '1 234', address: '1234' }));
+    expect(details(s)[2][0]).toBe('1234');
+    s = apply(s, identity({ telephone: '1234', address: '5 Long Street' }));
+    expect(details(s)[2][0]).toBe('5 Long Street');
+  });
+
   it('replaces samples left behind only for the details an edit names', () => {
     let s = apply(business(), identity({ email: 'orders@fernfield.co.za', address: '4 Bree Street' }));
     const about = { kind: 'page' as const, id: Object.values(s.pages).find((p) => p.route === '/about/')!.id };
@@ -407,16 +455,27 @@ describe('opening hours as visitors read them', () => {
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'fr-12')).toBe('Lundi – vendredi, 9:00 – 17:00');
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'zh-cmn-Hans')).toMatch(/^星期一 – 星期五/);
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'xx-invalid-tag-!')).toBe(SAMPLE_CONTACT.hours);
+    // An old name for a language is that language.
+    expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'iw')).toBe(openingHoursText(['Mo-Fr 09:00-17:00'], 'he'));
+    expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'he')).not.toBe(SAMPLE_CONTACT.hours);
     // A language the platform has no names for at all is written in English, not the computer's own language.
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'qaa')).toBe(SAMPLE_CONTACT.hours);
   });
 });
 
-describe('the site’s email address', () => {
-  it('takes none with a ? or #, which would end the address in its email links', () => {
+describe('the site’s email address and number', () => {
+  it('takes none with a ?, which would end the address in its email links', () => {
     expect(checkEmail('sales?west@example.org').ok).toBe(false);
-    expect(checkEmail('sales#west@example.org').ok).toBe(false);
+    expect(checkEmail('sales@west?.example.org').ok).toBe(false);
+    // A # is sent encoded, so it is the mailbox's own.
+    expect(checkEmail('sales#west@example.org')).toEqual({ ok: true, value: 'sales#west@example.org' });
     expect(checkEmail('sales+west@example.org')).toEqual({ ok: true, value: 'sales+west@example.org' });
+  });
+
+  it('takes a telephone number only when its links can dial it', () => {
+    expect(checkTelephone('+358 (0)').ok).toBe(false);
+    expect(checkTelephone('+358 (0) 9 123')).toEqual({ ok: true, value: '+358 (0) 9 123' });
+    expect(checkTelephone('112')).toEqual({ ok: true, value: '112' });
   });
 });
 

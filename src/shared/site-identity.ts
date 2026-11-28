@@ -5,6 +5,7 @@
  * applies `site.update`, and when the website is built from a file edited by hand, which keeps only what passes.
  */
 import type { EntityKind, SiteDoc, SiteIdentity } from './types';
+import { dialString } from './contact-links';
 
 export const ENTITY_KINDS: readonly EntityKind[] = ['Organization', 'LocalBusiness', 'Person'];
 export const ENTITY_KIND_LABELS: Record<EntityKind, string> = { Organization: 'Organization', LocalBusiness: 'Local business', Person: 'Person' };
@@ -60,21 +61,24 @@ export function checkTwitterHandle(input: string): Checked<string> {
 }
 
 /**
- * An email address: one mailbox, nothing around it. A ? or # in it would end the address in the email links that open
- * it (mailto:), so neither is taken.
+ * An email address: one mailbox, nothing around it. A ? in it would end the address in the email links that open it
+ * (mailto:), so none is taken.
  */
 export function checkEmail(input: string): Checked<string> {
   const text = input.trim();
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\?#]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
+  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\?]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
   return ok(text);
 }
 
-/** A telephone number as people dial it: digits, with spaces, “+”, brackets, dots or dashes between them. */
+/**
+ * A telephone number as people dial it: digits, with spaces, “+”, brackets, dots or dashes between them, and at least
+ * three of them left to dial once a bracketed trunk zero is dropped (“+358 (0)” dials nothing).
+ */
 export function checkTelephone(input: string): Checked<string> {
   const text = oneLine(input);
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.telephone || !/^\+?[\d\s().\-/]+$/.test(text) || (text.match(/\d/g) ?? []).length < 3) return no(`“${text}” is not a telephone number, such as +27 21 555 0134.`);
+  if (text.length > IDENTITY_LIMITS.telephone || !/^\+?[\d\s().\-/]+$/.test(text) || (dialString(text).match(/\d/g) ?? []).length < 3) return no(`“${text}” is not a telephone number, such as +27 21 555 0134.`);
   return ok(text);
 }
 
@@ -136,8 +140,15 @@ function localWords(language: string): LocalWords | null {
     } catch {
       continue;
     }
-    // A language the platform has no words for resolves to its own default, which is no answer.
-    if (locale.split('-')[0].toLowerCase() !== tag.split('-')[0].toLowerCase()) continue;
+    // A language the platform has no words for resolves to its own default, which is no answer. An old name for a
+    // language ("iw") resolves to its own ("he").
+    let asked: string;
+    try {
+      asked = Intl.getCanonicalLocales(tag)[0];
+    } catch {
+      continue;
+    }
+    if (locale.split('-')[0].toLowerCase() !== asked.split('-')[0].toLowerCase()) continue;
     if (/^en\b/i.test(locale)) return null;
     const day = new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' });
     const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });

@@ -24,7 +24,8 @@ import { openingHoursText, sitePublisher } from '@shared/site-identity';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { siteLanguage } from '@shared/languages';
-import { isFormContract } from '@shared/form-contract';
+import { isFormContract, sendsFormMessages } from '@shared/form-contract';
+import { formDestinationLookup, type FormDestinationLookup } from './form-destinations';
 import { allTrees, displayName } from './tree';
 import { clone } from './install';
 import { DEFAULT_TEXT_MAX } from './values';
@@ -151,6 +152,23 @@ const KEEP = 'detail:';
 const keepKey = (detail: BusinessDetail, path: string) => `${KEEP}${detail}:${path}`;
 /** The field a kept value's name names. */
 const keptPath = (key: string) => key.slice(key.indexOf(':', KEEP.length) + 1);
+/** A list item's field, its ID written so no ID can be read as more of the path. */
+const itemPath = (prop: string, itemId: string, field: string) => `${prop}[${encodeURIComponent(itemId)}].${field}`;
+/** The property, item and field a path names. */
+function parsePath(path: string): { prop: string; itemId?: string; field?: string } {
+  const item = /^([^.[]+)\[([^\]]*)\]\.(.+)$/.exec(path);
+  if (item) return { prop: item[1], itemId: decodeURIComponent(item[2]), field: item[3] };
+  const dot = path.indexOf('.');
+  return dot < 0 ? { prop: path } : { prop: path.slice(0, dot), field: path.slice(dot + 1) };
+}
+/** What a property's value holds at a path, as text to compare. */
+function valueAt(value: unknown, path: string): string {
+  const { itemId, field } = parsePath(path);
+  let v: unknown = value;
+  if (itemId !== undefined) v = Array.isArray(value) ? (value.find((it) => isRecord(it) && it.id === itemId) as Record<string, unknown> | undefined)?.[field!] : undefined;
+  else if (field !== undefined) v = isRecord(value) ? value[field] : undefined;
+  return JSON.stringify(v ?? null);
+}
 
 /** The detail values a placement keeps through changes of the site's details. */
 const keptOf = (node: InstanceNode): Set<string> => new Set(Array.isArray(node.keepsText) ? node.keepsText.filter((k): k is string => typeof k === 'string' && k.startsWith(KEEP)) : []);
@@ -164,20 +182,45 @@ function setKept(node: InstanceNode, keys: Set<string>) {
 }
 
 /**
- * An edit makes what it changes the author's choice again: each value follows the site's details if it shows them.
- * A whole property, one list item (`itemId`), or one field of an item or an object (`field`).
+ * Watches an edit of one property: call what it returns with the property's value after the edit. Each kept value the
+ * edit changed (its text, its link, even a link that moved with its text) is the author's choice again, and follows
+ * the site's details if it shows them; one it left as it was stays kept. `before` is the value the placement showed.
  */
-export function releaseDetailKeeps(node: InstanceNode, prop: string, itemId?: string, field?: string): void {
-  const kept = keptOf(node);
-  const edited = (path: string) => {
-    if (itemId !== undefined) return field === undefined ? path.startsWith(`${prop}[${itemId}].`) : path === `${prop}[${itemId}].${field}`;
-    if (field !== undefined) return path === `${prop}.${field}`;
-    return path === prop || path.startsWith(`${prop}.`) || path.startsWith(`${prop}[`);
+export function watchDetailKeeps(node: InstanceNode, prop: string, before: unknown): (after: unknown) => void {
+  const mine = [...keptOf(node)].filter((k) => parsePath(keptPath(k)).prop === prop);
+  if (!mine.length) return () => {};
+  const was = new Map(mine.map((k) => [k, valueAt(before, keptPath(k))]));
+  return (after) => {
+    const kept = keptOf(node);
+    let changed = false;
+    for (const [k, v] of was) if (valueAt(after, keptPath(k)) !== v && kept.delete(k)) changed = true;
+    if (changed) setKept(node, kept);
   };
-  const mine = [...kept].filter((k) => edited(keptPath(k)));
+}
+
+/** A property removed from the design takes its kept values with it. */
+export function dropDetailKeeps(node: InstanceNode, prop: string): void {
+  const kept = keptOf(node);
+  const mine = [...kept].filter((k) => parsePath(keptPath(k)).prop === prop);
   if (!mine.length) return;
   for (const k of mine) kept.delete(k);
   setKept(node, kept);
+}
+
+/** Properties renamed in the design (old name to new) keep their kept values; whatever was kept under a new name goes. */
+export function renameDetailKeeps(node: InstanceNode, renamed: ReadonlyMap<string, string>): void {
+  const kept = keptOf(node);
+  if (!kept.size) return;
+  const targets = new Set(renamed.values());
+  const out = new Set<string>();
+  for (const key of kept) {
+    const path = keptPath(key);
+    const { prop } = parsePath(path);
+    const to = renamed.get(prop);
+    if (to !== undefined) out.add(`${key.slice(0, key.length - path.length)}${to}${path.slice(prop.length)}`);
+    else if (!targets.has(prop)) out.add(key);
+  }
+  setKept(node, out);
 }
 
 /** A copy's list items take new IDs (`before` holds its properties with the old ones): its kept values move with them. */
@@ -187,16 +230,16 @@ export function remapDetailKeeps(node: InstanceNode, before: Record<string, unkn
   const out = new Set<string>();
   for (const key of kept) {
     const path = keptPath(key);
-    const m = /^([^.[]+)\[([^\]]+)\](\..+)$/.exec(path);
-    const from = m ? before[m[1]] : undefined;
-    const to = m ? node.props[m[1]] : undefined;
-    if (!m || !Array.isArray(from) || !Array.isArray(to) || from === to) {
+    const { prop, itemId, field } = parsePath(path);
+    const from = before[prop];
+    const to = node.props[prop];
+    if (itemId === undefined || !Array.isArray(from) || !Array.isArray(to) || from === to) {
       out.add(key);
       continue;
     }
-    const at = from.findIndex((it) => (it as ListItem | undefined)?.id === m[2]);
+    const at = from.findIndex((it) => (it as ListItem | undefined)?.id === itemId);
     const id = at >= 0 ? (to[at] as ListItem | undefined)?.id : undefined;
-    if (typeof id === 'string') out.add(`${key.slice(0, key.length - path.length)}${m[1]}[${id}]${m[3]}`);
+    if (typeof id === 'string') out.add(`${key.slice(0, key.length - path.length)}${itemPath(prop, id, field!)}`);
   }
   setKept(node, out);
 }
@@ -226,7 +269,7 @@ const maxOf = (schema: PropSchema) => (schema.type === 'string' ? (schema.maxLen
 const kindOf = (schema: PropSchema): 'text' | 'link' => (schema.type === 'link' ? 'link' : 'text');
 
 /** A design whose settings are a form service's (an endpoint, an access key, a form name) and whose items are fields to fill in. */
-const isForm = (def: ComponentDefinition) => isFormContract(def.componentId) || isFormContract(def.provenance?.componentId);
+const isForm = (def: ComponentDefinition) => isFormContract(def.componentId) || isFormContract(def.provenance?.componentId) || sendsFormMessages(def);
 
 /**
  * Visits every plain text and link a placement shows: its own properties, its objects' fields and each list item's
@@ -234,14 +277,16 @@ const isForm = (def: ComponentDefinition) => isFormContract(def.componentId) || 
  * `visit` returns the spot's new value, or undefined to leave it; the properties that change are returned with their
  * new values, each a copy, and nothing is written.
  */
-function visitNode(state: ProjectState, owner: OwnerRef, node: InstanceNode, visit: (spot: Spot) => unknown): Write[] {
+function visitNode(state: ProjectState, owner: OwnerRef, node: InstanceNode, visit: (spot: Spot) => unknown, routing: FormDestinationLookup = formDestinationLookup(state)): Write[] {
   const writes: Write[] = [];
   const put = (prop: string, value: unknown) => writes.push({ owner, node, prop, value });
   const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
   if (!def || isForm(def)) return writes;
-  const toForm = def.tree ? formFed(state, def) : null;
+  // A design's property it hands on to a form: where the form sends (engine/form-destinations.ts), or its fields.
+  const fed = def.tree ? formFed(state, def) : null;
+  const toForm = (prop: string) => !!fed?.has(prop) || routing(def.id, prop);
   for (const [prop, schema] of Object.entries(def.properties)) {
-    if (toForm?.has(prop)) continue;
+    if (toForm(prop)) continue;
     const own = Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
     if (textOrLink(schema)) {
       const next = visit({ key: prop, prop, kind: kindOf(schema), value: own === undefined ? schema.default : own, max: maxOf(schema), label: schema.label });
@@ -270,7 +315,7 @@ function visitNode(state: ProjectState, owner: OwnerRef, node: InstanceNode, vis
         if (!isRecord(item)) return;
         for (const [field, f] of Object.entries(schema.fields)) {
           if (!textOrLink(f)) continue;
-          const next = visit({ key: `${prop}[${item.id}].${field}`, prop, itemId: item.id, field, kind: kindOf(f), value: Object.hasOwn(item, field) ? item[field] : f.default, max: maxOf(f), label: `${schema.label} → ${f.label}` });
+          const next = visit({ key: itemPath(prop, item.id, field), prop, itemId: item.id, field, kind: kindOf(f), value: Object.hasOwn(item, field) ? item[field] : f.default, max: maxOf(f), label: `${schema.label} → ${f.label}` });
           if (next === undefined) continue;
           copy ??= clone(items);
           copy[i][field] = next;
@@ -307,8 +352,10 @@ interface Plan {
 /** What a spot that follows `s` shows next, or undefined when it already does or no link can open it. */
 function nextValue(s: DetailSwap, spot: Spot): unknown {
   if (spot.kind === 'text') return oneLine(String(spot.value)) === oneLine(s.to) ? undefined : s.to;
-  if (shows(s.detail, 'link', spot.value, s.to)) return undefined;
-  return relinked(s.detail, spot.value as LinkValue, s.to) ?? undefined;
+  const link = spot.value as LinkValue;
+  // An address corrected in case alone is corrected in its links too: a mail host may tell the two apart.
+  if (s.detail === 'email' ? link.target.split('?')[0].trim() === s.to : shows(s.detail, 'link', link, s.to)) return undefined;
+  return relinked(s.detail, link, s.to) ?? undefined;
 }
 
 /**
@@ -318,6 +365,7 @@ function nextValue(s: DetailSwap, spot: Spot): unknown {
 function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { owner: OwnerRef; node: GraphNode }): Plan | { problem: string } {
   const plan: Plan = { writes: [], keeps: [] };
   if (!swaps.length) return plan;
+  const routing = formDestinationLookup(state);
   for (const { owner, where, node } of nodesOf(state, only)) {
     const kept = keptOf(node);
     let keepsChanged = false;
@@ -345,6 +393,8 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { o
           continue;
         }
         const next = nextValue(s, spot);
+        // Already as this detail has it: another detail may still change it.
+        if (next === undefined) continue;
         if (typeof next === 'string' && next.length > spot.max) {
           const name = DETAIL_NAMES[s.detail];
           const def = state.components[node.definitionId];
@@ -355,7 +405,7 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { o
         return next;
       }
       return undefined;
-    });
+    }, routing);
     if (refused.problem) return { problem: refused.problem };
     plan.writes.push(...writes);
     if (keepsChanged) plan.keeps.push({ node, keys: kept });
@@ -414,38 +464,49 @@ export function changedDetailOwners(state: ProjectState, site: SiteDoc, samples:
 /**
  * A newly placed section shows the site's details where its design shows the samples, so a Contact section added
  * after Site details are filled in says the real ones from the start. The values the placement was `given` are its own
- * and stay as they are (an object's fields it was not given are its design's). A section with a field too short for a
- * detail keeps every sample, as the design gives them.
+ * and stay as they are (an object's fields it was not given are its design's). A detail one of its fields has no room
+ * for keeps its samples throughout the section, so no text says one address while its link opens another.
  */
 export function fillBusinessDetails(state: ProjectState, owner: OwnerRef, node: InstanceNode, given: Record<string, unknown> = {}): void {
   const site = detailTexts(state.site);
-  const swaps = BUSINESS_DETAILS.filter((d) => site[d]).map((d): DetailSwap => ({ detail: d, from: [SAMPLES[d]], to: site[d]!, keepOwn: false }));
-  if (!swaps.length) return;
+  const all = BUSINESS_DETAILS.filter((d) => site[d]).map((d): DetailSwap => ({ detail: d, from: [SAMPLES[d]], to: site[d]!, keepOwn: false }));
+  if (!all.length) return;
   const own = (spot: Spot) => {
     if (!Object.hasOwn(given, spot.prop)) return false;
     const v = given[spot.prop];
     return spot.itemId !== undefined || spot.field === undefined || !isRecord(v) || Object.hasOwn(v, spot.field);
   };
-  let fits = true;
-  // Placed but not yet in its tree, so it is visited on its own.
-  const writes = visitNode(state, owner, node, (spot) => {
-    if (own(spot)) return undefined;
-    for (const s of swaps) {
-      if (spot.kind === 'link' && !linkable(s.detail)) continue;
-      if (!s.from.some((f) => shows(s.detail, spot.kind, spot.value, f))) continue;
-      const next = nextValue(s, spot);
-      if (typeof next === 'string' && next.length > spot.max) fits = false;
-      return next;
-    }
-    return undefined;
-  });
-  if (fits) commit({ writes, keeps: [] });
+  const routing = formDestinationLookup(state);
+  // Placed but not yet in its tree, so it is visited on its own; `tooLong` collects the details a field has no room for.
+  const fill = (swaps: readonly DetailSwap[], tooLong?: Set<BusinessDetail>) =>
+    visitNode(
+      state,
+      owner,
+      node,
+      (spot) => {
+        if (own(spot)) return undefined;
+        for (const s of swaps) {
+          if (spot.kind === 'link' && !linkable(s.detail)) continue;
+          if (!s.from.some((f) => shows(s.detail, spot.kind, spot.value, f))) continue;
+          const next = nextValue(s, spot);
+          if (typeof next === 'string' && next.length > spot.max) tooLong?.add(s.detail);
+          return next;
+        }
+        return undefined;
+      },
+      routing
+    );
+  // A detail some field has no room for keeps its samples everywhere in the section, its links too; the others fill.
+  const tooLong = new Set<BusinessDetail>();
+  fill(all, tooLong);
+  commit({ writes: fill(all.filter((s) => !tooLong.has(s.detail))), keeps: [] });
 }
 
 /** Every place that shows one of the site's details or its sample (only in `only`, when it is given), in the trees' order. */
 export function detailPlaces(state: ProjectState, only?: { owner: OwnerRef; node: GraphNode }): DetailPlace[] {
   const site = detailTexts(state.site);
   const out: DetailPlace[] = [];
+  const routing = formDestinationLookup(state);
   for (const { owner, where, node } of nodesOf(state, only)) {
     const kept = keptOf(node);
     visitNode(state, owner, node, (spot) => {
@@ -458,7 +519,7 @@ export function detailPlaces(state: ProjectState, only?: { owner: OwnerRef; node
         break;
       }
       return undefined;
-    });
+    }, routing);
   }
   return out;
 }

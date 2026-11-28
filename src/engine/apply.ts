@@ -79,7 +79,7 @@ import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
-import { BUSINESS_DETAILS, carryBusinessDetails, detailTexts, fillBusinessDetails, releaseDetailKeeps, remapDetailKeeps } from './business-details';
+import { BUSINESS_DETAILS, carryBusinessDetails, detailTexts, fillBusinessDetails, remapDetailKeeps, watchDetailKeeps } from './business-details';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
@@ -2939,6 +2939,8 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
+  // What the edit changes of a value kept through changes of the site's details is the author's again (#1368).
+  const settleKeeps = watchDetailKeeps(node, op.prop, Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : schema.default);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
@@ -2961,10 +2963,9 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
       sent = op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? (op.value as Record<string, unknown>) : {};
     }
     const followed = followItemLinks(state, def, op, before, next, sent, ctx);
-    // What the edit changes is the author's again: it follows the site's details if it shows them.
-    releaseDetailKeeps(node, op.prop, before.id, op.field);
     list[idx] = next;
     node.props[op.prop] = [...list];
+    settleKeeps(node.props[op.prop]);
     return followed.length ? { followed } : {};
   }
   if (op.field !== undefined) {
@@ -2975,12 +2976,12 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     if (isBinding(own)) fail(`${schema.label} comes from the enclosing component's own property; edit it there.`);
     const current = own && typeof own === 'object' && !Array.isArray(own) ? own : schema.default;
     node.props[op.prop] = normalizeProp(schema, { [op.field]: op.value }, state, `${def.name} → ${schema.label}`, current);
-    releaseDetailKeeps(node, op.prop, undefined, op.field);
+    settleKeeps(node.props[op.prop]);
     return {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   releaseKept(node, op.prop);
-  releaseDetailKeeps(node, op.prop);
+  settleKeeps(node.props[op.prop]);
   return {};
 }
 
