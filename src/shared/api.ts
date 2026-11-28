@@ -1048,6 +1048,8 @@ export interface PostImportResult {
   revision?: number;
   /** The first imported post's entry, to open it. */
   firstEntryId?: string;
+  /** Whether the new blog's link joined the header menu; absent when none was asked for. */
+  addedToNavigation?: boolean;
   /** The pictures that did not come through (the library refused them): the file, the posts that show it, and why. */
   notes?: Array<{ file: string; posts: string[]; reason: string }>;
   message?: string;
@@ -1431,7 +1433,7 @@ export interface BuilderApi {
      */
     reviewPostImport(kind: PostImportKind, opening: string): Promise<PostImportReviewResult>;
     /** Import the posts of review `id`, as one change, while the project is still as it was reviewed. */
-    commitPostImport(id: string, opening: string): Promise<PostImportResult>;
+    commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult>;
     /** Forget review `id`: nothing of it is imported. */
     cancelPostImport(id: string): Promise<void>;
     /**

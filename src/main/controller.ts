@@ -3681,23 +3681,23 @@ export class Controller {
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
    * does. Refused once the project has changed since the review.
    */
-  commitPostImport(id: string, opening: string): Promise<PostImportResult> {
-    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
   }
 
-  private async commitPostImportNow(id: string, opening: string): Promise<PostImportResult> {
+  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     // Taken, once: its plan on disk goes whatever comes of it.
     this.postImport = null;
     try {
-      return await this.commitPending(pending, opening);
+      return await this.commitPending(pending, opening, addToNavigation);
     } finally {
       this.dropReview(pending.stored);
     }
   }
 
-  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string): Promise<PostImportResult> {
+  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
     const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
@@ -3767,12 +3767,15 @@ export class Controller {
         if (!open()) return closed;
         if (this.aiBusy()) return busy;
         const n = plan.posts.length;
-        const r = await s.apply({ operations: planOperations(plan, assetIds, added), expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        const operations = planOperations(plan, assetIds, added, { addToNavigation });
+        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
         if (!r.ok) {
           if (r.error?.code === 'STALE_REVISION') return stale;
           return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
-        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
+        // Whether the blog's link joined the header menu, when one was asked for.
+        const joined = r.results?.[operations.findIndex((o) => o.type === 'collection.create')]?.addedToNavigation;
+        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
       })
     );
   }

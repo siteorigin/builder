@@ -742,7 +742,7 @@ function registerIpc() {
     return controller.insertSavedComponent(id, digest, at, opening, revision as number);
   });
   handle('project:reviewPostImport', (kind: unknown, opening: unknown) => controller.reviewPostImport(kind === 'markdown' ? 'markdown' : 'wordpress', String(opening ?? '')));
-  handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));
+  handle('project:commitPostImport', (id: unknown, opening: unknown, addToNavigation: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? ''), addToNavigation === true));
   handle('project:cancelPostImport', (id: unknown) => controller.cancelPostImport(String(id ?? '')));
   handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
   // External sources (#678): tested, saved and synced by the main process, with secrets that never reach the editor.
