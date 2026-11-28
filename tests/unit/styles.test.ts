@@ -49,8 +49,15 @@ describe('element font weight (#1463)', () => {
     expect(validateStyleValue('fontWeight', '950')).toMatch(/must be one of: 100, 200, 300, 400, 500, 600, 700, 800, 900\./);
   });
 
-  it('writes a Black weight into the generated CSS', () => {
-    expect(styleToCss('fontWeight', '900')).toEqual(['font-weight: 900']);
+  it('takes a Black weight through node.setStyle into the generated site', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const next = applyOperations(s, [{ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'fontWeight', value: '900' }]).state;
+    expect((home(next).nodes[hero.id] as InstanceNode).overrides?.root?.base?.fontWeight).toBe('900');
+    const out = [...generateProject(next).entries()].filter(([path]) => /\.(css|svelte)$/.test(path)).map(([, text]) => String(text)).join('\n');
+    expect(out).toContain('font-weight: 900');
+    expect([...generateProject(s).entries()].some(([, text]) => String(text).includes('font-weight: 900'))).toBe(false);
   });
 });
 
