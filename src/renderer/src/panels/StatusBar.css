@@ -205,7 +205,7 @@
   .seo-readiness .health-details-body { max-width: 72ch; line-height: 1.45; text-wrap: pretty; }
   /* Pages sharing one description: each page's own way to its fix, the names in one column and their actions lined
      up beside them, however long a name is (to a point). */
-  .seo-shared-pages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, min(28ch, max-content)) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+  .seo-shared-pages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: fit-content(28ch) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
   .seo-shared-pages > li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
   .seo-shared-name { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
   .seo-shared-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
