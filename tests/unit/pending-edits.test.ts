@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterEditsSettle, afterLanding, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
+import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterEditsSettle, afterLanding, afterSettle, draftCount, isLeaving, isSettling, leavingEnded, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
 import { announcementText, saveStatusAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -33,6 +33,28 @@ describe('refused text inside a list about to be replaced (#575)', () => {
     retainRefused('gone', 'What you typed in Label can’t be saved.', { ...field(footer), isConnected: false });
     retainRefused('closed', 'What you typed in Label can’t be saved.', field(footer));
     expect(refusedWithin(footer)).toBeNull();
+  });
+});
+
+describe('a settle for leaving the project (#1383)', () => {
+  it('counts as leaving only while it runs for the open project, and an explicit save never does', async () => {
+    const saving = deferred();
+    trackApply(saving.promise);
+    const save = settle({ blur: () => undefined, wait });
+    const leave = settle({ blur: () => undefined, wait, leaving: true });
+    await wait(0);
+    expect(isSettling()).toBe(true);
+    expect(isLeaving()).toBe(true);
+    // The project closed without waiting for this page: its leave, still settling, no longer counts.
+    leavingEnded();
+    expect(isLeaving()).toBe(false);
+    saving.resolve({ ok: true });
+    for (const s of await Promise.all([save, leave])) s.finish();
+    expect(isSettling()).toBe(false);
+    // A save on its own is never a leave.
+    const alone = settle({ blur: () => undefined, wait });
+    expect(isLeaving()).toBe(false);
+    (await alone).finish();
   });
 });
 

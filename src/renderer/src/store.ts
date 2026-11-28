@@ -900,6 +900,9 @@ interface DraftOptions {
   review?: boolean;
   /** The control it was typed in, for as long as it is on screen (see writeTyped). */
   control?: object;
+  /** Hears that the project refused the edit once it was sent (it turned read-only when its folder moved, say): the field
+   *  it was typed in can keep the text instead of putting the saved value back. */
+  refused?: () => void;
 }
 
 /** The typed edit being committed (see commitDraft). */
@@ -1005,7 +1008,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   const s = getState();
   // A rename being committed goes with its typed edit, so whichever way that edit is held (now, when main answers
   // that the AI has just started, or because the title changed elsewhere) it carries the rename's offer.
-  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review, rename: renaming, control: draft.control } : null;
+  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review, rename: renaming, control: draft.control, refused: draft.refused } : null;
   if (typed) newestCommit.set(fieldOf(typed.base?.workspaceKey, operations), typed.seq);
   if (s.snapshot?.aiBusy) {
     landed({ ok: false, message: refuseWhileAiBusy(typed, operations, label) });
@@ -1048,6 +1051,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // The field the edit was made in may say why itself (see claimRefusals).
       const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
       if (r.error?.code !== 'BUSY' && !claimed) toast(message, 'error');
+      if (r.error?.code !== 'BUSY') typed?.refused?.();
       landed({ ok: false, message });
       return null;
     }
@@ -1056,6 +1060,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   } catch (e) {
     const message = `That change could not be saved${e instanceof Error && e.message ? `: ${e.message}` : '.'}`;
     toast(message, 'error');
+    typed?.refused?.();
     landed({ ok: false, message });
     return null;
   } finally {

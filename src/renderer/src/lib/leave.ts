@@ -1,4 +1,4 @@
-import { retainRefused, savesInFlight, settle, type Settled } from './pending';
+import { leavingEnded, retainRefused, savesInFlight, settle, type Settled } from './pending';
 import { api, confirmDialog, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
 import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
@@ -6,9 +6,11 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Settle edits against the real page: a field being typed in commits by losing focus, as it always has on an
  *  explicit save. Focus anywhere else (a Layers row, a button) stays put; an inline edit on the canvas is
- *  handed back by message instead. `hold` stops new input once that is done; `barrier` is waited for last. */
-export function settleEdits(hold?: () => void, barrier?: () => Promise<boolean>): Promise<Settled> {
+ *  handed back by message instead. `hold` stops new input once that is done; `barrier` is waited for last.
+ *  `leaving`: the settle is for leaving the project (see isLeaving). */
+export function settleEdits(hold?: () => void, barrier?: () => Promise<boolean>, leaving = false): Promise<Settled> {
   return settle({
+    leaving,
     blur: () => {
       const el = document.activeElement;
       if (el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) el.blur();
@@ -62,6 +64,7 @@ const LEAVE_QUESTION = 'Leave without your last change?';
 let closedCount = 0;
 export function projectClosed() {
   closedCount++;
+  leavingEnded();
   endEditingHold();
   forgetKeptDrafts();
   // A question about the project that just went away has nothing left to decide.
@@ -119,7 +122,7 @@ export async function prepareToLeave(asking: () => void): Promise<boolean> {
   // late settle takes no hold and asks nothing, so the next project is never frozen by it.
   const closedAt = closedCount;
   const current = () => closedCount === closedAt;
-  const { problems, refused, finish } = await settleEdits(() => current() && holdEditing());
+  const { problems, refused, finish } = await settleEdits(() => current() && holdEditing(), undefined, true);
   if (!current()) {
     finish();
     return false;
