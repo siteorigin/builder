@@ -75,7 +75,9 @@ export function addoBox(d: IconDesign): [number, number, number, number] {
   return [x - pad, y - pad, x + w + pad, y + w * ADDO_RATIO + pad];
 }
 
-function addo(d: IconDesign): string {
+/** Addo on the tile. `body` fills him with the tile's white, so the tile's floor never shows through him; a face that
+ *  is shaded (a control under the pointer, a dimmed dark tile) draws him without it, so he takes the face's own tone. */
+function addo(d: IconDesign, body = true): string {
   const [x, y, w] = d.addo;
   const s = w / 116.2;
   const { charcoal, white } = ICON_COLORS;
@@ -83,7 +85,7 @@ function addo(d: IconDesign): string {
   if (d.silhouette) {
     return `<g transform="${at}"><path d="${ADDO_SILHOUETTE}" fill="${charcoal}" stroke="${charcoal}" stroke-width="${d.line}" stroke-linejoin="round"/></g>`;
   }
-  return `<g transform="${at}"><path d="${ADDO_SILHOUETTE}" fill="${white}"/>` +
+  return `<g transform="${at}">${body ? `<path d="${ADDO_SILHOUETTE}" fill="${white}"/>` : ''}` +
     `<g fill="${charcoal}" stroke="${charcoal}" stroke-linejoin="round"><path d="${ADDO_OUTLINE}" stroke-width="${d.line}"/>` +
     `<path d="${ADDO_EYE}" stroke-width="${d.eye}"/></g></g>`;
 }
@@ -131,6 +133,14 @@ export function detailFor(px: number): IconDetail {
 export function appMarkMarkup(px: number, id: string): string {
   const { defs, body } = tileArt(DESIGNS[detailFor(px)], id, true, px);
   return `<defs>${defs}</defs>${body}`;
+}
+
+/**
+ * Addo alone, without the tile, in the same units and place as appMarkMarkup draws him, for a control whose own face is
+ * the tile (the toolbar's home button): `px` across picks his detail as it does for the whole mark.
+ */
+export function addoMarkup(px: number): string {
+  return addo(DESIGNS[detailFor(px)], false);
 }
 
 /** The tile's size in the units appMarkMarkup draws in. */
