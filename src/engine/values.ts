@@ -1,6 +1,6 @@
 import type { ChoiceOption, ImageValue, LinkRel, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
 import { canonicalRels } from '@shared/link-rel';
-import { cleanBlocks, COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
+import { cleanBlocks, COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, linkQuery, entryTarget, MAX_LINK_QUERY, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
 import { collectionIndexRoutes } from '@shared/archives';
 import { readablePath } from '@shared/routes';
@@ -101,7 +101,11 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
       if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text or fields for now.`);
       if (!findEntry(state, target)) fail(`${label}: entry "${target.slice(0, 60)}" does not exist.`);
       // An entry has no sections to jump to yet.
-      return l.newTab ? { type, target, newTab: true } : { type, target };
+      const raw: unknown = l.query ?? '';
+      if (typeof raw !== 'string' || (raw && !raw.startsWith('?')) || raw.includes('#')) fail(`${label}: an entry link's query starts with "?" and holds no "#".`);
+      const query = linkQuery(raw as string);
+      if (query.length > MAX_LINK_QUERY) fail(`${label}: an entry link's query is at most ${MAX_LINK_QUERY} characters.`);
+      return { type, target, ...(query ? { query } : {}), ...(l.newTab ? { newTab: true } : {}) };
     }
     default:
       fail(`${label}: unknown link type "${type}".`);
@@ -169,7 +173,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   const link = (target: string, newTab: boolean, rel: LinkRel[] = []): LinkValue | null => {
     const t = target.trim();
     // An entry by its ID, refused where entry links are not kept, so it never stays behind as plain text.
-    if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', target: t.slice(ENTRY_LINK_PREFIX.length), newTab }, state, label, scope);
+    if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', ...entryTarget(t.slice(ENTRY_LINK_PREFIX.length)), newTab }, state, label, scope);
     // Or by its address (a path of this site, never a //host one), while no page has it.
     if (scope.entries && /^\/(?!\/)/.test(t)) {
       const route = `/${readablePath(t).replace(/^\/+|\/+$/g, '')}/`;

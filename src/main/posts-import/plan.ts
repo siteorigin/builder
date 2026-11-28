@@ -16,6 +16,8 @@ import { newId } from '@shared/ids';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { applyOperations } from '@engine/apply';
 import { MAX_CAPTION, MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
+import { pageIds } from '@generator/checks';
+import { linkNotes, type LinkNotes } from './notes';
 import { POST_LINK_PREFIX, type ParsedSource, type SourceMedia, type SourcePost, type SourceTerm } from './source';
 
 /** Groupings an import fills, with the labels a new one gets. */
@@ -189,11 +191,12 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   for (const p of source.posts) if (p.oldPath) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
 
   const byKey = new Map(source.posts.map((p) => [p.key, p]));
+  const noSection = sectionCheck(state);
   // Every post's text first: one cut to fit arrives as a draft, which the posts linking to it are told. The imported
   // posts each one links to, as its text was read, are kept for that.
   const texts = source.posts.map((p) => {
     const notes: string[] = [];
-    const planned = { ...planBody(p, media, missing, entryIds, notes), notes, linked: new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : []))) };
+    const planned = { ...planBody(p, media, missing, entryIds, notes, noSection), notes, linked: new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : []))) };
     if (opts.consume) (p as { body: RichText }).body = [];
     return planned;
   });
@@ -421,14 +424,33 @@ export function checkPlan(state: ProjectState, plan: PostImportPlan, opts: { spe
   }
 }
 
+type SectionCheck = (link: LinkValue, notes: LinkNotes) => void;
+
+/**
+ * Names a link to a section the import can't find: a page's that its page doesn't have, and one within the post, whose
+ * imported text has no section IDs. Each keeps the section it names.
+ */
+function sectionCheck(state: ProjectState): SectionCheck {
+  const ids = new Map<string, Set<string>>();
+  return (link, notes) => {
+    if (link.type === 'anchor') notes.add(`#${link.target}`, 'was kept, but an imported post’s text has no section with that ID: check where it goes.');
+    if (link.type !== 'page' || !link.anchor || !Object.hasOwn(state.pages, link.target)) return;
+    let found = ids.get(link.target);
+    if (!found) ids.set(link.target, (found = pageIds(state, link.target)));
+    if (!found.has(link.anchor)) notes.add(`${state.pages[link.target].route}#${link.anchor}`, 'was kept, but that page has no section with that ID: check where it goes.');
+  };
+}
+
 /**
  * A post's text as the entry keeps it: pictures that were not found left out (and named), links to other imported
  * posts pointed at their entries, descriptions and captions kept within their limits, and the whole within what an
  * entry's text holds.
  */
-function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostImportPlan['missing'], entryIds: Map<string, string>, notes: string[]): { blocks: RichText; cut: boolean } {
+function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostImportPlan['missing'], entryIds: Map<string, string>, notes: string[], noSection: SectionCheck): { blocks: RichText; cut: boolean } {
+  const sections = linkNotes();
   const relink = (spans: RichSpan[]): RichSpan[] =>
     spans.map((s) => {
+      if (s.link) noSection(s.link, sections);
       const target = s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? entryIds.get(s.link.target.slice(POST_LINK_PREFIX.length)) : undefined;
       if (s.link?.type !== 'entry' || !s.link.target.startsWith(POST_LINK_PREFIX)) return s;
       const { link, ...rest } = s;
@@ -455,6 +477,7 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostI
   if (shortened) notes.push(`${shortened === 1 ? 'A picture’s description or caption was' : `${shortened} pictures’ descriptions or captions were`} shortened to ${MAX_CAPTION} characters.`);
   if (lost) notes.push(`${lost === 1 ? 'A picture it shows was' : `${lost} pictures it shows were`} not found in the chosen folder, so ${lost === 1 ? 'it was' : 'they were'} left out.`);
   // An entry's text has room for a long read; anything past that is cut, and said.
+  notes.push(...sections.list());
   let blocks = cleanBlocks(out);
   let chars = 0;
   const fits: RichBlock[] = [];

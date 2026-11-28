@@ -125,12 +125,12 @@ describe('the readiness summary', () => {
     expect(seoReadiness(runSeoAudit(untidy()))).toEqual({
       tone: 'warn',
       headline: '4 warnings',
-      detail: 'Technical, Agentic readiness, Content & links and Social & performance need attention; 1 of 5 areas is ready.'
+      detail: '4 of 5 areas need attention.'
     });
-    expect(seoReadiness([f('technical', 'warning'), f('content', 'info')])).toEqual({ tone: 'warn', headline: '1 warning and 1 note', detail: 'Technical needs attention; 4 of 5 areas are ready.' });
+    expect(seoReadiness([f('technical', 'warning'), f('content', 'info')])).toEqual({ tone: 'warn', headline: '1 warning and 1 note', detail: '1 of 5 areas needs attention.' });
     // A problem needs fixing as a warning does.
-    expect(seoReadiness([f('social', 'error')])).toEqual({ tone: 'warn', headline: '1 problem', detail: 'Social & performance needs attention; 4 of 5 areas are ready.' });
-    expect(seoReadiness(SEO_PILLARS.map((p) => f(p, 'warning'))).detail).toBe('Technical, Entity & structured data, Agentic readiness, Content & links and Social & performance need attention; no area is ready.');
+    expect(seoReadiness([f('social', 'error')])).toEqual({ tone: 'warn', headline: '1 problem', detail: '1 of 5 areas needs attention.' });
+    expect(seoReadiness(SEO_PILLARS.map((p) => f(p, 'warning'))).detail).toBe('All 5 areas need attention.');
   });
 
   it('says notes alone are suggestions', () => {

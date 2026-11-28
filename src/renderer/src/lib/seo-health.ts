@@ -87,23 +87,18 @@ export function seoPillarGroups(findings: readonly SeoFinding[], pillar: SeoPill
   return SEO_PILLARS.map((p) => ({ pillar: p, name: SEO_PILLAR_NAMES[p], findings: findings.filter((f) => f.pillar === p && matchesSeoFilter(f, pillar, severity)) })).filter((g) => g.findings.length > 0);
 }
 
-/** "Technical and Social & performance": a list of names as a sentence reads it. */
-function namesText(names: string[]): string {
-  return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
 /**
  * How ready the website is for search engines, link previews and AI agents, in a headline and a line: what was found,
- * and the pillars that need fixing (any with a problem or a warning), or that the rest are suggestions.
+ * and how many areas need fixing (any with a problem or a warning), or that the rest are suggestions.
  */
 export function seoReadiness(findings: readonly SeoFinding[]): { tone: 'warn' | 'quiet' | 'ok'; headline: string; detail: string } {
   if (!findings.length) return { tone: 'ok', headline: 'Ready for search and AI', detail: 'Nothing keeps search engines, link previews or AI agents from finding and reading the website.' };
   const attention = SEO_PILLARS.filter((p) => findings.some((f) => f.pillar === p && needsFixing(f)));
-  const ready = SEO_PILLARS.length - attention.length;
   if (!attention.length) return { tone: 'quiet', headline: seoCountsText(findings), detail: 'Nothing needs fixing. The notes are suggestions that help the website be found and shared.' };
   return {
     tone: 'warn',
     headline: seoCountsText(findings),
-    detail: `${namesText(attention.map((p) => SEO_PILLAR_NAMES[p]))} ${attention.length === 1 ? 'needs' : 'need'} attention; ${ready === 0 ? 'no area is' : `${ready} of ${SEO_PILLARS.length} areas ${ready === 1 ? 'is' : 'are'}`} ready.`
+    // The areas are named by the groups listed below the summary: it says how many.
+    detail: attention.length === SEO_PILLARS.length ? `All ${SEO_PILLARS.length} areas need attention.` : `${attention.length} of ${SEO_PILLARS.length} areas ${attention.length === 1 ? 'needs' : 'need'} attention.`
   };
 }
