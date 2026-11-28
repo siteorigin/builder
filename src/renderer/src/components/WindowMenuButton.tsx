@@ -103,10 +103,11 @@ export function WindowMenuButton() {
     const follower = followEditingTarget(document, inButton);
     editing.current = follower;
     // A press of the button is the window's, as a press of a menu bar is: the page never hears it, so nothing open
-    // (a popover, a note being written, a menu) takes it for a press outside and closes, and focus stays where it is.
+    // (a popover, a note being written, a menu, the color picker's own window listener) takes it for a press outside
+    // and closes, and focus stays where it is. Registered at startup, so it runs before any listener opened since.
     const press = (e: MouseEvent) => {
       if (!inButton(e.target)) return;
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       if (e.type === 'mousedown' && e.button === 0) e.preventDefault();
     };
     window.addEventListener('pointerdown', press, true);

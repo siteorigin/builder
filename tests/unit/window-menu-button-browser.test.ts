@@ -37,7 +37,9 @@ const ENTRY = [
   "window.outside = 0;",
   "document.addEventListener('pointerdown', () => (window.outside += 1), true);",
   "document.addEventListener('mousedown', () => (window.outside += 1), true);",
-  "document.addEventListener('click', () => (window.outside += 1));"
+  "document.addEventListener('click', () => (window.outside += 1));",
+  // And one on the window itself, added after the button's, as the color picker adds one while it is open.
+  "window.addEventListener('pointerdown', () => (window.outside += 1), true);"
 ].join('\n');
 
 /** The preload bridge: the menu records what had focus and the selection when it was asked to open, and stays open until closeMenu. */

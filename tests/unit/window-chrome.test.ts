@@ -47,6 +47,8 @@ describe('the window chrome by platform', () => {
     expect(opensMenuKey('darwin', k)).toBe(false);
     expect(opensMenuKey('win32', { ...k, shift: true })).toBe(false);
     expect(opensMenuKey('win32', { ...k, ctrl: true })).toBe(false);
+    expect(opensMenuKey('win32', { ...k, alt: true })).toBe(false);
+    expect(opensMenuKey('win32', { ...k, meta: true })).toBe(false);
     expect(opensMenuKey('win32', { ...k, isAutoRepeat: true })).toBe(false);
     expect(opensMenuKey('win32', { ...k, key: 'F9' })).toBe(false);
     expect(MENU_BUTTON_ROOM).toBeGreaterThanOrEqual(MENU_BUTTON.size + MENU_BUTTON.left - 10);
