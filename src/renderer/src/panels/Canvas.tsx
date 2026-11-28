@@ -43,13 +43,14 @@ import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definiti
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers, inspectElement } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
 import { CanvasSkeleton } from '../components/EditorSkeleton';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { isRemoteOpening } from '../lib/remote-snapshot';
 import { outlinesFirstPage } from '../lib/first-page';
 import { projectDisplayName } from '@shared/project-name';
@@ -169,6 +170,9 @@ export function Canvas() {
   const asked = useStore((s) => s.runStatus === 'awaiting-input' && !!s.runConversationId);
   // The chat already shows that question, so the notice would only repeat it over the page.
   const askedInView = useStore(questionShownInChat);
+  // While the form-routing review is the dialog on screen, it is where the question is answered (#1322): the canvas's
+  // own prompt to answer in chat steps back, and comes back if the dialog is taken away with the question still open.
+  const reviewing = useRoutingReviewShown();
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -2056,7 +2060,8 @@ export function Canvas() {
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
+        { label: 'Inspect', icon: <PanelRight />, onSelect: () => inspectElement(ref) },
+        { label: 'Edit with AI…', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
         // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
         ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
@@ -3579,7 +3584,7 @@ export function Canvas() {
             maxHeight={practiceMax}
           />
         )}
-        {runStatus && !askedInView && (
+        {runStatus && !askedInView && !(runStatus === 'awaiting-input' && reviewing) && (
           // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
           // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
           // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
@@ -4149,7 +4154,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
     current.current = 0;
   }, [key]);
   /** Too narrow for everything (a phone frame, many actions), the selection's name is the last thing to give way.
-   *  First Ask AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
+   *  First Edit with AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
    *  icon; if the name is still cut, the parent link goes too (Escape still selects the parent). */
   const [compact, setCompact] = useState(0);
   useLayoutEffect(() => setCompact(0), [key, frameWidth, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -4305,7 +4310,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
       )}
       {(!compact || onReveal || inspectorHidden) && <span className="chip-sep" aria-hidden="true" />}
       {!compact && (
-        <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" title={`Edit with AI… (${keys(askKeys.hint)})`} aria-label="Edit with AI…" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

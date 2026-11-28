@@ -1,4 +1,4 @@
-import type { ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
+import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -1545,9 +1545,12 @@ export interface BuilderApi {
     reviewEditions(): Promise<ReviewEditionManifest[]>;
     /**
      * Build the site for review and picture each page at `routes` at each of `widths` (a desktop and a phone width when
-     * none are given), keeping the pictures as a new review edition in the project.
+     * none are given), keeping the pictures as a new review edition in the project. Its `review:progress` events carry
+     * `id` (#1413).
      */
-    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }> }): Promise<ReviewEditionResult>;
+    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }>; id?: string }): Promise<ReviewEditionResult>;
+    /** Stop the review edition being captured with `id`, if it is still being captured (#1413): nothing of it is kept, and its capture answers `stopped`. */
+    stopReviewCapture(id: string): Promise<void>;
     /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */
     exportReviewSheet(editionId: string): Promise<ReviewSheetResult>;
     retryPreview(): Promise<void>;
@@ -1729,6 +1732,8 @@ export interface BuilderApi {
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
+  /** Where the review edition being captured has got to (#1413): the build, then each picture, then keeping it. */
+  on(channel: 'review:progress', cb: (p: ReviewCaptureProgress) => void): () => void;
   /** A project ZIP file is being unpacked, sent as it starts and as its files are written (null: it finished, failed or was called off). */
   on(channel: 'projects:unpacking', cb: (u: Unpacking | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;

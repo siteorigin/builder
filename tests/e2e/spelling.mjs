@@ -328,7 +328,7 @@ await clickCanvas(h1);
 await settle();
 await clickCanvas(h1, { button: 'right' });
 await eventually(async () => assert.equal(await openMenus(), 1, 'the element actions open'));
-assert.equal(await win.locator('[role="menu"]').getByRole('menuitem', { name: /Ask AI about this/ }).count(), 1, 'with the element’s actions');
+assert.equal(await win.locator('[role="menu"]').getByRole('menuitem', { name: /Edit with AI…/ }).count(), 1, 'with the element’s actions');
 await win.keyboard.press('Escape');
 
 assert.equal(await app.evaluate(() => globalThis.popups), 0, 'no native menu was shown');

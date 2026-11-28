@@ -4,7 +4,7 @@
  * to other entries), references guarded like links when an entry goes, and synced collections whose entries are
  * read-only to manual edits until detached.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { EntrySource, InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -21,9 +21,11 @@ import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isD
 import { entryFieldSchemas, entryFieldValue } from '@shared/entry-fields';
 import { syncedEntryChange } from '@engine/collections';
 import { isDefaultLayout, themeArticleTemplate } from '@engine/collection-layouts';
+import { queryProblem } from '@engine/collection-sources';
 import { collectionsFromDocs, stateToDocs } from '../../src/main/project/documents';
 import { planPostImport } from '../../src/main/posts-import/plan';
 import type { ParsedSource } from '../../src/main/posts-import/source';
+import { removeRendered, serverHtml } from './generated-site';
 
 const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops);
 const run = (s: ProjectState, ...ops: EditOperation[]) => apply(s, ops).state;
@@ -336,6 +338,82 @@ describe('rich custom fields', () => {
     // Fields of other kinds are plain values, whatever they hold.
     const plain = run(s, { type: 'entry.update', collectionId: 'team', entryId: 'en_ruiz', values: { role: contact.id } });
     expect(run(plain, { type: 'page.remove', pageId: contact.id, replacementPageId: about.id }).collections.team.entries.en_ruiz.values.role).toBe(contact.id);
+  });
+});
+
+describe('a reference in the ready-made layout (#1511)', () => {
+  afterAll(() => removeRendered());
+
+  /** The studio with two more published projects, a draft between them, and Town hall naming all three as related. */
+  function linked() {
+    return run(
+      studio(),
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_library', title: 'Library', draft: false },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_plans', title: 'Plans', draft: true },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_bridge', title: 'Bridge', draft: false },
+      { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { related: ['en_library', 'en_plans', 'en_bridge'] } }
+    );
+  }
+  /** The description of one fact on Town hall's exported page. */
+  const fact = (html: string, label: string) => html.match(new RegExp(`<dt[^>]*>${label}</dt>\\s*(?:<!---->)?\\s*<dd[^>]*>([\\s\\S]*?)</dd>`))?.[1] ?? '';
+
+  it('links each named entry that has a page of its own, and leaves a data-only record as text', async () => {
+    const s = linked();
+    expect(errors(s)).toEqual([]);
+    const read = { state: s, collection: s.collections.projects, entry: s.collections.projects.entries.en_hall, neighbours: {} };
+    // The titles as text, as a text reads them; linked, as rich text reads them, a draft's title not linked.
+    expect(entryFieldValue(read, 'field.related')).toBe('Library, Plans, Bridge');
+    expect(entryFieldValue(read, 'field.related.links')).toEqual([
+      { type: 'p', spans: [{ text: 'Library', link: { type: 'entry', target: 'en_library' } }, { text: ', ' }, { text: 'Plans' }, { text: ', ' }, { text: 'Bridge', link: { type: 'entry', target: 'en_bridge' } }] }
+    ]);
+    expect(entryFieldValue(read, 'field.crew.links')).toEqual([{ type: 'p', spans: [{ text: 'Ben Okafor' }, { text: ', ' }, { text: 'Ana Ruiz' }] }]);
+    expect(entryFieldValue(read, 'field.website.links')).toBeUndefined();
+    expect(entryFieldSchemas(s.collections.projects)['field.related.links']).toMatchObject({ type: 'richtext' });
+    expect(entryFieldSchemas(s.collections.projects)).not.toHaveProperty('field.website.links');
+
+    const html = await serverHtml(generateProject(publishedState(s)), 'reference-links-', 'src/routes/work/town-hall/+page.svelte');
+    const related = fact(html, 'Related');
+    // The draft is left out of the published site, so the two published projects are named, each a link to its page.
+    expect([...related.matchAll(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1], m[2].replace(/<[^>]*>/g, '')])).toEqual([
+      ['/work/library/', 'Library'],
+      ['/work/bridge/', 'Bridge']
+    ]);
+    expect(related.replace(/<[^>]*>/g, '')).toBe('Library, Bridge');
+    // A data-only team has no pages: its members are named, and nothing links.
+    const crew = fact(html, 'Crew');
+    expect(crew.replace(/<[^>]*>/g, '')).toBe('Ben Okafor, Ana Ruiz');
+    expect(crew).not.toContain('<a');
+    expect(fact(html, 'Lead').replace(/<[^>]*>/g, '')).toBe('Ana Ruiz');
+    // A reference naming nothing has no links, and its fact is left out.
+    const none = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { related: [] } });
+    expect(entryFieldValue({ ...read, state: none, entry: none.collections.projects.entries.en_hall }, 'field.related.links')).toEqual([]);
+    const bare = await serverHtml(generateProject(publishedState(none)), 'reference-links-', 'src/routes/work/town-hall/+page.svelte');
+    expect(bare).toMatch(/>Crew<\/dt>/);
+    expect(bare).not.toMatch(/>Related<\/dt>/);
+  });
+
+  it('keeps a reference shown as text where an author binds it to text, and guards the field the links read', () => {
+    const s = linked();
+    const owner = { kind: 'template' as const, id: 'projects' };
+    const links = Object.values(s.collections.projects.settings.template.nodes).find((n) => JSON.stringify(n).includes('"field.related.links"'))!;
+    expect(links).toMatchObject({ kind: 'text', rich: true });
+    // A plain text cannot take the linked form, and a rich one cannot take the titles alone.
+    const title = Object.values(s.collections.projects.settings.template.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"title"}')!;
+    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.related.links' } }])).toThrow(/"Related \(links\)" cannot be shown as the text: it needs a string/);
+    expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: links.id, field: 'text', binding: { $entry: 'field.related' } }])).toThrow(/"Related" cannot be shown as the text: it needs a richtext field/);
+    // The links are shown, never filtered or sorted by: the reference itself is.
+    const query = (field: string) => queryProblem(s, owner, { collectionId: 'projects', sort: [{ field }] });
+    expect(query('field.related.links')).toMatch(/sorts by "field\.related\.links"/);
+    expect(query('field.related')).toBeNull();
+    // Edited, the layout is the author's: the field it links can't go while it does.
+    const edited = run(s, { type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.lead' } });
+    const rest: Record<string, unknown> = { ...edited.collections.projects.settings.fields };
+    delete rest.related;
+    // Only the links read it, its condition gone.
+    const unlinked = structuredClone(edited);
+    for (const n of Object.values(unlinked.collections.projects.settings.template.nodes)) if (n.when && JSON.stringify(n.when).includes('"field.related"')) delete n.when;
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: rest as never }])).toThrow(/layout shows Related\. Unbind it in the layout before removing it/);
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: { ...rest, related: { type: 'string', label: 'Related' } } as never }])).toThrow(/layout shows Related\. Unbind it in the layout before changing its kind/);
   });
 });
 

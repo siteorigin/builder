@@ -12,7 +12,7 @@ export function menuKeyCopy(event: { triggeredByAccelerator?: boolean; metaKey?:
 
 /**
  * Whether the main process hands a real key press to the editor as a shortcut (it may have been pressed with the
- * preview frame focused, where the editor cannot see it). `askAi` is the Ask AI binding in use (#750), so a moved
+ * preview frame focused, where the editor cannot see it). `askAi` is the Edit with AI binding in use (#750), so a moved
  * shortcut works from the preview too and the old one is no longer passed on for it.
  */
 export function forwardsKey(k: ShortcutChord, askAi: string, mac: boolean): boolean {

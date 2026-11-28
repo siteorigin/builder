@@ -104,7 +104,7 @@ import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, openSiteStyles, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
-import { isLanguageCode, languageKey, linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, languageKey, linkClash, linkedGroup, lookAlikePages, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { languageCodeFor } from './site-details';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -950,14 +950,14 @@ function clipboardActions(owner: OwnerRef, plan: ReturnType<typeof planLayers>):
   return { copy: plan && owner.kind === 'page' ? asPlanned(plan, async (p) => void copySelection(p)) : null, paste: () => void pasteFromMenu() };
 }
 
-/** Ask AI, plus a menu of everything else that can be done to the selection. */
+/** Edit with AI, plus a menu of everything else that can be done to the selection. */
 function SelectionActions({ title, selection, items, group, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; group?: string; ask?: boolean }) {
   const menu = useMenu();
   const askKeys = useAskAiKeys();
   return (
     <>
       {ask && (
-        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (${platformKeys(askKeys.hint)})`} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" aria-label={`Edit ${title} with AI…`} title={`Edit ${title} with AI… (${platformKeys(askKeys.hint)})`} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}
@@ -3053,13 +3053,16 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
     const theirs = translationPeers(state, p).map((t) => pageLanguageName(state, t));
     return theirs.length ? ` · Also links its ${theirs.join(' and ')} version${theirs.length === 1 ? '' : 's'}` : '';
   };
+  // Two rows that read alike (same title, same language) each add the page's address, so the one meant can be told.
+  const alike = lookAlikePages(state, candidates.map((c) => c.page));
+  const at = (p: PageDoc) => (alike.has(p.id) ? ` · ${p.route}` : '');
   // The pages that can be linked first, each with its language; then those that can't, each saying why.
   const items = (): MenuItem[] => {
     return [
       ...(open.length ? [] : [{ info: true, label: 'No page can be linked yet. Each one says why.' }]),
-      ...open.map(({ page: p }) => ({ id: p.id, label: p.title, description: `${pageLanguageName(state, p)}${isDraftPage(state, p) ? ' · Draft' : ''}${joins(p)}`, onSelect: () => ((refocus.current = p.id), link(page.id, p.id, 'Link translation')) })),
+      ...open.map(({ page: p }) => ({ id: p.id, label: p.title, description: `${pageLanguageName(state, p)}${isDraftPage(state, p) ? ' · Draft' : ''}${at(p)}${joins(p)}`, onSelect: () => ((refocus.current = p.id), link(page.id, p.id, 'Link translation')) })),
       ...(open.length && refused.length ? [{ heading: 'Can’t be linked' }] : []),
-      ...refused.map(({ page: p, reason }) => ({ id: p.id, label: p.title, description: reason!, disabled: true }))
+      ...refused.map(({ page: p, reason }) => ({ id: p.id, label: p.title, description: `${reason!}${at(p)}`, disabled: true }))
     ];
   };
   return (

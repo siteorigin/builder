@@ -259,6 +259,53 @@ describe('web font metadata', async () => {
   it('keeps only characters that are safe in a CSS family name', async () => {
     await expect(fontInfo(woff([['name', nameTable("Evil'; } body{x")]]))).resolves.toMatchObject({ family: 'Evil bodyx' });
   });
+
+  /** An OS/2 table with an IBM family class (byte 30) and PANOSE (bytes 32-41), and a post table's fixed-pitch flag. */
+  const classed = (familyClass: number, panose: number[] = [], length = 78) => {
+    const t = os2Table(400, false).subarray(0, length);
+    t[30] = familyClass;
+    panose.forEach((b, k) => (t[32 + k] = b));
+    return t;
+  };
+  const post = (fixed: number) => {
+    const t = Buffer.alloc(32);
+    t.writeUInt32BE(0x00030000, 0);
+    t.writeUInt32BE(fixed, 12);
+    return t;
+  };
+
+  it('reads what kind of face a font is, so its fallback can match (#1490)', async () => {
+    const kind = async (os2: Buffer, more: Array<[string, Buffer]> = []) => (await fontInfo(woff([['name', nameTable('Brand')], ['OS/2', os2], ...more]))).category;
+    // Fixed pitch in post wins over a sans class: IBM Plex Mono says both. Any non-zero value is fixed pitch.
+    expect(await kind(classed(8, [2, 11, 5, 9]), [['post', post(1)]])).toBe('monospace');
+    expect(await kind(classed(8, [2, 11, 5, 3]), [['post', post(1)]])).toBe('monospace');
+    expect(await kind(classed(0), [['post', post(0x100)]])).toBe('monospace');
+    // A monospaced PANOSE proportion, for Latin text or with no family kind given (Roboto Mono sets only that).
+    expect(await kind(classed(0, [2, 0, 0, 9]))).toBe('monospace');
+    expect(await kind(classed(0, [0, 0, 0, 9]))).toBe('monospace');
+    // The IBM class, then the PANOSE serif style when the class says nothing.
+    for (const c of [1, 2, 3, 4, 5, 7]) expect(await kind(classed(c))).toBe('serif');
+    expect(await kind(classed(8))).toBe('sans-serif');
+    expect(await kind(classed(8, [2, 2]))).toBe('sans-serif');
+    expect(await kind(classed(0, [2, 4, 6, 3]))).toBe('serif');
+    expect(await kind(classed(0, [2, 11, 5, 3]))).toBe('sans-serif');
+    // The serif style means that only for Latin text; a monospaced proportion is read with no family kind given.
+    expect(await kind(classed(0, [0, 4, 6, 3]))).toBeUndefined();
+    // A script, ornamental or symbol class, a PANOSE of another family kind, and all zeros (as most web fonts ship) say nothing.
+    for (const c of [9, 10, 12]) expect(await kind(classed(c, [2, 11]))).toBeUndefined();
+    expect(await kind(classed(0, [3, 11, 5, 9]))).toBeUndefined();
+    expect(await kind(classed(0), [['post', post(0)]])).toBeUndefined();
+    // A short OS/2 table gives what it has: a class without PANOSE, or nothing.
+    expect(await kind(classed(5, [], 34))).toBe('serif');
+    expect(await kind(classed(0, [], 30))).toBeUndefined();
+    // A short or unreadable post table is skipped, never a reason to refuse the font.
+    expect(await kind(classed(8), [['post', Buffer.alloc(8)]])).toBe('sans-serif');
+    const info = await fontInfo(woff([['name', nameTable('Brand')], ['OS/2', classed(0)]]));
+    expect(info).toEqual({ family: 'Brand', weight: '400', style: 'normal' });
+    // From a WOFF2 file too, where post is known table 7.
+    expect((await fontInfo(woff2([[5, nameTable('Brand')], [6, classed(0)], [7, post(1)]]))).category).toBe('monospace');
+  });
+
 });
 
 /** A cmap table holding the given subtables, each under (platform, encoding). */

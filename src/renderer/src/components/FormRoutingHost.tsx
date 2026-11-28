@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Conversation } from '@shared/api';
-import { api, confirmDialog, getState, toast, useStore, withdrawConfirm } from '../store';
+import { api, confirmDialog, getConfirm, getState, onConfirmChange, toast, useStore, withdrawConfirm } from '../store';
 import { waitingQuestion } from '../lib/chatQuestions';
-import { askRoutingDialog, onRoutingReview, routingAnswered, routingKey, routingQuestion } from '../lib/formRoutingReview';
+import { askRoutingDialog, onRoutingReview, routingAnswered, routingKey, routingQuestion, routingReviewShown } from '../lib/formRoutingReview';
+
+const subscribe = (fn: () => void) => {
+  const off = onConfirmChange(fn);
+  return () => void off();
+};
+/** Whether the form-routing review is the dialog on screen (#1322), so other prompts for its question can step back. */
+const reviewShown = () => routingReviewShown(getConfirm());
+export const useRoutingReviewShown = () => useSyncExternalStore(subscribe, reviewShown, reviewShown);
 
 /**
  * Shows the app's question about an AI change to where contact forms send in the app's own dialog (#1130), whether or

@@ -10,7 +10,7 @@ const SUGGESTIONS = [DEFAULT_SHORTCUTS.askAi, 'Mod+Shift+L', 'Mod+L', 'Mod+Shift
 const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : 'Something went wrong.');
 
 /**
- * Settings → General → Keyboard shortcuts (#750): Ask AI's key, recorded from the next key press, or put back to
+ * Settings → General → Keyboard shortcuts (#750): Edit with AI's key, recorded from the next key press, or put back to
  * Cmd/Ctrl+J. A press another shortcut has, or the platform keeps, is refused with what has it.
  *
  * The key is a value beside its action, never inside it: the well shows the binding, and while recording it shows
@@ -47,7 +47,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
     try {
       await save(next);
       setProblem(null);
-      setAnnouncement(`Ask AI is now ${label(next)}.`);
+      setAnnouncement(`Edit with AI is now ${label(next)}.`);
     } catch (e) {
       setProblem(errorText(e));
       setAnnouncement(errorText(e));
@@ -88,8 +88,8 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
     <>
       <InlineRow
         id="settings-ask-ai-key"
-        label="Ask AI"
-        hint={recording ? instruction : 'Opens the AI chat about what’s selected, from anywhere in the editor.'}
+        label="Edit with AI"
+        hint={recording ? instruction : 'Opens the AI chat from anywhere in the editor. With an element selected, it’s set to edit that element.'}
         // A refusal while recording keeps the way on and the way out in the same line.
         error={problem && (recording ? `${problem} ${suggestion ? `Try ${label(suggestion)}, or` : 'Press another, or'} Esc to cancel.` : problem)}
       >
@@ -101,7 +101,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
             ref={changeRef}
             type="button"
             className="btn btn-sm"
-            aria-label={recording ? 'Cancel recording the Ask AI shortcut' : 'Change the Ask AI shortcut'}
+            aria-label={recording ? 'Cancel recording the Edit with AI shortcut' : 'Change the Edit with AI shortcut'}
             aria-describedby="settings-ask-ai-key-value settings-ask-ai-key-note"
             // Kept focusable while a press is saved, so the keyboard stays where it was.
             aria-disabled={busy || undefined}

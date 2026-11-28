@@ -5,8 +5,9 @@ import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, openRunThread, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
-import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
+import { Segmented, TOOLBAR_MOVED, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { selectPage, setMode } from '../lib/actions';
 import { pageMenuItems } from '../lib/page-switch';
 import { templateOwner } from '../lib/template-view';
@@ -27,6 +28,8 @@ import { shownLive } from '../lib/live-host';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
+  // The form-routing review open over the editor (#1322): the waiting state stays, but says where the answer goes.
+  const reviewing = useRoutingReviewShown();
   // Another computer's project, as a guest in its live session (#766): its host alone exports, shares and versions it.
   const remoteShell = useStore(isRemoteShell);
   const pageId = useStore((s) => s.pageId);
@@ -94,9 +97,10 @@ export function Toolbar() {
     setWidthDraft(String(useStore.getState().viewport));
   }, [covered]);
   const isMac = api.platform === 'darwin';
-  // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
-  // so the page switcher, Undo, Redo, the panel toggles and Export (or, for a guest, Leave session) always fit.
-  // A live session's wider controls take the labels sooner (#1342). Any session at all counts, starting and
+  // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu, and
+  // narrower still (the editor zoomed in) the controls wrap onto rows under the names (Toolbar.css), so the page
+  // switcher, the preview controls, Undo, Redo, the panel toggles and Export (or, for a guest, Leave session) always
+  // fit. A live session's wider controls take the labels sooner (#1342). Any session at all counts, starting and
   // ending too, so the toolbar keeps one tier through a session rather than changing as its pill does.
   const hosting = useStore((s) => shownLive(s).phase !== 'idle');
   const tier = toolbarTier(useWindowWidth(), isMac, remoteShell ? 'guest' : hosting ? 'hosting' : 'local');
@@ -119,6 +123,25 @@ export function Toolbar() {
     return () => {
       document.removeEventListener('focusin', away);
       document.removeEventListener('pointerdown', away, true);
+    };
+  }, []);
+  // The bar's height changes when it stacks (and as its rows wrap): what hangs below it (the Share popover, the
+  // notices' room) reads where it ends from --toolbar-bottom, and the notices hear of it (TOOLBAR_MOVED) to measure
+  // their room again, since a row can wrap with no window resize (a live session's pill widening).
+  useLayoutEffect(() => {
+    const el = header.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => {
+      const bottom = `${Math.ceil(el.getBoundingClientRect().bottom)}px`;
+      if (root.style.getPropertyValue('--toolbar-bottom') === bottom) return;
+      root.style.setProperty('--toolbar-bottom', bottom);
+      window.dispatchEvent(new Event(TOOLBAR_MOVED));
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--toolbar-bottom');
     };
   }, []);
   const replacement = () => header.current?.querySelector<HTMLElement>(tier === 'overflow' ? '.toolbar-more' : '.toolbar-settings');
@@ -170,7 +193,7 @@ export function Toolbar() {
     : phase === 'stopping' || stoppingForEdit
       ? { kind: 'ai', icon: ai, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone. Open the AI panel' : 'Anything the AI changed in this request is undone. Open the AI panel' }
       : phase === 'asking'
-        ? { kind: 'ask', icon: ai, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel' }
+        ? { kind: 'ask', icon: ai, text: 'AI is waiting for you', title: reviewing ? 'The AI asked to change where your forms send. Answer it in the review that is open' : 'The AI asked a question. Answer it in the AI panel' }
         : handoff
           ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
           : phase === 'checking'

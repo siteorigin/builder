@@ -758,7 +758,7 @@ export function leaveSeoView() {
  * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what
  * the editor shows changes: another page, a component edited everywhere or not, another element or none, the SEO view
  * opened or left, or another document chosen there. A choice
- * made for one view never carries into the next. An update that says its own scope ("Edit and try again", Ask AI
+ * made for one view never carries into the next. An update that says its own scope ("Edit and try again", Edit with AI
  * about this) keeps it.
  */
 function scopeFollows(p: Partial<State>): Partial<State> {

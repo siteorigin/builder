@@ -5,7 +5,7 @@ import { richTextToMarkdown, sameRichText, toRichText } from '@shared/richtext';
 import { propBindingSchema } from '@shared/bindings';
 import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
 import { tooLongMessage } from '@shared/text-limits';
-import { isBinding, refKey } from '@shared/types';
+import { isBinding, refKey, sameRef } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
@@ -14,6 +14,7 @@ import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
+import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
 import { postAt, postWorkspace } from './posts';
 import { withTypedSeo, type TypedSeo } from './seo-preview';
@@ -1275,12 +1276,33 @@ export function goToShellPart(part: string): boolean {
 }
 
 export function askAiAbout(ref: ElementRef | null) {
-  // Asking about a specific element scopes the message to it; opening the chat generically keeps the
-  // scope the user chose.
+  // Edit with AI on a specific element is an edit scoped to it, whatever mode the chat was in; opening the chat
+  // generically keeps the mode and scope the user chose.
   // Only a specific element is selected for it: the chat opened generically leaves the selection (and the layers
   // selected with it) as they are.
-  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatContextEnabled: { page: true, scope: 'selection' } } : {}) });
+  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatMode: 'edit', chatContextEnabled: { page: true, scope: 'selection' } } : {}) });
+  if (ref) saveLocal({ chatMode: 'edit' });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
+}
+
+/**
+ * Inspect, from an element's menu: the right panel opens on the Inspector with that element alone selected, and focus
+ * follows into it. An element that has gone since the menu opened is left alone.
+ */
+export function inspectElement(ref: ElementRef) {
+  const st = getState().snapshot?.state;
+  // The element is what has to be there, not the item it was picked in: a list that leaves out the entry a layout is
+  // shown on holds items that can't be told from here.
+  if (!st || !refExists(st, { ...ref, itemPath: undefined })) return;
+  // A post's preview keeps the Inspector on the post: Edit comes back, as only then does it show an element.
+  if (activeWorkspace(getState()) === 'preview') setMode('edit');
+  // The menu names one element: layers selected with it are let go.
+  setState({ selection: ref, rightTab: 'inspect', dockOpen: true });
+  // An element with no sections (an empty slot) is waited on: focus is not taken once the author has moved on.
+  focusInspector(undefined, () => {
+    const s = getState();
+    return s.dockOpen && s.rightTab === 'inspect' && sameRef(s.selection, ref);
+  });
 }
 
 /**

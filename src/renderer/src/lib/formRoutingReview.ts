@@ -51,6 +51,13 @@ export function routingDialog(q: RoutingQuestion): RoutingDialogRequest {
   };
 }
 
+/**
+ * Whether the dialog on screen is this review (#1322): while it is, the editor's other prompts for the same question
+ * (the canvas notice, the chat card's hint, the toolbar's title) stop pointing at the chat, which the dialog covers.
+ * Only the question on screen counts, so a routing review waiting behind another dialog leaves them as they are.
+ */
+export const routingReviewShown = (onScreen: { formRouting?: unknown } | null): boolean => !!onScreen?.formRouting;
+
 /** The answer a closed dialog gives: Allow only for the allow button, Keep for anything else. */
 export const routingAnswer = (q: WaitingQuestion, ok: boolean | null): string => (ok === true ? q.question.choices[1] : q.question.choices[0]);
 

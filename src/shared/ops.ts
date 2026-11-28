@@ -56,7 +56,8 @@ const styleState = z
 const FONT_FACE = z.object({
   family: z.string().regex(FONT_FAMILY_RE),
   weight: z.string().regex(FONT_WEIGHT_RE),
-  style: z.enum(['normal', 'italic'])
+  style: z.enum(['normal', 'italic']),
+  category: z.enum(['serif', 'sans-serif', 'monospace']).optional()
 });
 /** A style's token link: `{ token }`, or a colour token at part strength, `{ token, alpha }` (checked by validateStyleValue). */
 export const STYLE_TOKEN_REF = z.object({ token: z.string(), alpha: z.number().optional() }).strict();

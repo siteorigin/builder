@@ -1,6 +1,6 @@
 import './LayersPanel.css';
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelRight, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef, slotChildren, slotFallback } from '@shared/types';
@@ -11,7 +11,7 @@ import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot
 import { MenuTriggers, rovingKeys, Segmented, useMenu, useRovingTabStop, type MenuItem } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { openInsertSearch } from '../lib/insert-focus';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, selectPage, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, inspectElement, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, selectPage, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { withSeparator, wrapItems } from './WrapItems';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
@@ -19,7 +19,7 @@ import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, eyeFace, hiddenAncestor, hideHereEdits, holdsSelection, isSelectedRow, layerLabel, rowVisibility, selectionKeysOf, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
-import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
+import { createComponentTarget, refExists, resolveRef, treeFor } from '../lib/model';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { turnIntoSlotItem, turnIntoSlotTarget } from '../lib/turn-into-slot';
 import { placeWords } from '../lib/edit-label';
@@ -669,7 +669,9 @@ export function LayersPanel() {
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
-      { label: 'Ask AI about this', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => askAiAbout(ref) },
+      { label: 'Inspect', icon: <PanelRight />, onSelect: () => inspectElement(ref) },
+      // Never about a row that has gone while the menu was open: the chat would fall back to editing the whole page.
+      { label: 'Edit with AI…', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => { const now = getState().snapshot?.state; if (now && refExists(now, ref)) askAiAbout(ref); } },
       ...(editable && here
         ? [
             { separator: true },
