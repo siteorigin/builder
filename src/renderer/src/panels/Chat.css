@@ -419,7 +419,9 @@
   .menu[aria-label='Conversations'] { width: 300px; }
   .menu[aria-label='Conversations'] .menu-item:is([role='menuitemradio'], :has(.hint)) { height: auto; min-height: 30px; padding-top: 6px; padding-bottom: 6px; align-items: flex-start; line-height: 18px; }
   .menu[aria-label='Conversations'] .menu-item[role='menuitemradio'] .check { height: 18px; display: grid; place-items: center; }
-  .menu[aria-label='Conversations'] .menu-item .grow { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+  .menu[aria-label='Conversations'] .menu-item .grow:not(.menu-text) { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+  /* A row with a reason under its label (a disabled Clear history) keeps the menu's own two-line layout. */
+  .menu[aria-label='Conversations'] .menu-item .menu-text { display: flex; }
   .menu[aria-label='Conversations'] .menu-item .hint { flex: none; }
 
 
