@@ -23,6 +23,7 @@ import { safeJoin, sha } from './fsutil';
 import { importPackageImage, type WriteFence } from './assets';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from './session';
+import { siteIconRecord } from './site-icons';
 
 const MB = 1024 * 1024;
 
@@ -52,31 +53,36 @@ export async function buildComponentPackage(projectDir: string, state: ProjectSt
   if (Buffer.byteLength(text) > MAX_PACKAGE_BYTES) throw new Error(`The package would be larger than ${MAX_PACKAGE_BYTES / MB} MB. Use smaller images first.`);
   // Only a package this app can read again is written, and only one another project can import (#1417): code the
   // author's project saves with warnings may be what an import, holding a package's code to a stricter policy, refuses.
-  await trialImport(migratePackage(decodeComponentPackage(text)));
+  await trialImport(migratePackage(decodeComponentPackage(text)), state.site.themeId);
   return { text, notes, pkg };
 }
 
 /**
- * Import a package as the editor does, with Developer mode on, into a blank project made for it in a folder of its own,
- * removed afterwards: whatever that import refuses, a project in this build would refuse too. Throws the reason.
+ * Import a package as the editor does, with Developer mode on, into a blank project on the theme it was made on (`themeId`),
+ * made for it in a folder of its own and removed afterwards: whatever that import refuses, a new project on that theme
+ * in this build would refuse too. Throws the reason.
  */
-async function trialImport(pkg: ComponentPackage): Promise<void> {
-  const dir = await fs.mkdtemp(join(tmpdir(), 'so-package-check-'));
-  // Kept before its first file is written, so a project that fails to be made is still closed.
-  const session = ProjectSession.starting(dir, createStarterState('blank', 'Package check', false));
+async function trialImport(pkg: ComponentPackage, themeId: string): Promise<void> {
+  let dir: string | null = null;
+  let session: ProjectSession | null = null;
   let refused: string | null = null;
   try {
+    dir = await fs.mkdtemp(join(tmpdir(), 'so-package-check-'));
+    // Kept before its first file is written, so a project that fails to be made is still closed.
+    session = ProjectSession.starting(dir, createStarterState('blank', 'Package check', false, themeId));
     await session.writeNew();
     // As the editor imports: the package's images are written before their records land, with sweeping held off.
-    refused = await session.withImport(async () => {
+    const trial = session;
+    const at = dir;
+    refused = await trial.withImport(async () => {
       let prepared: PreparedImport;
       try {
-        prepared = await preparePackageImport(dir, session.state, pkg, { codeAllowed: true });
+        prepared = await preparePackageImport(at, trial.state, pkg, { codeAllowed: true });
       } catch (e) {
         if (e instanceof PackageError) return e.message;
         throw e;
       }
-      const r = await session.apply(
+      const r = await trial.apply(
         { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }] },
         { label: 'Import component', source: 'user', codeAllowed: true, componentImport: prepared.input }
       );
@@ -85,8 +91,13 @@ async function trialImport(pkg: ComponentPackage): Promise<void> {
   } catch (e) {
     throw new Error(`whether another project could import it could not be checked: ${(e as Error).message}`);
   } finally {
-    await session.close().catch(() => undefined);
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await session?.close().catch(() => undefined);
+    if (dir) {
+      // Nor is the note of its site icons, kept for a project's next opening, left behind.
+      const icons = siteIconRecord(dir);
+      if (icons) await fs.rm(icons.file, { force: true }).catch(() => undefined);
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
   if (refused) throw new Error(`another project would refuse it on import. ${refused.replace(/\s*$/, '')} Fix what it names, then try again.`);
 }
