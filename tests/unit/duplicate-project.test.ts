@@ -224,6 +224,41 @@ describe('a duplicated project (#176)', () => {
     expect(existsSync(join(original, 'static/assets/old-photo-0f1e2d3c.jpg'))).toBe(true);
   });
 
+  it('refuses a destination the copy’s preview could not run from, and copies a project out of one (#1366)', async () => {
+    const sites = temp('sites');
+    const hashed = join(sites, 'Client #47');
+    mkdirSync(hashed);
+    const original = await makeProject(hashed, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    // Into a folder with a “#” or “?” in its path, or reached through a link to one: nothing is made.
+    const asked = join(sites, 'Archive ?8');
+    mkdirSync(asked);
+    symlinkSync(hashed, join(sites, 'linked'));
+    mkdirSync(join(asked, 'clean'));
+    for (const [parentDir, folder, char] of [
+      [hashed, 'Client #47', '#'],
+      [asked, 'Archive ?8', '?'],
+      [join(asked, 'clean'), 'Archive ?8', '?'],
+      [join(sites, 'linked'), 'Client #47', '#']
+    ] as const) {
+      expect(await c.duplicate({ name: 'Copy', parentDir, opening: c.openingKey! })).toEqual({
+        ok: false,
+        field: 'location',
+        message: `The preview can’t run from a folder whose path contains “${char}”, and “${folder}” does. Choose a folder with no “#” or “?” anywhere in its path, or rename that folder.`
+      });
+    }
+    expect(readdirSync(hashed)).toEqual(['storefront']);
+    expect(readdirSync(asked)).toEqual(['clean']);
+    expect(readdirSync(join(asked, 'clean'))).toEqual([]);
+    // Nor is the editable project exported as a folder there; a ZIP file of it can be.
+    expect(await c.exportSourceTo(join(hashed, 'export'), 'folder')).toMatchObject({ ok: false, message: expect.stringMatching(/^The preview can’t run from a folder whose path contains “#”, and “Client #47” does\./) });
+    expect(existsSync(join(hashed, 'export'))).toBe(false);
+    // A folder without them is where the project goes on from.
+    expect(await c.duplicate({ name: 'Copy', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true });
+    expect(existsSync(join(sites, 'copy', 'siteorigin.project.json'))).toBe(true);
+  });
+
   it('explains a name or destination it cannot use, and writes nothing', async () => {
     const sites = temp('sites');
     const original = await makeProject(sites, 'storefront', 'Storefront');

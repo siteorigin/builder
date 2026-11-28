@@ -3,7 +3,7 @@
  * the same name and folder works. A folder the author made stays (empty); a folder the app made goes; a folder that
  * already held something is never written to.
  */
-import { existsSync, mkdirSync, mkdtempSync, promises as fs, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises as fs, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -808,6 +808,42 @@ describe('the folder a new project is made in (#808)', () => {
     // A project really named Website is told the folder is taken, as for any other name.
     expect((await c.create(named(parent, 'Website'))).message).toBe(`${join(parent, 'website')} already exists and is not empty. Choose another name or folder.`);
     expect(readdirSync(join(parent, 'website'))).toEqual(['notes.txt']);
+  });
+
+  it('is never in a folder whose path the preview cannot run under, and says which folder before making anything (#1366)', async () => {
+    const { c, parent } = setup();
+    const hashed = join(parent, 'Archive #8');
+    const asked = join(parent, 'Client ?47');
+    mkdirSync(hashed);
+    mkdirSync(asked);
+    symlinkSync(hashed, join(parent, 'linked'));
+    // A folder of the project's own name, empty, that leads into one: judged by where it leads.
+    const sites = join(parent, 'sites');
+    mkdirSync(join(hashed, 'target'));
+    mkdirSync(sites);
+    symlinkSync(join(hashed, 'target'), join(sites, 'meadow-studio'));
+    for (const [where, folder, char] of [
+      [hashed, 'Archive #8', '#'],
+      [join(asked, 'clients', 'new'), 'Client ?47', '?'],
+      [join(parent, 'linked'), 'Archive #8', '#'],
+      [join(parent, 'linked', 'clients', 'new'), 'Archive #8', '#'],
+      [sites, 'Archive #8', '#']
+    ] as const) {
+      const r = await c.create(named(where, 'Meadow Studio'));
+      expect(r).toEqual({ ok: false, message: `The preview can’t run from a folder whose path contains “${char}”, and “${folder}” does. Choose a folder with no “#” or “?” anywhere in its path, or rename that folder.` });
+    }
+    expect(readdirSync(hashed)).toEqual(['target']);
+    expect(readdirSync(join(hashed, 'target'))).toEqual([]);
+    expect(readdirSync(asked)).toEqual([]);
+    expect(deps.installs).toBe(0);
+    expect(c.session).toBeNull();
+    // A name with them is fine: its folder keeps neither. So are the folders the preview does run under.
+    expect(await c.create(named(parent, 'Client #47?'))).toEqual({ ok: true });
+    expect(c.session!.dir).toBe(join(parent, 'client-47'));
+    const odd = join(parent, 'Client 47% & %20 日本語 café');
+    mkdirSync(odd);
+    expect(await c.create(named(odd, 'Meadow Studio'))).toEqual({ ok: true });
+    expect(c.session!.dir).toBe(join(odd, 'meadow-studio'));
   });
 
   it('never gives a folder Windows keeps for a device', async () => {

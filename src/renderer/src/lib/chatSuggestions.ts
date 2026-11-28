@@ -2,6 +2,7 @@ import type { AssetRecord, ComponentDefinition, ElementRef, ImageValue, NodeTree
 import type { SeoFinding } from '@shared/seo';
 import { propBindingValue } from '@shared/bindings';
 import { isBinding } from '@shared/types';
+import { keptPublishedAddresses } from '@shared/collections';
 import { isRichBlock, richTextToPlain } from '@shared/richtext';
 import { childLists, headerMenu } from '@engine/tree';
 import { listPropFor, refLabel, resolveRef } from './model';
@@ -292,7 +293,7 @@ function lastSegment(route: string): string {
 
 /** Every name a live page answers to: its title, menu labels, address, and the old addresses that lead to it. */
 function namesOf(state: ProjectState, page: PageDoc): string[] {
-  const old = (state.site.redirects ?? []).filter((r) => r?.pageId === page.id).map((r) => r.from);
+  const old = [...(state.site.redirects ?? []), ...keptPublishedAddresses(state)].filter((r) => r?.pageId === page.id).map((r) => r.from);
   // Home is where a deleted page's links are sent, still carrying their labels, so its links say nothing about what it is.
   const labels = page.id === state.site.homePageId ? [] : linkLabelsTo(state, page.id);
   return [page.title, page.navLabel ?? '', ...labels, ...[page.route, ...old].map((r) => lastSegment(String(r)))];

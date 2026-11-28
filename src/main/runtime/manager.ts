@@ -160,6 +160,10 @@ const CACHE_PROBLEMS = new Set(['ENOTCACHED', 'EINTEGRITY']);
  */
 export async function prepareDependencies(dir: string, onLine: (line: string) => void, signal?: AbortSignal, mayWrite: () => Promise<boolean> = async () => true): Promise<void> {
   const stillMine = ownership(signal, mayWrite);
+  // npm removes what is installed before it installs: tools it leaves part done (it failed, the app quit) must never
+  // pass for set up, so the marker that says they are goes first, and comes back only once they are (#1395).
+  await stillMine();
+  await fs.rm(join(dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
   await installTools(dir, onLine, signal, stillMine);
   await markTools(dir, stillMine);
 }

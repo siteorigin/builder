@@ -14,17 +14,18 @@ import { seoLength, seoText } from '@shared/seo';
 import type { Collection, EntryDoc, OwnerRef, ProjectState } from '@shared/types';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
+import { siteEntries } from '@shared/collections';
 import { checkPublicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
 import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
-import { showsEntryText, type SiteLink } from '@generator/checks';
+import { ownSiteAddress, showsEntryText, type SiteLink } from '@generator/checks';
 import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
 import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
 import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
-import { publishedState } from '@generator/index';
+import { liveRedirects, publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
 
@@ -322,6 +323,77 @@ const genericLinkText: SeoAuditRule = {
   }
 };
 
+/** Query keys a WordPress site read a post, page, category or tag by (`/?p=88`), when they have a value: a static site answers none of them. */
+const WORDPRESS_QUERIES = ['p', 'page_id', 'cat', 'tag'];
+/** Endings of an old site's page addresses (`/contact.html`, `/index.php`): a page of this website is never at one. */
+const PAGE_FILE = /\.(html?|php|aspx?|jsp)$/i;
+
+/** Where a link is, as the author knows the place: a page or an entry by its title, the header or footer, or a layout. */
+function linkPlace(state: ProjectState, l: SiteLink): string {
+  if (l.owner.kind === 'shell') return `the shared ${l.owner.id}`;
+  if (l.owner.kind === 'page') return `“${seoText(state.pages[l.owner.id]?.title) || state.pages[l.owner.id]?.route}”`;
+  if (l.owner.kind === 'template') return `the ${seoText(state.collections[l.owner.id]?.settings.name) || l.owner.id} layout`;
+  const at = Object.values(state.collections).find((c) => Object.hasOwn(c.entries, l.owner.id));
+  return `“${seoText(at?.entries[l.owner.id]?.title) || l.owner.id}”`;
+}
+
+/**
+ * Links typed as a full web address on the site's own public URL (one kept from an imported site that this website
+ * replaces, say), or the same address over plain http, that lead to an address the website has nothing at: no page,
+ * collection entry, collection index or archive page, and no old address kept working that leads somewhere. Once the
+ * website is published there, each leads to Page not found. So does an address WordPress read by its query (`/?p=88`)
+ * or an old page file (`/contact.html`). A draft's address is left to the export, which already stops at links to a
+ * draft. Any other file's address (a PDF, the sitemap) is not judged, since the site's own files are not all in the
+ * project. One finding per address, naming where it is linked from, the address linked from the most places first.
+ */
+const brokenOwnLinks: SeoAuditRule = {
+  id: 'broken-own-links',
+  check({ state, links }) {
+    const own = links().flatMap((l) => {
+      if (l.link.type !== 'url') return [];
+      const at = ownSiteAddress(state, l.link.target) ?? (/^http:/i.test(l.link.target) ? ownSiteAddress(state, l.link.target.replace(/^http:/i, 'https:')) : null);
+      return at ? [{ l, at }] : [];
+    });
+    if (!own.length) return [];
+    const answered = new Set<string>(['/']);
+    for (const p of Object.values(state.pages)) if (typeof p.route === 'string') answered.add(p.route.toLowerCase());
+    for (const e of siteEntries(state)) answered.add(e.route.toLowerCase());
+    for (const p of archivePages(publishedState(state))) answered.add(p.route.toLowerCase());
+    // An old address answers only while it leads somewhere (a draft included, which the export already stops at).
+    for (const r of liveRedirects(state)) answered.add(r.from.toLowerCase());
+    const broken = new Map<string, SiteLink[]>();
+    for (const { l, at } of own) {
+      const last = at.route.slice(0, -1).split('/').pop() ?? '';
+      const byQuery = WORDPRESS_QUERIES.some((k) => !!at.url.searchParams.get(k)?.trim());
+      if (!byQuery && last.includes('.') && !PAGE_FILE.test(last)) continue;
+      if (!byQuery && answered.has(at.route.toLowerCase())) continue;
+      const list = broken.get(l.link.target) ?? [];
+      list.push(l);
+      broken.set(l.link.target, list);
+    }
+    // The address linked from the most places first, as the import's review lists them. A place is a page, an entry,
+    // the header or footer, or a layout: two posts of the same title are two.
+    const grouped = [...broken].map(([url, list]) => {
+      const owners = [...new Map(list.map((l) => [`${l.owner.kind}:${l.owner.id}`, l])).values()];
+      return { url, list, count: owners.length, first: linkPlace(state, owners[0]) };
+    });
+    grouped.sort((a, b) => b.count - a.count || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+    return grouped.map(({ url, list, count, first }) => {
+      const from = count === 1 ? first : `${first} and ${count - 1} other ${count === 2 ? 'place' : 'places'}`;
+      return finding('content', {
+        severity: 'warning',
+        code: 'SEO_LINK_OWN_MISSING',
+        message: `${from.charAt(0).toUpperCase()}${from.slice(1)} ${count === 1 ? 'links' : 'link'} to ${url}, where the website has no page.`,
+        explanation:
+          'The link is on the site’s own web address, so once the website is published there, visitors who follow it don’t reach what it named: they find Page not found, or for an address an old site read by its query (/?p=88), the page at its path. Point it at a page or post of the site, or keep the address working with a redirect in Site settings.',
+        aiFixable: false,
+        ...linkFix(state, list[0]),
+        site: `own-link|${url}`
+      });
+    });
+  }
+};
+
 /** The published entries whose page shows their text, as the website shows it, each with its collection and a name for messages. */
 function shownEntries(state: ProjectState, documents: readonly EffectiveSeo[]) {
   const live = publishedState(state);
@@ -425,7 +497,7 @@ const agenticDiscovery: SeoAuditRule = {
 };
 
 /**
- * WebMCP readiness: a website with a contact form or its own search, which agents in a visitor's browser could use
+ * WebMCP readiness: a website with a contact or signup form or its own search, which agents in a visitor's browser could use
  * through declared tools (shared/webmcp.ts), while the author has not turned WebMCP on. A suggestion only: it is off by
  * choice until the author decides agents may fill in the site's forms.
  */
@@ -437,14 +509,14 @@ const webMcpReadiness: SeoAuditRule = {
     const forms = showsFormTool(state);
     const search = showsSiteSearch(state);
     if (!forms && !search) return [];
-    const what = forms && search ? 'a contact form and site search' : forms ? 'a contact form' : 'site search';
+    const what = forms && search ? 'a form and site search' : forms ? 'a form' : 'site search';
     return [
       finding('agentic', {
         severity: 'info',
         code: 'SEO_WEBMCP_OFF',
         message: `The website has ${what} but declares no WebMCP tools: AI agents in visitors’ browsers have to work ${forms && search ? 'them' : 'it'} out from the page.`,
         site: 'webmcp',
-        explanation: 'With WebMCP on, each contact form tells AI assistants in the browser what it is for and what each field asks, and the site’s search can be used as a tool. The visitor still checks and sends every message.',
+        explanation: 'With WebMCP on, each contact or signup form tells AI assistants in the browser what it is for and what each field asks, and the site’s search can be used as a tool. The visitor still checks and sends every message.',
         aiFixable: true,
         destination: { kind: 'site', field: 'webmcp' }
       })
@@ -573,4 +645,4 @@ const pageStructuredData: SeoAuditRule = {
 };
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, brokenOwnLinks, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];
