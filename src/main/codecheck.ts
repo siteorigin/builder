@@ -1098,6 +1098,115 @@ export async function codeContractNames(source: string): Promise<{ parts: string
   return { parts: [...parts], slots, shown, lists: hookLists(hooks) };
 }
 
+/** What a code component's markup can give a part's class to, or mark as a part: an element or a component it places. */
+const PART_HOSTS = new Set(['RegularElement', 'SvelteElement', 'Component', 'SvelteComponent', 'SvelteSelf']);
+
+/** The path a well-formed text marker names (`so_text?.('heading')`, `so_text?.('features.title', item.id)`), or null. */
+function markedTextPath(attr: Node, hook: string): { path: string; prop: string; field?: string } | null {
+  const values = attr.value === true ? [] : Array.isArray(attr.value) ? (attr.value as Node[]) : [attr.value as Node];
+  const chain = values.length === 1 && values[0].type === 'ExpressionTag' ? (values[0].expression as Node) : undefined;
+  const call = chain?.type === 'ChainExpression' ? (chain.expression as Node) : undefined;
+  const callee = call?.type === 'CallExpression' && call.optional ? (call.callee as Node) : undefined;
+  if (callee?.type !== 'Identifier' || callee.name !== hook) return null;
+  const args = (call!.arguments as Node[]) ?? [];
+  const written = args.some((a) => a.type === 'SpreadElement') ? null : literalText(args[0]);
+  const path = written === null ? null : parseCodeTextPath(written);
+  if (!path || args.length !== (path.field === undefined ? 1 : 2)) return null;
+  return { path: written!, ...path };
+}
+
+/**
+ * The text each part of a code component shows, read from its syntax tree (#1416): by part, the path of each text
+ * marked for the canvas (`data-so-text`, "heading" or "features.title") on the element the part's class is given to
+ * (`so_o?.actions`, or a written-out `data-so-part`) or inside it, so the assistant may change it from a selection of
+ * that part, as the author may type over it there. A text counts only where everything the markup shows of it is in
+ * the part: the code marks it nowhere else, and reads its property nowhere else in the markup (a list's items only in
+ * the `{#each}` the part repeats in). The script's own reads (a `hasActions` worked out from the labels) show nothing
+ * of the text. Text in a snippet defined inside the part, which may be rendered anywhere, and a list's field marked
+ * inside a list repeated in another, which shows the same items in every outer item, are no part's. Null when the
+ * code cannot be parsed.
+ */
+export async function codePartTexts(source: string): Promise<Record<string, string[]> | null> {
+  const { parse } = await import('svelte/compiler');
+  let ast: Node;
+  try {
+    ast = parse(source, { modern: true }) as unknown as Node;
+  } catch {
+    return null;
+  }
+  const locals = propsLocals(ast);
+  const hook = locals.get(CODE_TEXT_HOOK)?.local;
+  if (!hook) return {};
+  /** Each part's elements, with the nodes around each, outermost first. */
+  const hosts = new Map<string, Array<{ node: Node; around: Node[] }>>();
+  const markers: Array<{ path: string; prop: string; field?: string; around: Node[] }> = [];
+  const byLocal = new Map([...locals].map(([prop, { local }]) => [local, prop]));
+  const reads: Array<{ prop: string; node: Node; around: Node[] }> = [];
+  walkAst(ast.fragment, (n, around) => {
+    const parent = around[around.length - 1];
+    if (PART_HOSTS.has(n.type) && Array.isArray(n.attributes)) {
+      for (const a of n.attributes as Node[]) {
+        if (a.type !== 'Attribute') continue;
+        const ids: string[] = [];
+        const name = attrName(a, n);
+        if (name === 'data-so-part') {
+          const id = markerName(a);
+          if (id !== null) ids.push(id);
+        } else if (name === 'class')
+          walkAst(a.value, (x) => {
+            const id = hookedPart(x);
+            if (id !== null) ids.push(id);
+          });
+        for (const id of ids) hosts.set(id, [...(hosts.get(id) ?? []), { node: n, around }]);
+      }
+    }
+    if (n.type === 'Attribute' && attrName(n, parent) === CODE_TEXT_ATTR) {
+      const path = markedTextPath(n, hook);
+      if (path) markers.push({ ...path, around });
+      // The marker's own call names the property as text, not a read of it.
+      return;
+    }
+    if (n.type !== 'Identifier' || !byLocal.has(String(n.name))) return;
+    // A name that is not a read: a property after a dot, or an object literal's key.
+    if (parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) return;
+    if (parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n) return;
+    reads.push({ prop: byLocal.get(String(n.name))!, node: n, around });
+  });
+  /** Whether a node sits in one of the part's elements (or is one), with no snippet between that could show it elsewhere. */
+  const inside = (part: string, around: Node[]) =>
+    (hosts.get(part) ?? []).some(({ node }) => {
+      const at = around.indexOf(node);
+      return at >= 0 && !around.slice(at + 1).some((a) => a.type === 'SnippetBlock');
+    });
+  const out: Record<string, string[]> = {};
+  for (const part of hosts.keys()) {
+    const paths = new Set<string>();
+    const outside = new Set<string>();
+    for (const m of markers) {
+      const nested = m.field !== undefined && m.around.filter((a) => a.type === 'EachBlock').length > 1;
+      if (nested || !inside(part, m.around)) outside.add(m.path);
+      else paths.add(m.path);
+    }
+    const own = new Set((hosts.get(part) ?? []).map((h) => h.node));
+    /** An {#if} that shows the part's element and nothing else: its test decides only whether the part shows. */
+    const guardsPart = (r: { node: Node; around: Node[] }) =>
+      r.around.some((a, i) => {
+        if (a.type !== 'IfBlock' || a.alternate || (r.around[i + 1] ?? r.node) !== a.test) return false;
+        const shown = (((a.consequent as Node)?.nodes as Node[]) ?? []).filter((c) => !(c.type === 'Text' && !String(c.data).trim()));
+        return shown.length === 1 && own.has(shown[0]);
+      });
+    for (const r of reads) {
+      if (inside(part, r.around) || guardsPart(r)) continue;
+      const each = r.around[r.around.length - 1];
+      // The list a repeated part is shown once per item of, read where the part repeats over it.
+      const repeats = each?.type === 'EachBlock' && each.expression === r.node && (hosts.get(part) ?? []).some((h) => h.around.includes(each));
+      for (const p of paths) if (p.split('.')[0] === r.prop && !(repeats && p.includes('.'))) outside.add(p);
+    }
+    out[part] = [...paths].filter((p) => !outside.has(p) && locals.has(p.split('.')[0])).sort();
+  }
+  return out;
+}
+
 /**
  * Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
  * call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).

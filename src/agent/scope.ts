@@ -16,7 +16,8 @@ import { dependentsOf } from '@engine/definitions';
 import { normalizeRoute } from '@shared/routes';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
-import { walkOperations } from '@engine/apply';
+import { sourceHash, walkOperations } from '@engine/apply';
+import { codeTextField, parseCodeTextPath } from '@shared/code-text';
 import type { CollectionWriteGrant, LayoutOwner } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
 
@@ -30,6 +31,18 @@ export interface PartAuthority {
   itemId?: string;
   /** Inside a component placed in this one: its parts cannot be changed from the outer placement on their own. */
   nested?: boolean;
+  /** A code component's part: the text its code shows there, read as the request started (see codePartReach). */
+  texts?: CodePartTexts;
+}
+
+/**
+ * The text a code component's part shows, as the main process read it from the component's code (codecheck's
+ * codePartTexts): each marked property ("primaryLabel") or list field ("features.title"), and the hash of the code it
+ * was read from, so a reading of other code never stands for this one.
+ */
+export interface CodePartTexts {
+  sourceHash: string;
+  paths: string[];
 }
 
 /**
@@ -139,6 +152,26 @@ export interface PartReach {
 
 const NOTHING: PartReach = { props: new Set(), itemFields: new Map(), nodes: new Set(), repeated: false, slots: new Set() };
 
+/**
+ * What a part of a code component shows (#1416), which has no tree to say: the text its code marks inside it, as read
+ * from the code the request started with (`texts`), among the properties and list fields the component still declares
+ * as text the canvas can type over. Without that reading, or once the code has changed, the part reaches nothing but
+ * its own styles. A part picked in one item of a list is shown once per item.
+ */
+export function codePartReach(def: ComponentDefinition, part: { partId?: string; itemId?: string }, texts: CodePartTexts | undefined): PartReach {
+  if (!texts || !part.partId || def.kind !== 'code' || typeof def.source !== 'string' || sourceHash(def.source) !== texts.sourceHash) return NOTHING;
+  const props = new Set<string>();
+  const itemFields = new Map<string, Set<string>>();
+  for (const written of texts.paths) {
+    const path = parseCodeTextPath(written);
+    if (!path || 'problem' in codeTextField(def.properties, path)) continue;
+    if (path.field === undefined) props.add(path.prop);
+    else itemFields.set(path.prop, (itemFields.get(path.prop) ?? new Set()).add(path.field));
+  }
+  const own = Object.hasOwn(def.parts, part.partId) ? def.parts[part.partId] : undefined;
+  return { props, itemFields, nodes: new Set(), repeated: !!own?.list || part.itemId !== undefined, slots: new Set() };
+}
+
 export function partReach(def: ComponentDefinition, regionNodeId: string): PartReach {
   const tree = def.tree;
   const nodes = new Set(tree && Object.hasOwn(tree.nodes, regionNodeId) ? subtreeIds(tree, regionNodeId) : []);
@@ -209,8 +242,9 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
 
 /**
  * The placement a part authority is in, its definition and what the part reaches, or null for the whole placement (its
- * definition's root). A part inside a nested component, or of a code component (which has no tree to say what its parts
- * show), reaches nothing but its own styles: anything more needs the user's approval.
+ * definition's root). A part inside a nested component reaches nothing but its own styles, and one of a code component
+ * (which has no tree to say what its parts show) only the text its code marks inside it (codePartReach): anything
+ * more needs the user's approval.
  */
 function selectedPart(state: ProjectState, authority: Extract<Authority, { kind: 'selection' }>): { def: ComponentDefinition; inst: InstanceNode; reach: PartReach; part: PartAuthority } | null {
   const part = authority.part;
@@ -225,7 +259,8 @@ function selectedPart(state: ProjectState, authority: Extract<Authority, { kind:
   if (!def || inst?.kind !== 'instance') return null;
   // A code component's root part is the placement itself.
   if (!part.nested && !def.tree && part.partId === 'root') return null;
-  if (part.nested || !def.tree) return { def, inst, reach: NOTHING, part };
+  if (part.nested) return { def, inst, reach: NOTHING, part };
+  if (!def.tree) return { def, inst, reach: codePartReach(def, part, part.texts), part };
   // Only the first top-level node is the placement itself; another is a part like any other.
   if (def.tree.rootIds[0] === part.regionNodeId) return null;
   return { def, inst, reach: partReach(def, part.regionNodeId), part };

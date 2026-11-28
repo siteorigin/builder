@@ -7,7 +7,7 @@ import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
 import type { SourceToolHost } from './source-tools';
-import type { ProjectState } from '@shared/types';
+import type { GraphNode, ProjectState } from '@shared/types';
 import { isSyncedCollection, POSTS_COLLECTION_ID } from '@shared/collections';
 import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
@@ -32,7 +32,8 @@ import { formRoutingPrompt, formRoutingQuestion, formRoutingReview, type FormRou
 import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
 import { guestEditProblem } from '@engine/guest-edits';
 import { checkEditBatch } from '@shared/live/capabilities';
-import { walkChecks } from '@engine/apply';
+import { sourceHash, walkChecks } from '@engine/apply';
+import { getTree } from '@engine/tree';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
 import { applyContextBudget, contextVerdict, estimateRequestTokens, MIN_OUTPUT_TOKENS } from './budget';
@@ -127,6 +128,8 @@ export interface RunSession {
   /** Let go of the kept sources of patches that landed, once the run that made them is kept. */
   discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
+  /** The text each part of a code component's code shows, by part (main/codecheck.ts codePartTexts); null when it cannot be read. */
+  codePartTexts?(source: string): Promise<Record<string, string[]> | null>;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
   /**
    * `formRouting`: the grant `grantFormRouting` gave, once the user allowed a batch that changes where a form sends
@@ -1665,7 +1668,9 @@ export class Orchestrator {
     };
     const readState = () => (ask ? startState : run.delegation ? guestView(session.state) : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
-    let authority: Authority = requestAuthority(userMsg.context, session.state);
+    let authority: Authority = await withCodePartTexts(session, requestAuthority(userMsg.context, session.state));
+    /** What the selected part of a code component shows, read as the request started: the tools and the context say it too. */
+    const partTexts = authority.kind === 'selection' ? authority.part?.texts : undefined;
     const startedOnPage = authority.kind === 'page';
     /** A request about a component's own design keeps the tools for it, even after the user widens it. */
     const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
@@ -1720,6 +1725,7 @@ export class Orchestrator {
     const completeRun = (label: string) =>
       delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
     const selected = selectionTarget(userMsg.context?.selection);
+    if (selected && partTexts) selected.texts = partTexts;
     /** The component design the run starts limited to, if any: its definition tools address it for the whole turn. */
     const startDefinition = definitionTarget(authority);
     // Read once: a window a local server reports part way through the run must not take away a tool it already used.
@@ -1833,7 +1839,7 @@ export class Orchestrator {
     const items: CanonicalItem[] = historyItems();
     const ctx = userMsg.context;
     // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
-    const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
+    const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask), texts: partTexts }) : null;
     const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text, 3, current.focused).map(exampleSection) : [];
     // A component request, with the tool that builds one whole, starts from a worked call or two of that tool.
     const blueprints = current.tools.some((t) => t.name === 'upsert_managed_component') && (componentTask || asksForComponent(requestText)) ? retrieveBlueprints(session.state, requestText).map(blueprintSection) : [];
@@ -3015,6 +3021,26 @@ export class Orchestrator {
       else await revertAndFinish('failed', `Something went wrong: ${(e as Error).message}`, (e as Error).message);
     }
   }
+}
+
+/**
+ * A selection of one part of a code component, with the text its code shows there (scope.ts codePartReach), read from
+ * the code as the request starts. Any other authority is returned as it is, and so is a part whose code cannot be read.
+ */
+async function withCodePartTexts(session: RunSession, authority: Authority): Promise<Authority> {
+  if (authority.kind !== 'selection' || !authority.part?.partId || authority.part.nested || !session.codePartTexts) return authority;
+  let inst: GraphNode | undefined;
+  try {
+    inst = getTree(session.state, authority.owner).nodes[authority.nodeId];
+  } catch {
+    return authority;
+  }
+  const def = inst?.kind === 'instance' && Object.hasOwn(session.state.components, inst.definitionId) ? session.state.components[inst.definitionId] : undefined;
+  if (def?.kind !== 'code' || def.tree || typeof def.source !== 'string') return authority;
+  const source = def.source;
+  const read = await session.codePartTexts(source).catch(() => null);
+  const paths = read && Object.hasOwn(read, authority.part.partId) ? read[authority.part.partId] : [];
+  return { ...authority, part: { ...authority.part, texts: { sourceHash: sourceHash(source), paths } } };
 }
 
 function activityLabel(call: ToolCall, state: ProjectState): string {
