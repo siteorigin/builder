@@ -37,7 +37,7 @@ const BRIDGE = `
   window.__calls = [];
   window.__modal = undefined;
   const project = new Proxy({}, { get: (_, key) =>
-    key === 'commitPostImport' ? async (...a) => (window.__calls.push(['commit', ...a]), { ok: true, imported: 1, updated: a[2] === 'update' ? 2 : 0 })
+    key === 'commitPostImport' ? async (...a) => (window.__calls.push(['commit', ...a]), { ok: true, imported: 1, updated: a[3] === 'update' ? 2 : 0 })
     : key === 'cancelPostImport' ? async (...a) => void window.__calls.push(['cancel', ...a])
     : any('project.' + String(key)) });
   window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'then' ? undefined : any(String(key))) });
@@ -132,7 +132,7 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     expect(await page.getByLabel('Skip them').isChecked()).toBe(true);
     await page.getByTestId('post-import-confirm').click();
     await page.waitForFunction('window.__modal === null');
-    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', 'skip']]);
+    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', false, 'skip']]);
   });
 
   it('imports only the new posts by default, or updates the others with them when chosen', async () => {
@@ -143,7 +143,7 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     expect(await page.getByTestId('post-import-confirm').textContent()).toBe('Import 1 post and update 2');
     await page.getByTestId('post-import-confirm').click();
     await page.waitForFunction('window.__modal === null');
-    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', 'update']]);
+    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', false, 'update']]);
     expect(await page.evaluate('window.__toasts')).toEqual(['Imported 1 post and updated 2.']);
   });
 
@@ -171,6 +171,6 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     await page.getByLabel('Skip them').check();
     await page.getByTestId('post-import-confirm').click();
     await page.waitForFunction('window.__modal === null');
-    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', 'skip']]);
+    expect(await page.evaluate('window.__calls')).toEqual([['commit', 'r1', 'w1', false, 'skip']]);
   });
 });

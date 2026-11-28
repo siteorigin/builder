@@ -85,14 +85,14 @@ describe('importing a WordPress export again (#1519)', { timeout: 60_000 }, () =
 
     const first = await review(c, file);
     expect(first.existing).toBe(0);
-    expect(await c.commitPostImport(first.id, key())).toMatchObject({ ok: true, imported: 3, updated: 0 });
+    expect(await c.commitPostImport(first.id, key(), false)).toMatchObject({ ok: true, imported: 3, updated: 0 });
     const before = posts(c);
     const revision = c.snapshot()!.revision;
 
     // The same export again: every post is known, and skipping them is no change at all.
     const again = await review(c, file);
     expect(again).toMatchObject({ existing: 3, pictures: 0, problems: [], update: { posts: 3, problems: [] } });
-    expect(await c.commitPostImport(again.id, key(), 'skip')).toEqual({ ok: true, imported: 0, updated: 0 });
+    expect(await c.commitPostImport(again.id, key(), false, 'skip')).toEqual({ ok: true, imported: 0, updated: 0 });
     expect(c.snapshot()!.revision).toBe(revision);
     expect(posts(c)).toEqual(before);
 
@@ -106,7 +106,7 @@ describe('importing a WordPress export again (#1519)', { timeout: 60_000 }, () =
     writeFileSync(join(dir, 'later.xml'), later);
     const mixed = await review(c, join(dir, 'later.xml'));
     expect(mixed).toMatchObject({ existing: 3, problems: [], update: { posts: 3 } });
-    const r = await c.commitPostImport(mixed.id, key(), 'update');
+    const r = await c.commitPostImport(mixed.id, key(), false, 'update');
     expect(r).toMatchObject({ ok: true, imported: 1, updated: 3 });
     const after = posts(c);
     expect(after).toHaveLength(4);
@@ -123,7 +123,7 @@ describe('importing a WordPress export again (#1519)', { timeout: 60_000 }, () =
     const file = join(dir, 'export.xml');
     const key = () => c.snapshot()!.workspaceKey;
     const first = await review(c, file);
-    await c.commitPostImport(first.id, key());
+    await c.commitPostImport(first.id, key(), false);
     // Winter, already here, now brings more tags than the collection may hold; a new post brings none.
     const tags = Array.from({ length: 205 }, (_, i) => `<category domain="post_tag" nicename="t${i}"><![CDATA[Tag ${i}]]></category>`).join('');
     const later = readFileSync(file, 'utf8')
@@ -136,10 +136,10 @@ describe('importing a WordPress export again (#1519)', { timeout: 60_000 }, () =
     const p = await review(c, join(dir, 'later.xml'));
     expect(p.problems).toEqual([]);
     expect(p.update?.problems[0]).toMatch(/it can have at most 200/);
-    expect(await c.commitPostImport(p.id, key(), 'update')).toMatchObject({ ok: false, message: expect.stringMatching(/at most 200/) });
+    expect(await c.commitPostImport(p.id, key(), false, 'update')).toMatchObject({ ok: false, message: expect.stringMatching(/at most 200/) });
     // That review is spent: a fresh one imports the new post alone.
     const again = await review(c, join(dir, 'later.xml'));
-    expect(await c.commitPostImport(again.id, key(), 'skip')).toMatchObject({ ok: true, imported: 1, updated: 0 });
+    expect(await c.commitPostImport(again.id, key(), false, 'skip')).toMatchObject({ ok: true, imported: 1, updated: 0 });
     expect(posts(c).map((e) => e.title)).toContain('Autumn');
     expect(Object.keys(c.snapshot()!.state.collections.posts.settings.taxonomies.tags.terms)).toEqual(['bread']);
   });

@@ -69,6 +69,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   source: 'posts',
   collection: { name: 'Posts', route: '/blog/', create },
   posts: [{ title: 'Bread', from: '2026-01-02-bread.md', route: '/blog/bread/', date: '2026-01-02', draft: false, pictures: 0, categories: [], tags: [], notes: [] }],
+  existing: 0,
   pictures: 0,
   missing: [],
   newTerms: { categories: [], tags: [] },
@@ -133,7 +134,7 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   it('is ticked for a new blog, asks for the link and says it was added', async () => {
     await mount(site, preview(true), { ok: true, imported: 1, addedToNavigation: true });
     expect(await box().isChecked()).toBe(true);
-    expect(await importing()).toEqual(['review-1', 'w', true]);
+    expect(await importing()).toEqual(['review-1', 'w', true, 'skip']);
     await expect.poll(toasts).toEqual(['Imported 1 post. Added the Blog link to the header menu.']);
   });
 
@@ -143,7 +144,7 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await box().check();
     await box().press('Enter');
     expect(await box().isChecked()).toBe(false);
-    expect(await importing()).toEqual(['review-1', 'w', false]);
+    expect(await importing()).toEqual(['review-1', 'w', false, 'skip']);
     await expect.poll(toasts).toEqual(['Imported 1 post.']);
   });
 
@@ -171,7 +172,7 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await mount(applyOperations(site, [{ type: 'collection.create', collectionId: 'posts' }]).state, preview(false));
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
-    expect(await importing()).toEqual(['review-1', 'w', false]);
+    expect(await importing()).toEqual(['review-1', 'w', false, 'skip']);
   });
 
   it('is not offered when the header has no menu', async () => {
@@ -180,7 +181,7 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await mount(bare, preview(true));
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
-    expect(await importing()).toEqual(['review-1', 'w', false]);
+    expect(await importing()).toEqual(['review-1', 'w', false, 'skip']);
   });
 
   it('is not offered for posts that can’t be imported', async () => {
