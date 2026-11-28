@@ -5,7 +5,7 @@ import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/Block
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { pageOutOfSight, selectPage } from '../lib/actions';
 import { openEditorDestination, openEntryField } from '../lib/open-destination';
-import { contentFields, contentTarget, entryTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
+import { contentFields, contentTarget, entryTarget, findContent, placeKey, placeQualifiers, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
 import { refKey, type ElementRef } from '@shared/types';
@@ -110,7 +110,7 @@ interface MatchGroup {
 function groupsOf(matches: ContentMatch[]): MatchGroup[] {
   const out = new Map<string, MatchGroup>();
   for (const m of matches) {
-    const key = `${m.field.owner.kind}:${m.field.owner.id}`;
+    const key = placeKey(m.field);
     const shared = m.field.sharedPages !== undefined;
     const g = out.get(key) ?? { key, where: m.field.where, reach: reach(m.field), shared, entry: !!m.field.entry, site: m.field.owner.kind === 'site', ...(shared ? { shell: m.field.owner.id, pages: m.field.sharedPages } : {}), matches: [] };
     g.matches.push(m);
@@ -230,12 +230,17 @@ function Path({ name }: { name: string }) {
   );
 }
 
-function ChangeRow({ c }: { c: ContentChange }) {
+/** A change elsewhere, by its place and field; a place that shares its title also says where it is. */
+function ChangeRow({ c, at }: { c: ContentChange; at?: string }) {
+  const { field } = c;
+  // A header or footer's own fields leave its name to the path, unless it has to be told apart.
+  const name = field.where !== field.section ? `${field.where} › ${pathOf(field)}` : at ? `${field.where} › ${field.label}` : field.label;
   return (
     <li className="find-match">
       <div className="grow find-match-text">
         <span className="find-where">
-          <Path name={c.field.where === c.field.section ? c.field.label : `${c.field.where} › ${pathOf(c.field)}`} />
+          {at && <span className="find-address">{at}</span>}
+          <Path name={name} />
         </span>
         <span className="find-excerpt">
           <del>{c.before || 'Empty'}</del>
@@ -433,6 +438,9 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const hasRefused = removing && !!plan?.error && refused.size > 0;
   const effective = plan && !plan.error ? chosen.filter((m) => !unchanged(m)).length : chosen.length - (hasRefused ? refused.size : 0);
   const alsoChanges = plan && !plan.error ? plan.changes.filter((c) => c.knockOn) : [];
+  // Places listed under one title say their addresses: in their heading, its checkbox and the jump strip alike.
+  const addresses = state ? placeQualifiers(state, [...matches.map((m) => m.field), ...alsoChanges.map((c) => c.field)]) : new Map<string, string>();
+  const placeName = (g: MatchGroup) => (addresses.has(g.key) ? `${g.where}, ${addresses.get(g.key)}` : g.where);
   const knockOnFor = (m: ContentMatch) => alsoChanges.find((c) => c.field.key === m.field.key && c.kind === m.kind);
   const noteFor = (m: ContentMatch) => {
     const c = plan?.changes.find((x) => !x.knockOn && x.field.key === m.field.key && x.kind === m.kind);
@@ -904,10 +912,12 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
             {groups.map((g) => {
               const allLocked = g.matches.every((m) => m.blocked);
               const JumpIcon = allLocked ? Lock : g.entry ? Newspaper : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
+              const at = addresses.get(g.key);
               return (
-                <button key={g.key} className={`find-jump-item${g.shared ? ' shared' : ''}`} disabled={!settled} onClick={() => jumpTo(g.key)} title={g.where} aria-label={`${g.where}, ${matchCount(g.matches.length)}${allLocked ? ', all need the inspector' : ''}`}>
+                <button key={g.key} className={`find-jump-item${g.shared ? ' shared' : ''}${at ? ' addressed' : ''}`} disabled={!settled} onClick={() => jumpTo(g.key)} title={placeName(g)} aria-label={`${placeName(g)}, ${matchCount(g.matches.length)}${allLocked ? ', all need the inspector' : ''}`}>
                   <JumpIcon aria-hidden />
                   <span className="find-jump-name">{g.where}</span>
+                  {at && <span className="find-address">{at}</span>}
                   <span className="find-jump-count">{g.matches.length}</span>
                 </button>
               );
@@ -965,7 +975,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
                 </h3>
                 <ul>
                   {alsoChanges.map((c, i) => (
-                    <ChangeRow key={i} c={c} />
+                    <ChangeRow key={i} c={c} at={addresses.get(placeKey(c.field))} />
                   ))}
                 </ul>
               </section>
@@ -979,13 +989,14 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
               const lockedText = g.entry ? `${locked} read-only` : `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
               const refusedIn = hasRefused ? g.matches.filter((m) => refused.has(m.id)).length : 0;
               const count = !replacing ? matchCount(g.matches.length) : !eligible.length ? lockedText : `${on} of ${eligible.length} chosen${locked ? ` · ${lockedText}` : ''}${refusedIn ? ` · ${refusedIn} ${refusedIn === 1 ? 'needs' : 'need'} an address` : ''}`;
+              const at = addresses.get(g.key);
               const GroupIcon = g.entry ? Newspaper : g.site ? Globe : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
               return (
-                <section key={g.key} data-group={g.key} className="find-group" aria-label={`${g.where}, ${g.reach.toLowerCase()}`}>
+                <section key={g.key} data-group={g.key} className="find-group" aria-label={`${placeName(g)}, ${g.reach.toLowerCase()}`}>
                   <h3 className={`find-group-head${!eligible.length ? ' locked' : ''}`}>
                     {replacing &&
                       (eligible.length ? (
-                        <Check aria-label={`Choose ${locked ? 'the replaceable' : 'all'} matches in ${g.where}`} checked={on === eligible.length} mixed={on > 0 && on < eligible.length} disabled={busy} onChange={(e) => setMany(eligible, e.target.checked)} />
+                        <Check aria-label={`Choose ${locked ? 'the replaceable' : 'all'} matches in ${placeName(g)}`} checked={on === eligible.length} mixed={on > 0 && on < eligible.length} disabled={busy} onChange={(e) => setMany(eligible, e.target.checked)} />
                       ) : (
                         <span className="find-check find-lock">
                           <Lock aria-hidden />
@@ -1004,7 +1015,15 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
                     >
                       <ChevronRight className="find-chevron" aria-hidden />
                       <GroupIcon className="find-group-icon" aria-hidden />
-                      <span className="find-group-name">{g.where}</span>
+                      <span className="find-group-name">
+                        {g.where}
+                        {at && (
+                          <>
+                            {' '}
+                            <span className="find-address">{at}</span>
+                          </>
+                        )}
+                      </span>
                       <span className="find-count">{count}</span>
                     </button>
                     {g.entry && <span className="badge">{g.reach}</span>}
