@@ -390,6 +390,10 @@ describe('Markdown copies', () => {
     ).get('static/index.html.md')!;
     expect(hidden).toContain('|   | a year | a year |\n| At home | Included | Not included Ask us |\n| Drawings |');
     expect(hidden).not.toContain('$10');
+    // With the plans' row hidden, each value still names its plan where the columns stack: the names stay, the prices go.
+    const row = files(run(s, { type: 'node.setStyle', owner, nodeId: placed.nodeId, partId: 'plans', scope: 'base', property: 'hidden', value: true })).get('static/index.html.md')!;
+    expect(row).toContain('|   | Basic | Pro \\| plus |\n| --- | --- | --- |\n| Visits: At home |');
+    expect(row).not.toContain('$10');
   });
 
   it('names each tab’s panel by its tab, and writes a plan’s features as its text says them', () => {
@@ -424,6 +428,9 @@ describe('Markdown copies', () => {
     expect(md).toContain('### Our writers');
     expect(md).not.toContain('Spring pottery classes');
     expect(md).not.toContain('Spring wheel classes');
+    // A data-only collection's entries are no documents of their own: what the list shows of them stays.
+    const data = run(s, { type: 'collection.update', collectionId: 'posts', pages: { detail: false, archive: false } } as never);
+    expect(files(data).get('static/index.html.md')).toContain('- **Spring pottery classes**\n  Spring wheel classes open for bookings');
   });
 
   it('gives a cached run the same copies as a fresh one when a section placed on several pages changes', () => {

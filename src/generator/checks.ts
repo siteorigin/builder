@@ -9,7 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { displayWinner, rangeDisplay } from '@shared/styles';
 import { publicUrl } from '@shared/public-url';
-import { entryRoute, findEntry, type SiteEntry } from '@shared/collections';
+import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
@@ -247,8 +247,10 @@ export function effectiveProps(
     // A list connected to a collection shows its entries, as the generator writes them, never its own items.
     const connected = connectedListItems(state, def, n, name, place);
     if (connected) {
-      // Each item is one of the collection's entries, by its ID: one the walk may not show is left out, all of it.
-      props[name] = listed ? connected.filter((item) => listed({ type: 'entry', target: item.id })) : connected;
+      // Each item is one of the collection's entries, by its ID. One with a page of its own is a document: one the walk
+      // may not show is left out, all of it. A data-only collection's entries are no documents, only what lists show.
+      const document = (id: unknown) => typeof id === 'string' && hasDetailPages(findEntry(state, id)?.collection.settings);
+      props[name] = listed ? connected.filter((item) => !document(item.id) || listed({ type: 'entry', target: item.id })) : connected;
       continue;
     }
     const own = Object.hasOwn(n.props, name);

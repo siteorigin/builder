@@ -390,13 +390,16 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
     // A row's value the placement never set is its field's default, as the site fills it in.
     const schema = def.properties.features;
     const fields = schema?.type === 'list' ? schema.fields : {};
-    const field = (r: Record<string, unknown>, k: string) => (Object.hasOwn(r, k) ? r[k] : (Object.hasOwn(fields, k) ? (fields[k] as { default?: unknown }).default : undefined));
+    // A list handed in by the design around it arrives as that design gives it.
+    const filled = !isBinding(n.props.features);
+    const field = (r: Record<string, unknown>, k: string) => (Object.hasOwn(r, k) || !filled ? r[k] : Object.hasOwn(fields, k) ? (fields[k] as { default?: unknown }).default : undefined);
     // An icon says whether a plan includes a feature: its accessible name where it is given one, else its mark.
     const value = (v: unknown) => (v === 'included' ? text(props.includedLabel) || '✓' : v === 'excluded' ? text(props.excludedLabel) || '—' : '');
     const features = Array.isArray(props.features) ? (props.features as Array<Record<string, unknown>>).filter((r) => r && typeof r === 'object') : [];
     const shown = !hidden('plans');
     const recommended = text(props.highlightLabel);
-    const header = ['', ...plans.map((p) => (shown ? cell(p.name) + (p.key === highlight && recommended ? ` (${inline(recommended)})` : '') : ''))];
+    // Each value names its plan where the columns stack, so the names show with the plans' row hidden.
+    const header = ['', ...plans.map((p) => cell(p.name) + (shown && p.key === highlight && recommended ? ` (${inline(recommended)})` : ''))];
     const rows = [
       ['', ...plans.map((p) => (shown ? cell(hidden('price') ? '' : p.price, p.period) : ''))],
       ...features.map((r) => {
@@ -414,6 +417,8 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
 
   /** What the theme's own code components show: their words around the table, form or video, and a table's cells. */
   const code = (def: ComponentDefinition, props: Record<string, unknown>, n: InstanceNode, scope: Scope) => {
+    // Hidden whole by its placement inside a design (a page's own placements are left out before they are walked).
+    if (codePartsHidden(def, n, ['root'])) return;
     if (def.componentId === 'pricing.compare' && shippedAsIs(def)) return compare(def, props, n, scope);
     const which = shippedCode(state, def);
     // The compact video's only words are its caption.
