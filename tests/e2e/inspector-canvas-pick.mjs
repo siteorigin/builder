@@ -56,6 +56,22 @@ assert.equal(after[home.other].props.heading, savedOther, 'the section clicked k
 assert.equal(await lost().count(), 0, 'no notice says the text was lost');
 await win.screenshot({ path: join(SHOTS, 'inspector-canvas-pick.png') });
 
+/** Where focus rests once the Inspector has drawn the selection, and whether anything there shows a focus ring. */
+const focusAfterPick = async () => {
+  await new Promise((r) => setTimeout(r, 400));
+  return win.evaluate(() => ({ body: document.activeElement === document.body, ring: !!document.querySelector('#dock-panel-inspect :focus-visible') }));
+};
+step('a click on the page with an Inspector field focused leaves no focus ring in the Inspector (#1476)');
+assert.deepEqual(await focusAfterPick(), { body: true, ring: false }, 'focus rests on the body, so the name of the selection is not ringed');
+
+step('nor does one made after a click on the status bar took focus away from an Inspector field (#1476)');
+await heading().focus();
+await heading().press('End');
+await win.locator('.status-bar').click({ position: { x: 4, y: 4 } });
+await frame.locator(`[data-so-ctx="page:${home.pageId}"][data-so-node="${home.hero}"]`).first().getByRole('heading', { name: typed, exact: true }).click();
+await eventually(async () => assert.equal(sectionOf(await selected()), home.hero, 'the click selects in the Split hero'));
+assert.deepEqual(await focusAfterPick(), { body: true, ring: false }, 'focus rests on the body after the second pick too');
+
 step('selecting the hero and its heading with the Inspector open leaves the editor in its window (#897)');
 await openInspector(win);
 /** The editor document's own scroll position, and how far it reaches past the window. */
