@@ -776,6 +776,11 @@ export interface ChatMessage {
      */
     repair?: 'settings' | 'key';
     /**
+     * What the request still needs that only the user can turn on: `developer-mode`, when the AI answered that what was
+     * asked needs custom code while Developer mode was off. The turn offers Settings at that switch (#1329).
+     */
+    needs?: 'developer-mode';
+    /**
      * Code the run wrote that the project does not keep, each version kept in the project's recovery folder (spec
      * 14.3): a source patch the checks refused (`rejected`), or one that landed in a run that was then undone because it
      * failed or was stopped (`reverted`). `path` is relative to the project folder.

@@ -210,6 +210,8 @@ describe('a new component asked for in page scope (#1143)', () => {
     const req = await firstRequest('Create a countdown component', onePage, false, toolCalling);
     expect(req.system).toMatch(ask);
     expect(req.system).toMatch(/Svelte code[^\n]*Developer mode(, which is off| \(off\))/);
+    // And where the user turns it on, which the assistant cannot do (#1329).
+    expect(req.system).toMatch(/Developer mode[^\n]*Settings > General/);
     expect(req.system).not.toContain('component.createCode');
   });
 });

@@ -25,6 +25,7 @@ import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
+import { SAYS_DEVELOPER_MODE } from '@engine/developer-mode';
 import { chatBusy, clearRefusal, composerAction, imageLabels, isClearCommand, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { requestRoutingReview } from '../lib/formRoutingReview';
@@ -1785,6 +1786,7 @@ export function Chat() {
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
+          {SAYS_DEVELOPER_MODE.test(asking.question.text) && <DeveloperModeOffer asking />}
           {/* The app's question about where forms send is answered in its own dialog, which shows each address before
               and after (#1130); the card opens it again. Only the options scroll, so a long list never scrolls the
               question and its instructions out of sight. */}
@@ -2152,7 +2154,35 @@ function HandledBy({ recipient }: { recipient: TurnModel }) {
  * Its words lead with no card around them; under them, one quiet line says the site is unchanged and opens what the
  * turn did on the way (its steps, any passed checks, the model).
  */
-function Reply({ m, recipient, children }: { m: ChatMessage; recipient: TurnModel | null; children?: ReactNode }) {
+/** Settings, opened at the Developer mode switch over the conversation, which stays as it is. */
+const openDeveloperMode = () => setState({ modal: { kind: 'settings', tab: 'general', focus: 'developer-mode' } });
+
+/**
+ * Where Developer mode is turned on, under a turn (or a waiting question) that said the request needs it while it is
+ * off (#1329). Turning it on stays the user's to do in Settings. Once it is on, a finished turn says to ask again; a
+ * question still waiting is in a request that started without it, so it says nothing more.
+ */
+function DeveloperModeOffer({ asking = false }: { asking?: boolean }) {
+  const devMode = useStore((s) => !!s.settings?.developerMode);
+  if (devMode && asking) return null;
+  return (
+    <div className="scope-note developer-mode-offer" role="note">
+      <Info aria-hidden="true" />
+      {devMode ? (
+        <span>Developer mode is on now. Ask again for the AI to write it in code.</span>
+      ) : (
+        <span>
+          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then ask again{asking ? ' once this request finishes' : ''}.{' '}
+          <button className="link" onClick={openDeveloperMode}>
+            Open Settings
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Reply({ m, recipient, latest = false, children }: { m: ChatMessage; recipient: TurnModel | null; latest?: boolean; children?: ReactNode }) {
   const history = useStore((s) => s.snapshot?.history);
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const turn = turnState(m, history)!;
@@ -2180,6 +2210,7 @@ function Reply({ m, recipient, children }: { m: ChatMessage; recipient: TurnMode
         <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
       </div>
       {locations.length > 0 && <Locations list={locations} />}
+      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer />}
       <div className="reply-foot">
         {hasDetails ? (
           <button className="reply-toggle" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)}>
@@ -2320,7 +2351,7 @@ const AssistantMessage = memo(function AssistantMessage({
       {/* A finished turn that changed nothing is its answer; any other is one card that leads with its result. What was
           asked and answered on the way sits inside either. */}
       {r && reply && (
-        <Reply m={m} recipient={modelLine ? null : recipient}>
+        <Reply m={m} recipient={modelLine ? null : recipient} latest={latest}>
           {answers.length > 0 ? answers : null}
         </Reply>
       )}
@@ -2710,6 +2741,7 @@ function ResultCard({
         )}
         {children && <div className="result-answers">{children}</div>}
       </div>
+      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer />}
       {/* Retrying puts the request back in the composer, so it is offered only while there is one to write in. */}
       {((r.canUndo && undoable) || reviewEntry || retryable || repair || onContinue || onRetry) && (
         <div className="result-foot">

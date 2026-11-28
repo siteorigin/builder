@@ -2297,6 +2297,24 @@ describe('tool definitions', () => {
     expect(results.map((r) => !!r.isError)).toEqual([false, true, true, true]);
   });
 
+  it('offers Settings when the answer says the request needs Developer mode while it is off (#1329)', async () => {
+    const blocked = 'A working calculator needs Developer mode, which is off. You can turn it on in Settings > General.';
+    const off = await setup([() => finish(blocked)], { codeEnabled: false });
+    const before = JSON.stringify(off.session.state);
+    const { result } = await off.run('Add an interactive mortgage calculator');
+    expect(result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // The setting is only offered: the run changed nothing, Developer mode included.
+    expect(JSON.stringify(off.session.state)).toBe(before);
+    // A question answered the same way offers it too.
+    const asked = await setup([() => finish(blocked)], { codeEnabled: false });
+    expect((await asked.run('Can you build a calculator?', { mode: 'ask' })).result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // With Developer mode on there is nothing to turn on, and an answer that only mentions it asks for nothing.
+    const on = await setup([() => finish(blocked)], { codeEnabled: true });
+    expect((await on.run('Add an interactive mortgage calculator')).result?.needs).toBeUndefined();
+    const fine = await setup([() => finish('I built the tabs with Developer mode off, from managed parts.')], { codeEnabled: false });
+    expect((await fine.run('Add tabs')).result?.needs).toBeUndefined();
+  });
+
   it('offers contract operations to a run selected inside a definition, even without Developer mode', async () => {
     const env = await setup([() => finish('Nothing to do.')], { codeEnabled: false, managed: ['hero.split'] });
     const homeId = env.session.state.site.homePageId;
