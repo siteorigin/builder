@@ -15,7 +15,7 @@ import { EngineError } from '@engine/tree';
 import { entryLinkUses, pageLinkUses } from '@engine/page-links';
 import { validateState } from '@engine/validate';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
-import { orderedEntries, routeOwners } from '@shared/collections';
+import { entryPickerLabel, orderedEntries, routeOwners } from '@shared/collections';
 import { todayArticleDate } from '@shared/articles';
 import { publishedState, resolveLink } from '@generator/index';
 import { linkToTarget } from '@shared/richtext';
@@ -219,6 +219,21 @@ describe('collections', () => {
     expect(JSON.stringify(linked.collections.posts.entries.en_spring.body)).toContain('{"type":"entry","target":"en_winter"}');
     expect(validateState(linked).filter((d) => d.severity === 'error')).toEqual([]);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_nope', title: 'X' }])).toThrow(/no entry "en_nope"/);
+  });
+
+  it('names same-title entries apart in a picker by address and date (#1440)', () => {
+    const s = run(
+      blog(),
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_mon', title: 'Open house', publishedAt: '2027-04-05' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_fri', title: 'Open house', publishedAt: '2027-04-09' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_mon', slug: 'open-house-monday' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_fri', slug: 'open-house-friday' }
+    );
+    const posts = s.collections.posts;
+    expect(entryPickerLabel(posts, posts.entries.en_mon)).toBe('Open house (/blog/open-house-monday/, 2027-04-05)');
+    expect(entryPickerLabel(posts, posts.entries.en_fri)).toBe('Open house (/blog/open-house-friday/, 2027-04-09)');
+    // A title that is its own needs only its address.
+    expect(entryPickerLabel(posts, posts.entries.en_winter)).toBe(`Winter hours (/blog/${posts.entries.en_winter.slug}/)`);
   });
 
   it('orders a collection holding a damaged entry as it always has', () => {

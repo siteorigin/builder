@@ -49,7 +49,8 @@ const BRIDGE = `
 
 /**
  * The bridge with the client review's calls answered (#1134): one edition captured earlier, and every capture and save
- * held until the test settles it, each call recorded on window.__calls.
+ * held until the test settles it, each call recorded on window.__calls. What the main process sends (a capture's
+ * progress, #1413) is sent by the test with window.__emit.
  */
 const REVIEW_BRIDGE = `
   const any = (path) => new Proxy(function () {}, {
@@ -65,8 +66,15 @@ const REVIEW_BRIDGE = `
     key === 'reviewEditions' ? async () => window.__editions
     : key === 'captureReviewEdition' ? (...a) => held('capture', a).then((r) => { if (r.ok) window.__editions = [r.edition, ...window.__editions]; return r; })
     : key === 'exportReviewSheet' ? (...a) => held('save', a)
+    : key === 'stopReviewCapture' ? async (...a) => void window.__calls.push(['stop', ...a])
     : any('project.' + String(key)) });
-  window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'then' ? undefined : any(String(key))) });
+  const listeners = new Map();
+  const on = (channel, cb) => {
+    listeners.set(channel, [...(listeners.get(channel) ?? []), cb]);
+    return () => listeners.set(channel, (listeners.get(channel) ?? []).filter((f) => f !== cb));
+  };
+  window.__emit = (channel, payload) => (listeners.get(channel) ?? []).forEach((cb) => cb(payload));
+  window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'on' ? on : key === 'then' ? undefined : any(String(key))) });
   window.__edition = edition;
 `;
 
@@ -395,8 +403,8 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.evaluate(`window.__calls.length`)).toBe(2);
     await home.check();
     await capture.click();
-    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/'] }]);
-    await expect.poll(() => page.locator('.client-review-hint').innerText()).toContain('Building the website and picturing each page');
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/'], id: expect.any(String) }]);
+    await expect.poll(() => page.locator('.client-review-hint').innerText()).toContain('Building the website…');
     expect(await home.isDisabled()).toBe(true);
     await page.evaluate(`window.__settle({ ok: true, path: '/p', message: 'Captured 2 pictures.', edition: { ...window.__edition('2026-11-27T10-00-00Z-1badc0de', new Date().toISOString()), captures: [{ route: '/', width: 1440, status: 'captured', file: 'images/001-1440.png', height: 900, sha256: 'a' }, { route: '/', width: 390, status: 'captured', file: 'images/001-390.png', height: 900, sha256: 'a' }] } })`);
     await expect.poll(() => rows.count()).toBe(2);
@@ -405,13 +413,73 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await outcome.innerText()).toContain('Captured 2 pictures.');
   });
 
+  it('says how far a capture has got and stops it, keeping the editions captured before (#1413)', async () => {
+    await open(1100, 900, { bridge: REVIEW_BRIDGE });
+    await page.getByRole('button', { name: 'Client review pages' }).click();
+    const rows = page.locator('.client-review-editions li');
+    await expect.poll(() => rows.count()).toBe(1);
+    await page.locator('.client-review-pages label', { hasText: '/about/' }).getByRole('checkbox').check();
+    await page.getByRole('button', { name: 'Capture 2 pages' }).click();
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)?.[0]`)).toBe('capture');
+    expect(await page.evaluate(`window.__calls.at(-1)[1].routes`)).toEqual(['/', '/about/']);
+    const id = await page.evaluate<string>(`window.__calls.at(-1)[1].id`);
+    expect(id).toMatch(/\S/);
+    const emit = (p: object) => page.evaluate(`window.__emit('review:progress', ${JSON.stringify({ id, ...p })})`);
+    const hint = page.locator('.client-review-hint');
+    // The build first, then each picture as it is taken, with the work done so far.
+    await expect.poll(() => hint.innerText()).toBe('Building the website…');
+    await emit({ phase: 'build' });
+    expect(await hint.innerText()).toBe('Building the website…');
+    await emit({ phase: 'capture', done: 0, total: 4, route: '/', title: 'Home', label: 'Desktop' });
+    await expect.poll(() => hint.innerText()).toBe('Picturing Home at Desktop · 0 of 4 done');
+    await emit({ phase: 'capture', done: 2, total: 4, route: '/about/', title: 'About', label: 'Desktop' });
+    await expect.poll(() => hint.innerText()).toBe('Picturing About at Desktop · 2 of 4 done');
+    // Another capture's word, arriving late, is not this one's.
+    await page.evaluate(`window.__emit('review:progress', { id: 'earlier', phase: 'saving', done: 4, total: 4 })`);
+    expect(await hint.innerText()).toBe('Picturing About at Desktop · 2 of 4 done');
+    // The dialog stays put while it works, but the capture can be stopped.
+    expect(await page.locator('.modal-foot > button', { hasText: 'Close' }).isDisabled()).toBe(true);
+    const stop = page.getByRole('button', { name: 'Stop capture' });
+    await stop.click();
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['stop', id]);
+    await expect.poll(() => hint.innerText()).toBe('Stopping the capture…');
+    expect(await stop.getAttribute('aria-disabled')).toBe('true');
+    // Asked once, however often it is pressed.
+    await stop.click({ force: true });
+    expect(await page.evaluate(`window.__calls.filter((c) => c[0] === 'stop').length`)).toBe(1);
+    await page.evaluate(`window.__settle({ ok: false, stopped: true, message: 'The capture was stopped. No edition was kept; the editions captured before are unchanged.' })`);
+    // Said as news, not as a failure; nothing partial listed, the earlier edition still there and the dialog free.
+    const outcome = page.locator('.client-review-outcome');
+    await expect.poll(() => outcome.innerText()).toContain('The capture was stopped.');
+    expect(await outcome.getAttribute('role')).toBe('status');
+    expect(await outcome.getAttribute('class')).not.toContain('danger');
+    await expect.poll(() => page.evaluate<boolean>(`document.activeElement === document.querySelector('.client-review-outcome')`)).toBe(true);
+    expect(await page.getByRole('button', { name: 'Stop capture' }).count()).toBe(0);
+    expect(await rows.count()).toBe(1);
+    expect(await rows.first().innerText()).toContain('2026-11-20T09-00-00Z-0badc0de');
+    expect(await page.locator('.modal-foot > button', { hasText: 'Close' }).isDisabled()).toBe(false);
+    // A late word from the capture that ended changes nothing, then or in the capture after it.
+    await emit({ phase: 'capture', done: 3, total: 4, route: '/about/', title: 'About', label: 'Phone' });
+    expect(await hint.innerText()).toBe('');
+    await page.getByRole('button', { name: 'Capture 2 pages' }).click();
+    await expect.poll(() => hint.innerText()).toBe('Building the website…');
+    await emit({ phase: 'saving', done: 4, total: 4 });
+    expect(await hint.innerText()).toBe('Building the website…');
+    await expect.poll(() => page.evaluate(`window.__calls.filter((c) => c[0] === 'capture').length`)).toBe(2);
+    const second = await page.evaluate<string>(`window.__calls.at(-1)[1].id`);
+    expect(second).not.toBe(id);
+    await page.evaluate(`window.__emit('review:progress', ${JSON.stringify({ id: second, phase: 'build' })})`);
+    await page.getByRole('button', { name: 'Stop capture' }).click();
+    await expect.poll(() => hint.innerText()).toBe('Stopping once the website is built…');
+  });
+
   it('captures the pages chosen, not only the home page, and drops a page that is no longer published (#1134)', async () => {
     await open(1100, 900, { bridge: REVIEW_BRIDGE });
     await page.getByRole('button', { name: 'Client review pages' }).click();
     const about = page.locator('.client-review-pages label', { hasText: '/about/' }).getByRole('checkbox');
     await about.check();
     await page.getByRole('button', { name: 'Capture 2 pages' }).click();
-    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/', '/about/'] }]);
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/', '/about/'], id: expect.any(String) }]);
     // The section stays open while it works.
     await page.getByRole('button', { name: 'Client review pages' }).click({ force: true });
     expect(await page.getByRole('button', { name: 'Client review pages' }).getAttribute('aria-expanded')).toBe('true');

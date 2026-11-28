@@ -22,12 +22,13 @@ export function firstInspectorControl(panel: ParentNode | null = document.getEle
 
 /**
  * Move focus into the Inspector once it has drawn the selection (it may have only just opened). Tries each
- * frame for up to `ms`; returns a cancel function.
+ * frame for up to `ms`, while `wanted` holds; returns a cancel function.
  */
-export function focusInspector(ms = 1000): () => void {
+export function focusInspector(ms = 1000, wanted: () => boolean = () => true): () => void {
   const until = Date.now() + ms;
   let frame = 0;
   const step = () => {
+    if (!wanted()) return;
     const panel = document.getElementById('dock-panel-inspect');
     // The panel's own content is drawn a frame after it opens: wait for a heading before settling for less.
     const el = firstInspectorControl(panel);

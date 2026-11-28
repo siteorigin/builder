@@ -24,6 +24,8 @@ const hostOf = (url: string) => {
     return url;
   }
 };
+/** The Developer mode switch, which a chat turn that needed it opens Settings at. */
+export const DEVELOPER_MODE_SWITCH = 'settings-developer-mode';
 const focusById = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
 /** Focuses a select and opens its list, where the platform allows it. */
 const openPicker = (id: string) => {
@@ -84,8 +86,15 @@ export function SettingsModal() {
   const updateSettings = useCallback(async (patch: SettingsPatch) => void (await saveSettings(patch)), []);
   // Opened straight to a section (from chat, say), focus starts on that section's tab rather than the first one.
   const loaded = !!settings;
+  // Asked for one setting (Developer mode, from a chat turn that needed it), focus lands on its switch instead (#1329).
+  const focusTarget = modal?.kind === 'settings' && modal.focus === 'developer-mode' ? DEVELOPER_MODE_SWITCH : null;
   useEffect(() => {
-    if (loaded) document.getElementById(`settings-tab-${tab}`)?.focus();
+    if (!loaded) return;
+    const target = focusTarget ? document.getElementById(focusTarget) : null;
+    if (target) {
+      target.scrollIntoView({ block: 'center' });
+      target.focus();
+    } else document.getElementById(`settings-tab-${tab}`)?.focus();
     // Only when the dialog first has content: later tab changes move focus themselves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
@@ -653,7 +662,7 @@ export function SettingsModal() {
                       />
                     </InlineRow>
                     <div className="settings-row">
-                      <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
+                      <SwitchRow id={DEVELOPER_MODE_SWITCH} checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
                     </div>
                     <div className="settings-row">
                       <SwitchRow
