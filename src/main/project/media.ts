@@ -328,7 +328,7 @@ export function heifHasImageData(buf: Buffer): boolean {
   for (const b of boxes(buf, 0, buf.length)) {
     if (b.type === 'mdat' && b.end > b.body) return true;
     // The metadata box is a full box: its children follow its version and flags.
-    if (b.type === 'meta' && [...boxes(buf, b.body + 4, b.end)].some((c) => c.type === 'idat' && c.end > c.body)) return true;
+    if (b.type === 'meta') for (const c of boxes(buf, b.body + 4, b.end)) if (c.type === 'idat' && c.end > c.body) return true;
   }
   return false;
 }

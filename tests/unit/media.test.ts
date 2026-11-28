@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { cmapLookup, fontCoverage, fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng } from '../../src/main/project/media';
+import { cmapLookup, fontCoverage, fontInfo, heifBrands, heifHasAlpha, heifHasImageData, imageInfo, imageProblem, isAnimatedPng } from '../../src/main/project/media';
 import { scriptLabels } from '@shared/font-scripts';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
@@ -33,6 +33,22 @@ function avif(rotate = 0): Buffer {
   const ipma = full('ipma', u32(2), assoc(2, [1]), assoc(1, rotate ? [2, 3] : [2]));
   return Buffer.concat([box('ftyp', Buffer.from('avifmif1', 'ascii')), full('meta', full('pitm', u16(1)), box('iprp', box('ipco', ...props), ipma))]);
 }
+
+describe('whether an AVIF holds image data (#1459)', () => {
+  it('finds it in a media data box of any size form, or inside the metadata, and not in a file cut before it', () => {
+    const data = Buffer.from([1, 2, 3, 4]);
+    expect(heifHasImageData(avif())).toBe(false);
+    expect(imageProblem(avif(), 'image/avif')).toBeNull();
+    expect(heifHasImageData(Buffer.concat([avif(), box('mdat', data)]))).toBe(true);
+    expect(heifHasImageData(Buffer.concat([avif(), box('mdat')]))).toBe(false);
+    // Size 0: to the end of the file; size 1: a 64-bit size after the type.
+    expect(heifHasImageData(Buffer.concat([avif(), u32(0), Buffer.from('mdat', 'ascii'), data]))).toBe(true);
+    expect(heifHasImageData(Buffer.concat([avif(), u32(1), Buffer.from('mdat', 'ascii'), u32(0), u32(20), data]))).toBe(true);
+    const withIdat = Buffer.concat([box('ftyp', Buffer.from('avifmif1', 'ascii')), full('meta', full('pitm', u16(1)), box('idat', data))]);
+    expect(heifHasImageData(withIdat)).toBe(true);
+    expect(heifHasImageData(Buffer.concat([box('ftyp', Buffer.from('avifmif1', 'ascii')), full('meta', full('pitm', u16(1)), box('idat'))]))).toBe(false);
+  });
+});
 
 describe('image dimensions', () => {
   it('reports a JPEG as displayed, turning it by its EXIF orientation', () => {

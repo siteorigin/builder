@@ -86,7 +86,14 @@ export async function damagedCopy(path: string): Promise<boolean> {
     const key = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
     const known = copyVerdicts.get(key);
     if (known !== undefined) return known;
-    const buf = await handle.readFile();
+    // Exactly the size the handle said, never more: a file that grows meanwhile is judged by what it held then.
+    const size = Number(st.size);
+    const buf = Buffer.alloc(size);
+    for (let got = 0; got < size; ) {
+      const { bytesRead } = await handle.read(buf, got, size - got, got);
+      if (!bytesRead) return false;
+      got += bytesRead;
+    }
     // A copy cut short just before its image data is still whole box by box.
     const verdict = imageProblem(buf, mime) !== null || (mime === 'image/avif' && !heifHasImageData(buf));
     if (copyVerdicts.size >= COPY_VERDICTS) copyVerdicts.delete(copyVerdicts.keys().next().value!);
