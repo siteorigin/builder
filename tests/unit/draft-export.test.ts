@@ -428,6 +428,54 @@ describe('exporting a project with a draft', () => {
     expect(reopened.snapshot()!.conflicts).toEqual([]);
   });
 
+  it('#1450: holds back the files only a draft uses, so the handoff’s own build leaves them out, and puts them back when the project is opened', async () => {
+    const dir = temp('project');
+    const sketch = 'static/assets/winter-sketch-1a2b3c4d.svg';
+    const prices = 'static/assets/winter-prices-2b3c4d5e.pdf';
+    const menu = 'static/assets/menu-3c4d5e6f.pdf';
+    const bytes: Record<string, Buffer> = { [sketch]: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), [prices]: Buffer.from('%PDF-1.4 winter prices'), [menu]: Buffer.from('%PDF-1.4 menu') };
+    let state = createStarterState('business', 'Bookshop', false);
+    const home = state.site.homePageId;
+    const draft = { kind: 'page' as const, id: 'pg_winter01' };
+    state = applyOperations(state, [
+      { type: 'asset.add', asset: { id: 'a_sketch', name: 'Winter sketch', file: sketch, mime: 'image/svg+xml', bytes: bytes[sketch].length, width: 10, height: 10, hash: sha(bytes[sketch]), kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' } },
+      { type: 'asset.add', asset: { id: 'a_prices', name: 'Winter prices', file: prices, mime: 'application/pdf', bytes: bytes[prices].length, hash: sha(bytes[prices]), kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' } },
+      { type: 'asset.add', asset: { id: 'a_menu', name: 'Menu', file: menu, mime: 'application/pdf', bytes: bytes[menu].length, hash: sha(bytes[menu]), kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' } },
+      { type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview' },
+      { type: 'page.update', pageId: 'pg_winter01', draft: true },
+      { type: 'node.insert', owner: draft, primitive: 'image', newNodeId: 'n_sketch' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_sketch', field: 'image', value: { assetId: 'a_sketch', alt: 'A sketch of the winter window' } },
+      { type: 'node.insert', owner: draft, primitive: 'button', newNodeId: 'n_prices', text: 'Prices' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_prices', field: 'link', value: { type: 'document', target: 'a_prices' } },
+      { type: 'node.insert', owner: { kind: 'page', id: home }, primitive: 'button', newNodeId: 'n_menu', text: 'Menu' },
+      { type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: 'n_menu', field: 'link', value: { type: 'document', target: 'a_menu' } }
+    ]).state;
+    await (await ProjectSession.create(dir, state)).close();
+    for (const [rel, data] of Object.entries(bytes)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), data);
+    }
+    const c = await open(dir);
+    // The website leaves both of the draft's files out, and ships the published page's document.
+    const site = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(site.ok).toBe(true);
+    expect(filesIn(site.path!).filter((f) => f.startsWith('assets/'))).toEqual(['assets/menu-3c4d5e6f.pdf']);
+
+    const out = join(temp('out'), 'handoff');
+    const r = await c.exportSourceTo(out);
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(out, 'siteorigin/pages/pg_winter01.json'))).toBe(true);
+    // A developer's ordinary build of the handoff serves static/ as it is: the draft's files are not there to serve.
+    for (const rel of [sketch, prices]) expect(existsSync(join(out, rel)), rel).toBe(false);
+    expect(readFileSync(join(out, menu))).toEqual(bytes[menu]);
+    // Opened in SiteOrigin Builder, the draft has its files back, exactly as they were, and nothing is missing.
+    await c.close();
+    const reopened = await open(out);
+    for (const rel of [sketch, prices, menu]) expect(readFileSync(join(out, rel)), rel).toEqual(bytes[rel]);
+    expect(await reopened.fileDiagnostics()).toEqual([]);
+    expect(reopened.snapshot()!.conflicts).toEqual([]);
+  });
+
   it('names a header menu link with nowhere to go in the website and in the editable project (#208)', async () => {
     const { c } = await projectWithDraft();
     const header = c.snapshot()!.state.site.shell.header;
