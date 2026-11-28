@@ -12,7 +12,7 @@ import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
@@ -964,13 +964,15 @@ function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; va
 
 /**
  * Apply a text edit typed on the canvas. The page puts its old text back when the edit is refused, so a refusal of the
- * text itself (longer than its field takes, say) is said with the text offered back to copy, never only dropped (#1447).
+ * text itself (longer than its field takes, say), or of the edit by a live session's host (a copy editor's edit that
+ * changes more than its words, or one made just as editing paused: #1318), is said with the text offered back to
+ * copy, never only dropped (#1447). One whose ending has been said elsewhere already keeps what was typed there.
  */
 function applyTyped(operations: EditOperation[], label: string, text: string | RichText, state: ProjectState) {
   // `text` is what the author typed, before it is put in its stored form (a copyright line's `{year}`).
   const typed = typeof text === 'string' ? text : richTextToMarkdown(text, state.pages);
   return claimRefusals((e) => {
-    if (e.code !== 'INVALID_ARGUMENT' || !typed.trim()) return false;
+    if ((e.code !== 'INVALID_ARGUMENT' && e.code !== 'CANCELLED') || (e.details as { said?: string } | undefined)?.said === SAID_ELSEWHERE.said || !typed.trim()) return false;
     toast(e.message, 'error', copyTextAction(typed, label));
     return true;
   }, () => applyOps(operations, label));

@@ -61,7 +61,8 @@ export function copyBatchProblem(state: ProjectState, grant: CopyOnlyGrant, oper
   for (const [operationIndex, op] of operations.entries()) {
     const shape = copyEditorOperationProblem(op);
     if (shape) return { message: shape, operationIndex };
-    const ref: ElementRef = { owner: op.owner, instancePath: [], nodeId: (op as { nodeId: string }).nodeId };
+    if (op.type !== 'node.setContent' && op.type !== 'instance.setProp') return { message: 'A copy editor changes only text and pictures.', operationIndex };
+    const ref: ElementRef = { owner: op.owner, instancePath: [], nodeId: op.nodeId };
     if (op.type === 'node.setContent' && !copyEditableText(state, ref)) return { message: 'A copy editor changes only the written words of a text element on a page.', operationIndex };
     if (op.type === 'instance.setProp' && !copyEditablePropsOf(state, grant, ref).includes(op.prop)) return { message: 'Only the host can change that.', operationIndex };
   }

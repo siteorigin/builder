@@ -74,10 +74,13 @@ function project() {
   const picture = 'pic1';
   const r = applyOperations(s0, [
     { type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph', text: 'Opening hours vary.' },
-    { type: 'instance.setProp', owner, nodeId: hero, prop: 'image', value: { assetId: picture, alt: 'The studio' } }
+    { type: 'instance.setProp', owner, nodeId: hero, prop: 'image', value: { assetId: picture, alt: 'The studio' } },
+    { type: 'node.insert', owner, parentId: null, index: 1, primitive: 'richtext' },
+    { type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }
   ]);
-  const state: ProjectState = r.state;
-  return { state, home, hero, paragraph: r.results[0].nodeId as string };
+  const rich = r.results[2].nodeId as string;
+  const state: ProjectState = applyOperations(r.state, [{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://example.com/faq).' }]).state;
+  return { state, home, hero, paragraph: r.results[0].nodeId as string, rich, bare: r.results[3].nodeId as string };
 }
 
 describe.skipIf(!browserInstalled)('a copy editor’s Inspector (#1318)', { timeout: 30_000 }, () => {
@@ -86,7 +89,7 @@ describe.skipIf(!browserInstalled)('a copy editor’s Inspector (#1318)', { time
   let context: BrowserContext;
   let page: Page;
   let errors: string[];
-  const { state, home, hero, paragraph } = project();
+  const { state, home, hero, paragraph, rich, bare } = project();
   const grant = { props: copyEditableProps(state), paused: false };
   const at = (nodeId: string, extra: Partial<ElementRef> = {}): ElementRef => ({ owner: { kind: 'page', id: home }, instancePath: [], nodeId, ...extra });
 
@@ -157,9 +160,25 @@ describe.skipIf(!browserInstalled)('a copy editor’s Inspector (#1318)', { time
     expect(await (await show({ owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: header })).innerText()).toMatch(/Only the host can change this/);
   });
 
+  it('rewords rich text with bold and italic only, never its links or lists', async () => {
+    const panel = await show(at(rich));
+    const tools = panel.getByRole('toolbar', { name: 'Text formatting' });
+    expect(await tools.getByRole('button', { name: 'Bold' }).count()).toBe(1);
+    for (const gone of [/link/i, /list/i, /item/i]) expect(await tools.getByRole('button', { name: gone }).count(), gone.source).toBe(0);
+  });
+
+  it('never offers a picture where a section has none: adding one changes the layout', async () => {
+    const panel = await show(at(bare));
+    expect(await panel.getByRole('button', { name: /Choose image/ }).count()).toBe(0);
+    await panel.locator('.insp-image-thumb').first().click();
+    expect(await page.getByRole('dialog').count()).toBe(0);
+  });
+
   it('locks its fields while editing is paused, saying why', async () => {
     const panel = await show(at(paragraph), true);
     expect(await panel.innerText()).toContain('The host’s AI is making changes.');
     expect(await panel.getByLabel('Text', { exact: true }).getAttribute('readonly')).not.toBeNull();
+    // Nor can a picture be chosen meanwhile.
+    expect(await (await show(at(hero), true)).getByRole('button', { name: 'Change…' }).isDisabled()).toBe(true);
   });
 });

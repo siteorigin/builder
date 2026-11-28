@@ -11,7 +11,7 @@ import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
-import { DisclosureMark, DraftInput, Field, FieldHome, InfoTip, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { DisclosureMark, DraftInput, Field, FieldHome, InfoTip, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome, useLockedFields } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, refusedWithin, registerUnsent, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -801,6 +801,10 @@ const carryKey = (x: ImageValue | null | undefined, project: string | undefined,
  */
 export function ImageEditor({ value, onChange, state, title, plain, picture, mark, info, describedBy, copyOnly }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn; /** Said after the title (that the component requires a picture). */ mark?: ReactNode; /** The picture's explanation, behind an info button beside the title (see InfoTip). */ info?: ReactNode; describedBy?: string; /** For a live session's copy editor (#1318): a picture already set is replaced from the library and described, and nothing more. */ copyOnly?: boolean }) {
   const runtime = useStore((s) => s.runtime);
+  // Locked (a copy editor's editing paused): nothing is chosen, and the description is read-only.
+  const locked = useLockedFields();
+  // A copy editor replaces a picture set already and never adds one where there is none: that changes the layout.
+  const choosable = !locked && (!copyOnly || !!(value?.assetId && Object.hasOwn(state.assets.assets, value.assetId) && state.assets.assets[value.assetId].kind === 'image'));
   // The project as this editor shows it: an import checks its placement against it.
   const snapshot = useStore((s) => s.snapshot);
   const altId = useId();
@@ -1001,7 +1005,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
       </span>
       <div className="insp-image-top">
         {/* A second way to open the library for a pointer; the button beside it is the one keyboard stop. */}
-        <div className={`insp-image-thumb${shownAsset && !fileGone ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined} aria-hidden="true" onClick={() => !importing && (browsing ? closeBrowser() : setBrowsing(true))}>
+        <div className={`insp-image-thumb${shownAsset && !fileGone ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined} aria-hidden="true" onClick={() => !importing && choosable && (browsing ? closeBrowser() : setBrowsing(true))}>
           {shownAsset && devUrl && !fileGone ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover={!fitFor(shownAsset).contain} className={fitFor(shownAsset).contain ? 'contain' : undefined} alt="" /> : gone || fileGone ? <ImageOff /> : <ImageIcon />}
         </div>
         <div className="insp-image-body">
@@ -1035,7 +1039,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
                 aria-expanded={browsing}
                 aria-controls={browsing ? browseId : undefined}
                 onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))}
-                disabled={importing}
+                disabled={importing || locked}
               >
                 <ImagePlus />
                 {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
@@ -1065,7 +1069,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
           </div>
         )}
       </div>
-      {browsing && (
+      {browsing && choosable && (
         <ImageBrowser
           id={browseId}
           box={browser}
@@ -2037,7 +2041,7 @@ function NumberInput({ schema, value, onChange, id, describedBy, invalid, ariaLa
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere, copyOnly }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; copyOnly?: boolean }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
@@ -2054,6 +2058,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
           pages={state.pages}
           plainAs={schema.plainAs}
           ariaLabel={name}
+          copyOnly={copyOnly}
           placeholder={'One paragraph per line; end a line with \\ to break it inside the paragraph. Use **bold**, *italic*, [a link](/about/), "- " for lists and "### " for headings.'}
         />
       );
@@ -2564,7 +2569,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
     );
   return (
     <Field label={named} infoLabel={shown} hint={note} info={info} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={[note || error ? `${id}-note` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={[note || error ? `${id}-note` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} copyOnly={copyOnly} />
     </Field>
   );
 }

@@ -374,9 +374,11 @@ export function remoteApi(joinId: string): RemoteApi {
         if (!entry || (opts?.opening !== undefined && opts.opening !== opening)) return { ok: false, revision: revision(), error: { code: 'SCOPE_MISMATCH', message: 'That change was made in a live session that has ended.', recoverable: false } };
         // Whatever reaches here (a shortcut, a drag) is held to what the editor shows: no edit while editing is paused,
         // and a copy editor's only to the words and pictures its editor offers (#1318), which the host checks again.
-        const readOnly = entry.snapshot?.readOnly;
+        // Nothing goes before the host's project has arrived: what may be changed is not known yet.
+        if (!entry.snapshot) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: 'The host’s project is still on its way. Try again in a moment.', recoverable: true } };
+        const readOnly = entry.snapshot.readOnly;
         const grant = copyEditing(entry.snapshot);
-        const refused = grant && entry.snapshot ? copyBatchProblem(entry.snapshot.state, grant, batch.operations) : null;
+        const refused = grant ? copyBatchProblem(entry.snapshot.state, grant, batch.operations) : null;
         if (readOnly && (!grant || refused)) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: refused?.message ?? readOnly.reason, recoverable: false, ...(refused && batch.operations.length > 1 ? { details: { operationIndex: refused.operationIndex } } : {}) } };
         const label = opts?.label?.slice(0, LIVE_BATCH_LABEL_MAX);
         // Typed text on its way: kept until the edit is done with, so an ending meanwhile keeps it to copy. Unanswered,

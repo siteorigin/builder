@@ -706,7 +706,7 @@ function CopyTextField({ state, owner, node }: { state: ProjectState; owner: Own
       <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
         {node.rich ? (
           <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-copy-text`}>
-            <RichTextField id={`${node.id}-copy-text`} value={richTextToMarkdown(toRichText(node.text), state.pages)} onCommit={(v, edit) => content(v, edit)} pages={state.pages} />
+            <RichTextField id={`${node.id}-copy-text`} value={richTextToMarkdown(toRichText(node.text), state.pages)} onCommit={(v, edit) => content(v, edit)} pages={state.pages} copyOnly />
           </Field>
         ) : (
           <Field label="Text" hint="Or double-click the text on the page to edit it there.">

@@ -728,7 +728,8 @@ export function Editor() {
   // The rail is one stop in the Tab order (WAI-ARIA APG toolbar): the button last focused, else the open view.
   const [railStop, setRailStop] = useState<string | null>(null);
   const railIds = [...leftTabs.map((t) => t.id as string), ...(stylesRail ? ['styles'] : [])];
-  const railTab = railStop ?? leftTab ?? 'pages';
+  // A stop the rail no longer has (a role change took its view away) gives way, so the rail stays in the Tab order.
+  const railTab = (railStop && railIds.includes(railStop) ? railStop : null) ?? leftTab ?? 'pages';
   const onRailKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const i = railIds.indexOf(railTab);
     const n = e.key === 'ArrowDown' ? i + 1 : e.key === 'ArrowUp' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? railIds.length - 1 : null;

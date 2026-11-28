@@ -840,7 +840,7 @@ export function Canvas() {
     setEditing(true);
     markDraft(CANVAS_DRAFT, true);
     // Marked text is edited as the text its property is: the page refuses an element that shows it otherwise.
-    post('beginTextEdit', { desc, editId, hit, ...(code ? { rich: code.rich } : {}) });
+    post('beginTextEdit', { desc, editId, hit, ...(code ? { rich: code.rich } : {}), ...(copyGrant(getState().snapshot) ? { copyOnly: true } : {}) });
   }
   /** Edit text from the editor's own controls (the chip's Edit text, or the menu's): the page takes focus for it,
    *  after a menu has closed and handed focus back, so the edit keeps the focus it is given. */

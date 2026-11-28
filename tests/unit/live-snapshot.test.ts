@@ -68,6 +68,9 @@ describe('the project as guests are given it', () => {
     expect((snap.state.collections.leads.entries.e1 as unknown as { values: { files: string[] } }).values.files).toEqual([`${P}/static/a.pdf`, 'plain']);
     expect(Object.keys(snap.state.site)).toContain(`${P}/note`);
     expect(JSON.stringify(snap).toLowerCase()).not.toContain(`${DIR}`.toLowerCase());
+    // What a copy editor may change names properties as the shared designs do (#1318).
+    const named = liveSnapshot({ state: project(), revision: 7, readOnly: false, aiBusy: false, runtime: 'ready', copyEditable: { theme_form: [`${DIR}/heading`] } }, [DIR, HOME]);
+    expect(named.copyEditable).toEqual({ theme_form: [`${P}/heading`] });
   });
 
   it('leaves web addresses and other people’s folders as they are', () => {

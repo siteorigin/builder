@@ -176,6 +176,7 @@ export function liveSnapshot(source: LiveSnapshotSource, hostPaths: readonly str
     readOnly: source.readOnly,
     aiBusy: source.aiBusy,
     runtime: { state: source.runtime },
-    copyEditable: source.copyEditable
+    // Named as the documents are: a property's name holding a host path is scrubbed in both.
+    copyEditable: pattern ? (scrub(source.copyEditable, pattern) as Record<string, string[]>) : source.copyEditable
   };
 }

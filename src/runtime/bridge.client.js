@@ -2317,7 +2317,8 @@ function wordRange(el, node, at) {
  * selected (or a caret, off a word), as a double-click does in any text. Whole text is for Select All. An answer to
  * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
  */
-function beginTextEdit(desc, editId, hitId, wantRich) {
+/** `copyOnly`: a live session's copy editor (#1318), who rewords text but never adds, retargets or removes its links or lists. */
+function beginTextEdit(desc, editId, hitId, wantRich, copyOnly) {
   // An answer to an older double-click leaves the newer one waiting for its own answer.
   const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
   if (hit) pendingHit = null;
@@ -2350,7 +2351,7 @@ function beginTextEdit(desc, editId, hitId, wantRich) {
   if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   const rich = el.classList.contains('so-rich');
   // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
-  editing = { el, desc, editId, original: el.innerHTML, rich, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
+  editing = { el, desc, editId, original: el.innerHTML, rich, copyOnly: !!copyOnly, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
   el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
@@ -2380,7 +2381,7 @@ function beginTextEdit(desc, editId, hitId, wantRich) {
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
   if (desc.bind) el.addEventListener('input', keepTyped);
-  if (rich) openToolbar();
+  if (rich && !copyOnly) openToolbar();
   send('textEditStarted', { desc });
 }
 /** Space left between the text being edited and what covers the top of the frame, or the frame's edge. */
@@ -2479,6 +2480,7 @@ function onEditKey(e) {
   }
   if (mod && !e.altKey && !e.shiftKey && k === 'k') {
     e.preventDefault();
+    if (editing.copyOnly) return;
     openLinkEditor();
     return;
   }
@@ -5623,7 +5625,7 @@ window.addEventListener('message', async (e) => {
       setReveal(m.payload.target);
       break;
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit, m.payload.rich);
+      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit, m.payload.rich, m.payload.copyOnly);
       break;
     case 'linkChecked':
       linkChecked(m.payload);

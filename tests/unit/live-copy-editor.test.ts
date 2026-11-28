@@ -643,7 +643,10 @@ describe('what a copy editor’s editor offers (#1318)', () => {
     const { state, promo } = project();
     const props = copyEditableProps(state);
     expect(props[HERO]).toEqual(expect.arrayContaining(['heading', 'image']));
-    for (const [id, names] of Object.entries(props)) for (const prop of names) expect(copyEditableLookup(state)(id, prop), `${id}.${prop}`).toBe(true);
+    // Every property the host's lookup allows, and no other.
+    const lookup = copyEditableLookup(state);
+    const expected = Object.fromEntries(Object.entries(state.components).map(([id, def]) => [id, Object.keys(def.properties).filter((p) => lookup(id, p))]).filter(([, names]) => names.length));
+    expect(props).toEqual(expected);
     // Promo passes its marked title on to the hero's heading; its tagline becomes a button's label, and its note is unmarked.
     expect(props[promo]).toEqual(['title']);
     // A design with nothing a copy editor may change is left out.

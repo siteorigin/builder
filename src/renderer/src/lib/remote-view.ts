@@ -102,6 +102,6 @@ export function remoteRoster(state: ProjectState, remote: AdmittedRemote, presen
   return [
     ...(remote.hostConnected ? [line('host', 'Host', at?.host)] : []),
     ...others.filter((p) => p.role === 'collaborator').map((p) => line(p.guestId, p.displayName, at?.guests[p.guestId])),
-    ...others.filter((p) => p.role !== 'collaborator').map((p): RosterLine => ({ key: p.guestId, who: p.displayName, where: 'Watching', pageId: null, watching: true }))
+    ...others.filter((p) => p.role !== 'collaborator').map((p): RosterLine => ({ key: p.guestId, who: p.displayName, where: p.role === 'copy-editor' ? 'Editing copy' : 'Watching', pageId: null, watching: true }))
   ];
 }

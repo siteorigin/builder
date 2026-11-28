@@ -485,12 +485,24 @@ describe('following the session', () => {
     const other = Object.keys(state.components[placed.definitionId].properties).find((p) => p !== prop) ?? 'nope';
     expect(await store.api.project.apply({ operations: [reword, { type: 'node.remove', owner, nodeId: placed.id }] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/cannot make "node.remove"/), details: { operationIndex: 1 } } });
     expect(await store.api.project.apply({ operations: [{ ...reword, prop: other }] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/Only the host/) } });
+    // A property the host no longer grants (its design changed) is refused at once.
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(9, { copyEditable: { [placed.definitionId]: [other] } }) });
+    expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/Only the host/) } });
     // Paused (the host's AI at work), or made a viewer: nothing goes, and the reason says why.
-    emit('remote:changed', { joinId: 'join-1', snapshot: live(9, { copyEditable, aiBusy: true }) });
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(10, { copyEditable, aiBusy: true }) });
     expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/AI is making changes/) } });
-    emit('remote:changed', { joinId: 'join-1', snapshot: live(10, { copyEditable }) });
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(11, { copyEditable }) });
     emit('remote:state', admitted({ role: 'viewer' }));
     expect(await store.api.project.apply({ operations: [reword] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/as a viewer/) } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
+  it('sends nothing before the host’s project has arrived (#1318)', async () => {
+    remoteSnapshot = null;
+    session.applyRemoteState(admitted({ role: 'copy-editor' }));
+    await flush();
+    const result = await store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });
+    expect(result).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/on its way/) } });
     expect(calls.remoteApply).toEqual([]);
   });
 
@@ -698,20 +710,24 @@ describe('presence', () => {
       { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const, colorSlot: 4, connected: true },
       { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const, colorSlot: 5, connected: true },
       { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const, colorSlot: 6, connected: true },
-      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true }
+      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true },
+      { guestId: 'g-5', displayName: 'Cy', role: 'copy-editor' as const, colorSlot: 8, connected: true }
     ];
     const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at }, activity: {} });
     expect(roster.map((l: { who: string; where: string; pageId: string | null; watching: boolean }) => [l.who, l.where, l.pageId, l.watching])).toEqual([
       ['Host', state.pages[home].title, home, false],
       ['Tom', state.pages[home].title, home, false],
       ['Lee', 'Location not known yet', null, false],
-      ['Ann', 'Watching', null, true]
+      ['Ann', 'Watching', null, true],
+      // A copy editor shares no presence, but is no mere watcher (#1318).
+      ['Cy', 'Editing copy', null, true]
     ]);
     // A host that is away is not counted as here; presence from another join says nothing about where anyone is.
     expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {}, activity: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
       ['Tom', 'Location not known yet'],
       ['Lee', 'Location not known yet'],
-      ['Ann', 'Watching']
+      ['Ann', 'Watching'],
+      ['Cy', 'Editing copy']
     ]);
   });
 
@@ -733,6 +749,10 @@ describe('the host’s AI (#769)', () => {
     expect([...session.remoteRightTabs('collaborator')].sort()).toEqual(['chat', 'inspect', 'styles']);
     expect([...session.remoteRightTabs('viewer')].sort()).toEqual(['inspect', 'styles']);
     expect(session.remoteRightTabs(undefined).has('chat')).toBe(false);
+    // A copy editor (#1318) has the Inspector alone, and the pages and their layers with nothing to insert.
+    expect([...session.remoteRightTabs('copy-editor')]).toEqual(['inspect']);
+    expect([...session.remoteLeftTabs('copy-editor')].sort()).toEqual(['layers', 'pages']);
+    expect([...session.remoteLeftTabs('viewer')].sort()).toEqual(['insert', 'layers', 'pages']);
   });
 
   it('follows this join’s own AI requests, never another join’s, and lets them go when the join ends', async () => {

@@ -543,7 +543,7 @@ describe('what the review found (#766)', () => {
     const noHome = { ...state, pages: { ...state.pages, [state.site.homePageId]: null } };
     g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(9), state: noHome } } });
     // Nor one that does not say, as lists of property names, what a copy editor may change (#1318).
-    for (const copyEditable of [undefined, ['heading'], { hero: 'heading' }, { hero: [1] }]) g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(10), copyEditable } } });
+    for (const copyEditable of [undefined, ['heading'], { hero: 'heading' }, { hero: [1] }, { hero: ['heading'], card: [null] }]) g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(10), copyEditable } } });
     expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3]);
     g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: snapshotAt(11, { copyEditable: { hero: ['heading'] } }) } });
     expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3, 11]);
