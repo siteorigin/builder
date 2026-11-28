@@ -144,6 +144,7 @@ export const TOOL_ARGS = {
     itemId: z.string().optional().describe('For a list property: the id of one item.'),
     field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
   }),
+  open_page: z.object({ page: z.string().min(1).max(600).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   update_page_seo: PAGE_SEO_ARGS,
@@ -212,6 +213,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four concrete answers in choices, never “Other”; the user can type their own. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   locate_field:
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
+  open_page:
+    'Open a page in the editor, as clicking it in Pages does: the canvas shows it and Pages selects it. Use it only when the author asks to go to, open, show or switch to a page, never to work on one; it changes nothing in the site. page is its ID, route or title. When no page is found, nothing opens: tell the author. When more than one page has the title, nothing opens: ask the author which one they meant. Say it was opened only after this succeeds.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   update_page_seo: PAGE_SEO_DESCRIPTION,
@@ -257,6 +260,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
+  open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found: say so. Several match: ask which.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
   update_page_seo: PAGE_SEO_BRIEF,
@@ -512,7 +516,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'open_page', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -690,8 +694,8 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
  * has no room left for them).
  */
-export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools }): RunTools {
-  const all = withEditorTools(runTools(opts), opts.editor, !!opts.ask);
+export function toolsForRun(opts: Parameters<typeof runTools>[0] & { editor?: EditorTools; pageRequest?: boolean }): RunTools {
+  const all = withEditorTools(withPageOpener(runTools(opts), !!opts.pageRequest), opts.editor, !!opts.ask);
   // The export's measurements are the author's: never a collaborator's to read. A small window keeps its room for the
   // edit itself unless the request is about speed (as Project health's Improve with AI is).
   const dropped = opts.delegated || (all.focused && all.mode !== 'ask' && !opts.performanceRequest);
@@ -879,6 +883,81 @@ function runTools(opts: {
   // in code: that one operation, and the page tool places what it made.
   const code = focused && codeEnabled && opts.widenedFromPage && (opts.componentRequest || opts.svelteRequest) ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
   return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+}
+
+/**
+ * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357), in every mode a
+ * request can be typed in, as Pages can be clicked from any of them. It changes nothing in the site, so it widens no
+ * run; a request that never asks to go anywhere is never offered it, so no edit moves the editor. Create component
+ * keeps its own set. Ambiguity is asked about in the same run, which a set without the question tool could not do.
+ */
+function withPageOpener(run: RunTools, asked: boolean): RunTools {
+  if (!asked || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
+  const ask = run.tools.some((t) => t.name === 'request_clarification') ? [] : [narrowQuestion()];
+  return { ...run, tools: [...run.tools, plainTool('open_page'), ...ask] };
+}
+
+/** request_clarification without widenScope: asking which page widens nothing. */
+function narrowQuestion(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
+}
+
+// "Open" is going somewhere, but not a link that opens in a new tab or on a click; "show" and "display" are going
+// there when they are "show me", or say a page within a few words ("show the About page", never "show the phone
+// number on the Contact page").
+const GO_TO =
+  /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
+const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
+
+/**
+ * Whether a request typed into the chat asks to go to a page (#1357): a word for going there ("take me to", "open",
+ * "show me") with a page named, as a page, by its route (with or without its slashes), or by a title one of the
+ * project's pages has.
+ */
+export function asksToOpenPage(text: string, state?: ProjectState): boolean {
+  if (!GO_TO.test(text)) return false;
+  if (NAMES_A_PAGE.test(text)) return true;
+  const fold = (v: string) => v.normalize('NFKC').toLowerCase();
+  const words = fold(text);
+  const named = (n: string) => {
+    if (!n) return false;
+    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
+    // One Latin letter is a word of the request ("a"), never a page's name in it.
+    if (n.length < 2) return false;
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
+  };
+  return Object.values(state?.pages ?? {}).some((p) => {
+    const title = typeof p?.title === 'string' ? fold(p.title.trim()) : '';
+    const route = typeof p?.route === 'string' ? fold(p.route.replace(/^\/+|\/+$/g, '')) : '';
+    return named(title) || named(route);
+  });
+}
+
+/**
+ * The page the author named to open: by its ID, by its route when it is written as one, by its title (ignoring case),
+ * and last by a word that spells its route ("about" for /about/). A title more than one page has names none of them,
+ * even when one of those pages has it as its route.
+ */
+export function findPageToOpen(state: ProjectState, ref: string): { ok: true; pageId: string } | { ok: false; message: string } {
+  if (Object.hasOwn(state.pages, ref)) return { ok: true, pageId: ref };
+  const route = ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (route) return { ok: true, pageId: route };
+  const fold = (v: string) => v.normalize('NFKC').trim().toLowerCase();
+  const wanted = fold(ref);
+  const pages = Object.values(state.pages).filter((p) => !!p);
+  const titled = pages.filter((p) => typeof p.title === 'string' && fold(p.title) === wanted);
+  if (titled.length === 1) return { ok: true, pageId: titled[0].id };
+  const slug = !titled.length && !ref.includes('/') ? pageIdFor(state, ref) : null;
+  if (slug) return { ok: true, pageId: slug };
+  const list = (ps: typeof pages) =>
+    ps
+      .slice(0, 20)
+      .map((p) => `"${p.title}" (${p.route})`)
+      .join(', ') + (ps.length > 20 ? `, and ${ps.length - 20} more` : '');
+  if (titled.length > 1) return { ok: false, message: `More than one page is titled "${ref.trim()}": ${list(titled)}. Nothing was opened. Ask the author which one they meant, then open it by its route.` };
+  return { ok: false, message: `No page has the ID, route or title "${ref.trim()}". Nothing was opened. Tell the author so${pages.length ? `; the site's pages are ${list(pages)}` : ''}.` };
 }
 
 /**
@@ -1578,6 +1657,17 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
           ...(r.label ? { label: r.label } : {}),
           note: `${did} ${r.label ? `"${r.label}"` : `${steps} changes`}. This request can change nothing more: tell the user what was ${a.direction === 'undo' ? 'undone' : 'redone'}, and that ${a.direction === 'undo' ? 'Redo puts it back' : 'Undo takes it back again'}.`
         }
+      };
+    }
+    case 'open_page': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['open_page']>;
+      const found = findPageToOpen(state, a.page);
+      if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
+      const page = state.pages[found.pageId];
+      return {
+        ok: true,
+        openPage: found.pageId,
+        content: { revision: host.revision(), opened: { pageId: page.id, title: page.title, route: page.route }, note: 'The editor now shows this page. Nothing in the site changed.' }
       };
     }
     case 'request_clarification': {

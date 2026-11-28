@@ -20,6 +20,8 @@ export type ToolResult = ToolSuccessResult | ToolFailureResult;
 interface Landed {
   /** A field locate_field found, for the answer's "Open in inspector". */
   location?: FieldLocation;
+  /** The page open_page resolved, for the editor to show (#1357). Nothing in the site changes. */
+  openPage?: string;
   mutated?: boolean;
   ops?: EditOperation[];
   results?: unknown[];
