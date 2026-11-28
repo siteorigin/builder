@@ -284,6 +284,23 @@ describe('page languages in the project', () => {
   });
 });
 
+describe('the editor’s preview of a site in one language (#1335)', () => {
+  it('takes a new language or direction in place, while the website keeps them in app.html alone', () => {
+    const rtl = apply(fresh(), { type: 'site.update', direction: 'rtl' });
+    const preview = generateProject(rtl, { instrument: true }).get('src/routes/+layout.svelte')!;
+    expect(preview).toContain('document.documentElement.lang = "en";');
+    expect(preview).toContain('document.documentElement.dir = "rtl";');
+    const arabic = generateProject(apply(fresh(), { type: 'site.update', language: 'ar' }), { instrument: true }).get('src/routes/+layout.svelte')!;
+    expect(arabic).toContain('document.documentElement.lang = "ar";');
+    expect(arabic).toContain('document.documentElement.dir = "rtl";');
+    // Not a site in more than one language: nothing follows the page's own.
+    expect(preview).not.toMatch(/pageLanguages|speak\(/);
+    const site = generateProject(rtl);
+    expect(site.get('src/routes/+layout.svelte')).not.toContain('documentElement');
+    expect(site.get('src/app.html')).toContain('<html lang="en" dir="rtl">');
+  });
+});
+
 describe('page languages in the website', () => {
   it('generates a site in one language exactly as before', () => {
     const s = apply(fresh(), { type: 'site.update', baseUrl: 'https://example.com/' });

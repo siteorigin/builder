@@ -4411,10 +4411,15 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
   // A site in more than one language keeps <html lang> and dir right as visitors move between its pages, and what
-  // the site says on its own in the language of the page they are on.
-  const languages = languagesByRoute(state).length
+  // the site says on its own in the language of the page they are on. The editor's preview of a site in one language
+  // keeps them right as the author changes them: app.html names them only when the page first loads, and a hot update
+  // never loads it again, so the canvas takes a new language or direction from this layout instead, in place.
+  const multilingual = languagesByRoute(state).length > 0;
+  const languages = multilingual
     ? `\n\tconst pageLanguages = ${routeLanguagesJs(state, '\t')};\n\tconst pageDirections = ${routeDirectionsJs(state, '\t')};\n\tconst language = $derived(page.route.id && Object.hasOwn(pageLanguages, page.route.id) ? pageLanguages[page.route.id] : ${js(siteLanguage(state.site))});\n\tspeak(() => language);\n\t$effect(() => {\n\t\tconst id = page.route.id;\n\t\tdocument.documentElement.lang = language;\n\t\tdocument.documentElement.dir = id && Object.hasOwn(pageDirections, id) ? pageDirections[id] : ${js(siteDirection(state.site))};\n\t});`
-    : '';
+    : opts.instrument
+      ? `\n\t// The site's language and direction, as the author last chose them: app.html names them only on the first load.\n\t$effect.pre(() => {\n\t\tdocument.documentElement.lang = ${js(siteLanguage(state.site))};\n\t\tdocument.documentElement.dir = ${js(siteDirection(state.site))};\n\t});`
+      : '';
   // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
   // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
   // Sections and containers with an entrance come in as they first scroll into view (see generator/appear.ts). The
@@ -4449,7 +4454,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${searchImport}${toggleImport}
-	import { ${languages ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
+	import { ${multilingual ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
 	let { children } = $props();

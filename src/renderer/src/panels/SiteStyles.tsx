@@ -30,14 +30,14 @@ import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useCo
 import type { ContrastPair, ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText, notFoundCopy, notFoundDefaults } from '@shared/not-found';
 import { VisitorTextFields, WordingField, visitorTextScope, type Wording } from './VisitorText';
-import { languageCodeFor, namedLanguage, notFoundScope, ownWording, siteDetailsScope } from './site-details';
+import { directionHint, languageCodeFor, namedLanguage, notFoundScope, ownWording, siteDetailsScope } from './site-details';
 import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
 import { redirectRecords } from '@shared/redirects';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
-import { isLanguageCode, languageDirection, siteDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
+import { isLanguageCode, siteDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { carrySiteName, siteNameNote, siteNameText } from '@shared/site-name';
 import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
 import './SiteStyles.css';
@@ -1164,6 +1164,8 @@ export function SiteStyles() {
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
   // Samples are drawn in the project's imported files themselves, which the editor loads under names of its own.
   const shownStack = usePreviewStack();
+  // The page in the canvas: Text direction says so when it is in another language than the site's.
+  const shownPageId = useStore((s) => s.pageId);
   if (!snap) return null;
   const st = snap.state;
   const theme = getTheme(st.site.themeId);
@@ -2192,11 +2194,7 @@ export function SiteStyles() {
               { value: 'ltr', label: 'Left to right' },
               { value: 'rtl', label: 'Right to left' }
             ]}
-            hint={
-              site.direction === 'ltr' || site.direction === 'rtl'
-                ? 'Pages in another language keep that language’s direction.'
-                : `${namedLanguage(siteLanguage(site)) ?? siteLanguage(site)} reads ${languageDirection(siteLanguage(site)) === 'rtl' ? 'right to left' : 'left to right'}.`
-            }
+            hint={directionHint(site, shownPageId && Object.hasOwn(st.pages, shownPageId) ? st.pages[shownPageId] : null)}
             onChange={(direction) => updSite({ direction })}
           />
         </div>
