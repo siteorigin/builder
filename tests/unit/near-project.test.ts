@@ -2,6 +2,7 @@
  * #1433: Open project on a folder that is not a project names the project beside it (the one it is inside, or the one
  * it holds) and offers it, says an exported website is one, and otherwise never names the manifest file.
  */
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,6 +61,19 @@ describe('notAProject', () => {
     expect((await notAProject(join(p, 'src'))).nearby).toEqual({ dir: p, name: 'Bistro (draft)' });
   });
 
+  it('never waits on a pipe where a project file should be', async () => {
+    if (process.platform === 'win32') return;
+    const holder = tmp();
+    const p = project(join(holder, 'cafe'), { name: 'Cafe' });
+    execFileSync('mkfifo', [join(p, 'siteorigin', 'site.json')]);
+    expect((await notAProject(holder)).nearby).toEqual({ dir: p, name: 'Cafe' });
+    const piped = join(holder, 'piped');
+    mkdirSync(piped);
+    execFileSync('mkfifo', [join(piped, 'siteorigin.project.json')]);
+    // A pipe for a manifest is no project, so the one beside it is still the only one.
+    expect((await notAProject(holder)).nearby).toEqual({ dir: p, name: 'Cafe' });
+  });
+
   it('names a project by its folder when its manifest has no name or cannot be read', async () => {
     const holder = tmp();
     const p = project(join(holder, 'half-a-site'), '{"name": "Half');
@@ -88,6 +102,10 @@ describe('notAProject', () => {
     const cafe = project(join(beside, 'cafe'), { name: 'Cafe' });
     symlinkSync(cafe, join(beside, 'cafe-shortcut'));
     expect((await notAProject(beside)).nearby).toEqual({ dir: cafe, name: 'Cafe' });
+    // Chosen by another name for the same folder, the link and its folder are still one project.
+    const alias = join(tmp(), 'alias');
+    symlinkSync(beside, alias);
+    expect((await notAProject(alias)).nearby).toEqual({ dir: cafe, name: 'Cafe' });
   });
 
   it('says an exported website folder is one, and points to its project', async () => {

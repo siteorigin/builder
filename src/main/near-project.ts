@@ -37,15 +37,24 @@ const field = (text: string | null, key: string): string | null => {
  * explains the damage.
  */
 async function projectName(dir: string): Promise<string | null | undefined> {
-  let text: string;
+  let text: string | null;
   try {
-    text = await fs.readFile(join(dir, MANIFEST_FILE), 'utf8');
+    text = await readRegular(join(dir, MANIFEST_FILE));
   } catch (e) {
     const code = errorCode(e);
-    return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR' ? null : undefined;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? null : undefined;
   }
-  const site = await fs.readFile(join(dir, DOC_DIR, 'site.json'), 'utf8').catch(() => null);
-  return field(text, 'workingCopyName') ?? field(site, 'name') ?? field(text, 'name') ?? basename(dir);
+  if (text === null) return null;
+  const own = field(text, 'workingCopyName');
+  if (own !== null) return own;
+  const site = await readRegular(join(dir, DOC_DIR, 'site.json')).catch(() => null);
+  return field(site, 'name') ?? field(text, 'name') ?? basename(dir);
+}
+
+/** A regular file's text; null for anything else there (a folder, or a pipe whose read would never end). */
+async function readRegular(path: string): Promise<string | null> {
+  if (!(await fs.stat(path)).isFile()) return null;
+  return fs.readFile(path, 'utf8');
 }
 
 /** “A”, “B” and “C”; past four, the first three and how many more (`others`: how many is not known). */
@@ -94,12 +103,14 @@ export async function notAProject(chosen: string): Promise<{ message: string; ne
   // A file chosen in the macOS picker (a page's index.html, the project's package.json) speaks for the folder it is in,
   // which may be the project itself.
   const file = await isFile(chosen);
-  const dir = file ? dirname(chosen) : chosen;
+  // By its real path, as the project would be opened: a link to a project beside it, or the home folder reached by
+  // another name, is then the same folder.
+  const dir = await fs.realpath(file ? dirname(chosen) : chosen).catch(() => (file ? dirname(chosen) : chosen));
   // A website says which project it was exported from nowhere, wherever it is kept: none is guessed for it.
   if ((await isFile(join(dir, 'index.html'))) && (await isDirectory(join(dir, '_app')))) return { message: WEBSITE_FOLDER };
   // The project above: the nearest folder up that is one, however deep the chosen folder is inside it, up to (and not
   // including) the home folder or the top of the disk, where a stray manifest is no project anyone keeps work in.
-  const home = homedir();
+  const home = await fs.realpath(homedir()).catch(() => homedir());
   for (let up = file ? dir : dirname(dir), from = file ? '' : dir; up !== from && up !== home && dirname(up) !== up; from = up, up = dirname(up)) {
     const name = await projectName(up);
     // A manifest there that cannot be read: whether this is that project cannot be told, so none further up is offered.
