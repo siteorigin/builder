@@ -369,6 +369,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     // The conversations that allowed the whole site are this project's own too (#1412).
     chatSiteGrants: cleanGrants(local.chatSiteGrants),
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
+    keptSampleContent: Array.isArray(local.keptSampleContent) ? local.keptSampleContent.filter((v): v is string => typeof v === 'string') : [],
     firstSteps: readFirstSteps(local.firstSteps),
     conversation: null,
     pagePlaces,

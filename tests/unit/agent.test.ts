@@ -24,6 +24,7 @@ import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@shared/icons';
 import { diagnosticKey, validateState, type Diagnostic } from '@engine/validate';
+import { isSampleFinding } from '@engine/sample-content';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 import { turnState } from '@shared/turns';
@@ -4983,7 +4984,7 @@ describe('the project brief as standing context (#519)', () => {
 
 describe('the project diagnostics in the editor context (#757)', () => {
   /** What the editor context lists: problems and warnings, but images waiting for the author's pictures (#1633). */
-  const inContext = (d: Diagnostic) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED';
+  const inContext = (d: Diagnostic) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d);
   const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.find((i) => (i as { kind?: string }).kind === 'user') as { text: string }).text)![1]);
   const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
   /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
@@ -5009,6 +5010,8 @@ describe('the project diagnostics in the editor context (#757)', () => {
       // The other page comes first in the validator's own order.
       env.session.state = { ...env.session.state, site: { ...env.session.state.site, pageOrder: [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)] } };
       seed(env.session, [other, home]);
+      // Sample content still to replace (#1640) is Project health's and validate_project's, not every request's.
+      expect(env.session.diagnostics().some(isSampleFinding)).toBe(true);
       const expected = env.session.diagnostics().filter(inContext);
       expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
       expect(expected.filter((d) => d.severity === 'warning').length).toBeGreaterThanOrEqual(2);
@@ -5060,6 +5063,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
 
   it('leaves the section out of a project without problems', async () => {
     const env = await setup([() => finish('Done.')]);
+    // Its sample content (#1640) is no problem a request carries.
     expect(env.session.diagnostics().filter(inContext)).toEqual([]);
     await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'page' }));
     expect(editorContext(env.adapter.requests[0])).not.toHaveProperty('diagnostics');

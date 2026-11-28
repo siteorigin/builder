@@ -13,7 +13,7 @@ import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
-import { SO_ID_ATTR, anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
+import { SO_ID_ATTR, anchorCapable, anchorsInUse, childLists, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
 import { inGenerationRun } from './structured-data';
@@ -1479,7 +1479,16 @@ function shippedCodeShows(state: ProjectState, which: string, props: Record<stri
  * that goes nowhere lists only its words.
  */
 export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
+  return renderedContentKnown(state, tree).content;
+}
+
+/**
+ * renderedContent, and which of its entries markup the checks know shows: a design's node, or the text a shipped or
+ * Foundation section's own markup shows. Any other is only read by code (`custom`), which may show it or not.
+ */
+export function renderedContentKnown(state: ProjectState, tree: NodeTree): { content: RenderedContent[]; known: Set<RenderedContent> } {
   const out: RenderedContent[] = [];
+  const known = new Set<RenderedContent>();
   const guarded = new Set<string>();
   const keyOf = (c: RenderedContent) =>
     JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.at ?? null]]);
@@ -1488,9 +1497,10 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     const k = keyOf(c);
     const had = seen.get(k);
     // One entry per field. A field that a custom code component also reads may be its setting: it stays custom.
-    if (had) return void (c.custom && (had.custom = true));
+    if (had) return void (c.custom ? (had.custom = true) : known.add(had));
     seen.set(k, c);
     out.push(c);
+    if (!c.custom) known.add(c);
   };
   /** Where content a definition node reads is stored, and how to select it. */
   const from = (b: unknown, field: 'text' | 'label' | 'link', scope: Scope, defNodeId: string, inDef: boolean): Pick<RenderedContent, 'source' | 'at' | 'defNodeId' | 'itemPath' | 'direct'> => {
@@ -1624,6 +1634,58 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
   });
   // A field any custom code or setting reads stays out of reach, however else it is shown.
   for (const c of out) if (c.source?.kind === 'prop' && guarded.has(JSON.stringify([c.nodeId, c.source.prop, c.source.itemId ?? null, c.source.field ?? null]))) c.custom = true;
+  return { content: out, known };
+}
+
+/** The theme's Table, or a copy of it made unique (which keeps its code). */
+function drawsTable(state: ProjectState, def: ComponentDefinition): boolean {
+  let d: ComponentDefinition | undefined = def;
+  for (let guard = 0; d && d.owner !== 'theme' && d.kind === 'code' && d.provenance?.forkedFrom && guard < 20; guard++) d = Object.hasOwn(state.components, d.provenance.forkedFrom) ? state.components[d.provenance.forkedFrom] : undefined;
+  return !!d && shippedCode(state, d) === 'data.table';
+}
+
+/**
+ * The tables a page or shell tree renders, each once, by the placement's own table property that holds it: the theme's
+ * Table (or a copy of it), whose markup shows its table, placed in the tree or handed a placement's table by the design
+ * it is placed in. Its words are cells, which renderedContent does not list. Any other code's markup decides what it
+ * shows of a table it is given.
+ */
+export function renderedTables(state: ProjectState, tree: NodeTree): Array<{ nodeId: string; prop: string }> {
+  const out: Array<{ nodeId: string; prop: string }> = [];
+  const seen = new Set<string>();
+  walkRendered(state, tree, {
+    code: (def, _props, reportId, _placement, n, scope, inDef) => {
+      if (!drawsTable(state, def)) return;
+      for (const [key, schema] of Object.entries(def.properties)) {
+        if (schema.type !== 'table') continue;
+        const field = inDef ? placementField(n.props[key], scope) : { prop: key };
+        if (!field || field.itemId !== undefined || field.field !== undefined) continue;
+        const k = JSON.stringify([reportId, field.prop]);
+        if (!seen.has(k)) (seen.add(k), out.push({ nodeId: reportId, prop: field.prop }));
+      }
+    }
+  });
+  return out;
+}
+
+/**
+ * Whether the site hides a node of a page or shell tree at every size: by its own styles, or a container's around it.
+ * `parents` gives each node's container in the tree (treeParents), worked out once for many questions.
+ */
+export function hiddenInTree(tree: NodeTree, nodeId: string, parents: ReadonlyMap<string, string> = treeParents(tree)): boolean {
+  const seen = new Set<string>();
+  for (let id: string | undefined = nodeId; id && !seen.has(id); id = parents.get(id)) {
+    seen.add(id);
+    const n = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+    if (n && typeof n === 'object' && hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined)) return true;
+  }
+  return false;
+}
+
+/** Each node's container in a tree (its parent, or the placement whose slot holds it), by node ID. */
+export function treeParents(tree: NodeTree): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [id, n] of Object.entries(tree.nodes)) if (n && typeof n === 'object') for (const cl of childLists(n)) for (const c of Array.isArray(cl.ids) ? cl.ids : []) if (typeof c === 'string' && !out.has(c)) out.set(c, id);
   return out;
 }
 
