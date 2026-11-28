@@ -7,7 +7,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, PropSchema } from '@shared/types';
 import { findTheme } from '@catalogue/index';
-import { MARKER_ATTRIBUTE, SHIPPED_COPY, rendersAsShipped } from '@engine/shipped-copy';
+import { compile } from 'svelte/compiler';
+import { unmarkedSource, SHIPPED_COPY, rendersAsShipped } from '@engine/shipped-copy';
 import { copyUses, type CopyUse } from './fixtures/svelte-copy-uses';
 
 const PACKS = ['foundation', 'foundation-alt'];
@@ -180,7 +181,9 @@ describe('a section as a publication carries it', () => {
         if (def.kind !== 'code' || typeof def.source !== 'string') continue;
         const clean = await withoutCodeMarkers(def.source);
         // What the check expects of a publication is what the export writes, to the byte.
-        expect(def.source.replace(MARKER_ATTRIBUTE, ''), `${pack} ${def.componentId}`).toBe(clean);
+        expect(unmarkedSource(def.source), `${pack} ${def.componentId}`).toBe(clean);
+        expect(clean, `${pack} ${def.componentId}`).not.toContain('so_text');
+        expect(() => compile(clean, { generate: 'server', runes: true }), `${pack} ${def.componentId}`).not.toThrow();
         expect(rendersAsShipped({ ...def, source: clean }), `${pack} ${def.componentId}`).toBe(true);
         checked++;
       }

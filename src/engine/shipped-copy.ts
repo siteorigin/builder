@@ -90,14 +90,18 @@ export function shippedAsIs(def: ComponentDefinition): boolean {
 /**
  * An editor marker attribute in a code component's markup (shared/code-markers.ts), with the space before it, as the
  * exports take it out (withoutCodeMarkers, src/main/codecheck.ts). Read only from a bundled definition's own code, whose
- * markers are all written this way: tests/unit/shipped-copy.test.ts holds every one to what the exports leave.
+ * markers and hook are all written this way: tests/unit/shipped-copy.test.ts holds every one to what the exports leave.
  */
-export const MARKER_ATTRIBUTE = /\s*\bdata-so-(?:part|text)\s*=\s*(?:"[^"]*"|'[^']*'|\{[^{}]*\})/gi;
+const MARKER_ATTRIBUTE = /\s*\bdata-so-(?:part|text)\s*=\s*(?:"[^"]*"|'[^']*'|\{[^{}]*\})/gi;
+/** The text hook's line in a bundled definition's $props(), which goes with the markers that called it. */
+const TEXT_HOOK_LINE = /^[\t ]*so_text,\r?\n/m;
+/** A bundled definition's code as the exports leave it. */
+export const unmarkedSource = (source: string): string => source.replace(MARKER_ATTRIBUTE, '').replace(TEXT_HOOK_LINE, '');
 const shippedUnmarked = new WeakMap<ComponentDefinition, string>();
 
 /**
  * Whether `def` renders exactly as a definition the app bundles: it is that definition (shippedAsIs), or that
- * definition with the editor's markers taken out of its code and nothing else changed, as a publication carries it
+ * definition with the editor's markers and text hook taken out of its code and nothing else changed, as a publication carries it
  * (src/main/publication.ts), which shows visitors the same. For reading what a section shows visitors; what the editor
  * may do with one still needs shippedAsIs.
  */
@@ -106,7 +110,7 @@ export function rendersAsShipped(def: ComponentDefinition): boolean {
   const shipped = bundled(def);
   if (!shipped || typeof shipped.source !== 'string') return false;
   let json = shippedUnmarked.get(shipped);
-  if (json === undefined) shippedUnmarked.set(shipped, (json = JSON.stringify({ ...shipped, source: shipped.source.replace(MARKER_ATTRIBUTE, '') })));
+  if (json === undefined) shippedUnmarked.set(shipped, (json = JSON.stringify({ ...shipped, source: unmarkedSource(shipped.source) })));
   return JSON.stringify(def) === json;
 }
 

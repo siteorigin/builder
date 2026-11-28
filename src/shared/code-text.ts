@@ -8,7 +8,7 @@
  *   <RichText value={body} data-so-text={so_text?.('body')} />
  *
  * The website is given no hook, so the call gives nothing and no marker is written there: the published site carries
- * none, whoever owns the code. A component placed by the code (not by the editor) is given no hook either, so text it
+ * none, whoever owns the code, and both exports take the hook out of $props() with the markers. A component placed by the code (not by the editor) is given no hook either, so text it
  * marks never names its parent's properties.
  */
 import type { ComponentDefinition, ListProp, PropSchema } from './types';
