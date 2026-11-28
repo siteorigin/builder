@@ -87,9 +87,10 @@ describe('visitor text', () => {
     const fr = resolveVisitorText(site, 'fr');
     expect(fr.english).toEqual(VISITOR_TEXT_KEYS.filter((k) => k !== 'menu'));
     expect(fr.english).toContain('skipLink');
-    expect(resolveVisitorText(site, 'fr-CA').english).not.toContain('menu');
+    expect(resolveVisitorText(site, 'fr-CA').english).toEqual(fr.english);
+    expect(resolveVisitorText({ visitorText: { 'fr-ca': { mainNav: 'Principal' }, ...site.visitorText } }, 'fr-CA').english).toEqual(fr.english.filter((k) => k !== 'mainNav'));
     expect(resolveVisitorText(site, 'ur').english).toEqual([...VISITOR_TEXT_KEYS]);
-    expect(resolveVisitorText(site, 'fr').words).toEqual(visitorTextFor(site, 'fr'));
+    expect(resolveVisitorText(site, 'fr').words).toMatchObject({ menu: 'Menu', skipLink: 'Skip to content', mainNav: 'Main' });
     // English pages, and languages with built-in wording or the author's, have nothing to mark.
     for (const code of ['en', 'en-GB', 'EN-us', 'ar', 'ar-MA', 'he', 'iw']) expect(resolveVisitorText(site, code).english, code).toEqual([]);
   });
@@ -162,6 +163,17 @@ describe('the generated wording', () => {
     // An English site has no English to mark.
     expect(one.get(`${RUNTIME_DIR}/visitor-text.js`)).toContain('const ENGLISH = {};');
     expect(one.get('src/routes/+layout.svelte')).not.toContain('speak(');
+  });
+
+  it('lists the pieces each language says in English, and only for languages without wording of their own (issue #1464)', () => {
+    const english = (s: ProjectState) => JSON.parse(/const ENGLISH = (.*);/.exec(generateProject(s).get(`${RUNTIME_DIR}/visitor-text.js`)!)![1]) as Record<string, string[]>;
+    let s = apply(fresh(), { type: 'site.update', language: 'fr', visitorText: { language: 'fr', text: { menu: 'Menu' } } });
+    s = apply(s, { type: 'page.update', pageId: byTitle(s, 'About').id, language: 'ur' }, { type: 'page.update', pageId: byTitle(s, 'Contact').id, language: 'en-GB' });
+    const all = (drop: string[]) => VISITOR_TEXT_KEYS.filter((k) => !drop.includes(k));
+    // No Light/Dark switch on this site, so its name goes nowhere, English or not.
+    expect(english(s)).toEqual({ fr: all(['menu', 'themeToggle']), ur: all(['themeToggle']) });
+    s = apply(s, { type: 'token.setColorScheme', mode: 'toggle' });
+    expect(english(s)).toEqual({ fr: all(['menu']), ur: all([]) });
   });
 });
 
@@ -437,7 +449,9 @@ const READ_LANGUAGES = `(() => {
     nav: nav.getAttribute('lang'),
     name: name.getAttribute('lang'),
     submenu: [...sub.childNodes].filter((n) => n.textContent).map((n) => [n.textContent, n.nodeType === 1 ? n.getAttribute('lang') : null]),
-    link: nav.querySelector('a').closest('[lang]').getAttribute('lang')
+    // The author's words around the marked ones keep the page's language: the links, and the link's name in the button.
+    link: [...new Set([...nav.querySelectorAll('a'), sub].map((el) => el.closest('[lang]').getAttribute('lang')))],
+    nameHidden: name.hidden
   };
 })()`;
 
@@ -461,7 +475,7 @@ describe.skipIf(!browserInstalled)('English wording on a page in French or Urdu,
     try {
       await page.setContent(`<!doctype html><html lang="fr" dir="ltr"><head><meta charset="utf-8"><style>${site.css}</style></head><body><div id="app"></div></body></html>`);
       await page.addScriptTag({ content: script });
-      const english = (en: string | null, link: string, side: string) => ({ skip: en, skipSide: side, nav: null, name: en, submenu: [['About', null], [' submenu', en]], link });
+      const english = (en: string | null, link: string, side: string) => ({ skip: en, skipSide: side, nav: null, name: en, submenu: [['About', null], [' submenu', en]], link: [link], nameHidden: true });
       const steps: Array<[string, string, string | null, ReturnType<typeof english>]> = [
         // route, the page's language, the menu button's mark (the author's French "Menu" is French), the rest
         [site.routes.home, 'fr', null, english('en', 'fr', 'left')],
@@ -478,11 +492,134 @@ describe.skipIf(!browserInstalled)('English wording on a page in French or Urdu,
         await expect(page.getByRole('link', { name: 'Skip to content', exact: true }).count()).resolves.toBe(1);
         await page.locator('.so-header__toggle').click();
         await expect(page.getByRole('navigation', { name: 'Main', exact: true }).count()).resolves.toBe(1);
+        await expect(page.locator('.so-header__nav > span[hidden]').isVisible()).resolves.toBe(false);
         await expect(page.getByRole('button', { name: 'About submenu', exact: true }).count()).resolves.toBe(1);
         await page.locator('.so-header__toggle').click();
       }
     } finally {
       await page.close();
     }
+  });
+});
+
+/**
+ * The site's layout (with its header) as the export prerenders each page, before any of the site's script runs: a
+ * page's HTML, by route ID.
+ */
+async function prerender(files: Map<string, string>): Promise<(route: string) => string> {
+  const GEN = '\0gen:';
+  const entry = `export { render } from 'svelte/server';\nexport { createRawSnippet } from 'svelte';\nexport { default as Layout } from ${JSON.stringify(GEN + 'src/routes/+layout.svelte')};`;
+  const out = (await build({
+    configFile: false,
+    logLevel: 'silent',
+    ssr: { noExternal: true },
+    plugins: [
+      {
+        name: 'prerendered-layout',
+        enforce: 'pre',
+        resolveId(id, importer) {
+          if (id === '\0entry' || id.startsWith(GEN)) return id;
+          if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
+          if (id.startsWith('@fontsource')) return '\0empty';
+          if (importer?.startsWith(GEN) && id.startsWith('.')) {
+            const path = posix.join(posix.dirname(importer.slice(GEN.length)), id);
+            if (files.has(path)) return GEN + path;
+            if (path.endsWith('.css')) return '\0empty';
+          }
+          return null;
+        },
+        load(id) {
+          if (id === '\0entry') return entry;
+          if (id === '\0empty') return { code: '', moduleType: 'js' };
+          if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
+          // The page being prerendered, which the test sets before each render.
+          if (id === '\0$app/state') return "export const page = { get route() { return { id: globalThis.__route }; }, get url() { return new URL('https://site.test' + globalThis.__route); } };";
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
+          if (!id.startsWith(GEN)) return null;
+          const path = id.slice(GEN.length);
+          if (path.endsWith('.css')) return { code: '', moduleType: 'js' };
+          const source = files.get(path)!;
+          if (!path.endsWith('.svelte')) return { code: source, moduleType: 'js' };
+          return { code: compile(source, { filename: path, generate: 'server', runes: true, css: 'external' }).js.code, moduleType: 'js' };
+        }
+      }
+    ],
+    build: { write: false, ssr: true, minify: false, rolldownOptions: { input: '\0entry', output: { format: 'esm', codeSplitting: false } } }
+  })) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[];
+  const chunk = (Array.isArray(out) ? out[0] : out).output.find((o) => o.type === 'chunk');
+  if (!chunk || chunk.type !== 'chunk') throw new Error('The layout did not bundle');
+  const tmp = mkdtempSync(join(resolve('.tmp'), 'visitor-prerender-'));
+  try {
+    const file = join(tmp, 'layout.mjs');
+    writeFileSync(file, chunk.code);
+    const mod = (await import(/* @vite-ignore */ pathToFileURL(file).href)) as { render: (c: unknown, o: { props: Record<string, unknown> }) => { body: string }; createRawSnippet: (f: () => { render: () => string }) => unknown; Layout: unknown };
+    return (route) => {
+      (globalThis as unknown as { __route: string }).__route = route;
+      return mod.render(mod.Layout, { props: { children: mod.createRawSnippet(() => ({ render: () => '<div></div>' })) } }).body.replace(/<!--[\s\S]*?-->/g, '');
+    };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+describe('English wording on a page in French or Urdu, as the export prerenders it', () => {
+  mkdirSync(resolve('.tmp'), { recursive: true });
+  const tag = (html: string, pattern: RegExp) => pattern.exec(html)?.[0] ?? '';
+  const read = (html: string) => {
+    const nav = tag(html, /<nav\b[^>]*>/);
+    const nameId = /aria-labelledby="([^"]+)"/.exec(nav)?.[1];
+    return {
+      skip: tag(html, /<a class="so-skip-link"[^>]*>[^<]*<\/a>/),
+      menu: tag(html, /<span class="so-visually-hidden"[^>]*>Menu<\/span>/),
+      nav: nav.replace(/ class="[^"]*"/, ''),
+      name: nameId ? tag(html, new RegExp(`<span id="${nameId}"[^>]*>[^<]*</span>`)).replace(nameId, 'ID') : '',
+      submenu: tag(html, /<span class="so-visually-hidden">About[\s\S]*?submenu(<\/span>)+/)
+    };
+  };
+
+  it('marks the English pieces in the HTML each page is sent as, and none on an English page', async () => {
+    const site = englishFallbackSite();
+    const page = await prerender(site.files);
+    const marked = {
+      skip: '<a class="so-skip-link" href="#main" lang="en">Skip to content</a>',
+      nav: '<nav id="so-site-nav" aria-labelledby="ID">',
+      name: '<span id="ID" hidden="" lang="en">Main</span>',
+      submenu: '<span class="so-visually-hidden">About<span lang="en"> submenu</span></span>'
+    };
+    const fr = read(page(site.routes.home));
+    expect({ ...fr, nav: fr.nav.replace(/"so-nav-name:[^"]+"/, '"ID"') }).toEqual({ ...marked, menu: '<span class="so-visually-hidden">Menu</span>' });
+    const ur = read(page(site.routes.ur));
+    expect({ ...ur, nav: ur.nav.replace(/"so-nav-name:[^"]+"/, '"ID"') }).toEqual({ ...marked, menu: '<span class="so-visually-hidden" lang="en">Menu</span>' });
+    const en = read(page(site.routes.en));
+    expect({ ...en, nav: en.nav.replace(/"so-nav-name:[^"]+"/, '"ID"') }).toEqual({
+      skip: '<a class="so-skip-link" href="#main">Skip to content</a>',
+      menu: '<span class="so-visually-hidden">Menu</span>',
+      nav: '<nav id="so-site-nav" aria-labelledby="ID">',
+      name: '<span id="ID" hidden="">Main</span>',
+      submenu: '<span class="so-visually-hidden">About submenu</span>'
+    });
+    // The navigation's name is an ID no author's anchor can take.
+    expect(en.nav).toMatch(/aria-labelledby="so-nav-name:[^"]+"/);
+  });
+
+  it('marks Home as English only where it names the brand link, on a site in French alone', async () => {
+    let s = fresh();
+    s = apply(s, { type: 'site.update', language: 'fr' });
+    const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+    const render = async (props: Record<string, unknown>) => {
+      header.props = { ...header.props, ...props };
+      const files = generateProject(s);
+      // A site in one language never calls speak(): the wording is the site's.
+      expect(files.get('src/routes/+layout.svelte')).not.toContain('speak(');
+      return /<a class="so-header__brand[^"]*"[^>]*>/.exec((await prerender(files))('/'))?.[0] ?? '';
+    };
+    const unnamed = await render({ siteName: '', showSiteName: true, logo: null });
+    expect(unnamed).toContain('aria-label="Home"');
+    expect(unnamed).toContain('lang="en"');
+    // The author's own name for the link is in the page's language, shown or not.
+    for (const props of [{ siteName: 'Atelier Nord', showSiteName: true, logo: null }, { siteName: 'Atelier Nord', showSiteName: false, logo: null }]) expect(await render(props)).not.toContain('lang=');
+    // The skip link on that page is marked too, without the layout naming a language.
+    const s2 = generateProject(s);
+    expect((await prerender(s2))('/')).toContain('<a class="so-skip-link" href="#main" lang="en">Skip to content</a>');
   });
 });
