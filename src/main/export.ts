@@ -91,7 +91,7 @@ import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName, missingFiles } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
-import type { ExportNote, MissingAssetFiles } from '@shared/api';
+import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
@@ -1809,7 +1809,7 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
   const place = file ? `${file}${line ? `, line ${line}` : ''}` : '';
   // A project component is named as the author knows it; its file is how a developer finds it.
   const at = component ? `the “${component}” component (${place})` : place;
-  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : 'The production build failed.';
+  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : BUILD_FAILED_UNPLACED;
   const warnings = [...read.causes];
   if (at && (page || route)) warnings.push(`The build was working in ${at}.`);
   if (!warnings.length) warnings.push('The build did not say what went wrong. The technical details list everything it printed.');

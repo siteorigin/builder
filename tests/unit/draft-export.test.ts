@@ -32,6 +32,8 @@ const filesIn = (dir: string): string[] =>
 // static/ is copied as it is. The tools are not copied.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The project's website tools are set up, so the website is built (#1395).
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     env.builds++;
     const out = join(dir, 'build');

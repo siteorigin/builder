@@ -612,6 +612,14 @@ export class Controller {
   private settled = new WeakMap<ProjectSession, { state: ProjectState; revision: number }>();
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
+  /**
+   * The website tools being set up or reinstalled in the open project's folder (#1395): how many such jobs are under
+   * way, and how many have ever begun, so a website build can tell that its copy of the tools was made while none was
+   * changing them.
+   */
+  private toolsWork = { running: 0, begun: 0 };
+  /** The openings whose preview has looked at their website tools: until it has, tools not set up are about to be. */
+  private toolsLooked = new WeakSet<ProjectSession>();
   private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
@@ -1855,6 +1863,8 @@ export class Controller {
     const ready = await dependenciesReady(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
+    // Found set up; tools that are not are looked at once the install below has ended, and until then are being set up.
+    if (ready) this.toolsLooked.add(session);
     if (!ready) {
       if (session.readOnly) {
         this.status({ state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
@@ -1864,6 +1874,7 @@ export class Controller {
       if (!(await session.stillOwner()) || this.session !== session) return;
       this.status({ state: 'preparing', message: 'Setting up website tools…' });
       const abort = (this.prepareAbort = new AbortController());
+      const done = this.changingTools();
       try {
         await prepareDependencies(session.dir, (line) => this.status({ state: 'preparing', message: line.slice(0, 120) }), abort.signal, async () => this.session === session && (await session.stillOwner()));
       } catch (e) {
@@ -1873,6 +1884,8 @@ export class Controller {
         this.broadcast();
         return;
       } finally {
+        if (!abort.signal.aborted) this.toolsLooked.add(session);
+        done();
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
     }
@@ -2495,16 +2508,55 @@ export class Controller {
       const owned = async () => this.session === s && (await s.stillOwner());
       if (!(await owned())) return;
       this.status({ state: 'preparing', message: 'Reinstalling website tools…' });
+      // While the files go, a website build copies none of the tools. The marker goes first, so tools left part removed
+      // are never taken for set up; the install that follows is tracked as every install is (startRuntimeChecked).
+      const done = this.changingTools();
       try {
-        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
-        if (!(await owned())) return;
         await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+        if (!(await owned())) return;
+        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
       } catch (e) {
         this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         return;
+      } finally {
+        // The tools are about to be set up again, not missing, until the preview has looked at them once more.
+        this.toolsLooked.delete(s);
+        done();
       }
       await this.startRuntimeNow();
     });
+  }
+
+  /** The website tools in the project's folder are being changed until the function returned is called (toolsWork). */
+  private changingTools(): () => void {
+    this.toolsWork.running++;
+    this.toolsWork.begun++;
+    let ended = false;
+    return () => {
+      if (!ended) this.toolsWork.running--;
+      ended = true;
+    };
+  }
+
+  /**
+   * Why the website cannot be built with the open project's tools now, or null (#1395): they are being set up or
+   * reinstalled, or they are not set up, because setting them up failed or has not begun yet. A build copies them first,
+   * so one started meanwhile would build from a half-installed copy and fail in ways that name nothing of the project.
+   */
+  private async toolsUnready(s: ProjectSession): Promise<string | null> {
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    if (await dependenciesReady(s.dir)) return null;
+    if (this.toolsWork.running > 0) return TOOLS_SETTING_UP;
+    // Not set up, and nothing setting them up. The preview stopped before setting them up (it says why, and Project
+    // health shows it), or has not looked at them yet for this opening, which it is about to; or it found them set up
+    // and they have changed since, which only a reinstall puts right.
+    const runtime = this.session === s ? this.runtimeStatus() : null;
+    if (runtime?.state === 'error' && runtime.message === TRUST_CHANGED) return TRUST_CHANGED;
+    // The package files are part of what the author trusted: changed outside the app, they are reviewed before any
+    // reinstall removes the tools they replace.
+    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return TRUST_CHANGED;
+    if (runtime?.state === 'error') return TOOLS_FAILED;
+    return this.toolsLooked.has(s) ? TOOLS_MISSING : TOOLS_SETTING_UP;
   }
 
   /**
@@ -4238,6 +4290,10 @@ export class Controller {
     // Published pages that link to a draft would send visitors to a page the website leaves out.
     const drafts = draftLinksStop(s!.state) ?? publishedChanged(s!.state, published);
     if (drafts) return { ok: false, ...drafts };
+    // Said before a folder is chosen when it is already known; the build checks again when it copies the tools.
+    const tools = await this.toolsUnready(s!);
+    if (tools) return { ok: false, message: tools, warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     const dest = await this.chooseExportTarget('site', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
     if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
@@ -5102,12 +5158,24 @@ export class Controller {
     if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };
     // The build gets its own copy of the tools: what they write must not land in the project, which may have been
     // taken over by the time the build starts. The copy is kept between exports, checked against the project's tools.
+    // Only tools that are set up, copied while nothing was setting them up or reinstalling them (#1395): a copy made
+    // while one of those ran may hold some files from before it and some from after, or none at all.
+    const begun = this.toolsWork.begun;
+    const unready = await this.toolsUnready(s);
+    if (unready) return { ok: false, message: unready, warnings: [] };
+    const changed = () => this.toolsWork.begun !== begun || this.toolsWork.running > 0;
     let tools: BuildTools;
     try {
       tools = await timed('export.copyTools', () => (this.keptTools ??= new KeptTools(join(this.stagingRoot(), 'tools'))).take(s.dir, project, s.settleMs))();
     } catch (e) {
-      return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
+      if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
+      return { ok: false, message: TOOLS_MISSING, warnings: [(e as Error).message] };
     }
+    // The copy is thrown away with the staging folder, and never kept for the next export. Another app that took the
+    // project over meanwhile may be changing its tools where this app's count cannot see.
+    if (changed()) return { ok: false, message: TOOLS_SETTING_UP, warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the website was built.', warnings: [] };
+    if (!(await s.stillOwner())) return { ok: false, message: s.readOnly?.reason ?? READ_ONLY, warnings: [] };
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
     // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
     if (build.exited) await timed('export.keepTools', () => tools.keep())();
@@ -5342,6 +5410,13 @@ async function occupied(dir: string): Promise<boolean> {
 
 /** The new project's folder was found taken: told as written, never mistaken for another failure by its wording. */
 class FolderTakenError extends Error {}
+
+/** A website build asked for while the website tools are being set up or reinstalled (#1395). */
+const TOOLS_SETTING_UP = 'SiteOrigin Builder is still setting up the website tools. Wait until it finishes, then try again.';
+/** A website build asked for once setting the tools up has failed (#1395): Project health has the details and the way back. */
+const TOOLS_FAILED = 'The website tools could not be set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
+/** A website build asked for when the website tools are not set up and nothing is setting them up (#1395). */
+const TOOLS_MISSING = 'The website tools are not set up, so the website cannot be built. Open Project health and choose Reinstall website tools, then try again.';
 
 export function friendlyError(msg: string): string {
   if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))
