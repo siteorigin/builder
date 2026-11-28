@@ -608,6 +608,20 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'The view lists and chooses documents; their previews, search settings and a site-wide overview there are still to come', owner: 'pages', issue: 699 }]
   },
   {
+    id: 'pages.seo-mode',
+    area: 'pages',
+    intent: 'Move between editing, previewing and the SEO view from the toolbar',
+    start: 'Business site with a blog post, a section of Home selected, Layers showing',
+    routes: ['toolbar:SEO', 'toolbar:Edit', 'toolbar:Preview', 'command:edit', 'command:preview'],
+    outcome: 'The Mode toggle offers Edit, Preview and SEO as one radio group; SEO opens the SEO view and is chosen while it is open, however it was opened; Edit or Preview, from the toggle or the command menu, leaves the view for the canvas in that mode with the sidebar back on the panel the view replaced and the selection back; a live session’s guest has no SEO option',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the toolbar’s Mode toggle opens the view, and Edit or Preview leaves it for the canvas in that mode (#1583)' },
+      { test: 'tests/unit/toolbar-mode.test.ts', kind: 'unit' },
+      { test: 'tests/unit/toolbar-place-browser.test.ts', kind: 'unit' }
+    ]
+  },
+  {
     id: 'pages.seo-health',
     area: 'pages',
     intent: 'Find what is holding the site back in search and AI answers, and fix it',
