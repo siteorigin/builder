@@ -60,7 +60,16 @@ export interface RecentProject {
    * PNG data URL, read from the folder when the list is asked for. Absent when the folder is missing or has none.
    */
   icon?: string;
+  /**
+   * Where the project's editor draws its panels and page, from its workspace file (.siteorigin/workspace.json), read
+   * when the list is asked for: the outline shown from a click on the card is drawn at these sizes, so the project's
+   * arrival moves nothing (#1758). Absent when the folder is missing or has no workspace file that can be read.
+   */
+  layout?: SavedLayout;
 }
+
+/** The parts of a project's saved workspace state that set the editor's panels and page (LocalWorkspaceState). */
+export type SavedLayout = Pick<LocalWorkspaceState, 'leftTab' | 'leftWidth' | 'rightWidth' | 'viewport' | 'zoom'>;
 
 export interface AppSettings {
   appearance: Appearance;

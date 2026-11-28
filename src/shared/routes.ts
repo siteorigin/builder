@@ -8,7 +8,7 @@ import { SITE_ICON_FILES } from './site-icons';
  * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts), and the hosts' redirect rules
  * (generator/host-redirects.ts).
  */
-const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
+const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', '_headers', 'vercel.json', ...SITE_ICON_FILES]);
 
 /** Names of the home page's and the not-found page's files (`build/index.html`, `build/404.html`), which a page at that address alone cannot be built beside. */
 const ROOT_FILES = new Set(['index', '404']);
