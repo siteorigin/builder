@@ -190,9 +190,15 @@ try {
     60000,
     500
   );
-  const enHtml = await served('/about/');
-  assert.equal(htmlLang(enHtml), 'en', 'About stays English');
-  assert.deepEqual(alternates(enHtml, '/about/'), BOTH);
+  await eventually(
+    async () => {
+      const enHtml = await served('/about/');
+      assert.equal(htmlLang(enHtml), 'en', 'About stays English');
+      assert.deepEqual(alternates(enHtml, '/about/'), BOTH);
+    },
+    60000,
+    500
+  );
   assert.equal(htmlLang(await served('/contact/')), 'en', 'a page without translations keeps the site language');
   // In Preview, a visitor's link clicks move through the site in the editor's own frame.
   await win.locator('.pages-list [role="option"]', { hasText: /^About/ }).click();

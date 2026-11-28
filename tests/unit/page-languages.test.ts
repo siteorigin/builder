@@ -573,6 +573,23 @@ describe('page languages in the website', () => {
     expect(ld(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
   });
 
+  it('lists the versions at full addresses once a public address is set, with no relinking', () => {
+    const { s, en, fr } = bilingual();
+    const cache = new GenerationCache();
+    for (const opts of [{}, { instrument: true }]) expect(generateProject(s, opts, cache).get(pageFile(s.pages[fr]))).not.toContain('hreflang');
+    const published = apply(s, { type: 'site.update', baseUrl: 'https://example.com/' });
+    expect(published.pages[fr].translationGroup).toBe(s.pages[fr].translationGroup);
+    for (const opts of [{}, { instrument: true }]) {
+      const files = generateProject(published, opts, cache);
+      expect([...files]).toEqual([...generateProject(published, opts)]);
+      for (const id of [en, fr])
+        expect(alternatesIn(files.get(pageFile(published.pages[id]))!)).toEqual([
+          ['en', 'https://example.com/about/'],
+          ['fr', 'https://example.com/fr/a-propos/']
+        ]);
+    }
+  });
+
   it('follows a version to its new address and to the Home page', () => {
     const two = bilingual();
     const { en, fr } = two;
