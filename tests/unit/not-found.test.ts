@@ -186,6 +186,57 @@ describe('not-found page wording', () => {
   });
 });
 
+describe('built-in English wording on a page that is not in English', () => {
+  /** What the heading, message and link home hold, as the page renders them. */
+  const phrases = (body: string) => [/<h1\b[^>]*>(.*?)<\/h1>/, /<p\b[^>]*>(.*?)<\/p>/, /<a\b[^>]*so-btn[^>]*>(.*?)<\/a>/].map((re) => re.exec(body)?.[1]);
+  const english = (text: string) => `<span lang="en" dir="ltr">${text}</span>`;
+
+  it.each(['ur-PK', 'fr-CA'])('is marked as English, read left to right, on a %s site, beside the author’s own', async (language) => {
+    const s = fresh();
+    s.site.language = language;
+    s.site.notFoundHeading = 'Perdu';
+    const { body } = await renderNotFound(s);
+    expect(phrases(body)).toEqual(['Perdu', english(NOT_FOUND_DEFAULTS.message), english(NOT_FOUND_DEFAULTS.linkLabel)]);
+  });
+
+  it('marks only built-in wording: the author’s own stays unmarked even when it reads the same', async () => {
+    const s = fresh();
+    s.site.language = 'ur-PK';
+    s.site.notFoundMessage = NOT_FOUND_DEFAULTS.message;
+    // Wording that shows nothing leaves the built-in phrase in its place.
+    s.site.notFoundLinkLabel = '\u200b ';
+    const { body } = await renderNotFound(s);
+    expect(phrases(body)).toEqual([english(NOT_FOUND_DEFAULTS.heading), NOT_FOUND_DEFAULTS.message, english(NOT_FOUND_DEFAULTS.linkLabel)]);
+  });
+
+  it.each<[string, 'ltr' | 'rtl' | undefined]>([
+    ['en', undefined],
+    ['EN-gb', undefined],
+    ['not a language', undefined],
+    ['ar-MA', undefined],
+    ['he', 'ltr']
+  ])('leaves the phrases unmarked on a %s site (direction %s)', async (language, direction) => {
+    const s = fresh();
+    s.site.language = language;
+    s.site.direction = direction;
+    const { body } = await renderNotFound(s);
+    const copy = notFoundCopy(s.site);
+    expect(phrases(body)).toEqual([copy.heading, copy.message, copy.linkLabel]);
+  });
+
+  it('gives English its reading direction on an English site set to run right to left, in a cached run too', () => {
+    const cache = new GenerationCache();
+    const component = (s: ProjectState) => generateProject(s, {}, cache).get(NOT_FOUND_COMPONENT)!;
+    const s = fresh();
+    expect(component(s)).not.toContain('lang="en"');
+    const rtl = applyOperations(s, [{ type: 'site.update', direction: 'rtl' }]).state;
+    expect(component(rtl).match(/<span lang="en" dir="ltr">/g)).toHaveLength(3);
+    const urdu = applyOperations(s, [{ type: 'site.update', language: 'ur-PK' }]).state;
+    expect(component(urdu).match(/<span lang="en" dir="ltr">/g)).toHaveLength(3);
+    expect(component(s)).not.toContain('lang="en"');
+  });
+});
+
 describe('generated not-found page', () => {
   it('is generated for every project, built as 404.html, with a hook that only rewrites it during a build', () => {
     for (const instrument of [false, true]) {
