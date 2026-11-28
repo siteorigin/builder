@@ -4,9 +4,9 @@
  * route prefix plus its slug, and those addresses share one namespace with the pages and the old page addresses kept
  * working, so nothing here lets two of them claim the same address.
  */
-import type { Collection, CollectionKind, EntryDoc, ProjectState } from './types';
+import type { Collection, CollectionKind, EntryDoc, ProjectState, SiteRedirect } from './types';
 import { numberedSlug, slugify, validateRoute, validateSegment } from './routes';
-import { keptPublishedAddresses } from './published';
+import { addressesLeft } from './published';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
 export const COLLECTION_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -248,6 +248,15 @@ export function collectionRoutes(state: ProjectState): RouteOwner[] {
     }
   }
   return out;
+}
+
+/**
+ * The addresses an export delivered for a page that has left them since, which the site keeps working for it as old
+ * addresses are (#1382, see shared/published): those no collection, entry or archive page of a collection holds.
+ */
+export function keptPublishedAddresses(state: ProjectState): SiteRedirect[] {
+  const left = addressesLeft(state);
+  return left.length ? left.filter((r) => !collectionRouteOwner(state, r.from)) : left;
 }
 
 /** Every address of the site: pages, old addresses kept working (of pages and of entries), collections and entries. */

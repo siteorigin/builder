@@ -5,7 +5,7 @@
  */
 import type { StepChange } from '@shared/api';
 import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
-import { keptPublishedAddresses } from '@shared/published';
+import { keptPublishedAddresses } from '@shared/collections';
 import { displayName } from '@engine/tree';
 import { codeImports } from '@engine/code-imports';
 import { publicUrl } from '@shared/public-url';

@@ -48,11 +48,11 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
 import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
-import { keptPublishedAddresses, publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
+import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
@@ -1052,6 +1052,8 @@ function redirectUpdate(state: ProjectState, op: Op<'redirect.update'>): OpResul
   const was = state.site.redirects![i];
   const target = redirectTarget(state, op, was.from);
   state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target } as SiteRedirect;
+  // Sent somewhere else, it never goes back to the page an export delivered it for, should this redirect go later.
+  if (target.pageId === undefined || target.pageId !== publishedPageAt(state, was.from)) dropAddress(state, was.from);
   refuseRedirectLoop(state, was.from);
   return { from: was.from, ...target };
 }

@@ -23,7 +23,7 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import type { ComponentDefinition, NodeTree, ProjectState } from '@shared/types';
 import { holdsSecretValue, isSensitiveName, MIN_SECRET_LENGTH } from '@shared/sources';
-import { keptPublishedAddresses } from '@shared/published';
+import { keptPublishedAddresses } from '@shared/collections';
 import { getTheme } from '@catalogue/index';
 import { defFile, publishedState, webMcpFormFile } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';

@@ -8,8 +8,7 @@
  * straight to where they will land; a loop, and an address that leads nowhere, sends them nowhere and is left out.
  */
 import { archivePages } from './archives';
-import { keptPublishedAddresses } from './published';
-import { isDraftEntry, siteEntries, type SiteEntry } from './collections';
+import { isDraftEntry, keptPublishedAddresses, siteEntries, type SiteEntry } from './collections';
 import { validateRoute, validateSegment } from './routes';
 import type { PageDoc, ProjectState, SiteRedirect } from './types';
 
@@ -82,10 +81,10 @@ export function redirectRecord(item: unknown): SiteRedirect | null {
  * The redirects the site keeps: as the documents keep them, damaged ones left out, in their order, then each address an
  * export delivered for a page that has left it since (keptPublishedAddresses, #1382).
  */
-export function redirectRecords(state: Pick<ProjectState, 'site'> & Partial<Pick<ProjectState, 'published' | 'pages' | 'collections'>>): SiteRedirect[] {
+export function redirectRecords(state: Pick<ProjectState, 'site'> & Partial<ProjectState>): SiteRedirect[] {
   const list: unknown = state.site?.redirects;
   const stored = Array.isArray(list) ? list.flatMap((r) => redirectRecord(r) ?? []) : [];
-  return state.published && state.pages ? [...stored, ...keptPublishedAddresses({ site: state.site, published: state.published, pages: state.pages, collections: state.collections })] : stored;
+  return state.published && state.pages ? [...stored, ...keptPublishedAddresses(state as ProjectState)] : stored;
 }
 
 /**

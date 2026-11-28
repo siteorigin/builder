@@ -8,7 +8,7 @@
  * So an address it holds is kept working for its page whenever the page has left it, however it left: an Address edit
  * records the old address as a redirect, and an undone move, a step back in History or a restored version, which put
  * back documents from before the export, still find it here (keptPublishedAddresses, #1382). Only the author stops
- * keeping one (SiteDoc.droppedAddresses).
+ * keeping one (SiteDoc.droppedAddresses), and a collection's own address is the collection's.
  */
 import { validateRoute } from './routes';
 import type { ProjectState, PublishedDoc, SiteRedirect } from './types';
@@ -28,7 +28,7 @@ export function publishedPageAt(state: Pick<ProjectState, 'published'>, address:
 export const wasPublishedFor = (state: Pick<ProjectState, 'published'>, address: string, pageId: string): boolean => publishedPageAt(state, address) === pageId;
 
 /** Whether the author stopped keeping `address` working for the page `pageId` (SiteDoc.droppedAddresses). */
-export function isDroppedAddress(state: Pick<ProjectState, 'site'>, address: string, pageId: string): boolean {
+export function isDroppedAddress(state: { site: { droppedAddresses?: unknown } }, address: string, pageId: string): boolean {
   const list: unknown = state.site?.droppedAddresses;
   const key = address.toLowerCase();
   return Array.isArray(list) && list.some((d) => typeof d?.from === 'string' && d.from.toLowerCase() === key && d.pageId === pageId);
@@ -44,26 +44,33 @@ export function withDroppedAddress(state: Pick<ProjectState, 'site' | 'published
   return [...(Array.isArray(list) ? list : []), { from: address.toLowerCase(), pageId }];
 }
 
+/** The parts of a project the addresses its pages left are worked out from. */
+type LeftSite = {
+  site: { homePageId: string; redirects?: unknown; droppedAddresses?: unknown };
+  pages: Record<string, { id: string; route: string; draft?: boolean }>;
+  published?: PublishedDoc;
+};
+
 /**
- * The addresses an export delivered for a page that has left them since, kept working for it as old addresses are
- * (`{ from, pageId }`, in the record's order): each one no redirect of the site's own is at, that its page or a
- * published page does not have now, that is no collection's, and that the author has not dropped. A draft at one
- * leaves it working until the draft is published, as it does a redirect of the site's own (#1363).
+ * The addresses an export delivered for a page that has left them since (`{ from, pageId }`, in the record's order):
+ * each one no redirect of the site's own is at, that its page or a published page does not have now, and that the
+ * author has not dropped. A draft at one leaves it working until the draft is published, as it does a redirect of
+ * the site's own (#1363). The site keeps those no collection holds working (keptPublishedAddresses in
+ * shared/collections, which knows the collections' addresses).
  */
-export function keptPublishedAddresses(state: Pick<ProjectState, 'site' | 'published' | 'pages'> & Partial<Pick<ProjectState, 'collections'>>): SiteRedirect[] {
+export function addressesLeft(state: LeftSite): SiteRedirect[] {
   const recorded = state.published?.pages;
   if (!recorded || typeof recorded !== 'object' || !state.pages) return [];
   const stored: unknown = state.site.redirects;
   const kept = new Set(Array.isArray(stored) ? stored.flatMap((r) => (typeof r?.from === 'string' ? [r.from.toLowerCase()] : [])) : []);
   const held = new Map<string, { id: string; draft: boolean }>();
   for (const p of Object.values(state.pages)) if (typeof p?.route === 'string') held.set(p.route.toLowerCase(), { id: p.id, draft: p.draft === true && p.id !== state.site.homePageId });
-  const collections = Object.values(state.collections ?? {}).flatMap((c) => (typeof c?.settings?.route === 'string' && c.settings.route !== '/' ? [c.settings.route.toLowerCase()] : []));
   const out: SiteRedirect[] = [];
   for (const [from, pageId] of Object.entries(recorded)) {
     if (typeof pageId !== 'string' || !Object.hasOwn(state.pages, pageId) || from === '/' || validateRoute(from) || kept.has(from)) continue;
     const holder = held.get(from);
     if (holder && (holder.id === pageId || !holder.draft)) continue;
-    if (collections.some((c) => from.startsWith(c)) || isDroppedAddress(state, from, pageId)) continue;
+    if (isDroppedAddress(state, from, pageId)) continue;
     out.push({ from, pageId });
   }
   return out;

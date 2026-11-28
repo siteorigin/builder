@@ -13,11 +13,12 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations, planHomeChange } from '@engine/apply';
 import { headerMenu, headerMenuRoom } from '@engine/tree';
 import { generateHostRedirects } from '@generator/host-redirects';
-import { liveRedirects, publishedState } from '@generator/index';
+import { generateProject, liveRedirects, publishedState, redirectFile, siteEntries } from '@generator/index';
 import { planPageAddress } from '@shared/page-address';
 import { redirectRecords } from '@shared/redirects';
 import { routeOwners } from '@shared/collections';
 import { publicationState } from '../../src/main/publication';
+import { planPageRemoval } from '../../src/renderer/src/lib/page-removal';
 import { PUBLISHED_FILE, publishedDocProblem, publishedPageAt, wasPublishedFor, withPublished } from '@shared/published';
 import { validateRoute } from '@shared/routes';
 import { isCanonicalPath, stateToDocs } from '../../src/main/project/documents';
@@ -130,6 +131,13 @@ describe('addresses exported for a page that has left them some other way (#1382
     // Nor does sending it somewhere else bring the page's back.
     const elsewhere = applyOperations(moved, [{ type: 'redirect.update', from: '/services/', to: '/about/' }]).state;
     expect(kept(elsewhere)).toEqual([['/services/', '/about/']]);
+    // Nor once that redirect goes later, by the author's removal or a page taking its address for a while.
+    expect(kept(applyOperations(elsewhere, [{ type: 'redirect.remove', from: '/services/' }]).state)).toEqual([]);
+    const passing = oneByOne(elsewhere, [
+      { type: 'page.create', pageId: 'pg_temp', title: 'Temporary', route: '/services/' },
+      { type: 'page.update', pageId: 'pg_temp', route: '/temporary/' }
+    ]);
+    expect(kept(passing)).toEqual([]);
   });
 
   it('is sent somewhere else as a redirect of the site’s own, and refused as a new one', () => {
@@ -150,7 +158,10 @@ describe('addresses exported for a page that has left them some other way (#1382
     expect(kept(left)).toEqual([['/what-we-do/', 'pg_wwd']]);
     // A draft there leaves it working until it is published.
     const draft = applyOperations(s, [{ type: 'page.create', pageId: 'pg_wwd', title: 'What we do', route: '/what-we-do/', draft: true }]).state;
+    expect(kept(draft)).toEqual([['/what-we-do/', 'pg_services']]);
     expect(liveRedirects(publishedState(draft)).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
+    // Published, it takes the address over.
+    expect(kept(applyOperations(draft, [{ type: 'page.update', pageId: 'pg_wwd', draft: false }]).state)).toEqual([]);
   });
 
   it('keeps nothing for a page removed since, or for a new Home page told not to keep its address', () => {
@@ -167,6 +178,50 @@ describe('addresses exported for a page that has left them some other way (#1382
     const declined = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state;
     expect(kept(declined)).toEqual([]);
     expect(declined.site.droppedAddresses).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
+  });
+
+  it('keeps an address under a collection’s that no entry or archive page of it holds', () => {
+    let s = applyOperations(withPage(), [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_winter', title: 'Winter workshop', publishedAt: '2026-01-12', draft: false, body: ['Bring an apron.'] }
+    ]).state;
+    const entry = siteEntries(s).find((e) => e.entry.id === 'en_winter')!.route;
+    const prefix = s.collections.posts.settings.route;
+    s = { ...s, published: { pages: { [`${prefix}team/`]: 'pg_services', [entry]: 'pg_services', [`${prefix}page/2/`]: 'pg_services' } } };
+    expect(kept(s)).toEqual([[`${prefix}team/`, 'pg_services']]);
+  });
+
+  it('is never taken silently by a page moved along with its parent', () => {
+    let s = applyOperations(withPage(), [
+      { type: 'page.create', pageId: 'pg_lookbook', title: 'Lookbook' },
+      { type: 'page.create', pageId: 'pg_kitchens', title: 'Kitchens', route: '/lookbook/kitchens/' }
+    ]).state;
+    s = { ...s, published: { pages: { '/gallery/kitchens/': 'pg_services' } } };
+    expect(planPageAddress(s, 'pg_lookbook', '/gallery/')).toEqual({ error: expect.stringContaining('an old address kept working for “Services”') });
+  });
+
+  it('follows a removed page to the replacement the delete dialog offers, though nothing links to it', () => {
+    const s = undoneMove();
+    const home = s.site.homePageId;
+    expect(planPageRemoval(s, 'pg_services', home, new Map()).operations).toEqual([{ type: 'page.remove', pageId: 'pg_services', replacementPageId: home }]);
+  });
+
+  it('is left out once the author sends it to a draft, by the website and by the publication', () => {
+    const s = applyOperations(undoneMove(), [
+      { type: 'page.create', pageId: 'pg_soon', title: 'Coming soon', route: '/coming-soon/', draft: true },
+      { type: 'redirect.update', from: '/what-we-do/', pageId: 'pg_soon' }
+    ]).state;
+    expect(kept(s)).toEqual([['/what-we-do/', 'pg_soon']]);
+    expect(liveRedirects(publishedState(s))).toEqual([]);
+    expect(publicationState(s).site.redirects).toBeUndefined();
+  });
+
+  it('is a redirect of the publication beside the site’s own, which keep their order', () => {
+    const s = applyOperations(undoneMove(), [{ type: 'redirect.add', from: '/old-team/', to: '/about/' }]).state;
+    expect(publicationState(s).site.redirects).toEqual([
+      { from: '/old-team/', custom: true, to: '/about/' },
+      { from: '/what-we-do/', pageId: 'pg_services' }
+    ]);
   });
 
   it('is a redirect of the publication, which carries no record of exports or of the addresses dropped', () => {
@@ -323,10 +378,30 @@ describe('recording an export in the project', () => {
     const live = publishedState(s.state);
     expect(liveRedirects(live).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
     expect(generateHostRedirects(live)).toContain('/what-we-do/ /services/ 301');
+    expect(generateProject(live).get(redirectFile('/what-we-do/'))).toContain('/services/');
     // Redo still puts the page back where it was moved, keeping its first address working.
     expect((await s.redo()).ok).toBe(true);
     expect(s.state.pages.pg_services.route).toBe('/what-we-do/');
     expect(liveRedirects(publishedState(s.state)).map((r) => [r.from, r.to])).toEqual([['/services/', '/what-we-do/']]);
+    await s.close();
+  });
+
+  it('keeps a kept address the author removed gone, until the removal is undone', async () => {
+    const { s } = await session();
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }] }, { label: 'Change page address' })).ok).toBe(true);
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.undo()).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'redirect.remove', from: '/what-we-do/' }] }, { label: 'Remove redirect' })).ok).toBe(true);
+    expect(generateProject(publishedState(s.state)).has(redirectFile('/what-we-do/'))).toBe(false);
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' })).ok).toBe(true);
+    // Undoing what came after leaves it removed; undoing the removal brings it back, and Redo takes it away again.
+    expect((await s.undo()).ok).toBe(true);
+    expect(liveRedirects(publishedState(s.state))).toEqual([]);
+    expect((await s.undo()).ok).toBe(true);
+    expect(liveRedirects(publishedState(s.state)).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
+    expect((await s.redo()).ok).toBe(true);
+    expect(liveRedirects(publishedState(s.state))).toEqual([]);
     await s.close();
   });
 
