@@ -613,7 +613,20 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);
       if (op.originalName) a.originalName = op.originalName;
-      return {};
+      if (a.kind !== 'image') return {};
+      // Another picture now shows wherever the image is used, so its suggested alt text, written for the old one, goes.
+      // Every description a use carries over is listed for the author to check against the new picture (one with none
+      // too), as a replacement lists them; a decorative use and a background describe nothing. Collections' uses have no
+      // place in the list yet.
+      delete a.altSuggestion;
+      const altReview: AltReview[] = [];
+      for (const u of imageUses(state, op.assetId)) {
+        const v = u.value;
+        if (!u.place || !v || u.background || v.decorative) continue;
+        const alt = typeof v.alt === 'string' ? v.alt : '';
+        altReview.push({ ...u.place, reason: alt.trim() ? 'custom' : 'missing', alt });
+      }
+      return { altReview };
     }
   }
   fail(`Unsupported operation "${(op as { type: string }).type}".`);
