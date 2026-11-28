@@ -4332,7 +4332,8 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   const article = pageArticle(page);
   const base = publicUrl(site);
   const alternates = pageAlternates(state, page);
-  const head = seoHead(state, meta, { article: !!article, alternates: alternates.map((a) => a.language) });
+  // Open Graph names every published language, whether or not search engines may list that version.
+  const head = seoHead(state, meta, { article: !!article, alternates: translationVersions(state, page).map((a) => a.language) });
   // The first section's main picture, asked for straight after the title so it starts loading first.
   const hero = heroPreload(ctx);
   if (hero) head.splice(1, 0, hero);
@@ -4686,24 +4687,32 @@ export function fillParts(text, values) {
 }
 
 /**
- * The versions of a published page in each language it has, itself among them, in page order: what its
- * alternate-language links name. None for a draft, for a page hidden from search engines or a copy of another address,
- * for a page without translations, and for a set whose pages clash on language (which the editor never lets happen).
- * A version the sitemap leaves out (hidden from search engines, a copy) is named by none, as in the sitemap's links.
+ * The versions of a published page in each language it has, itself among them, in page order. None for a draft, for a
+ * page without translations, and for a set whose pages clash on language (which the editor never lets happen).
  */
-export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
+function translationVersions(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
   const group = translationGroup(page);
   if (!group || isDraftPage(state, page)) return [];
-  const searchable = (p: PageDoc) => {
-    const meta = pageMetadata(state, p);
-    return !!meta && !meta.noindex && sameAddress(meta.canonical, meta.url);
-  };
-  if (!searchable(page)) return [];
   const members = translationMembers(state, group)
-    .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p) && searchable(p))
+    .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
     .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
   const languages = new Set(members.map((m) => languageKey(m.language)));
   return members.length < 2 || languages.size < members.length ? [] : members;
+}
+
+/**
+ * The versions a page's alternate-language links name, as the sitemap's do: the published versions that search engines
+ * may list. A version hidden from search engines or a copy of another address is named by none, and a page that is one
+ * lists none, so a set left with one version has no links.
+ */
+export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ language: string; route: string; pageId: string }> {
+  const searchable = (id: string) => {
+    const meta = pageMetadata(state, id);
+    return !!meta && !meta.noindex && (!meta.url || sameAddress(meta.canonical, meta.url));
+  };
+  if (!searchable(page.id)) return [];
+  const members = translationVersions(state, page).filter((m) => searchable(m.pageId));
+  return members.length < 2 ? [] : members;
 }
 
 export type { LiveRedirect } from '@shared/redirects';

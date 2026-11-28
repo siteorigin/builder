@@ -654,6 +654,9 @@ describe('page languages in the website', () => {
     expect(alternatesIn(hidden.get(pageFile(s.pages[en]))!)).toEqual(rest);
     expect(alternatesIn(hidden.get(pageFile(s.pages[de]))!)).toEqual(rest);
     expect(alternatesIn(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
+    // Open Graph still names every published language.
+    expect(hidden.get(pageFile(s.pages[en]))).toContain('og:locale:alternate');
+    expect(hidden.get(pageFile(s.pages[en]))).toContain('fr_FR');
     expect(hidden.get(pageFile(s.pages[fr]))).toContain('noindex');
     expect(ld(hidden.get(pageFile(s.pages[fr]))!)).toEqual([]);
     // With one eligible version left, it has no alternates in the HTML or the sitemap.
