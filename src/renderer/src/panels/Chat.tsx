@@ -914,7 +914,7 @@ export function Chat() {
     : scope.empty
     ? // The writer with no post open shows no page: a change reaches the whole site, never the page out of sight under
       // the writer (#895, #1424), and a question reads the site.
-      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, styles and collections', icon: <Globe />, title: emptyTitle, chip: 'Whole site', where: emptyChip.toLowerCase() }]
+      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, styles and collections', icon: <Globe />, title: emptyTitle, chip: 'Whole site', where: listedNow ? `no ${openNoun} open` : 'nothing open' }]
     : scope.template
     ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
       [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
