@@ -221,14 +221,14 @@ export function chainOf(v: unknown): BridgeDesc[] {
 }
 
 /** What the page says is at a point while something is dragged over it (see the bridge's pointAt), or null. */
-export function pointedAt(v: unknown): { chain: BridgeDesc[]; rect: FrameRect | null; picture: { rect: FrameRect | null; src: string; own: boolean } | null; scroll: string } | null {
+export function pointedAt(v: unknown): { chain: BridgeDesc[]; rect: FrameRect | null; picture: { rect: FrameRect | null; src: string; own: boolean; inside: boolean } | null; scroll: string } | null {
   if (!v || typeof v !== 'object') return null;
   const p = v as Record<string, unknown>;
   const box = (r: unknown) => (isRect(r) ? { x: r.x, y: r.y, width: r.width, height: r.height } : null);
   // Where the page was scrolled to, as a key: boxes measured at another scroll no longer hold.
   const scroll = Array.isArray(p.scroll) && p.scroll.length === 2 && p.scroll.every(finite) ? p.scroll.join(',') : '';
   const pic = p.picture && typeof p.picture === 'object' ? (p.picture as Record<string, unknown>) : null;
-  const picture = pic ? { rect: box(pic.rect), src: str(pic.src) ? pic.src : '', own: pic.own === true } : null;
+  const picture = pic ? { rect: box(pic.rect), src: str(pic.src) ? pic.src : '', own: pic.own === true, inside: pic.inside === true || pic.own === true } : null;
   return { chain: chainOf(p.chain), rect: box(p.rect), picture, scroll };
 }
 
