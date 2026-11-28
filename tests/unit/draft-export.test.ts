@@ -468,12 +468,38 @@ describe('exporting a project with a draft', () => {
     // A developer's ordinary build of the handoff serves static/ as it is: the draft's files are not there to serve.
     for (const rel of [sketch, prices]) expect(existsSync(join(out, rel)), rel).toBe(false);
     expect(readFileSync(join(out, menu))).toEqual(bytes[menu]);
+    // They are kept beside the documents instead, and the export and the README say so.
+    expect(filesIn(join(out, 'siteorigin/draft-assets')).sort()).toEqual(['winter-prices-2b3c4d5e.pdf', 'winter-sketch-1a2b3c4d.svg']);
+    expect(r.warnings).toContain('Winter prices and Winter sketch are used only by drafts, so their files are kept in siteorigin/draft-assets/ rather than static/assets/, and a build of the exported project leaves them out. Opening the project in SiteOrigin Builder puts them back.');
+    expect(readFileSync(join(out, 'README.md'), 'utf8')).toContain('kept in `siteorigin/draft-assets/` rather than `static/assets/`, so the build leaves those out too.');
     // Opened in SiteOrigin Builder, the draft has its files back, exactly as they were, and nothing is missing.
     await c.close();
     const reopened = await open(out);
     for (const rel of [sketch, prices, menu]) expect(readFileSync(join(out, rel)), rel).toEqual(bytes[rel]);
+    expect(existsSync(join(out, 'siteorigin/draft-assets'))).toBe(false);
     expect(await reopened.fileDiagnostics()).toEqual([]);
     expect(reopened.snapshot()!.conflicts).toEqual([]);
+    // Exported again from there, the handoff holds them back just the same.
+    const again = join(temp('out'), 'again');
+    expect((await reopened.exportSourceTo(again)).ok).toBe(true);
+    for (const rel of [sketch, prices]) expect(existsSync(join(again, rel)), rel).toBe(false);
+    expect(filesIn(join(again, 'siteorigin/draft-assets')).sort()).toEqual(['winter-prices-2b3c4d5e.pdf', 'winter-sketch-1a2b3c4d.svg']);
+  });
+
+  it('#1450: a project with no drafts, or none that use a file, holds nothing back', async () => {
+    const { c, dir } = await projectWithDraft();
+    const unused = 'static/assets/spare-4d5e6f7a.pdf';
+    const added = await c.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_spare', name: 'Spare', file: unused, mime: 'application/pdf', bytes: 3, hash: 'h', kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' } }] });
+    expect(added.ok).toBe(true);
+    mkdirSync(dirname(join(dir, unused)), { recursive: true });
+    writeFileSync(join(dir, unused), 'pdf');
+    const out = join(temp('out'), 'handoff');
+    const r = await c.exportSourceTo(out);
+    expect(r.ok).toBe(true);
+    // A library file nothing uses stays where a developer's own code can still use it.
+    expect(readFileSync(join(out, unused), 'utf8')).toBe('pdf');
+    expect(existsSync(join(out, 'siteorigin/draft-assets'))).toBe(false);
+    expect(r.warnings.filter((w) => w.includes('draft-assets'))).toEqual([]);
   });
 
   it('names a header menu link with nowhere to go in the website and in the editable project (#208)', async () => {

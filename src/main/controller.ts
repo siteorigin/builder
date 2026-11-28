@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -59,6 +59,7 @@ import { isImageBlock } from '@shared/richtext';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
+import { holdDraftAssets } from './project/draft-assets';
 import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
@@ -119,7 +120,8 @@ interface SnapshotOptions {
   milestone?: string;
   held?: Array<() => void>;
 }
-type SourceSnapshot = { ok: true; revision: number; state: ProjectState; milestone?: ExportedVersion; unsaved?: string } | { ok: false; message: string };
+/** A snapshot for the editable project carries `drafts`: the text the drafts add to its generated files (leaveOutDrafts). */
+type SourceSnapshot = { ok: true; revision: number; state: ProjectState; milestone?: ExportedVersion; unsaved?: string; drafts?: Map<string, string> } | { ok: false; message: string };
 
 /** Fingerprinted by projectInventory before and after an export's copy: any change there stops the export already. */
 const FINGERPRINTED = new Set(['src', 'static', 'siteorigin']);
@@ -4266,6 +4268,11 @@ export class Controller {
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
       warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
+      // just before it is delivered, once everything said about the copy's files has looked at them where they are.
+      const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
+      const heldNote = heldDraftAssetsNote(snap.state, draftOnly);
+      if (heldNote) warn(heldNote);
       for (const { file, route, draft, markdown } of withheldStaticFiles(folder, snap.state))
         warn(
           markdown
@@ -4277,6 +4284,7 @@ export class Controller {
       warn(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
       const ownNotFound = ownNotFoundFileNote(folder);
       if (ownNotFound) warn(ownNotFound);
+      await holdDraftAssets(folder, draftOnly);
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
@@ -4934,7 +4942,8 @@ export class Controller {
         if (!unmade) return stop('The project changed on disk while it was being exported. Export again.');
       }
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
-      await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state))();
+      const drafts = opts.forBuild ? undefined : new Map<string, string>();
+      await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state, undefined, drafts))();
       // What the editor finds in code components by their markers: neither export carries a marker, whoever owns the code.
       await timed('export.markers', () => stripCodeMarkers(dest, s.state))();
       if (opts.forBuild) {
@@ -4944,7 +4953,7 @@ export class Controller {
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       // The session's state is frozen through and through, and a change makes a new one, so the state the files were
       // copied from is kept as it is: no copy of the whole project for the length of the export (#1044).
-      return { ok: true as const, revision: s.revision, state: s.state, ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}) };
+      return { ok: true as const, revision: s.revision, state: s.state, ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}), ...(drafts ? { drafts } : {}) };
     }));
   }
 
