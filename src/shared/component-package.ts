@@ -7,7 +7,7 @@
  * check of a file someone else wrote. What the package holds is checked again, as it will land, when it is imported.
  */
 import { z } from 'zod';
-import type { ComponentDefinition, DarkColorValue, TextStyleValue, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, TextStyleValue, TokenGroup, TokenValue } from './types';
 
 export const COMPONENT_PACKAGE_FORMAT = 'siteorigin.component';
 /** The package format. A newer one is refused by name, so an older app never misreads it. */
@@ -53,11 +53,11 @@ export interface PackageToken {
   /** Its value with every link followed (a text style's font included), so a project without it can make one that looks the same. */
   resolved: string | TextStyleValue;
   /**
-   * A colour's own colour in the dark palette of the project it came from, when it has one there: for a style of the
-   * site's own, as that palette holds it (a colour, or `{ token }` following another style the package also carries);
-   * for a theme style, with every link followed, as `resolved` is. Absent: it shows there as its light value does.
+   * A colour's look in the dark palette of the project it came from, with every link followed, as `resolved` is: for a
+   * style of the site's own, when it has a dark colour of its own there; for a theme style, when it differs from its
+   * light one. Absent: it shows in dark what its light value leads to, as it will where it lands.
    */
-  dark?: DarkColorValue;
+  dark?: string;
 }
 
 /** One library image the package's components show. */

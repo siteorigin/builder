@@ -91,6 +91,8 @@ export async function insertSaved(entry: SavedComponent, tile?: unknown): Promis
   const there = !!nodes && Object.hasOwn(nodes, r.nodeId);
   if (!shown || !here || !there || now.selection !== start.selection || now.slotTarget !== start.slotTarget) {
     if (there) toast([`Added ${entry.name}.`, ...(r.notes ?? [])].join(' '), 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
+    // Landed, though not shown where it went: what landed differently is still said.
+    else if (r.notes?.length) toast(r.notes.join(' '), 'info');
     return;
   }
   // Selected where it went, so only what landed differently is said.

@@ -79,7 +79,8 @@ export function headingText(value: unknown): string {
 /** What the colour of the site is made of: the colour tokens' own values, the dark palette and which palettes it has. */
 function colorsOf(tokens: TokensDoc, ids: string[]): string {
   const own = Object.fromEntries(ids.filter((id) => Object.hasOwn(tokens.overrides, id)).map((id) => [id, tokens.overrides[id]]));
-  return JSON.stringify({ own, dark: tokens.darkOverrides ?? {}, mode: tokens.colorSchemeMode ?? 'single' });
+  // Dark colours an imported component brought, kept until the site first has a dark palette, are not the site's colour.
+  return JSON.stringify({ own, dark: tokens.darkPending ? {} : (tokens.darkOverrides ?? {}), mode: tokens.colorSchemeMode ?? 'single' });
 }
 
 /** The site as it is now, to measure later changes against. `colorIds` are its theme's colour tokens. */
