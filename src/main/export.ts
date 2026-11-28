@@ -16,7 +16,7 @@ import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@en
 import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { blankPages, describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
@@ -1772,6 +1772,15 @@ export function emptySectionWarnings(state: ProjectState): string[] {
     found.length === 1
       ? 'A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):'
       : `${found.length} sections have nothing to show visitors. Give each one content, or remove it (Project health leads to each):`;
+  const more = found.length - UNLINKED_LISTED;
+  return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
+}
+
+/** Warnings for published pages with nothing on them (see blankPages): each by its title and address. */
+export function blankPageWarnings(state: ProjectState): string[] {
+  const found = blankPages(state).map((p) => `${p.title} (${p.route})`);
+  if (!found.length) return [];
+  const lead = found.length === 1 ? 'A page has nothing on it, so visitors find it blank. Add content to it, or keep it off the website:' : `${found.length} pages have nothing on them, so visitors find them blank. Add content to each one, or keep it off the website:`;
   const more = found.length - UNLINKED_LISTED;
   return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
 }

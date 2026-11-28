@@ -440,3 +440,152 @@ describe('the file watch of an open project', () => {
     expect(full).not.toHaveBeenCalled();
   });
 });
+
+describe('an outside edit that breaks a code component (#1533)', () => {
+  /** A project in a controller with code components named `names`, each in its own file, and what it sends the editor. */
+  async function withCode(...names: string[]) {
+    const open = await openInController();
+    const sent: string[] = [];
+    open.c.send = (channel: string) => void sent.push(channel);
+    const ids: Record<string, { id: string; path: string; source: string }> = {};
+    for (const name of names) {
+      const source = `<p>${name}</p>\n`;
+      // Made as the editor makes it in Developer mode.
+      expect(await open.session.apply({ operations: [{ type: 'component.createCode', name, source }] }, { label: `Create ${name}`, codeAllowed: true })).toMatchObject({ ok: true });
+      const def = Object.values(open.session.state.components).find((d) => d.name === name)!;
+      ids[name] = { id: def.id, path: def.sourcePath!, source };
+    }
+    const refusals = () => (open.c.snapshot()?.diagnostics ?? []).filter((d) => d.code === 'EXTERNAL_SOURCE_REFUSED');
+    return { ...open, sent, ids, refusals };
+  }
+  const broken = '<div>\n  <p>Hello</p>\n  {broken\n</div>\n';
+
+  it('tells the editor the file was refused, with its line, and clears it once the file is put back', async () => {
+    const { dir, session, tell, sent, ids, refusals } = await withCode('Greeting');
+    const { id, path, source } = ids.Greeting;
+    const revision = session.revision;
+    const undo = session.historyInfo().undoLabel;
+    const { checkSvelteSource } = await import('../../src/main/codecheck');
+    const [problem] = (await checkSvelteSource(broken)).filter((p) => p.severity === 'error');
+    sent.length = 0;
+    writeFileSync(join(dir, path), broken);
+    tell(path);
+    await vi.waitFor(() => expect(refusals()).toHaveLength(1), { timeout: 5000, interval: 20 });
+    const [refusal] = refusals();
+    expect(refusal.owner).toEqual({ kind: 'component', id });
+    expect(refusal.severity).toBe('error');
+    expect(refusal.site).toBe(path);
+    expect(problem.line).toBeGreaterThan(1);
+    expect(refusal.message).toBe(`The edited code for "Greeting" has problems, so it was not loaded (${path}, line ${problem.line}): ${problem.message}`);
+    // Sent to the editor at once, though the project did not change.
+    expect(sent).toContain('project:changed');
+    expect(session.revision).toBe(revision);
+    expect(session.state.components[id].source).toBe(source);
+    expect(session.historyInfo().undoLabel).toBe(undo);
+    expect(readFileSync(join(dir, path), 'utf8')).toBe(broken);
+    // A save made from the version that loaded is refused rather than written over the outside edit.
+    const { sourceHash } = await import('../../src/engine/apply');
+    const saved = await session.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source: '<p>Saved in the app</p>\n', expectedHash: sourceHash(source) }] }, { label: 'Edit Greeting source', codeAllowed: true });
+    expect(saved.ok).toBe(false);
+    expect(readFileSync(join(dir, path), 'utf8')).toBe(broken);
+    expect(refusals()).toHaveLength(1);
+    // The file put back as it was loads nothing new, and the refusal goes: the file holds what the app last wrote, but
+    // the read that settles the refusal is made all the same, and the editor is told.
+    sent.length = 0;
+    writeFileSync(join(dir, path), source);
+    expect(await session.reloadChanged([path])).toEqual({ ok: true });
+    expect(refusals()).toEqual([]);
+    expect(sent).toContain('project:changed');
+    expect(session.revision).toBe(revision);
+  });
+
+  it('names every refused component, and loads the batch once each is put right', async () => {
+    const { dir, session, tell, ids, refusals, home } = await withCode('First', 'Second');
+    writeFileSync(join(dir, ids.First.path), broken);
+    writeFileSync(join(dir, ids.Second.path), broken);
+    const doc = read(dir, page(home));
+    doc.title = 'Retitled in another editor';
+    write(dir, page(home), doc);
+    tell(ids.First.path, ids.Second.path, page(home));
+    await vi.waitFor(() => expect(refusals().map((d) => d.owner?.id).sort()).toEqual([ids.First.id, ids.Second.id].sort()), { timeout: 5000, interval: 20 });
+    expect(session.state.pages[home].title).not.toBe('Retitled in another editor');
+    expect(refusals().every((d) => d.severity === 'error')).toBe(true);
+    // First is fixed: only Second is refused now, and nothing loads yet, so First is told it waits on it.
+    writeFileSync(join(dir, ids.First.path), '<p>First, fixed</p>\n');
+    tell(ids.First.path);
+    const severities = () => Object.fromEntries(refusals().map((d) => [d.owner?.id, d.severity]));
+    await vi.waitFor(() => expect(severities()).toEqual({ [ids.First.id]: 'warning', [ids.Second.id]: 'error' }), { timeout: 5000, interval: 20 });
+    const second = refusals().find((d) => d.owner?.id === ids.Second.id)!.message;
+    expect(second).toMatch(/^The edited code for "Second" has problems, so it was not loaded/);
+    expect(refusals().find((d) => d.owner?.id === ids.First.id)?.message).toBe(`The edited code for "First" (${ids.First.path}) has not loaded yet: it waits, because other edited code has problems. ${second}`);
+    expect(session.state.components[ids.First.id].source).toBe(ids.First.source);
+    // Second is fixed too: the whole batch loads as one outside change, and nothing is refused.
+    writeFileSync(join(dir, ids.Second.path), '<p>Second, fixed</p>\n');
+    tell(ids.Second.path);
+    // The notices go with the change that loads the batch, once it is recorded.
+    await vi.waitFor(() => expect(refusals()).toEqual([]), { timeout: 5000, interval: 20 });
+    expect(session.historyInfo().undoLabel).toBe('External change');
+    expect(session.state.components[ids.Second.id].source).toBe('<p>Second, fixed</p>\n');
+    expect(session.state.components[ids.First.id].source).toBe('<p>First, fixed</p>\n');
+    expect(session.state.pages[home].title).toBe('Retitled in another editor');
+  });
+
+  it('holds a fixed file back, saying why, while another changed file cannot be loaded', async () => {
+    const { dir, session, tell, ids, refusals } = await withCode('Greeting');
+    const { id, path, source } = ids.Greeting;
+    writeFileSync(join(dir, path), broken);
+    tell(path);
+    await vi.waitFor(() => expect(refusals()).toHaveLength(1), { timeout: 5000, interval: 20 });
+    // The code is put right as the site's home page is pointed at a page there is none of.
+    const site = read(dir, SITE);
+    const goodSite = structuredClone(site);
+    site.homePageId = 'no-such-page';
+    write(dir, SITE, site);
+    writeFileSync(join(dir, path), '<p>Fixed</p>\n');
+    tell(path, SITE);
+    await vi.waitFor(() => expect(refusals().map((d) => d.severity)).toEqual(['warning']), { timeout: 5000, interval: 20 });
+    // It says why: the reason the read was refused, as a read now gives it.
+    const why = await session.reloadFromDisk();
+    expect(why.ok).toBe(false);
+    expect(refusals()[0].message).toBe(`The edited code for "Greeting" (${path}) has not loaded yet: it waits with the other changed files. ${why.message}`);
+    expect(session.state.components[id].source).toBe(source);
+    // The site put right: everything loads, and nothing is refused.
+    write(dir, SITE, goodSite);
+    tell(SITE);
+    await vi.waitFor(() => expect(refusals()).toEqual([]), { timeout: 5000, interval: 20 });
+    expect(session.state.components[id].source).toBe('<p>Fixed</p>\n');
+  });
+
+  it('looks at a file edited while an AI request held the project once the request ends', async () => {
+    const { dir, c, tell, ids, refusals } = await withCode('Greeting');
+    const busy = vi.spyOn(c as unknown as { aiBusy(): boolean }, 'aiBusy').mockReturnValue(true);
+    writeFileSync(join(dir, ids.Greeting.path), broken);
+    tell(ids.Greeting.path);
+    // Past the watch's pause: nothing is looked at while the request holds the project.
+    await new Promise((r) => setTimeout(r, 800));
+    expect(refusals()).toEqual([]);
+    busy.mockReturnValue(false);
+    c.aiEnded();
+    await vi.waitFor(() => expect(refusals()).toHaveLength(1), { timeout: 5000, interval: 20 });
+  });
+
+  it('keeps a refusal whose fix failed to be published, and clears it at the next read', async () => {
+    const { dir, session, sent, ids, refusals } = await withCode('Greeting');
+    const { id, path } = ids.Greeting;
+    writeFileSync(join(dir, path), broken);
+    expect((await session.reloadChanged([path])).ok).toBe(false);
+    expect(refusals()).toHaveLength(1);
+    // The fixed code is read, but the step that records it fails: the editor is not told it loaded.
+    writeFileSync(join(dir, path), '<p>Fixed</p>\n');
+    const saving = vi.spyOn(session as unknown as { saveLocalState(): Promise<void> }, 'saveLocalState').mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    await expect(session.reloadChanged([path])).rejects.toThrow('EACCES');
+    saving.mockRestore();
+    expect(refusals()).toHaveLength(1);
+    // The next read finds the code loaded, and tells the editor the refusal has gone.
+    sent.length = 0;
+    expect(await session.reloadChanged([path])).toEqual({ ok: true });
+    expect(refusals()).toEqual([]);
+    expect(sent).toContain('project:changed');
+    expect(session.state.components[id].source).toBe('<p>Fixed</p>\n');
+  });
+});

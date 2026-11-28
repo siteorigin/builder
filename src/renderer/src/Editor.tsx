@@ -1,10 +1,10 @@
 import './Editor.css';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import type { TrustRequest } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, type TrustRequest } from '@shared/api';
 import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
-import { api, applyOps, errorText, getState, leaveSeoView, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
+import { api, applyOps, dismissToast, toastWithId, errorText, getState, leaveSeoView, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
@@ -597,6 +597,16 @@ export function Editor() {
   useEffect(() => {
     if (recovery) recovery.split('\n').forEach((n) => toast(n));
   }, [recovery]);
+  // An outside edit of a code component refused for its errors is told as it happens, once, and its notice goes when
+  // the file is put right (#1533). Project health and the component's source editor keep saying so meanwhile.
+  // Kept as JSON, so each new snapshot (a fresh array over IPC) does not toast the same refusals again.
+  const refusedSources = useStore((s) => JSON.stringify((s.snapshot?.diagnostics ?? []).filter((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.severity === 'error').map((d) => d.message)));
+  const refusalToasts = useRef(new Map<string, number>());
+  useEffect(() => {
+    const now = new Set(JSON.parse(refusedSources) as string[]);
+    for (const [text, id] of refusalToasts.current) if (!now.has(text)) (dismissToast(id), refusalToasts.current.delete(text));
+    for (const text of now) if (!refusalToasts.current.has(text)) refusalToasts.current.set(text, toastWithId(text, 'error'));
+  }, [refusedSources]);
 
   // In a small window, starting an edit gives the canvas the Pages list's width (the rail stays, and an
   // explicit reopen is respected for the rest of the session).

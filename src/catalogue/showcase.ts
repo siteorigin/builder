@@ -9,6 +9,7 @@ import type { ComponentDefinition, GraphNode, ImageValue, InstanceNode, ListItem
 import { SCHEMA_VERSION } from '@shared/types';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { pickImagesField } from '@shared/image-lists';
+import { formatArticleDate } from '@shared/articles';
 import { newId } from '@shared/ids';
 import { installComponent, makeInstance } from '@engine/install';
 import { collectionCreate, entryCreate } from '@engine/collections';
@@ -51,8 +52,26 @@ const SAMPLE_POSTS = [
 
 /** The dated pages a news list shows: news lists leave out the page they are on, so these are pages of their own. */
 const SAMPLE_NEWS = [
-  { title: 'The studio moves to Harbor Lane', route: '/news/harbor-lane/', date: '2025-06-02', excerpt: 'A bigger room, more light and a proper materials library.' },
-  { title: 'Open studio weekend', route: '/news/open-studio/', date: '2025-04-18', excerpt: 'Come and see the work in progress, and bring your questions.' }
+  {
+    title: 'The studio moves to Harbor Lane',
+    route: '/news/harbor-lane/',
+    date: '2025-06-02',
+    excerpt: 'A bigger room, more light and a proper materials library.',
+    body: [
+      'After four years in two small rooms, the studio has a new home on Harbor Lane. There is space to lay out a whole project on one table and to leave it there overnight.',
+      'The materials library has its own wall at last, so samples can be compared side by side in daylight. Drop in to see it the next time you are nearby.'
+    ]
+  },
+  {
+    title: 'Open studio weekend',
+    route: '/news/open-studio/',
+    date: '2025-04-18',
+    excerpt: 'Come and see the work in progress, and bring your questions.',
+    body: [
+      'For one weekend the studio is open to everyone. Drawings, models and material samples from current projects will be out on the tables.',
+      'There is nothing to book. Stay for ten minutes or an hour, and bring a plan or a few photographs if there is a room you would like to talk about.'
+    ]
+  }
 ];
 
 const hasFeed = (def: ComponentDefinition, feed?: string) => Object.values(def.properties).some((p) => p.type === 'list' && !!p.feed && (feed === undefined || p.feed === feed));
@@ -219,15 +238,59 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
     for (const post of SAMPLE_POSTS) entryCreate(state, { type: 'entry.create', collectionId: POSTS_COLLECTION_ID, ...post, author: 'Studio team', draft: false });
   }
   // News lists show the site's dated pages other than their own.
-  const news: PageDoc[] = kinds.some((k) => k.components.some((c) => hasFeed(c, 'articles')))
-    ? SAMPLE_NEWS.map((n) => sitePage(newId('pg'), n.title, n.route, [], [], { article: { date: n.date, byline: 'Studio team', excerpt: n.excerpt } }))
-    : [];
+  const news: PageDoc[] = kinds.some((k) => k.components.some((c) => hasFeed(c, 'articles'))) ? SAMPLE_NEWS.map((n) => newsPage(state, n, place)) : [];
 
   return {
     homeNodes,
     pages: [...pages, ...news],
     nav: [{ label: 'Home', pageId: homeId }, ...kinds.map((k) => ({ label: k.title, pageId: ids.get(k.kind)! }))]
   };
+}
+
+/**
+ * A sample news article's own page: the theme's Article header, which reads the page's title and details, over a Text
+ * section with the article's words. A theme without either gets the same from plain text, so no article opens blank.
+ */
+function newsPage(state: ProjectState, n: (typeof SAMPLE_NEWS)[number], place: (componentId: string) => InstanceNode): PageDoc {
+  const theme = getTheme(state.site.themeId);
+  const find = (componentId: string) => theme.components.find((c) => c.componentId === componentId);
+  const nodes: GraphNode[] = [];
+  const roots: string[] = [];
+  const text = (tag: 'h1' | 'p', words: string, datetime?: string): string => {
+    const id = newId('n');
+    nodes.push({ id, kind: 'text', tag, text: words, ...(datetime ? { datetime } : {}) });
+    return id;
+  };
+  const section = (children: string[]) => {
+    const node: GraphNode = { id: newId('n'), kind: 'element', tag: 'section', children };
+    nodes.push(node);
+    roots.push(node.id);
+  };
+  const add = (node: InstanceNode) => {
+    nodes.push(node);
+    roots.push(node.id);
+  };
+
+  const header = find('content.article');
+  if (header && hasFeed(header, 'currentPage')) {
+    const node = place(header.componentId);
+    if (header.properties.eyebrow?.type === 'string') node.props.eyebrow = '';
+    add(node);
+  } else section([text('h1', n.title), text('p', formatArticleDate(n.date, state.site.language), n.date)]);
+
+  const words = find('content.text');
+  // The section goes under the article's header with no heading of its own, so a theme that requires one is passed over.
+  const optional = (k: string) => !words?.properties[k]?.required;
+  if (words?.properties.body?.type === 'richtext' && optional('eyebrow') && optional('heading')) {
+    const node = place(words.componentId);
+    for (const k of ['eyebrow', 'heading']) if (words.properties[k]?.type === 'string') node.props[k] = '';
+    node.props.body = n.body.map((p) => ({ type: 'p', spans: [{ text: p }] }));
+    // With no heading of its own, the text sits in one column under the article's header.
+    if (words.variantAxes?.layout && Object.hasOwn(words.variantAxes.layout.options, 'stacked')) node.variants = { ...node.variants, layout: 'stacked' };
+    add(node);
+  } else section(n.body.map((p) => text('p', p)));
+
+  return sitePage(newId('pg'), n.title, n.route, nodes, roots, { article: { date: n.date, byline: 'Studio team', excerpt: n.excerpt } });
 }
 
 /**

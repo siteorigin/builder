@@ -128,10 +128,17 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.state.pages.pg_winter01.draft).toBe(true);
   });
 
+  /** A site with nothing to say of it: a public URL, and a Home page with something on it. */
+  function cleanSite() {
+    const blank = createStarterState('blank', 'Bookshop', false);
+    const state = applyOperations(blank, [{ type: 'node.insert', owner: { kind: 'page', id: blank.site.homePageId }, componentId: 'intro.page', index: 0 }]).state;
+    state.site.baseUrl = 'https://books.example';
+    return state;
+  }
+
   it('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance beside the warnings', async () => {
     const dir = temp('project');
-    const state = createStarterState('blank', 'Bookshop', false);
-    state.site.baseUrl = 'https://books.example';
+    const state = cleanSite();
     await (await ProjectSession.create(dir, state)).close();
     const c = await open(dir);
     const r = await c.buildStaticTo(join(temp('out'), 'site'));
@@ -147,8 +154,7 @@ describe('exporting a project with a draft', () => {
 
   it('#884: the editable project’s export says private files were left out without counting it as a note', async () => {
     const dir = temp('project');
-    const state = createStarterState('blank', 'Bookshop', false);
-    state.site.baseUrl = 'https://books.example';
+    const state = cleanSite();
     await (await ProjectSession.create(dir, state)).close();
     const c = await open(dir);
     const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
@@ -158,6 +164,18 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.recentExports[0].notes).toEqual([]);
     const zip = await c.exportSourceTo(join(temp('out'), 'handoff.zip'), 'zip');
     expect(zip).toMatchObject({ ok: true, message: 'Source project exported as a ZIP file. Private files such as .env, keys and credentials were left out.', warnings: [], notes: [] });
+  });
+
+  it('#1550: names a published page with nothing on it in the notes of both exports', async () => {
+    const dir = temp('project');
+    await (await ProjectSession.create(dir, createStarterState('blank', 'Bookshop', false))).close();
+    const c = await open(dir);
+    const built = await c.buildStaticTo(join(temp('out'), 'site'));
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    for (const r of [built, source]) {
+      expect(r.ok).toBe(true);
+      expect(r.warnings).toContain('Home (/)');
+    }
   });
 
   it('#884: counts the published entries by their collection, as the Export dialog does', async () => {

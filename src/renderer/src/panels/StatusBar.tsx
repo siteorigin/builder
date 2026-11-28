@@ -364,6 +364,12 @@ function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null
   return { owner: d.owner as ElementRef['owner'], instancePath: [], nodeId: d.nodeId };
 }
 
+function showPage(pageId: string) {
+  selectPage(pageId, null);
+  // With the Inspector, which holds the page's own settings.
+  setState({ modal: null, mode: 'edit', rightTab: 'inspect', dockOpen: true });
+}
+
 function showElement(ref: ElementRef) {
   const s = getState();
   if (ref.owner.kind === 'page') {
@@ -858,6 +864,8 @@ export function HealthModal() {
     const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
     // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
+    // A page with nothing on it has no element to show: the page itself is opened.
+    const blankPage = d.code === 'PAGE_EMPTY' && d.owner?.kind === 'page' ? d.owner.id : null;
     // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
@@ -875,6 +883,10 @@ export function HealthModal() {
           ) : outlinePage ? (
             <button className="btn btn-sm" onClick={() => showHeadings(outlinePage, d)}>
               Show headings
+            </button>
+          ) : blankPage ? (
+            <button className="btn btn-sm" onClick={() => showPage(blankPage)}>
+              Open page
             </button>
           ) : dest ? (
             <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
