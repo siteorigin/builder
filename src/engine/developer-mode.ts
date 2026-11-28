@@ -70,3 +70,9 @@ export function developerModeCheck(state: ProjectState, ops: EditOperation[], ct
   if (!ops.some((o) => COPIES.has(o.type))) return null;
   return (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null);
 }
+
+/**
+ * An answer that says what was asked needs Developer mode, as the assistant is told to say it: with it off, the turn
+ * offers Settings at its switch (#1329). One that only mentions it ("built with Developer mode off") offers nothing.
+ */
+export const SAYS_DEVELOPER_MODE = /(?<!(?:\bnot|n['’]t|\bnever)\s+)\b(?:needs?|requires?|required|needed)\s+(?:\*\*|_)?Developer mode\b|(?<!\bno\s+(?:\*\*|_)?)\bDeveloper mode(?:\*\*|_)?\s+(?:is\s+)?(?:required|needed)\b/i;
