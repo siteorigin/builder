@@ -382,7 +382,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
   });
 
   it('brings back what each search on the page held, and words typed after the last search beside its results', async () => {
-    const two = [{ heading: 'Find a project' }, { heading: 'Search again', label: 'Search the series' }];
+    const two: Record<string, string>[] = [{ heading: 'Find a project' }, { heading: 'Search again', label: 'Search the series' }];
     await withSearch(
       async (page) => {
         const second = page.getByRole('searchbox', { name: 'Search the series' });
