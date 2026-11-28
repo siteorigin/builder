@@ -126,6 +126,7 @@ describe('address problems in the Address field’s words', () => {
     expect(problem('/assets/')).toMatch(/^The address "\/assets\/" is kept for the website’s own files/);
     // The home page's and the not-found page's own files: a page there fails the production build unless something links to it.
     for (const kept of ['/index/', '/404/']) expect(problem(kept)).toMatch(/is kept for the website’s own files/);
+    for (const deeper of ['/index/old/', '/404/old/']) expect(problem(deeper)).toBeNull();
     expect(problem('/about/')).toBe('Another page already uses /about/.');
     expect(problem(`/${'a'.repeat(61)}/`)).toBe('Each part of an address can be at most 60 characters.');
     // Capitals, accents and spaces are spelled as addresses spell them, never refused.

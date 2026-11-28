@@ -6,10 +6,12 @@ import { SITE_ICON_FILES } from './site-icons';
  * for here (see validateSegment), so those are kept for completeness, as are the RSS feed and the agentic discovery
  * files (shared/llms.ts), whose Markdown copies (`index.html.md`) no part of an address can hold either, and the
  * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts), and the hosts' redirect rules
- * (generator/host-redirects.ts). `index` and `404` are the files of the home page and the not-found page (`build/index.html`,
- * `build/404.html`), which a page at those addresses cannot be built beside when nothing links to it.
+ * (generator/host-redirects.ts).
  */
-const RESERVED = new Set(['index', '404', '_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
+const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
+
+/** Names of the home page's and the not-found page's files (`build/index.html`, `build/404.html`), which a page at that address alone cannot be built beside. */
+const ROOT_FILES = new Set(['index', '404']);
 
 /** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
 const ACCENTS = /[\u0300-\u036f]/g;
@@ -220,6 +222,8 @@ export function validateRoute(route: string): string | null {
     const err = validateSegment(seg);
     if (err) return err;
   }
+  // Only the address itself: deeper ones ("/index/old/") are folders beside the two files.
+  if (segments.length === 1 && ROOT_FILES.has(segments[0])) return `The address "/${segments[0]}/" is kept for the website’s own files. Choose another.`;
   if (RESERVED.has(segments[0]) || segments[0].startsWith('_')) return `The address "/${segments[0]}/" is kept for the website’s own files. Choose another.`;
   return null;
 }
