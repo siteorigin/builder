@@ -1761,8 +1761,27 @@ function closingBrace(source: string, open: number): number {
   return -1;
 }
 
-/** Markup with its HTML comments blanked out, every other character where it was. */
-const uncommented = (source: string) => source.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ' '));
+/**
+ * Markup with its HTML comments blanked out, every other character where it was. Text inside an expression
+ * (`{"<!--"}`) is no comment; markup whose braces don't close is left as it is, every tag in it counted.
+ */
+function uncommented(source: string): string {
+  let out = '';
+  for (let i = 0; i < source.length; ) {
+    if (source[i] === '{') {
+      const end = closingBrace(source, i);
+      if (end < 0) return source;
+      out += source.slice(i, end + 1);
+      i = end + 1;
+    } else if (source.startsWith('<!--', i)) {
+      const end = source.indexOf('-->', i + 4);
+      const stop = end < 0 ? source.length : end + 3;
+      out += source.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
+    } else out += source[i++];
+  }
+  return out;
+}
 
 /** Attributes of SoImage's that would show a picture of their own in place of its image's. */
 const OWN_PICTURE = /^(?:src|srcset|sources)$/;

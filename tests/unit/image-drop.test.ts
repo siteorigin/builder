@@ -469,6 +469,9 @@ describe('a code component’s picture (#505)', () => {
     expect(showsWithSoImage('<SoImage {image} class={`a ${b ? `}` : c}`} />', 'image')).toBe(true);
     expect(showsWithSoImage('<SoImage {image} src={badgeSrc} />', 'image')).toBe(false);
     expect(showsWithSoImage('<SoImage {image} {srcset} />', 'image')).toBe(false);
+    expect(showsWithSoImage('<SoImage {image} sources={formats} />', 'image')).toBe(false);
+    // Comment markers given as text are no comment: the second SoImage counts.
+    expect(showsWithSoImage('<SoImage {image} />{"<!--"}<SoImage image={badge} />{"-->"}', 'image')).toBe(false);
     // A tag in a comment is no tag; a shorthand is an attribute of its own, never another's value.
     expect(showsWithSoImage('<!-- <SoImage image={badge} /> --><SoImage {image} />', 'image')).toBe(true);
     expect(showsWithSoImage('<SoImage title= {image} />', 'image')).toBe(false);
@@ -554,10 +557,13 @@ describe('a Foundation section’s filled picture (#1386)', () => {
     expect(before.length).toBeGreaterThan(1);
     expect(new Set(before.map((r) => r.image.assetId)).size).toBe(before.length);
     const second = before[1];
+    const record = s.state.assets.assets[second.image.assetId!];
+    record.variants = [{ width: 640, file: `static/assets/${record.id}-640.webp` }];
     const targets = imageDropTargets(s.state, s.owner.id);
     // One target per item, each its own field; none of them taken off its picture.
     expect(targets.filter((t) => t.field?.nodeId === s.gallery).map((t) => t.field!.itemId)).toEqual(before.map((r) => r.id));
-    const hit = pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(second.image.assetId!), own: false, inside: true });
+    // Pointed at by the smaller copy the Gallery shows.
+    const hit = pick(s.state, targets, on(s.owner, s.gallery), { src: `/assets/${second.image.assetId}-640.webp`, own: false, inside: true });
     expect(hit).toMatchObject({ direct: true, target: { unfilled: false, field: { nodeId: s.gallery, prop: 'images', itemId: second.id, field: 'image' } } });
     expect(hit!.target.label).toBe(`Image${second.caption ? ` · ${second.caption}` : ''} in Gallery`);
     // Not a picture the Gallery draws, or no picture at all: no item.
