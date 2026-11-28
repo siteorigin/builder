@@ -15,8 +15,8 @@ const PARTITION = 'siteorigin-export-check';
 const WIDTH = 1280;
 
 export interface PageChecker {
-  /** Open the built page at `url` and say whether it still shows its content once started. */
-  check(url: string, signal?: AbortSignal): Promise<PageCheck>;
+  /** Open the built page at `url` and say whether it still shows its content once started, measuring it until `measureUntil` (see checkBuiltPage). */
+  check(url: string, signal?: AbortSignal, measureUntil?: number): Promise<PageCheck>;
   /** Destroy every window still checking a page. */
   dispose(): void;
 }
@@ -34,7 +34,7 @@ export function createPageChecker(): PageChecker {
   let disposals = 0;
   const stopped = (): PageCheck => ({ status: 'unchecked', detail: 'The check was stopped.' });
 
-  const check = async (url: string, signal?: AbortSignal): Promise<PageCheck> => {
+  const check = async (url: string, signal?: AbortSignal, measureUntil?: number): Promise<PageCheck> => {
     if (signal?.aborted) return stopped();
     const generation = disposals;
     const lane = free.pop() ?? made++;
@@ -50,7 +50,7 @@ export function createPageChecker(): PageChecker {
     try {
       // Called off, or the windows disposed of (the editor closed), meanwhile: no window is made for it.
       if (signal?.aborted || generation !== disposals) return stopped();
-      const done = await inHiddenPage({ session: ses, width: WIDTH, signal, open }, (page, gone) => checkBuiltPage(page, url, { signal: gone }));
+      const done = await inHiddenPage({ session: ses, width: WIDTH, signal, open }, (page, gone) => checkBuiltPage(page, url, { signal: gone, measureUntil }));
       if (done.ok) {
         if (done.value.status === 'unchecked' && done.lost && !signal?.aborted) return { status: 'unchecked', detail: 'The page stopped responding.' };
         return done.value;

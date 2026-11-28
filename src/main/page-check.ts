@@ -9,11 +9,16 @@
  * (main/page-check-window) and a test's headless Chromium run exactly the same steps.
  */
 import { ERROR_SECTION_CLASS } from '@generator/index';
+import type { PageSample } from '@shared/performance';
 import type { CdpPage } from './review-shot';
+import { createPageSampler } from './page-performance';
 
 export type PageCheck =
-  /** The page still shows what was built once it has started. */
-  | { status: 'working' }
+  /**
+   * The page still shows what was built once it has started, with what its visit downloaded and showed when it was
+   * measured (see main/page-performance).
+   */
+  | { status: 'working'; sample?: PageSample }
   /**
    * The site's error page took the place of the page's content: its heading ("Error 500"), the error the browser was
    * told of last before it appeared (null when none was), and the errors it was told of, in order.
@@ -27,6 +32,12 @@ export interface PageCheckOptions {
   signal?: AbortSignal;
   /** How long the whole check may take. */
   timeoutMs?: number;
+  /**
+   * Measure what a first visit to the page downloads and shows, once it works (#1488), until this time (ms since the
+   * epoch) at the latest. A page found working past it is not measured, so measuring never takes time the export's
+   * checks of later pages need.
+   */
+  measureUntil?: number;
 }
 
 const CHECK_MS = 8000;
@@ -106,8 +117,10 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     if (logged.length >= LOGGED) logged.shift();
     logged.push({ at: Date.now(), text: text.slice(0, LOGGED_CHARS) });
   };
+  let sampler = opts.measureUntil !== undefined && Date.now() < opts.measureUntil ? createPageSampler(url, () => mainFrame) : null;
 
   const stopListening = page.listen((method, p) => {
+    sampler?.hear(method, p);
     const id = String(p.requestId);
     switch (method) {
       case 'Network.requestWillBeSent': {
@@ -145,11 +158,16 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     wake?.();
   });
 
-  const deadline = Date.now() + (opts.timeoutMs ?? CHECK_MS);
+  let deadline = Date.now() + (opts.timeoutMs ?? CHECK_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let endInTime: (() => void) | undefined;
   let onAbort: (() => void) | undefined;
   const ended = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Unchecked('The page did not finish starting in time.')), Math.max(0, deadline - Date.now()));
+    endInTime = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => reject(new Unchecked('The page did not finish starting in time.')), Math.max(0, deadline - Date.now()));
+    };
+    endInTime();
     onAbort = () => reject(new Unchecked('The check was stopped.'));
     if (opts.signal?.aborted) onAbort();
     else opts.signal?.addEventListener('abort', onAbort, { once: true });
@@ -189,13 +207,8 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     return r.result?.value as T;
   };
 
-  try {
-    await race(page.send('Page.enable'));
-    await race(page.send('Runtime.enable'));
-    await race(page.send('Network.enable'));
-    await race(page.send('Page.addScriptToEvaluateOnNewDocument', { source: NO_PRINT }));
-    const tree = (await race(page.send('Page.getFrameTree'))) as { frameTree: { frame: { id: string } } };
-    mainFrame = tree.frameTree.frame.id;
+  /** Whether the page still shows what was built once it has started (see the top of this file). */
+  const judge = async (): Promise<PageCheck> => {
     const nav = (await race(page.send('Page.navigate', { url }))) as { errorText?: string };
     if (nav.errorText) throw new Unchecked(`The page could not be opened (${nav.errorText}).`);
     // The page itself, not what it shows: an image still on its way (a slow host's) holds up nothing.
@@ -232,6 +245,30 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
     const { heading, at } = seen as { heading: string; at: number };
     const before = logged.filter((l) => l.at <= at);
     return { status: 'error-page', heading, cause: before.length ? before[before.length - 1].text : null, logged: logged.map((l) => l.text) };
+  };
+
+  try {
+    await race(page.send('Page.enable'));
+    await race(page.send('Runtime.enable'));
+    await race(page.send('Network.enable'));
+    await race(page.send('Page.addScriptToEvaluateOnNewDocument', { source: NO_PRINT }));
+    // A page that cannot be set up to be measured is checked all the same, unmeasured. Setting it up takes nothing from
+    // the check's own time: its deadline moves on by as long as that took.
+    if (sampler) {
+      const began = Date.now();
+      const ready = await race(sampler.prepare(page, opts.measureUntil ?? began));
+      deadline += Date.now() - began;
+      endInTime?.();
+      if (!ready) sampler = null;
+    }
+    const tree = (await race(page.send('Page.getFrameTree'))) as { frameTree: { frame: { id: string } } };
+    mainFrame = tree.frameTree.frame.id;
+    const verdict = await judge();
+    // Measured only once it works, in what is left of the check's time: a measurement never decides the verdict.
+    if (verdict.status !== 'working' || !sampler) return verdict;
+    const until = Math.min(deadline, opts.measureUntil ?? deadline);
+    if (Date.now() >= until) return verdict;
+    return { status: 'working', sample: await sampler.collect(page, { deadline: until, signal: opts.signal }) };
   } catch (e) {
     if (e instanceof Unchecked) return { status: 'unchecked', detail: e.message };
     return { status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` };

@@ -135,7 +135,7 @@ controller.reviewShoot = (url, width, signal) =>
   win && !win.isDestroyed() ? reviewShooter.shoot(url, width, signal) : Promise.resolve({ ok: false as const, reason: 'failed' as const, detail: 'The editor is closed.' });
 /** Opens each page of a website export as a visitor's browser does (#1534), each in a hidden window of its own, while the editor is open. */
 const pageChecker = createPageChecker();
-controller.pageCheck = (url, signal) => (win && !win.isDestroyed() ? pageChecker.check(url, signal) : Promise.resolve({ status: 'unchecked' as const, detail: 'The editor is closed.' }));
+controller.pageCheck = (url, signal, measureUntil) => (win && !win.isDestroyed() ? pageChecker.check(url, signal, measureUntil) : Promise.resolve({ status: 'unchecked' as const, detail: 'The editor is closed.' }));
 // The hidden windows belong to the project's previews: they close with the project, not only with the editor.
 controller.onSessionClosed = () => {
   thumbCapturer.dispose();
@@ -529,6 +529,7 @@ const orchestrator = new Orchestrator({
   inspectLayout,
   controlPreview,
   fileDiagnostics: () => controller.fileDiagnostics(),
+  performance: () => controller.performanceStatus(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
   sources: (signal) => controller.agentSources(signal),
   onBusyChange: (busy) => {
