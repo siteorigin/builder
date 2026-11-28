@@ -1,13 +1,14 @@
 import type { GraphNode, NodeTree, OwnerRef, ProjectState, StyleProps, StyleValue, TokenDef } from '@shared/types';
 import { isBinding, parseStyleScopeKey } from '@shared/types';
-import { cascadeStyles, isGradient, linkOf, parseCustomCss, textMetrics } from '@shared/styles';
+import { cascadeStyles, followedText, isGradient, linkOf, parseCustomCss, textMetrics, tokenVar } from '@shared/styles';
 import { parseColor, type Rgba } from '@shared/color';
 import { compositeOver, contrastBetween, formatRatio, relativeLuminance, TEXT_CONTRAST } from '@shared/contrast';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { getTheme } from '@catalogue/index';
+import { showsPart } from '@shared/page-shell';
 import { detachedClasses, effectiveTokens, pageNodeClass } from '@generator/index';
+import { paintsPicture } from '@generator/background';
 import { displayName } from './tree';
 import { themePaintRules, type ThemeLayoutRules } from './theme-layout-rules';
 import type { Diagnostic } from './validate';
@@ -22,14 +23,16 @@ import type { Keeper } from './validation-cache';
  * - The text colour is the text's own, or the nearest one around it; the background is what is painted behind it, the
  *   text's own and every element's around it, a see-through colour laid over what is beneath.
  * - Over a background picture, the overlay is what the text sits on: a solid one is checked as a colour; a see-through
- *   one could show any part of the picture, so the text is checked against it over both black and white, and is said
- *   to need checking when either may be hard to read. A picture with no overlay, or a gradient one, can't be measured,
+ *   one could show any part of the picture, so the text is checked against every colour it can make of one, from it
+ *   over black to it over white, and is said to need checking when any may be hard to read. A picture with no overlay, or a gradient one, can't be measured,
  *   so its text is said to need checking rather than passed.
  * - Only what is known for certain is measured, since a wrong warning is worse than a missed one. The page starts
  *   with the theme's text colour on its page background; inside a placed component, whose own markup and stylesheet
  *   may paint anything, nothing is known until an element of the page sets a colour or a background again. A theme
- *   rule that may paint an element, custom CSS that may, a width range of its container, a fade (opacity) or a colour
- *   this cannot read leaves its text unmeasured. Hover, focus and press states are not read.
+ *   rule that may paint an element, custom CSS that may, a width range of its container, a fade (opacity), an inset
+ *   shadow or a colour this cannot read leaves its text unmeasured; an element positioned or moved away from where it
+ *   sits leaves what is behind it unknown. Text that may not render (a condition, a collection's items, a bound text)
+ *   is not read, nor are hover, focus and press states.
  * - Text is measured only where an element sets a text colour, a background or a picture on the way to it: the theme's
  *   own colours alone are its pairs' to check.
  * - Text this size needs 4.5:1; text that may be large (a heading, or a size that reaches 24px, or 18.66px bold) 3:1.
@@ -55,6 +58,8 @@ interface Ground {
 
 /** Why text over a picture can't be measured. */
 type Picture = 'bare' | 'gradient';
+/** A picture: any colour at all may be behind the text. */
+const ANY: Ground = { lo: BLACK, hi: WHITE, exact: false };
 
 /** What paints the text at one screen size in one palette. */
 interface Paint {
@@ -64,7 +69,7 @@ interface Paint {
   fg: Rgba | null;
   /** What is behind; null when not known. */
   ground: Ground | null;
-  /** A background picture behind with no solid overlay: what this can't measure. */
+  /** A background picture behind with no overlay, or a gradient one: what this can't measure. */
   picture: Picture | null;
   /** An element on the way set a text colour, a background or a picture. */
   chosen: boolean;
@@ -78,9 +83,10 @@ type Key = `${Size}|${PaletteScheme}`;
 type Paints = Map<Key, Paint>;
 
 /** Style properties that decide what this reads: set in a container width range, they leave it unknown. */
-const READ_PROPS = new Set(['color', 'background', 'backgroundImage', 'opacity', 'hidden', 'customCss', 'textStyle', 'fontSize', 'fontWeight', 'backdropBlur']);
+const READ_PROPS = new Set(['color', 'background', 'backgroundImage', 'opacity', 'hidden', 'customCss', 'textStyle', 'fontSize', 'fontWeight', 'backdropBlur', 'shadow', 'position', 'translateX', 'translateY', 'rotate', 'scale']);
 /** Custom CSS that may paint text, or what is behind it, or change its size. */
-const PAINT_CSS = /^(color|-webkit-text-fill-color|background(-[a-z-]+)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode|font(-size|-weight)?|display|visibility|content-visibility)$/;
+const PAINT_CSS =
+  /^(color|-webkit-text-fill-color|background(-[a-z-]+)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode|box-shadow|font(-size|-weight)?|display|visibility|content-visibility|position|inset|top|bottom|left|right|transform|translate|margin(-[a-z-]+)?)$/;
 /** The resting rules: what shows before any hover, focus or press. */
 const RESTING = ['base', 'phone', 'tablet', 'desktop'] as const;
 
@@ -137,15 +143,19 @@ function over(top: Rgba, ground: Ground | null): Ground | null {
   return ground ? { lo: compositeOver(top, ground.lo), hi: compositeOver(top, ground.hi), exact: ground.exact } : null;
 }
 
-/** The lowest contrast `fg` can have over a ground, and whether that is at its lighter end. */
-function lowest(fg: Rgba, ground: Ground): { ratio: number; light: boolean } {
+/** Where over a picture the text reads worst: its light parts, its dark parts, or those close to the text's colour. */
+type Worst = 'light' | 'dark' | 'close';
+
+/** The lowest contrast `fg` can have over a ground, and where over a picture that is. */
+function lowest(fg: Rgba, ground: Ground): { ratio: number; at: Worst } {
   const lo = contrastBetween(compositeOver(fg, ground.lo), ground.lo);
-  if (ground.exact) return { ratio: lo, light: false };
+  if (ground.exact) return { ratio: lo, at: 'dark' };
   const hi = contrastBetween(compositeOver(fg, ground.hi), ground.hi);
-  // An opaque colour as light as some colour between the ends can't be told from it there.
+  // Every colour between the ends is as light as some ground between them: text of that lightness (see-through or not,
+  // since it then shows as nearly that ground) can't be told from it there.
   const l = relativeLuminance(fg);
-  if (fg.a >= 1 && l >= relativeLuminance(ground.lo) && l <= relativeLuminance(ground.hi)) return { ratio: 1, light: hi <= lo };
-  return hi < lo ? { ratio: hi, light: true } : { ratio: lo, light: false };
+  if (l >= relativeLuminance(ground.lo) && l <= relativeLuminance(ground.hi)) return { ratio: 1, at: 'close' };
+  return hi < lo ? { ratio: hi, at: 'light' } : { ratio: lo, at: 'dark' };
 }
 
 const HEADING = /^h[1-6]$/;
@@ -160,7 +170,8 @@ function mayBeLarge(n: GraphNode & { kind: 'text' }, p: Paint): boolean {
 
 /** Whether a text node shows any text. */
 function showsText(n: GraphNode & { kind: 'text' }): boolean {
-  if (isBinding(n.text)) return true;
+  // Bound text may be empty.
+  if (isBinding(n.text)) return false;
   if (n.rich) {
     try {
       return richTextToPlain(toRichText(n.text)).trim() !== '';
@@ -201,14 +212,24 @@ function whereText(keys: Key[], schemes: PaletteScheme[]): string {
   return text ? `${text[0].toUpperCase()}${text.slice(1)}, ` : '';
 }
 
+/**
+ * Whether a theme's stylesheet paints the page as contrast.ts assumes: its `body` rule sets the page background and the
+ * text colour from the site's Background and Primary text styles.
+ */
+function bodyPaints(css: string): boolean {
+  const rule = /(?:^|[}\s])body\s*\{([^{}]*)\}/.exec(css)?.[1] ?? '';
+  const decl = (prop: string) => [...rule.matchAll(new RegExp(`(?:^|;)\\s*${prop}\\s*:([^;]*)`, 'g'))].map((m) => m[1].trim()).pop();
+  return (decl('background') ?? decl('background-color')) === `var(${tokenVar('color.background')})` && decl('color') === `var(${tokenVar('color.text')})`;
+}
+
 interface Finding {
   code: 'TEXT_CONTRAST_LOW' | 'TEXT_CONTRAST_UNVERIFIED';
   nodeId: string;
   /** What kind of finding it is, for telling them apart. */
   kind: string;
   keys: Key[];
-  /** The lowest contrast found, the minimum it needed, and whether it was at the picture's lighter parts. */
-  worst?: { ratio: number; min: number; light: boolean };
+  /** The lowest contrast found, where over a picture it was, and the highest minimum any of its places needs. */
+  worst?: { ratio: number; min: number; at: Worst };
   /** The highest contrast found where it holds, to say when the lowest is only one of several. */
   best?: number;
 }
@@ -228,13 +249,15 @@ export function elementContrastDiagnostics(state: ProjectState, keep?: Keeper): 
       const tokens = effectiveTokens(state, scheme);
       return { scheme, tokens, read: colorReader(tokens) };
     });
-    return { theme, schemes, palettes };
+    return { theme, schemes, palettes, body: bodyPaints(getTheme(state.site.themeId).baseCss ?? '') };
   };
   const context = keep ? keep.shared('elementContrast', shared) : shared();
-  const trees: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [
-    { owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, label: 'Header' },
-    { owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, label: 'Footer' }
-  ];
+  // The shared header and footer, while a page or a collection's pages show them.
+  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
+  const shown = (part: 'header' | 'footer') => Object.keys(state.collections ?? {}).length > 0 || pages.some((p) => showsPart(p, part));
+  const trees: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [];
+  if (shown('header')) trees.push({ owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, label: 'Header' });
+  if (shown('footer')) trees.push({ owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, label: 'Footer' });
   for (const id of state.site.pageOrder) if (Object.hasOwn(state.pages, id)) trees.push({ owner: { kind: 'page', id }, tree: state.pages[id], label: state.pages[id].title });
   for (const t of trees) {
     const run = () => {
@@ -255,7 +278,7 @@ function treeContrast(
   owner: OwnerRef,
   tree: NodeTree,
   label: string,
-  { theme, schemes, palettes }: { theme: ThemeLayoutRules; schemes: PaletteScheme[]; palettes: Array<{ scheme: PaletteScheme; tokens: TokenDef[]; read: ReturnType<typeof colorReader> }> }
+  { theme, schemes, palettes, body }: { theme: ThemeLayoutRules; schemes: PaletteScheme[]; palettes: Array<{ scheme: PaletteScheme; tokens: TokenDef[]; read: ReturnType<typeof colorReader> }>; body: boolean }
 ): Diagnostic[] {
   if (!tree || typeof tree !== 'object' || !tree.nodes || !Array.isArray(tree.rootIds)) return [];
   const found = new Map<string, Finding>();
@@ -263,17 +286,20 @@ function treeContrast(
     const id = `${f.code}|${f.nodeId}|${f.kind}`;
     const kept = found.get(id) ?? found.set(id, { ...f, keys: [] }).get(id)!;
     kept.keys.push(key);
-    if (worst && (!kept.worst || worst.ratio < kept.worst.ratio)) kept.worst = worst;
+    if (worst && (!kept.worst || worst.ratio < kept.worst.ratio)) kept.worst = { ...worst, min: Math.max(worst.min, kept.worst?.min ?? 0) };
+    else if (worst && kept.worst) kept.worst.min = Math.max(kept.worst.min, worst.min);
     if (worst && (kept.best === undefined || worst.ratio > kept.best)) kept.best = worst.ratio;
   };
 
-  /** The page as it starts: the theme's text colour on its page background (painted over white). */
+  /**
+   * The page as it starts: the theme's text colour on its page background, when its stylesheet paints the page with
+   * them (as contrast.ts reads its pairs on that background); otherwise nothing is known.
+   */
   const start: Paints = new Map();
   for (const { scheme, read } of palettes) {
-    const fg = read({ token: 'color.text' });
-    const page = read({ token: 'color.background' });
-    for (const size of SIZES)
-      start.set(`${size}|${scheme}`, { off: false, fg, ground: page ? over(page, { lo: WHITE, hi: WHITE, exact: true }) : null, picture: null, chosen: false, px: undefined, weight: undefined });
+    const fg = body ? read({ token: 'color.text' }) : null;
+    const page = body ? read({ token: 'color.background' }) : null;
+    for (const size of SIZES) start.set(`${size}|${scheme}`, { off: false, fg, ground: page && page.a >= 1 ? over(page, null) : null, picture: null, chosen: false, px: undefined, weight: undefined });
   }
   /**
    * Inside a placed component: nothing is known of what paints it but where it is hidden. Text placed in it keeps the
@@ -284,16 +310,22 @@ function treeContrast(
   /** The paints inside an element, from the ones around it; null when nothing inside can be read. */
   const inside = (n: GraphNode & { kind: 'element' | 'text' }, around: Paints): Paints | null => {
     const tag = n.tag;
-    const renders = typeof tag === 'string' ? [tag, ...(n.kind === 'element' && n.link !== undefined ? ['a'] : [])] : undefined;
-    if (theme.reaches([pageNodeClass(n.id), ...detachedClasses(n)], renders)) return null;
+    // A card renders as the runtime's link while its destination resolves; one with an action, inside one.
+    const linked = n.kind === 'element' && ((n.link !== undefined && n.link !== null) || (n.action !== undefined && n.action !== null));
+    const renders = typeof tag === 'string' ? [tag, ...(linked ? ['a'] : [])] : undefined;
+    if (theme.reaches([pageNodeClass(n.id), ...detachedClasses(n), ...(linked ? ['so-card-link', 'so-action'] : [])], renders)) return null;
     const styles = n.styles && typeof n.styles === 'object' ? n.styles : {};
+    /** The sizes custom CSS may paint at: nothing inside can be read there. */
+    const custom = new Set<Size>();
     for (const [scope, props] of Object.entries(styles)) {
       const parsed = parseStyleScopeKey(scope);
       if (!parsed || parsed.state || !props || typeof props !== 'object') continue;
+      const resting = (RESTING as readonly string[]).includes(parsed.scope);
       // A container's width this can't know decides it.
-      if (!(RESTING as readonly string[]).includes(parsed.scope) && Object.keys(props).some((p) => READ_PROPS.has(p))) return null;
+      if (!resting && Object.keys(props).some((p) => READ_PROPS.has(p))) return null;
       const css = (props as StyleProps).customCss;
-      if (typeof css === 'string' && parseCustomCss(css).decls.some((d) => PAINT_CSS.test(d.slice(0, d.indexOf(':')).trim().toLowerCase()))) return null;
+      if (typeof css === 'string' && parseCustomCss(css).decls.some((d) => PAINT_CSS.test(d.slice(0, d.indexOf(':')).trim().toLowerCase())))
+        for (const size of parsed.scope === 'base' || !resting ? SIZES : [parsed.scope as Size]) custom.add(size);
     }
     const won = cascadeStyles([{ styles: n.styles, strength: 1 }]);
     const out: Paints = new Map();
@@ -309,43 +341,56 @@ function treeContrast(
         const next: Paint = { ...p };
         const opacity = at.opacity;
         // Faded, the text and what is behind it blend with whatever is beneath: nothing inside can be read.
-        if (opacity !== undefined && !(Number(opacity) >= 1)) next.off = true;
-        if (at.backdropBlur !== undefined) next.off = true;
+        if (custom.has(size) || (opacity !== undefined && !(Number(opacity) >= 1))) next.off = true;
+        const blur = at.backdropBlur;
+        if (blur !== undefined && blur !== 'none' && Number.parseFloat(String(blur)) !== 0) next.off = true;
+        // Placed or moved away from where it sits, it may be over anything.
+        const position = at.position;
+        if (position === 'absolute' || position === 'fixed' || ['translateX', 'translateY', 'rotate', 'scale'].some((t) => at[t] !== undefined)) [next.ground, next.picture] = [null, null];
         if (at.background !== undefined) {
           next.chosen = true;
           const bg = typeof at.background === 'string' && isGradient(at.background) ? null : read(at.background);
-          next.ground = bg ? over(bg, next.ground) : null;
-          if (!bg || bg.a >= 1) next.picture = null;
+          next.ground = bg ? over(bg, next.picture ? ANY : next.ground) : null;
+          // A colour over a picture covers it, or lets it show through: either way it is measured as it is.
+          if (!bg || bg.a > 0) next.picture = null;
         }
         const image = at.backgroundImage;
-        const asset = isBackgroundImageValue(image) && Object.hasOwn(state.assets.assets, image.assetId) ? state.assets.assets[image.assetId] : undefined;
-        if (isBackgroundImageValue(image) && isPictureAsset(asset)) {
+        if (image !== undefined && paintsPicture(image, state.assets.assets)) {
           next.chosen = true;
-          const scrim = typeof image.scrim === 'string' && image.scrim.trim() ? image.scrim.trim() : null;
+          const scrim = typeof image === 'object' && typeof (image as { scrim?: unknown }).scrim === 'string' ? (image as { scrim: string }).scrim.trim() : '';
           const solid = scrim && !isGradient(scrim) ? parseColor(scrim) : null;
           if (!scrim) [next.ground, next.picture] = [null, 'bare'];
           else if (!solid) [next.ground, next.picture] = [null, 'gradient'];
           else {
-            // The picture may be any colour where the text sits: an overlay over it lies between its own colour over
+            // The picture may be any colour where the text sits: an overlay over it is between its own colour over
             // black and over white.
-            next.ground = over(solid, solid.a >= 1 ? null : { lo: BLACK, hi: WHITE, exact: false });
+            next.ground = over(solid, ANY);
             next.picture = null;
           }
         }
+        // An inset shadow paints over the background, beneath the text.
+        const shadow = at.shadow;
+        const shadowCss = typeof shadow === 'string' ? shadow : linkOf(shadow, 'shadow') ? followedText(tokens, linkOf(shadow, 'shadow')!) : '';
+        if (/\binset\b/i.test(shadowCss) || (shadow !== undefined && typeof shadow !== 'string' && !shadowCss)) [next.ground, next.picture] = [null, null];
         if (at.color !== undefined) {
           next.chosen = true;
           next.fg = read(at.color);
         }
-        if (at.textStyle !== undefined) {
-          const id = linkOf(at.textStyle, 'text');
+        if (at.textStyle !== undefined && (at.fontSize !== undefined || at.fontWeight !== undefined)) {
+          // Which of them wins depends on where each is set: the size is not known.
+          next.px = null;
+        } else if (at.textStyle !== undefined) {
+          const raw = at.textStyle;
+          const id = linkOf(raw, 'text') ?? (typeof raw === 'string' && tokens.some((t) => t.id === raw && t.group === 'text') ? raw : null);
           const m = id ? textMetrics(tokens, id) : null;
           next.px = m ? maxPx(m.size) : null;
           next.weight = m ? m.weight : undefined;
-        }
-        if (at.fontSize !== undefined) next.px = maxPx(at.fontSize);
-        if (at.fontWeight !== undefined) {
-          const w = Number(at.fontWeight);
-          next.weight = Number.isFinite(w) ? w : 700;
+        } else {
+          if (at.fontSize !== undefined) next.px = maxPx(at.fontSize);
+          if (at.fontWeight !== undefined) {
+            const w = Number(at.fontWeight);
+            next.weight = Number.isFinite(w) ? w : 700;
+          }
         }
         out.set(key, next);
       }
@@ -362,10 +407,10 @@ function treeContrast(
       }
       if (!p.fg || !p.ground) continue;
       const min = mayBeLarge(n, p) ? LARGE_TEXT_CONTRAST : TEXT_CONTRAST;
-      const { ratio, light } = lowest(p.fg, p.ground);
+      const { ratio, at } = lowest(p.fg, p.ground);
       if (ratio >= min) continue;
-      if (p.ground.exact) record({ code: 'TEXT_CONTRAST_LOW', nodeId: n.id, kind: 'low' }, key, { ratio, min, light });
-      else record({ code: 'TEXT_CONTRAST_UNVERIFIED', nodeId: n.id, kind: 'overlay' }, key, { ratio, min, light });
+      if (p.ground.exact) record({ code: 'TEXT_CONTRAST_LOW', nodeId: n.id, kind: 'low' }, key, { ratio, min, at });
+      else record({ code: 'TEXT_CONTRAST_UNVERIFIED', nodeId: n.id, kind: 'overlay' }, key, { ratio, min, at });
     }
   };
 
@@ -374,7 +419,8 @@ function treeContrast(
     const n = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
     if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'repeat') return n.children.forEach((c) => visit(c, around));
+    // What renders only under a condition, or once per item of a list that may be empty, may never show.
+    if (n.kind === 'repeat' || (n as { when?: unknown }).when !== undefined || (n as { unless?: unknown }).unless !== undefined) return;
     if (n.kind === 'element' || n.kind === 'text') {
       const paints = inside(n, around);
       if (!paints) return;
@@ -383,7 +429,11 @@ function treeContrast(
     }
     if (n.kind !== 'instance') return;
     // A placed component's markup and stylesheet are its own: what is placed in its slots starts from nothing known,
-    // though it stays hidden wherever the placement is.
+    // though it stays hidden wherever the placement is. A part of it hidden at some size may hold the slot: nothing
+    // placed in it is read then.
+    const hides = (rs: unknown) => !!rs && typeof rs === 'object' && Object.values(rs).some((props) => !!props && typeof props === 'object' && 'hidden' in props);
+    if (Object.entries(n.overrides ?? {}).some(([part, rs]) => part !== 'root' && hides(rs))) return;
+    if (Object.values(n.itemOverrides ?? {}).some((io) => Object.values(io?.items ?? {}).some(hides))) return;
     const root = cascadeStyles([{ styles: n.overrides?.root, strength: 1 }]);
     const fresh: Paints = new Map([...around].map(([key, p]) => [key, unknown({ ...p, off: p.off || root[key.split('|')[0] as Size]?.hidden === true })]));
     for (const ids of Object.values(n.slots ?? {})) if (Array.isArray(ids)) ids.forEach((c) => visit(c, fresh));
@@ -404,7 +454,7 @@ function treeContrast(
     if (f.kind === 'low')
       message = `${label}: ${where}${subject} is hard to read: its color has ${asLittle}${keyRatios}:1 contrast with the background behind it, and text ${w!.min === TEXT_CONTRAST ? 'this size' : 'even this large'} needs at least ${w!.min}:1. Choose a text color or a background that stands further apart.`;
     else if (f.kind === 'overlay')
-      message = `${label}: ${where}${subject} sits on a background picture its overlay lets show through, so where the picture is ${w!.light ? 'light' : 'dark'} it has as little as ${keyRatios}:1 contrast, and text ${w!.min === TEXT_CONTRAST ? 'this size' : 'even this large'} needs at least ${w!.min}:1. Make the overlay stronger, or check that the text reads well across the picture.`;
+      message = `${label}: ${where}${subject} sits on a background picture that shows through the color over it, so where the picture is ${w!.at === 'close' ? 'close to the text’s color' : w!.at} it has as little as ${keyRatios}:1 contrast, and text ${w!.min === TEXT_CONTRAST ? 'this size' : 'even this large'} needs at least ${w!.min}:1. Make the overlay stronger, or check that the text reads well across the picture.`;
     else if (f.kind === 'gradient')
       message = `${label}: ${where}${subject} sits on a background picture with a gradient overlay, so its contrast can’t be measured. Check that the text reads well across the picture, or choose a solid overlay.`;
     else message = `${label}: ${where}${subject} sits on a background picture with no overlay, so its contrast can’t be measured, and text is hard to read wherever the picture is close to its color. Add an overlay to the picture (Darken, say), or check that the text reads well across it.`;

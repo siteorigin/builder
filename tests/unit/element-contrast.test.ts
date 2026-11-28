@@ -107,6 +107,18 @@ describe('text whose own colours disappear into its background (#1489)', () => {
     // A text colour alone is read against the page background, at the top of the page.
     s = page([text('n_t', undefined, { base: { color: ACCENT } })]);
     expect(contrast(s).map((d) => d.message.match(/has ([\d.]+):1/)?.[1])).toEqual(['1.10']);
+    // The text's own background is what it sits on: a highlight.
+    s = page([el('n_card', { base: { background: { token: 'color.inverse' }, color: ACCENT } }, ['n_t']), text('n_t', undefined, { base: { background: CARD } })]);
+    expect(contrast(s).map((d) => d.nodeId)).toEqual(['n_t']);
+    // A card with no colour of its own keeps the colour around it: the theme's ink on a dark card.
+    s = page([el('n_card', { base: { background: { token: 'color.inverse' } } }, ['n_t']), text('n_t')]);
+    expect(contrast(s).map((d) => d.nodeId)).toEqual(['n_t']);
+    // Positioned or moved away from its card, the text may be over anything: not measured.
+    s = page([el('n_card', { base: { background: CARD, color: ACCENT } }, ['n_t']), text('n_t', undefined, { base: { position: 'absolute' } })]);
+    expect(contrast(s)).toEqual([]);
+    // An inset shadow paints over the card's background.
+    s = page([el('n_card', { base: { background: CARD, color: ACCENT, shadow: 'inset 0 0 0 1000px #000' } }, ['n_t']), text('n_t')]);
+    expect(contrast(s)).toEqual([]);
   });
 
   it('says the screen sizes and palette where it happens', () => {
@@ -115,6 +127,9 @@ describe('text whose own colours disappear into its background (#1489)', () => {
     // Hidden on phones, it never shows to go wrong.
     s = setStyle(s, 'n_t', 'phone', 'hidden', true);
     expect(contrast(s)).toEqual([]);
+    // Failing everywhere, but hidden on tablets and desktops and shown again on desktops.
+    s = page([el('n_card', { base: { background: CARD, color: ACCENT }, tablet: { hidden: true } }, ['n_t']), text('n_t')]);
+    expect(contrast(s).map((d) => d.message.match(/: (On [a-z ]+),/)?.[1])).toEqual(['On phones and desktops']);
 
     // A dark palette visitors can see is checked too: here only it fails.
     s = page([el('n_card', { base: { background: CARD, color: INK } }, ['n_t']), text('n_t')]);
@@ -128,28 +143,49 @@ describe('text whose own colours disappear into its background (#1489)', () => {
   });
 
   it('lays a see-through colour over what is beneath it, and measures text that may be large against 3:1', () => {
-    // Accent at 10% over the card is nearly the card: dark ink on it reads well.
-    let s = page([el('n_card', { base: { background: CARD } }, ['n_tint']), el('n_tint', { base: { background: { token: 'color.accent', alpha: 0.1 } } }, ['n_t']), text('n_t', undefined, { base: { color: INK } })]);
+    // Ink at 10% over the card is nearly the card: ink on it reads well (ink at full strength would be ink on ink).
+    let s = page([el('n_card', { base: { background: CARD } }, ['n_tint']), el('n_tint', { base: { background: { token: 'color.text', alpha: 0.1 } } }, ['n_t']), text('n_t', undefined, { base: { color: INK } })]);
     expect(contrast(s)).toEqual([]);
+    expect(contrast(setStyle(s, 'n_tint', 'base', 'background', INK)).map((d) => d.nodeId)).toEqual(['n_t']);
     // Muted text a touch too light: 3.5:1 fails body text and passes a heading.
     s = fresh();
     s.tokens.overrides['color.muted'] = '#8a8a86';
     s = page([el('n_card', { base: { background: CARD, color: { token: 'color.muted' } } }, ['n_p', 'n_h']), text('n_p'), text('n_h', 'Big news', undefined, { tag: 'h2' })], s);
     expect(contrast(s).map((d) => d.nodeId)).toEqual(['n_p']);
-    // Body text at a large size needs only 3:1 too; small text at a heading's tag still may be large.
+    // Body text at a large size needs only 3:1 too, as does one a large text style sizes.
     expect(contrast(setStyle(s, 'n_p', 'base', 'fontSize', '28px'))).toEqual([]);
+    expect(contrast(setStyle(s, 'n_p', 'base', 'textStyle', { token: 'text.h1' }))).toEqual([]);
+    // A text style at one size and a font size at another: which wins there is not read, so 3:1 is the bar.
+    expect(contrast(setStyle(setStyle(s, 'n_p', 'base', 'fontSize', '14px'), 'n_p', 'desktop', 'textStyle', { token: 'text.h1' })).map((d) => d.message.match(/: (On [a-z ]+),/)?.[1])).toEqual([
+      'On phones and tablets'
+    ]);
+    // Where sizes need different minimums, the message gives the higher.
+    const mixed = contrast(setStyle(s, 'n_p', 'phone', 'fontSize', '28px'));
+    expect(mixed.map((d) => d.message.match(/needs at least ([\d.]+):1/)?.[1])).toEqual(['4.5']);
   });
 
   it('stays quiet where it can’t know the colours: a component’s own paint, custom CSS, a fade, a container width', () => {
-    // Inside a placed section with no colour of the page's own, the section's tone decides: nothing is measured.
+    // Inside a placed section with no text colour of the page's own, the section's tone decides: nothing is measured,
+    // though the theme's ink on a dark card would fail at the top of the page.
     let s = fresh();
-    s = page([el('n_card', { base: { background: CARD } }, ['n_t']), text('n_t')], s, section(s));
+    s = page([el('n_card', { base: { background: { token: 'color.inverse' } } }, ['n_t']), text('n_t')], s, section(s));
     expect(contrast(s)).toEqual([]);
-    // The theme's own colours alone are its pairs' to check.
-    expect(contrast(page([el('n_box', undefined, ['n_t']), text('n_t')]))).toEqual([]);
+    // A part of the section hidden at some size may hold its content: nothing placed in it is read.
+    s = fresh();
+    const hiding = section(s);
+    hiding.overrides = { container: { base: { hidden: true }, desktop: { hidden: false } } };
+    expect(contrast(page([el('n_card', { base: { background: CARD, color: ACCENT } }, ['n_t']), text('n_t')], s, hiding))).toEqual([]);
+    // The theme's own colours alone are its pairs' to check, however they read.
+    s = fresh();
+    s.tokens.overrides['color.text'] = '#f8f8f4';
+    expect(contrast(page([el('n_box', undefined, ['n_t']), text('n_t')], s))).toEqual([]);
     const failing = (styles: ResponsiveStyles) => contrast(page([el('n_card', { base: { background: CARD, color: ACCENT }, ...styles }, ['n_t']), text('n_t')]));
     expect(failing({})).toHaveLength(1);
-    expect(failing({ desktop: { customCss: 'color: black;' } })).toEqual([]);
+    // Custom CSS that may paint is read only where it applies.
+    expect(failing({ desktop: { customCss: 'color: black;' } })[0].message).toMatch(/: On phones and tablets, /);
+    expect(failing({ base: { background: CARD, color: ACCENT, customCss: 'box-shadow: inset 0 0 0 99px #000;' } })).toEqual([]);
+    expect(failing({ desktop: { backdropBlur: '12px' } })[0].message).toMatch(/: On phones and tablets, /);
+    expect(failing({ desktop: { backdropBlur: '0' } })[0].message).not.toMatch(/: On /);
     expect(failing({ desktop: { opacity: 0.8 } })[0].message).toMatch(/: On phones and tablets, /);
     expect(failing({ 'cq-wide': { color: INK } } as ResponsiveStyles)).toEqual([]);
     // Hover styles are not read.
@@ -158,8 +194,25 @@ describe('text whose own colours disappear into its background (#1489)', () => {
     expect(contrast(page([el('n_card', { base: { background: 'linear-gradient(#fff, #eee)', color: ACCENT } }, ['n_t']), text('n_t')]))).toEqual([]);
   });
 
-  it('leaves empty text and buttons alone', () => {
-    expect(contrast(page([el('n_card', { base: { background: CARD, color: ACCENT } }, ['n_t']), text('n_t', '  ')]))).toEqual([]);
+  it('leaves alone text that may not show: empty, bound, conditional, in a collection’s items, or a button', () => {
+    const inCard = (...nodes: GraphNode[]) => contrast(page([el('n_card', { base: { background: CARD, color: ACCENT } }, [nodes[0].id]), ...nodes]));
+    expect(inCard(text('n_t', '  '))).toEqual([]);
+    expect(inCard({ id: 'n_b', kind: 'link', link: { type: 'url', href: 'https://example.com' }, label: 'Order', appearance: 'primary' } as unknown as GraphNode)).toEqual([]);
+    expect(inCard(text('n_t', undefined, undefined, { when: { $entry: 'title' } } as never))).toEqual([]);
+    expect(inCard({ id: 'n_loop', kind: 'repeat', list: { $query: { collection: 'posts' } }, children: ['n_t'] } as unknown as GraphNode, text('n_t'))).toEqual([]);
+    expect(inCard(text('n_t', { $entry: 'title' } as never))).toEqual([]);
+    expect(inCard(text('n_t'))).toHaveLength(1);
+  });
+
+  it('reads the header and footer while a page shows them', () => {
+    const s = fresh();
+    const header = s.site.shell.header;
+    header.nodes.n_bar = el('n_bar', { base: { background: CARD, color: ACCENT } }, ['n_t']);
+    header.nodes.n_t = text('n_t', 'Call us');
+    header.rootIds.push('n_bar');
+    expect(contrast(s).map((d) => [d.owner, d.nodeId])).toEqual([[{ kind: 'shell', id: 'header' }, 'n_t']]);
+    for (const p of Object.values(s.pages)) p.showHeader = false;
+    expect(contrast(s)).toEqual([]);
   });
 });
 
@@ -177,8 +230,20 @@ describe('text over a background picture (#1489)', () => {
     );
     // Even with the theme's own text colour on it.
     expect(contrast(page([el('n_hero', { base: { backgroundImage: { assetId: 'as_dark' } } as never }, ['n_t']), text('n_t')], withPhoto(fresh()))).map((d) => d.code)).toEqual([UNVERIFIED]);
-    // A card on the picture covers it.
-    expect(contrast(page([el('n_hero', { base: { backgroundImage: { assetId: 'as_dark' } } as never }, ['n_card']), el('n_card', { base: { background: CARD } }, ['n_t']), text('n_t')], withPhoto(fresh())))).toEqual([]);
+    // A card on the picture covers it; a nearly opaque one is measured over every colour the picture may have.
+    const onCard = (background: unknown, color: unknown = INK) =>
+      contrast(page([el('n_hero', { base: { backgroundImage: { assetId: 'as_dark' } } as never }, ['n_card']), el('n_card', { base: { background, color } as never }, ['n_t']), text('n_t')], withPhoto(fresh())));
+    expect(onCard(CARD)).toEqual([]);
+    expect(onCard('rgb(0 0 0 / 95%)', '#ffffff')).toEqual([]);
+    expect(onCard('rgb(0 0 0 / 40%)', '#ffffff').map((d) => d.code)).toEqual([UNVERIFIED]);
+    // A transparent card over it leaves the picture unmeasured.
+    expect(onCard('transparent').map((d) => d.message.includes('with no overlay'))).toEqual([true]);
+    // The card's own colour sits under its picture, which still needs checking.
+    expect(contrast(page([el('n_hero', { base: { background: '#000000', backgroundImage: { assetId: 'as_dark' }, color: '#ffffff' } as never }, ['n_t']), text('n_t')], withPhoto(fresh()))).map((d) => d.code)).toEqual([UNVERIFIED]);
+    // A picture the site can't show (a file it can't serve) paints nothing.
+    const broken = withPhoto(fresh());
+    broken.assets.assets.as_dark.file = 'static/assets/night photo.jpg';
+    expect(contrast(page([el('n_hero', { base: { backgroundImage: { assetId: 'as_dark' } } as never }, ['n_t']), text('n_t')], broken))).toEqual([]);
   });
 
   it('checks the text against its overlay: a solid one exactly, a see-through one over both light and dark parts', () => {
@@ -188,7 +253,13 @@ describe('text over a background picture (#1489)', () => {
     expect(contrast(photo('rgba(0, 0, 0, 0.65)', '#ffffff'))).toEqual([]);
     const [d] = contrast(photo('rgba(0, 0, 0, 0.45)', '#ffffff'));
     expect(d.code).toBe(UNVERIFIED);
-    expect(d.message).toContain('sits on a background picture its overlay lets show through, so where the picture is light it has as little as 3.');
+    expect(d.message).toContain('sits on a background picture that shows through the color over it, so where the picture is light it has as little as 3.35:1 contrast, and text this size needs at least 4.5:1.');
+    // Black text on a light overlay: the picture's dark parts are the ones to check.
+    expect(contrast(photo('rgba(255, 255, 255, 0.75)', '#000000'))).toEqual([]);
+    expect(contrast(photo('rgba(255, 255, 255, 0.45)', '#000000'))[0].message).toContain('where the picture is dark it has as little as 4.4');
+    // Gray text on a light overlay matches some part of any picture, see-through or not.
+    expect(contrast(photo('rgba(0, 0, 0, 0.1)', '#777777'))[0].message).toContain('where the picture is close to the text’s color it has as little as 1.00:1');
+    expect(contrast(photo('rgba(0, 0, 0, 0.1)', 'rgba(119, 119, 119, 0.95)'))[0].message).toContain('as little as 1.00:1');
     // A gradient overlay can't be measured.
     expect(contrast(photo('linear-gradient(to bottom, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.7))', '#ffffff'))[0].message).toContain('with a gradient overlay, so its contrast can’t be measured');
   });
@@ -210,6 +281,7 @@ describe('the check as Project health runs it', () => {
     const cache = new ValidationCache();
     const low = (st: ProjectState) => adviceValidation(st, cache)[1].find((d) => d.code === LOW);
     const before = low(s);
+    expect(before).toBeDefined();
     expect(before).toEqual(elementContrastDiagnostics(s)[0]);
     // Another page's content edited: the home page's finding is the very one kept.
     const about = Object.keys(s.pages).find((id) => id !== s.site.homePageId)!;

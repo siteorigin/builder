@@ -246,10 +246,10 @@ const paintCache = new Map<string, ThemeLayoutRules>();
 /**
  * Properties a theme rule can set that decide how text is painted (engine/element-contrast): its colour, what is
  * behind it, and anything that fades or blends either. `color: inherit` (or `currentcolor`, `unset`) only keeps the
- * colour the text already has, so it decides nothing.
+ * colour the text already has, so it decides nothing, unless it is important and so beats the element's own colour.
  */
 const PAINTING = /^(color|-webkit-text-fill-color|background(-color|-image|-clip|-blend-mode)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode)$/;
-const paints = (d: { prop: string; value: string }) => PAINTING.test(d.prop) && !(d.prop === 'color' && /^(inherit|currentcolor|unset)(\s*!important)?$/.test(d.value));
+const paints = (d: { prop: string; value: string }) => PAINTING.test(d.prop) && !(d.prop === 'color' && /^(inherit|currentcolor|unset)$/.test(d.value));
 
 /**
  * Which boxes a theme's rules may paint (see `themeLayoutRules`, read the same way): rules that set a box's text colour
