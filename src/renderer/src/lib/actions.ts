@@ -1663,6 +1663,8 @@ export function revealSection(pageId: string, ref: ElementRef) {
  */
 export function openFromChat(opening: EditorOpening, still: () => boolean) {
   if (dialogInTheWay()) return toast(`Close the open dialog to see ${chatOpeningName(opening)}.`, 'info');
+  // A dialog Chat opened that holds nothing typed gives way to what Chat opens next, which it would otherwise cover.
+  if (getState().modal) setState({ modal: null });
   if (opening.kind === 'entry') return void openEntryFromChat(opening, still);
   if (opening.kind === 'section') return revealSection(opening.pageId, opening.ref);
   switch (opening.view) {
@@ -1696,10 +1698,14 @@ export function openFromChat(opening: EditorOpening, still: () => boolean) {
 }
 setEditorOpener(openFromChat);
 
-/** The dialog Chat itself opened last: one asked for after it ("open History, then Versions") may take its place. */
+/**
+ * The dialog Chat itself opened last, when it holds nothing the author could type (Project health, the History list):
+ * what Chat is asked for after it ("open History, then Versions") may take its place. Settings, Export and Versions
+ * take typing (a key, a folder, a version's name), so once open they stay until the author closes them.
+ */
 let chatModal: Modal = null;
 function chatDialog(modal: Modal) {
-  chatModal = modal;
+  chatModal = modal?.kind === 'health' || (modal?.kind === 'history' && !modal.tab) ? modal : null;
   setState({ modal });
 }
 

@@ -1192,7 +1192,9 @@ function runOpenInEditor(a: z.infer<(typeof TOOL_ARGS)['open_in_editor']>, state
     const page = a.page ? findPageToOpen(state, a.page) : null;
     if (page && !page.ok) return toolError('INVALID_ARGUMENT', page.message);
     const shown = host.shownPageId?.() ?? state.site.homePageId;
-    const found = findSectionToOpen(state, a.target, shown, page?.ok ? { pageId: page.pageId } : undefined, !page && !!host.onlyShownPage?.());
+    // Asked for on the page the author is on, it is looked for there, whatever page the call names.
+    const onlyShown = !!host.onlyShownPage?.();
+    const found = findSectionToOpen(state, a.target, shown, page?.ok && !onlyShown ? { pageId: page.pageId } : undefined, onlyShown);
     if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
     const tree = found.value.ref.owner.kind === 'page' ? state.pages[found.value.ref.owner.id] : state.site.shell[found.value.ref.owner.id as 'header' | 'footer'];
     const node = tree.nodes[found.value.ref.nodeId];

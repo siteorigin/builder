@@ -740,6 +740,16 @@ describe('opening entries, sections and editor views, and saving versions, from 
     expect(openings(events)).toEqual([]);
   });
 
+  it('keeps "on this page" to that page even when the call names another', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'section', target: aboutCta(session).name, page: 'About' })], () => finish('Contact has none.')]);
+    session = s;
+    const contact = Object.values(session.state.pages).find((p) => p.title === 'Contact')!;
+    await run(`Scroll to the ${aboutCta(session).name} section on this page`, { mode: 'ask', pageId: contact.id, pageTitle: 'Contact' });
+    expect(lastResult(adapter, 1).error.message).toMatch(/No section on the page the author is on, Contact,/);
+    expect(openings(events)).toEqual([]);
+  });
+
   it('never takes a page\'s own title for the name of every section on it', async () => {
     const { session } = await setup([]);
     const { name } = aboutCta(session);
@@ -786,7 +796,8 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
     'Show Site Styles',
     'Select Testimonials',
     'Open en_bastide01',
-    'Open the hero section'
+    'Open the hero section',
+    'Make the button blue, then scroll to the testimonials section'
   ])('hears "%s" as opening something in the editor', (text) => {
     expect(asksToOpenInEditor(text, state)).toBe(true);
   });
@@ -806,7 +817,7 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
     expect(() => asksToOpenInEditor('open Pricing', damaged)).not.toThrow();
     expect(asksToOpenInEditor('pull up Pricing', damaged)).toBe(false);
   });
-  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version', 'Save a version of the site called Launch', 'Create a version of the website named Draft 2', 'Create a version called Launch', 'Make a backup of my website'])('hears "%s" as saving a version', (text) => {
+  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version', 'Save a version of the site called Launch', 'Create a version of the website named Draft 2', 'Create a version called Launch', 'Make a backup of my website', 'Create a named version called Launch'])('hears "%s" as saving a version', (text) => {
     expect(asksToSaveVersion(text)).toBe(true);
   });
   it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions', 'Make a mobile version called Compact', 'Make a backup of the hero'])('hears "%s" as no request to save one', (text) => {

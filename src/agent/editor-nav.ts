@@ -62,11 +62,10 @@ const ENTRY_WORDS = /\b(?:posts?|blog\s+posts?|articles?|entr(?:y|ies)|collectio
  */
 export function asksToOpenInEditor(text: string, state?: ProjectState): boolean {
   if (HOW_TO.test(text)) return false;
-  if (EXPORT_OR_SHARE.test(text) || LEADING_NAV.test(text) || SHOW_VIEW.test(text)) return true;
-  const visitorEdit = EDIT_LEAD.test(text) && VISITOR_BEHAVIOUR.test(text);
-  if (!visitorEdit && ((SECTION_VERBS.test(text) && SECTION_WORDS.test(text)) || /\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(text))) return true;
+  // Each clause on its own: an edit to a button in one ("make the button blue") says nothing of going somewhere in the
+  // next ("then scroll to the testimonials section").
+  if (clausesOf(text).some(clauseAsks)) return true;
   if (!GO_TO.test(text)) return false;
-  if (VIEW_NAMES.test(text) || ENTRY_WORDS.test(text) || (!visitorEdit && SECTION_WORDS.test(text)) || ENTRY_ID.test(text)) return true;
   const named = namedIn(text);
   for (const c of Object.values(state?.collections ?? {})) {
     if (!c?.settings) continue;
@@ -74,6 +73,22 @@ export function asksToOpenInEditor(text: string, state?: ProjectState): boolean 
     for (const e of Object.values(c.entries ?? {})) if (named(e?.title)) return true;
   }
   return false;
+}
+
+/** A request's clauses, split where a sentence or a step ends ("…, then …"). */
+const clausesOf = (text: string) =>
+  text
+    .split(/[,;.!?\n]+|\b(?:and\s+)?then\b/iu)
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+/** Whether one clause of a request asks to open a view, a section, an entry by its ID, or Export or Share. */
+function clauseAsks(clause: string): boolean {
+  if (EXPORT_OR_SHARE.test(clause) || LEADING_NAV.test(clause) || SHOW_VIEW.test(clause)) return true;
+  const visitorEdit = EDIT_LEAD.test(clause) && VISITOR_BEHAVIOUR.test(clause);
+  if (!visitorEdit && ((SECTION_VERBS.test(clause) && SECTION_WORDS.test(clause)) || /\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(clause))) return true;
+  if (!GO_TO.test(clause)) return false;
+  return VIEW_NAMES.test(clause) || ENTRY_WORDS.test(clause) || (!visitorEdit && SECTION_WORDS.test(clause)) || ENTRY_ID.test(clause);
 }
 
 /**
@@ -90,13 +105,13 @@ export function asksToSaveVersion(text: string): boolean {
     new RegExp(String.raw`\b(?:save|create|take|make|keep|add)\b[^.?!\n]{0,40}?\b(?:snapshots?|checkpoints?|restore\s+points?|backups?)\b` + site, 'iu').test(text) ||
     new RegExp(String.raw`\b(?:save|keep|take)\b[^.?!\n]{0,40}?\bversions?\b` + site, 'iu').test(text) ||
     // Made, a version is the site's when nothing describes it ("create a version called Launch", never "a mobile version").
-    new RegExp(String.raw`\b(?:create|make|add)\s+(?:(?:a|an|another|one)\s+)?(?:new\s+)?versions?\b` + site, 'iu').test(text)
+    new RegExp(String.raw`\b(?:create|make|add)\s+(?:(?:a|an|another|one)\s+)?(?:(?:new|named|saved|fresh|quick)\s+){0,2}versions?\b` + site, 'iu').test(text)
   );
 }
 
 /** "On this page", "here": a section the author asks for is on the page they are on, and only there (#1406). */
 export function asksForThisPage(text: string): boolean {
-  return /\b(?:this|the\s+current|my\s+current)\s+page\b|\bon\s+here\b|\bhere\s*[.?!]?\s*$/iu.test(text);
+  return /\b(?:this|the\s+current|my\s+current)\s+page\b|\bon\s+here\b/iu.test(text) || /\bhere[.?!]?$/iu.test(text.trimEnd());
 }
 
 type Found<T> = { ok: true; value: T } | { ok: false; message: string };
