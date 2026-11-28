@@ -5,6 +5,7 @@
  */
 import type { Collection, CollectionFieldSchema, CollectionKind, CollectionTaxonomy, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
+import { redirectRecords } from '@shared/redirects';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, feedsByDefault, inSiteFeed, collectionRoutes, hasArchivePages, hasDetailPages, isCollectionId, isSyncedCollection, isTermId } from '@shared/collections';
 import { numberedSlug, slugify, suggestRoute } from '@shared/routes';
@@ -145,7 +146,7 @@ export function freeCollectionId(state: ProjectState, base: string, reserved: Re
  * taken (as a new page's address is).
  */
 export function freeCollectionRoute(state: ProjectState, wanted: string): string {
-  const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+  const kept: unknown[] = redirectRecords(state);
   // Every collection with pages claims its address, and the folders under it, entries or none.
   const prefixes = Object.values(state.collections ?? {}).flatMap((c) => (hasDetailPages(c.settings) && typeof c.settings.route === 'string' ? [c.settings.route] : []));
   const held = [...collectionRoutes(state).map((o) => o.route), ...prefixes];

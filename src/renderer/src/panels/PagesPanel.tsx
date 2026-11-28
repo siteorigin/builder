@@ -5,6 +5,7 @@ import { suggestRoute } from '@shared/routes';
 import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives, hasDetailPages } from '@shared/collections';
 import { defaultArchiveDescription } from '@shared/archives';
 import type { ElementRef, ProjectState } from '@shared/types';
+import { redirectRecords } from '@shared/redirects';
 import { aiActivity, api, applyOps, commitDraft, commitOps, confirmDialog, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
@@ -39,7 +40,7 @@ const FIND_FROM = 8;
  */
 function newPageRoute(st: ProjectState, title: string, parent = '/'): { route: string; base: string; reserved?: string } {
   // Old addresses kept working count as taken: a new page is never given one without asking.
-  const kept: unknown[] = Array.isArray(st.site.redirects) ? st.site.redirects : [];
+  const kept: unknown[] = redirectRecords(st);
   // So do the addresses of collections and their entries, which a page can never take.
   const held = collectionRoutes(st).map((o) => o.route);
   const taken = (r: string) => [...Object.values(st.pages).map((p) => p.route), ...kept.map((x) => (x as { from?: unknown })?.from), ...held].some((u) => typeof u === 'string' && u.toLowerCase() === r.toLowerCase());

@@ -4878,7 +4878,12 @@ export function publishedState(state: ProjectState): ProjectState {
           return [id, { ...c, settings, entries }];
         })
       );
-  return { ...state, site, collections, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
+  // Its redirects are every one the site keeps, worked out already: those an export delivered for a page that left them
+  // among them (see shared/published). Worked out again from the record without the drafts, an address the author sent
+  // to a draft would go back to the page it was exported for.
+  const { published: _published, ...rest } = state;
+  void _published;
+  return { ...rest, site, collections, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
 }
 
 /**

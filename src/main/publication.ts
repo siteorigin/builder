@@ -23,6 +23,7 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import type { ComponentDefinition, NodeTree, ProjectState } from '@shared/types';
 import { holdsSecretValue, isSensitiveName, MIN_SECRET_LENGTH } from '@shared/sources';
+import { keptPublishedAddresses } from '@shared/collections';
 import { getTheme } from '@catalogue/index';
 import { defFile, publishedState, webMcpFormFile } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
@@ -144,7 +145,12 @@ export function publicationState(state: ProjectState): ProjectState {
   // An old address publishedState kept as it was is the very redirect the project has, so its document reads the same.
   const kept = new Map((state.site.redirects ?? []).map((r) => [r.from, r]));
   const same = (a: object, b: object) => JSON.stringify({ ...a, custom: undefined }) === JSON.stringify({ ...b, custom: undefined });
-  const site = live.site.redirects ? { ...live.site, redirects: live.site.redirects.map((r) => (kept.has(r.from) && same(kept.get(r.from)!, r) ? kept.get(r.from)! : r)) } : live.site;
+  // The addresses earlier exports delivered that the site keeps working only by its record (see shared/published) are
+  // the publication's redirects, since it carries no record; which ones the author dropped is the project's.
+  const { droppedAddresses: _dropped, ...shownSite } = live.site;
+  void _dropped;
+  const redirects = [...(live.site.redirects ?? []).map((r) => (kept.has(r.from) && same(kept.get(r.from)!, r) ? kept.get(r.from)! : r)), ...keptPublishedAddresses(live)];
+  const site = redirects.length ? { ...shownSite, redirects } : shownSite;
   const { brief: _brief, sources: _sources, published: _published, ...rest } = live;
   void _brief;
   void _sources;

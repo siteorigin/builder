@@ -48,11 +48,11 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
 import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
-import { wasPublishedFor } from '@shared/published';
+import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
@@ -909,7 +909,20 @@ function redirectIndex(state: ProjectState, route: string): number {
 function routeReserved(state: ProjectState, route: string, forPageId?: string): boolean {
   if (routeTaken(state, route, forPageId) || collectionRouteOwner(state, route)) return true;
   const i = redirectIndex(state, route);
-  return i >= 0 && !(forPageId !== undefined && state.site.redirects![i].pageId === forPageId);
+  const kept = i >= 0 ? state.site.redirects![i] : keptPublishedAt(state, route);
+  return !!kept && !(forPageId !== undefined && kept.pageId === forPageId);
+}
+
+/** The address an export delivered for a page that has left it, kept working at `route` (see shared/published). */
+function keptPublishedAt(state: ProjectState, route: string): SiteRedirect | undefined {
+  const key = route.toLowerCase();
+  return keptPublishedAddresses(state).find((r) => r.from === key);
+}
+
+/** Stop keeping `address` working for the page an export delivered it for, should the page leave it (or have left it). */
+function dropAddress(state: ProjectState, address: string, pageId = publishedPageAt(state, address)) {
+  const dropped = withDroppedAddress(state, address, pageId && Object.hasOwn(state.pages, pageId) ? pageId : undefined);
+  if (dropped) state.site.droppedAddresses = dropped;
 }
 
 /**
@@ -998,7 +1011,7 @@ function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
   if (page) fail(`${from} is the address of the page “${page.title}”. Move the page first, or choose another address.`);
   const owner = collectionRouteOwner(state, from);
   if (owner) fail(`${from} is the address of ${owner.label}. Choose another address.`);
-  if (redirectIndex(state, from) >= 0) fail(`${from} already sends visitors on. Change where it goes instead.`);
+  if (redirectIndex(state, from) >= 0 || keptPublishedAt(state, from)) fail(`${from} already sends visitors on. Change where it goes instead.`);
   const target = redirectTarget(state, op, from);
   state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target } as SiteRedirect];
   refuseRedirectLoop(state, from);
@@ -1017,21 +1030,48 @@ function namedRedirect(state: ProjectState, input: string): number {
   return i;
 }
 
-/** Send an old address somewhere else; it stays the author's own, or recorded by a move, as it was. */
+/**
+ * The address an export delivered for a page that has left it, as the author named it, when the site keeps no
+ * redirect of its own there (see shared/published).
+ */
+function namedKeptAddress(state: ProjectState, input: string): SiteRedirect | undefined {
+  const list: unknown = state.site.redirects;
+  if (Array.isArray(list) && list.some((r) => r?.from === input.trim())) return undefined;
+  const from = typedSitePath(input, 'The old address');
+  return redirectIndex(state, from) < 0 ? keptPublishedAt(state, from) : undefined;
+}
+
+/**
+ * Send an old address somewhere else; it stays the author's own, or recorded by a move, as it was. One an export
+ * delivered for a page that has left it becomes a redirect of the site's own, recorded as a move's are.
+ */
 function redirectUpdate(state: ProjectState, op: Op<'redirect.update'>): OpResult {
-  const i = namedRedirect(state, op.from);
+  const kept = namedKeptAddress(state, op.from);
+  if (kept) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), kept];
+  const i = kept ? state.site.redirects!.length - 1 : namedRedirect(state, op.from);
   const was = state.site.redirects![i];
   const target = redirectTarget(state, op, was.from);
   state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target } as SiteRedirect;
+  // Sent somewhere else, it never goes back to the page an export delivered it for, should this redirect go later.
+  if (target.pageId === undefined || target.pageId !== publishedPageAt(state, was.from)) dropAddress(state, was.from);
   refuseRedirectLoop(state, was.from);
   return { from: was.from, ...target };
 }
 
-/** Stop keeping an old address working. */
+/**
+ * Stop keeping an old address working. One an export delivered for a page stays gone however the page leaves it later
+ * (an undone move, say), until this is undone.
+ */
 function redirectRemove(state: ProjectState, input: string): OpResult {
+  const kept = namedKeptAddress(state, input);
+  if (kept) {
+    dropAddress(state, kept.from, kept.pageId);
+    return { from: kept.from };
+  }
   const i = namedRedirect(state, input);
   const [gone] = state.site.redirects!.splice(i, 1);
   if (!state.site.redirects!.length) delete state.site.redirects;
+  dropAddress(state, gone.from);
   return { from: gone.from };
 }
 
@@ -1436,6 +1476,7 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
     const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id && state.pages[id]?.draft !== true);
     if (!next) fail('Every other page is a draft. Publish one before removing the Home page, or leave a new blank Home page.');
     if (state.pages[next].draft === true) fail(`"${state.pages[next].title}" is a draft and cannot become the Home page. Publish it first, or choose a published page.`);
+    dropAddress(state, state.pages[next].route, next);
     state.pages[next].route = '/';
     state.site.homePageId = next;
   }
@@ -1446,7 +1487,10 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
       if (anchor) link.anchor = anchor;
       else delete link.anchor;
     }
-  // Old addresses kept for the removed page follow its links to the replacement, or go with it.
+  // Old addresses kept for the removed page follow its links to the replacement, or go with it: those exports delivered
+  // for it that it has left too (see shared/published), which name no page once it is gone.
+  const left = keptPublishedAddresses(state).filter((r) => r.pageId === page.id);
+  if (heir && left.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...left];
   if (Array.isArray(state.site.redirects)) {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : heir ? [{ ...r, pageId: heir }] : []));
     if (!state.site.redirects.length) delete state.site.redirects;
@@ -1494,6 +1538,8 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
   // Only an exported address the page was served at when the batch began, as a move keeps (see movePages).
   const keep = keepOldAddress && (!atStart || atStart.has(vacated.toLowerCase())) && !validateRoute(vacated) && wasPublishedFor(state, vacated, pageId);
   if (keep) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
+  // Told not to keep it, it stays gone, however the page leaves Home later.
+  else if (!keepOldAddress) dropAddress(state, vacated, pageId);
   if (old) {
     // Home was published whatever its document said: it stays published at its new address.
     delete old.draft;
