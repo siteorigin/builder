@@ -10,9 +10,6 @@ import { validateState } from '@engine/validate';
 import { pageSections } from '@generator/checks';
 import { ProjectSession } from '../../src/main/project/session';
 import { NEW_HOME, planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
-import { P, prop } from '@catalogue/dsl';
-import { makeInstance } from '@engine/install';
-import { projectDesign } from './fixtures/packs';
 
 const business = () => createStarterState('business', 'Test Studio', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
@@ -28,26 +25,14 @@ function removeHome(s: ProjectState) {
 }
 
 /**
- * The business starter with the header's action jumping to a section of Home, and an old address kept for Home. Only a
- * design built in the editor takes an anchor (Foundation's sections are code), so Home gets a small one of the
- * project's own to link to.
+ * The business starter with the header's action jumping to a section of Home (one of Foundation's, which are code
+ * placing the anchor as their id), and an old address kept for Home.
  */
 function linkedHome() {
   let s = business();
   const home = s.site.homePageId;
-  const band = makeInstance(
-    projectDesign(s, {
-      componentId: 'welcome.band',
-      name: 'Welcome band',
-      properties: { heading: P.str('Heading', 'Welcome') },
-      parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['background'] } },
-      build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h2', prop('heading'))])
-    })
-  );
-  s.pages[home].nodes[band.id] = band;
-  s.pages[home].rootIds.splice(1, 0, band.id);
   const section = pageSections(s, home).find((x) => !x.anchor && !x.nested)!;
-  expect(section.nodeId).toBe(band.id);
+  expect(s.components[(s.pages[home].nodes[section.nodeId] as InstanceNode).definitionId].kind).toBe('code');
   s = applyOperations(s, [
     { type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: section.nodeId, field: 'anchor', value: 'welcome' },
     { type: 'instance.setProp', owner: header, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: home, anchor: 'welcome' } }

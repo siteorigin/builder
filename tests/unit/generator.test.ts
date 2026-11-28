@@ -62,7 +62,7 @@ function placeDesign(s: ProjectState, spec: DesignSpec, opts: { index?: number; 
 
 /**
  * The Contact page made of designs of the project's own, worded as the starter words it: its introduction, contact
- * details and questions. Foundation's sections are code components, which take no anchor (see the Release gap tests).
+ * details and questions. (Foundation's own sections are code components.)
  */
 function managedContact(s: ProjectState) {
   const contact = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === '/contact/')!;
@@ -1151,8 +1151,7 @@ describe('section links', () => {
     expect(missing(s)).toHaveLength(1);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('takes an ID on a section of the release', () => {
+  it('takes an ID on a section of the release', () => {
     const s = fresh();
     const contact = contactOf(s);
     const details = instanceOf(s, 'contact.details', contact.id);
@@ -1446,8 +1445,7 @@ describe('choosing a section to link to', () => {
     expect(pageSections(s, contactOf(s).id).at(-1)).toMatchObject({ nodeId: 'n_h', label: 'Opening hours', nested: false });
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails("lists the release's sections on a page by their visible headings", () => {
+  it("lists the release's sections on a page by their visible headings", () => {
     const s = fresh();
     const contact = contactOf(s);
     (contact.nodes[contact.rootIds[2]] as InstanceNode).props.heading = 'Frequently asked questions';

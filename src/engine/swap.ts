@@ -11,7 +11,7 @@ import { repeatedPartList } from '@shared/item-styles';
 import { newId } from '@shared/ids';
 import { isWebMcpForm, toolOverrides } from '@shared/webmcp';
 import { catalogueComponent, getTheme } from '@catalogue/index';
-import { EngineError, anchorCapable, findParent } from './tree';
+import { EngineError, anchorCapable, entranceCapable, findParent } from './tree';
 import { clone } from './install';
 import { normalizeProp, normalizeScalar } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill, takesComponent } from './slots';
@@ -384,7 +384,8 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
       problems.push(`The “${decl.label}” slot of “${own(state.components, parent.definitionId)?.name ?? 'its component'}” takes ${slotAccepts(decl, state)}, not “${target.name}” (a ${target.category} component).`);
   }
 
-  // In-page links reach the section by its anchor, which only a design built in the editor renders.
+  // In-page links reach the section by its anchor, which a design built in the editor renders on its root and code
+  // renders where it places `id={so_id}`; an entrance lands only on a root built in the editor.
   // A theme design not yet installed brings the theme's designs it places with it when it is.
   const designs = own(state.components, target.id) ? state : { ...state, components: { ...Object.fromEntries(getTheme(state.site.themeId).components.map((c) => [c.id, c])), ...state.components } };
   const anchors = anchorCapable(designs, target);
@@ -396,8 +397,9 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     if (targetAnchor) dropped.push({ label: `Anchor #${anchor}`, reason: `the new design gives the section its own anchor, #${targetAnchor}` });
     else plan.anchor = anchor;
   }
-  plan.keepAppear = anchors;
-  if (node.appear && !anchors) restyled.push('Entrance');
+  const entrance = entranceCapable(designs, target);
+  plan.keepAppear = entrance;
+  if (node.appear && !entrance) restyled.push('Entrance');
   // A form's own tool name and description (WebMCP) go with it unless it becomes another form.
   const tool = toolOverrides(node);
   if ((tool.toolName || tool.toolDescription) && !isWebMcpForm(target)) dropped.push({ label: 'Agent tool name and description', reason: 'only a contact or signup form is a tool for AI agents' });
