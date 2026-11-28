@@ -1,31 +1,17 @@
-import "./NotesPopover.css";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { StickyNote, Trash2, X } from "lucide-react";
-import {
-  NOTE_TEXT_MAX,
-  normalizeNoteText,
-  type LiveNote,
-} from "@shared/live/notes";
-import { getState, setState, useStore } from "../store";
-import { openMenus } from "../components/ui";
-import { shownLive } from "../lib/live-host";
-import { hasRoom } from "../lib/live-session";
-import { isRemoteShell } from "../lib/remote-session";
-import { refLabel } from "../lib/model";
-import { refreshNotes } from "../lib/notes-feed";
-import { registerUnsent } from "../lib/pending";
-import {
-  addNote,
-  deleteNote,
-  jumpToNote,
-  noteAge,
-  notePlaceLabel,
-  notePlaceNow,
-  noteRights,
-  openNotes,
-  resolveNote,
-} from "../lib/notes";
+import './NotesPopover.css';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { StickyNote, Trash2, X } from 'lucide-react';
+import { NOTE_TEXT_MAX, normalizeNoteText, type LiveNote } from '@shared/live/notes';
+import { getState, setState, useStore } from '../store';
+import { openMenus } from '../components/ui';
+import { shownLive } from '../lib/live-host';
+import { hasRoom } from '../lib/live-session';
+import { isRemoteShell } from '../lib/remote-session';
+import { refLabel } from '../lib/model';
+import { refreshNotes } from '../lib/notes-feed';
+import { registerUnsent } from '../lib/pending';
+import { addNote, deleteNote, jumpToNote, noteAge, notePlaceLabel, notePlaceNow, noteRights, openNotes, resolveNote } from '../lib/notes';
 
 /**
  * Notes in the toolbar (#770): the shown project's pinned notes as a compact checklist, with how many are open. Each
@@ -41,9 +27,8 @@ export function NotesControl({ compact }: { compact?: boolean }) {
   const id = useId();
   const count = notes ? openNotes(notes.notes).length : 0;
   // In the remote shell it is always there, read or not yet: opening it asks for the host's notes again.
-  if (!remote && (!notes || (!hosting && notes.notes.length === 0)))
-    return null;
-  const label = count === 0 ? "Notes: none open" : `Notes: ${count} open`;
+  if (!remote && (!notes || (!hosting && notes.notes.length === 0))) return null;
+  const label = count === 0 ? 'Notes: none open' : `Notes: ${count} open`;
   return (
     <>
       <button
@@ -54,7 +39,7 @@ export function NotesControl({ compact }: { compact?: boolean }) {
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         aria-label={label}
-        title={label.replace(/^Notes: /, "Notes, ")}
+        title={label.replace(/^Notes: /, 'Notes, ')}
         onClick={() => {
           if (!open) refreshNotes();
           setState({ notesOpen: !open });
@@ -73,13 +58,7 @@ export function NotesControl({ compact }: { compact?: boolean }) {
   );
 }
 
-function NotesPopover({
-  id,
-  trigger,
-}: {
-  id: string;
-  trigger: React.RefObject<HTMLButtonElement | null>;
-}) {
+function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HTMLButtonElement | null> }) {
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const notes = useStore((s) => s.notes);
@@ -96,14 +75,7 @@ function NotesPopover({
     openMenus.count++;
     const el = box.current;
     // A note's button in the open list only: one folded away under Resolved cannot take focus.
-    const first =
-      [
-        "textarea:not(:disabled)",
-        ".notes-scroll > .notes-list .notes-jump",
-        "button:not(:disabled)",
-      ]
-        .map((q) => el?.querySelector<HTMLElement>(q))
-        .find(Boolean) ?? el;
+    const first = ['textarea:not(:disabled)', '.notes-scroll > .notes-list .notes-jump', 'button:not(:disabled)'].map((q) => el?.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
     first?.focus({ preventScroll: true });
     return () => {
       openMenus.count--;
@@ -113,22 +85,16 @@ function NotesPopover({
   useEffect(() => {
     const away = (e: PointerEvent) => {
       const t = e.target instanceof Node ? e.target : null;
-      if (!t || box.current?.contains(t) || trigger.current?.contains(t))
-        return;
-      if (t instanceof Element && t.closest(".overlay-backdrop")) return;
+      if (!t || box.current?.contains(t) || trigger.current?.contains(t)) return;
+      if (t instanceof Element && t.closest('.overlay-backdrop')) return;
       setState({ notesOpen: false });
     };
-    const intoFrame = () =>
-      setTimeout(
-        () =>
-          document.activeElement instanceof HTMLIFrameElement &&
-          setState({ notesOpen: false }),
-      );
-    document.addEventListener("pointerdown", away, true);
-    window.addEventListener("blur", intoFrame);
+    const intoFrame = () => setTimeout(() => document.activeElement instanceof HTMLIFrameElement && setState({ notesOpen: false }));
+    document.addEventListener('pointerdown', away, true);
+    window.addEventListener('blur', intoFrame);
     return () => {
-      document.removeEventListener("pointerdown", away, true);
-      window.removeEventListener("blur", intoFrame);
+      document.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('blur', intoFrame);
     };
   }, [trigger]);
   // Below the Notes button, its right edge with the button's, kept 8px inside the window.
@@ -138,18 +104,13 @@ function NotesPopover({
       const a = trigger.current?.getBoundingClientRect();
       if (!el || !a) return;
       const w = el.offsetWidth;
-      const left = Math.max(
-        8,
-        Math.min(a.right - w, window.innerWidth - w - 8),
-      );
+      const left = Math.max(8, Math.min(a.right - w, window.innerWidth - w - 8));
       const top = a.bottom + 6;
-      setPos((p) =>
-        p && p.left === left && p.top === top ? p : { left, top },
-      );
+      setPos((p) => (p && p.left === left && p.top === top ? p : { left, top }));
     };
     place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
   });
   const list = notes?.notes ?? [];
   const open = list.filter((n) => !n.resolved);
@@ -166,24 +127,12 @@ function NotesPopover({
       onBlur={(e) => {
         const to = e.relatedTarget as Node | null;
         // Focus that went nowhere (a row resolved or deleted under it) is put back on the popover itself.
-        if (!to)
-          return void requestAnimationFrame(
-            () =>
-              box.current &&
-              !box.current.contains(document.activeElement) &&
-              document.activeElement === document.body &&
-              box.current.focus({ preventScroll: true }),
-          );
+        if (!to) return void requestAnimationFrame(() => box.current && !box.current.contains(document.activeElement) && document.activeElement === document.body && box.current.focus({ preventScroll: true }));
         // Tabbing or clicking away into the editor puts it away, so the editor's shortcuts work again.
-        if (
-          !e.currentTarget.contains(to) &&
-          !trigger.current?.contains(to) &&
-          !(to instanceof Element && to.closest(".overlay-backdrop"))
-        )
-          setState({ notesOpen: false });
+        if (!e.currentTarget.contains(to) && !trigger.current?.contains(to) && !(to instanceof Element && to.closest('.overlay-backdrop'))) setState({ notesOpen: false });
       }}
       onKeyDown={(e) => {
-        if (e.key !== "Escape" || e.defaultPrevented) return;
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
         e.preventDefault();
         e.stopPropagation();
         close(true);
@@ -191,63 +140,30 @@ function NotesPopover({
     >
       <div className="share-head">
         <h2 id={`${id}-title`}>Notes</h2>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="Close"
-          title="Close"
-          onClick={() => close(true)}
-        >
+        <button type="button" className="icon-btn" aria-label="Close" title="Close" onClick={() => close(true)}>
           <X />
         </button>
       </div>
       <div className="share-body">
-        {!canAdd && (
-          <p className="share-quiet">
-            {notes?.guestNotes === false
-              ? "The host has turned off notes from guests."
-              : "You can read the notes, but not leave one."}
-          </p>
-        )}
+        {!canAdd && <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
         {/* Stays mounted while notes are off, so a draft is kept (and still offered back when the session ends). */}
         <NoteForm locked={!canAdd} />
         <div className="share-scroll notes-scroll">
           {!notes ? (
             <p className="share-quiet notes-empty">Reading the notes…</p>
           ) : open.length === 0 && done.length === 0 ? (
-            <p className="share-quiet notes-empty">
-              No notes yet. Pin one to what is selected, or to the page, for
-              whoever works on it next.
-            </p>
+            <p className="share-quiet notes-empty">No notes yet. Pin one to what is selected, or to the page, for whoever works on it next.</p>
           ) : (
             <>
               <ul className="notes-list" aria-label="Open notes">
-                {open.length === 0 ? (
-                  <li className="share-quiet notes-empty">
-                    Every note is resolved.
-                  </li>
-                ) : (
-                  open.map((n) => (
-                    <NoteRow
-                      key={n.id}
-                      note={n}
-                      manage={canManage}
-                      onJump={() => close(false)}
-                    />
-                  ))
-                )}
+                {open.length === 0 ? <li className="share-quiet notes-empty">Every note is resolved.</li> : open.map((n) => <NoteRow key={n.id} note={n} manage={canManage} onJump={() => close(false)} />)}
               </ul>
               {done.length > 0 && (
                 <details className="notes-done">
                   <summary>Resolved ({done.length})</summary>
                   <ul className="notes-list" aria-label="Resolved notes">
                     {done.map((n) => (
-                      <NoteRow
-                        key={n.id}
-                        note={n}
-                        manage={canManage}
-                        onJump={() => close(false)}
-                      />
+                      <NoteRow key={n.id} note={n} manage={canManage} onJump={() => close(false)} />
                     ))}
                   </ul>
                 </details>
@@ -257,49 +173,35 @@ function NotesPopover({
         </div>
       </div>
     </div>,
-    document.body,
+    document.body
   );
 }
 
 /** A note to pin to what is selected now, or to the page shown. */
 function NoteForm({ locked }: { locked: boolean }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const counterId = useId();
   const where = useStore((s) => {
     const place = notePlaceNow(s);
     const st = s.snapshot?.state;
     if (!place || !st) return null;
-    const page = st.pages[place.pageId]?.title || "Untitled page";
+    const page = st.pages[place.pageId]?.title || 'Untitled page';
     return place.target ? `${refLabel(st, place.target)} on ${page}` : page;
   });
   // A note being written when the live session ends is offered back to copy (see registerUnsent).
   const unsent = useRef({ text, where, sending });
   unsent.current = { text, where, sending };
   // One being pinned may have reached the host.
-  useEffect(
-    () =>
-      registerUnsent(() =>
-        unsent.current.text.trim()
-          ? {
-              label: unsent.current.where
-                ? `Note on ${unsent.current.where}`
-                : "Note",
-              text: unsent.current.text,
-              ...(unsent.current.sending ? { uncertain: true } : {}),
-            }
-          : null,
-      ),
-    [],
-  );
-  const length = [...text.normalize("NFC").replace(/\s+/gu, " ").trim()].length;
+  useEffect(() => registerUnsent(() => (unsent.current.text.trim() ? { label: unsent.current.where ? `Note on ${unsent.current.where}` : 'Note', text: unsent.current.text, ...(unsent.current.sending ? { uncertain: true } : {}) } : null)), []);
+  const length = [...text.normalize('NFC').replace(/\s+/gu, ' ').trim()].length;
   const usable = normalizeNoteText(text) !== null;
   const send = async () => {
     if (locked || !usable || sending) return;
     setSending(true);
     const kept = await addNote(text);
     setSending(false);
-    if (kept) setText("");
+    if (kept) setText('');
   };
   // Nothing to show while notes are off and nothing was written; a draft stays visible, read-only.
   if (locked && !text) return null;
@@ -318,37 +220,23 @@ function NoteForm({ locked }: { locked: boolean }) {
         value={text}
         // What is typed while a note is being sent would be lost when the field empties for it.
         readOnly={sending || locked}
-        placeholder={
-          where
-            ? "Swap this photo, check this price…"
-            : "Open a page to leave a note on it."
-        }
+        placeholder={where ? 'Swap this photo, check this price…' : 'Open a page to leave a note on it.'}
         disabled={!where}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           // Enter pins the note; Shift+Enter is the only line break a note keeps (as a space).
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             void send();
           }
         }}
       />
       <div className="notes-form-foot">
-        <span className="share-quiet notes-where">
-          {where ? `On ${where}` : "No page shown"}
-        </span>
-        <span
-          id={counterId}
-          className={`share-quiet notes-count${length > NOTE_TEXT_MAX ? " over" : ""}`}
-          aria-live="polite"
-        >
+        <span className="share-quiet notes-where">{where ? `On ${where}` : 'No page shown'}</span>
+        <span id={counterId} className={`share-quiet notes-count${length > NOTE_TEXT_MAX ? ' over' : ''}`} aria-live="polite">
           {length}/{NOTE_TEXT_MAX}
         </span>
-        <button
-          type="submit"
-          className="btn btn-sm btn-primary"
-          disabled={locked || !where || !usable || sending}
-        >
+        <button type="submit" className="btn btn-sm btn-primary" disabled={locked || !where || !usable || sending}>
           Pin note
         </button>
       </div>
@@ -356,18 +244,8 @@ function NoteForm({ locked }: { locked: boolean }) {
   );
 }
 
-function NoteRow({
-  note,
-  manage,
-  onJump,
-}: {
-  note: LiveNote;
-  manage: boolean;
-  onJump: () => void;
-}) {
-  const place = useStore((s) =>
-    s.snapshot ? notePlaceLabel(s.snapshot.state, note) : "",
-  );
+function NoteRow({ note, manage, onJump }: { note: LiveNote; manage: boolean; onJump: () => void }) {
+  const place = useStore((s) => (s.snapshot ? notePlaceLabel(s.snapshot.state, note) : ''));
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<boolean>) => {
     setBusy(true);
@@ -375,28 +253,15 @@ function NoteRow({
     setBusy(false);
   };
   return (
-    <li className={`notes-row${note.resolved ? " resolved" : ""}`}>
-      {manage && (
-        <input
-          type="checkbox"
-          aria-label={note.resolved ? "Resolved: open it again" : "Resolve"}
-          title={note.resolved ? "Open again" : "Resolve"}
-          checked={note.resolved}
-          disabled={busy}
-          onChange={(e) =>
-            void run(() => resolveNote(note.id, e.target.checked))
-          }
-        />
-      )}
+    <li className={`notes-row${note.resolved ? ' resolved' : ''}`}>
+      {manage && <input type="checkbox" aria-label={note.resolved ? 'Resolved: open it again' : 'Resolve'} title={note.resolved ? 'Open again' : 'Resolve'} checked={note.resolved} disabled={busy} onChange={(e) => void run(() => resolveNote(note.id, e.target.checked))} />}
       <button
         type="button"
         className="notes-jump"
         title={`Go to ${place}`}
         onClick={() => {
           onJump();
-          jumpToNote(
-            getState().notes?.notes.find((n) => n.id === note.id) ?? note,
-          );
+          jumpToNote(getState().notes?.notes.find((n) => n.id === note.id) ?? note);
         }}
       >
         <span className="notes-body">{note.text}</span>
@@ -405,14 +270,7 @@ function NoteRow({
         </span>
       </button>
       {manage && (
-        <button
-          type="button"
-          className="icon-btn notes-delete"
-          aria-label="Delete note"
-          title="Delete note"
-          disabled={busy}
-          onClick={() => void run(() => deleteNote(note.id))}
-        >
+        <button type="button" className="icon-btn notes-delete" aria-label="Delete note" title="Delete note" disabled={busy} onClick={() => void run(() => deleteNote(note.id))}>
           <Trash2 />
         </button>
       )}
