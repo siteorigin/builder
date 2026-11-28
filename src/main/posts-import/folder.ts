@@ -36,25 +36,30 @@ interface Found {
  * `about.md`) are not taken for posts and a picture addressed from the site's root (`/assets/cover.jpg`) is found there.
  */
 const POST_FOLDERS = [['_posts'], ['content', 'posts'], ['content', 'post'], ['content', 'blog'], ['src', 'content', 'blog'], ['src', 'content', 'posts']];
-/** The settings file a generator keeps at a site's root: Jekyll, Hugo, Astro, Eleventy. */
-const SITE_CONFIG = /^(_config\.(ya?ml|toml)|hugo\.(toml|ya?ml|json)|config\.(toml|ya?ml|json)|astro\.config\.[cm]?[jt]s|\.eleventy\.[cm]?js|eleventy\.config\.[cm]?[jt]s)$/i;
+/** The settings file a generator keeps at a site's root: Jekyll (and its Gemfile), Hugo, Astro, Eleventy. */
+const SITE_CONFIG = /^(_config\.(ya?ml|toml)|gemfile|hugo\.(toml|ya?ml|json)|config\.(toml|ya?ml|json)|astro\.config\.[cm]?[jt]s|\.eleventy\.[cm]?js|eleventy\.config\.[cm]?[jt]s)$/i;
 
 /**
- * The posts of the chosen folder. A site's folder (one with a generator's settings file, or with no posts of its own)
- * is read from its posts folder; any other folder is read as the posts themselves, even one that also holds a
- * `_posts` folder (an archive with an old site inside it).
+ * The posts of the chosen folder. A site's folder (one with a generator's settings file, or with no posts of its own
+ * beside its home page `index.md`) is read from its posts folder; any other folder is read as the posts themselves,
+ * even one that also holds a `_posts` folder (an archive with an old site inside it). A posts folder that cannot be
+ * listed is said in `skipped`.
  */
-async function findPosts(root: string, realRoot: string): Promise<{ found: Found[]; over: number }> {
+async function findPosts(root: string, realRoot: string, skipped: string[]): Promise<{ found: Found[]; over: number }> {
   const own = await findPostsIn(root, []);
-  const site = (await fs.readdir(root).catch(() => [] as string[])).some((n) => SITE_CONFIG.test(n));
-  if (own.found.length && !site) return own;
+  const site = (await fs.readdir(root, { withFileTypes: true }).catch(() => [])).some((e) => e.isFile() && SITE_CONFIG.test(e.name));
+  if (!site && own.found.some((f) => !/^index\.(md|markdown)$/i.test(f.rel))) return own;
   for (const at of POST_FOLDERS) {
     // Never through a link that leads outside the chosen folder (`content` linked to another folder), and listed by
     // the real path checked, so a link swapped in for a folder on the way is not followed.
     const real = await fs.realpath(join(root, ...at)).catch(() => null);
     if (!real || !isInsideRoot(realRoot, real)) continue;
-    const posts = await findPostsIn(root, at, real).catch(() => null);
-    if (posts?.found.length) return posts;
+    try {
+      const posts = await findPostsIn(root, at, real);
+      if (posts.found.length) return posts;
+    } catch (e) {
+      skipped.push(`${at.join('/')}: it could not be read (${(e as Error).message}).`);
+    }
   }
   return own;
 }
@@ -148,10 +153,10 @@ function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
 export async function readMarkdownFolder(root: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
   const realRoot = await fs.realpath(root);
   const label = basename(root);
-  const { found, over } = await findPosts(root, realRoot);
+  const skipped: string[] = [];
+  const { found, over } = await findPosts(root, realRoot, skipped);
   if (!found.length) throw new Error(`${label} has no Markdown posts (.md files) in it. Choose the site’s folder, or the folder that holds its posts.`);
   const media = new MediaTable(root, realRoot);
-  const skipped: string[] = [];
   let total = 0;
   const read: Array<{ f: Found; key: string; text: string; notUtf8: boolean }> = [];
   for (const [n, f] of found.entries()) {
