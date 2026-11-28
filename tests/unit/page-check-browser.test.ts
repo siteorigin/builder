@@ -1,0 +1,264 @@
+/**
+ * The website export's check of each built page in a real headless Chromium (#1534): the steps the app's hidden window
+ * runs (src/main/page-check.ts), driven through a DevTools session on pages of a website folder served as the export
+ * serves it, under a base path. Each page starts as SvelteKit's do: its script loads another, then either says it has
+ * started (the announcer SvelteKit adds) or, as when a code component's `$effect` writes the state it reads, logs the
+ * error and puts the site's error page in place of the page's content.
+ */
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { chromium, type Browser, type CDPSession } from 'playwright';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ERROR_PAGE_SVELTE, ERROR_SECTION_CLASS, generateLayout } from '@generator/index';
+import { createStarterState } from '@catalogue/starters';
+import { StaticPreviews } from '../../src/main/static-preview';
+import { checkBuiltPage, type PageCheck } from '../../src/main/page-check';
+import type { CdpPage } from '../../src/main/review-shot';
+
+const browserInstalled = existsSync(chromium.executablePath());
+const LOOP = 'https://svelte.dev/e/effect_update_depth_exceeded';
+
+let root = '';
+let server = '';
+let browser: Browser;
+/** A host that never answers: an image from it keeps the page from ever finishing loading. */
+let hold: Server;
+const previews = new StaticPreviews();
+
+/**
+ * A built page: its sections in the layout's main element, and SvelteKit's start script, which names its global and
+ * starts the page from /client/<name>.js; or, built without it, no script at all.
+ */
+const page = (name: string, sections = '<section class="hero"><h1>Welcome</h1></section><section class="loop"><p>Loop count 0</p></section>', start = true) =>
+  `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title></head><body><div style="display: contents"><a href="#main">Skip</a><header>Site</header><main id="main">${sections}</main><footer>Footer</footer></div>${start ? `<script>{ __sveltekit_1x2y3z = { base: '/client' }; import('/client/${name}.js'); }</script>` : ''}</body></html>`;
+
+/** What SvelteKit adds once it has hydrated the page and run its first navigation callbacks. */
+const STARTED = `const a = document.createElement('div'); a.id = 'svelte-announcer'; a.setAttribute('aria-live', 'assertive'); document.body.append(a);`;
+/** The site's error page in place of the page's content, as the generated +error.svelte renders it. */
+const ERROR_PAGE = `document.title = 'Error 500'; document.querySelector('main#main').innerHTML = '<section class="${ERROR_SECTION_CLASS}"><div class="so-container"><h1>Error 500</h1><p>Internal Error</p></div></section>';`;
+/** The page's own script: it loads its app first, as SvelteKit's does, then runs `then`. */
+const script = (then: string) => `await import('/client/app.js');\n${then}\n`;
+
+beforeAll(async () => {
+  // It answers for SvelteKit's app files only, a moment late, as a slow CDN serving them would.
+  hold = createServer((req, res) => {
+    const late = (ms: number, cause: string) => setTimeout(() => res.writeHead(200, { 'content-type': 'text/javascript' }).end(`console.error(new Error('${cause}')); ${ERROR_PAGE}`), ms);
+    if (req.url === '/_app/late.js') late(300, 'Failed in a late chunk');
+    // Past the time a page that keeps asking for scripts is given to start.
+    else if (req.url === '/_app/slow.js') late(2500, 'Failed in a slow chunk');
+  });
+  await new Promise<void>((r) => hold.listen(0, '127.0.0.1', r));
+  const held = `http://127.0.0.1:${(hold.address() as AddressInfo).port}/hero.png`;
+  root = mkdtempSync(join(tmpdir(), 'so-page-check-'));
+  const put = (rel: string, body: string) => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+  put('app.js', 'export const app = true;\n');
+  const route = (name: string, then: string, sections?: string) => {
+    put(`${name}/index.html`, page(name, sections));
+    put(`${name}.js`, script(then));
+  };
+  route('working', STARTED);
+  // Hydration fails: SvelteKit's error hook logs the error, then the error page takes the page's place.
+  route('loop', `console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
+  // SvelteKit has said it started, and its scripts are quiet, before an awaited error hook answers and the error page is shown.
+  route('late', `${STARTED} setTimeout(() => { console.error(new Error('A late failure')); ${ERROR_PAGE} }, 100);`);
+  // SvelteKit takes the failed content away, then waits on the project's own error hook before showing the error page.
+  route('emptied', `console.error(new Error('Failed while starting')); document.querySelector('main#main').innerHTML = ''; ${STARTED} setTimeout(() => { ${ERROR_PAGE} }, 400);`);
+  // A header image from a host that never answers: the page never finishes loading, and fails all the same.
+  route('slow-image', `console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`, `<img src="${held}" alt=""><section class="hero"><h1>Welcome</h1></section>`);
+  // A component that gives the page's only section the error page's class, as a page of its own may: it works.
+  route('own-only', `document.querySelector('main#main > section').classList.add('${ERROR_SECTION_CLASS}'); ${STARTED}`, '<section class="hours"><h1>Opening hours</h1></section>');
+  // A page that asks to be printed as it starts: the hidden window opens no print dialog (the page fails when it would).
+  route('prints', `if (String(window.print).includes('[native code]')) { ${ERROR_PAGE} } else window.print(); ${STARTED}`);
+  // A component that puts plain text in place of the page's only section, as it may once it has started: it works.
+  route('text-only', `document.querySelector('main#main').textContent = 'Open every day'; ${STARTED}`, '<section class="hours"><p>Loading…</p></section>');
+  // A healthy page that asks another host for a script that never arrives, once it has started: it works.
+  route('slow-remote', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', 'widget.js')}'; document.head.append(s);`);
+  // A page whose app files come from another host (SvelteKit's paths.assets), one of which arrives late and fails.
+  route('cdn-chunk', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', '_app/late.js')}'; document.head.append(s);`);
+  // A healthy page that keeps asking for a script of its own: it is taken as working once it has had time to start.
+  route('polling', `${STARTED} setInterval(() => { const s = document.createElement('script'); s.src = '/client/app.js?' + Math.random(); document.head.append(s); }, 40);`);
+  // A page whose app file arrives only after the time a polling page is given, and fails.
+  route('slow-chunk', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', '_app/slow.js')}'; document.head.append(s);`);
+  // A healthy page with a frame of the site's own whose script never arrives.
+  put('frame/index.html', `<!doctype html><html><body><script src="${held.replace('hero.png', '_app/never.js')}"></script></body></html>`);
+  route('framed', STARTED, '<section class="hero"><h1>Welcome</h1><iframe src="/client/frame/"></iframe></section>');
+  // A page that logs more errors than a check keeps before the one that broke it.
+  route('chatty', `for (let i = 0; i < 30; i++) console.error('Could not load widget ' + i); console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
+  // A page that logs an error of its own (a fetch it could not make) and goes on showing its content.
+  route('noisy', `console.error('Could not load the opening hours'); ${STARTED}`);
+  // An earlier error of the page's own is not what broke it: the one logged last before the error page is.
+  route('earlier', `console.error('Could not load the opening hours'); await new Promise((r) => setTimeout(r, 30)); console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
+  // An error the browser is never told of (the project's own error hook keeps it to itself).
+  route('silent', `${ERROR_PAGE} ${STARTED}`);
+  // A page whose own content is a section of that class, among others, still fails when the error page takes its place.
+  route('own-class', `console.error(new Error('Broken')); ${ERROR_PAGE} ${STARTED}`, `<section class="${ERROR_SECTION_CLASS}"><p>Our own</p></section><section class="hero"><h1>Welcome</h1></section>`);
+  // A page built showing nothing but a section of that class cannot be told from one that failed: it is not failed.
+  route('built-so', STARTED, `<section class="${ERROR_SECTION_CLASS}"><div><h1>Error 500</h1></div></section>`);
+  // A page whose script never says it has started.
+  route('stuck', 'void 0;');
+  // A page built without SvelteKit's script (csr off): it never says it has started, and nothing of it runs.
+  put('static/index.html', page('static', undefined, false));
+  server = await previews.serve(root, '/client');
+  if (browserInstalled) browser = await chromium.launch();
+});
+
+afterAll(async () => {
+  await browser?.close();
+  previews.stopAll();
+  hold.closeAllConnections();
+  hold.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+/** A fresh page and a DevTools session on it, as the app opens a fresh hidden window for each check. */
+async function session(): Promise<{ cdp: CdpPage; close: () => Promise<void> }> {
+  const context = await browser.newContext({ viewport: null });
+  const p = await context.newPage();
+  const s: CDPSession = await context.newCDPSession(p);
+  const listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
+  const events = ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed', 'Page.loadEventFired', 'Runtime.consoleAPICalled', 'Runtime.exceptionThrown'] as const;
+  for (const name of events) s.on(name, (params: unknown) => listeners.forEach((l) => l(name, params as Record<string, unknown>)));
+  return {
+    cdp: {
+      send: (method, params) => s.send(method as never, params as never) as Promise<unknown>,
+      listen: (l) => (listeners.add(l), () => void listeners.delete(l))
+    },
+    close: () => context.close()
+  };
+}
+
+async function check(route: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<PageCheck> {
+  const { cdp, close } = await session();
+  try {
+    return await checkBuiltPage(cdp, new URL(`${route}/`, server).href, opts);
+  } finally {
+    await close();
+  }
+}
+
+describe.skipIf(!browserInstalled)('opening a built page in a browser', () => {
+  it('finds a page whose content the site’s error page took the place of once it started, with the error the browser was told of', async () => {
+    const r = await check('loop');
+    expect(r).toMatchObject({ status: 'error-page', heading: 'Error 500' });
+    if (r.status !== 'error-page') return;
+    expect(r.cause?.split('\n')[0]).toBe(`Error: ${LOOP}`);
+    expect(r.logged).toHaveLength(1);
+  });
+
+  it('takes a page that still shows what was built once it started as working', async () => {
+    expect(await check('working')).toEqual({ status: 'working' });
+  });
+
+  it('watches a page a moment after it says it started, for an error page an awaited error hook brings', async () => {
+    expect(await check('late')).toMatchObject({ status: 'error-page', heading: 'Error 500', cause: expect.stringContaining('A late failure') });
+  });
+
+  it('watches a page its content was taken from until the error page comes', async () => {
+    expect(await check('emptied')).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Failed while starting') });
+  });
+
+  it('finds the error page on a page still loading an image a host never sends', async () => {
+    expect(await check('slow-image', { timeoutMs: 3000 })).toMatchObject({ status: 'error-page', cause: expect.stringContaining(LOOP) });
+  });
+
+  it('takes a page whose own only section is given the error page’s class as working', async () => {
+    expect(await check('own-only')).toEqual({ status: 'working' });
+  });
+
+  it('takes a page whose main element holds only text once started as working, without waiting it out', async () => {
+    expect(await check('text-only', { timeoutMs: 2000 })).toEqual({ status: 'working' });
+  });
+
+  it('is not held up by another host’s script that never arrives', async () => {
+    expect(await check('slow-remote', { timeoutMs: 2000 })).toEqual({ status: 'working' });
+  });
+
+  it('waits for SvelteKit’s app files from another host, and finds the error page one of them brings', async () => {
+    expect(await check('cdn-chunk', { timeoutMs: 3000 })).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Failed in a late chunk') });
+  });
+
+  it('takes a page that keeps asking for scripts of its own as working once it has had time to start', async () => {
+    expect(await check('polling', { timeoutMs: 4000 })).toEqual({ status: 'working' });
+  });
+
+  it('waits for an app file still on its way, past the time a page that keeps asking for scripts is given', async () => {
+    expect(await check('slow-chunk', { timeoutMs: 5000 })).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Failed in a slow chunk') });
+  });
+
+  it('is not held up by a script one of the page’s frames is waiting for', async () => {
+    expect(await check('framed', { timeoutMs: 3000 })).toEqual({ status: 'working' });
+  });
+
+  it('opens no print dialog for a page that asks to be printed', async () => {
+    expect(await check('prints')).toEqual({ status: 'working' });
+  });
+
+  it('keeps the latest errors, so the one that broke the page is the cause however many came before', async () => {
+    const r = await check('chatty');
+    expect(r).toMatchObject({ status: 'error-page', cause: expect.stringContaining(LOOP) });
+    if (r.status === 'error-page') expect(r.logged).toHaveLength(20);
+  });
+
+  it('takes a page that logs an error of its own and goes on showing its content as working', async () => {
+    expect(await check('noisy')).toEqual({ status: 'working' });
+  });
+
+  it('gives the error logged last before the error page appeared as the cause, and keeps every one', async () => {
+    const r = await check('earlier');
+    expect(r).toMatchObject({ status: 'error-page' });
+    if (r.status !== 'error-page') return;
+    expect(r.cause).toContain(LOOP);
+    expect(r.logged.map((l) => l.split('\n')[0])).toEqual(['Could not load the opening hours', `Error: ${LOOP}`]);
+  });
+
+  it('finds the error page when the browser was told of no error', async () => {
+    expect(await check('silent')).toEqual({ status: 'error-page', heading: 'Error 500', cause: null, logged: [] });
+  });
+
+  it('finds the error page on a page whose own content has a section of its class among others', async () => {
+    expect(await check('own-class')).toMatchObject({ status: 'error-page', cause: expect.stringContaining('Broken') });
+  });
+
+  it('takes a page built showing only a section of the error page’s class as working', async () => {
+    expect(await check('built-so')).toEqual({ status: 'working' });
+  });
+
+  it('says a page that never starts could not be checked, rather than working or failed', async () => {
+    expect(await check('stuck', { timeoutMs: 1500 })).toEqual({ status: 'unchecked', detail: 'The page did not finish starting in time.' });
+  });
+
+  it('takes a page built without SvelteKit’s script as working at once: nothing of it runs to fail', async () => {
+    const started = Date.now();
+    expect(await check('static', { timeoutMs: 1500 })).toEqual({ status: 'working' });
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it('says a page the server does not have could not be checked', async () => {
+    expect(await check('missing')).toMatchObject({ status: 'unchecked', detail: expect.stringContaining('404') });
+  });
+
+  it('stops when called off, before or while it waits for the page to start', async () => {
+    const stop = new AbortController();
+    stop.abort();
+    expect(await check('working', { signal: stop.signal })).toEqual({ status: 'unchecked', detail: 'The check was stopped.' });
+    const later = new AbortController();
+    setTimeout(() => later.abort(), 300);
+    const started = Date.now();
+    expect(await check('stuck', { signal: later.signal })).toEqual({ status: 'unchecked', detail: 'The check was stopped.' });
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+});
+
+describe('the site’s error page, as the check knows it', () => {
+  it('is the generated error page’s section, with its "Error" heading, in the layout’s main element', () => {
+    expect(ERROR_PAGE_SVELTE).toContain(`<section class="${ERROR_SECTION_CLASS}">`);
+    expect(ERROR_PAGE_SVELTE).toContain('<h1>Error {page.status}</h1>');
+    expect(generateLayout(createStarterState('business', 'Harbour Lane', false), {})).toMatch(/<main id="main">\s*\{@render children\(\)\}\s*<\/main>/);
+  });
+});

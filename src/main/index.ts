@@ -45,6 +45,7 @@ import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navig
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
+import { createPageChecker } from './page-check-window';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installSourceTestHosts } from './sources/test-hosts';
 import { sweepSpools } from './sources/spool';
@@ -115,10 +116,14 @@ controller.thumbCapture = (server, path) =>
 const reviewShooter = createReviewShooter();
 controller.reviewShoot = (url, width, signal) =>
   win && !win.isDestroyed() ? reviewShooter.shoot(url, width, signal) : Promise.resolve({ ok: false as const, reason: 'failed' as const, detail: 'The editor is closed.' });
+/** Opens each page of a website export as a visitor's browser does (#1534), each in a hidden window of its own, while the editor is open. */
+const pageChecker = createPageChecker();
+controller.pageCheck = (url, signal) => (win && !win.isDestroyed() ? pageChecker.check(url, signal) : Promise.resolve({ status: 'unchecked' as const, detail: 'The editor is closed.' }));
 // The hidden windows belong to the project's previews: they close with the project, not only with the editor.
 controller.onSessionClosed = () => {
   thumbCapturer.dispose();
   reviewShooter.dispose();
+  pageChecker.dispose();
   toolsChecker.release();
 };
 
@@ -1248,6 +1253,7 @@ async function createWindow() {
     // A review edition being captured is called off first: pictures the closed editor could not take are not kept.
     controller.cancelReviewCapture();
     reviewShooter.dispose();
+    pageChecker.dispose();
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();

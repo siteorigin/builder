@@ -12,12 +12,12 @@ import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameL
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
-import { formNameClashMessage, pixelLimitMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { definitionsRenderedBy, formNameClashMessage, runtimeFontDiagnostics, validateState, pixelLimitMessage } from '@engine/validate';
 import { overPixelLimit } from '@shared/picture-formats';
 import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
-import { displayName } from '@engine/tree';
-import { blankPages, describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { displayName, templateTrees } from '@engine/tree';
+import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, shownArchiveLayouts, unlinkedButtons, unlinkedMenuLinks, blankPages } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
@@ -95,6 +95,8 @@ import { ownServerHook } from './project/server-hook';
 import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
+import type { ReviewPage } from '@shared/review-edition';
+import type { PageCheck } from './page-check';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
@@ -1830,6 +1832,83 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
   return { message, warnings: warnings.slice(0, 8), details: read.report(message) };
 }
 
+
+/**
+ * The trees the website shows at `route`, of a published state (publishedState): a page and the shared header and
+ * footer it shows, or an entry or archive page with its collection's layout, when it has one, and both of them.
+ */
+export function routeTrees(live: ProjectState, route: string): NodeTree[] {
+  const page = live.site.pageOrder.map((id) => (Object.hasOwn(live.pages, id) ? live.pages[id] : undefined)).find((p) => p?.route === route);
+  if (page) return [page, ...SHELL_PARTS.filter((part) => showsPart(page, part)).map((part) => live.site.shell[part])];
+  const shell = SHELL_PARTS.map((part) => live.site.shell[part]);
+  const entry = siteEntries(live).find((e) => e.route === route);
+  if (entry) return [...templateTrees(live).filter((t) => t.owner.kind === 'template' && t.owner.id === entry.collection.settings.id).map((t) => t.tree), ...shell];
+  const archive = archivePages(live).find((a) => a.route === route);
+  if (archive) return [...shownArchiveLayouts(live, [archive]).map((a) => a.tree), ...shell];
+  return [];
+}
+
+/** The project's code components the website shows at `route`, by name, each as the author knows it and with its file. */
+export function routeCodeComponents(live: ProjectState, route: string): Array<{ name: string; file: string }> {
+  return [...definitionsRenderedBy(live, routeTrees(live, route))]
+    .map((id) => live.components[id])
+    .filter((d) => d?.kind === 'code' && d.owner === 'project')
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((d) => ({ name: d.name, file: defFile(d) }));
+}
+
+/** A page of the website as a message names it: its title and address, or its address alone. */
+const namedPage = (p: ReviewPage) => {
+  const title = p.title.replace(/\s+/g, ' ').trim();
+  return title ? `“${title.length > 80 ? `${title.slice(0, 80)}…` : title}” (${p.route})` : p.route;
+};
+
+/** How many code components a stop names before it sums up the rest. */
+const COMPONENTS_LISTED = 6;
+
+/**
+ * Why a website export stopped for pages that show the site's error page once they start in a browser (#1534), in
+ * route order: the first page, what the browser said went wrong there, the code components it shows (where to look:
+ * the browser cannot say which one failed), and the other pages found doing the same.
+ */
+export function brokenPagesStop(live: ProjectState, broken: Array<{ page: ReviewPage; check: Extract<PageCheck, { status: 'error-page' }> }>): { message: string; warnings: string[]; details: string } {
+  const [{ page, check }] = broken;
+  const message = `${namedPage(page)} shows “${check.heading}” in place of its content once it opens in a browser, so visitors would see an error page. Fix it, then export again.`;
+  const cause = check.cause?.split('\n').find((l) => l.trim())?.trim();
+  const warnings = [cause ? `The browser reported: ${cause.length > 300 ? `${cause.slice(0, 300)}…` : cause}` : 'The browser was not told what went wrong.'];
+  const code = routeCodeComponents(live, page.route);
+  const named = code.slice(0, COMPONENTS_LISTED).map((c) => `the “${c.name}” component (${c.file})`);
+  const more = code.length - named.length;
+  if (code.length === 1) warnings.push(`It shows one code component, ${named[0]}. Look there first: code that runs only in the browser, such as an $effect, does not run while the site is built.`);
+  else if (code.length) warnings.push(`It shows ${code.length} code components. Look at these first, since code that runs only in the browser does not run while the site is built: ${named.join(', ')}${more ? `, and ${more} more` : ''}.`);
+  else warnings.push('It shows no code component of the project’s, so a file of the project’s own may be the cause.');
+  const others = broken.slice(1).map((b) => namedPage(b.page));
+  if (others.length === 1) warnings.push(`${others[0]} shows it too.`);
+  else if (others.length) warnings.push(`${others.length} other pages show it too: ${others.slice(0, COMPONENTS_LISTED).join(', ')}${others.length > COMPONENTS_LISTED ? ', and more' : ''}.`);
+  // The report names every candidate of every page, however many the warnings sum up.
+  const report = (b: (typeof broken)[number]) => {
+    const shown = routeCodeComponents(live, b.page.route);
+    return [
+      `Page: ${namedPage(b.page)}`,
+      `Shown: ${b.check.heading}`,
+      shown.length ? `Code components: ${shown.map((c) => `${c.name} (${c.file})`).join(', ')}` : 'Code components: none',
+      ...(b.check.logged.length ? ['Browser errors:', ...b.check.logged] : ['Browser errors: none']),
+      ''
+    ];
+  };
+  const details = [message, '', ...broken.flatMap(report)].join('\n').trimEnd();
+  return { message, warnings, details };
+}
+
+/** A warning for the pages the export could not open in a browser to check (brokenPagesStop), or null when it checked them all. */
+export function uncheckedPagesWarning(unchecked: Array<{ page: ReviewPage; detail: string }>): string | null {
+  if (!unchecked.length) return null;
+  const [first] = unchecked;
+  const why = first.detail.trim().replace(/\.$/, '');
+  const reason = why.charAt(0).toLowerCase() + why.slice(1);
+  if (unchecked.length === 1) return `${namedPage(first.page)} could not be opened in a browser to check that it still shows its content once it starts: ${reason}.`;
+  return `${unchecked.length} pages could not be opened in a browser to check that they still show their content once they start, such as ${namedPage(first.page)}: ${reason}.`;
+}
 
 /** Markup and code only the editor's preview may carry. */
 const EDITOR_MARKUP = /data-so-(ctx|node)|siteorigin-bridge/;
