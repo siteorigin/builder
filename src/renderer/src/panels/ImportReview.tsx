@@ -4,7 +4,7 @@ import type { ImportReviewRow } from '@shared/api';
 import { getState, setState } from '../store';
 import { Disclosure, Modal } from '../components/ui';
 import { settleImportReview } from '../lib/import-review';
-import { fromFolder } from '../lib/import-folder';
+import { fromFolders } from '../lib/import-folder';
 import './ImportReview.css';
 
 const size = (w?: number, h?: number) => (w && h ? `${w.toLocaleString()} × ${h.toLocaleString()}` : '');
@@ -71,9 +71,8 @@ export function ReviewDisclosure({ summary, icon, className, children, testId }:
   );
 }
 
-function Row({ r, copy, onCopy }: { r: ImportReviewRow; copy: boolean; onCopy: (on: boolean) => void }) {
+function Row({ r, folder, copy, onCopy }: { r: ImportReviewRow; folder: string; copy: boolean; onCopy: (on: boolean) => void }) {
   const id = useId();
-  const folder = fromFolder(r.path);
   return (
     <li className={`import-review-row ${r.action}`} data-testid="import-review-row">
       <div className="import-review-name">
@@ -140,6 +139,8 @@ export function ImportReviewModal({ id, rows }: { id: number; rows: ImportReview
   const choices = changed.filter((r) => r.action === 'offer' && !r.copyOnly);
   const fixed = changed.filter((r) => !choices.includes(r));
   const plain = rows.filter((r) => r.action === 'import');
+  const folderLabels = fromFolders(rows.map((r) => r.path));
+  const folderOf = (path: string) => folderLabels[rows.findIndex((r) => r.path === path)] ?? '';
   const refused = rows.filter((r) => r.action === 'refuse');
   const adding = rows.length - refused.length;
   const toggle = (path: string, on: boolean) =>
@@ -196,7 +197,7 @@ export function ImportReviewModal({ id, rows }: { id: number; rows: ImportReview
           <ReviewHeading id="import-review-choices">{choices.length === 1 ? 'Choose a size for this photo' : `Choose a size for these ${choices.length} photos`}</ReviewHeading>
           <ul className="import-review">
             {choices.map((r) => (
-              <Row key={r.path} r={r} copy={copies.has(r.path)} onCopy={(on) => toggle(r.path, on)} />
+              <Row key={r.path} r={r} folder={folderOf(r.path)} copy={copies.has(r.path)} onCopy={(on) => toggle(r.path, on)} />
             ))}
           </ul>
         </section>
@@ -206,7 +207,7 @@ export function ImportReviewModal({ id, rows }: { id: number; rows: ImportReview
           <ReviewHeading id="import-review-changed">{fixed.length === 1 ? '1 file changes automatically' : `${fixed.length} files change automatically`}</ReviewHeading>
           <ul className="import-review">
             {fixed.map((r) => (
-              <Row key={r.path} r={r} copy={copies.has(r.path)} onCopy={(on) => toggle(r.path, on)} />
+              <Row key={r.path} r={r} folder={folderOf(r.path)} copy={copies.has(r.path)} onCopy={(on) => toggle(r.path, on)} />
             ))}
           </ul>
         </section>
@@ -216,7 +217,7 @@ export function ImportReviewModal({ id, rows }: { id: number; rows: ImportReview
           <ReviewHeading id="import-review-refused">{count(refused.length, 'file left out', 'files left out')}</ReviewHeading>
           <ul className="import-review">
             {refused.map((r) => (
-              <Row key={r.path} r={r} copy={false} onCopy={() => undefined} />
+              <Row key={r.path} r={r} folder={folderOf(r.path)} copy={false} onCopy={() => undefined} />
             ))}
           </ul>
         </section>
