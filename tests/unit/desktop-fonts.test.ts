@@ -85,6 +85,20 @@ function woff2Tables(buf: Buffer): { flavor: number; tags: string[]; tables: Map
   return { flavor: buf.readUInt32BE(4), tags, tables, flags, totalSfntSize: buf.readUInt32BE(16) };
 }
 
+/** `font` with one more table, `tag`, at the end of its file. */
+function withTable(font: Buffer, tag: string, data: Buffer): Buffer {
+  const n = font.readUInt16BE(4);
+  const head = Buffer.from(font.subarray(0, 12));
+  head.writeUInt16BE(n + 1, 4);
+  const records = Buffer.from(font.subarray(12, 12 + n * 16));
+  for (let k = 0; k < n; k++) records.writeUInt32BE(records.readUInt32BE(k * 16 + 8) + 16, k * 16 + 8);
+  const record = Buffer.alloc(16);
+  record.write(tag, 0, 'latin1');
+  record.writeUInt32BE(font.length + 16, 8);
+  record.writeUInt32BE(data.length, 12);
+  return Buffer.concat([head, records, record, font.subarray(12 + n * 16), data]);
+}
+
 describe('sfntToWoff2', () => {
   it('keeps every table of a TrueType font as it is, glyf and loca null-transformed, in a file of the length it declares', async () => {
     const web = await sfntToWoff2(TTF);
@@ -95,7 +109,14 @@ describe('sfntToWoff2', () => {
     expect(flavor).toBe(0x00010000);
     const original = sfntTables(TTF);
     expect(tags).toEqual([...original.keys()].sort());
-    for (const [tag, table] of original) expect(tables.get(tag)!.equals(table), tag).toBe(true);
+    for (const [tag, table] of original) if (tag !== 'head') expect(tables.get(tag)!.equals(table), tag).toBe(true);
+    // The head table says the font went through a lossless conversion (bit 11), its stale checksum zeroed for the
+    // browser to work out again, and is otherwise as it was.
+    const head = tables.get('head')!;
+    const was = original.get('head')!;
+    expect(head.readUInt16BE(16)).toBe(was.readUInt16BE(16) | 0x0800);
+    expect(head.readUInt32BE(8)).toBe(0);
+    expect(Buffer.concat([head.subarray(0, 8), head.subarray(12, 16), head.subarray(18)]).equals(Buffer.concat([was.subarray(0, 8), was.subarray(12, 16), was.subarray(18)]))).toBe(true);
     // Transform version 3 on glyf and loca (their null transform), 0 on the rest.
     tags.forEach((t, k) => expect(flags[k] >> 6, t).toBe(t === 'glyf' || t === 'loca' ? 3 : 0));
     expect(tags.indexOf('loca')).toBeGreaterThan(tags.indexOf('glyf'));
@@ -115,21 +136,20 @@ describe('sfntToWoff2', () => {
   });
 
   it('leaves out a digital signature, which would no longer match', async () => {
-    // The fixture with a DSIG table added at the end of its directory.
-    const n = TTF.readUInt16BE(4);
-    const dsig = Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]);
-    const head = Buffer.from(TTF.subarray(0, 12));
-    head.writeUInt16BE(n + 1, 4);
-    const records = Buffer.from(TTF.subarray(12, 12 + n * 16));
-    for (let k = 0; k < n; k++) records.writeUInt32BE(records.readUInt32BE(k * 16 + 8) + 16, k * 16 + 8);
-    const record = Buffer.alloc(16);
-    record.write('DSIG', 0, 'latin1');
-    record.writeUInt32BE(TTF.length + 16, 8);
-    record.writeUInt32BE(dsig.length, 12);
-    const signed = Buffer.concat([head, records, record, TTF.subarray(12 + n * 16), dsig]);
+    const signed = withTable(TTF, 'DSIG', Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]));
     const { tags } = woff2Tables(await sfntToWoff2(signed));
     expect(tags).not.toContain('DSIG');
     expect(tags).toEqual([...sfntTables(TTF).keys()].sort());
+  });
+
+  it('names a table WOFF2 has no index for by its own tag', async () => {
+    const { tags, tables } = woff2Tables(await sfntToWoff2(withTable(TTF, 'ZZZZ', Buffer.from('custom table'))));
+    expect(tags).toContain('ZZZZ');
+    expect(tables.get('ZZZZ')!.toString()).toBe('custom table');
+  });
+
+  it('refuses a font that unpacks to over 100 times its web font version, which browsers would not load', async () => {
+    await expect(sfntToWoff2(withTable(TTF, 'ZZZZ', Buffer.alloc(2 * 1024 * 1024)))).rejects.toThrow(/^it compresses so far that browsers would refuse its web font version/);
   });
 
   it('refuses a collection, a file that is no font, and one whose tables run past its end, saying which', async () => {
@@ -180,6 +200,19 @@ describe('adding a TTF or OTF font (#1460)', () => {
     const refused = (name: string, data: Buffer) => importAsset(temp(), write(name, data), [], fence).then(() => '', (e: Error) => e.message);
     expect(await refused('Brand.ttf', Buffer.from('not really a font'))).toBe('Brand.ttf was not imported because it is not a TrueType or OpenType font, although its name says it is. Choose the font file from the font’s download again.');
     expect(await refused('Family.ttf', Buffer.concat([Buffer.from('ttcf'), Buffer.alloc(40)]))).toMatch(/^Family\.ttf was not imported because it is a font collection/);
+    // A collection by its own name is a font too, and says what it is.
+    expect(isAssetOfKind('Family.ttc', 'font')).toBe(true);
+    expect(await refused('Family.ttc', Buffer.concat([Buffer.from('ttcf'), Buffer.alloc(40)]))).toMatch(/^Family\.ttc was not imported because it is a font collection/);
+  });
+
+  it('converts the very bytes a review held it to, and refuses a file that changed since', async () => {
+    const { createHash } = await import('node:crypto');
+    const source = write('Brand.otf', OTF);
+    const fingerprint = createHash('sha256').update(OTF).digest('hex');
+    const { record } = await importAsset(temp(), source, [], fence, { fingerprint });
+    expect(record).toMatchObject({ mime: 'font/woff2', font: { family: 'Fixture Sans' } });
+    writeFileSync(source, TTF);
+    await expect(importAsset(temp(), source, [], fence, { fingerprint })).rejects.toThrow('Brand.otf was not imported because it changed while it was being reviewed. Add it again.');
   });
 
   it('takes a web font that was given a desktop font’s name as the web font it is', async () => {

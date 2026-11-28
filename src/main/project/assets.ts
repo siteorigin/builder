@@ -18,7 +18,7 @@ import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
 import { createVariantClient, MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type WebCopyResult } from './media-client';
 import type { SiteIconRenderer } from './site-icons';
-import { DESKTOP_FONT_EXTENSIONS, DesktopFontError, sfntKind, sfntToWoff2 } from './woff2';
+import { DESKTOP_FONT_EXTENSIONS, DesktopFontError, FONT_COLLECTION_EXTENSIONS, sfntKind, sfntToWoff2 } from './woff2';
 
 export { WEB_EDGE, webCopySize };
 import { addCredits, cleanPhoto, hasCredits, sniffImageType, textCreditsAsTiff, type PhotoCredits, type PhotoMetadata } from './photo-metadata';
@@ -45,8 +45,11 @@ export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 's
 export const pictureMime = (ext: string): string | undefined => (IMAGE_EXTENSIONS.includes(ext.slice(1).toLowerCase()) ? MIME[ext.toLowerCase()] : undefined);
 /** File extensions the font chooser offers: the web fonts the library stores, and the desktop fonts it converts. */
 export const FONT_EXTENSIONS = ['woff2', 'woff', ...DESKTOP_FONT_EXTENSIONS];
-/** TrueType and OpenType fonts browsers load slowly or not at all: the importer stores a WOFF2 copy of each instead. */
-const isDesktopFont = (path: string) => DESKTOP_FONT_EXTENSIONS.includes(extname(path).slice(1).toLowerCase());
+/**
+ * TrueType and OpenType fonts, which a site should not serve as they are: the importer stores a WOFF2 copy of each
+ * instead. A font collection (.ttc, .otc) counts as one too, so adding one says why it can't be taken.
+ */
+const isDesktopFont = (path: string) => [...DESKTOP_FONT_EXTENSIONS, ...FONT_COLLECTION_EXTENSIONS].includes(extname(path).slice(1).toLowerCase());
 /** Phone photos browsers can't show: the importer stores a web-sized copy of each instead. */
 const PHOTO_EXTENSIONS = ['heic', 'heif'];
 /** File extensions the import chooser offers: every image the library stores, and the photos it converts. */
@@ -218,6 +221,10 @@ async function prepareDesktopFont(sourcePath: string, refuse: Refusal): Promise<
   if (stat.size > CONVERT_MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 64 MB.`);
   const bytes = await fs.readFile(sourcePath);
   countMediaRead(bytes.length);
+  return prepareDesktopFontBytes(sourcePath, bytes, refuse);
+}
+
+async function prepareDesktopFontBytes(sourcePath: string, bytes: Buffer, refuse: Refusal): Promise<PreparedFile> {
   const kind = sfntKind(bytes);
   if (kind === 'woff' || kind === 'woff2') {
     if (bytes.length > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
@@ -367,6 +374,8 @@ async function prepareImport(sourcePath: string, refuse: Refusal, opts: ImportOp
   countMediaRead(buf.length);
   if (opts.fingerprint && sha(buf) !== opts.fingerprint) throw refuse('it changed while it was being reviewed. Add it again.');
   if (!heic && !copyOf) {
+    // The very bytes the fingerprint held to, never the file read again.
+    if (isDesktopFont(sourcePath)) return prepareDesktopFontBytes(sourcePath, buf, refuse);
     if (!MIME[ext]) return prepareFile(sourcePath, refuse);
     if (buf.length > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
     return prepareBytes(sourcePath, buf, MIME[ext], ext, refuse);

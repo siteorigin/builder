@@ -12,6 +12,16 @@ const brotliCompressAsync = promisify(brotliCompress);
 
 /** The file extensions of the desktop fonts the importer converts. */
 export const DESKTOP_FONT_EXTENSIONS = ['ttf', 'otf'];
+/** Font collections: desktop font files holding several fonts, which the importer names as such rather than as no font. */
+export const FONT_COLLECTION_EXTENSIONS = ['ttc', 'otc'];
+
+/**
+ * Brotli's best quality takes about a second for a typical font but nearly a minute for a 20 MB one, so a font larger
+ * than this is compressed at quality 9 (a few seconds, about 6% larger).
+ */
+const BEST_QUALITY_MAX = 4 * 1024 * 1024;
+/** Browsers (Chromium's WOFF2 decoder) refuse a WOFF2 file whose fonts unpack to more than 100 times its size. */
+const MAX_RATIO = 100;
 
 /** Why a desktop font cannot be converted, as the end of "{file} was not imported because …". */
 export class DesktopFontError extends Error {}
@@ -61,6 +71,13 @@ export async function sfntToWoff2(buf: Buffer): Promise<Buffer> {
     seen.add(tag);
     if (tag !== 'DSIG') tables.push({ tag, data: buf.subarray(offset, offset + length) });
   }
+  // As a WOFF2 encoder must, the head table says the font has been through a lossless conversion (flags bit 11); its
+  // whole-font checksum, which no longer holds, is left for the browser to work out again as it rebuilds the font.
+  const head = tables.find((t) => t.tag === 'head');
+  if (!head || head.data.length < 54) throw damaged();
+  head.data = Buffer.from(head.data);
+  head.data.writeUInt32BE(0, 8);
+  head.data.writeUInt16BE(head.data.readUInt16BE(16) | 0x0800, 16);
   // A TrueType font's outlines come in two tables that a decoder rebuilds together: neither is any use alone.
   if (seen.has('glyf') !== seen.has('loca')) throw damaged();
   // The order an sfnt lists its tables in (by tag, byte by byte), which puts loca after glyf as WOFF2 requires.
@@ -75,10 +92,13 @@ export async function sfntToWoff2(buf: Buffer): Promise<Buffer> {
     })
   );
   const stream = Buffer.concat(tables.map((t) => t.data));
+  const quality = stream.length > BEST_QUALITY_MAX ? 9 : 11;
   const compressed = await brotliCompressAsync(stream, {
-    params: { [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_FONT, [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: stream.length }
+    params: { [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_FONT, [constants.BROTLI_PARAM_QUALITY]: quality, [constants.BROTLI_PARAM_SIZE_HINT]: stream.length }
   });
   const length = round4(48 + directory.length + compressed.length);
+  const sfntSize = 12 + 16 * tables.length + tables.reduce((s, t) => s + round4(t.data.length), 0);
+  if (sfntSize > length * MAX_RATIO) throw new DesktopFontError('it compresses so far that browsers would refuse its web font version, which usually means it is mostly empty glyphs. Use a WOFF2 or WOFF version of it from the font’s maker.');
   const header = Buffer.alloc(48);
   header.write('wOF2', 0, 'latin1');
   // An old Mac TrueType font says 'true': the web knows its outlines as 0x00010000.
@@ -86,7 +106,7 @@ export async function sfntToWoff2(buf: Buffer): Promise<Buffer> {
   header.writeUInt32BE(length, 8);
   header.writeUInt16BE(tables.length, 12);
   // The size of the font a browser rebuilds: its header, its table records and each table padded to four bytes.
-  header.writeUInt32BE(12 + 16 * tables.length + tables.reduce((s, t) => s + round4(t.data.length), 0), 16);
+  header.writeUInt32BE(sfntSize, 16);
   header.writeUInt32BE(compressed.length, 20);
   header.writeUInt16BE(1, 24);
   const out = Buffer.alloc(length);

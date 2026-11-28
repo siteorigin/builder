@@ -1935,7 +1935,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       {foot}
     </>
   );
-  const add = section === 'fonts' ? { label: 'Add fonts', icon: <Type />, run: () => void addFonts(), title: 'Choose WOFF2 or WOFF font files' } : section === 'documents' ? { label: 'Add documents', icon: <FilePlus />, run: () => void addDocuments(), title: 'Choose PDFs or other files for visitors to download' } : { label: 'Add images', icon: <ImagePlus />, run: () => void addImages(), title: 'Choose images to add, or drop files anywhere on this panel' };
+  const add = section === 'fonts' ? { label: 'Add fonts', icon: <Type />, run: () => void addFonts(), title: 'Choose WOFF2, WOFF, TTF or OTF font files' } : section === 'documents' ? { label: 'Add documents', icon: <FilePlus />, run: () => void addDocuments(), title: 'Choose PDFs or other files for visitors to download' } : { label: 'Add images', icon: <ImagePlus />, run: () => void addImages(), title: 'Choose images to add, or drop files anywhere on this panel' };
   // An empty kind needs no count: its tab says so when opened, and the row stays inside a narrow sidebar.
   const tabCount = (n: number) => !narrow && n > 0 && <span className="asset-count">{n}</span>;
 
@@ -1981,7 +1981,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                       <FontList fonts={fonts} usage={usage} missingOf={missingOf} reveal={shownFont} onRevealed={fontRevealed} />
                     ) : (
                       <p className="asset-section-note">
-                        No fonts yet. Add WOFF2 or WOFF files, then choose them for headings or body text in{' '}
+                        No fonts yet. Add WOFF2, WOFF, TTF or OTF files, then choose them for headings or body text in{' '}
                         <button className="link-btn" onClick={() => openSiteStyles()}>
                           Site styles
                         </button>
