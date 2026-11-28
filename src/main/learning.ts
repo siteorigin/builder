@@ -168,8 +168,12 @@ export class LearningRecorder implements ChatRecorder {
   }
 
   /** Settles once everything recorded so far is written (or has failed to be). */
-  flush(): Promise<void> {
-    return this.queue;
+  async flush(): Promise<void> {
+    // Work in the queue can add more (an undo found in a file is then recorded), which is waited for too.
+    for (let tail = this.queue; ; tail = this.queue) {
+      await tail;
+      if (tail === this.queue) return;
+    }
   }
 
   private enqueue(work: () => Promise<void>) {
