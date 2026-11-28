@@ -12,7 +12,7 @@ import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
@@ -1583,6 +1583,22 @@ export function openSeoView(subject?: SeoSubject | null): boolean {
   if (subject && !seoDocument(s.snapshot.state, subject)) return (toast('That page or post is no longer in the project.', 'info'), false);
   setState({ modal: null, leftTab: 'seo', ...(subject ? { seoSubject: subject } : {}) });
   return true;
+}
+
+/** The toolbar's Mode choices (#1583): the canvas's two modes, and the SEO view in the canvas's place. */
+export type ToolbarMode = 'edit' | 'preview' | 'seo';
+
+/** What the toolbar's Mode toggle shows as chosen: SEO while the view is open, else the canvas's mode. */
+export const toolbarMode = (s: { leftTab: string | null; mode: 'edit' | 'preview' }): ToolbarMode => (s.leftTab === 'seo' ? 'seo' : s.mode);
+
+/**
+ * Choose one of the toolbar's Mode options. SEO opens the SEO view on the document it last chose. Edit or Preview, from
+ * the view, leaves it as every other way out does (the sidebar back on the panel it replaced), then sets the mode.
+ */
+export function chooseMode(choice: ToolbarMode) {
+  if (choice === 'seo') return void openSeoView();
+  leaveSeoView();
+  setMode(choice);
 }
 
 /**

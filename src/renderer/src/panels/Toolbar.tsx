@@ -8,7 +8,7 @@ import { api, editRunStatus, openRunThread, projectHistory, setState, setViewpor
 import { Segmented, TOOLBAR_MOVED, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { useRoutingReviewShown } from '../components/FormRoutingHost';
-import { selectPage, setMode } from '../lib/actions';
+import { chooseMode, selectPage, toolbarMode } from '../lib/actions';
 import { pageMenuItems } from '../lib/page-switch';
 import { templateOwner } from '../lib/template-view';
 import { ownerLabel } from '../lib/model';
@@ -39,8 +39,8 @@ export function Toolbar() {
   const mode = useStore((s) => s.mode);
   const leftTab = useStore((s) => s.leftTab);
   // The Posts workspace in front: the toolbar names the post (or where its preview's visitor went), not the page under
-  // the writer, and the canvas's width and zoom wait while the writer covers it (#578). The SEO view names itself, and
-  // the canvas's width, zoom and mode wait while it covers the canvas (#700).
+  // the writer, and the canvas's width and zoom wait while the writer covers it (#578). The SEO view names itself, the
+  // canvas's width and zoom wait while it covers the canvas (#700), and the Mode toggle has it chosen (#1583).
   const workspace = useStore(activeWorkspace);
   const seo = workspace === 'seo';
   const covered = canvasCovered(workspace);
@@ -259,7 +259,6 @@ export function Toolbar() {
   ];
   const openSettings = () => setState({ modal: { kind: 'settings' } });
   const widthCovered = seo ? 'The SEO view covers the canvas. Close the SEO view (Esc) to see the page at another width or zoom.' : 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
-  const modeCovered = 'The SEO view covers the canvas. Close the SEO view (Esc) to edit or preview the page.';
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
     const v = validWidth(widthDraft);
     if (v !== null) {
@@ -476,11 +475,13 @@ export function Toolbar() {
         <Segmented
           radio
           label="Mode"
-          value={mode}
-          onChange={setMode}
+          value={toolbarMode({ leftTab, mode })}
+          onChange={chooseMode}
           options={[
-            { value: 'edit', icon: <MousePointer2 aria-hidden="true" />, label: tier === 'full' ? 'Edit' : undefined, name: 'Edit', title: seo ? modeCovered : 'Edit: click things on the page to select and change them', disabled: seo },
-            { value: 'preview', icon: <Eye aria-hidden="true" />, label: tier === 'full' ? 'Preview' : undefined, name: 'Preview', title: seo ? modeCovered : 'Preview: use the site as a visitor would', disabled: seo }
+            { value: 'edit', icon: <MousePointer2 aria-hidden="true" />, label: tier === 'full' ? 'Edit' : undefined, name: 'Edit', title: 'Edit: click things on the page to select and change them' },
+            { value: 'preview', icon: <Eye aria-hidden="true" />, label: tier === 'full' ? 'Preview' : undefined, name: 'Preview', title: 'Preview: use the site as a visitor would' },
+            // The SEO view (#700) is the third way of working on the site (#1583), in the canvas's place.
+            { value: 'seo', icon: <SearchCheck aria-hidden="true" />, label: tier === 'full' ? 'SEO' : undefined, name: 'SEO', title: 'SEO: how each page and post shows in search results and when shared' }
           ]}
         />
       </div>
