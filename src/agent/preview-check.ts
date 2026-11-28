@@ -272,7 +272,8 @@ function fieldsReach(op: EditOperation, reach: Reach, before: ProjectState, arti
     // The page itself is found from the state it led to; a linked or dated page also shows on the others.
     if (op.addToNavigation || op.starter === 'article' || op.articleDate !== undefined) reach.shared = true;
   } else if (op.type === 'page.duplicate') {
-    if (article(op.pageId)) reach.shared = true;
+    // A draft copy is listed nowhere.
+    if (!op.draft && article(op.pageId)) reach.shared = true;
   } else if (op.type === 'page.update') {
     const page = Object.hasOwn(before.pages, op.pageId) ? before.pages[op.pageId] : undefined;
     // A field written with the value it has changes nothing: a search title sent with the page's own title is search only.
