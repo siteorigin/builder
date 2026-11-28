@@ -6,9 +6,10 @@ import { SITE_ICON_FILES } from './site-icons';
  * for here (see validateSegment), so those are kept for completeness, as are the RSS feed and the agentic discovery
  * files (shared/llms.ts), whose Markdown copies (`index.html.md`) no part of an address can hold either, and the
  * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts), and the hosts' redirect rules
- * (generator/host-redirects.ts).
+ * (generator/host-redirects.ts). `index` and `404` are the files of the home page and the not-found page (`build/index.html`,
+ * `build/404.html`), which a page at those addresses cannot be built beside when nothing links to it.
  */
-const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
+const RESERVED = new Set(['index', '404', '_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
 
 /** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
 const ACCENTS = /[\u0300-\u036f]/g;
