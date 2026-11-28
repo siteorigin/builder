@@ -403,7 +403,21 @@ describe('site search index', () => {
     s = apply(r.state, [{ type: 'node.insert', owner: home(s), parentId: r.results[0].nodeId, slot: 'body', primitive: 'paragraph', text: 'Page slot words' } as EditOperation]);
     const text = pageText(s, s.pages[s.site.homePageId]);
     expect(text).toContain('Page slot words');
-    expect([text.indexOf('Design before'), text.indexOf('Page slot words'), text.indexOf('Design after')]).toEqual([...[text.indexOf('Design before'), text.indexOf('Page slot words'), text.indexOf('Design after')]].sort((a, b) => a - b));
+    const at = ['Design before', 'Page slot words', 'Design after'].map((w) => text.indexOf(w));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect(at).toEqual([...at].sort((a, b) => a - b));
+  });
+
+  it('reads a table of any size (#1351)', () => {
+    const base = withSearch();
+    const s = apply(base, [{ type: 'node.insert', owner: home(base), componentId: 'data.table' } as EditOperation]);
+    const page = s.pages[s.site.homePageId];
+    const table = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.components[(n as InstanceNode).definitionId]?.componentId === 'data.table') as InstanceNode;
+    const columns = Array.from({ length: 12 }, (_, c) => ({ id: `c${c}`, label: `Column ${c}` }));
+    table.props.table = { columns, rows: Array.from({ length: 15000 }, (_, r) => ({ id: `r${r}`, cells: Object.fromEntries(columns.map((c) => [c.id, `Cell ${r}-${c.id}`])) })) };
+    const text = pageText(s, page);
+    expect(text).toContain('Cell 14999-c11');
+    expect(text.indexOf('Column 0')).toBeLessThan(text.indexOf('Cell 0-c0'));
   });
 });
 
