@@ -205,6 +205,14 @@ describe('contact forms in collection layouts that send to Netlify under one nam
     const clash = netlifyFormClashes(s).find((c) => c.name === 'notes')!;
     expect(clash.forms.map(at).sort()).toEqual(['archive:notes:n_noteform', 'template:notes:n_layoutform']);
     expect(formNameWarnings(s).find((w) => w.includes('“notes”'))).toContain('the Notes layout');
+    // Each is one form, however many entry pages and index pages show it: a second entry, one to an index page.
+    s = run(
+      s,
+      { type: 'collection.update', collectionId: 'notes', pageSize: 1 } as EditOperation,
+      { type: 'entry.create', collectionId: 'notes', entryId: 'en_second', title: 'Second note', publishedAt: '2026-02-01', draft: false, body: ['Second.'] } as EditOperation
+    );
+    expect(generateProject(s).has('src/routes/notes/page/2/+page.svelte')).toBe(true);
+    expect(netlifyFormClashes(s).find((c) => c.name === 'notes')!.forms.map(at).sort()).toEqual(['archive:notes:n_noteform', 'template:notes:n_layoutform']);
   });
 });
 
