@@ -249,6 +249,8 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   };
 
   const r = open?.review;
+  // Only while the list still names it as the review does: a rename in flight would pair the old name with the new place.
+  const reviewTwin = open && list.find((v) => v.id === open.version.id)?.name === open.version.name ? twins.get(open.version.id) : undefined;
   // The project moved on since the review was worked out (the AI, a guest, an edit elsewhere): it is worked out again,
   // so what it says, and whether Restore is offered, are for the site as it is.
   // While the AI works Restore waits anyway: the review is brought up to date once it has finished, not at every step.
@@ -319,14 +321,14 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
       </span>
       {open ? (
         <div className="history-scroll version-review" data-testid="version-review">
-          <h3 ref={heading} tabIndex={-1}>
+          <h3 ref={heading} tabIndex={-1} aria-describedby="version-review-when">
             {open.version.auto ? <ArchiveRestore aria-hidden="true" /> : <Bookmark aria-hidden="true" />}
             <span>{open.version.name}</span>
           </h3>
-          <p className="muted version-review-when" title={fullWhen(open.version.time)}>
+          <p id="version-review-when" className="muted version-review-when" title={fullWhen(open.version.time)}>
             {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically, ' : 'Saved '}
             {lowerDay(savedAt(open.version.time))}
-            {twins.get(open.version.id) && ` (${twins.get(open.version.id)!.precise}, ${twins.get(open.version.id)!.place})`}
+            {reviewTwin && ` (${reviewTwin.precise}, ${reviewTwin.place})`}
           </p>
           {note}
           {!r ? (

@@ -20,3 +20,10 @@ describe('twinsOf (#1457)', () => {
     expect(t.size).toBe(2);
   });
 });
+
+describe('twinsOf names', () => {
+  it('groups names that differ only in Unicode composition', () => {
+    const t = twinsOf([v('b', 'Café', '2026-11-28T10:00:40Z'), v('a', 'Café', '2026-11-28T10:00:05Z')]);
+    expect(t.size).toBe(2);
+  });
+});

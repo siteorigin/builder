@@ -16,7 +16,7 @@ export interface Twin {
   precise: string;
 }
 
-const nameKey = (name: string) => name.replace(/\s+/g, ' ').trim().toLowerCase();
+const nameKey = (name: string) => name.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
 
 /** The versions sharing their name with another, by id. The list is newest first; the place counts from the oldest. */
 export function twinsOf(list: SavedVersionInfo[], locale?: string): Map<string, Twin> {
