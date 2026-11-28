@@ -254,6 +254,8 @@ function outcome(r: NonNullable<ChatMessage['result']>) {
   // A question read the site and could not change it, which is what its heading says.
   if (r.ask && r.status === 'no-changes') return { icon: <BookOpen />, label: 'Answered · site unchanged' };
   if (r.status === 'no-changes' && r.incomplete) return { icon: <CircleDashed />, label: 'Not finished' };
+  // A saved version changes nothing in the site, and is no change to undo: the card says what it did (#1406).
+  if (r.status === 'no-changes' && r.versionsSaved?.length) return { icon: <CircleCheck />, label: 'Version saved · site unchanged' };
   switch (r.status) {
     case 'completed':
       return { icon: <CircleCheck />, label: 'Completed' };

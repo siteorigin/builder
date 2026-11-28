@@ -47,7 +47,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, projectTokenVars } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, declaredPackages, importedPackages, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -1715,9 +1715,10 @@ export class ProjectSession extends EventEmitter {
         }
         const errors = this.introducedProblems(next);
         if (errors.length) return { ok: false, message: `Keeping the external version of ${path} would leave the site inconsistent: ${errors.slice(0, 3).map((d) => d.message).join(' ')} Restore SiteOrigin Builder's version instead, or fix the file.` };
+        const packages = await this.declaredPackages();
         for (const def of Object.values(next.components)) {
           if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-          const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
+          const bad = (await checkSvelteSource(def.source ?? '', { packages })).filter((p) => p.severity === 'error');
           if (bad.length) return { ok: false, message: `The external code for "${def.name}" has problems, so it was not kept: ${bad[0].message}` };
         }
         const pin = themePinProblem(next);
@@ -1812,7 +1813,8 @@ export class ProjectSession extends EventEmitter {
         // The design's properties, which the converted file must still take under the keys its design's file did.
         manifest: { ...def, designFile: true },
         resolve,
-        modules: exists
+        modules: exists,
+        packages: await this.declaredPackages()
       })
     ).filter((p) => p.severity === 'error');
     if (problems.length) return refuse(`The edited file can’t become a code component: ${problems.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')} Fix the file and try again, or use SiteOrigin Builder’s version.`);
@@ -2799,6 +2801,21 @@ export class ProjectSession extends EventEmitter {
   private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>): Promise<boolean> {
     // Asked again before each Windows rename retry too: the journal is the run's decision, and what decided it must hold.
     return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace, retryCheck: beforeReplace } : {});
+  }
+
+  /**
+   * The npm packages the project's package.json declares now (#1480), which a developer's code may import. Read when a
+   * check needs them, so a package added or removed (in the app or outside it) counts from the next check on.
+   */
+  async declaredPackages(): Promise<Set<string>> {
+    return declaredPackages(await readIfExists(join(this.dir, 'package.json')).catch(() => null));
+  }
+
+  /** The names of the code components whose code imports the npm package `name` (#1480), however it imports it. */
+  async packageUsers(name: string): Promise<string[]> {
+    const users: string[] = [];
+    for (const def of Object.values(this.state.components)) if (def.kind === 'code' && def.source && (await importedPackages(def.source)).includes(name)) users.push(def.name);
+    return users;
   }
 
   /**
@@ -3802,6 +3819,9 @@ export class ProjectSession extends EventEmitter {
       const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
       const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
       let modules: ((path: string) => boolean) | undefined;
+      // The npm packages the project declares, read once for the batch and only when some code is checked.
+      let packages: Promise<Set<string>> | undefined;
+      const declared = () => (packages ??= this.declaredPackages());
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
@@ -3822,7 +3842,7 @@ export class ProjectSession extends EventEmitter {
           if (ai && def.owner === 'project' && JSON.stringify(was.properties) !== JSON.stringify(def.properties)) {
             const source = def.source;
             const contracted = async (properties: ComponentDefinition['properties']) =>
-              (await checkSvelteSource(source, { filename: def.sourcePath, resolve, contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties } })).filter((p) => p.severity === 'error');
+              (await checkSvelteSource(source, { filename: def.sourcePath, resolve, packages: await declared(), contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties } })).filter((p) => p.severity === 'error');
             const had = new Set((await contracted(was.properties)).map((p) => p.message));
             const fresh = (await contracted(def.properties)).filter((p) => !had.has(p.message));
             if (fresh.length)
@@ -3854,6 +3874,7 @@ export class ProjectSession extends EventEmitter {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
             tokens: projectTokenVars(next),
+            packages: await declared(),
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
             // Its code takes what its properties hold, and nothing they do not.
@@ -4924,31 +4945,53 @@ export class ProjectSession extends EventEmitter {
    * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
    * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
    */
-  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
+  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+    return this.serialize(async () => this.storeVersion(name, await this.versionsBlocked()));
+  }
+
+  /**
+   * Save a named version for the AI request `runId`, which the author asked for (#1406). Only a run that has changed
+   * nothing can: its documents are then the author's own, settled, and the version holds no provisional work. A
+   * version is no change to the site, so the run keeps the project and may go on to change it.
+   */
+  saveVersionForRun(runId: string, name: string, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
     return this.serialize(async () => {
-      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
-      if (why) return { ok: false, message: why };
-      const clean = name.replace(/\s+/g, ' ').trim();
-      if (!clean) return { ok: false, message: 'Give the version a name.' };
-      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
-      // A change made outside the app and not loaded yet would be missing from it, under the author's chosen name.
-      const unloaded = await this.unloadedEdit(new Set());
-      if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
-      let v: SavedVersion;
-      try {
-        v = await this.captureVersion(clean);
-        // Storing a large library takes a while: something may have changed outside the app meanwhile, or an Unlock
-        // from another app taken the project over.
-        const late = await this.unloadedEdit(new Set());
-        if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
-        if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-        v = await this.versions.add(v);
-      } catch (e) {
-        return { ok: false, message: (e as Error).message };
-      }
-      this.emit('history');
-      return { ok: true, id: v.id, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
+      const run = this.activeRun;
+      if (!run || run.id !== runId) return { ok: false, message: 'This request no longer holds the project.' };
+      if (this.runChanged() || this.revision !== run.startRevision) return { ok: false, message: 'This request has already changed the site, so a version saved now would hold its unfinished changes. Nothing was saved: the author can save it from History, Versions, once this request finishes.' };
+      const blocked = await this.writeBlocked();
+      return this.storeVersion(name, blocked ? (blocked.error?.message ?? LOCK_UNCHECKED) : this.versions.problem, stopped);
     });
+  }
+
+  /**
+   * saveVersion's work, run inside serialize once `why` (what stops a version being saved now, if anything) is known.
+   * `stopped`: the request that asked was stopped meanwhile, so the version it captured is never listed.
+   */
+  private async storeVersion(name: string, why: string | null, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+    why ??= await this.pendingVersionBlocks();
+    if (why) return { ok: false, message: why };
+    const clean = name.replace(/\s+/g, ' ').trim();
+    if (!clean) return { ok: false, message: 'Give the version a name.' };
+    if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+    // A change made outside the app and not loaded yet would be missing from it, under the author's chosen name.
+    const unloaded = await this.unloadedEdit(new Set());
+    if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
+    let v: SavedVersion;
+    try {
+      v = await this.captureVersion(clean);
+      // Storing a large library takes a while: something may have changed outside the app meanwhile, or an Unlock
+      // from another app taken the project over.
+      const late = await this.unloadedEdit(new Set());
+      if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+      if (stopped?.()) return { ok: false, message: 'Canceled' };
+      v = await this.versions.add(v);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+    this.emit('history');
+    return { ok: true, id: v.id, name: clean, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
   }
 
   /**
@@ -5084,10 +5127,12 @@ export class ProjectSession extends EventEmitter {
     const fatal = validateState(state, { sectionLinks: false }).find((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     if (fatal) return refuse(`“${v.name}” can’t be restored: ${fatal.message}`);
     const resolve = componentSources(state.components);
+    // The package files stay as they are now: restored code may import what the project declares now.
+    const packages = await this.declaredPackages();
     for (const def of Object.values(state.components)) {
       if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
       if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
-      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, packages })).filter((p) => p.severity === 'error');
       if (bad.length) return refuse(`The code for “${def.name}” in “${v.name}” has problems, so it can’t be restored: ${bad[0].message}`);
     }
     const files: Array<{ path: string; hash: string; replaces: boolean }> = [];
@@ -6070,9 +6115,10 @@ export class ProjectSession extends EventEmitter {
       if (path.startsWith(`${GENERATED_DIR}/`) && path.includes('.svelte')) return generated.has(path);
       return true;
     };
+    const packages = await this.declaredPackages();
     for (const def of Object.values(next.components)) {
       if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
-      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, modules })).filter((p) => p.severity === 'error');
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, modules, packages })).filter((p) => p.severity === 'error');
       if (bad.length) return problem(`the code for “${def.name}” would have problems: ${bad[0].message}`);
     }
     // Nor may restored code close a loop with code changed since, a component that ends up rendering itself.
@@ -6528,9 +6574,10 @@ export class ProjectSession extends EventEmitter {
    */
   private async editedSources(next: ProjectState): Promise<EditedSource[]> {
     const edited: EditedSource[] = [];
+    let packages: Set<string> | undefined;
     for (const def of Object.values(next.components)) {
       if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-      const problem = (await checkSvelteSource(def.source ?? '')).find((p) => p.severity === 'error');
+      const problem = (await checkSvelteSource(def.source ?? '', { packages: (packages ??= await this.declaredPackages()) })).find((p) => p.severity === 'error');
       const path = def.sourcePath ?? componentDocPath(def.id);
       const where = problem?.line ? `${path}, line ${problem.line}${def.sourcePath ? '' : ' of its source'}` : path;
       edited.push({ id: def.id, name: def.name, path, problem: !!problem, message: problem ? `The edited code for "${def.name}" has problems, so it was not loaded (${where}): ${problem.message}` : '' });

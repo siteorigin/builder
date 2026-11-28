@@ -193,6 +193,22 @@ describe('a development build, with no tools shipped', () => {
     expect(existsSync(marker())).toBe(true);
   });
 
+  it('never marks package files changed while npm ran as set up (#1480)', async () => {
+    // The lock is installed as it was when npm began: package.json edited meanwhile is not what the tools are for.
+    const install0 = npm.install!;
+    npm.install = (dir) => {
+      install0(dir);
+      writeFileSync(join(dir, 'package.json'), readFileSync(join(dir, 'package.json'), 'utf8').replace('"private": true', '"private": true, "dependencies": { "zod": "4.1.0" }'));
+    };
+    await install();
+    expect(existsSync(marker())).toBe(false);
+    expect(await dependenciesReady(project)).toBe(false);
+    // Unchanged, they are set up.
+    npm.install = install0;
+    await install();
+    expect(await dependenciesReady(project)).toBe(true);
+  });
+
   it('installs offline, and says nothing was downloaded, once an earlier download left everything in the cache', async () => {
     fill(userCache());
     expect(await starterTools(starter)).toBe('local');

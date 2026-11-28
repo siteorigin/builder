@@ -539,6 +539,27 @@ export type Unpacking = { name: string; dir: string; folder: string; done: numbe
  */
 export type WebsiteTools = 'local' | 'download' | 'unknown';
 
+/** One npm package a project's package.json declares (#1480). */
+export interface ProjectPackage {
+  name: string;
+  /** What package.json asks for: a version (`4.1.0`), a range or a tag. */
+  wanted: string;
+  section: 'dependencies' | 'devDependencies' | 'optionalDependencies' | 'peerDependencies';
+  /** The version set up in the project's website tools, or null when it is not set up there. */
+  installed: string | null;
+  /** One of the website's own tools (Svelte, SvelteKit, Vite), which Packages never changes or removes. */
+  tool: boolean;
+}
+
+/** The open project's npm packages, and why they can't be changed now (null when they can). */
+export interface ProjectPackages {
+  packages: ProjectPackage[];
+  locked: string | null;
+}
+
+/** A change to a project's npm packages: add or update one (`name` or `name@version`), or remove one by name. */
+export type PackageChange = { add: string } | { remove: string };
+
 export interface ProgressEvent {
   step: 'files' | 'dependencies' | 'preview' | 'done' | 'error';
   message: string;
@@ -607,6 +628,8 @@ export type EditorDestination =
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'canonical' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'canonical' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
+  /** Colors in Site styles, showing one of the site's palettes, with a colour's row (`token`) focused when there is one. */
+  | { kind: 'colors'; scheme: 'light' | 'dark'; token?: string }
   /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
   | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
 
@@ -710,6 +733,12 @@ export interface ChatContext {
    * collection's name then, for the transcript.
    */
   template?: { collectionId: string; archive?: true; entryId?: string; name: string };
+  /**
+   * The page the editor showed when the request was sent, when that is not `pageId` (the page's context was left out
+   * of the request, so `pageId` names the home page). Only for finding a section the author asks to go to (#1406):
+   * the model is never told it.
+   */
+  shownPageId?: string;
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their names and IDs alone, never the pictures or their files (search_assets reads what the library says about them). */
   assetIds?: string[];
@@ -799,6 +828,8 @@ export interface ChatMessage {
     /** The same checks with their status; `validation` is their text. */
     checks?: ChatCheck[];
     canUndo: boolean;
+    /** Versions of the site the request saved when the author asked (#1406), by name: kept however it ended, and no change to Undo. */
+    versionsSaved?: string[];
     error?: string;
     /** The run's tokens in all, and each answered model turn's in order: null where the provider did not report them. */
     usage?: TokenUsage & { turns?: Array<TokenUsage | null> };
@@ -947,7 +978,7 @@ export interface ConversationSummary {
 export interface AiEvent {
   runId: string;
   conversationId: string;
-  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page';
+  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page' | 'open-editor';
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
@@ -966,7 +997,19 @@ export interface AiEvent {
   message?: ChatMessage;
   /** With `open-page`: the page the author asked the request to go to, for the editor to show (#1357). */
   pageId?: string;
+  /** With `open-editor`: the entry, section or editor view the author asked the request to open (#1406). */
+  opening?: EditorOpening;
 }
+
+/** The editor's views the assistant can open when the author asks it to (open_in_editor, #1406). */
+export const EDITOR_VIEWS = ['site_styles', 'seo', 'content', 'pages', 'layers', 'assets', 'settings', 'project_health', 'history', 'versions', 'project_brief', 'export', 'share'] as const;
+export type EditorView = (typeof EDITOR_VIEWS)[number];
+
+/**
+ * What the assistant opens in the editor for the author (#1406): an entry in Content's writer, a placed section on a
+ * page (selected and brought into view), or one of the editor's views. Opening one changes nothing in the site.
+ */
+export type EditorOpening = { kind: 'entry'; collectionId: string; entryId: string } | { kind: 'section'; pageId: string; ref: ElementRef } | { kind: 'view'; view: EditorView };
 
 /** One file in an import review: what it is, and what importing it would add to Assets. */
 export interface ImportReviewRow {
@@ -1685,6 +1728,14 @@ export interface BuilderApi {
      */
     componentThumb(definitionId: string, workspaceKey: string, have?: string): Promise<ComponentThumb>;
     repairDependencies(): Promise<void>;
+    /** The open project's npm packages (#1480), as Project health lists them. */
+    packages(): Promise<ProjectPackages>;
+    /**
+     * Add or update (`{ add: 'zod@4.1.0' }`) or remove (`{ remove: 'zod' }`) one npm package of the project open as
+     * `opening` (its `workspaceKey`, #1480). Settles once the package files are changed and the preview has set the
+     * website tools up again for them, or with why nothing was changed.
+     */
+    changePackage(change: PackageChange, opening: string): Promise<{ ok: boolean; message?: string }>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;

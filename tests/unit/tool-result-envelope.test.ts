@@ -235,7 +235,9 @@ const CASES = {
   insert_definition_node: { where: 'design', ok: () => ({ parentId: 'content', primitive: 'paragraph', text: 'Made by hand' }), fail: () => ({ parentId: 'heading', primitive: 'icon' }), code: 'VALIDATION_FAILED' },
   remove_definition_node: { where: 'design', ok: () => ({ nodeId: 'secondary' }), fail: () => ({ nodeId: 'node_gone' }), code: 'VALIDATION_FAILED' },
   set_preview: { where: 'ask', ok: () => ({ viewport: 'phone' }), fail: () => ({}), code: 'INVALID_ARGUMENT' },
-  step_history: { where: 'site', seed: authorEdit, ok: () => ({ direction: 'undo' }), fail: () => ({ direction: 'sideways' }), code: 'INVALID_ARGUMENT' }
+  step_history: { where: 'site', seed: authorEdit, ok: () => ({ direction: 'undo' }), fail: () => ({ direction: 'sideways' }), code: 'INVALID_ARGUMENT' },
+  open_in_editor: { where: 'ask', request: 'Open Site Styles', ok: () => ({ view: 'site_styles' }), fail: () => ({ view: 'entry', target: 'Nowhere at all' }), code: 'INVALID_ARGUMENT' },
+  save_version: { where: 'site', request: 'Save a version called Before launch', ok: () => ({ name: 'Before launch' }), fail: () => ({ name: '   ' }), code: 'INVALID_ARGUMENT' }
 } satisfies Record<ToolName, Case>;
 
 /** A measured case, as the component preview reports one with nothing wrong. */
@@ -284,6 +286,11 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     stepHistory: async (direction, steps) => {
       if (session.activeRun?.id !== 'run_envelope') await session.beginRun('run_envelope');
       return session.stepHistoryForRun('run_envelope', direction, steps);
+    },
+    // As a run that has changed nothing saves a version (#1406).
+    saveVersion: async (name) => {
+      if (session.activeRun?.id !== 'run_envelope') await session.beginRun('run_envelope');
+      return session.saveVersionForRun('run_envelope', name);
     },
     macros: newMacroMemory(),
     selection: () => (sel ? { owner: sel.owner, nodeId: sel.nodeId } : null),

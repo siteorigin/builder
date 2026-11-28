@@ -23,6 +23,7 @@ import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { useJumpMark } from '../lib/use-jump-mark';
 import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, InfoTip, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { SHOW_COLORS_EVENT, type ShowColors } from '../lib/open-destination';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { SiteImageField } from './PropEditors';
@@ -1180,6 +1181,19 @@ export function SiteStyles() {
   const contrast = useMemo(() => buildContrastModel(shownTokens, pairs), [shownTokens, pairs]);
   const otherContrast = useMemo(() => (dual ? buildContrastModel(palette === 'dark' ? tokens : darkTokens, pairs) : null), [dual, palette, tokens, darkTokens, pairs]);
   const contrastStatus = useContrastStatus(contrast);
+  // Project health's way to a colour pair: its palette shown (and previewed), then Colors opened at the colour.
+  useEffect(() => {
+    const onShow = (e: Event) => {
+      const { scheme, token } = (e as CustomEvent<ShowColors>).detail ?? { scheme: 'light' };
+      if (hasDarkPalette(getState().snapshot?.state.tokens)) {
+        setPaletteChoice(scheme);
+        setState({ previewScheme: scheme });
+      }
+      openSection('tok-color', token ? { focus: `[data-token-id="${CSS.escape(token)}"] :is(.ss-disclose, input.ss-hex)` } : {});
+    };
+    window.addEventListener(SHOW_COLORS_EVENT, onShow);
+    return () => window.removeEventListener(SHOW_COLORS_EVENT, onShow);
+  }, []);
   // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
