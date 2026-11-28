@@ -457,6 +457,36 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(await run({ adapter: 'wordpress', config: { url: uncounted.origin } })).toMatchObject({ ok: false, code: 'invalid' });
   });
 
+  it('WordPress: a post is dated by its site’s own day, never moved across midnight by GMT (#1428)', async () => {
+    const posts = [
+      // UTC+2: just after local midnight is the evening before in GMT.
+      { id: 1, title: { rendered: 'East' }, date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' },
+      // UTC−8: a local evening is the next morning in GMT.
+      { id: 2, title: { rendered: 'West' }, date: '2026-11-25T21:30:00', date_gmt: '2026-11-26T05:30:00', modified: '2026-11-25T22:00:00', modified_gmt: '2026-11-26T06:00:00' },
+      // A post whose local times are null is still dated by its GMT ones.
+      { id: 3, title: { rendered: 'Only GMT' }, date: null, date_gmt: '2026-11-20T09:00:00', modified: null, modified_gmt: '2026-11-21T09:00:00' }
+    ];
+    const api = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
+    const reply = await run({ adapter: 'wordpress', config: { url: api.origin } });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) return;
+    expect(reply.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-25', '2026-11-26'],
+      ['2026-11-25', '2026-11-25'],
+      ['2026-11-20', '2026-11-21']
+    ]);
+    // The sample shows what WordPress sent under its own names, so a mapping can choose the GMT time instead.
+    const sample = await run({ adapter: 'wordpress', config: { url: api.origin }, mode: 'sample' });
+    expect(sample.ok && sample.raw?.[0]).toMatchObject({ date: '2026-11-25T00:15:00', date_gmt: '2026-11-24T22:15:00', modified: '2026-11-26T00:30:00', modified_gmt: '2026-11-25T22:30:00' });
+    expect(sample.ok && sample.raw?.[2]).toMatchObject({ date: '2026-11-20T09:00:00', date_gmt: '2026-11-20T09:00:00', modified: '2026-11-21T09:00:00' });
+    const gmt = await run({ adapter: 'wordpress', config: { url: api.origin }, mapping: { publishedAt: 'date_gmt', updatedAt: 'modified_gmt' } });
+    expect(gmt.ok && gmt.records.map((r) => [r.publishedAt, r.updatedAt])).toEqual([
+      ['2026-11-24', '2026-11-25'],
+      ['2026-11-26', '2026-11-26'],
+      ['2026-11-20', '2026-11-21']
+    ]);
+  });
+
   it('WordPress: a post’s relative links go where they went on its own page (#1426)', async () => {
     const linksOf = (body: unknown) =>
       (body as Array<{ spans?: Array<{ text: string; link?: { type: string; target: string } }> }>).flatMap((b) => (b.spans ?? []).filter((s) => s.link).map((s) => [s.text, s.link!.type, s.link!.target]));
