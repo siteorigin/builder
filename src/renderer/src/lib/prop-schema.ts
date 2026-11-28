@@ -1,4 +1,4 @@
-import type { PropSchema } from '@shared/types';
+import type { PropSchema, TokenGroup } from '@shared/types';
 import type { CodePropsTaken } from '@shared/api';
 import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { checkPropName } from '@engine/schema';
@@ -54,14 +54,31 @@ export const TYPES: Array<[PropType, string]> = [
   ['list', 'List'],
   ['table', 'Table']
 ];
+/** The token groups a token property can take, as the Type list names them (engine/schema.ts TOKEN_PROP_GROUPS). */
+export const TOKEN_TYPES: Array<[TokenGroup, string]> = [
+  ['color', 'Theme color'],
+  ['font', 'Theme font'],
+  ['space', 'Spacing'],
+  ['container', 'Page width'],
+  ['radius', 'Corners'],
+  ['shadow', 'Shadow'],
+  ['border', 'Border']
+];
+/** An entry of the Type list: a property type, or a token property of one group. */
+export type TypeChoice = PropType | `token:${TokenGroup}`;
+export const typeChoice = (schema: Record<string, unknown>): TypeChoice => (schema.type === 'token' ? `token:${schema.tokenGroup as TokenGroup}` : (schema.type as PropType));
 /** A list item's fields are single values: no lists or tables inside one, but several choices can be. */
 const ITEM_TYPES: Array<[PropType, string]> = [...TYPES.filter(([t]) => t !== 'list' && t !== 'table'), ['choices', 'Multiple choice']];
 /** The most item fields a list can have. */
 export const MAX_ITEM_FIELDS = 20;
 
-/** The types a row can pick from, plus its own type when they leave it out (several choices, set in code). */
-export function typeOptions(type: PropType, inList: boolean): Array<[PropType, string]> {
-  const types = inList ? ITEM_TYPES : TYPES;
+/**
+ * The types a row can pick from, plus its own type when they leave it out (several choices, set in code). A token
+ * type is offered for each group in `groups` (those the site has tokens of), and for the row's own group.
+ */
+export function typeOptions(type: TypeChoice, inList: boolean, groups: ReadonlySet<TokenGroup> = new Set()): Array<[TypeChoice, string]> {
+  const tokens = TOKEN_TYPES.filter(([g]) => groups.has(g) || type === `token:${g}`).map(([g, label]): [TypeChoice, string] => [`token:${g}`, label]);
+  const types: Array<[TypeChoice, string]> = [...(inList ? ITEM_TYPES : TYPES), ...tokens];
   return types.some(([t]) => t === type) ? types : [[type, type === 'choices' ? 'Multiple choice' : type], ...types];
 }
 
@@ -164,11 +181,19 @@ export function schemaProblems(rows: SchemaRow[]): string[] {
 }
 
 /** Defaults that make sense when a property changes type, so the engine never receives a mismatched default. */
-export function retype(row: SchemaRow, type: PropType): SchemaRow {
+export function retype(row: SchemaRow, choice: TypeChoice, tokens: ReadonlyArray<{ id: string; group: TokenGroup }> = []): SchemaRow {
   const s = row.schema;
+  const group = choice.startsWith('token:') ? (choice.slice('token:'.length) as TokenGroup) : null;
+  const type = group ? 'token' : (choice as PropType);
   const schema: Record<string, unknown> = { type, label: s.label };
   if (s.description) schema.description = s.description;
   if (s.group) schema.group = s.group;
+  if (group) {
+    // It starts on the group's first token, as the engine would start it, so the row shows what it holds.
+    schema.tokenGroup = group;
+    const first = tokens.find((t) => t.group === group);
+    if (first) schema.default = { token: first.id };
+  }
   if (type === 'enum') schema.options = [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }];
   const next: SchemaRow = { key: row.key, name: row.name, ...(row.orig !== undefined ? { orig: row.orig } : {}), schema };
   if (type === 'list') {
@@ -198,10 +223,11 @@ function fits(field: Record<string, unknown>, v: unknown): boolean {
  * stored values: the default items leave it out and the engine fills its default.
  */
 function listSettings(row: SchemaRow): Record<string, unknown> {
-  const stored = (row.schema.fields ?? {}) as Record<string, { type?: unknown }>;
+  const stored = (row.schema.fields ?? {}) as Record<string, { type?: unknown; tokenGroup?: unknown }>;
   const fields = row.fields ?? [];
   const now = (name: unknown) => {
-    const f = typeof name === 'string' ? fields.find((x) => x.orig === name && Object.hasOwn(stored, name) && stored[name].type === x.schema.type) : undefined;
+    // A token field that takes another group is retyped: no stored token of the old group fits it.
+    const f = typeof name === 'string' ? fields.find((x) => x.orig === name && Object.hasOwn(stored, name) && stored[name].type === x.schema.type && stored[name].tokenGroup === x.schema.tokenGroup) : undefined;
     return f?.name.trim();
   };
   const out: Record<string, unknown> = {};

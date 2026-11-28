@@ -14,6 +14,7 @@ import { isCollectionLoop } from '@shared/types';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
+import type { AuthorityGrants } from './scope';
 import { applyFailure } from './result';
 
 /** The owner shape every tool shares, so a constrained grammar spells it once (see tools.ts). */
@@ -86,7 +87,8 @@ export function connectListSchema(state: ProjectState, pinned?: OwnerRef): JsonS
   return schema;
 }
 
-export async function runConnectList(args: ConnectListArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
+/** `grants`: the one collection layout a whole-site run's call writes (#1408), never the model's. */
+export async function runConnectList(args: ConnectListArgs, host: ToolHost, callId: string, grants?: AuthorityGrants): Promise<ToolOutcome> {
   const state = host.state();
   const revision = host.revision();
   const issues: FieldIssue[] = [];
@@ -128,7 +130,7 @@ export async function runConnectList(args: ConnectListArgs, host: ToolHost, call
   }
   const what = displayName(state, node);
   const label = args.disconnect ? `Disconnect ${what}` : `Show ${args.query?.collectionId === CURRENT_COLLECTION ? 'entries' : (state.collections?.[args.query?.collectionId ?? '']?.settings.name ?? 'entries')} in ${what}`;
-  const res = await host.apply([op], revision, label.slice(0, 120), callId);
+  const res = await host.apply([op], revision, label.slice(0, 120), callId, grants);
   if (!res.ok) return applyFailure(res);
   return { ok: true, mutated: true, ops: [op], results: res.results, content: { ok: true, revision: res.revision, owner: args.owner, nodeId: node.id, ...(args.prop ? { prop: args.prop } : {}), connected: !args.disconnect } };
 }

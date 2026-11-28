@@ -1145,6 +1145,21 @@ export interface SiteDoc {
    * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.
    */
   identity?: SiteIdentity;
+  /**
+   * The author's own markup for the <head> of every page of the published website (src/shared/site-code.ts): <meta>,
+   * <link>, <script> and <style> elements, kept as typed. Never in the editor's preview. Absent: none.
+   */
+  headCode?: string;
+  /** The author's own stylesheet, loaded after every other on every page, in the preview too. Absent: none. */
+  globalCss?: string;
+  /** Services added in Site settings, each set up from what the author chose (src/shared/integrations.ts). */
+  integrations?: SiteIntegrations;
+}
+
+/** The integrations added to a site, each under its own key while it is added. */
+export interface SiteIntegrations {
+  /** Fathom Analytics, by the site ID from Fathom's own settings. */
+  fathom?: { siteId: string };
 }
 
 /** The kinds of entity a site can be published by. */

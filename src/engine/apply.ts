@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc, SiteIntegrations, SiteRedirect } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
@@ -47,6 +47,8 @@ import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
+import { codeProblemText, globalCssProblem, hasCode, headCodeProblem } from '@shared/site-code';
+import { fathomIdText, fathomSiteIdProblem } from '@shared/integrations';
 import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
@@ -3388,6 +3390,24 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
   }
+  // The site's own code (shared/site-code.ts), kept exactly as typed once it passes its check; nothing but space is none.
+  if (op.headCode !== undefined) {
+    if (!hasCode(op.headCode)) delete s.headCode;
+    else {
+      const problem = headCodeProblem(op.headCode);
+      if (problem) fail(codeProblemText('Head code', problem));
+      s.headCode = op.headCode;
+    }
+  }
+  if (op.globalCss !== undefined) {
+    if (!hasCode(op.globalCss)) delete s.globalCss;
+    else {
+      const problem = globalCssProblem(op.globalCss);
+      if (problem) fail(codeProblemText('Custom CSS', problem));
+      s.globalCss = op.globalCss;
+    }
+  }
+  if (op.integrations !== undefined) setIntegrations(s, op.integrations);
   // The header menu keeps its own order unless it follows the pages (engine/header-order.ts): stored only then.
   if (op.headerMenuOrder !== undefined) {
     if (op.headerMenuOrder === 'follow') s.headerMenuOrder = 'follow';
@@ -3413,6 +3433,22 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     else delete s.identity;
   }
   return {};
+}
+
+/**
+ * Adds, changes or removes the integrations given (shared/integrations.ts), leaving the others as they are. The
+ * integrations are stored only while one is added.
+ */
+function setIntegrations(site: ProjectState['site'], patch: NonNullable<Op<'site.update'>['integrations']>): void {
+  const next: SiteIntegrations = site.integrations && typeof site.integrations === 'object' ? { ...site.integrations } : {};
+  if (patch.fathom === null) delete next.fathom;
+  else if (patch.fathom !== undefined) {
+    const problem = fathomSiteIdProblem(patch.fathom.siteId);
+    if (problem) fail(`Fathom Analytics: ${problem}`);
+    next.fathom = { siteId: fathomIdText(patch.fathom.siteId) };
+  }
+  if (Object.keys(next).length) site.integrations = next;
+  else delete site.integrations;
 }
 
 /**

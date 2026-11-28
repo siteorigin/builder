@@ -124,6 +124,9 @@ describe('the export’s page check windows', () => {
     expect(await answer('subFrame', 'http://127.0.0.1:1/menu/')).toBe(false);
     expect(await answer('script', 'https://cdn.example/widget.js')).toBe(false);
     expect(await answer('mainFrame', 'http://127.0.0.1:1/')).toBe(false);
+    // Checking a page is never a visit to the site's analytics: Fathom's script and beacons are left out (#1485).
+    expect(await answer('script', 'https://cdn.usefathom.com/script.js')).toBe(true);
+    expect(await answer('ping', 'https://www.google-analytics.com/g/collect')).toBe(true);
   });
 
   it('opens no window for a check whose windows were disposed of while its session was emptied', async () => {
