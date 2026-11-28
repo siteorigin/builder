@@ -63,7 +63,6 @@ export function composerAction(opts: { text: string; waiting: boolean; running: 
   // `/clear` is never sent, not even as an answer: Chat clears the conversation or says why it can't (#1356).
   if (isClearCommand(opts.text)) return 'clear';
   if (opts.waiting) return 'answer';
-  if (opts.waiting) return 'The AI is waiting for your answer. Answer it, or stop the request, before clearing the chat.';
   if (opts.running) return 'hold';
   return (opts.sinceAnswerMs ?? Infinity) < ANSWER_ECHO_MS ? 'none' : 'send';
 }

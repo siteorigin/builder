@@ -49,6 +49,7 @@ describe('the question the composer answers', () => {
     expect(isClearCommand('/clearer')).toBe(false);
     expect(isClearCommand('clear')).toBe(false);
     expect(isClearCommand('/help')).toBe(false);
+    expect(composerAction({ text: '/clear', waiting: false, running: false })).toBe('clear');
     expect(composerAction({ text: ' /clear ', waiting: false, running: false })).toBe('clear');
     // Not held for after the request, nor sent as the answer to its question.
     expect(composerAction({ text: '/clear', waiting: false, running: true })).toBe('clear');
@@ -62,6 +63,7 @@ describe('the question the composer answers', () => {
     expect(clearRefusal({ ...ready, running: true })).toMatch(/once the AI finishes/);
     expect(clearRefusal({ ...ready, running: true, waiting: true })).toMatch(/waiting for your answer/);
     expect(clearRefusal({ ...ready, sending: true })).toMatch(/still being sent/);
+    expect(clearRefusal({ ...ready, sending: true, running: true })).toMatch(/once the AI finishes/);
     expect(clearRefusal({ ...ready, clearingHistory: true })).toMatch(/history is being cleared/);
     expect(clearRefusal({ ...ready, messages: 0 })).toMatch(/already empty/);
     expect(clearRefusal({ ...ready, configured: false })).toMatch(/Settings/);

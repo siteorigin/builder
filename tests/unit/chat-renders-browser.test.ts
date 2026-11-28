@@ -71,6 +71,9 @@ const ENTRY = [
   "  confirms: () => pendingConfirms().length,",
   "  toasts: () => useStore.getState().toasts.map((t) => t.text),",
   "  shown: () => useStore.getState().conversation?.id,",
+  // A request started from elsewhere (a live session guest) while the chat is idle.
+  "  busy: () => flushSync(() => useStore.setState({ runStatus: 'running', activeRunId: 'run_guest', runConversationId: 'c_r' })),",
+  "  idle: () => flushSync(() => useStore.setState({ runStatus: null, activeRunId: null, runConversationId: null })),",
   '};'
 ].join('\n');
 
@@ -268,6 +271,18 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await page.waitForFunction('so.confirming() === null');
     expect(await page.evaluate('so.shown()')).toBe('c_r');
     expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
+    // Confirmed after a request started while it was asked: nothing is cleared, and the chat says why.
+    await box.press('Enter');
+    await page.waitForFunction('so.confirming() !== null');
+    const toasts = (await page.evaluate<string[]>('so.toasts()')).length;
+    await page.evaluate('so.busy()');
+    await page.evaluate('so.confirm(true)');
+    await page.waitForFunction(`so.toasts().length > ${toasts}`);
+    expect((await page.evaluate<string[]>('so.toasts()')).at(-1)).toContain('once the AI finishes');
+    expect(await page.evaluate('so.shown()')).toBe('c_r');
+    expect(await page.evaluate("so.calls('ai.newConversation')")).toEqual([]);
+    expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
+    await page.evaluate('so.idle()');
     // Confirmed, from the Send button: a new conversation, with the earlier one left without the command as its draft.
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.waitForFunction('so.confirming() !== null');
@@ -289,11 +304,13 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await page.evaluate('so.ask()');
     const box = page.getByRole('textbox', { name: 'Your answer', exact: true });
     await box.fill('/clear');
-    await page.getByRole('button', { name: 'Send answer' }).click();
+    // Enter and Send answer each say why, and neither answers.
     await box.press('Enter');
+    expect(await page.evaluate<string[]>('so.toasts()')).toEqual([expect.stringContaining('waiting for your answer')]);
+    await page.getByRole('button', { name: 'Send answer' }).click();
+    expect(await page.evaluate<string[]>('so.toasts()')).toHaveLength(2);
     expect(await page.evaluate("so.calls('ai.answer')")).toEqual([]);
     expect(await page.evaluate('so.confirming()')).toBeNull();
-    expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('waiting for your answer'));
     expect(await box.inputValue()).toBe('/clear');
   });
 
