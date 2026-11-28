@@ -8,7 +8,7 @@ import type { ProjectState } from '@shared/types';
 import { runSeoAudit } from '@engine/seo-audit';
 import { SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE } from '@engine/seo-rules';
 import { countSeoOverviews, seoOverview, seoOverviewOnce, seoOverviewProblems, seoTextStatus, type SeoOverviewRow } from '../../src/renderer/src/lib/seo-overview';
-import { copy, run, seoSite } from './fixtures/seo-site';
+import { copy, run, auditSite } from './fixtures/seo-site';
 
 const x = (n: number) => 'x'.repeat(n);
 const row = (rows: SeoOverviewRow[], key: string) => rows.find((r) => r.key === key)!;
@@ -37,7 +37,7 @@ function overviewText(s: ProjectState): string[] {
 
 describe('seoOverview', () => {
   it('gives a well set-up site a row per document, each in order and with nothing to fix', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const rows = seoOverview(state);
     expect(rows.map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
     expect(rows.every((r) => r.level === 'ok' && r.problems.length === 0 && r.listed)).toBe(true);
@@ -61,7 +61,7 @@ describe('seoOverview', () => {
   });
 
   it('agrees with the audit on every title and description finding for published documents', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const variants: ProjectState[] = [
       state,
       run(state, { type: 'page.update', pageId: services, seoTitle: x(10), description: x(170) }),
@@ -79,7 +79,7 @@ describe('seoOverview', () => {
   });
 
   it('flags a repeated title or description on every document involved', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const dup = run(state, { type: 'page.update', pageId: services, seoTitle: state.pages[home].seo.title!.toUpperCase().replace(/ /g, '  ') });
     const rows = seoOverview(dup);
     expect(row(rows, HOME(dup)).title.duplicates).toBe(1);
@@ -105,7 +105,7 @@ describe('seoOverview', () => {
   });
 
   it('keeps documents in different languages apart', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const s = run(state, { type: 'page.update', pageId: services, seoTitle: state.pages[home].seo.title! });
     const other = copy(s);
     other.pages[services].language = 'fr';
@@ -114,7 +114,7 @@ describe('seoOverview', () => {
   });
 
   it('lists drafts with a status of their own, repeating only what search engines already list', () => {
-    const { state, home } = seoSite();
+    const { state, home } = auditSite();
     const s = run(
       state,
       { type: 'page.create', pageId: 'pg_draft', title: 'Prices', route: '/prices/' },
@@ -145,7 +145,7 @@ describe('seoOverview', () => {
   });
 
   it('says where each sharing image comes from, and when there is none', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     const s = run(state, { type: 'page.update', pageId: services, socialImage: 'img_bowls' }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', featuredImage: 'img_bowls' });
     let rows = seoOverview(s);
     expect([HOME(s), SERVICES, SPRING].map((k) => row(rows, k).image)).toEqual(['site', 'own', 'featured']);
@@ -162,7 +162,7 @@ describe('seoOverview', () => {
   });
 
   it('says which documents are hidden from search engines, a problem only on Home', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services } = auditSite();
     const s = run(state, { type: 'page.update', pageId: services, noindex: true }, { type: 'page.update', pageId: home, noindex: true });
     const rows = seoOverview(s);
     // A document search engines can't list is kept out of search: not one of the documents with something to fix.
@@ -175,7 +175,7 @@ describe('seoOverview', () => {
   });
 
   it('puts warnings first, then notes, each in the view’s order', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     const s = run(state, { type: 'page.update', pageId: services, seoTitle: x(10) }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: '' });
     const noDescription = run(s, { type: 'site.update', description: '' });
     const rows = seoOverview(noDescription);
@@ -188,7 +188,7 @@ describe('seoOverview', () => {
   });
 
   it('leaves out a record too damaged to read, and still lists the rest', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const damaged = copy(state);
     // A page with no address and an entry that is not one, as a project edited outside the app might have them.
     (damaged.pages as Record<string, unknown>).pg_broken = { id: 'pg_broken', title: 'Broken' };
@@ -198,7 +198,7 @@ describe('seoOverview', () => {
   });
 
   it('leaves out a draft the resolver can’t read, where the audit never looks', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const s = copy(run(state, { type: 'page.create', pageId: 'pg_draft', title: 'Prices', route: '/prices/' }, { type: 'page.update', pageId: 'pg_draft', draft: true }));
     (s.pages.pg_draft.seo as Record<string, unknown>).socialImage = { toString: null };
     expect(() => runSeoAudit(s)).not.toThrow();
@@ -206,7 +206,7 @@ describe('seoOverview', () => {
   });
 
   it('lists a document once however often a hand-edited entry order names it', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const s = copy(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: 'Short.' }));
     s.collections.posts.settings.entryOrder = ['en_spring', 'en_spring'];
     const rows = seoOverview(s);
@@ -215,7 +215,7 @@ describe('seoOverview', () => {
   });
 
   it('works a saved state out once, and a new one again', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     expect(seoOverviewOnce(state)).toBe(seoOverviewOnce(state));
     const next = run(state, { type: 'page.update', pageId: services, seoTitle: x(10) });
     const first = seoOverviewOnce(state);
@@ -224,7 +224,7 @@ describe('seoOverview', () => {
   });
 
   it('tells the timing marks of each overview it works out, and of none it already has', () => {
-    const { state, services } = seoSite();
+    const { state, services } = auditSite();
     let worked = 0;
     countSeoOverviews(() => worked++);
     try {
@@ -240,7 +240,7 @@ describe('seoOverview', () => {
   });
 
   it('stays quick on a site with a few hundred documents', () => {
-    const { state } = seoSite();
+    const { state } = auditSite();
     const ops = Array.from({ length: 300 }, (_, i) => ({ type: 'entry.create' as const, collectionId: 'posts', entryId: `en_${i}`, title: `Post number ${i}`, publishedAt: '2026-01-01', draft: i % 3 === 0, excerpt: i % 2 ? 'The same excerpt for half of the posts, long enough to read well.' : '' }));
     const big = run(state, ...ops);
     const start = performance.now();

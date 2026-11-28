@@ -17,6 +17,7 @@ const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'],
   favicon: { section: 'site-settings', focus: '#site-favicon button' },
   socialImage: { section: 'site-settings', focus: '#site-social-image button' },
   identity: { section: 'site-settings', focus: '#site-identity-kind' },
+  publisherUrl: { section: 'site-settings', focus: '#site-identity-url' },
   logo: { section: 'site-settings', focus: '#site-identity-logo button' },
   sameAs: { section: 'site-settings', focus: '#site-identity-profiles' },
   llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' },
@@ -31,6 +32,7 @@ const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['f
   title: '#page-seo-title',
   description: '#page-seo-description',
   noindex: '#page-seo-noindex',
+  canonical: '#page-seo-canonical',
   socialImage: '[data-seo-field="socialImage"] button',
   structuredData: '#page-structured-type',
   pageTitle: '[data-seo-field="pageTitle"] input'
@@ -177,7 +179,8 @@ const POST_FIELDS: Record<string, string> = {
   author: '[data-entry-field="author"] input',
   excerpt: '[data-entry-field="excerpt"] textarea',
   seoTitle: '[data-entry-field="seoTitle"] input',
-  seoDescription: '[data-entry-field="seoDescription"] textarea'
+  seoDescription: '[data-entry-field="seoDescription"] textarea',
+  canonical: '[data-entry-field="canonical"] input'
 };
 
 /** Focus a field of the open post once the writer shows it, its details opened first when it is one of them. */
