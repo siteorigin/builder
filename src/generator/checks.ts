@@ -20,7 +20,7 @@ import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRe
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
-import { isVideoContract, parseVideoUrl } from '@shared/video';
+import { isVideoContract, parseVideoUrl, videoFieldNotes } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
@@ -1281,6 +1281,104 @@ export function emptySectionMessage(e: EmptySection): string {
   return `the ${e.name}${e.heading ? ` “${e.heading}”` : ''} has no ${e.what} to show visitors. ${e.fix}, or remove the section.`;
 }
 
+/** A link, button or card a tree renders with no accessible name: nothing a screen reader can say for it. */
+export interface UnnamedControl {
+  /** Node in the page or shell tree (the outermost placement, for one inside a component's design). */
+  nodeId: string;
+  what: 'link' | 'button' | 'card';
+  /** Tells apart the controls of one placement: the design's node and the list items it is rendered for. */
+  key: string;
+}
+
+/** A video a tree renders whose player visitors cannot use: one with no title for screen readers, or no address its player can play. */
+export interface VideoProblem {
+  nodeId: string;
+  /** The video's placement: `nodeId`, or the one inside that placement's design. */
+  placementId: string;
+  name: string;
+  problem: 'title' | 'url';
+  message: string;
+}
+
+/** Text as an accessible name reads it: a string's or rich text's words, any run of whitespace as one space. */
+const nameText = (v: unknown) => (typeof v === 'number' ? String(v) : plainText(v)).trim();
+
+/**
+ * What a page or shell tree renders that screen readers cannot use: links, buttons and whole-card links with nothing to
+ * name them (no words, no described picture inside, no accessible name of their own), and videos with no title or no
+ * address their player can play, caption or not. What visitors never meet is left out: content hidden at every size,
+ * or that a condition leaves out. Panels a visitor can open count. Code shows what its own markup says, so the links
+ * and cards inside it are not judged, and neither is a card around it.
+ */
+export function accessibilityProblems(state: ProjectState, tree: NodeTree): { controls: UnnamedControl[]; videos: VideoProblem[] } {
+  const controls: UnnamedControl[] = [];
+  const videos: VideoProblem[] = [];
+  const at = (n: GraphNode, scope: Scope) => `${scope.trail ?? ''}:${n.id}:${(scope.path ?? []).join('/')}`;
+  // Page nodes hidden at every size, from the outermost in: nothing inside them is met by anyone.
+  const hiding: boolean[] = [];
+  let hidden = 0;
+  // The cards being walked, innermost last, until something inside them names them.
+  const cards: Array<{ n: GraphNode; scope: Scope; reportId: string; named: boolean }> = [];
+  const named = () => cards.forEach((c) => (c.named = true));
+  walkRendered(state, tree, {
+    everyState: true,
+    enter: (n) => {
+      const hides = hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined);
+      hiding.push(hides);
+      if (hides) hidden++;
+    },
+    leave: () => {
+      if (hiding.pop()) hidden--;
+    },
+    node: (n, scope, reportId) => {
+      if (n.kind === 'text' && nameText(evaluate(n.text, scope))) named();
+      if (n.kind === 'icon' && nameText(evaluate(n.ariaLabel, scope))) named();
+      if (n.kind === 'image') {
+        const img = evaluate(n.image, scope) as Partial<ImageValue> | null | undefined;
+        // A described picture names the card it is in, and so does what it stands for (said as hidden text when it is
+        // decorative); a decorative picture's own description is never said.
+        if ((img && !img.decorative && nameText(img.alt)) || nameText(evaluate(n.fallbackAlt, scope))) named();
+      }
+      // A link or button inside a card is a problem of its own (CARD_LINK_INTERACTIVE), and has words of its own.
+      if (n.kind === 'link' && (nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope)))) named();
+      // Code says what its own markup says: whatever it shows may name the card.
+      if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') named();
+      if (n.kind !== 'element' || n.link === undefined) return;
+      // A card links the whole container. One with an action follows its destination only while that action is `link`.
+      if (n.action !== undefined && n.action !== null && (!actionWraps(n) || evaluate(n.action, scope) !== 'link')) return;
+      const link = evaluate(n.link, scope) as LinkValue | undefined;
+      if (!resolveLink(link, { state })) return;
+      cards.push({ n, scope, reportId, named: !!nameText(evaluate(n.ariaLabel, scope)) });
+    },
+    done: (n) => {
+      const card = cards[cards.length - 1];
+      if (card?.n !== n) return;
+      cards.pop();
+      if (!card.named && !hidden) controls.push({ nodeId: card.reportId, what: 'card', key: at(n, card.scope) });
+    },
+    link: (n, scope, reportId, _inDef, _ownId, def) => {
+      if (hidden || nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope))) return;
+      const link = evaluate(n.link, scope) as LinkValue | undefined;
+      const goes = !!resolveLink(link, { state });
+      // A button that changes its component's state renders as a real button with nowhere to go. One choosing an option
+      // or an item says that option's or item's name when it has no words of its own.
+      const action = n.stateAction;
+      const control = !goes && stateActionWorks(def, action, n.id);
+      if (!goes && !control) return;
+      if (control && (action?.op === 'select' || (action?.op === 'set' && typeof action.value === 'string'))) return;
+      controls.push({ nodeId: reportId, what: control ? 'button' : 'link', key: at(n, scope) });
+    },
+    code: (def, props, reportId, _placement, n) => {
+      if (hidden || !(isComponent(def, 'media.video') || isComponent(def, 'block.video'))) return;
+      const notes = videoFieldNotes(props);
+      const name = displayName(state, n);
+      if (notes.url?.error) videos.push({ nodeId: reportId, placementId: n.id, name, problem: 'url', message: notes.url.error });
+      if (notes.title?.error) videos.push({ nodeId: reportId, placementId: n.id, name, problem: 'title', message: notes.title.error });
+    }
+  });
+  return { controls, videos };
+}
+
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
 export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
   return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
@@ -2353,6 +2451,66 @@ export function sharedPageIds(state: ProjectState, part: ShellPart): Set<string>
   return new Set([...sets[0]].filter((id) => sets.every((x) => x.has(id))));
 }
 
+/** An HTML id a page renders, with the tree (the page, or the shared header or footer) and the element rendering it. */
+export interface IdUse {
+  id: string;
+  owner: OwnerRef;
+  /** The element in that tree: its own node, or the outermost placement it is rendered through. */
+  nodeId: string;
+}
+
+/** Kept with the source they were read from, as codeIdCache is. */
+const markupIdCache = new WeakMap<ComponentDefinition, { source: string; ids: string[] }>();
+
+/**
+ * Each `id` a code component's markup writes out literally, as often as it writes it: its script, styles and comments
+ * left out, since an id there is no element's. IDs it computes cannot be known here.
+ */
+function markupIds(def: ComponentDefinition): string[] {
+  const source = def.source ?? '';
+  const known = markupIdCache.get(def);
+  if (known?.source === source) return known.ids;
+  const markup = source.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<!--[\s\S]*?-->/gi, ' ');
+  const ids = [...markup.matchAll(LITERAL_ID)].map((m) => m[1] ?? m[2]);
+  markupIdCache.set(def, { source, ids });
+  return ids;
+}
+
+/**
+ * Every HTML id one tree of a page renders, once per element rendering it, panels kept in the page hidden included:
+ * the ids elements and placements carry, those code writes out literally, and again for content a second slot shows.
+ * What a page's own collection loop repeats is the engine's to count (see engine/accessibility.ts).
+ */
+export function treeIdUses(state: ProjectState, owner: OwnerRef, tree: NodeTree): IdUse[] {
+  const out: IdUse[] = [];
+  // The scope of the node being visited, innermost last: an id is reported before its node is done.
+  const scopes: Scope[] = [];
+  const bySlot = new Map<string, IdUse[]>();
+  const add = (id: string, nodeId: string) => {
+    const use = { id, owner, nodeId };
+    out.push(use);
+    for (const slot of scopes[scopes.length - 1]?.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), use]);
+  };
+  walkRendered(state, tree, {
+    kept: true,
+    node: (_n, scope) => void scopes.push(scope),
+    done: () => void scopes.pop(),
+    id: (id, reportId) => add(id, reportId),
+    code: (def, _props, reportId) => markupIds(def).forEach((id) => add(id, reportId)),
+    // Content shown through a second slot of the same name renders its ids a second time.
+    again: (slot) => {
+      for (const use of bySlot.get(slot) ?? []) out.push(use);
+    }
+  });
+  return out;
+}
+
+/** The trees a page renders, each with its owner, in order: the shared header when it shows it, its own content, the shared footer when it shows it. */
+export function pageTrees(state: ProjectState, page: PageDoc): Array<{ owner: OwnerRef; tree: NodeTree }> {
+  const shell = (part: ShellPart) => (showsPart(page, part) ? [{ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }] : []);
+  return [...shell('header'), { owner: { kind: 'page', id: page.id }, tree: page }, ...shell('footer')];
+}
+
 /** A link that renders, with what a person would call it. */
 interface RenderedLink {
   link: LinkValue;
@@ -3243,6 +3401,16 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
   // The shared header and footer the page shows, each in its place around the page's own content.
   if (shell && showsPart(page, 'header')) trees.unshift([{ kind: 'shell', id: 'header' }, state.site.shell.header]);
   if (shell && showsPart(page, 'footer')) trees.push([{ kind: 'shell', id: 'footer' }, state.site.shell.footer]);
+  return headingsIn(state, trees);
+}
+
+/** The headings of the shared header or footer, as every page showing it renders them (see headingOutline). */
+export function partHeadings(state: ProjectState, part: ShellPart): OutlineHeading[] {
+  return headingsIn(state, [[{ kind: 'shell', id: part }, state.site.shell[part]]]).outline;
+}
+
+/** The headings `trees` render in turn, as collectHeadings reads them, and whether code among them shows headings that cannot be read. */
+function headingsIn(state: ProjectState, trees: Array<[OwnerRef, NodeTree]>): { outline: OutlineHeading[]; uninspected: boolean } {
   const out: OutlineHeading[] = [];
   let uninspected = false;
   // The headings shown through each slot: a slot shown again (by a second slot of that name) repeats them.

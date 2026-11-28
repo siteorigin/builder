@@ -584,6 +584,8 @@ export type EditorDestination =
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
+  /** Colors in Site styles, showing one of the site's palettes, with a colour's row (`token`) focused when there is one. */
+  | { kind: 'colors'; scheme: 'light' | 'dark'; token?: string }
   /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
   | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
 

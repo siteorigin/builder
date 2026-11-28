@@ -36,11 +36,17 @@ const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['f
   pageTitle: '[data-seo-field="pageTitle"] input'
 };
 
+/** What Site styles is asked to show by SHOW_COLORS_EVENT: a palette, and a colour's row in Colors. */
+export type ShowColors = { scheme: 'light' | 'dark'; token?: string };
+
+/** The event asking Site styles to show Colors (see ShowColors). */
+export const SHOW_COLORS_EVENT = 'site-styles-show-colors';
+
 /**
  * Take the author to where a Project health finding, an SEO finding or an export note is fixed, closing the dialog that named it.
  * A contact form is selected where it is (its page, a page showing the shared header or footer, its collection's
  * layout, or its component in Component Studio) with Content open and the setting it needs focused; a site setting
- * opens Site styles with its section expanded and its field focused. A form that has gone since is said, and nothing
+ * opens Site styles with its section expanded and its field focused, and a colour pair Colors, in its palette. A form that has gone since is said, and nothing
  * moves.
  */
 export function openEditorDestination(dest: EditorDestination) {
@@ -53,6 +59,14 @@ export function openEditorDestination(dest: EditorDestination) {
     // Site styles shows once the dock has switched to it: the field's section then opens, scrolls to the field and focuses it.
     const { section, focus } = SITE_FIELDS[dest.field];
     requestAnimationFrame(() => openSection(section, { focus }));
+    return;
+  }
+  if (dest.kind === 'colors') {
+    setState({ modal: null });
+    openSiteStyles();
+    // Site styles takes the request once the dock has switched to it: it shows the palette, then opens Colors at the colour.
+    const detail: ShowColors = { scheme: dest.scheme, ...(dest.token ? { token: dest.token } : {}) };
+    requestAnimationFrame(() => window.dispatchEvent(new CustomEvent(SHOW_COLORS_EVENT, { detail })));
     return;
   }
   if (dest.kind === 'pageSeo') {
