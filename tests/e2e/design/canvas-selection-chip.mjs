@@ -107,7 +107,7 @@ const setWidth = async (name) => {
   await pause(900);
 };
 
-// 1. The first section selected: grip, name, Ask AI, Move up (unavailable: it is first), Move down, Duplicate, More.
+// 1. The first section selected: grip, name, Edit with AI, Move up (unavailable: it is first), Move down, Duplicate, More.
 await selectHeading();
 if ((await win.locator('.ov-chip [aria-label="Move up"]').getAttribute('aria-disabled')) !== 'true') throw new Error('Move up should be unavailable on the first section');
 await shot('section-first', '.ov-chip [aria-label="Move up"]');
@@ -147,7 +147,7 @@ await deepPick(frame.locator('h1').first());
 await chipSays('Heading');
 await shot('part-selected', '.ov-chip .of.link');
 // Reached by the arrow keys, as a keyboard user would, so the focus ring shows.
-await win.locator('.ov-chip [aria-label="Ask AI about this"]').focus();
+await win.locator('.ov-chip [aria-label="Edit with AI…"]').focus();
 await win.keyboard.press('ArrowLeft');
 await pause(200);
 await shot('focus-parent', '.ov-chip .of.link:focus-visible', { themes: LIGHT, pointer: 'keep' });
@@ -174,7 +174,7 @@ await dockButton.click();
 await win.locator('.toolbar [aria-label="Right panel"][aria-pressed="false"]').waitFor();
 await pause(700);
 await shot('dock-closed', '.ov-chip .chip-text');
-await win.locator('.ov-chip [aria-label="Ask AI about this"]').focus();
+await win.locator('.ov-chip [aria-label="Edit with AI…"]').focus();
 await win.keyboard.press('ArrowRight');
 await pause(200);
 await shot('focus-text-button', '.ov-chip .chip-text:focus-visible', { themes: LIGHT, pointer: 'keep' });

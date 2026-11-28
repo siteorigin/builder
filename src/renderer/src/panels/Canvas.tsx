@@ -2049,7 +2049,7 @@ export function Canvas() {
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
+        { label: 'Edit with AI…', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
         // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
         ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
@@ -4142,7 +4142,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
     current.current = 0;
   }, [key]);
   /** Too narrow for everything (a phone frame, many actions), the selection's name is the last thing to give way.
-   *  First Ask AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
+   *  First Edit with AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
    *  icon; if the name is still cut, the parent link goes too (Escape still selects the parent). */
   const [compact, setCompact] = useState(0);
   useLayoutEffect(() => setCompact(0), [key, frameWidth, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -4298,7 +4298,7 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
       )}
       {(!compact || onReveal || inspectorHidden) && <span className="chip-sep" aria-hidden="true" />}
       {!compact && (
-        <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" title={`Edit with AI… (${keys(askKeys.hint)})`} aria-label="Edit with AI…" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

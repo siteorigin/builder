@@ -669,7 +669,7 @@ export function LayersPanel() {
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
-      { label: 'Ask AI about this', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => askAiAbout(ref) },
+      { label: 'Edit with AI…', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => askAiAbout(ref) },
       ...(editable && here
         ? [
             { separator: true },

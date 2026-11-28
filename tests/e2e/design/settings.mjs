@@ -159,7 +159,7 @@ for (let i = 0; i < 12; i++) {
 await shot('general-focus', '.modal [role="tab"]:focus-visible', LIGHT, { keepFocus: true });
 await shot('context', '.modal', LIGHT, { full: true, keepFocus: true });
 
-// ---- Keyboard shortcuts: Ask AI's recorder ----
+// ---- Keyboard shortcuts: Edit with AI's recorder ----
 const shortcutRow = '.modal .settings-shortcut';
 await win.locator(shortcutRow).getByRole('button', { name: /^Change/ }).focus();
 await win.keyboard.press('Enter');

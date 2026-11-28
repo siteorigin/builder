@@ -971,14 +971,14 @@ function clipboardActions(owner: OwnerRef, plan: ReturnType<typeof planLayers>):
   return { copy: plan && owner.kind === 'page' ? asPlanned(plan, async (p) => void copySelection(p)) : null, paste: () => void pasteFromMenu() };
 }
 
-/** Ask AI, plus a menu of everything else that can be done to the selection. */
+/** Edit with AI, plus a menu of everything else that can be done to the selection. */
 function SelectionActions({ title, selection, items, group, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; group?: string; ask?: boolean }) {
   const menu = useMenu();
   const askKeys = useAskAiKeys();
   return (
     <>
       {ask && (
-        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (${platformKeys(askKeys.hint)})`} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" aria-label={`Edit ${title} with AI…`} title={`Edit ${title} with AI… (${platformKeys(askKeys.hint)})`} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

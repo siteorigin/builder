@@ -66,7 +66,7 @@ export function menuHistoryOwner(c: HistoryContext, fromKey: boolean): HistoryOw
 
 /**
  * Shortcuts that still work from a visitor's page or a field on the page: they open editor panels or save, and never
- * change the site or its text. Ask AI is one too, on whatever key the author gave it (`askAi`).
+ * change the site or its text. Edit with AI is one too, on whatever key the author gave it (`askAi`).
  */
 const PREVIEW_KEYS = new Set(['k', 's', 'e', 'f', '\\', '|']);
 
