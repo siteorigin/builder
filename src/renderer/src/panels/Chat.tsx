@@ -1619,7 +1619,8 @@ export function Chat() {
             {anyRunStatus === 'awaiting-input' ? 'The AI needs your answer in another conversation' : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}
           </span>
           <span className="run-actions">
-            {runThreadId && (
+            {/* Not while the form-routing review is open over the chat: that question is answered there (#1322). */}
+            {runThreadId && !(anyRunStatus === 'awaiting-input' && reviewing) && (
               // The one filled action is the answer it waits for; going there otherwise is quiet, like Stop.
               <button className={`btn btn-sm ${anyRunStatus === 'awaiting-input' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => toRunThread()}>
                 {anyRunStatus === 'awaiting-input' ? 'Answer' : 'Go to conversation'}
