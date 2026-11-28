@@ -2005,11 +2005,11 @@ new MutationObserver(scheduleForms).observe(document.documentElement, {
   attributeFilter: ['action', 'method', 'data-netlify', 'value', 'aria-labelledby', 'aria-label', 'href']
 });
 
-/** What the visitor typed into a form: its text answers, long enough to recognise in a request. */
+/** What the visitor typed into a form: its text answers and dates and times, long enough to recognise in a request. */
 function answersOf(form) {
   const answers = [];
   for (const el of Element.prototype.querySelectorAll.call(form, 'input, textarea, select')) {
-    if (el instanceof HTMLInputElement && !['text', 'email', 'tel', 'url', 'search', 'number'].includes(el.type)) continue;
+    if (el instanceof HTMLInputElement && !['text', 'email', 'tel', 'url', 'search', 'number', 'date', 'time'].includes(el.type)) continue;
     const value = String(el.value ?? '').trim();
     if (value.length >= 3) answers.push(value);
   }

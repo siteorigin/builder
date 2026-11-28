@@ -247,13 +247,80 @@ describe('editing a form’s questions', () => {
   });
 
   it('shows each type of field only the settings it uses, and offers the new types only where the form renders them', () => {
-    expect(formFieldSettingsHidden({ type: 'choice' })).toEqual(['placeholder']);
-    expect(formFieldSettingsHidden({ type: 'checkbox' })).toEqual(['placeholder', 'options']);
-    for (const type of ['text', 'email', 'tel', 'textarea', undefined]) expect(formFieldSettingsHidden({ type })).toEqual(['options']);
+    expect(formFieldSettingsHidden({ type: 'choice' })).toEqual(['placeholder', 'value']);
+    // A dropdown's placeholder is what it shows until an answer is picked (issue #1337).
+    expect(formFieldSettingsHidden({ type: 'select' })).toEqual(['value']);
+    for (const type of ['checkbox', 'date', 'time']) expect(formFieldSettingsHidden({ type })).toEqual(['placeholder', 'options', 'value']);
+    // A hidden field sends its value, and there is nothing for a visitor to fill in or leave out.
+    expect(formFieldSettingsHidden({ type: 'hidden' })).toEqual(['placeholder', 'options', 'required']);
+    for (const type of ['text', 'email', 'tel', 'textarea', undefined]) expect(formFieldSettingsHidden({ type })).toEqual(['options', 'value']);
     expect(offersFormChoices(contactForm)).toBe(true);
     expect(offersFormChoices(LEGACY)).toBe(false);
     // A copy whose code no longer names fields the theme's way is custom code: its fields are its own business.
     expect(offersFormChoices({ ...contactForm, source: contactForm.source!.replace("'subject', ", '') })).toBe(false);
+  });
+
+  it('offers dropdowns, dates, times and hidden fields on both forms, a hidden field with a value of its own (issue #1337)', () => {
+    for (const componentId of ['contact.form', 'block.signup']) {
+      const def = getTheme('foundation').components.find((c) => c.componentId === componentId)!;
+      const fields = def.properties.fields;
+      if (fields?.type !== 'list') throw new Error(`${componentId} has no fields list`);
+      const type = fields.fields.type;
+      expect(type?.type === 'enum' && type.options.map((o) => o.value)).toEqual(['text', 'email', 'tel', 'textarea', 'date', 'time', 'choice', 'select', 'checkbox', 'hidden']);
+      expect(fields.fields.value).toMatchObject({ type: 'string', default: '' });
+      expect(offersFormChoices(def)).toBe(true);
+      expect(formRefusesUnchoosable(def)).toBe(true);
+    }
+  });
+
+  it('adds a dropdown and a hidden field, keeping the dropdown’s choices and the hidden value through a switch of type (issue #1337)', () => {
+    const { s, nodeId } = withForm();
+    let next = edit(
+      s,
+      nodeId,
+      { type: 'instance.listInsert', item: { label: 'Suite', type: 'select', required: true, options: ['Garden suite', 'Harbour suite'] } },
+      { type: 'instance.listInsert', item: { label: 'Listing', type: 'hidden', value: 'Oak House' } }
+    );
+    const suite = fieldNamed(next, nodeId, 'Suite');
+    expect(suite).toMatchObject({ name: 'suite', type: 'select', required: true });
+    expect(pairs(choicesOf(next, nodeId, 'Suite'))).toEqual([
+      ['Garden suite', 'Garden suite'],
+      ['Harbour suite', 'Harbour suite']
+    ]);
+    const listing = fieldNamed(next, nodeId, 'Listing');
+    expect(listing).toMatchObject({ name: 'listing', type: 'hidden', value: 'Oak House' });
+    // A dropdown and radio buttons ask the same question: switching keeps the choices and what each is sent as.
+    next = edit(next, nodeId, { type: 'instance.setProp', itemId: suite.id, field: 'type', value: 'choice' }, { type: 'instance.setProp', itemId: suite.id, field: 'type', value: 'select' });
+    expect(pairs(choicesOf(next, nodeId, 'Suite'))).toEqual([
+      ['Garden suite', 'Garden suite'],
+      ['Harbour suite', 'Harbour suite']
+    ]);
+    next = edit(next, nodeId, { type: 'instance.setProp', itemId: listing.id, field: 'type', value: 'text' }, { type: 'instance.setProp', itemId: listing.id, field: 'type', value: 'hidden' });
+    expect(fieldNamed(next, nodeId, 'Listing').value).toBe('Oak House');
+    expect(validateState(next).filter((d) => d.code === 'FORM_NO_CHOICES' || d.code === 'FORM_FIELD_KEYS')).toEqual([]);
+  });
+
+  it('warns about a dropdown with nothing to choose from, and says the form will not send (issue #1337)', () => {
+    const { s, nodeId } = withForm();
+    const next = edit(s, nodeId, { type: 'instance.listInsert', item: { label: 'Suite', type: 'select' } });
+    expect(validateState(next).filter((d) => d.code === 'FORM_NO_CHOICES').map((d) => d.message)).toEqual([
+      expect.stringContaining('the contact form\'s “Suite” field has no choices to pick from, so visitors cannot send the form. Add its choices, or change its type.')
+    ]);
+    expect(formUnchoosable([{ type: 'select', options: [{ id: 'a', label: '  ', value: 'x' }] }, { type: 'select', options: [{ id: 'b', label: 'Yes', value: 'Yes' }] }, { type: 'hidden' }])).toEqual([0]);
+  });
+
+  it('leaves a hidden field’s label and value out of the page’s words, and a dropdown’s placeholder in them (issue #1337)', () => {
+    const { s, nodeId } = withForm([
+      { id: 'f1', label: 'Zanzibar quill', name: 'listing', type: 'hidden', required: false, placeholder: '', value: 'Quokka lantern' },
+      { id: 'f2', label: 'Suite', name: 'suite', type: 'select', required: false, placeholder: 'Marmalade prompt', options: [{ id: 'o1', label: 'Garden', value: 'Garden' }] }
+    ]);
+    const words = renderedContent(s, home(s)).filter((c) => c.source?.kind === 'prop' && c.source.prop === 'fields');
+    expect(words.map((c) => c.value)).not.toContain('Zanzibar quill');
+    expect(words.map((c) => c.value)).not.toContain('Quokka lantern');
+    expect(words.find((c) => c.value === 'Marmalade prompt')?.source).toEqual({ kind: 'prop', prop: 'fields', itemId: 'f2', field: 'placeholder' });
+    // Shown as a text field, its label is on the page again.
+    const shown = edit(s, nodeId, { type: 'instance.setProp', itemId: 'f1', field: 'type', value: 'text' });
+    expect(renderedContent(shown, home(shown)).map((c) => c.value)).toContain('Zanzibar quill');
   });
 });
 

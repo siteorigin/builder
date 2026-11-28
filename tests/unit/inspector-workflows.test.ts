@@ -4,6 +4,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, anchorCapable, codeTakesOverrides, enclosingRepeatProp, entranceCapable } from '@engine/tree';
 import { validateState } from '@engine/validate';
+import { isSampleFinding } from '@engine/sample-content';
 import { defFile, generateProject, overrideClass } from '@generator/index';
 import { pageSections, planSectionPick } from '@generator/checks';
 import { columnLayoutPart } from '@shared/styles';
@@ -453,8 +454,9 @@ describe('paste what was copied (#62)', () => {
     expect((tree(r.state).nodes[id] as InstanceNode).definitionId).toBe(stats.definitionId);
     expect(r.state.pages[s.site.homePageId].nodes[stats.id]).toBeDefined();
     // The paste adds no problem: the only one is the fixture's own, the starter's hero and the placed one both Heading 1s,
-    // beside the starter's sections still waiting for their pictures.
-    expect(validateState(s).filter((d) => d.code !== 'IMAGE_UNFILLED').map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // beside the starter's sections still waiting for their pictures. The starter's own sample text (#1640) is named too,
+    // and the paste changes none of it (below).
+    expect(validateState(s).filter((d) => d.code !== 'IMAGE_UNFILLED' && !isSampleFinding(d)).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
     expect(validateState(r.state)).toEqual(validateState(s));
     // Beside the root, where the component's one designated root would be joined by another, it is refused.
     rejects(() => paste(s, clip, inComponent), /inside the component, not beside its root/);
