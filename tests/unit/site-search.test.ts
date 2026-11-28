@@ -334,6 +334,41 @@ describe('site search index', () => {
     expect(index.some((e) => e.route === '/portfolio/workshop-commission-3/')).toBe(false);
     expect(() => generateProject(s)).not.toThrow();
   });
+
+  it('lists every word Foundation’s sections show, the ones their canvas cannot type over included (#1351)', async () => {
+    let s = withSearch();
+    s = apply(
+      s,
+      ['features.bento', 'pricing.toggle', 'pricing.compare', 'data.table', 'content.media'].map((componentId) => ({
+        type: 'node.insert',
+        owner: home(s),
+        componentId,
+        ...(componentId === 'content.media' ? { props: { points: [{ id: 'p1', text: 'Cinnabar freight acoustic calibration' }] } } : {})
+      })) as EditOperation[]
+    );
+    const index = generateProject(s).get(INDEX)!;
+    const { loadPages, searchPages } = await runtime(index);
+    const pages = await loadPages();
+    const homeText = pages.find((e) => e.route === '/')!.text;
+    for (const words of [
+      // The bento's featured card, an object rather than a list item.
+      'One designer, start to finish',
+      // Both of the billing switch's prices and notes: the page ships both, one shown at a time.
+      '$29',
+      'per year, billed once',
+      // The comparison's plans, with their prices.
+      'Consultation',
+      '$350',
+      'One session',
+      // The table's column headings and cells.
+      'Start time',
+      'Wheel throwing',
+      // Content with image's points, which its canvas marks.
+      'Cinnabar freight acoustic calibration'
+    ])
+      expect(homeText).toContain(words);
+    expect(searchPages(pages, 'wheel throwing').results.map((r) => r.route)).toContain('/');
+  });
 });
 
 describe('site search as the website runs it', () => {
