@@ -279,3 +279,6 @@ export function detachOps(state: ProjectState, collectionId: string): EditOperat
   if (source) ops.push({ type: 'source.remove', sourceId: source.id });
   return ops;
 }
+
+/** Why the kind is fixed once connected. Detaching keeps the entries, and a collection with entries cannot connect again, so detaching is no way to switch kinds. */
+export const SOURCE_KIND_LOCKED_HINT = 'A connected source keeps its kind. Another kind needs an empty collection: detaching keeps its entries, so it cannot be connected again.';
