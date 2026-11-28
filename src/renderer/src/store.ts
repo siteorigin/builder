@@ -761,19 +761,91 @@ export function setPageOpener(open: (pageId: string) => void) {
   pageOpener = open;
 }
 
+/** How long a saved Undo or Redo waits for the editor to show it before asking for the whole project again (projectHistory). */
+const HISTORY_SHOWN_MS = 3000;
+/** An Undo or Redo is on its way (projectHistory): sent, and not shown yet. */
+let historyBusy = false;
+
 /**
  * Undo or redo the project, from any button, shortcut or menu. A failure is said at once. One whose change is not on
  * the page shown says what it changed and where, and offers that page (#903): the author sees nothing happen otherwise.
+ *
+ * One step goes at a time, until the editor shows it (#1452). Held down, the key repeats far faster than a step is
+ * saved and shown: a press made meanwhile, in either direction, is dropped, never kept for later, so letting go stops
+ * within a step of what the editor shows instead of undoing on for seconds, and nothing pressed before an edit is
+ * taken after it.
  */
 export function projectHistory(action: 'undo' | 'redo') {
+  if (historyBusy) return;
   const before = getState().snapshot;
-  void trackHistory(() => (action === 'redo' ? api.project.redo() : api.project.undo())).then(
+  const run = trackHistory(() => (action === 'redo' ? api.project.redo() : api.project.undo()));
+  historyBusy = true;
+  void run.then(
     (r) => {
       if (r && !r.ok && r.error) toast(r.error.message, 'error');
       else if (r?.ok && before) void noticeElsewhere(action, r, before);
     },
     (e: unknown) => toast(errorText(e), 'error')
   );
+  // It settles once, and only then can the next go.
+  void stepShown(action, before, run, HISTORY_SHOWN_MS).then(() => void (historyBusy = false));
+}
+
+/** The History entry an Undo takes back, or a Redo brings back, by History as `snap` shows it. */
+function historyEntryFor(action: 'undo' | 'redo', snap: ProjectSnapshot): string | undefined {
+  const entries = snap.history?.entries ?? [];
+  const next = entries.findIndex((e) => !e.applied);
+  const cursor = next < 0 ? entries.length : next;
+  return (action === 'undo' ? entries[cursor - 1] : entries[cursor])?.id;
+}
+
+/**
+ * Resolves once the editor shows the step `run` takes, that opening is no longer shown, or the step was refused or
+ * failed. A step shows before its reply comes: the project announces it as soon as its journal is on disk
+ * (ProjectSession.persist), while the rest of its save goes on. Until the reply it is known by its History entry
+ * changing (another change shown meanwhile, an edit saved ahead of it, says nothing about it); once saved, by its own
+ * revision. Saved and still not shown after `ms`, it asks for the whole project again, every `ms` until it shows: an
+ * update lost on its way never lets a step go that the editor has not shown, nor holds Undo and Redo back once the
+ * editor has caught up.
+ */
+function stepShown(action: 'undo' | 'redo', before: ProjectSnapshot | null, run: Promise<ApplyResult | null | undefined>, ms: number): Promise<void> {
+  // With no project shown there is nothing to see: the reply is enough.
+  if (!before)
+    return run.then(
+      () => undefined,
+      () => undefined
+    );
+  const { workspaceKey } = before;
+  const entry = historyEntryFor(action, before);
+  /** The step's own revision, once its reply has come. */
+  let saved: number | null = null;
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let over = false;
+    const shown = () => {
+      const s = getState().snapshot;
+      if (!s || s.workspaceKey !== workspaceKey) return true;
+      if (saved !== null && s.revision >= saved) return true;
+      return entry !== undefined && s.history?.entries.find((e) => e.id === entry)?.applied === (action === 'redo');
+    };
+    const finish = () => {
+      over = true;
+      stop();
+      clearInterval(timer);
+      resolve();
+    };
+    const stop = useStore.subscribe(() => void (shown() && finish()));
+    void run.then(
+      (r) => {
+        if (over) return;
+        if (!r?.ok) return finish();
+        saved = r.revision;
+        if (shown()) return finish();
+        timer = setInterval(() => void Promise.resolve().then(() => api.project.resync()).catch(() => undefined), ms);
+      },
+      () => finish()
+    );
+  });
 }
 
 /** The notice for an Undo or Redo that changed a page out of sight (see projectHistory). `label` stands in for a step
