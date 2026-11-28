@@ -1058,7 +1058,7 @@ export const OPERATION_SCHEMAS = {
     redirectFrom: z.string().max(1100).optional().describe('An address the post had on an earlier site, such as "/2019/03/winter-workshop/", kept working by sending visitors to the new entry. Nothing else may use it.'),
     imported: ENTRY_IMPORTED
   }),
-  'entry.update': z.object({ type: z.literal('entry.update'), collectionId: z.string(), entryId: z.string(), title: z.string().min(1).max(200).optional(), ...ENTRY_FIELDS, imported: ENTRY_IMPORTED }),
+  'entry.update': z.object({ type: z.literal('entry.update'), collectionId: z.string(), entryId: z.string(), title: z.string().min(1).max(200).optional(), ...ENTRY_FIELDS }),
   'entry.reorder': z.object({
     type: z.literal('entry.reorder'),
     collectionId: z.string(),

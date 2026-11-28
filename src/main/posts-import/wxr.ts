@@ -153,8 +153,11 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   const earlierIds = siteKey && known && Object.hasOwn(known.ids, siteKey) ? known.ids[siteKey] : undefined;
   const earlierPath = (path: string) => {
     const at = known && Object.hasOwn(known.paths, path) ? known.paths[path] : undefined;
-    return at && (at.site === undefined || at.site === siteKey) ? at.entryId : undefined;
+    return at && at.site === siteKey ? at.entryId : undefined;
   };
+  // Within the site's own installation: another one on the same host has posts of its own.
+  const home = siteKey ? new URL(siteKey).pathname.replace(/\/+$/, '') : '';
+  const inSite = (url: URL) => url.protocol !== 'relative:' && `${url.pathname.replace(/\/+$/, '')}/`.startsWith(`${home}/`);
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
   const byId = new Map<string, string>();
@@ -224,7 +227,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
       // A post this export leaves out that the project already has: its entry.
-      const earlier = p !== null ? (earlierIds && Object.hasOwn(earlierIds, p) ? earlierIds[p] : undefined) : earlierPath(sitePath(url.pathname).toLowerCase());
+      const earlier = !inSite(url) ? undefined : p !== null ? (earlierIds && Object.hasOwn(earlierIds, p) ? earlierIds[p] : undefined) : earlierPath(sitePath(url.pathname).toLowerCase());
       if (earlier) return { type: 'entry', target: earlier, ...tab };
       // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
       // which named something other than the page at its path.

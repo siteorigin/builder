@@ -51,12 +51,12 @@ export interface SourcePost {
 
 /**
  * The posts of the project imported before (#1519), so a link in a post to one an export leaves out still goes to its
- * entry: entry IDs by site (ParsedSource.siteKey), then by the post's ID there; and by an old address kept for one,
- * with the site it came from when it says.
+ * entry: entry IDs by site (ParsedSource.siteKey), then by the post's ID there; and by its address or an old address kept
+ * for it, with the site it came from.
  */
 export interface KnownPosts {
   ids: Record<string, Record<string, string>>;
-  paths: Record<string, { entryId: string; site?: string }>;
+  paths: Record<string, { entryId: string; site: string }>;
 }
 
 /** A picture a post shows: the file found for it inside the chosen folder, or why there is none. */

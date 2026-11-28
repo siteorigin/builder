@@ -7,7 +7,7 @@
 import type { AssetRecord, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasDetailPages, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
-import { todayArticleDate } from '@shared/articles';
+import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { addressSlug, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
 import { cleanBlocks, isImageBlock, isListBlock, spanRuns } from '@shared/richtext';
 import { newId } from '@shared/ids';
@@ -120,14 +120,19 @@ function alreadyImported(state: ProjectState, source: ParsedSource, route: strin
   const site = source.siteKey;
   const byPost = new Map<string, EntryDoc>();
   const byAddress = new Map<string, EntryDoc>();
+  // Only an entry imported from the same site is known again, by its post's ID, else by its address or an old address
+  // kept for it: a post written in the project, or an old address an author pointed at one, says nothing of where it
+  // came from.
+  const same = (e: EntryDoc | undefined): e is EntryDoc => !!site && e?.imported?.site === site;
   for (const e of Object.values(c.entries)) {
-    if (!site || e.imported?.site !== site) continue;
-    byPost.set(e.imported.postId, e);
-    // Its own address is a sign only for a post of the same site: one written in the project may sit at any address.
+    if (!same(e)) continue;
+    byPost.set(e.imported!.postId, e);
     if (hasDetailPages(c.settings)) byAddress.set(lower(`${route}${e.slug}/`), e);
   }
-  // An old address kept for an entry was the address of what it stands for.
-  for (const r of redirectRecords(state)) if (r.entryId !== undefined && Object.hasOwn(c.entries, r.entryId)) byAddress.set(lower(r.from), c.entries[r.entryId]);
+  for (const r of redirectRecords(state)) {
+    const e = r.entryId !== undefined && Object.hasOwn(c.entries, r.entryId) ? c.entries[r.entryId] : undefined;
+    if (same(e)) byAddress.set(lower(r.from), e);
+  }
   const claimed = new Set<string>();
   const claim = (key: string, e: EntryDoc | undefined) => {
     if (!e || claimed.has(e.id)) return;
@@ -138,9 +143,8 @@ function alreadyImported(state: ProjectState, source: ParsedSource, route: strin
   if (site) for (const p of source.posts) if (p.postId) claim(p.key, byPost.get(p.postId));
   for (const p of source.posts) {
     if (out.has(p.key) || !p.oldPath) continue;
-    const at = byAddress.get(lower(p.oldPath));
-    // An address another site's post, or another post of this site, had before is no sign of this one.
-    if (at && (!at.imported || (at.imported.site === site && !p.postId))) claim(p.key, at);
+    // An address another post of the site, known by its ID, had before is no sign of this one.
+    if (!p.postId) claim(p.key, byAddress.get(lower(p.oldPath)));
   }
   return out;
 }
@@ -150,15 +154,18 @@ export function knownPosts(state: ProjectState): KnownPosts {
   const out: KnownPosts = { ids: {}, paths: {} };
   const c = Object.hasOwn(state.collections, POSTS_COLLECTION_ID) ? state.collections[POSTS_COLLECTION_ID] : undefined;
   if (!c) return out;
+  const origin = (e: EntryDoc | undefined) => (e?.imported && typeof e.imported.site === 'string' && typeof e.imported.postId === 'string' ? e.imported : undefined);
   for (const e of Object.values(c.entries)) {
-    if (!e.imported || typeof e.imported.site !== 'string' || typeof e.imported.postId !== 'string') continue;
-    const ids = Object.hasOwn(out.ids, e.imported.site) ? out.ids[e.imported.site] : (out.ids[e.imported.site] = {});
-    ids[e.imported.postId] = e.id;
+    const from = origin(e);
+    if (!from) continue;
+    const ids = Object.hasOwn(out.ids, from.site) ? out.ids[from.site] : (out.ids[from.site] = {});
+    ids[from.postId] = e.id;
+    // A post whose old address is its address here, so none was kept.
+    if (hasDetailPages(c.settings)) out.paths[lower(`${c.settings.route}${e.slug}/`)] = { entryId: e.id, site: from.site };
   }
   for (const r of redirectRecords(state)) {
-    if (r.entryId === undefined || !Object.hasOwn(c.entries, r.entryId)) continue;
-    const site = c.entries[r.entryId].imported?.site;
-    out.paths[lower(r.from)] = { entryId: r.entryId, ...(typeof site === 'string' ? { site } : {}) };
+    const from = r.entryId !== undefined && Object.hasOwn(c.entries, r.entryId) ? origin(c.entries[r.entryId]) : undefined;
+    if (from) out.paths[lower(r.from)] = { entryId: r.entryId!, site: from.site };
   }
   return out;
 }
@@ -323,12 +330,18 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   // posts each one links to, as its text was read, are kept for that.
   const texts = source.posts.map((p) => {
     const notes: string[] = [];
-    const planned = { ...planBody(p, media, missing, entryIds, notes), notes, linked: new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : []))) };
+    const links = p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' ? [s.link.target] : []));
+    // The imported posts it links to, by key, and the entries already in the project it links to (read so).
+    const linked = new Set(links.flatMap((t) => (t.startsWith(POST_LINK_PREFIX) ? [t.slice(POST_LINK_PREFIX.length)] : [])));
+    const linkedEntries = new Set(links.filter((t) => !t.startsWith(POST_LINK_PREFIX)));
+    const planned = { ...planBody(p, media, missing, entryIds, notes), notes, linked, linkedEntries };
     if (opts.consume) (p as { body: RichText }).body = [];
     return planned;
   });
   // A post already here is as the project has it, which it stays when it is skipped.
   const arrivesDraft = new Map(source.posts.map((p, i) => [p.key, already.has(p.key) ? !!already.get(p.key)!.draft : p.draft || texts[i].cut]));
+  // A post already here, published, that updating makes a draft: the source has it as one, or its text was cut.
+  const updateDrafts = new Set(source.posts.flatMap((p, i) => (already.has(p.key) && !already.get(p.key)!.draft && !p.unread && (p.draft || texts[i].cut) ? [p.key] : [])));
   // Every post's categories and tags, those of the posts that are new first: room for a term goes to them before any
   // brought only by updating a post already here, which alone never stops importing the new ones.
   const order = source.posts.map((_, i) => i).sort((a, b) => Number(already.has(source.posts[a].key)) - Number(already.has(source.posts[b].key)));
@@ -356,7 +369,13 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     if (!arrivesDraft.get(p.key)) {
       for (const key of texts[i].linked) {
         const target = byKey.get(key);
-        if (target && arrivesDraft.get(key)) notes.push(`It links to “${clip(target.title, 200).text}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`);
+        if (!target) continue;
+        if (arrivesDraft.get(key)) notes.push(`It links to “${clip(target.title, 200).text}”, which ${already.has(key) ? 'is a draft' : 'arrives as a draft'}: publish that post, or change the link, before the website is exported.`);
+        else if (updateDrafts.has(key)) notes.push(`It links to “${clip(target.title, 200).text}”, which updating the posts already here makes a draft: publish that post, or change the link, before the website is exported.`);
+      }
+      for (const id of texts[i].linkedEntries) {
+        const e = findEntry(state, id)?.entry;
+        if (e?.draft) notes.push(`It links to “${clip(e.title, 200).text}”, which is a draft: publish that post, or change the link, before the website is exported.`);
       }
     }
     const { slug, wanted } = slugs[i];
@@ -432,8 +451,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       route: entryRoute,
       ...(wanted ? { wantedSlug: wanted } : {}),
       // A post already here keeps its own date when the source has none.
-      date: p.date ?? was?.publishedAt ?? today,
-      ...(p.date || was ? {} : { dateAssigned: true }),
+      date: p.date ?? (isArticleDate(was?.publishedAt) ? was.publishedAt : today),
+      ...(p.date || isArticleDate(was?.publishedAt) ? {} : { dateAssigned: true }),
       draft,
       ...(draftReason ? { draftReason } : {}),
       ...(author ? { author } : {}),
@@ -445,8 +464,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       ...(redirectFrom ? { redirectFrom } : {}),
       ...(lostAddress ? { lostAddress } : {}),
       ...(p.oldPath ? { oldPath: p.oldPath } : {}),
-      // A post new here, or one known only by its address until now, keeps its ID from now on.
-      ...((!was || !was.imported) && p.postId && source.kind === 'wordpress' && source.siteKey ? { postId: p.postId } : {}),
+      ...(!was && p.postId && source.kind === 'wordpress' && source.siteKey ? { postId: p.postId } : {}),
       ...(was ? { existing: { draft: was.draft, ...(p.unread ? { unread: true as const } : {}) } } : {}),
       ...(keepFeatured ? { keepFeatured: true as const } : {}),
       notes
@@ -600,14 +618,13 @@ export function planOperations(plan: PostImportPlan, assetIds: Map<string, strin
         collectionId: c.id,
         entryId: p.entryId,
         title: p.title,
-        publishedAt: p.date,
+        ...(p.dateAssigned ? {} : { publishedAt: p.date }),
         ...(p.draft && !p.existing.draft ? { draft: true } : {}),
         author: p.author ?? null,
         excerpt: p.excerpt ?? null,
         ...(featured ? { featuredImage: featured } : p.featured || p.keepFeatured ? {} : { featuredImage: null }),
         terms: p.terms,
-        body: body(p),
-        ...(p.postId && plan.source.siteKey ? { imported: { site: plan.source.siteKey, postId: p.postId } } : {})
+        body: body(p)
       } as EditOperation);
     } else if (p.linksEntries) ops.push({ type: 'entry.update', collectionId: c.id, entryId: p.entryId, body: body(p) } as EditOperation);
   }

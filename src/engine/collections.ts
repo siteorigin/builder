@@ -921,7 +921,6 @@ export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart
   const entry = getEntry(c, op.entryId);
   refuseSynced(c, 'changed', sync);
   applyEntryFields(state, c, entry, op, atStart);
-  if (op.imported !== undefined) setImported(entry, op.imported);
   return entryResult(c, entry);
 }
 

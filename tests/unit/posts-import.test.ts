@@ -406,23 +406,29 @@ describe('planning an import', () => {
     expect(plan.posts.some((p) => p.existing)).toBe(false);
   });
 
-  it('learns the ID of a post it knew only by its old address, keeps its date, and leaves it published when skipped', async () => {
+  it('keeps a post’s date when the export has none, takes a newer one, and warns of a link updating makes a draft', async () => {
     const dir = wordpressFolder();
     const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
-    for (const e of Object.values(first.collections.posts.entries)) delete e.imported;
     const [winter, spring] = Object.values(first.collections.posts.entries);
     const source = await readWordPress(join(dir, 'export.xml'), {});
-    // Spring menu is a draft at the source now, and Winter's date can't be read.
-    Object.assign(source.posts[1], { draft: true, draftReason: 'it is a draft' });
+    // Winter's date can't be read; Spring menu is a draft at the source now, with a new date.
     source.posts[0].date = null;
+    Object.assign(source.posts[1], { draft: true, draftReason: 'it is a draft', date: '2019-04-09' });
     const plan = planPostImport(first, source, '2026-11-24');
-    expect(plan.posts[0]).toMatchObject({ date: winter.publishedAt, postId: '12' });
+    expect(plan.posts[0].date).toBe(winter.publishedAt);
     expect(plan.posts[0].dateAssigned).toBeUndefined();
-    // Winter links to Spring menu, which stays published when it is skipped.
-    expect(plan.posts[0].notes.filter((n) => n.includes('arrives as a draft'))).toEqual([]);
+    // Winter links to Spring menu, which stays published when skipped, and becomes a draft when updated: said once.
+    expect(plan.posts[0].notes.filter((n) => n.includes('a draft'))).toEqual(['It links to “Spring menu”, which updating the posts already here makes a draft: publish that post, or change the link, before the website is exported.']);
     const { after } = commit(structuredClone(first), source, 'update');
-    expect(after.collections.posts.entries[winter.id]).toMatchObject({ publishedAt: winter.publishedAt, imported: { site: 'https://riverside.example', postId: '12' } });
-    expect(after.collections.posts.entries[spring.id].draft).toBe(true);
+    expect(after.collections.posts.entries[winter.id].publishedAt).toBe(winter.publishedAt);
+    expect(after.collections.posts.entries[spring.id]).toMatchObject({ publishedAt: '2019-04-09', draft: true });
+    // A saved date the engine would refuse is never written back.
+    const damaged = structuredClone(first);
+    damaged.collections.posts.entries[winter.id].publishedAt = 'someday';
+    const again = await readWordPress(join(dir, 'export.xml'), {});
+    again.posts[0].date = null;
+    const ops = planOperations(selectPlan(planPostImport(damaged, again, '2026-11-24'), 'update'), new Map());
+    expect(ops.find((o) => o.type === 'entry.update' && o.entryId === winter.id)).not.toHaveProperty('publishedAt');
   });
 
   it('gives a new post’s grouping the room a post already here would have taken', async () => {
@@ -440,18 +446,41 @@ describe('planning an import', () => {
     expect(Object.keys(plan.taxonomies ?? {})).toContain('tags');
   });
 
-  it('recognises a post by its kept old address when the entry does not say where it came from', async () => {
+  it('knows a post with no ID by an old address kept for a post of its site, never by one kept for a post written here', async () => {
     const dir = wordpressFolder();
     const { after: first } = commit(site(), await readWordPress(join(dir, 'export.xml'), {}));
-    for (const e of Object.values(first.collections.posts.entries)) delete e.imported;
-    const plan = planPostImport(first, await readWordPress(join(dir, 'export.xml'), {}), '2026-11-24');
-    // The two published posts by their old addresses; the draft had none, so it comes in again.
-    expect(plan.posts.map((p) => [p.title, !!p.existing])).toEqual([
-      ['Winter workshop & tasting', true],
-      ['Spring menu', true],
-      ['Summer plans', false]
-    ]);
-    expect(selectPlan(plan, 'skip').posts.map((p) => p.slug)).toEqual(['summer-plans-2']);
+    const winter = Object.values(first.collections.posts.entries)[0];
+    const source = await readWordPress(join(dir, 'export.xml'), {});
+    delete source.posts[0].postId;
+    expect(planPostImport(first, source, '2026-11-24').posts[0]).toMatchObject({ existing: { draft: false }, entryId: winter.id });
+    // An entry that does not say where it came from is never known again, by its old address or its own.
+    const local = structuredClone(first);
+    for (const e of Object.values(local.collections.posts.entries)) delete e.imported;
+    expect(planPostImport(local, await readWordPress(join(dir, 'export.xml'), {}), '2026-11-24').posts.some((p) => p.existing)).toBe(false);
+  });
+
+  it('links to the posts an export leaves out only within the site’s own installation, by ID or by address', async () => {
+    const dir = wordpressFolder();
+    // The site lives under /a/ on its host.
+    const at = (xml: string) => xml.replace('<wp:base_blog_url>https://riverside.example</wp:base_blog_url>', '<wp:base_blog_url>https://riverside.example/a</wp:base_blog_url>');
+    writeFileSync(join(dir, 'a.xml'), at(readFileSync(join(dir, 'export.xml'), 'utf8')));
+    const { after: first } = commit(site(), await readWordPress(join(dir, 'a.xml'), {}));
+    const spring = Object.values(first.collections.posts.entries)[1];
+    const withLink = (href: string, state = first, site = at) => {
+      const xml = site(readFileSync(join(dir, 'export.xml'), 'utf8'))
+        .replace(/<item>(?:(?!<\/item>)[\s\S])*<title><!\[CDATA\[Spring menu\]\]><\/title>[\s\S]*?<\/item>/, '')
+        .replace('https://riverside.example/2019/04/spring-menu/', href);
+      writeFileSync(join(dir, 'later.xml'), xml);
+      return readWordPress(join(dir, 'later.xml'), {}, undefined, knownPosts(state)).then((src) => JSON.stringify(src.posts[0].body));
+    };
+    const entry = `{"type":"entry","target":"${spring.id}"}`;
+    expect(await withLink('https://riverside.example/a/?p=13')).toContain(entry);
+    // Another installation on the same host has a post 13 of its own.
+    expect(await withLink('https://riverside.example/b/?p=13')).not.toContain(entry);
+    // A site at its host's root whose post's address here was its address there, so none was kept: still known by it.
+    const root = commit(site(), await readWordPress(join(dir, 'export.xml'), {})).after;
+    const rootSpring = Object.values(root.collections.posts.entries)[1];
+    expect(await withLink(`https://riverside.example/blog/${rootSpring.slug}/`, root, (x) => x)).toContain(`{"type":"entry","target":"${rootSpring.id}"}`);
   });
 
   it('brings only the new posts, linking them to the posts already here, or updates those in place', async () => {
