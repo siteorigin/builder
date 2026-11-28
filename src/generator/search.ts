@@ -192,7 +192,7 @@ export function generateSearchIndex(state: ProjectState): string {
 
 /**
  * The search code as the website runs it. Plain JavaScript with no dependencies, so the site needs nothing else to
- * search. Matching ignores case and accents ("cafe" finds "Café"), and a page matches when every word searched for
+ * search. Matching ignores case and accents ("cafe" finds "Café") but not Japanese voicing marks ("かぎ" is not "かき"), and a page matches when every word searched for
  * is in its title, browser title, description or content. A page named exactly by the search comes first, then pages
  * whose title has the words as a phrase, then pages that have the phrase anywhere, then the rest, each group in page
  * order. Highlights and passages are cut where they never split a character from its accents.
@@ -212,20 +212,40 @@ const LEAD = 60;
 
 const ASCII = /^[\\x00-\\x7f]*$/;
 /** What belongs to the character before it: an accent or other mark, or an emoji's skin tone. */
-const JOINS = /^[\\p{M}\\p{Emoji_Modifier}]/u;
+const JOINS = /^[\\p{M}\\p{Emoji_Modifier}\\uff9e\\uff9f]/u;
 
 /** One character as search compares it: lower case, without accents, and a final sigma like any other. */
 function foldChar(c) {
 	if (c.charCodeAt(0) < 0x80) return c.toLowerCase();
-	return c.normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
+	const d = c.normalize('NFKD');
+	return (d.includes('\\u3099') || d.includes('\\u309a') ? d.normalize('NFC') : d).replace(/(?![\\u3099\\u309a])\\p{M}/gu, '').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
+}
+
+/**
+ * Adds the next folded character to the folded characters so far, and returns how many it added. A Japanese voicing
+ * mark is part of its kana ("か" and "が" are different letters), so it joins the kana before it, however the text
+ * spells it, precomposed or not: that adds none.
+ */
+function join(parts, f) {
+	if (!f) return 0;
+	if (parts.length && (f === '\\u3099' || f === '\\u309a')) {
+		const last = parts[parts.length - 1];
+		const c = (last.slice(-1) + f).normalize('NFC');
+		if (c.length === 1) {
+			parts[parts.length - 1] = last.slice(0, -1) + c;
+			return 0;
+		}
+	}
+	parts.push(f);
+	return f.length;
 }
 
 /** Text as search compares it. */
 function fold(text) {
 	if (ASCII.test(text)) return text.toLowerCase();
-	let out = '';
-	for (const c of text) out += foldChar(c);
-	return out;
+	const parts = [];
+	for (const c of text) join(parts, foldChar(c));
+	return parts.join('');
 }
 
 /**
@@ -234,20 +254,21 @@ function fold(text) {
  */
 function foldMap(text) {
 	if (ASCII.test(text)) return { text: text.toLowerCase() };
-	let out = '';
+	const parts = [];
 	const from = [];
 	const to = [];
 	let i = 0;
 	for (const c of text) {
 		const f = foldChar(c);
-		for (let k = 0; k < f.length; k++) {
+		const added = join(parts, f);
+		if (!added && f) to[to.length - 1] = i + c.length;
+		for (let k = 0; k < added; k++) {
 			from.push(i);
 			to.push(i + c.length);
 		}
-		out += f;
 		i += c.length;
 	}
-	return { text: out, from, to };
+	return { text: parts.join(''), from, to };
 }
 
 const startOf = (f, at) => (f.from ? f.from[at] : at);
@@ -319,10 +340,11 @@ function highlight(text, words) {
 /** Where the character a place in the folded text came from starts in the text. Reads no further than that place. */
 function originalAt(text, at) {
 	if (ASCII.test(text)) return at;
+	const parts = [];
 	let folded = 0;
 	let i = 0;
 	for (const c of text) {
-		folded += foldChar(c).length;
+		folded += join(parts, foldChar(c));
 		if (folded > at) return i;
 		i += c.length;
 	}
