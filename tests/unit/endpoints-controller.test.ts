@@ -131,6 +131,11 @@ describe('the Endpoints panel', () => {
     await c.changeEndpointVariable({ name: 'SEARCH_KEY', declare: true }, opening);
     expect(restarts()).toBe(before + 1);
     expect(JSON.stringify(await c.endpointEnvironment(opening))).not.toContain('sk_live_123');
+    // .env changed in another editor: the panel starts the preview again when asked, to read it.
+    await c.reloadEndpointEnvironment(opening);
+    await vi.waitFor(() => expect(restarts()).toBe(before + 2));
+    expect(await c.reloadEndpointEnvironment('another opening')).toEqual({ ok: false, message: 'No project is open.' });
+    expect(restarts()).toBe(before + 2);
   });
 
   it('sends a test request to the project’s own preview once it is running, and to nothing else', async () => {

@@ -113,6 +113,7 @@ const HOST_ONLY_METHODS = [
   'project.stopEndpointRequest',
   'project.endpointEnvironment',
   'project.changeEndpointVariable',
+  'project.reloadEndpointEnvironment',
   'project.undo',
   'project.redo',
   'project.copy',

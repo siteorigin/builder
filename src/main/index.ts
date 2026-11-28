@@ -859,6 +859,7 @@ function registerIpc() {
   handle('project:stopEndpointRequest', () => controller.stopEndpointRequest());
   handle('project:endpointEnvironment', (opening: unknown) => controller.endpointEnvironment(opening));
   handle('project:changeEndpointVariable', (change: unknown, opening: unknown) => controller.changeEndpointVariable(change, opening));
+  handle('project:reloadEndpointEnvironment', (opening: unknown) => controller.reloadEndpointEnvironment(opening));
   handle('project:storage', (key: unknown) => (typeof key === 'string' ? controller.storageInfo(key) : null));
   handle('project:reclaimStorage', (plan: unknown, key: unknown) =>
     typeof plan === 'string' && typeof key === 'string' ? controller.reclaimStorage(plan, key) : { ok: false, message: 'Nothing to free.' }

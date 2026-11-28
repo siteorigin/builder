@@ -21,6 +21,39 @@ export interface EndpointFile {
   methods: string[];
 }
 
+/** A route's parts: `[...rest]`, `[[optional]]`, `[param]` (with or without a matcher), or text that may mix them. */
+const REST = /^\[\.\.\.[^\]]+\]$/;
+const OPTIONAL = /^\[\[[^\]]+\]\]$/;
+const PARAM = /^\[[^\]]+\]$/;
+
+/**
+ * Whether an endpoint at `route` (as listed: `/api/posts/[id]`, `/[...rest]`, `/[[lang]]/about`) can answer a request
+ * for `address` (a route such as `/team/`), as SvelteKit matches one: a rest part takes any number of parts, an
+ * optional part one or none, a parameter any one part, whatever its matcher would say of it, so the answer errs
+ * towards yes. Text is compared as written.
+ */
+export function endpointAnswers(route: string, address: string): boolean {
+  const parts = route.split('/').filter(Boolean);
+  const want = address.split('/').filter(Boolean);
+  const at = (i: number, j: number): boolean => {
+    if (i === parts.length) return j === want.length;
+    const p = parts[i];
+    if (REST.test(p)) {
+      for (let k = j; k <= want.length; k++) if (at(i + 1, k)) return true;
+      return false;
+    }
+    if (OPTIONAL.test(p)) return at(i + 1, j) || (j < want.length && at(i + 1, j + 1));
+    if (j >= want.length) return false;
+    if (PARAM.test(p)) return at(i + 1, j + 1);
+    if (p.includes('[')) {
+      const text = new RegExp(`^${p.split(/\[[^\]]+\]/).map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.+')}$`, 'u');
+      return text.test(want[j]) && at(i + 1, j + 1);
+    }
+    return p === want[j] && at(i + 1, j + 1);
+  };
+  return at(0, 0);
+}
+
 /** The request methods an endpoint can answer, as the tester offers them. */
 export const ENDPOINT_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'] as const;
 export type EndpointMethod = (typeof ENDPOINT_METHODS)[number];

@@ -245,7 +245,8 @@ port.on('message', async (ev) => {
       await build(m.dir);
       process.exit(0);
     } else if (m.type === 'serve-built') {
-      const { url } = await serveBuilt(useRealProjectDir(m.dir));
+      // Run from the folder the main process chose for it (the worker's cwd), never the build being delivered.
+      const { url } = await serveBuilt(canonicalDir(m.dir));
       post({ type: 'serving', url });
     } else if (m.type === 'stop') {
       idle?.dispose();

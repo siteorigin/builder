@@ -124,11 +124,12 @@ afterEach(async () => {
 });
 
 /** A business site, built as `target`, open in a controller whose page checks fetch each page and the endpoint. */
-async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean } = {}) {
+async function site(target: 'static' | 'node', opts: { base?: string; endpoint?: boolean; vercel?: boolean; draft?: boolean } = {}) {
   const dir = temp('project');
   let state = createStarterState('business', 'Harbour Lane', false);
   if (opts.base) state.site.baseUrl = `https://harbour.example${opts.base}`;
   state = applyOperations(state, [{ type: 'site.update', deployTarget: target, ...(opts.vercel ? { redirectHost: 'vercel' as const } : {}) }, ...(opts.vercel ? [{ type: 'redirect.add' as const, from: '/old/', to: '/contact/' }] : [])]).state;
+  if (opts.draft) state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_staff001', title: 'Staff', route: '/staff/' }, { type: 'page.update', pageId: 'pg_staff001', draft: true }]).state;
   await (await ProjectSession.create(dir, state)).close();
   if (opts.endpoint) {
     mkdirSync(join(dir, 'src/routes/api/hello'), { recursive: true });
@@ -207,12 +208,39 @@ describe('a website built as a Node.js server', () => {
   });
 });
 
+describe('what a Node.js server must not answer', () => {
+  it('stops for an endpoint of the developer’s own that can answer at a draft’s address, before anything is built', async () => {
+    const { c, dir } = await site('node', { draft: true });
+    mkdirSync(join(dir, 'src/routes/[section]'), { recursive: true });
+    writeFileSync(join(dir, 'src/routes/[section]/+server.js'), 'export const GET = () => new Response("internal");\n');
+    const dest = join(temp('out'), 'server');
+    const r = await c.buildStaticTo(dest);
+    expect(r).toMatchObject({ ok: false, message: 'The API endpoint src/routes/[section]/+server.js can answer at /staff/, the address of the draft Staff, so the Node.js server would publish it. Move the endpoint, or publish the draft, then export again.' });
+    expect(env.served).toEqual([]);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it('stops for a file of the site’s own the server would send at a page’s or an old address’s place', async () => {
+    for (const shadow of ['old.html', 'contact/index.html']) {
+      const { c, dir } = await site('node', { vercel: true });
+      mkdirSync(join(dir, 'static', shadow, '..'), { recursive: true });
+      writeFileSync(join(dir, 'static', shadow), '<p>stale</p>');
+      const dest = join(temp('out'), 'server');
+      const r = await c.buildStaticTo(dest);
+      expect(r.ok, shadow).toBe(false);
+      expect(r.message).toContain(`file ${shadow} in static/`);
+      expect(existsSync(dest)).toBe(false);
+      for (const ctl of controllers.splice(0)) await ctl.close();
+    }
+  });
+});
+
 describe('a static website with an API endpoint', () => {
   it('says the build needs a server for the endpoint, naming it, and how to go on', async () => {
     const { c } = await site('static', { endpoint: true });
     const r = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(r.ok).toBe(false);
-    expect(r.message).toBe('The website is built as a static website, which cannot answer an API endpoint that needs a server: src/routes/api/hello. Choose Node.js server under Deployment in Site settings to export it, then export again.');
+    expect(r.message).toBe('The website is built as a static website, which cannot answer an API endpoint that needs a server: src/routes/api/hello. Choose Node.js server under Deployment in Site settings (with Developer mode on) to export it, then export again.');
     expect(r.warnings[0]).toContain('export const prerender = true');
   });
 

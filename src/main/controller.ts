@@ -101,7 +101,7 @@ import { loopbackPreview } from './live/preview-proxy';
 import { createEndpoint, listEndpoints, readEndpoint, saveEndpoint, type EndpointWrite } from './project/endpoints';
 import { changeEndpointVariable, readEndpointEnvironment, type EnvChange } from './project/endpoint-env';
 import { sendEndpointRequest, type EndpointRequest, type EndpointResponse } from './runtime/endpoint-request';
-import type { EndpointFile } from '@shared/endpoints';
+import { endpointAnswers, type EndpointFile } from '@shared/endpoints';
 import type { EndpointEnvironment } from '@shared/endpoint-env';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
@@ -4214,8 +4214,35 @@ export class Controller {
     if ('message' in at) return { ok: false, message: at.message };
     const r = await changeEndpointVariable(at.s.dir, change as EnvChange, this.writeFence(at.s));
     if (!r.ok) return r;
-    if (r.changed && this.session === at.s) void this.startRuntime();
+    if (r.changed) this.restartForEnvironment(at.s);
     return { ok: true, environment: r.environment };
+  }
+
+  /**
+   * Start the preview again so its server reads the environment as it is now: after .env was changed outside the app,
+   * which the dev server does not watch. Says what the panel shows of it.
+   */
+  async reloadEndpointEnvironment(opening: unknown): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }> {
+    const at = await this.endpointsSession(opening);
+    if ('message' in at) return { ok: false, message: at.message };
+    this.restartForEnvironment(at.s);
+    return this.endpointEnvironment(opening);
+  }
+
+  /** A preview restart asked for by an environment change, and not yet begun: later changes share it. */
+  private environmentRestart: ProjectSession | null = null;
+
+  /**
+   * Start `s`'s preview again once the preview work under way is done, for the environment its server reads as it
+   * starts. Changes made before that restart begins are read by it, so they ask for no other; one made after asks again.
+   */
+  private restartForEnvironment(s: ProjectSession) {
+    if (this.session !== s || this.environmentRestart === s) return;
+    this.environmentRestart = s;
+    void this.runtimeQueue.then(() => {
+      if (this.environmentRestart === s) this.environmentRestart = null;
+      if (this.session === s && !this.closing) return this.startRuntime();
+    });
   }
 
   /**
@@ -4771,7 +4798,7 @@ export class Controller {
         const base = built.basePath ?? '';
         let served: ServedBuild;
         try {
-          served = await this.serveBuild(site, base, built.nodeServer === true);
+          served = await this.serveBuild(site, base, built.nodeServer === true, job.signal);
         } catch {
           return gone() ? closed() : { ok: false, message: 'The review build could not be served to be captured.' };
         }
@@ -5401,6 +5428,16 @@ export class Controller {
     // be built with the website's page there: the built page alone cannot tell (#1363).
     const around = await answeredAddressFile(project, state, live);
     if (around) return { ok: false, message: `The website has ${around.file} at ${around.route}, the address of the draft ${around.draft}. Remove or move the file, then export again.`, warnings: [] };
+    // A Node.js server runs the project's own endpoints when visitors ask (#1481): one whose route can answer at a
+    // draft's address, or at an old address that leads to one, would publish what the author kept back, and no built
+    // file shows it.
+    if (runsOnNode(live.site)) {
+      const endpoints = await listEndpoints(project);
+      for (const { route, draft } of withheldRoutes(state, live)) {
+        const answering = endpoints.find((e) => endpointAnswers(e.route, route));
+        if (answering) return { ok: false, message: `The API endpoint ${answering.file} can answer at ${route}, the address of the draft ${draft}, so the Node.js server would publish it. Move the endpoint, or publish the draft, then export again.`, warnings: [] };
+      }
+    }
     // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
     // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
     const missingFiles = await timed('export.assets.missing', () => missingWebsiteAssets(project, state))();
@@ -5439,8 +5476,11 @@ export class Controller {
     // A review stopped meanwhile (#1413) starts no build: one under way runs to its end, as nothing can stop it.
     if (opts.signal?.aborted) return { ok: false, message: BUILD_CALLED_OFF, warnings: [] };
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
-    // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
-    if (build.exited) await timed('export.keepTools', () => tools.keep())();
+    // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy. A
+    // Node.js server keeps them until its pages have been opened: the packages its server code imports at run time
+    // (the project's own dependencies, which adapter-node leaves out of its bundle) are loaded from them.
+    const keepTools = () => (build.exited ? timed('export.keepTools', () => tools.keep())() : Promise.resolve());
+    if (!runsOnNode(live.site)) await keepTools();
     if (!build.ok) return { ok: false, ...explainBuildFailure(live, build, this.buildFailureContext(staging, project, s.dir)) };
     const out = join(project, 'build');
     // A Node.js server (shared/deploy-target.ts) keeps its prerendered pages and its assets in folders of their own,
@@ -5463,6 +5503,9 @@ export class Controller {
     const builtRel = (file: string) => (file.startsWith(out + sep) ? file.slice(out.length + 1).split(sep).join('/') : '');
     const pageFile = (route: string) => join(pagesRoot, route === '/' ? 'index.html' : join(route, 'index.html'));
     const notFoundRel = builtRel(join(pagesRoot, NOT_FOUND_FILE));
+    // A file of the site's own (static/) that adapter-node would send at a page's address in place of the page.
+    const shadowing = (route: string) => (node ? [join(publicRoots[1], route, 'index.html'), ...(route === '/' ? [] : [join(publicRoots[1], `${route.replace(/\/$/, '')}.html`)])].find(isPlainFile) : undefined);
+    const shadowStop = (route: string, file: string) => ({ ok: false as const, message: `The website has its own file ${file.slice(publicRoots[1].length + 1).split(sep).join('/')} in static/, which the Node.js server would send at ${route} in place of the page there. Remove or rename the file, then export again.`, warnings: warnings() });
     // What a Node.js server's build would need rewritten to be cleaned: it records every file's size and hash as it
     // is built, so nothing is rewritten in it, and the export stops instead.
     const unrewritten: string[] = [];
@@ -5498,6 +5541,8 @@ export class Controller {
       const p = live.pages[id];
       const file = pageFile(p.route);
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings: warnings() };
+      const shadow = shadowing(p.route);
+      if (shadow) return shadowStop(p.route, shadow);
       const built = await pageAtFile(file);
       if (built.markup) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
       if (built.language) warn(built.language);
@@ -5506,18 +5551,24 @@ export class Controller {
     for (const { route } of siteEntries(live)) {
       const file = join(pagesRoot, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
+      const shadow = shadowing(route);
+      if (shadow) return shadowStop(route, shadow);
       if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // So is each page of every collection's index and category archives.
     for (const { route } of archivePages(live)) {
       const file = join(pagesRoot, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
+      const shadow = shadowing(route);
+      if (shadow) return shadowStop(route, shadow);
       if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(pagesRoot, from, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings: warnings() };
+      const shadow = shadowing(from);
+      if (shadow) return shadowStop(from, shadow);
       if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
@@ -5573,6 +5624,7 @@ export class Controller {
       if (opened.stop) return { ok: false, ...opened.stop };
       if (opened.unchecked) warn(opened.unchecked);
     }
+    if (node) await keepTools();
     // A Node.js server goes out ready to start: the package file that runs it, and how.
     if (node) await writeNodeServerFiles(out, live, project);
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
@@ -5619,7 +5671,7 @@ export class Controller {
     let served: ServedBuild | undefined;
     try {
       try {
-        served = await this.serveBuild(out, basePath(live), node);
+        served = await this.serveBuild(out, basePath(live), node, job.signal);
       } catch (e) {
         if (gone()) return {};
         // A Node.js server that cannot start would not start where it is published either: the export stops on it.
@@ -5679,13 +5731,23 @@ export class Controller {
    * folder (StaticPreviews), a Node.js server by starting it (serveBuiltServer), so its API endpoints answer as they
    * will where it is published.
    */
-  private async serveBuild(out: string, base: string, node: boolean): Promise<ServedBuild> {
+  private async serveBuild(out: string, base: string, node: boolean, signal?: AbortSignal): Promise<ServedBuild> {
     if (!node) {
       const url = await this.previews.serve(out, base);
       return { url, stop: async () => this.previews.stop(url) };
     }
-    const server = await serveBuiltServer(out);
-    return { url: `${server.url}${base}/`, stop: () => server.stop() };
+    // The server runs in a folder of its own: whatever its endpoints write where they run (a visit counter's database,
+    // say) lands there, never in the build that is delivered. Removed once the server has gone.
+    const cwd = await fs.mkdtemp(join(tmpdir(), 'siteorigin-check-'));
+    const drop = () => fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined);
+    let server: Awaited<ReturnType<typeof serveBuiltServer>>;
+    try {
+      server = await serveBuiltServer(out, { cwd, signal });
+    } catch (e) {
+      await drop();
+      throw e;
+    }
+    return { url: `${server.url}${base}/`, stop: () => server.stop().then(drop) };
   }
 
   /**

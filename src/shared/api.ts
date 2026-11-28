@@ -1612,6 +1612,8 @@ export interface BuilderApi {
     endpointEnvironment(opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
     /** Declare a variable or take it away, and set or remove its local value; the preview starts again after a change. */
     changeEndpointVariable(change: EnvChange, opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
+    /** Start the preview again so endpoints read .env as it is now, after it was changed outside the app. */
+    reloadEndpointEnvironment(opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
     /** What the project of the opening `workspaceKey` takes on disk; null once another opening is current. */
     storage(workspaceKey: string): Promise<StorageInfo | null>;
     /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */

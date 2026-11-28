@@ -927,16 +927,25 @@ export interface BuiltServer {
  * the project processes' own: no credential of the app's, and none of the project's .env, which no export carries.
  * Rejects, with the worker gone, when the server cannot be loaded or does not start in time.
  */
-export function serveBuiltServer(dir: string): Promise<BuiltServer> {
+export function serveBuiltServer(dir: string, opts: { cwd?: string; signal?: AbortSignal } = {}): Promise<BuiltServer> {
   return new Promise((resolve, reject) => {
-    const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin website check', stdio: 'ignore' });
+    if (opts.signal?.aborted) return reject(new Error('The check was called off.'));
+    const proc = utilityProcess.fork(workerPath(), [], { cwd: opts.cwd ?? dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin website check', stdio: 'ignore' });
     let exited = false;
     let settled = false;
     const exits: Array<() => void> = [];
     const stop = () =>
       new Promise<void>((done) => {
         if (exited) return done();
-        const stuck = setTimeout(done, SERVE_BUILT_LIMITS.exitWaitMs);
+        // One that has not gone a few seconds after it was asked to is ended outright, and given a moment more.
+        const stuck = setTimeout(() => {
+          try {
+            if (!exited && proc.pid) process.kill(proc.pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          setTimeout(done, SERVE_BUILT_LIMITS.exitWaitMs);
+        }, SERVE_BUILT_LIMITS.exitWaitMs);
         exits.push(() => {
           clearTimeout(stuck);
           done();
@@ -951,14 +960,18 @@ export function serveBuiltServer(dir: string): Promise<BuiltServer> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', calledOff);
       void stop().then(() => reject(new Error(message)));
     };
+    const calledOff = () => fail('The check was called off.');
+    opts.signal?.addEventListener('abort', calledOff, { once: true });
     const timer = setTimeout(() => fail('The website’s Node.js server took too long to start.'), SERVE_BUILT_LIMITS.startMs);
     proc.on('message', (m: { type?: string; url?: unknown; message?: unknown }) => {
       if (m?.type === 'serving' && typeof m.url === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(m.url)) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', calledOff);
         resolve({ url: m.url, stop });
       } else if (m?.type === 'error') fail(`The website’s Node.js server could not start: ${String(m.message ?? '').split('\n')[0]}`);
     });

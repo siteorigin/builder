@@ -31,7 +31,7 @@ describe('what a test request may be', () => {
     const ok = (path: string) => endpointRequestProblem({ method: 'GET', path });
     expect(ok('/api/search?q=chairs')).toBeNull();
     expect(ok('/')).toBeNull();
-    for (const p of ['api/search', '//evil.example/x', '/@fs/etc/passwd', '/@vite/client', '/node_modules/x', '/src/lib/x.js', '/.svelte-kit/generated/x', '/.env', '/__open-in-editor?file=x', '/a/../b', 'http://127.0.0.1/x', '/x#y', '/a b'])
+    for (const p of ['api/search', '//evil.example/x', '/@fs/etc/passwd', '/@vite/client', '/node_modules/x', '/src/lib/x.js', '/%73rc/lib/x.js', '/SRC/lib/x.js', '/.svelte-kit/generated/x', '/.env', '/package.json', '/siteorigin/site.json', '/vite.config.js', '/__open-in-editor?file=x', '/a/../b', 'http://127.0.0.1/x', '/x#y', '/a b'])
       expect(ok(p), p).not.toBeNull();
   });
 
@@ -44,6 +44,10 @@ describe('what a test request may be', () => {
     expect(endpointRequestProblem({ method: 'GET', path: '/api/x', body: 'x' })).toContain('has no body');
     expect(endpointRequestProblem({ method: 'TRACE' as never, path: '/api/x' })).toContain('method');
     expect(endpointRequestProblem({ method: 'POST', path: '/api/x', body: 'x'.repeat(ENDPOINT_REQUEST_LIMITS.maxRequestBytes + 1) })).toContain('too large');
+    // Bytes, not characters: a body of three-byte characters a third as long is as large.
+    expect(endpointRequestProblem({ method: 'POST', path: '/api/x', body: '€'.repeat(Math.ceil((ENDPOINT_REQUEST_LIMITS.maxRequestBytes + 1) / 3)) })).toContain('too large');
+    expect(endpointRequestProblem({ method: 'GET', path: '/api/x', headers: Array.from({ length: 41 }, (_, i): [string, string] => [`x-h${i}`, 'v']) })).toContain('at most 40');
+    expect(endpointRequestProblem({ method: 'GET', path: '/api/x', headers: [['x-big', 'v'.repeat(9000)]] })).toContain('too long');
   });
 });
 
@@ -87,6 +91,17 @@ describe('a test request', () => {
     const sent = sendEndpointRequest(at, { method: 'GET', path: '/api/slow' }, { signal: stop.signal });
     setTimeout(() => stop.abort(), 50);
     expect(await sent).toEqual({ ok: false, message: 'The request was stopped.' });
+  });
+
+  it('is given up when no answer comes in time, with no one calling it off', async () => {
+    const at = await preview(() => undefined);
+    const limit = ENDPOINT_REQUEST_LIMITS.timeoutMs;
+    ENDPOINT_REQUEST_LIMITS.timeoutMs = 100;
+    try {
+      expect(await sendEndpointRequest(at, { method: 'GET', path: '/api/slow' })).toEqual({ ok: false, message: 'No answer came within 0.1 seconds, so the request was given up.' });
+    } finally {
+      ENDPOINT_REQUEST_LIMITS.timeoutMs = limit;
+    }
   });
 
   it('is sent only to the preview’s loopback address, and says when nothing is there', async () => {

@@ -9,14 +9,11 @@
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { dotenvNames, ENV_DECLARATIONS, ENV_DECLARATIONS_FILE, ENV_NAMES_FILE, envNameProblem, envNamesJson, envValueProblem, LOCAL_ENV_FILE, managedDeclarations, MAX_ENV_NAMES, readEnvNames, setDotenv, type EndpointEnvironment, type EnvChange } from '@shared/endpoint-env';
+import { dotenvNames, ENV_DECLARATIONS, ENV_DECLARATIONS_FILE, ENV_NAMES_FILE, envNameProblem, envNamesJson, envValueProblem, LOCAL_ENV_FILE, managedDeclarations, MAX_DOTENV_BYTES, MAX_ENV_NAMES, OTHER_DECLARATION_FILES, readEnvNames, setDotenv, type EndpointEnvironment, type EnvChange } from '@shared/endpoint-env';
 import { atomicWrite } from './fsutil';
 import { lookPlain } from './endpoints';
 
 export type { EnvChange };
-
-/** The largest .env the panel reads, in bytes. */
-const MAX_DOTENV_BYTES = 256 * 1024;
 
 /** A plain file's text below `dir`, null when nothing is there; refused through a link or for anything but a file. */
 async function readPlain(dir: string, rel: string, max: number): Promise<string | null> {
@@ -33,15 +30,25 @@ function plainAt(dir: string, rel: string): { abs: string; kind: 'file' | 'missi
   return { abs: at.abs, kind: at.kind };
 }
 
+/**
+ * Whether the declarations SvelteKit reads are the panel's own: a src/env.js it wrote, or none, with no other file
+ * SvelteKit would take them from instead (src/env.ts, a src/env folder).
+ */
+async function declarationsManaged(dir: string, declarations: string | null): Promise<boolean> {
+  if (!managedDeclarations(declarations)) return false;
+  return OTHER_DECLARATION_FILES.every((f) => lookPlain(dir, f).kind === 'missing');
+}
+
 /** The project's environment, as the Endpoints panel shows it: names, and whether each has a local value. */
 export async function readEndpointEnvironment(dir: string): Promise<EndpointEnvironment> {
   const [names, dotenv, declarations] = await Promise.all([readPlain(dir, ENV_NAMES_FILE, 64 * 1024).then(readEnvNames), readPlain(dir, LOCAL_ENV_FILE, MAX_DOTENV_BYTES).then((t) => t ?? ''), readPlain(dir, ENV_DECLARATIONS_FILE, 256 * 1024)]);
+  const managed = await declarationsManaged(dir, declarations);
   const local = new Set(dotenvNames(dotenv));
   // A variable .env sets that no declaration names is listed too, so it can be declared: undeclared, no endpoint can read it.
   const undeclared = [...local].filter((n) => !names.includes(n) && !envNameProblem(n));
   return {
     variables: [...names.map((name) => ({ name, local: local.has(name), declared: true })), ...undeclared.map((name) => ({ name, local: true, declared: false }))],
-    declarations: managedDeclarations(declarations) ? 'managed' : 'own'
+    declarations: managed ? 'managed' : 'own'
   };
 }
 
@@ -93,7 +100,7 @@ export async function changeEndpointVariable(dir: string, change: EnvChange, fen
   let refused: string | null = null;
   try {
     const wrote = await fence(async () => {
-      const [namesText, dotenv, declarations] = await Promise.all([readPlain(dir, ENV_NAMES_FILE, 64 * 1024), readPlain(dir, LOCAL_ENV_FILE, MAX_DOTENV_BYTES), readPlain(dir, ENV_DECLARATIONS_FILE, 256 * 1024)]);
+      const [namesText, declarations] = await Promise.all([readPlain(dir, ENV_NAMES_FILE, 64 * 1024), readPlain(dir, ENV_DECLARATIONS_FILE, 256 * 1024)]);
       const names = readEnvNames(namesText);
       if (change.declare !== undefined) {
         const has = names.includes(change.name);
@@ -103,7 +110,7 @@ export async function changeEndpointVariable(dir: string, change: EnvChange, fen
         }
         const next = change.declare ? (has ? names : [...names, change.name]) : names.filter((n) => n !== change.name);
         if (next.length !== names.length) {
-          const managed = managedDeclarations(declarations);
+          const managed = await declarationsManaged(dir, declarations);
           if (next.length) {
             await atomicWrite(plainAt(dir, ENV_NAMES_FILE).abs, envNamesJson(next));
             if (managed && declarations !== ENV_DECLARATIONS) await atomicWrite(plainAt(dir, ENV_DECLARATIONS_FILE).abs, ENV_DECLARATIONS);
@@ -115,8 +122,13 @@ export async function changeEndpointVariable(dir: string, change: EnvChange, fen
         }
       }
       if (change.value !== undefined) {
-        const before = dotenv ?? '';
+        // Read just before it is replaced, so a change made to it in another editor meanwhile is kept.
+        const before = (await readPlain(dir, LOCAL_ENV_FILE, MAX_DOTENV_BYTES)) ?? '';
         const after = setDotenv(before, change.name, change.value);
+        if (Buffer.byteLength(after) > MAX_DOTENV_BYTES) {
+          refused = `.env would be larger than ${MAX_DOTENV_BYTES / 1024 / 1024} MB: remove a variable you no longer need first.`;
+          return;
+        }
         if (after !== before) {
           await writeDotenv(dir, after);
           changed = true;

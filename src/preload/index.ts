@@ -94,6 +94,7 @@ const api: BuilderApi = {
     stopEndpointRequest: invoke('project:stopEndpointRequest'),
     endpointEnvironment: invoke('project:endpointEnvironment'),
     changeEndpointVariable: invoke('project:changeEndpointVariable'),
+    reloadEndpointEnvironment: invoke('project:reloadEndpointEnvironment'),
     storage: invoke('project:storage'),
     reclaimStorage: invoke('project:reclaimStorage'),
     saveVersion: invoke('project:saveVersion'),

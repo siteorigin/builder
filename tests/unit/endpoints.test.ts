@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { endpointFileFor, endpointMethods, endpointRoute, endpointStarter, isEndpointFile, newEndpointProblem, newEndpointRoute, parseHeaderLines, shownBody } from '@shared/endpoints';
+import { endpointAnswers, endpointFileFor, endpointMethods, endpointRoute, endpointStarter, isEndpointFile, newEndpointProblem, newEndpointRoute, parseHeaderLines, shownBody } from '@shared/endpoints';
 import { createEndpoint, endpointHash, listEndpoints, readEndpoint, saveEndpoint } from '../../src/main/project/endpoints';
 
 const dirs: string[] = [];
@@ -63,6 +63,25 @@ describe('endpoint files', () => {
   });
 });
 
+describe('which addresses an endpoint answers', () => {
+  it('matches a route as SvelteKit does, parameters, rest and optional parts included', () => {
+    expect(endpointAnswers('/staff', '/staff/')).toBe(true);
+    expect(endpointAnswers('/staff', '/staff/team/')).toBe(false);
+    expect(endpointAnswers('/[slug]', '/staff/')).toBe(true);
+    expect(endpointAnswers('/[slug]', '/a/b/')).toBe(false);
+    expect(endpointAnswers('/blog/[id=integer]', '/blog/hello/')).toBe(true);
+    expect(endpointAnswers('/[...rest]', '/any/where/at/all/')).toBe(true);
+    expect(endpointAnswers('/docs/[...rest]', '/docs/')).toBe(true);
+    expect(endpointAnswers('/[[lang]]/about', '/about/')).toBe(true);
+    expect(endpointAnswers('/[[lang]]/about', '/fr/about/')).toBe(true);
+    expect(endpointAnswers('/[[lang]]/about', '/fr/de/about/')).toBe(false);
+    expect(endpointAnswers('/report-[year]', '/report-2026/')).toBe(true);
+    expect(endpointAnswers('/report-[year]', '/summary-2026/')).toBe(false);
+    expect(endpointAnswers('/api/search', '/staff/')).toBe(false);
+    expect(endpointAnswers('/', '/')).toBe(true);
+  });
+});
+
 describe('the tester’s request and answer', () => {
   it('reads headers typed one per line, leaving out lines that are not one', () => {
     expect(parseHeaderLines('content-type: application/json\n\nAuthorization:  Bearer a:b \nnot a header\n: empty name')).toEqual([
@@ -96,6 +115,11 @@ describe('endpoints on disk', () => {
       { file: 'src/routes/api/search/+server.ts', route: '/api/search', language: 'ts', methods: ['GET'] }
     ]);
     expect(await listEndpoints(temp())).toEqual([]);
+    // Routes that are a link to somewhere else are not the project's.
+    const linked = temp();
+    mkdirSync(join(linked, 'src'));
+    symlinkSync(join(elsewhere), join(linked, 'src/routes'));
+    expect(await listEndpoints(linked)).toEqual([]);
   });
 
   it('reads and saves an endpoint while it holds what was read, and calls a change made meanwhile a conflict', async () => {
@@ -155,5 +179,16 @@ describe('endpoints on disk', () => {
     expect(await createEndpoint(dir, '/api/search', 'js', open)).toMatchObject({ ok: false, message: expect.stringContaining('already has an endpoint') });
     expect(await createEndpoint(dir, '/api/search', 'ts', open)).toMatchObject({ ok: false });
     expect(await createEndpoint(dir, '/contact', 'ts', open)).toMatchObject({ ok: false, message: expect.stringContaining('/api/') });
+    // A route an endpoint in a group already answers is the same route to SvelteKit.
+    write(dir, 'src/routes/(shop)/api/cart/+server.ts', 'export const GET = () => new Response("");');
+    expect(await createEndpoint(dir, '/api/cart', 'js', open)).toMatchObject({ ok: false, message: expect.stringContaining('(shop)') });
+  });
+
+  it.skipIf(process.platform !== 'darwin')('knows a generated file by any spelling of its path on a disk that ignores case', async () => {
+    const dir = temp();
+    write(dir, 'src/routes/Gen/+server.js', 'x');
+    write(dir, 'siteorigin/generated-manifest.json', JSON.stringify({ files: { 'src/routes/gen/+server.js': 'x' } }));
+    expect(await listEndpoints(dir)).toEqual([]);
+    expect(await readEndpoint(dir, 'src/routes/Gen/+server.js')).toMatchObject({ ok: false });
   });
 });

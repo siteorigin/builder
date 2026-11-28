@@ -39,6 +39,9 @@ describe('the deployment target', () => {
     expect(back.site.deployTarget).toBeUndefined();
     expect(Object.hasOwn(back.site, 'deployTarget')).toBe(false);
     expect(validateOperation({ type: 'site.update', deployTarget: 'vercel' }).ok).toBe(false);
+    for (const deployTarget of ['static', 'node'] as const) expect(validateOperation({ type: 'site.update', deployTarget })).toMatchObject({ ok: true, op: { deployTarget } });
+    // Any other change to the site's settings leaves it as it is.
+    expect(run(node, { type: 'site.update', name: 'Harbour' }).site.deployTarget).toBe('node');
   });
 
   it('reaches vite.config.js through paths.json, named only for a Node.js server', () => {
@@ -82,7 +85,9 @@ describe('a build that stops at an endpoint', () => {
 
   it('names the endpoints and the two ways on, on a static website', () => {
     const r = explainBuildFailure(starter(), failed);
-    expect(r.message).toBe('The website is built as a static website, which cannot answer API endpoints that need a server: src/routes/api/search and src/routes/api/posts/[id]. Choose Node.js server under Deployment in Site settings to export them, then export again.');
+    expect(r.message).toBe('The website is built as a static website, which cannot answer API endpoints that need a server: src/routes/api/search and src/routes/api/posts/[id]. Choose Node.js server under Deployment in Site settings (with Developer mode on) to export them, then export again.');
+    // Another failure of a static build is said as before.
+    expect(explainBuildFailure(starter(), { ok: false, error: 'Something else broke', logs: ['  - src/routes/api/search'] }).message).not.toContain('Node.js server');
     expect(r.warnings[0]).toContain('export const prerender = true');
     expect(r.details).toContain(r.message);
   });
@@ -99,12 +104,32 @@ describe('what a Node.js server goes out with', () => {
     mkdirSync(out);
     writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'harbour', version: '1.2.0', type: 'module', engines: { node: '>=22.17.0' }, devDependencies: { vite: '8.3.8' }, dependencies: { nanoid: '^5.0.0' } }));
     await writeNodeServerFiles(out, starter(), project);
-    expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toEqual({ name: 'harbour', version: '1.2.0', private: true, type: 'module', scripts: { start: 'node index.js' }, engines: { node: '>=22.17.0' }, dependencies: { nanoid: '^5.0.0' } });
+    expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toEqual({ name: 'harbour', version: '1.2.0', private: true, type: 'module', scripts: { start: 'node index.js' }, engines: { node: '>=22.17.0' }, dependencies: { nanoid: '^5.0.0' }, devDependencies: { vite: '8.3.8' } });
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
-    expect(readme).toContain('npm install --omit=dev');
+    expect(readme).toContain('npm ci --omit=dev');
     expect(readme).toContain('node index.js');
     expect(readme).toContain('ORIGIN');
-    expect(nodeServerReadme('Harbour Lane')).not.toContain('npm install');
+    expect(nodeServerReadme('Harbour Lane')).not.toContain('npm ci');
+  });
+
+  it('with the project’s lockfile, and a manifest that lists what it does, when its server code imports packages', async () => {
+    const project = temp();
+    const out = join(project, 'build');
+    mkdirSync(out);
+    const lock = JSON.stringify({ name: 'harbour', lockfileVersion: 3, packages: { '': { dependencies: { nanoid: '5.0.1' }, devDependencies: { vite: '8.3.8' } } } });
+    writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'harbour', type: 'module', engines: { node: '>=24' }, devDependencies: { vite: '8.3.8' }, dependencies: { nanoid: '5.0.1' }, overrides: { foo: '1.0.0' } }));
+    writeFileSync(join(project, 'package-lock.json'), lock);
+    await writeNodeServerFiles(out, starter(), project);
+    expect(JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'))).toMatchObject({ type: 'module', engines: { node: '>=24' }, dependencies: { nanoid: '5.0.1' }, devDependencies: { vite: '8.3.8' }, overrides: { foo: '1.0.0' } });
+    expect(readFileSync(join(out, 'package-lock.json'), 'utf8')).toBe(lock);
+    expect(readFileSync(join(out, 'README.md'), 'utf8')).toContain('npm ci --omit=dev');
+    // None at all: no lockfile goes with it.
+    const bare = temp();
+    mkdirSync(join(bare, 'build'));
+    writeFileSync(join(bare, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { vite: '8.3.8' } }));
+    writeFileSync(join(bare, 'package-lock.json'), lock);
+    await writeNodeServerFiles(join(bare, 'build'), starter(), bare);
+    expect(existsSync(join(bare, 'build', 'package-lock.json'))).toBe(false);
   });
 
   it('nothing rewritten in its build, whose files the server has measured: what would be is listed instead', async () => {

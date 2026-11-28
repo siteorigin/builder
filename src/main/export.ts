@@ -261,6 +261,11 @@ export function inProjectSource(root: string, p: string): boolean {
   }
 }
 
+/** Whether a path's parts lead into SvelteKit's generated environment modules (`…/generated/dev/env/…`). */
+function inGeneratedEnv(parts: string[]): boolean {
+  return parts.some((part, i) => part.toLowerCase() === 'generated' && /^(dev|build)$/i.test(parts[i + 1] ?? '') && parts[i + 2]?.toLowerCase() === 'env');
+}
+
 /** Whether a path in `root` is part of its source by its name alone (inProjectSource, without looking at what it is). */
 function sourcePathKept(root: string, p: string): boolean {
   const rel = relative(root, p);
@@ -272,6 +277,9 @@ function sourcePathKept(root: string, p: string): boolean {
   // Wrangler's local state (#1126), beside any Worker or Pages Function in the project: its local databases and
   // bundles hold what `.dev.vars` gave them.
   if (rel.split(sep).some((part) => part.toLowerCase() === '.wrangler')) return false;
+  // The modules SvelteKit writes the endpoints' environment into as it reads .env (#1481), in its output folder however
+  // a project names it: `<outDir>/generated/<dev|build>/env/`, which it writes again whenever it runs.
+  if (inGeneratedEnv(rel.split(sep))) return false;
   return !isPrivateFileName(basename(p));
 }
 
@@ -1916,7 +1924,7 @@ function dynamicRoutesFailure(state: ProjectState, read: ExplainedBuild): { mess
   const routes = [...new Set(read.lines.map((l) => DYNAMIC_ROUTE_LINE.exec(l)?.[1]).filter((r): r is string => !!r))];
   const shown = routes.slice(0, 5);
   const named = !routes.length ? '' : routes.length > shown.length ? `${shown.join(', ')} and ${routes.length - shown.length} more` : listNames(shown);
-  const message = `The website is built as a static website, which cannot answer ${routes.length === 1 ? 'an API endpoint' : 'API endpoints'} that need${routes.length === 1 ? 's' : ''} a server${named ? `: ${named}` : ''}. Choose Node.js server under Deployment in Site settings to export ${routes.length === 1 ? 'it' : 'them'}, then export again.`;
+  const message = `The website is built as a static website, which cannot answer ${routes.length === 1 ? 'an API endpoint' : 'API endpoints'} that need${routes.length === 1 ? 's' : ''} a server${named ? `: ${named}` : ''}. Choose Node.js server under Deployment in Site settings (with Developer mode on) to export ${routes.length === 1 ? 'it' : 'them'}, then export again.`;
   const warnings = ['An endpoint whose answer never changes can stay on a static website: add `export const prerender = true` to its +server.js or +server.ts file.', 'A page whose own +page.js or +page.server.js reads the request (its query, cookies or headers) needs a server too.'];
   return { message, warnings, details: read.report(message) };
 }
@@ -2180,7 +2188,7 @@ This folder is the website built as a Node.js server by [SiteOrigin Builder](htt
 Run it on any host with Node.js 22.17 or newer:
 
 \`\`\`sh
-${dependencies ? 'npm install --omit=dev   # the packages its server code imports\n' : ''}${NODE_START_COMMAND}
+${dependencies ? 'npm ci --omit=dev   # the packages its server code imports, as the build used them\n' : ''}${NODE_START_COMMAND}
 \`\`\`
 
 It listens on port 3000 unless \`PORT\` names another, and on every address unless \`HOST\` names one (\`HOST=127.0.0.1\`).
@@ -2196,9 +2204,10 @@ See [adapter-node's documentation](https://svelte.dev/docs/kit/adapter-node#Envi
 
 /**
  * Make a website built as a Node.js server in `out` (adapter-node's folder) ready to start where it is published: a
- * package.json that runs it as the ES modules it is (`npm start`), with the Node.js it needs and the packages its
- * server code imports at run time (the project's own `dependencies`, which adapter-node leaves out of its bundle), and a
- * README that says how. `project` is the staged project it was built from.
+ * package.json that runs it as the ES modules it is (`npm start`), with the Node.js it needs, and a README that says
+ * how. A project whose server code imports packages at run time (its own `dependencies`, which adapter-node leaves out
+ * of its bundle) gives them with its lockfile, the manifest listing what the lockfile does, so `npm ci --omit=dev`
+ * installs exactly the versions the build used. `project` is the staged project it was built from.
  */
 export async function writeNodeServerFiles(out: string, live: ProjectState, project: string): Promise<void> {
   let own: Record<string, unknown> = {};
@@ -2208,17 +2217,21 @@ export async function writeNodeServerFiles(out: string, live: ProjectState, proj
   } catch {
     // A package.json that cannot be read built nothing: the build would have failed first.
   }
-  const deps = own.dependencies && typeof own.dependencies === 'object' && !Array.isArray(own.dependencies) && Object.keys(own.dependencies).length ? own.dependencies : null;
+  const record = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+  const deps = record(own.dependencies) && Object.keys(record(own.dependencies)!).length ? record(own.dependencies) : null;
+  const lock = deps ? await readExportText(join(project, 'package-lock.json')) : null;
   const manifest = {
     name: typeof own.name === 'string' ? own.name : 'siteorigin-site',
     version: typeof own.version === 'string' ? own.version : '0.0.1',
     private: true,
     type: 'module',
     scripts: { start: NODE_START_COMMAND },
-    engines: own.engines && typeof own.engines === 'object' && !Array.isArray(own.engines) ? own.engines : NODE_ENGINES,
-    ...(deps ? { dependencies: deps } : {})
+    engines: record(own.engines) ?? NODE_ENGINES,
+    // What the lockfile lists, so npm ci installs from it: the build's tools are listed too, and left out by --omit=dev.
+    ...(deps ? { dependencies: deps, ...(record(own.devDependencies) ? { devDependencies: own.devDependencies } : {}), ...(record(own.optionalDependencies) ? { optionalDependencies: own.optionalDependencies } : {}), ...(record(own.overrides) ? { overrides: own.overrides } : {}) } : {})
   };
   await fs.writeFile(join(out, 'package.json'), JSON.stringify(manifest, null, '\t') + '\n');
+  if (lock !== null) await fs.writeFile(join(out, 'package-lock.json'), lock);
   await fs.writeFile(join(out, 'README.md'), nodeServerReadme(live.site.name, !!deps));
 }
 

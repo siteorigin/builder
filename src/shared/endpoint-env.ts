@@ -34,11 +34,18 @@ export const variables = defineEnvVars(Object.fromEntries(names.map((name) => [n
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 /** Names SvelteKit's adapter-node and Node itself read, which a site's variable must not take. */
 const RESERVED = new Set(['PORT', 'HOST', 'ORIGIN', 'SOCKET_PATH', 'XFF_DEPTH', 'ADDRESS_HEADER', 'PROTOCOL_HEADER', 'HOST_HEADER', 'PORT_HEADER', 'BODY_SIZE_LIMIT', 'SHUTDOWN_TIMEOUT', 'IDLE_TIMEOUT', 'KEEP_ALIVE_TIMEOUT', 'HEADERS_TIMEOUT', 'NODE_ENV', 'NODE_OPTIONS', 'PATH', 'HOME', 'TMPDIR', 'LANG']);
-/** JavaScript's reserved words, which SvelteKit refuses as a variable's name (it exports each by its name). */
-const JS_RESERVED = new Set(['await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof', 'interface', 'let', 'new', 'null', 'package', 'private', 'protected', 'public', 'return', 'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield']);
+/** The words SvelteKit 3 refuses as a variable's name (JavaScript's reserved words, `eval` and `arguments`). */
+const JS_RESERVED = new Set(['await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum', 'eval', 'arguments', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof', 'interface', 'let', 'new', 'null', 'package', 'private', 'protected', 'public', 'return', 'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield']);
+/**
+ * The prefixes of values that go to the browser: SvelteKit's public variables, and Vite's own (`import.meta.env`),
+ * which the dev server sends with any page module that reads import.meta.env. A private value takes neither.
+ */
+const PUBLIC_PREFIXES = ['PUBLIC_', 'VITE_'];
 
 /** The largest value the panel keeps, in characters. */
 export const MAX_ENV_VALUE = 8192;
+/** The largest .env the panel reads or writes, in bytes. */
+export const MAX_DOTENV_BYTES = 1024 * 1024;
 /** The most variables the panel lists. */
 export const MAX_ENV_NAMES = 100;
 
@@ -47,7 +54,8 @@ export function envNameProblem(name: string): string | null {
   if (!NAME.test(name)) return 'A variable’s name is letters, numbers and underscores, starting with a letter or underscore, as in SEARCH_API_KEY.';
   if (RESERVED.has(name.toUpperCase())) return `${name} is set by the server or the system itself: choose another name.`;
   if (JS_RESERVED.has(name)) return `${name} is a word JavaScript keeps for itself: choose another name.`;
-  if (name.startsWith('PUBLIC_')) return 'A name starting with PUBLIC_ is for values sent to the browser: this panel keeps private ones. Choose another name.';
+  const prefix = PUBLIC_PREFIXES.find((p) => name.toUpperCase().startsWith(p));
+  if (prefix) return `A name starting with ${prefix} is for values sent to the browser: this panel keeps private ones. Choose another name.`;
   return null;
 }
 
@@ -82,14 +90,32 @@ export interface EndpointEnvironment {
 /** One line of a dotenv file that sets a variable: `NAME=value`, optionally after `export `. */
 const ASSIGNMENT = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 
+/**
+ * The assignments in a dotenv file's lines, each with the lines it spans: a value in quotes (single, double or back
+ * quotes) runs on to the line that closes them, as Node's parseEnv, and so Vite, reads it, so a line inside it is
+ * never taken for an assignment of its own.
+ */
+function assignments(lines: string[]): Array<{ name: string; start: number; end: number }> {
+  const out: Array<{ name: string; start: number; end: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = ASSIGNMENT.exec(lines[i]);
+    if (!m) continue;
+    const value = lines[i].slice(m[0].length).trimStart();
+    const quote = value[0];
+    let end = i;
+    if ((quote === '"' || quote === "'" || quote === '`') && value.indexOf(quote, 1) < 0) {
+      const closing = lines.findIndex((l, j) => j > i && l.includes(quote));
+      if (closing > 0) end = closing;
+    }
+    out.push({ name: m[1], start: i, end });
+    i = end;
+  }
+  return out;
+}
+
 /** The names a dotenv file's text sets, in order, once each. */
 export function dotenvNames(text: string): string[] {
-  const names: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const m = ASSIGNMENT.exec(line);
-    if (m && !names.includes(m[1])) names.push(m[1]);
-  }
-  return names;
+  return [...new Set(assignments(text.split(/\r?\n/)).map((a) => a.name))];
 }
 
 /**
@@ -115,12 +141,14 @@ export function setDotenv(text: string, name: string, value: string | null): str
   // The empty string after a final line break is not a line of its own.
   const final = lines.length > 0 && lines[lines.length - 1] === '';
   if (final) lines.pop();
+  // Every line an assignment of `name` spans goes, a value over several lines included; the first is replaced.
+  const spans = assignments(lines).filter((a) => a.name === name);
   const out: string[] = [];
   let set = false;
-  for (const line of lines) {
-    const m = ASSIGNMENT.exec(line);
-    if (m?.[1] !== name) out.push(line);
-    else if (value !== null && !set) {
+  for (let i = 0; i < lines.length; i++) {
+    const span = spans.find((a) => i >= a.start && i <= a.end);
+    if (!span) out.push(lines[i]);
+    else if (i === span.start && value !== null && !set) {
       out.push(`${name}=${dotenvValue(value)}`);
       set = true;
     }
@@ -146,6 +174,12 @@ export const envNamesJson = (names: string[]): string => JSON.stringify(names, n
 
 /** Whether a src/env.js is the panel's own (or there is none, which it may write). */
 export const managedDeclarations = (text: string | null): boolean => text === null || text.startsWith(ENV_DECLARATIONS_MARK);
+
+/**
+ * The other files SvelteKit takes its declarations from in place of src/env.js (`src/env.ts`, a folder `src/env`
+ * with an index, or a file `src/env`): with any of them there, the declarations are the developer's own.
+ */
+export const OTHER_DECLARATION_FILES = ['src/env.ts', 'src/env', 'src/env/index.js', 'src/env/index.ts'];
 
 /** A change to one variable: declared or not (`declare`), and its local value set or removed (`value`, null removes it). */
 export interface EnvChange {

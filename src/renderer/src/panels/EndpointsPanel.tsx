@@ -39,28 +39,33 @@ export function EndpointsPanel() {
   const [newRoute, setNewRoute] = useState('');
   const [newLanguage, setNewLanguage] = useState<EndpointLanguage>('ts');
   const [newError, setNewError] = useState<string | null>(null);
-  // Anything answered for an earlier opening is dropped.
+  // Anything answered for an earlier opening is dropped, and so is a file read the author has since moved on from.
   const current = useRef(opening);
   current.current = opening;
+  const reading = useRef(0);
+  const failed = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   const refresh = async () => {
     const at = opening;
-    const r = await api.project.listEndpoints(at);
+    const r = await api.project.listEndpoints(at).catch((e: unknown) => ({ ok: false as const, message: failed(e) }));
     if (current.current !== at) return;
     if (r.ok) {
       setEndpoints(r.endpoints);
       setListError(null);
     } else setListError(r.message);
   };
+  /** Whether unsaved changes may go, asking first when there are some. */
+  const mayLeave = async () => !open || open.text === open.saved || (await confirmDialog({ title: 'Discard your changes?', body: `Your changes to ${open.file} have not been saved.`, subject: open.file, confirmLabel: 'Discard changes', stayLabel: 'Keep editing', tone: 'caution' })) === true;
   useEffect(() => {
     void refresh();
   }, [opening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openFile = async (ep: EndpointFile) => {
-    if (open && open.text !== open.saved && (await confirmDialog({ title: 'Discard your changes?', body: `Your changes to ${open.file} have not been saved.`, subject: open.file, confirmLabel: 'Discard changes', stayLabel: 'Keep editing', tone: 'caution' })) !== true) return;
+    if (!(await mayLeave())) return;
     const at = opening;
-    const r = await api.project.readEndpoint(ep.file, at);
-    if (current.current !== at) return;
+    const asked = ++reading.current;
+    const r = await api.project.readEndpoint(ep.file, at).catch((e: unknown) => ({ ok: false as const, message: failed(e) }));
+    if (current.current !== at || reading.current !== asked) return;
     if (!r.ok) return setMessage({ text: r.message, tone: 'error' });
     setOpen({ file: ep.file, language: ep.language, saved: r.text, text: r.text, hash: r.hash });
     setMessage(null);
@@ -70,10 +75,15 @@ export function EndpointsPanel() {
     if (!open || saving) return;
     setSaving(true);
     const at = opening;
-    const r = await api.project.saveEndpoint(open.file, open.text, open.hash, at).finally(() => setSaving(false));
+    const draft = open;
+    const r = await api.project
+      .saveEndpoint(draft.file, draft.text, draft.hash, at)
+      .catch((e: unknown) => ({ ok: false as const, message: failed(e) }))
+      .finally(() => setSaving(false));
     if (current.current !== at) return;
     if (!r.ok) return setMessage({ text: r.message, tone: 'error' });
-    setOpen({ ...open, saved: open.text, hash: r.hash });
+    // What was typed while it saved stays unsaved.
+    setOpen((o) => (o && o.file === draft.file ? { ...o, saved: draft.text, hash: r.hash } : o));
     setMessage({ text: `Saved ${open.file}. The preview runs the new code at once.`, tone: 'info' });
     void refresh();
   };
@@ -81,8 +91,10 @@ export function EndpointsPanel() {
   const create = async () => {
     const route = newEndpointRoute(newRoute);
     if (!route) return setNewError(newEndpointProblem(newRoute.startsWith('/api/') ? newRoute : `/api/${newRoute.replace(/^\/+/, '')}`) ?? 'Enter an address, such as /api/search.');
+    if (!(await mayLeave())) return;
     const at = opening;
-    const r = await api.project.createEndpoint(route, newLanguage, at);
+    ++reading.current;
+    const r = await api.project.createEndpoint(route, newLanguage, at).catch((e: unknown) => ({ ok: false as const, message: failed(e) }));
     if (current.current !== at) return;
     if (!r.ok) return setNewError(r.message);
     setNewRoute('');
@@ -187,18 +199,27 @@ function EndpointTester({ opening, route, methods, previewReady }: { opening: st
   const [answer, setAnswer] = useState<EndpointResponse | null>(null);
   const current = useRef(opening);
   current.current = opening;
+  // Each request's number: an answer to one sent before another endpoint was chosen, or another request, is dropped.
+  const sent = useRef(0);
   // Another endpoint chosen: its route is what is tested next.
   useEffect(() => {
+    sent.current++;
     setPath(testPath(route));
     setAnswer(null);
+    setSending(false);
   }, [route]);
   const hasBody = method !== 'GET' && method !== 'HEAD';
   const send = async () => {
     setSending(true);
     setAnswer(null);
     const at = opening;
-    const r = await api.project.sendEndpointRequest({ method, path: path.trim(), headers: parseHeaderLines(headers), ...(hasBody && body ? { body } : {}) }, at).finally(() => setSending(false));
-    if (current.current === at) setAnswer(r);
+    const asked = ++sent.current;
+    const r = await api.project
+      .sendEndpointRequest({ method, path: path.trim(), headers: parseHeaderLines(headers), ...(hasBody && body ? { body } : {}) }, at)
+      .catch((e: unknown): EndpointResponse => ({ ok: false, message: e instanceof Error ? e.message : String(e) }));
+    if (current.current !== at || sent.current !== asked) return;
+    setSending(false);
+    setAnswer(r);
   };
   const shown = answer?.ok ? shownBody(answer.body, answer.headers) : null;
   return (
@@ -281,16 +302,35 @@ function EndpointVariables({ opening, readOnly }: { opening: string; readOnly: b
   current.current = opening;
   useEffect(() => {
     const at = opening;
-    void api.project.endpointEnvironment(at).then((r) => {
-      if (current.current !== at) return;
-      if (r.ok) setEnv(r.environment);
-      else setError(r.message);
-    });
+    void api.project
+      .endpointEnvironment(at)
+      .catch((e: unknown) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }))
+      .then((r) => {
+        if (current.current !== at) return;
+        if (r.ok) setEnv(r.environment);
+        else setError(r.message);
+      });
   }, [opening]);
+  const reload = async () => {
+    setBusy(true);
+    const at = opening;
+    const r = await api.project
+      .reloadEndpointEnvironment(at)
+      .catch((e: unknown) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setBusy(false));
+    if (current.current !== at) return;
+    if (r.ok) {
+      setEnv(r.environment);
+      setError(null);
+    } else setError(r.message);
+  };
   const change = async (c: { name: string; declare?: boolean; value?: string | null }) => {
     setBusy(true);
     const at = opening;
-    const r = await api.project.changeEndpointVariable(c, at).finally(() => setBusy(false));
+    const r = await api.project
+      .changeEndpointVariable(c, at)
+      .catch((e: unknown) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setBusy(false));
     if (current.current !== at) return false;
     if (!r.ok) {
       setError(r.message);
@@ -389,7 +429,12 @@ function EndpointVariables({ opening, readOnly }: { opening: string; readOnly: b
           {error}
         </p>
       )}
-      <p className="faint ep-foot">Changing a variable starts the preview again, so endpoints read the new value.</p>
+      <div className="ep-foot-row">
+        <p className="faint ep-foot">Changing a variable here starts the preview again, so endpoints read the new value. Edited .env yourself? Start it again to read it.</p>
+        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void reload()}>
+          Restart preview
+        </button>
+      </div>
     </div>
   );
 }

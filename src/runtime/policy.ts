@@ -74,8 +74,8 @@ export function frameAncestorsCsp(packaged: boolean): string {
  * What the preview server may serve from disk: the project folder only, never the editor's private data or
  * secrets, nor the project's private brief (#518) and any copy of it an editor left beside it, nor its external
  * sources' settings and any copy of a credential file (#676), nor the modules SvelteKit writes with the endpoints'
- * private environment variables in them as the dev server reads them from .env (#1481): its public ones, which pages
- * do load, hold none. Vite's own defaults are repeated because setting `deny` replaces them.
+ * private environment variables in them as the dev server reads them from .env (#1481), in its output folder whatever
+ * it is named (`.svelte-kit/generated/dev/env/…` by default): its public ones, which pages do load, hold none. Vite's own defaults are repeated because setting `deny` replaces them.
  */
 /**
  * The header the host's live session tunnel marks every guest's preview request with (src/main/live/preview-proxy.ts).
@@ -153,7 +153,7 @@ export function liveGuestPlugin() {
 }
 
 export function previewFsPolicy(dir: string) {
-  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '**/.wrangler/**', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets*.json*', '**/*api-keys*.json*', '**/*remote-credentials*.json*', '**/.svelte-kit/generated/*/env/config.js', '**/.svelte-kit/generated/*/env/private/**'] };
+  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '**/.wrangler/**', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets*.json*', '**/*api-keys*.json*', '**/*remote-credentials*.json*', '**/generated/*/env/config.js', '**/generated/*/env/private/**'] };
 }
 
 type HeaderValue = string | number | readonly string[];

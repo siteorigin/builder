@@ -1143,9 +1143,12 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
 
 export function SiteStyles() {
   const snap = useStore((s) => s.snapshot);
-  // The site's own head code and CSS change in Developer mode alone (Custom code), and so do its API endpoints and
-  // where it is deployed (#1481).
+  // The site's own head code and CSS change in Developer mode alone (Custom code).
   const developer = useStore((s) => !!s.settings?.developerMode);
+  // So do its API endpoints and where it is deployed (#1481): the host's own, never a guest's in another computer's
+  // live session, whose project they are.
+  const endpointsShown = useStore((s) => !!s.settings?.developerMode && s.remote.phase !== 'admitted');
+  const remotePhase = useStore((s) => s.remote.phase);
   const [dev, setDev] = useState(false);
   useEffect(() => void api.app.info().then((i) => setDev(i.dev)), []);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2352,7 +2355,7 @@ export function SiteStyles() {
         <SiteCodeFields key={`code-${snap?.workspaceKey}`} site={site} developer={developer} onChange={updSite} />
       </Section>
 
-      {(developer || runsOnNode(site)) && (
+      {(endpointsShown || (runsOnNode(site) && remotePhase !== 'admitted')) && (
         <Section title="Deployment" id="site-deployment" defaultOpen={false} scope={DEPLOY_TARGET_LABELS[deployTarget(site)]}>
           <ChoiceField
             label="Build the website as"
@@ -2365,8 +2368,8 @@ export function SiteStyles() {
         </Section>
       )}
 
-      {developer && (
-        <Section title="API endpoints" id="site-endpoints" defaultOpen={false}>
+      {endpointsShown && (
+        <Section title="API endpoints" id="site-endpoints" defaultOpen={false} keepMounted>
           {/* Keyed by the project's opening: what one project's panel had open never shows in the next. */}
           <EndpointsPanel key={`endpoints-${snap?.workspaceKey}`} />
         </Section>

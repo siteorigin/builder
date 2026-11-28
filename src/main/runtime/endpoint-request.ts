@@ -14,8 +14,20 @@ export type { EndpointRequest, EndpointResponse };
 
 export const ENDPOINT_REQUEST_LIMITS = { timeoutMs: 30_000, maxResponseBytes: 1024 * 1024, maxRequestBytes: 1024 * 1024, maxHeaders: 40, maxHeaderBytes: 8 * 1024 };
 
-/** First parts of an address that are Vite's or the project's files, never the site's: the tester asks none of them. */
-const NOT_SITE = /^\/(?:@|node_modules(?:\/|$|\?)|src(?:\/|$|\?)|\.svelte-kit(?:\/|$|\?)|\.)/i;
+/**
+ * First parts of an address that are Vite's or the project's own files and folders, which the dev server would serve
+ * from the project folder, never the site's: the tester asks none of them, however the part is spelled or escaped.
+ */
+const PROJECT_ENTRIES = new Set(['node_modules', 'src', 'siteorigin', 'siteorigin.project.json', 'package.json', 'package-lock.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'jsconfig.json', 'tsconfig.json', 'static', 'scripts', 'tests', 'build', 'readme.md', 'notice.md', 'vercel.json', 'netlify.toml', 'wrangler.toml']);
+function notSite(path: string): boolean {
+  let first: string;
+  try {
+    first = decodeURIComponent(path.split('?', 1)[0].split('/')[1] ?? '').toLowerCase();
+  } catch {
+    return true;
+  }
+  return first.startsWith('@') || first.startsWith('.') || PROJECT_ENTRIES.has(first);
+}
 
 /** Headers the request's own transport sets, or the app does: never the author's to send. */
 const TRANSPORT_HEADERS = new Set(['host', 'origin', 'connection', 'content-length', 'transfer-encoding', 'keep-alive', 'upgrade', 'expect', 'te', 'trailer', 'proxy-authorization', 'proxy-connection', LIVE_GUEST_HEADER]);
@@ -26,7 +38,7 @@ const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 export function endpointRequestProblem(req: EndpointRequest): string | null {
   if (!req || typeof req !== 'object') return 'Nothing to send.';
   if (!(ENDPOINT_METHODS as readonly string[]).includes(req.method)) return 'Choose a request method.';
-  if (typeof req.path !== 'string' || !isPreviewTarget(req.path) || NOT_SITE.test(req.path)) return 'Enter an address in the site, starting with /, such as /api/search?q=chairs.';
+  if (typeof req.path !== 'string' || !isPreviewTarget(req.path) || notSite(req.path)) return 'Enter an address in the site, starting with /, such as /api/search?q=chairs.';
   const headers = req.headers ?? [];
   if (!Array.isArray(headers) || headers.length > ENDPOINT_REQUEST_LIMITS.maxHeaders) return `A request can have at most ${ENDPOINT_REQUEST_LIMITS.maxHeaders} headers.`;
   let size = 0;

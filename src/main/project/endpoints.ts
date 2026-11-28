@@ -21,11 +21,14 @@ const MAX_LISTED = 500;
 /** The hash an endpoint's text is known by, so a save can tell it was not changed meanwhile. */
 export const endpointHash = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-/** The files generated-manifest.json lists as SiteOrigin Builder's. */
+/** A path as the disk compares it: without case on macOS and Windows, where another spelling is the same file. */
+const folded = (rel: string) => (process.platform === 'darwin' || process.platform === 'win32' ? rel.toLowerCase() : rel);
+
+/** The files generated-manifest.json lists as SiteOrigin Builder's, as the disk compares them (folded). */
 async function generatedFiles(dir: string): Promise<Set<string>> {
   try {
     const manifest = JSON.parse(await fs.readFile(join(dir, MANIFEST_PATH), 'utf8')) as { files?: Record<string, unknown> };
-    return new Set(Object.keys(manifest?.files ?? {}));
+    return new Set(Object.keys(manifest?.files ?? {}).map(folded));
   } catch {
     return new Set();
   }
@@ -38,6 +41,8 @@ async function generatedFiles(dir: string): Promise<Set<string>> {
 export async function listEndpoints(dir: string): Promise<EndpointFile[]> {
   const generated = await generatedFiles(dir);
   const found: EndpointFile[] = [];
+  // Routes reached through a link (src, or src/routes, a link to somewhere else) are not the project's own.
+  if (!(await isPlainFolder(dir, 'src/routes'))) return found;
   const walk = async (rel: string, depth: number): Promise<void> => {
     if (depth > MAX_DEPTH || found.length >= MAX_LISTED) return;
     let entries: Dirent[];
@@ -49,7 +54,7 @@ export async function listEndpoints(dir: string): Promise<EndpointFile[]> {
     for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const path = `${rel}/${e.name}`;
       if (e.isDirectory() && !e.name.startsWith('.')) await walk(path, depth + 1);
-      else if (e.isFile() && isEndpointFile(path) && !generated.has(path)) {
+      else if (e.isFile() && isEndpointFile(path) && !generated.has(folded(path))) {
         const text = await readEndpointText(dir, path).catch(() => null);
         found.push({ file: path, route: endpointRoute(path), language: endpointLanguage(path), methods: text === null ? [] : endpointMethods(text) });
       }
@@ -63,7 +68,7 @@ export async function listEndpoints(dir: string): Promise<EndpointFile[]> {
 /** Why `file` cannot be read or written as an endpoint of the project's, or null. */
 async function refusal(dir: string, file: string): Promise<string | null> {
   if (!isEndpointFile(file)) return 'That is not an endpoint file: endpoints are +server.js or +server.ts files in src/routes.';
-  if ((await generatedFiles(dir)).has(file)) return 'That file is SiteOrigin Builder’s own, not an endpoint of yours.';
+  if ((await generatedFiles(dir)).has(folded(file))) return 'That file is SiteOrigin Builder’s own, not an endpoint of yours.';
   return null;
 }
 
@@ -90,6 +95,17 @@ export function lookPlain(root: string, rel: string): { abs: string; kind: 'file
     if (st.isSymbolicLink() || (i < parts.length - 1 ? !st.isDirectory() : !st.isFile())) return { abs, kind: 'other' };
   }
   return { abs, kind: 'file' };
+}
+
+/** Whether `rel` below `dir` is a folder reached through plain folders, with no link on the way. */
+async function isPlainFolder(dir: string, rel: string): Promise<boolean> {
+  let at = dir;
+  for (const part of rel.split('/')) {
+    at = join(at, part);
+    const st = await fs.lstat(at).catch(() => null);
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return false;
+  }
+  return true;
 }
 
 /** The plain file at `file` below `dir`, reached through no link, or none there. Throws for anything else. */
@@ -142,7 +158,12 @@ export async function saveEndpoint(dir: string, file: string, text: string, expe
         outcome = { ok: false, message: `${file} changed outside SiteOrigin Builder since it was opened. Open it again to see the change.`, conflict: true };
         return;
       }
-      await atomicWrite(abs, text, { beforeReplace: async () => endpointHash(await fs.readFile(abs, 'utf8').catch(() => '')) === expected });
+      // Looked at again just before the file is replaced, and before any retry of the rename.
+      const unchanged = async () => endpointHash(await fs.readFile(abs, 'utf8').catch(() => '')) === expected;
+      if (!(await atomicWrite(abs, text, { beforeReplace: unchanged, retryCheck: unchanged }))) {
+        outcome = { ok: false, message: `${file} changed outside SiteOrigin Builder while it was being saved. Open it again to see the change.`, conflict: true };
+        return;
+      }
       outcome = { ok: true, hash: endpointHash(text), endpoint: { file, route: endpointRoute(file), language: endpointLanguage(file), methods: endpointMethods(text) } };
     });
     if (!wrote) return { ok: false, message: 'The project can’t be changed here now.' };
@@ -165,6 +186,12 @@ export async function createEndpoint(dir: string, route: string, language: Endpo
   let outcome = null as EndpointWrite | null;
   try {
     const wrote = await fence(async () => {
+      // One the route already has in a group of its own (`src/routes/(shop)/api/cart`) is the same route to SvelteKit.
+      const same = (await listEndpoints(dir)).find((e) => e.route === route);
+      if (same) {
+        outcome = { ok: false, message: `${route} already has an endpoint: ${same.file}.` };
+        return;
+      }
       for (const f of [file, other]) {
         if (plainFile(dir, f).exists) {
           outcome = { ok: false, message: `${route} already has an endpoint: ${f}.` };
