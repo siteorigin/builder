@@ -1,11 +1,12 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Trash2, TriangleAlert } from 'lucide-react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { FileSearch, Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
+import type { MissingAssetFiles } from '@shared/api';
 import { familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
 import { scriptLabels } from '@shared/font-scripts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
-import { applyOps, commitOps, toast, undoAction, useStore } from '../store';
+import { api, applyOps, commitOps, toast, undoAction, useStore } from '../store';
 import { DisclosureMark, DraftInput, Modal } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 import { formatBytes, plural } from '../lib/storage';
@@ -87,11 +88,29 @@ function usedFor(state: ProjectState, family: string): string | null {
   return others ? `Used for ${list}, and in ${plural(others, 'other place', 'other places')}` : `Used for ${list}`;
 }
 
-/** Imported web fonts, a card a family: its name, whether the site uses it and where, then each of its files (one face each). */
-export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string, number> }) {
+/**
+ * Imported web fonts, a card a family: its name, whether the site uses it and where, then each of its files (one face
+ * each). A file missing from the project folder (#1425) is flagged on its family and offers Locate file on its row.
+ * `reveal` is a font to open its family on and focus (Open in Assets), until `onRevealed` says it was.
+ */
+export function FontList({
+  fonts,
+  usage,
+  missingOf,
+  reveal = null,
+  onRevealed
+}: {
+  fonts: AssetRecord[];
+  usage: Record<string, number>;
+  missingOf?: ReadonlyMap<string, MissingAssetFiles>;
+  reveal?: string | null;
+  onRevealed?: () => void;
+}) {
   const [removing, setRemoving] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+  const lost = (a: AssetRecord) => !!missingOf?.get(a.id)?.original;
   const state = useStore((s) => s.snapshot?.state);
-  const families = groupFamilies(fonts);
+  const families = useMemo(() => groupFamilies(fonts), [fonts]);
   // Families start closed (name, status and uses only), so the whole inventory fits on one screen; each opens to its
   // files. A lone family starts open. What the author opened or closed is kept against each of the family's files, so
   // a rename, a re-sort, a removed file or an Undo leaves the card as it was.
@@ -144,6 +163,28 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
       focusAfter(a);
     }
   };
+  // Open in Assets opens the font's family and focuses its row, where the missing file is fixed.
+  useEffect(() => {
+    if (!reveal) return;
+    const own = families.find((f) => f.some((x) => x.id === reveal));
+    onRevealed?.();
+    if (!own) return;
+    setShown((was) => new Map([...was, ...own.map((x) => [x.id, true] as const)]));
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-font="${reveal}"] .font-locate`) ?? document.querySelector<HTMLElement>(`[data-font-family-key="${familyKey(own)}"] .font-family-toggle`))?.focus());
+  }, [reveal, families, onRevealed]);
+  /** Locate file: the font's very file goes back where its record names it, and nothing else changes. */
+  const locate = async (a: AssetRecord) => {
+    if (locating) return;
+    setLocating(true);
+    try {
+      const r = await api.project.locateAsset(a.id).catch((e: Error) => ({ ok: false, message: e.message }));
+      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+      // The note and its button go with the missing file: focus moves to the family's name, never the page.
+      if (r.ok) requestAnimationFrame(() => (!document.activeElement || document.activeElement === document.body) && document.querySelector<HTMLElement>(`[data-font="${a.id}"]`)?.closest<HTMLElement>('.font-family')?.querySelector<HTMLElement>('.font-family-toggle')?.focus());
+    } finally {
+      setLocating(false);
+    }
+  };
   const asking = fonts.find((a) => a.id === removing);
   // A file removed elsewhere closes its question for good: an Undo that brings it back doesn't ask again.
   useEffect(() => {
@@ -167,9 +208,12 @@ export function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record
             onToggle={() => toggle(faces)}
             used={faces.some((a) => usage[a.id])}
             where={state ? usedFor(state, faces[0].font?.family ?? faces[0].name) : null}
+            lost={lost}
+            locating={locating}
             onRename={(family) => renameFamily(faces[0], family)}
             onUpdate={update}
             onRemove={(a) => void remove(a)}
+            onLocate={(a) => void locate(a)}
           />
         ))}
       </ul>
@@ -184,22 +228,29 @@ function FontFamily({
   onToggle,
   used,
   where,
+  lost,
+  locating,
   onRename,
   onUpdate,
-  onRemove
+  onRemove,
+  onLocate
 }: {
   faces: AssetRecord[];
   open: boolean;
   onToggle: () => void;
   used: boolean;
   where: string | null;
+  lost: (a: AssetRecord) => boolean;
+  locating: boolean;
   onRename: (family: string) => void;
   onUpdate: (a: AssetRecord, patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => unknown;
   onRemove: (a: AssetRecord) => void;
+  onLocate: (a: AssetRecord) => void;
 }) {
   const uid = useId();
   const family = faces[0].font?.family ?? faces[0].name;
   const bytes = faces.reduce((n, a) => n + a.bytes, 0);
+  const missing = faces.filter(lost).length;
   const shownStack = usePreviewStack();
   return (
     <li className="font-family" data-font-family={family} data-font-family-key={familyKey(faces)} data-open={open || undefined} aria-labelledby={`${uid}-name`}>
@@ -216,7 +267,14 @@ function FontFamily({
           <span className={`badge${used ? ' accent' : ''}`}>{used ? 'In use' : 'Not used'}</span>
         </div>
         <p className="font-family-meta">
-          {plural(faces.length, 'file', 'files')} · {formatBytes(bytes)}
+          {plural(faces.length, 'file', 'files')}
+          {missing > 0 && (
+            <>
+              {' · '}
+              <span className="doc-state-alert">{faces.length === 1 ? 'File missing' : `${missing} of ${faces.length} missing`}</span>
+            </>
+          )}{' '}
+          · {formatBytes(bytes)}
           {where ? ` · ${where}` : ''}
         </p>
       </div>
@@ -240,7 +298,7 @@ function FontFamily({
         </div>
         <ul className="font-faces" aria-label={`Files of ${family}`}>
           {faces.map((a) => (
-            <FontRow key={a.id} a={a} used={used} onUpdate={(patch, label) => onUpdate(a, patch, label)} onRemove={() => onRemove(a)} />
+            <FontRow key={a.id} a={a} used={used} lost={lost(a)} locating={locating} onUpdate={(patch, label) => onUpdate(a, patch, label)} onRemove={() => onRemove(a)} onLocate={() => onLocate(a)} />
           ))}
         </ul>
       </div>
@@ -265,7 +323,23 @@ function weightText(a: AssetRecord): string {
   return lo === hi ? String(lo) : `${lo}–${hi}, variable`;
 }
 
-function FontRow({ a, used, onUpdate, onRemove }: { a: AssetRecord; used: boolean; onUpdate: (patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => void; onRemove: () => void }) {
+function FontRow({
+  a,
+  used,
+  lost,
+  locating,
+  onUpdate,
+  onRemove,
+  onLocate
+}: {
+  a: AssetRecord;
+  used: boolean;
+  lost: boolean;
+  locating: boolean;
+  onUpdate: (patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => void;
+  onRemove: () => void;
+  onLocate: () => void;
+}) {
   const uid = useId();
   const file = fontFileName(a);
   const covers = coverageText(useEditorFontFile(a.id));
@@ -287,7 +361,23 @@ function FontRow({ a, used, onUpdate, onRemove }: { a: AssetRecord; used: boolea
           <Trash2 />
         </button>
       </div>
-      <FontSample a={a} />
+      {lost ? (
+        <div className="asset-note asset-missing" role="note">
+          <TriangleAlert aria-hidden="true" />
+          <div>
+            <span>
+              <b>File missing.</b> {fontFileName(a)} is no longer in the project folder, so {used ? 'text set in this font shows in another font, and the website can’t be exported' : 'this font can’t be shown'}. Locate the file it was added from to bring it back, or remove the font.
+            </span>
+            <div className="asset-missing-actions">
+              <button className="btn btn-sm btn-primary font-locate" disabled={locating} onClick={onLocate}>
+                <FileSearch /> Locate file…
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <FontSample a={a} />
+      )}
       <span className="font-face-file">
         {importedName(a)}
       </span>
