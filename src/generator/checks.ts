@@ -1762,37 +1762,25 @@ function closingBrace(source: string, open: number): number {
 }
 
 /**
- * Markup with its HTML comments blanked out, every other character where it was. Text inside an expression
- * (`{"<!--"}`) is no comment; markup whose braces don't close is left as it is, every tag in it counted.
+ * Whether markup could hide what SoImage shows from a reading of its source: an HTML comment (or text that looks like
+ * one) holding a `<SoImage>` or a loop's braces, or the image component imported under another name.
  */
-function uncommented(source: string): string {
-  let out = '';
-  for (let i = 0; i < source.length; ) {
-    if (source[i] === '{') {
-      const end = closingBrace(source, i);
-      if (end < 0) return source;
-      out += source.slice(i, end + 1);
-      i = end + 1;
-    } else if (source.startsWith('<!--', i)) {
-      const end = source.indexOf('-->', i + 4);
-      const stop = end < 0 ? source.length : end + 3;
-      out += source.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop;
-    } else out += source[i++];
-  }
-  return out;
+function unreadable(source: string): boolean {
+  if (/<!--(?:(?!-->)[\s\S])*(?:<SoImage\b|\{[#:/]each\b)/.test(source)) return true;
+  return [...source.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"][^'"]*\/Image\.svelte['"]/g)].some((m) => m[1] !== 'SoImage');
 }
 
 /** Attributes of SoImage's that would show a picture of their own in place of its image's. */
 const OWN_PICTURE = /^(?:src|srcset|sources)$/;
 
 /**
- * Code markup's one `<SoImage>` (comments left out), and the expression its `image` attribute gives (`image={...}`, or
- * the shorthand `{image}`): null when there is not exactly one, it has no image attribute or more than one, or a
- * spread (`{...rest}`) or a picture of its own (`src`, `srcset`, `sources`) could show something else.
+ * Code markup's one `<SoImage>`, and the expression its `image` attribute gives (`image={...}`, or the shorthand
+ * `{image}`): null when there is not exactly one, it has no image attribute or more than one, a spread (`{...rest}`)
+ * or a picture of its own (`src`, `srcset`, `sources`) could show something else, or the markup can't be read
+ * (see unreadable).
  */
-function soImageAttr(markup: string): { at: number; expr: string } | null {
-  const source = uncommented(markup);
+function soImageAttr(source: string): { at: number; expr: string } | null {
+  if (unreadable(source)) return null;
   const tags = [...source.matchAll(/<SoImage\b/g)];
   if (tags.length !== 1) return null;
   const at = tags[0].index;
@@ -1846,7 +1834,14 @@ function givesImage(expr: string, value: string): boolean {
     // Settings added to a copy of it, never its picture: no other source, and nothing spread in that could be one.
     const m = e.match(copy);
     const keys = (m?.[1] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
-    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset|sources)['"]?\s*(?::|$)/.test(part));
+    return (
+      !!m &&
+      keys.every((part) => {
+        // A plain name (`alt: ...`, `'alt': ...`, or `alt`), never a computed or spread one, nor one of a picture's own.
+        const key = part.match(/^(['"]?)([A-Za-z_$][\w$]*)\1\s*(?::|$)/);
+        return !!key && !OWN_PICTURE.test(key[2]);
+      })
+    );
   };
   return outcomes(expr).every(shows);
 }
@@ -1865,7 +1860,7 @@ export function showsWithSoImage(source: string, prop: string): boolean {
 /**
  * Whether code markup shows each item of list `prop` once, with its one SoImage showing the item's image `field` and
  * nothing else: exactly one `<SoImage>`, inside one `{#each prop as item}` and no other loop or snippet (either could
- * show an item twice), whose `image` attribute gives `item.field` (a copy or thumbnail of it, as showsWithSoImage
+ * show an item twice), with no `{@const}` that could name another item as it, whose `image` attribute gives `item.field` (a copy or thumbnail of it, as showsWithSoImage
  * allows). Only then is a picture there that shows one item's file that item's.
  */
 export function showsItemsWithSoImage(source: string, prop: string, field: string): boolean {
@@ -1873,7 +1868,7 @@ export function showsItemsWithSoImage(source: string, prop: string, field: strin
   if (!name.test(prop) || !name.test(field) || /\{#snippet\b/.test(source)) return false;
   const attr = soImageAttr(source);
   if (!attr) return false;
-  const markup = uncommented(source);
+  const markup = source;
   // The loops open around the SoImage.
   const open: string[] = [];
   for (const m of markup.slice(0, attr.at).matchAll(/\{#each\b|\{\/each\s*\}/g)) {
@@ -1887,8 +1882,8 @@ export function showsItemsWithSoImage(source: string, prop: string, field: strin
   }
   if (open.length !== 1) return false;
   const each = open[0].match(/^\{#each\s+([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)\s*(?:,\s*[A-Za-z_$][\w$]*\s*)?(?:\([^()]*\)\s*)?\}$/);
-  // An item the markup names again (`{@const item = ...}`) may be another one.
-  if (!each || each[1] !== prop || new RegExp(`\\{@const\\s+${each[2].replace(/\$/g, '\\$')}\\b`).test(markup)) return false;
+  // A name the markup gives a value of its own (`{@const item = ...}`) may name another item.
+  if (!each || each[1] !== prop || /\{@const\b/.test(markup)) return false;
   return givesImage(attr.expr, `${each[2]}.${field}`);
 }
 

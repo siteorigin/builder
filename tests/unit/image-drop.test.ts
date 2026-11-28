@@ -472,8 +472,15 @@ describe('a code component’s picture (#505)', () => {
     expect(showsWithSoImage('<SoImage {image} sources={formats} />', 'image')).toBe(false);
     // Comment markers given as text are no comment: the second SoImage counts.
     expect(showsWithSoImage('<SoImage {image} />{"<!--"}<SoImage image={badge} />{"-->"}', 'image')).toBe(false);
-    // A tag in a comment is no tag; a shorthand is an attribute of its own, never another's value.
-    expect(showsWithSoImage('<!-- <SoImage image={badge} /> --><SoImage {image} />', 'image')).toBe(true);
+    // A comment that holds a tag, or text that opens one, is not read past; a comment of words is.
+    expect(showsWithSoImage('<!-- <SoImage image={badge} /> --><SoImage {image} />', 'image')).toBe(false);
+    expect(showsWithSoImage('<!-- A smaller copy shows here. --><SoImage {image} />', 'image')).toBe(true);
+    expect(showsWithSoImage('<script>const open = "<!--";</script><SoImage image={badge} /><!-- x --><SoImage {image} />', 'image')).toBe(false);
+    // The image component imported under another name draws pictures too.
+    expect(showsWithSoImage("<script>import SoImage from '../runtime/Image.svelte'; import Cover from '../runtime/Image.svelte';</script><Cover image={badge} /><SoImage {image} />", 'image')).toBe(false);
+    // A computed key could be a picture's own.
+    expect(showsWithSoImage("<SoImage image={{ ...photo, ['src']: other }} />", 'photo')).toBe(false);
+    // A shorthand is an attribute of its own, never another's value.
     expect(showsWithSoImage('<SoImage title= {image} />', 'image')).toBe(false);
     expect(showsWithSoImage('<SoImage {...rest} {image} />', 'image')).toBe(false);
     // Another attribute's expression, or text in a quoted value, is not the image.
@@ -502,6 +509,7 @@ describe('a code component’s picture (#505)', () => {
     // Another row's picture, or the item named again as another.
     expect(showsItemsWithSoImage(gallery('<SoImage image={images[0].image} />'), 'images', 'image')).toBe(false);
     expect(showsItemsWithSoImage(gallery('{@const item = images[0]}<SoImage image={item.image} />'), 'images', 'image')).toBe(false);
+    expect(showsItemsWithSoImage(gallery('{#if on}{@const { item } = { item: images[0] }}<SoImage image={item.image} />{/if}'), 'images', 'image')).toBe(false);
     // A filtered copy of the list shows other items than its own rows' places.
     expect(showsItemsWithSoImage('{#each shown as item}<SoImage image={item.image} />{/each}', 'images', 'image')).toBe(false);
     expect(showsItemsWithSoImage(gallery('<SoImage image={item.image} /><SoImage image={item.image} />'), 'images', 'image')).toBe(false);
