@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { askFrame, followed, followReport, newFrameNav, sendsFrame } from '../../src/renderer/src/lib/frame-nav';
 
@@ -126,5 +127,18 @@ describe('sending the frame to a page the editor opens', () => {
     expect(sendsFrame(true, true)).toBe(true);
     // A check that failed is no reason to go there, for a guest either.
     expect(sendsFrame(false, true)).toBe(false);
+  });
+
+  // No test mounts Canvas, so this holds Canvas to the rule where it opens the page shown.
+  it('is the rule Canvas sends the frame on when it opens the page shown, unless a newer request overtook the answer', () => {
+    const canvas = readFileSync('src/renderer/src/panels/Canvas.tsx', 'utf8');
+    const from = canvas.indexOf('function openShownPage()');
+    const open = canvas.slice(from, canvas.indexOf('\n  }\n', from));
+    expect(open).toContain('const remote = isRemoteShell(s);');
+    expect(open).toContain("if (sendsFrame(canServe, remote)) post('navigate', { path: shown.route, navId, fullReload: true });");
+    // A late answer for a page asked for before, or for another frame, sends nothing and starts no recovery.
+    expect(open).toMatch(/if \(nav\.current !== asked \|\| asked\.request\?\.id !== navId\) return;\n\s*if \(sendsFrame/);
+    // Nothing else in it sends the frame anywhere.
+    expect(open.match(/post\('navigate'/g)).toHaveLength(1);
   });
 });
