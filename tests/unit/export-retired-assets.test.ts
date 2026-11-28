@@ -25,6 +25,8 @@ const filesIn = (dir: string): string[] =>
 // build, as SvelteKit's prerender does.
 vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  // The project's website tools are set up, so the website is built (#1395).
+  dependenciesReady: async () => true,
   buildProject: async (dir: string) => {
     const { serverHtml } = await import('./generated-site');
     const files = new Map(filesIn(join(dir, 'src')).map((f) => [`src/${f}`, readFileSync(join(dir, 'src', f), 'utf8')]));
