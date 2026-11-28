@@ -1,4 +1,4 @@
-import { retainRefused, savesInFlight, settle, type Settled } from './pending';
+import { leavingEnded, retainRefused, savesInFlight, settle, type Settled } from './pending';
 import { api, confirmDialog, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
 import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
@@ -64,6 +64,7 @@ const LEAVE_QUESTION = 'Leave without your last change?';
 let closedCount = 0;
 export function projectClosed() {
   closedCount++;
+  leavingEnded();
   endEditingHold();
   forgetKeptDrafts();
   // A question about the project that just went away has nothing left to decide.

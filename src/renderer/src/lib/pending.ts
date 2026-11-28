@@ -117,6 +117,11 @@ export const isSettling = () => active.length > 0;
 /** A settle for leaving the project is running: text the project refuses meanwhile stays in its field, for the author
  *  to keep editing or leave without, rather than the saved value coming back. */
 export const isLeaving = () => active.some((a) => a.leaving);
+/** The project has gone: a leave still settling for it (the app stopped waiting for this page) no longer counts as one,
+ *  so text refused in the next project is put back as usual. */
+export function leavingEnded(): void {
+  for (const a of active) a.leaving = false;
+}
 
 /** Something typed was refused before it reached the project (a page with no title, text too long to send).
  *  Counted only while a settle is running; otherwise the field explains it as it always has. `draftKey` is
