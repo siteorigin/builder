@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { NearbyProject } from '@shared/api';
-import { MANIFEST_FILE } from './project/documents';
+import { DOC_DIR, MANIFEST_FILE } from './project/documents';
 
 /** A folder that is no project, when the author knows nothing about how a project is laid out on disk. */
 export const NOT_A_PROJECT = 'That folder is not a SiteOrigin Builder project. Choose the folder the project was saved in, the one named after it when it was created.';
@@ -19,9 +20,21 @@ const isDirectory = async (p: string) => (await fs.stat(p).catch(() => null))?.i
 const isFile = async (p: string) => (await fs.stat(p).catch(() => null))?.isFile() === true;
 const errorCode = (e: unknown) => (e as NodeJS.ErrnoException | null)?.code;
 
+/** A JSON document's string field, trimmed; null when it is missing, empty or unreadable. */
+const field = (text: string | null, key: string): string | null => {
+  try {
+    const v = text === null ? undefined : (JSON.parse(text) as Record<string, unknown> | null)?.[key];
+    return typeof v === 'string' && v.trim() ? v.trim() : null;
+  } catch {
+    return null;
+  }
+};
+
 /**
- * A project folder's name as Welcome shows it: its manifest's name, else the folder's own. `null` when the folder is no
- * project, `undefined` when that cannot be told (its manifest is there but could not be read).
+ * A project folder's name as Recent projects shows it (projectDisplayName: a working copy's own name, else the site's
+ * name), else its manifest's, else the folder's own. `null` when the folder is no project, `undefined` when that cannot
+ * be told (its manifest is there but could not be read). A damaged manifest is still that project's: opening it
+ * explains the damage.
  */
 async function projectName(dir: string): Promise<string | null | undefined> {
   let text: string;
@@ -31,13 +44,8 @@ async function projectName(dir: string): Promise<string | null | undefined> {
     const code = errorCode(e);
     return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR' ? null : undefined;
   }
-  let name: unknown;
-  try {
-    name = (JSON.parse(text) as { name?: unknown } | null)?.name;
-  } catch {
-    // A damaged manifest is still that project's: opening it explains the damage.
-  }
-  return typeof name === 'string' && name.trim() ? name.trim() : basename(dir);
+  const site = await fs.readFile(join(dir, DOC_DIR, 'site.json'), 'utf8').catch(() => null);
+  return field(text, 'workingCopyName') ?? field(site, 'name') ?? field(text, 'name') ?? basename(dir);
 }
 
 /** “A”, “B” and “C”; past four, the first three and how many more (`others`: how many is not known). */
@@ -59,11 +67,18 @@ async function childProjects(dir: string): Promise<{ found: NearbyProject[]; com
       complete = false;
       break;
     }
-    const path = join(dir, e.name);
-    if (e.name.startsWith('.') || !(e.isDirectory() || (e.isSymbolicLink() && (await isDirectory(path))))) continue;
+    let path = join(dir, e.name);
+    if (e.name.startsWith('.') || !(e.isDirectory() || e.isSymbolicLink())) continue;
+    // A linked folder is offered where it leads, so the offer opens what it names and a link beside its own folder is
+    // one project, not two.
+    if (e.isSymbolicLink()) {
+      const real = await fs.realpath(path).catch(() => null);
+      if (real === null || !(await isDirectory(real))) continue;
+      path = real;
+    }
     const name = await projectName(path);
     if (name === undefined) complete = false;
-    else if (name !== null) found.push({ dir: path, name });
+    else if (name !== null && !found.some((p) => p.dir === path)) found.push({ dir: path, name });
   }
   found.sort((a, b) => a.name.localeCompare(b.name));
   return { found, complete };
@@ -80,14 +95,18 @@ export async function notAProject(chosen: string): Promise<{ message: string; ne
   // which may be the project itself.
   const file = await isFile(chosen);
   const dir = file ? dirname(chosen) : chosen;
-  const website = (await isFile(join(dir, 'index.html'))) && (await isDirectory(join(dir, '_app')));
-  // The project above: the nearest folder up that is one, however deep the chosen folder is inside it.
-  for (let up = file ? dir : dirname(dir), from = file ? '' : dir; up !== from; from = up, up = dirname(up)) {
+  // A website says which project it was exported from nowhere, wherever it is kept: none is guessed for it.
+  if ((await isFile(join(dir, 'index.html'))) && (await isDirectory(join(dir, '_app')))) return { message: WEBSITE_FOLDER };
+  // The project above: the nearest folder up that is one, however deep the chosen folder is inside it, up to (and not
+  // including) the home folder or the top of the disk, where a stray manifest is no project anyone keeps work in.
+  const home = homedir();
+  for (let up = file ? dir : dirname(dir), from = file ? '' : dir; up !== from && up !== home && dirname(up) !== up; from = up, up = dirname(up)) {
     const name = await projectName(up);
-    if (!name) continue;
+    // A manifest there that cannot be read: whether this is that project cannot be told, so none further up is offered.
+    if (name === undefined) break;
+    if (name === null) continue;
     const nearby = { dir: up, name };
     if (up === dir) return { message: `That file is part of the project “${name}”, in ${up}.`, nearby };
-    if (website) return { message: `That folder holds a website exported from the project “${name}”, which is edited from its own folder, ${up}.`, nearby };
     return { message: `That folder is inside the project “${name}”, whose folder is ${up}.`, nearby };
   }
   let children: Awaited<ReturnType<typeof childProjects>>;
@@ -100,7 +119,7 @@ export async function notAProject(chosen: string): Promise<{ message: string; ne
   const { found, complete } = children;
   if (found.length === 1 && complete) return { message: `That folder holds the project “${found[0].name}”, in ${found[0].dir}.`, nearby: found[0] };
   if (found.length > 1 && complete) return { message: `That folder holds ${found.length} projects: ${listed(found.map((p) => p.name))}. Choose the folder of the one to open.` };
+  if (found.length === 1) return { message: `That folder holds the project “${found[0].name}”, but not all of the folder could be looked through for others. Choose the folder of the project to open.` };
   if (found.length > 0) return { message: `That folder holds projects, among them ${listed(found.map((p) => p.name), found.length > 3)}. Choose the folder of the one to open.` };
-  if (website) return { message: WEBSITE_FOLDER };
   return { message: NOT_A_PROJECT };
 }

@@ -494,6 +494,8 @@ export function Editor() {
     if (openingProject.current) return;
     openingProject.current = true;
     perfMark('open.requested', { chosen: dir === undefined ? 'dialog' : 'path' });
+    // The project this was asked over: an offer in the reply belongs to it, and goes when it does.
+    const askedIn = getState().snapshot?.workspaceKey;
     void api.projects
       .open(dir, opts)
       .then(
@@ -504,7 +506,15 @@ export function Editor() {
             endEditingHold();
             // A folder beside a project offers that project (#1433), while this one is open and no live session has
             // taken its place: a project of the author's own opens only once they have left it, as Open project does.
-            const offer = nearbyOffer(r.nearby, (d) => (showsRemote() ? toast('Leave the live session first: a project of your own opens once you have left.', 'info') : openProject(d)), getState().snapshot?.workspaceKey);
+            // Nor while this project is being closed: the notice is outside the editor that leaving holds.
+            const offer = nearbyOffer(
+              r.nearby,
+              (d) => {
+                if (showsRemote()) toast('Leave the live session first: a project of your own opens once you have left.', 'info');
+                else if (!getState().leaving && getState().snapshot?.workspaceKey === askedIn) openProject(d);
+              },
+              askedIn
+            );
             if (r.message) toast(r.message, 'error', offer);
           }
         },

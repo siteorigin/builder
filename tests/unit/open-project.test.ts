@@ -106,6 +106,9 @@ describe('opening a received project', () => {
       const r = await c.open(undefined, { folder: true });
       expect(r).toEqual({ ok: false, message: expect.stringContaining('“Fynbos and Fern”'), nearby: { dir, name: 'Fynbos and Fern' } });
     }
+    // Find folder… for a missing recent project is answered the same way.
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [holder] });
+    expect((await c.open(undefined, { replaces: join(holder, 'gone') })).nearby).toEqual({ dir, name: 'Fynbos and Fern' });
     // Asked for by its folder (a Recent projects card), the folder above is still just not found.
     expect((await c.open(holder)).nearby).toBeUndefined();
     // The offer opens the project like any other: it asks for trust.
