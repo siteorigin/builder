@@ -11,7 +11,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { asksToOpenPage, copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { asksToOpenInEditor, asksToSaveVersion } from '@agent/editor-nav';
+import { asksToOpenInEditor, asksToSaveVersion, findSectionToOpen } from '@agent/editor-nav';
 import { findingsOf, inTurns, introducedProblems, MEASURE_AT_ONCE, requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, requestedAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
@@ -740,6 +740,19 @@ describe('opening entries, sections and editor views, and saving versions, from 
     expect(openings(events)).toEqual([]);
   });
 
+  it('never takes a page\'s own title for the name of every section on it', async () => {
+    const { session } = await setup([]);
+    const { name } = aboutCta(session);
+    const state = structuredClone(session.state);
+    const contact = Object.values(state.pages).find((p) => p.title === 'Contact')!;
+    contact.title = name;
+    // Contact has no such section: Home's and About's are the two that fit, never every section of the page so titled.
+    const found = findSectionToOpen(state, name, contact.id);
+    expect(found.ok).toBe(false);
+    expect(!found.ok && found.message).toMatch(/More than one section fits/);
+    expect(!found.ok && found.message).not.toContain(`on the ${name} page`);
+  });
+
   it('refuses arguments a view does not take', async () => {
     const { run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'settings', target: 'Billing' })], () => finish('Done.')]);
     await run('Open Settings', { mode: 'ask' });
@@ -777,7 +790,7 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
   ])('hears "%s" as opening something in the editor', (text) => {
     expect(asksToOpenInEditor(text, state)).toBe(true);
   });
-  it.each(['Change the SEO title of the About page', 'Add a Share button to the footer', 'How do I export my website?', 'Make the hero bigger', 'Make the settings link open in a new tab', 'Write a section about our history', 'Make the footer link scroll to Pricing', 'Make the button jump to the contact form'])('hears "%s" as no request to open anything', (text) => {
+  it.each(['Change the SEO title of the About page', 'Add a Share button to the footer', 'How do I export my website?', 'Make the hero bigger', 'Make the settings link open in a new tab', 'Write a section about our history', 'Make the footer link scroll to Pricing', 'Make the button jump to the contact form', 'Make the button jump to the contact section', 'Display assets in a gallery'])('hears "%s" as no request to open anything', (text) => {
     expect(asksToOpenInEditor(text, state)).toBe(false);
   });
   it('hears an entry by its title, and a collection by what one entry is called', () => {
@@ -793,10 +806,10 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
     expect(() => asksToOpenInEditor('open Pricing', damaged)).not.toThrow();
     expect(asksToOpenInEditor('pull up Pricing', damaged)).toBe(false);
   });
-  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version', 'Save a version of the site called Launch', 'Create a version of the website named Draft 2'])('hears "%s" as saving a version', (text) => {
+  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version', 'Save a version of the site called Launch', 'Create a version of the website named Draft 2', 'Create a version called Launch', 'Make a backup of my website'])('hears "%s" as saving a version', (text) => {
     expect(asksToSaveVersion(text)).toBe(true);
   });
-  it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions', 'Make a mobile version called Compact'])('hears "%s" as no request to save one', (text) => {
+  it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions', 'Make a mobile version called Compact', 'Make a backup of the hero'])('hears "%s" as no request to save one', (text) => {
     expect(asksToSaveVersion(text)).toBe(false);
   });
 });

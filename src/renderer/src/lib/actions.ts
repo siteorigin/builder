@@ -12,7 +12,7 @@ import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setEditorOpener, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, claimRefusals, commitOps, confirmDialog, copyTextAction, SAID_ELSEWHERE, setEditorOpener, setPageOpener, getState, inspectorFocusRequest, leaveSeoView, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type Modal, type State } from '../store';
 import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { focusInspector } from './inspector-focus';
 import { sameSubject, seoDocument } from './seo-view';
@@ -1662,7 +1662,7 @@ export function revealSection(pageId: string, ref: ElementRef) {
  * not open instead.
  */
 export function openFromChat(opening: EditorOpening, still: () => boolean) {
-  if (getState().modal) return toast(`Close the open dialog to see ${chatOpeningName(opening)}.`, 'info');
+  if (dialogInTheWay()) return toast(`Close the open dialog to see ${chatOpeningName(opening)}.`, 'info');
   if (opening.kind === 'entry') return void openEntryFromChat(opening, still);
   if (opening.kind === 'section') return revealSection(opening.pageId, opening.ref);
   switch (opening.view) {
@@ -1679,22 +1679,39 @@ export function openFromChat(opening: EditorOpening, still: () => boolean) {
     case 'assets':
       return setState({ leftTab: 'assets' });
     case 'settings':
-      return setState({ modal: { kind: 'settings' } });
+      return chatDialog({ kind: 'settings' });
     case 'project_health':
-      return setState({ modal: { kind: 'health' } });
+      return chatDialog({ kind: 'health' });
     case 'history':
-      return setState({ modal: { kind: 'history' } });
+      return chatDialog({ kind: 'history' });
     case 'versions':
-      return setState({ modal: { kind: 'history', tab: 'versions' } });
+      return chatDialog({ kind: 'history', tab: 'versions' });
     case 'project_brief':
       return setState({ rightTab: 'project', dockOpen: true });
     case 'export':
-      return setState({ modal: { kind: 'export' } });
+      return chatDialog({ kind: 'export' });
     case 'share':
       return setState({ shareOpen: true });
   }
 }
 setEditorOpener(openFromChat);
+
+/** The dialog Chat itself opened last: one asked for after it ("open History, then Versions") may take its place. */
+let chatModal: Modal = null;
+function chatDialog(modal: Modal) {
+  chatModal = modal;
+  setState({ modal });
+}
+
+/**
+ * Whether a dialog the author has open is in the way: the editor's own (`modal`), or one a panel keeps of its own (the
+ * writer's picture dialog), which may hold a draft that closing it would lose. Only the dialog Chat opened is not.
+ */
+function dialogInTheWay(): boolean {
+  const modal = getState().modal;
+  if (modal) return modal !== chatModal;
+  return typeof document !== 'undefined' && !!document.querySelector('[role="dialog"][aria-modal="true"]');
+}
 
 /** What Chat was opening, for a notice that it could not. */
 function chatOpeningName(o: EditorOpening): string {
@@ -1710,7 +1727,7 @@ function chatOpeningName(o: EditorOpening): string {
  */
 async function openEntryFromChat(o: Extract<EditorOpening, { kind: 'entry' }>, still: () => boolean) {
   const saved = getState().post?.entryId === o.entryId || (await saveOpenPost());
-  if (!still() || getState().modal) return;
+  if (!still() || dialogInTheWay()) return;
   if (!saved) return toast('The entry you are writing has a change that is not saved yet, so Chat could not open another. See the note beside it.', 'error');
   setState({ leftTab: 'posts', post: { collectionId: o.collectionId, entryId: o.entryId }, postView: 'write', postReveal: null });
 }

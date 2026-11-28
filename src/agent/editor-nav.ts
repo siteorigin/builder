@@ -48,7 +48,9 @@ const LEADING_NAV = /^\s*(?:please\s+)?(?:select|highlight|scroll\s+(?:down\s+|u
 /** What a link or button does for visitors ("make the footer link scroll to Pricing") is an edit, not going there. */
 const VISITOR_BEHAVIOUR = /\b(?:links?|buttons?|anchors?|menu\s+items?|ctas?|clicks?|visitors?)\b/iu;
 /** "show Site styles" and "display the SEO view": a view named right after showing it. */
-const SHOW_VIEW = new RegExp(`\\b(?:show|display)\\s+(?:me\\s+)?(?:the\\s+)?${VIEW_NAMES.source}`, 'iu');
+const SHOW_VIEW = new RegExp(`\\b(?:show|display)\\s+(?:me\\s+)?(?:the\\s+)?${VIEW_NAMES.source}(?=\\s*(?:$|[.,!?;:]|(?:and|then|please|now|too)\\b))`, 'iu');
+/** An edit that says what something does for visitors: "make the button jump to the contact section". */
+const EDIT_LEAD = /^\s*(?:please\s+)?(?:make|set|change|add|let|have|link|point)\b/iu;
 /** An entry named by its ID. */
 const ENTRY_ID = /\ben_[a-z0-9]{4,32}\b/u;
 /** Words for an entry, when its collection is not named ("open the blog post about pricing"). */
@@ -61,9 +63,10 @@ const ENTRY_WORDS = /\b(?:posts?|blog\s+posts?|articles?|entr(?:y|ies)|collectio
 export function asksToOpenInEditor(text: string, state?: ProjectState): boolean {
   if (HOW_TO.test(text)) return false;
   if (EXPORT_OR_SHARE.test(text) || LEADING_NAV.test(text) || SHOW_VIEW.test(text)) return true;
-  if (!VISITOR_BEHAVIOUR.test(text) && ((SECTION_VERBS.test(text) && SECTION_WORDS.test(text)) || /\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(text))) return true;
+  const visitorEdit = EDIT_LEAD.test(text) && VISITOR_BEHAVIOUR.test(text);
+  if (!visitorEdit && ((SECTION_VERBS.test(text) && SECTION_WORDS.test(text)) || /\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(text))) return true;
   if (!GO_TO.test(text)) return false;
-  if (VIEW_NAMES.test(text) || ENTRY_WORDS.test(text) || SECTION_WORDS.test(text) || ENTRY_ID.test(text)) return true;
+  if (VIEW_NAMES.test(text) || ENTRY_WORDS.test(text) || (!visitorEdit && SECTION_WORDS.test(text)) || ENTRY_ID.test(text)) return true;
   const named = namedIn(text);
   for (const c of Object.values(state?.collections ?? {})) {
     if (!c?.settings) continue;
@@ -81,10 +84,13 @@ export function asksToSaveVersion(text: string): boolean {
   if (HOW_TO.test(text)) return false;
   // A snapshot is always the site's; a version is when it is saved or kept ("save a version"), or named as the site's
   // ("create a version of the website"). Making a version of something else ("a mobile version") is an edit.
+  // "Of" something other than the site is a copy of that part ("a backup of the hero"), never a saved version.
+  const site = String.raw`(?:(?=\s+of\s+(?:the\s+|my\s+|this\s+|our\s+)?(?:whole\s+|entire\s+)?(?:web\s*)?(?:site|project)\b)|(?!\s+of\b))`;
   return (
-    /\b(?:save|create|take|make|keep|add)\b[^.?!\n]{0,40}?\b(?:snapshots?|checkpoints?|restore\s+points?|backups?)\b/iu.test(text) ||
-    /\b(?:save|keep|take)\b[^.?!\n]{0,40}?\bversions?\b(?!\s+of\b)/iu.test(text) ||
-    /\b(?:save|keep|take|create|make|add)\b[^.?!\n]{0,40}?\bversions?\s+of\s+(?:the\s+|my\s+|this\s+|our\s+)?(?:whole\s+|entire\s+)?(?:web\s*)?(?:site|project)\b/iu.test(text)
+    new RegExp(String.raw`\b(?:save|create|take|make|keep|add)\b[^.?!\n]{0,40}?\b(?:snapshots?|checkpoints?|restore\s+points?|backups?)\b` + site, 'iu').test(text) ||
+    new RegExp(String.raw`\b(?:save|keep|take)\b[^.?!\n]{0,40}?\bversions?\b` + site, 'iu').test(text) ||
+    // Made, a version is the site's when nothing describes it ("create a version called Launch", never "a mobile version").
+    new RegExp(String.raw`\b(?:create|make|add)\s+(?:(?:a|an|another|one)\s+)?(?:new\s+)?versions?\b` + site, 'iu').test(text)
   );
 }
 
@@ -192,7 +198,8 @@ export function findSectionToOpen(state: ProjectState, ref: string, shownPageId:
     const exact = all.filter((s) => fold(s.name) === wanted || (s.component && fold(s.component) === wanted));
     if (exact.length) return exact;
     const words = wanted.split(/\s+/).filter(Boolean);
-    return words.length ? all.filter((s) => words.every((w) => `${fold(s.name)} ${fold(s.component)} ${fold(s.where)}`.includes(w))) : [];
+    // A shared part is also known by where it is ("footer contact links"); a page's own, never by its page's title.
+    return words.length ? all.filter((s) => words.every((w) => `${fold(s.name)} ${fold(s.component)} ${s.ref.owner.kind === 'shell' ? fold(s.where) : ''}`.includes(w))) : [];
   };
   const pick = (hits: PlacedSection[]): Found<{ pageId: string; ref: ElementRef }> | null => {
     // The header or footer found on several pages is one section: it opens on the first of them.
