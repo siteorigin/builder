@@ -5,7 +5,7 @@
  * `static/assets/`, and the project's first writable opening in SiteOrigin Builder puts them back.
  */
 import { promises as fs, constants as fsConstants } from 'node:fs';
-import { basename, dirname, join, posix } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import type { AssetRecord } from '@shared/types';
 import { removeEmptyDirs, safeJoin } from './fsutil';
 
@@ -16,14 +16,10 @@ const ASSETS_DIR = 'static/assets';
 /** Errors of a disk that has no hard links (as src/main/git/repo.ts knows them), or no more for one file: the file is copied instead. */
 const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EINVAL', 'EISDIR', 'UNKNOWN', 'EMLINK']);
 
-/** The start of the name of a folder a restore copies a file into before putting it in place: the restore's own, never a held file. */
-const SCRATCH = '.siteorigin-restoring-';
-
-/** Every regular file below `dir`, relative to it with forward slashes, but for a restore's own scratch folders. A link, or anything in a linked folder, is none. */
+/** Every regular file below `dir`, relative to it with forward slashes. A link, or anything in a linked folder, is none. */
 async function filesBelow(dir: string, base = ''): Promise<string[]> {
   const out: string[] = [];
   for (const e of await fs.readdir(join(dir, base), { withFileTypes: true }).catch(() => [])) {
-    if (!base && e.name.startsWith(SCRATCH)) continue;
     const rel = base ? `${base}/${e.name}` : e.name;
     if (e.isDirectory()) out.push(...(await filesBelow(dir, rel)));
     else if (e.isFile()) out.push(rel);
@@ -59,8 +55,6 @@ async function spelledAs(root: string, rel: string): Promise<boolean> {
   return true;
 }
 
-const exists = (path: string) => fs.lstat(path).then(() => true, () => false);
-
 /** The held folder's own files, as project paths (`siteorigin/draft-assets/…`), or none when it is not a folder of its own. */
 export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
   if (await linkOnTheWay(dir, DRAFT_ASSETS_DIR)) return [];
@@ -70,36 +64,40 @@ export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
 
 /**
  * Put `from` at `to` without replacing anything there: linked and then let go of where the disk can, so the file is at
- * one path or both but never half written. Where it can't, it is copied into a scratch folder of the restore's own in
- * `held` first and put in place once whole, so a copy cut short is never at `to`. False when something is already at `to`.
+ * one path or both but never half written, and copied where it can't, into a file the copy alone makes. A copy that
+ * fails is taken away again; one cut short by the app stopping is the start of the held file, which the next opening
+ * knows (heldAt). False when something is already at `to`.
  */
-async function moveNew(from: string, to: string, held: string): Promise<boolean> {
+async function moveNew(from: string, to: string): Promise<boolean> {
   try {
     await fs.link(from, to);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code ?? '';
     if (code === 'EEXIST') return false;
     if (!NO_LINKS.has(code)) throw e;
-    if (await exists(to)) return false;
-    const scratch = await fs.mkdtemp(join(held, SCRATCH));
     try {
-      const copy = join(scratch, basename(to));
-      await fs.copyFile(from, copy, fsConstants.COPYFILE_EXCL);
-      if (await exists(to)) return false;
-      await fs.rename(copy, to);
-    } finally {
-      await fs.rm(scratch, { recursive: true, force: true });
+      await fs.copyFile(from, to, fsConstants.COPYFILE_EXCL);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      await fs.rm(to, { force: true });
+      throw err;
     }
   }
   await fs.rm(from);
   return true;
 }
 
-/** Whether the file at `to` (the project path `target`) is the held file `from` put back already: the same bytes, at exactly that name, through no link. */
-async function putBack(dir: string, from: string, to: string, target: string): Promise<boolean> {
-  if ((await fs.realpath(from)) === (await fs.realpath(to))) return false;
-  if (!(await fs.lstat(to)).isFile() || !(await spelledAs(dir, target))) return false;
-  return (await fs.readFile(from)).equals(await fs.readFile(to));
+/**
+ * What the file at `to` (the project path `target`) is of the held file `from`, reached through no link and at exactly
+ * that name: the held file put back already (`same`: the same bytes, a move cut short), the start of it (`start`: a
+ * copy cut short), or another file.
+ */
+async function heldAt(dir: string, from: string, to: string, target: string): Promise<'same' | 'start' | 'other'> {
+  if ((await fs.realpath(from)) === (await fs.realpath(to))) return 'other';
+  if (!(await fs.lstat(to)).isFile() || !(await spelledAs(dir, target))) return 'other';
+  const [whole, there] = [await fs.readFile(from), await fs.readFile(to)];
+  if (whole.equals(there)) return 'same';
+  return there.length < whole.length && whole.subarray(0, there.length).equals(there) ? 'start' : 'other';
 }
 
 /**
@@ -147,16 +145,15 @@ export async function holdDraftAssets(dir: string, files: readonly string[]): Pr
  * Put the library files an export held back (holdDraftAssets) where the project uses them, in `static/assets/`, and
  * remove the folder once it is empty. Only one of `assets`' own files (an original or a copy, its path matched
  * without case) is ever put back: anything else there is no file an export held. A file is never put over one already
- * there: one with the same bytes at exactly that name is the same file (a move cut short), so the held copy goes;
- * anything else there stays as it is, beside the held copy. Nothing is moved, compared or removed through a link.
+ * there: one with the same bytes at exactly that name is the same file (a move cut short), so the held copy goes; one
+ * that is the start of it is a copy cut short, made again; anything else stays as it is, beside the held copy.
+ * Nothing is moved, compared or removed through a link.
  * Returns the held files left where they are (as `siteorigin/draft-assets/…`), for the opening to say so.
  */
 export async function restoreDraftAssets(dir: string, assets: Readonly<Record<string, AssetRecord>>): Promise<string[]> {
   if (await linkOnTheWay(dir, DRAFT_ASSETS_DIR)) return [];
   const held = join(dir, DRAFT_ASSETS_DIR);
   if (!(await fs.lstat(held).then((st) => st.isDirectory(), () => false))) return [];
-  // A restore's scratch folders that one cut short left behind hold only its copies.
-  for (const name of await fs.readdir(held).catch(() => [] as string[])) if (name.startsWith(SCRATCH)) await fs.rm(join(held, name), { recursive: true, force: true }).catch(() => undefined);
   const library = new Set<string>();
   for (const a of Object.values(assets)) for (const f of [a?.file, ...(a?.variants ?? []).map((v) => v?.file)]) if (typeof f === 'string') library.add(f.toLowerCase());
   const kept: string[] = [];
@@ -182,9 +179,10 @@ export async function restoreDraftAssets(dir: string, assets: Readonly<Record<st
         const to = safeJoin(dir, target);
         await openFolder(dirname(to), opened);
         await openFolder(dirname(from), opened);
-        if (await moveNew(from, to, held)) continue;
-        if (await putBack(dir, from, to, target)) await fs.rm(from);
-        else kept.push(path);
+        if (await moveNew(from, to)) continue;
+        const there = await heldAt(dir, from, to, target);
+        if (there === 'same') await fs.rm(from);
+        else if (there !== 'start' || !(await fs.rm(to).then(() => moveNew(from, to)))) kept.push(path);
       } catch {
         kept.push(path);
       }

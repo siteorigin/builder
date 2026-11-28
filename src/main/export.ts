@@ -589,9 +589,10 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   // (`Photo-…` for the record's `photo-…`). Only these are held, since only these does an opening put back.
   const spelled = new Map<string, string[]>();
   for (const rel of unshipped) spelled.set(rel.toLowerCase(), [...(spelled.get(rel.toLowerCase()) ?? []), rel]);
+  const exact = new Set(candidates);
   const library = new Set<string>();
   for (const a of Object.values(state.assets.assets)) {
-    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f !== 'string' ? [] : unshipped.has(f) ? [f] : (spelled.get(f.toLowerCase()) ?? [])));
+    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f !== 'string' ? [] : exact.has(f) ? (unshipped.has(f) ? [f] : []) : (spelled.get(f.toLowerCase()) ?? [])));
     for (const f of own) library.add(f);
     if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) held.add(f);
   }

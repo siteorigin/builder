@@ -110,6 +110,9 @@ describe('files kept aside for drafts', () => {
     expect(read(dir, 'static/assets/new-12345678.svg')).toBe('new');
     expect(there(dir, 'static/assets/reviewer-notes.txt')).toBe(false);
     expect(there(dir, 'static/assets/notes-20261128.txt')).toBe(false);
+    expect(read(dir, `${DRAFT_ASSETS_DIR}/reviewer-notes.txt`)).toBe('notes');
+    expect(read(dir, `${DRAFT_ASSETS_DIR}/notes-20261128.txt`)).toBe('notes');
+    expect(read(dir, `${DRAFT_ASSETS_DIR}/extra/thing-12345678.svg`)).toBe('thing');
     expect(there(dir, 'static/assets/extra')).toBe(false);
     expect(keptDraftAssetsNote([`${DRAFT_ASSETS_DIR}/other-12345678.pdf`])).toBe(
       'siteorigin/draft-assets/other-12345678.pdf was left where it is, in the folder where an exported project keeps the files only its drafts use: it is no file of the project’s assets, another file is in its place in static/assets/, or it could not be moved. Move it into static/assets/ to use it, or delete it.'
@@ -121,7 +124,7 @@ describe('files kept aside for drafts', () => {
     expect(heldDraftAssetsStop([`${DRAFT_ASSETS_DIR}/other-12345678.pdf`])).toBe('siteorigin/draft-assets/other-12345678.pdf is still kept aside from an earlier export of this project. Move it into static/assets/ or delete it, then export again.');
   });
 
-  it('copies where the disk has no hard links, never over a file there, and never leaves a copy cut short in its place', async () => {
+  it('copies where the disk has no hard links, never over a file there, and makes again a copy cut short', async () => {
     const dir = temp();
     write(dir, `${DRAFT_ASSETS_DIR}/sketch-12345678.jpg`, 'sketch');
     write(dir, `${DRAFT_ASSETS_DIR}/taken-12345678.jpg`, 'held');
@@ -139,18 +142,22 @@ describe('files kept aside for drafts', () => {
     write(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`, 'whole picture');
     const copy = fsPromises.copyFile;
     const cut = vi.spyOn(fsPromises, 'copyFile').mockImplementation(async (from, to) => {
+      // As an exclusive copy does: nothing is made over a file there.
+      if (existsSync(to as string)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
       writeFileSync(to as string, 'wh');
       throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
     });
     expect(await restoreDraftAssets(dir, records)).toContain(`${DRAFT_ASSETS_DIR}/cut-12345678.jpg`);
     expect(there(dir, 'static/assets/cut-12345678.jpg')).toBe(false);
-    // One a restore cut short left behind is its own, never a held file, and goes.
-    write(dir, `${DRAFT_ASSETS_DIR}/.siteorigin-restoring-a1b2c3/cut-12345678.jpg`, 'wh');
-    expect(await heldDraftAssetFiles(dir)).toEqual([`${DRAFT_ASSETS_DIR}/cut-12345678.jpg`, `${DRAFT_ASSETS_DIR}/taken-12345678.jpg`]);
+    expect(read(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`)).toBe('whole picture');
+    // One cut short by the app stopping is the start of the held file: the next opening makes it again. The file
+    // that only shares a first letter with its held copy is another file, and stays.
     cut.mockImplementation(copy);
+    write(dir, 'static/assets/cut-12345678.jpg', 'whole pic');
     expect(await restoreDraftAssets(dir, records)).toEqual([`${DRAFT_ASSETS_DIR}/taken-12345678.jpg`]);
     expect(read(dir, 'static/assets/cut-12345678.jpg')).toBe('whole picture');
-    expect(there(dir, `${DRAFT_ASSETS_DIR}/.siteorigin-restoring-a1b2c3`)).toBe(false);
+    expect(there(dir, `${DRAFT_ASSETS_DIR}/cut-12345678.jpg`)).toBe(false);
+    expect(read(dir, 'static/assets/taken-12345678.jpg')).toBe('mine');
   });
 
   it.each(['EACCES', 'EIO'])('leaves a held file where it is when the disk refuses the move otherwise (%s)', async (code) => {
