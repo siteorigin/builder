@@ -11,7 +11,7 @@ import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
 import { sourceWriteRefusal } from '../sources/grant';
-import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
+import type { ApplyResult, EditBatch, EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { axesOf, choicesLost } from '@shared/variants';
@@ -5641,6 +5641,60 @@ export class ProjectSession extends EventEmitter {
       if (!latest || latest.runId !== runId)
         return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Later changes were made after this AI turn. Undo those first from the history.', recoverable: false } };
       return this.travel(this.history.cursor - 1);
+    });
+  }
+
+  /**
+   * Undo or redo `steps` History entries for the AI run `runId`, which the author asked to do just that (#1405): the
+   * same step the toolbar's Undo or Redo takes, recorded as the author's, never as an AI change. The run lets go of
+   * the project for it, so it must have changed nothing, and the project must be at the revision the run started from:
+   * an edit of the author's saved while it waited moves what "the latest change" is, and the step is refused. Once taken,
+   * the run holds nothing (completeRun and abortRun find no run) and can change nothing more.
+   */
+  stepHistoryForRun(runId: string, direction: 'undo' | 'redo', steps = 1): Promise<ApplyResult> {
+    return this.serialize(async () => {
+      const run = this.activeRun;
+      const refuse = (code: ToolErrorCode, message: string, recoverable = false): ApplyResult => ({ ok: false, revision: this.revision, error: { code, message, recoverable } });
+      if (!run || run.id !== runId) return refuse('CONFLICT', 'This request no longer holds the project.');
+      if (this.runChanged()) return refuse('CONFLICT', `This request has already changed the site, so it cannot also ${direction}. The author can ${direction} from the toolbar once it finishes.`);
+      if (this.revision !== run.startRevision) return refuse('STALE_REVISION', `The author saved changes while this request ran, so its ${direction} might take back other changes than they meant. Nothing was ${direction === 'undo' ? 'undone' : 'redone'}: ask them to send it again.`);
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
+      const h = this.history;
+      const to = direction === 'undo' ? h.cursor - steps : h.cursor + steps;
+      const left = direction === 'undo' ? h.cursor : h.entries.length - h.cursor;
+      if (!left) return refuse('INVALID_ARGUMENT', `Nothing to ${direction}.`);
+      if (to < 0 || to > h.entries.length) return refuse('INVALID_ARGUMENT', `Only ${left} ${left === 1 ? 'change' : 'changes'} can be ${direction === 'undo' ? 'undone' : 'redone'}.`, true);
+      // Unchanged since its checkpoint, the run's project is the author's as it was: letting go of it restores nothing.
+      const at = { revision: this.revision, cursor: h.cursor };
+      const label = steps === 1 ? h.entries[direction === 'undo' ? h.cursor - 1 : h.cursor].label : undefined;
+      this.activeRun = null;
+      /** Nothing of the step was written: the run may hold the project again, as it was. Once anything was, the step
+       *  is the author's and stays (restoring the run would let its rollback write the old documents under a moved cursor). */
+      const untouched = () => this.revision === at.revision && this.history.cursor === at.cursor && !this.unsettled;
+      // A marker left behind names no document the run changed, so reopening restores nothing from it.
+      const letGo = () => removeDurable(this.local('sessions', 'active-run.json')).catch(() => undefined);
+      let r: ApplyResult;
+      try {
+        r = await this.travel(to);
+      } catch (e) {
+        if (untouched()) {
+          this.activeRun = run;
+          throw e;
+        }
+        // Saved, and something after the save failed (a listener): the step landed, and is reported as it stands. A
+        // save that did not finish is reopening's to settle, and is no success.
+        await letGo();
+        if (this.history.cursor !== to || this.unsettled) throw e;
+        return { ok: true, revision: this.revision, ...(label ? { label } : {}) };
+      }
+      if (!r.ok) {
+        if (untouched()) this.activeRun = run;
+        else await letGo();
+        return r;
+      }
+      await letGo();
+      return r;
     });
   }
 

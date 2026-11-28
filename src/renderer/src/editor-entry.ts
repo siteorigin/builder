@@ -6,3 +6,4 @@ export { Editor, handleShortcut } from './Editor';
 export { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 export { cancelComponentPreviews, runComponentPreviews, runInspection } from './lib/inspect';
 export { forgetCopy } from './lib/clipboard';
+export { runPreviewControl } from './lib/preview-control';
