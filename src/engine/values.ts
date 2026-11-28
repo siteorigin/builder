@@ -153,8 +153,8 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string, s
 
 export const MAX_RICH_CHARS = 20000;
 export const MAX_RICH_BLOCKS = 500;
-/** A collection entry's text is a whole article, so it has room for one: a long read with its pictures. */
-export const MAX_ENTRY_CHARS = 100000;
+/** A collection entry's text is a whole article, so it has room for one: a long read of 20,000 words and more, with its pictures. */
+export const MAX_ENTRY_CHARS = 150_000;
 export const MAX_ENTRY_BLOCKS = 2000;
 /** The longest caption a picture in an article has. */
 export const MAX_CAPTION = 300;

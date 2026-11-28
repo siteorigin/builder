@@ -13,6 +13,7 @@ import { runSeoAudit } from '@engine/seo-audit';
 import { generateProject } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { checkCrawlerPath, checkCrawlerPathLines, checkCrawlerToken, checkCrawlerTokenLines, crawlerRules, NOAI_META, patchCrawlerPolicy, patchedCrawlerRules, robotsTxt, siteRobotsTxt, storedCrawlerPolicy } from '@shared/crawler-policy';
+import { validateRoute } from '@shared/routes';
 import { projectSummary } from '../../src/agent/context';
 import { checkHeld, fieldKey, readField, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { destinationLabel } from '../../src/renderer/src/lib/destinations';
@@ -295,10 +296,62 @@ describe('checking what is typed', () => {
     // A space of another alphabet is part of the path, never trimmed away to widen it.
     expect(checkCrawlerPath(' /offers\u00a0 ')).toEqual({ ok: true, value: '/offers%C2%A0' });
     expect(checkCrawlerPath('\u00a0/offers').ok).toBe(false);
-    for (const bad of ['private/', '//evil.example/', '/a b', '/a#b', '/a$b', '/a%zz', '/a/../b', '/a/%2E%2E/b', '/a\\b', '/a"b', '/' + 'a'.repeat(512), '/\ud800'])
+    for (const bad of ['private/', '//evil.example/', '/a b', '/a#b', '/a$b', '/a%zz', '/a/../b', '/a/%2E%2E/b', '/a\\b', '/a"b', '/' + 'a'.repeat(1600), '/\ud800'])
       expect(checkCrawlerPath(bad).ok, JSON.stringify(bad)).toBe(false);
     expect(checkCrawlerPathLines('/b/\n\n/a/\n/b/')).toEqual({ ok: true, value: ['/a/', '/b/'] });
     expect(checkCrawlerPathLines('/a/\nb')).toMatchObject({ ok: false, message: expect.stringContaining('start it with “/”') });
+  });
+
+  it('closes the exact address of any page, however long robots.txt writes it', () => {
+    // Issue 1549: 64 typed characters were 512 encoded and saved; the sibling's 65 were 513 and refused.
+    const parent = 'あ'.repeat(30);
+    const first = `/${parent}/${'い'.repeat(26)}-a-b/$`;
+    const second = `/${parent}/${'い'.repeat(26)}-a-bz/$`;
+    // The longest a native address gets: four levels, each 120 bytes as a folder name.
+    const deepest = `/${Array(4).fill('う'.repeat(40)).join('/')}/$`;
+    for (const path of [first, second, deepest]) {
+      expect(validateRoute(path.slice(0, -1))).toBeNull();
+      const encoded = encodeURI(path.slice(0, -1)) + '$';
+      expect(checkCrawlerPath(path)).toEqual({ ok: true, value: encoded });
+      expect(checkCrawlerPath(encoded)).toEqual({ ok: true, value: encoded });
+      expect(invalid({ preset: 'custom', disallowPaths: [encoded] })).toBeNull();
+    }
+    // A category's later archive page, the deepest address the website writes itself.
+    const archive = `/${Array(3).fill('う'.repeat(40)).join('/')}/category/${'c'.repeat(60)}/page/2/$`;
+    const paths = [first, second, deepest, archive];
+    const file = robots(policy(rootSite(), { preset: 'custom', disallowPaths: paths }))!;
+    for (const path of paths) expect(mayFetch(file, 'Googlebot', encodeURI(path.slice(0, -1)))).toBe(false);
+    // Each rule stays exact: closing one sibling leaves the other open.
+    const one = robots(policy(rootSite(), { preset: 'custom', disallowPaths: [first] }))!;
+    expect(mayFetch(one, 'Googlebot', encodeURI(second.slice(0, -1)))).toBe(true);
+    expect(mayFetch(one, 'Googlebot', `${encodeURI(first.slice(0, -1))}below/`)).toBe(true);
+  });
+
+  it('says what it counts when a path is too long', () => {
+    expect(checkCrawlerPath(`/${'a'.repeat(1599)}`).ok).toBe(true);
+    expect(checkCrawlerPath(`/${'a'.repeat(1600)}`)).toMatchObject({ ok: false, message: expect.stringMatching(/at most 1600 characters as robots\.txt writes it.*percent-encoded.*This one takes 1601\./) });
+    // 178 typed characters, 1,603 as written.
+    expect(checkCrawlerPath(`/${'あ'.repeat(178)}`)).toMatchObject({ ok: false, message: expect.stringContaining('This one takes 1603.') });
+    // Counted as written, not as typed: “%61” is written “a”.
+    expect(checkCrawlerPath(`/%61${'a'.repeat(1599)}`)).toMatchObject({ ok: false, message: expect.stringContaining('This one takes 1601.') });
+  });
+
+  it('keeps robots.txt inside what crawlers read, never cutting a policy an edit saved', () => {
+    // The most an edit may write: every path at its longest and listing the home page twice, under the longest sub-path.
+    const longest = (i: number) => `/?${String(i).padStart(3, '0')}${'a'.repeat(1594)}$`;
+    const { state } = seoSite();
+    state.site.baseUrl = `https://a.example/${'m'.repeat(182)}`;
+    const saved = policy(state, { preset: 'custom', overrides: { Googlebot: 'allow' }, disallowPaths: Array.from({ length: 64 }, (_, i) => longest(i)) });
+    expect(crawlerRules(saved.site).paths).toHaveLength(64);
+    expect(Buffer.byteLength(robots(saved)!)).toBeLessThan(500 * 1024);
+    // A hand edit past that is cut to fit, the pattern closing the whole site kept, with room for every crawler named.
+    const named = Object.fromEntries(Array.from({ length: 255 }, (_, i) => [`${String.fromCharCode(97 + Math.floor(i / 26), 97 + (i % 26))}${'x'.repeat(126)}`, i % 2 ? ('allow' as const) : ('disallow' as const)]));
+    const flooded = { ...saved, site: { ...saved.site, crawlerPolicy: { preset: 'custom' as const, overrides: { ...named, Googlebot: 'allow' as const }, disallowPaths: [...Array.from({ length: 256 }, (_, i) => longest(i)), '/*'] } } };
+    const kept = crawlerRules(flooded.site).paths;
+    expect(kept).toContain('/*');
+    expect(kept.length).toBeGreaterThanOrEqual(64);
+    expect(kept.length).toBeLessThan(256);
+    expect(Buffer.byteLength(robots(flooded)!)).toBeLessThan(500 * 1024);
   });
 
   it('refuses rules the website could not write before anything is saved', () => {

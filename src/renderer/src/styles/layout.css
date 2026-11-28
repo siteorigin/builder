@@ -143,6 +143,10 @@
   .list-item.drop-before::before, .list-item.drop-after::after { content: ''; position: absolute; left: 6px; right: 6px; height: 2px; background: var(--accent); border-radius: 2px; }
   .list-item.drop-before::before { top: -1px; }
   .list-item.drop-after::after { bottom: -1px; }
+  /* A focused row's whole title and address (ListText.tsx ListPeek): a card beside the sidebar, level with the row. */
+  .list-peek { position: fixed; z-index: var(--z-peek); display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); pointer-events: none; }
+  .list-peek-title { font-weight: 500; overflow-wrap: anywhere; }
+  .list-peek-route { font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
   .list-section { padding: 12px 14px 4px; font-size: 12px; font-weight: 600; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
   .list-section svg { width: 13px; height: 13px; color: var(--text-3); }
   .tree-toggle { width: 24px; height: 24px; margin: 0 -6px 0 -8px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; padding: 0; color: var(--text-3); flex: none; }

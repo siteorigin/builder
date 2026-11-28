@@ -49,9 +49,11 @@ async function setTheme(theme) {
 async function panelClip() {
   const box = await win.locator('.side-panel').boundingBox();
   let right = box.x + box.width + 16;
-  // An open menu can extend past the sidebar; widen the crop so it is captured whole.
-  const menu = win.locator('.menu').first();
-  if (await menu.isVisible().catch(() => false)) right = Math.max(right, ((await menu.boundingBox())?.x ?? 0) + ((await menu.boundingBox())?.width ?? 0) + 12);
+  // An open menu, or a focused row's peek card beside the sidebar, extends past it; widen the crop so it is captured whole.
+  for (const sel of ['.menu', '.list-peek']) {
+    const pop = win.locator(sel).first();
+    if (await pop.isVisible().catch(() => false)) right = Math.max(right, ((await pop.boundingBox())?.x ?? 0) + ((await pop.boundingBox())?.width ?? 0) + 12);
+  }
   return { x: 0, y: 0, width: Math.ceil(right), height: 900 };
 }
 
@@ -211,10 +213,10 @@ await pause(300);
   await row('Kōwhai Street apartment').focus();
   for (let i = 0; i < 4; i++) await win.keyboard.press('ArrowUp');
   await pause(300);
-  await shot('peek', '.pages-peek', LIGHT, { keepPointer: true });
+  await shot('peek', '.list-peek', LIGHT, { keepPointer: true });
   await win.keyboard.press('Escape');
   await pause(200);
-  if (await win.locator('.pages-peek').count()) throw new Error('Escape did not hide the peek card');
+  if (await win.locator('.list-peek').count()) throw new Error('Escape did not hide the peek card');
 
   // A draft page's options: Publish instead of Keep as draft, no Make home page.
   await row('Careers').scrollIntoViewIfNeeded();

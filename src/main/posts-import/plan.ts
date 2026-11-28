@@ -384,11 +384,12 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostI
  * The plan as one batch: the new library images first (`assets`, made from the pictures found), the collection and
  * its groupings, every entry (each keeping its old address), then the text of those that link to entries of the
  * import, once they all exist. `assetIds` maps each picture's key to its library image; one missing is left out.
+ * With `addToNavigation`, a blog the import makes asks for its link in the header menu, as the starter card's does.
  */
-export function planOperations(plan: PostImportPlan, assetIds: Map<string, string>, assets: AssetRecord[] = []): EditOperation[] {
+export function planOperations(plan: PostImportPlan, assetIds: Map<string, string>, assets: AssetRecord[] = [], { addToNavigation = false }: { addToNavigation?: boolean } = {}): EditOperation[] {
   const ops: EditOperation[] = assets.map((asset) => ({ type: 'asset.add', asset }) as EditOperation);
   const c = plan.collection;
-  if (c.create) ops.push({ type: 'collection.create', collectionId: c.id, ...(plan.taxonomies ? { taxonomies: plan.taxonomies } : {}) } as EditOperation);
+  if (c.create) ops.push({ type: 'collection.create', collectionId: c.id, ...(plan.taxonomies ? { taxonomies: plan.taxonomies } : {}), ...(addToNavigation ? { addToNavigation } : {}) } as EditOperation);
   else if (plan.taxonomies) ops.push({ type: 'collection.update', collectionId: c.id, taxonomies: plan.taxonomies } as EditOperation);
   const body = (p: PlannedPost): RichText =>
     p.body.flatMap((b): RichBlock[] => {

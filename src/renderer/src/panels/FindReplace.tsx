@@ -1,10 +1,10 @@
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type InputHTMLAttributes, type KeyboardEvent } from 'react';
-import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Link2, ListChecks, ListX, Lock, Newspaper, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
+import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Globe, Link2, ListChecks, ListX, Lock, Newspaper, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
 import { Modal, openSection } from '../components/ui';
 import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { pageOutOfSight, selectPage } from '../lib/actions';
-import { openEntryField } from '../lib/open-destination';
+import { openEditorDestination, openEntryField } from '../lib/open-destination';
 import { contentFields, contentTarget, entryTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
@@ -53,6 +53,8 @@ export function openContentMatch(field: ContentField): Promise<boolean> | void {
     if (!at) return toast('That entry is no longer on the site.', 'error');
     return openEntryField(at.collectionId, at.entryId, at.field);
   }
+  // The site's details open in Site styles, a page's search settings in its Search & sharing, each at the field.
+  if (field.destination) return openEditorDestination(field.destination);
   const target = contentTarget(state, field, s.pageId);
   if (!target) return toast('That content is no longer on the site.', 'error');
   if (s.modal) setState({ modal: null });
@@ -84,6 +86,7 @@ export function openContentMatch(field: ContentField): Promise<boolean> | void {
 /** Where a field is shown: on its own page, on every page that shows the shared header or footer, or an entry's. */
 function reach(f: ContentField): string {
   if (f.entry) return `${f.section} entry${f.entry.draft ? ' · draft' : ''}${f.entry.synced ? ' · synced' : ''}`;
+  if (f.owner.kind === 'site') return 'Whole site';
   if (f.sharedPages === undefined) return 'This page only';
   return `Shared ${f.owner.id} · on ${f.sharedPages} page${f.sharedPages === 1 ? '' : 's'}`;
 }
@@ -95,19 +98,21 @@ interface MatchGroup {
   shared: boolean;
   /** A collection entry's title and excerpt. */
   entry: boolean;
+  /** The site's name and default description. */
+  site: boolean;
   shell?: string;
   /** For a shared part: how many pages show it. */
   pages?: number;
   matches: ContentMatch[];
 }
 
-/** The result groups: one per page, shared part or entry, in reading order. */
+/** The result groups: the site's details, then one per page, shared part or entry, in reading order. */
 function groupsOf(matches: ContentMatch[]): MatchGroup[] {
   const out = new Map<string, MatchGroup>();
   for (const m of matches) {
     const key = `${m.field.owner.kind}:${m.field.owner.id}`;
     const shared = m.field.sharedPages !== undefined;
-    const g = out.get(key) ?? { key, where: m.field.where, reach: reach(m.field), shared, entry: !!m.field.entry, ...(shared ? { shell: m.field.owner.id, pages: m.field.sharedPages } : {}), matches: [] };
+    const g = out.get(key) ?? { key, where: m.field.where, reach: reach(m.field), shared, entry: !!m.field.entry, site: m.field.owner.kind === 'site', ...(shared ? { shell: m.field.owner.id, pages: m.field.sharedPages } : {}), matches: [] };
     g.matches.push(m);
     out.set(key, g);
   }
@@ -118,15 +123,16 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const clip = (t: string, max = 90) => (t.length > max ? `${t.slice(0, max).replace(/\s+\S*$/, '')}…` : t);
 const matchCount = (n: number) => plural(n, 'match', 'matches');
 
-/** Where the matches are, in words: "on 3 pages, 2 entries and the shared footer", with how far a shared part reaches if asked. */
+/** Where the matches are, in words: "on 3 pages, 2 entries, the shared footer and the site details", with how far a shared part reaches if asked. */
 function placesText(groups: MatchGroup[], withReach = false, samePages = false): string {
-  const pages = groups.filter((g) => !g.shared && !g.entry).length;
+  const pages = groups.filter((g) => !g.shared && !g.entry && !g.site).length;
   const entries = groups.filter((g) => g.entry).length;
+  const site = groups.some((g) => g.site);
   const shared = groups.filter((g) => g.shared);
   const reachOf = (g: MatchGroup) => (withReach ? ` (shown on ${plural(g.pages ?? 0, 'page')})` : '');
   // The header and footer read as one place only when they show on the same pages.
   const sharedPlaces = shared.length === 2 && samePages ? [`the shared header and footer${reachOf(shared[0])}`] : shared.map((g) => `the shared ${g.shell}${reachOf(g)}`);
-  const places = [...(pages ? [plural(pages, 'page')] : []), ...(entries ? [plural(entries, 'entry', 'entries')] : []), ...sharedPlaces];
+  const places = [...(pages ? [plural(pages, 'page')] : []), ...(entries ? [plural(entries, 'entry', 'entries')] : []), ...sharedPlaces, ...(site ? ['the site details'] : [])];
   const list = places.length > 1 ? `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}` : places[0];
   return `${pages || entries ? 'on' : 'in'} ${list}`;
 }
@@ -640,7 +646,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     : [];
   const emptyHead = doneHere ? `No matches left for “${q}”.` : `Nothing on the site matches “${q}”.`;
   const summary = !q ? (
-    'Search the words on every page, the shared header and footer and each entry’s title and excerpt, and where their links go.'
+    'Search the words on every page, the shared header and footer and each entry’s title and excerpt, and where their links go, with the site’s name and description and each page’s and post’s search title and description.'
   ) : !settled ? (
     'Searching…'
   ) : !matches.length ? (
@@ -815,7 +821,13 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
             </p>
           )}
           {/* Mounted throughout, so a refusal that appears as the author types is announced. */}
-          <div className="find-error" id={errorId} role="status">
+          <div className={`find-error${plan && !plan.error && plan.notice ? ' is-notice' : ''}`} id={errorId} role="status">
+            {preview && plan && !plan.error && plan.notice && (
+              <>
+                <CircleAlert aria-hidden />
+                <span className="grow">{plan.notice}</span>
+              </>
+            )}
             {preview && plan?.error && (
               <>
                 <CircleAlert aria-hidden />
@@ -967,7 +979,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
               const lockedText = g.entry ? `${locked} read-only` : `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
               const refusedIn = hasRefused ? g.matches.filter((m) => refused.has(m.id)).length : 0;
               const count = !replacing ? matchCount(g.matches.length) : !eligible.length ? lockedText : `${on} of ${eligible.length} chosen${locked ? ` · ${lockedText}` : ''}${refusedIn ? ` · ${refusedIn} ${refusedIn === 1 ? 'needs' : 'need'} an address` : ''}`;
-              const GroupIcon = g.entry ? Newspaper : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
+              const GroupIcon = g.entry ? Newspaper : g.site ? Globe : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
               return (
                 <section key={g.key} data-group={g.key} className="find-group" aria-label={`${g.where}, ${g.reach.toLowerCase()}`}>
                   <h3 className={`find-group-head${!eligible.length ? ' locked' : ''}`}>
