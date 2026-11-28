@@ -50,7 +50,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { importAsset, locateAssetFile, restoreAssetFiles, stopMediaWorker } = await import('../../src/main/project/assets');
+const { importAsset, importAssetBatch, locateAssetFile, restoreAssetFiles, stopMediaWorker } = await import('../../src/main/project/assets');
 const { findMissingAssetFiles, missingFileDiagnostics } = await import('../../src/main/project/asset-files');
 const { isReadable } = await import('../../src/main/project/image-variants');
 const { imageProblem } = await import('../../src/main/project/media');
@@ -782,7 +782,26 @@ describe('a font whose file left the project folder (#1425)', () => {
     unlinkSync(join(dir, record.file));
     const closed = async () => false;
     await expect(importAsset(dir, sourceFile('lora.woff2', original), [record], closed)).rejects.toThrow(/was not restored because the project was closed/);
+    await expect(locateAssetFile(dir, record, sourceFile('lora.woff2', original), closed)).rejects.toThrow(/was not restored because the project was closed/);
     expect(existsSync(join(dir, record.file))).toBe(false);
+    // In a batch, the same font given twice is put back once, through the fence for its own record: one that refuses
+    // (the record changed meanwhile) writes nothing, and says why for each file.
+    const twiceOver = [sourceFile('a.woff2', original), sourceFile('b.woff2', original)].map((path) => ({ path, opts: {} }));
+    const fenced: string[] = [];
+    const changed = (r: AssetRecord) => async () => (fenced.push(r.id), Promise.reject(new Error(`${r.name} changed while its file was being put back.`)));
+    const refused = await importAssetBatch(dir, twiceOver, [record], async (w) => (await w(), true), { parallel: 2, go: () => true, repair: changed });
+    expect(refused.map((o) => (o && 'error' in o ? o.error.message : o))).toEqual([`${record.name} changed while its file was being put back.`, `${record.name} changed while its file was being put back.`]);
+    expect(fenced).toEqual([record.id]);
+    expect(existsSync(join(dir, record.file))).toBe(false);
+    let writes = 0;
+    const counted = () => async (w: () => Promise<void>) => (writes++, await w(), true);
+    const back = await importAssetBatch(dir, twiceOver, [record], closed, { parallel: 2, go: () => true, repair: counted });
+    expect(back.map((o) => o && !('error' in o) && [o.record.id, o.existing, o.restored])).toEqual([[record.id, true, true], [record.id, true, true]]);
+    expect(writes).toBe(1);
+    expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
+    unlinkSync(join(dir, record.file));
+    // A font lists no smaller copies: one that names some (assets.json edited by hand) is missing only its own file.
+    expect(await findMissingAssetFiles(dir, { [record.id]: { ...record, variants: [{ width: 480, file: 'static/assets/lora-00000000-480w.woff2' }] } })).toEqual([{ assetId: record.id, original: true, variants: [] }]);
   });
 
   it('in an open project, shows in Project health, comes back through Add fonts with its styles kept, and stops a website export', async () => {

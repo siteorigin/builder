@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { FileSearch, Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { MissingAssetFiles } from '@shared/api';
@@ -163,26 +163,44 @@ export function FontList({
       focusAfter(a);
     }
   };
-  // Open in Assets opens the font's family and focuses its row, where the missing file is fixed.
+  // Open in Assets opens the font's family and focuses its row, where the missing file is fixed: once the family is
+  // open on screen (the effect below), so a button still in a closed family's hidden body is never the target.
+  const focusing = useRef<{ id: string; family: string } | null>(null);
   useEffect(() => {
     if (!reveal) return;
     const own = families.find((f) => f.some((x) => x.id === reveal));
     onRevealed?.();
     if (!own) return;
+    focusing.current = { id: reveal, family: familyKey(own) };
     setShown((was) => new Map([...was, ...own.map((x) => [x.id, true] as const)]));
-    requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-font="${reveal}"] .font-locate`) ?? document.querySelector<HTMLElement>(`[data-font-family-key="${familyKey(own)}"] .font-family-toggle`))?.focus());
   }, [reveal, families, onRevealed]);
+  useEffect(() => {
+    const want = focusing.current;
+    if (!want) return;
+    const button = document.querySelector<HTMLButtonElement>(`[data-font="${want.id}"] .font-locate`);
+    // Still in the closed family (this runs in the commit that asked for it to open): the next one shows it.
+    if (button?.closest('[hidden]')) return;
+    focusing.current = null;
+    (button && !button.disabled ? button : document.querySelector<HTMLElement>(`[data-font-family-key="${want.family}"] .font-family-toggle`))?.focus();
+  }, [shown]);
   /** Locate file: the font's very file goes back where its record names it, and nothing else changes. */
   const locate = async (a: AssetRecord) => {
     if (locating) return;
     setLocating(true);
+    // The button is disabled while the chooser is open, which drops its focus.
+    const lostFocus = () => !document.activeElement || document.activeElement === document.body;
     try {
       const r = await api.project.locateAsset(a.id).catch((e: Error) => ({ ok: false, message: e.message }));
       if (r.message) toast(r.message, r.ok ? 'info' : 'error');
-      // The note and its button go with the missing file: focus moves to the family's name, never the page.
-      if (r.ok) requestAnimationFrame(() => (!document.activeElement || document.activeElement === document.body) && document.querySelector<HTMLElement>(`[data-font="${a.id}"]`)?.closest<HTMLElement>('.font-family')?.querySelector<HTMLElement>('.font-family-toggle')?.focus());
     } finally {
       setLocating(false);
+      // Focus goes back to Locate file once it is enabled again (a canceled chooser), or, once the file is back and the
+      // note has gone, to the family's name: never the page.
+      requestAnimationFrame(() => {
+        if (!lostFocus()) return;
+        const row = document.querySelector<HTMLElement>(`[data-font="${a.id}"]`);
+        (row?.querySelector<HTMLElement>('.font-locate') ?? row?.closest<HTMLElement>('.font-family')?.querySelector<HTMLElement>('.font-family-toggle'))?.focus();
+      });
     }
   };
   const asking = fonts.find((a) => a.id === removing);

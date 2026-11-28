@@ -3304,7 +3304,8 @@ export class Controller {
             const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
             if (!r.ok) {
               for (const a of waiting) claimed.delete(a.id);
-              return { answer: { ok: false, assetIds: [], message: r.error?.message } };
+              // A font's file already put back stays back, and is said so.
+              return { answer: { ok: false, assetIds: [...restored], ...(restored.length ? { restoredAssetIds: restored } : {}), message: r.error?.message } };
             }
           }
           const answer = { ok: errors.length === 0, assetIds: ids, ...(restored.length ? { restoredAssetIds: restored } : {}), message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
