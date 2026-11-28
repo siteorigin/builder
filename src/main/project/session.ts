@@ -4893,7 +4893,7 @@ export class ProjectSession extends EventEmitter {
         revision: this.revision,
         pages: { back: [], gone: [], changed: [] },
         entries: { back: [], gone: [], changed: [] },
-        collections: [],
+        collections: { back: [], gone: [], changed: [] },
         site: false,
         styles: false,
         components: 0,
@@ -4918,9 +4918,14 @@ export class ProjectSession extends EventEmitter {
           else review.pages.changed.push(title(plan.state, pageId));
         } else if (collectionPathOf(p)) {
           const at = collectionPathOf(p)!;
-          const name = (s: ProjectState) => s.collections[at.collectionId]?.settings.name?.trim() || at.collectionId;
-          const entry = (s: ProjectState) => s.collections[at.collectionId]?.entries[at.entryId!]?.title?.trim() || 'Untitled entry';
-          if (at.entryId === undefined) review.collections.push(plan.docs.has(p) ? name(plan.state) : name(this.state));
+          const text = (v: unknown, fallback: string) => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
+          const name = (s: ProjectState) => text(s.collections[at.collectionId]?.settings.name, at.collectionId);
+          const entry = (s: ProjectState) => text(s.collections[at.collectionId]?.entries[at.entryId!]?.title, 'Untitled entry');
+          if (at.entryId === undefined) {
+            if (!this.docs.has(p)) review.collections.back.push(name(plan.state));
+            else if (!plan.docs.has(p)) review.collections.gone.push(name(this.state));
+            else review.collections.changed.push(name(plan.state));
+          }
           else if (!this.docs.has(p)) review.entries.back.push(entry(plan.state));
           else if (!plan.docs.has(p)) review.entries.gone.push(entry(this.state));
           else review.entries.changed.push(entry(plan.state));

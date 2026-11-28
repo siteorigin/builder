@@ -269,10 +269,10 @@ export interface VersionReview {
   problem?: string;
   /** Page titles: pages that come back, pages that go, and pages that change. */
   pages: { back: string[]; gone: string[]; changed: string[] };
-  /** Collection entries, named by title (and collection when it is not obvious): entries that come back, go, and change. */
+  /** Collection entries, named by title: entries that come back, go, and change. */
   entries: { back: string[]; gone: string[]; changed: string[] };
-  /** Names of collections whose own settings change, come back or go. */
-  collections: string[];
+  /** Collection names: collections that come back, go, and whose own settings change. */
+  collections: { back: string[]; gone: string[]; changed: string[] };
   /** Site settings (name, header, footer, addresses) change. */
   site: boolean;
   /** Site styles (colors, fonts, spacing) change. */

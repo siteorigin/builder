@@ -228,7 +228,7 @@ describe('saved versions', () => {
     const saved = await ok(s.saveVersion('V1'));
     await ok(s.apply({ operations: [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_after', title: 'After V1', publishedAt: '2026-11-02', body: ['Two.'] }] }, { label: 'After' }));
     const { review } = await ok(s.reviewVersion(saved.id!));
-    expect(review).toMatchObject({ unchanged: false, entries: { back: [], gone: ['After V1'], changed: [] }, collections: [] });
+    expect(review).toMatchObject({ unchanged: false, entries: { back: [], gone: ['After V1'], changed: [] }, collections: { back: [], gone: [], changed: [] } });
     expect(describeReview(review!)).toEqual(['Removes 1 entry it doesn’t have: “After V1”']);
   });
 
@@ -1667,7 +1667,7 @@ describe('restoring with Git snapshots on (#1155)', () => {
 });
 
 describe('the saved version wording', () => {
-  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, entries: { back: [], gone: [], changed: [] }, collections: [], site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
+  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, entries: { back: [], gone: [], changed: [] }, collections: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], replaced: [], left: [], missing: [], unchanged: false };
 
   it('names pages first, at most four a line, then what else changes', () => {
     const lines = describeReview({
@@ -1697,10 +1697,12 @@ describe('the saved version wording', () => {
   });
 
   it('names collection entries a restore removes, brings back or changes', () => {
-    expect(describeReview({ ...base, entries: { back: ['Old'], gone: ['After V1'], changed: ['A', 'B'] }, collections: ['Posts'] })).toEqual([
+    expect(describeReview({ ...base, entries: { back: ['Old'], gone: ['After V1'], changed: ['A', 'B'] }, collections: { back: ['Docs'], gone: ['Team'], changed: ['Posts'] } })).toEqual([
       'Brings back 1 entry: “Old”',
       'Removes 1 entry it doesn’t have: “After V1”',
       'Changes 2 entries: “A” and “B”',
+      'Brings back 1 collection: “Docs”',
+      'Removes 1 collection it doesn’t have: “Team”',
       'Changes the settings of 1 collection: “Posts”'
     ]);
   });

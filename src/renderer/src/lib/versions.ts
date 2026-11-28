@@ -30,7 +30,10 @@ export function describeReview(r: VersionReview): string[] {
   if (e.back.length) lines.push(`Brings back ${plural(e.back.length, 'entry', 'entries')}: ${titles(e.back)}`);
   if (e.gone.length) lines.push(`Removes ${plural(e.gone.length, 'entry', 'entries')} it doesn’t have: ${titles(e.gone)}`);
   if (e.changed.length) lines.push(`Changes ${plural(e.changed.length, 'entry', 'entries')}: ${titles(e.changed)}`);
-  if (r.collections.length) lines.push(`Changes the settings of ${plural(r.collections.length, 'collection', 'collections')}: ${titles(r.collections)}`);
+  const c = r.collections;
+  if (c.back.length) lines.push(`Brings back ${plural(c.back.length, 'collection', 'collections')}: ${titles(c.back)}`);
+  if (c.gone.length) lines.push(`Removes ${plural(c.gone.length, 'collection', 'collections')} it doesn’t have: ${titles(c.gone)}`);
+  if (c.changed.length) lines.push(`Changes the settings of ${plural(c.changed.length, 'collection', 'collections')}: ${titles(c.changed)}`);
   if (r.site) lines.push('Changes site settings: the name, header, footer or page order');
   if (r.styles) lines.push('Changes site styles: colors, fonts and spacing');
   if (r.components) lines.push(`Changes ${plural(r.components, 'component', 'components')}`);
