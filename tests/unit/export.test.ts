@@ -398,9 +398,10 @@ describe('website export assets', () => {
     // published site keeps, so only its file says the draft alone shows it.
     expect(await draftOnlyAssetFiles(dir, state, new Map())).toEqual(held);
     // A file the drafts' text names, and no draft uses by its ID, is held too, with the rest of its record; the search
-    // index's words are no use.
+    // index's words are no use, and a file no record lists is never held, since an opening would never put it back.
+    write(dir, 'static/assets/stray-eeeeeeee.svg', 'x');
     const named = new Map([
-      ['src/routes/soon/+page.svelte', '<a href="/assets/spare-aaaaaaaa.svg">Spare</a><img src="/assets/leaflet-dddddddd-480w.webp" alt="" />'],
+      ['src/routes/soon/+page.svelte', '<a href="/assets/spare-aaaaaaaa.svg">Spare</a><img src="/assets/leaflet-dddddddd-480w.webp" alt="" /><img src="/assets/stray-eeeeeeee.svg" alt="" />'],
       [`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, 'export default ["offer-1a2b3c4d.doc"];']
     ]);
     expect(await draftOnlyAssetFiles(dir, state, named)).toEqual(

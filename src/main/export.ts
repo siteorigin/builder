@@ -89,7 +89,7 @@ import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
-import { DRAFT_ASSETS_DIR, IMPORTED_ASSET } from './project/draft-assets';
+import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
 import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -281,6 +281,8 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
   return out;
 }
 
+/** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
+const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
 /**
  * Which project files an export carries. Every library file stays, used or not, because the editable project
@@ -561,9 +563,9 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
  * website names (as pruneWebsiteAssets finds one) is never held. Of the rest, an asset record any of whose files the
  * drafts name, in that text or in a file of a component only drafts place that the website never reaches, is held
  * whole: its original and every copy, so a draft's photo goes with whichever copies its page shows; so is one the
- * drafts use by its ID where the published pages and entries do not, whether or not they show it. Any other file
- * named like an imported one is held when the drafts name it. Files nothing names stay, as the editable project keeps
- * its whole library.
+ * drafts use by its ID where the published pages and entries do not, whether or not they show it. Only records' own
+ * files are held, as only those does an opening put back (restoreDraftAssets). Files nothing names stay, as the
+ * editable project keeps its whole library.
  */
 export async function draftOnlyAssetFiles(project: string, state: ProjectState, drafts: ReadonlyMap<string, string>): Promise<string[]> {
   const live = publishedState(state);
@@ -583,14 +585,17 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   // in an entry's field its layout leaves out).
   const published = assetUsages(live);
   const drafted = new Set(Object.entries(assetUsages(state)).flatMap(([id, n]) => (n > 0 && !(published[id] > 0) ? [id] : [])));
-  // A record's files as the copy spells them: a disk that ignores case reads `Photo-…` as the record's `photo-…`.
+  // A record's files as the copy has them: by their very paths, or else as a disk that ignores case reads them
+  // (`Photo-…` for the record's `photo-…`). Only these are held, since only these does an opening put back.
   const spelled = new Map<string, string[]>();
   for (const rel of unshipped) spelled.set(rel.toLowerCase(), [...(spelled.get(rel.toLowerCase()) ?? []), rel]);
+  const library = new Set<string>();
   for (const a of Object.values(state.assets.assets)) {
-    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f === 'string' ? (spelled.get(f.toLowerCase()) ?? []) : []));
+    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f !== 'string' ? [] : unshipped.has(f) ? [f] : (spelled.get(f.toLowerCase()) ?? [])));
+    for (const f of own) library.add(f);
     if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) held.add(f);
   }
-  return candidates.filter((rel) => held.has(rel));
+  return candidates.filter((rel) => held.has(rel) && library.has(rel));
 }
 
 /** The export's note for an editable project whose drafts' own files it kept out of its build (draftOnlyAssetFiles), or null. */

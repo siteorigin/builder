@@ -4,8 +4,8 @@
  * itself is not. The export moves them to `siteorigin/draft-assets/`, at the same paths below it as below
  * `static/assets/`, and the project's first writable opening in SiteOrigin Builder puts them back.
  */
-import { promises as fs } from 'node:fs';
-import { dirname, join, posix } from 'node:path';
+import { promises as fs, constants as fsConstants } from 'node:fs';
+import { basename, dirname, join, posix } from 'node:path';
 import type { AssetRecord } from '@shared/types';
 import { removeEmptyDirs, safeJoin } from './fsutil';
 
@@ -13,19 +13,17 @@ import { removeEmptyDirs, safeJoin } from './fsutil';
 export const DRAFT_ASSETS_DIR = 'siteorigin/draft-assets';
 const ASSETS_DIR = 'static/assets';
 
-/** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
-export const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
-
 /** Errors of a disk that has no hard links (as src/main/git/repo.ts knows them), or no more for one file: the file is copied instead. */
 const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EINVAL', 'EISDIR', 'UNKNOWN', 'EMLINK']);
 
-/** What a copy being made beside a held file is called until it is whole and put in place. */
-const PARTIAL = '.siteorigin-restoring';
+/** The start of the name of a folder a restore copies a file into before putting it in place: the restore's own, never a held file. */
+const SCRATCH = '.siteorigin-restoring-';
 
-/** Every regular file below `dir`, relative to it with forward slashes. A link, or anything in a linked folder, is none. */
+/** Every regular file below `dir`, relative to it with forward slashes, but for a restore's own scratch folders. A link, or anything in a linked folder, is none. */
 async function filesBelow(dir: string, base = ''): Promise<string[]> {
   const out: string[] = [];
   for (const e of await fs.readdir(join(dir, base), { withFileTypes: true }).catch(() => [])) {
+    if (!base && e.name.startsWith(SCRATCH)) continue;
     const rel = base ? `${base}/${e.name}` : e.name;
     if (e.isDirectory()) out.push(...(await filesBelow(dir, rel)));
     else if (e.isFile()) out.push(rel);
@@ -61,6 +59,8 @@ async function spelledAs(root: string, rel: string): Promise<boolean> {
   return true;
 }
 
+const exists = (path: string) => fs.lstat(path).then(() => true, () => false);
+
 /** The held folder's own files, as project paths (`siteorigin/draft-assets/…`), or none when it is not a folder of its own. */
 export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
   if (await linkOnTheWay(dir, DRAFT_ASSETS_DIR)) return [];
@@ -70,23 +70,26 @@ export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
 
 /**
  * Put `from` at `to` without replacing anything there: linked and then let go of where the disk can, so the file is at
- * one path or both but never half written. Where it can't, it is copied beside `from` first and put in place once
- * whole, so a copy cut short is never at `to`. False when something is already at `to`.
+ * one path or both but never half written. Where it can't, it is copied into a scratch folder of the restore's own in
+ * `held` first and put in place once whole, so a copy cut short is never at `to`. False when something is already at `to`.
  */
-async function moveNew(from: string, to: string): Promise<boolean> {
+async function moveNew(from: string, to: string, held: string): Promise<boolean> {
   try {
     await fs.link(from, to);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code ?? '';
     if (code === 'EEXIST') return false;
     if (!NO_LINKS.has(code)) throw e;
-    const partial = from + PARTIAL;
-    await fs.copyFile(from, partial);
-    if (await fs.lstat(to).then(() => true, () => false)) {
-      await fs.rm(partial, { force: true });
-      return false;
+    if (await exists(to)) return false;
+    const scratch = await fs.mkdtemp(join(held, SCRATCH));
+    try {
+      const copy = join(scratch, basename(to));
+      await fs.copyFile(from, copy, fsConstants.COPYFILE_EXCL);
+      if (await exists(to)) return false;
+      await fs.rename(copy, to);
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true });
     }
-    await fs.rename(partial, to);
   }
   await fs.rm(from);
   return true;
@@ -100,8 +103,9 @@ async function putBack(dir: string, from: string, to: string, target: string): P
 }
 
 /**
- * Let the owner write in `folder` of a staged copy (which keeps its original's modes) while files are moved out of
- * or into it, noting its own mode in `opened` to be given back. Windows reports no such bits for a folder, nor needs them.
+ * Let the owner write in `folder` (a copy keeps its original's modes, and a delivered project its export's) while
+ * files are moved out of or into it, noting its own mode in `opened` to be given back. Windows reports no such bits
+ * for a folder, nor needs them.
  */
 async function openFolder(folder: string, opened: Map<string, number>): Promise<void> {
   if (process.platform === 'win32' || opened.has(folder)) return;
@@ -109,6 +113,11 @@ async function openFolder(folder: string, opened: Map<string, number>): Promise<
   if ((mode & 0o300) === 0o300) return;
   opened.set(folder, mode);
   await fs.chmod(folder, mode | 0o700);
+}
+
+/** Give each folder openFolder opened its own mode back, the deepest first. */
+async function closeFolders(opened: Map<string, number>): Promise<void> {
+  for (const [folder, mode] of [...opened].reverse()) await fs.chmod(folder, mode).catch(() => undefined);
 }
 
 /**
@@ -130,57 +139,60 @@ export async function holdDraftAssets(dir: string, files: readonly string[]): Pr
       await fs.rename(from, safeJoin(dir, target));
     }
   } finally {
-    for (const [folder, mode] of opened) await fs.chmod(folder, mode).catch(() => undefined);
+    await closeFolders(opened);
   }
 }
 
 /**
  * Put the library files an export held back (holdDraftAssets) where the project uses them, in `static/assets/`, and
- * remove the folder once it is empty. Only a file an export could have held is moved: one of `assets`' own files, or
- * one named like an imported file directly in `static/assets/`. A file is never put over one already there: one with
- * the same bytes at exactly that name is the same file (a move cut short), so the held copy goes; anything else there
- * stays as it is, beside the held copy. Nothing is moved, compared or removed through a link. Returns the held files
- * left where they are (as `siteorigin/draft-assets/…`), for the opening to say so.
+ * remove the folder once it is empty. Only one of `assets`' own files (an original or a copy, its path matched
+ * without case) is ever put back: anything else there is no file an export held. A file is never put over one already
+ * there: one with the same bytes at exactly that name is the same file (a move cut short), so the held copy goes;
+ * anything else there stays as it is, beside the held copy. Nothing is moved, compared or removed through a link.
+ * Returns the held files left where they are (as `siteorigin/draft-assets/…`), for the opening to say so.
  */
 export async function restoreDraftAssets(dir: string, assets: Readonly<Record<string, AssetRecord>>): Promise<string[]> {
+  if (await linkOnTheWay(dir, DRAFT_ASSETS_DIR)) return [];
   const held = join(dir, DRAFT_ASSETS_DIR);
-  const listed = await heldDraftAssetFiles(dir);
-  if (!listed.length && !(await fs.lstat(held).then((st) => st.isDirectory(), () => false))) return [];
+  if (!(await fs.lstat(held).then((st) => st.isDirectory(), () => false))) return [];
+  // A restore's scratch folders that one cut short left behind hold only its copies.
+  for (const name of await fs.readdir(held).catch(() => [] as string[])) if (name.startsWith(SCRATCH)) await fs.rm(join(held, name), { recursive: true, force: true }).catch(() => undefined);
   const library = new Set<string>();
   for (const a of Object.values(assets)) for (const f of [a?.file, ...(a?.variants ?? []).map((v) => v?.file)]) if (typeof f === 'string') library.add(f.toLowerCase());
   const kept: string[] = [];
-  for (const path of listed) {
-    const rel = path.slice(DRAFT_ASSETS_DIR.length + 1);
-    // A copy cut short (moveNew) is only ever the start of one.
-    if (rel.endsWith(PARTIAL)) {
-      await fs.rm(safeJoin(dir, path), { force: true }).catch(() => kept.push(path));
-      continue;
-    }
-    const target = `${ASSETS_DIR}/${rel}`;
-    if (!library.has(target.toLowerCase()) && (rel.includes('/') || !IMPORTED_ASSET.test(rel))) {
-      kept.push(path);
-      continue;
-    }
-    try {
-      const from = safeJoin(dir, path);
-      if (await linkOnTheWay(dir, target)) {
+  const opened = new Map<string, number>();
+  try {
+    for (const path of await heldDraftAssetFiles(dir)) {
+      const target = `${ASSETS_DIR}/${path.slice(DRAFT_ASSETS_DIR.length + 1)}`;
+      if (!library.has(target.toLowerCase())) {
         kept.push(path);
         continue;
       }
-      await fs.mkdir(safeJoin(dir, posix.dirname(target)), { recursive: true });
-      if (await linkOnTheWay(dir, target)) {
+      try {
+        const from = safeJoin(dir, path);
+        if (await linkOnTheWay(dir, target)) {
+          kept.push(path);
+          continue;
+        }
+        await fs.mkdir(safeJoin(dir, posix.dirname(target)), { recursive: true });
+        if (await linkOnTheWay(dir, target)) {
+          kept.push(path);
+          continue;
+        }
+        const to = safeJoin(dir, target);
+        await openFolder(dirname(to), opened);
+        await openFolder(dirname(from), opened);
+        if (await moveNew(from, to, held)) continue;
+        if (await putBack(dir, from, to, target)) await fs.rm(from);
+        else kept.push(path);
+      } catch {
         kept.push(path);
-        continue;
       }
-      const to = safeJoin(dir, target);
-      if (await moveNew(from, to)) continue;
-      if (await putBack(dir, from, to, target)) await fs.rm(from);
-      else kept.push(path);
-    } catch {
-      kept.push(path);
     }
+    for (const folder of (await allFolders(held)).reverse()) await removeEmptyDirs(folder, dirname(held));
+  } finally {
+    await closeFolders(opened);
   }
-  for (const folder of (await allFolders(held)).reverse()) await removeEmptyDirs(folder, dirname(held));
   return kept;
 }
 

@@ -500,6 +500,7 @@ describe('exporting a project with a draft', () => {
     expect(await third.exportSourceTo(join(temp('out'), 'refused'))).toMatchObject({ ok: false, message: stop });
     const asked = env.dialogs;
     expect(await third.exportSource('folder')).toMatchObject({ ok: false, message: stop });
+    expect(await third.exportSource('zip')).toMatchObject({ ok: false, message: stop });
     expect(env.dialogs, 'refused before asking where to save it').toBe(asked);
     rmSync(join(again, 'siteorigin/draft-assets'), { recursive: true });
     expect((await third.exportSourceTo(join(temp('out'), 'fourth'))).ok).toBe(true);
