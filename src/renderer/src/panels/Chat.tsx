@@ -7,7 +7,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest, openThread, openRunThread, replaceThread } from '../store';
 import { afterSendMessage, draftFor, imagesFor, lastSentText, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
-import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
+import { importIntoChat, importPastedIntoChat, isFileDrag, pastedImageFiles, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-model';
 import { modelPickerRows, type LocalListing, type ModelPickerRow } from '../lib/modelPicker';
@@ -1162,7 +1162,7 @@ export function Chat() {
     // Image files dropped on the composer are still being added: an edit started now would miss them, and would hold the
     // project while their records are saved (#679). Continue and Try again wait for them too.
     // A question asked now would go without them too; only one put back with its own images (Try again) need not wait.
-    if (dropping && !(context && context.mode === 'ask')) return (toast('The dropped images are still being added. Send once they show under your message.', 'info'), false);
+    if (dropping && !(context && context.mode === 'ask')) return (toast('The images are still being added. Send once they show under your message.', 'info'), false);
     // A code component open in Component Studio is edited through its source, which only Developer mode lets the AI
     // change (#1410): without it the draft stays, and says how. A question changes nothing, so it is still asked.
     const code = !context && !askMode && scope.component ? codeDesign(st, scope.component.id) : null;
@@ -1912,6 +1912,18 @@ export function Chat() {
             readOnly={!conversation}
             // Each keystroke timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
             onChange={perfOn ? (e) => perfWork('chat.keystroke', () => typed(e.target)) : (e) => typed(e.target)}
+            // An image pasted here (a screenshot, a copied picture) is imported into Assets and attached, as a dropped
+            // one is (#1410). Text pastes as it always has.
+            onPaste={(e) => {
+              const files = pastedImageFiles(e.clipboardData);
+              if (!files.length || !conversation) return;
+              e.preventDefault();
+              if (asking) return void toast('Answer the question first. Images can go with your next message.', 'info');
+              setDroppingCount((n) => n + 1);
+              void importPastedIntoChat(files, conversation.id)
+                .then(({ ids, to }) => ids.length && to === getState().conversation?.id && (document.activeElement === document.body || document.activeElement === taRef.current) && focusComposer())
+                .finally(() => setDroppingCount((n) => Math.max(0, n - 1)));
+            }}
             onKeyDown={(e) => {
               // ArrowUp in an empty box brings back the last message sent in this conversation, to edit and send again
               // (#1410). Its images and target stay as the composer has them now.

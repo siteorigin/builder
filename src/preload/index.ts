@@ -64,6 +64,8 @@ const api: BuilderApi = {
     stepHistory: invoke('project:stepHistory'),
     reviewImport: invoke('project:reviewImport'),
     importAssets: invoke('project:importAssets'),
+    stagePastedImages: invoke('project:stagePastedImages'),
+    releasePastedImages: invoke('project:releasePastedImages'),
     exportComponent: invoke('project:exportComponent'),
     importComponent: invoke('project:importComponent'),
     savedComponents: invoke('project:savedComponents'),

@@ -1463,6 +1463,13 @@ export interface BuilderApi {
      */
     importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; /** Fonts already in the library whose missing file the import put back (#1425). */ restoredAssetIds?: string[]; message?: string; note?: string }>;
     /**
+     * Write images pasted with no file of their own (a screenshot on the clipboard) where importAssets can read them
+     * (#1410): PNG, JPEG, GIF, WebP or AVIF, at most four. Release the batch once the import is done with its paths.
+     */
+    stagePastedImages(files: Array<{ type: string; bytes: Uint8Array }>): Promise<{ ok: true; batch: string; paths: string[] } | { ok: false; message: string }>;
+    /** Remove what stagePastedImages wrote for one paste. */
+    releasePastedImages(batch: string): Promise<void>;
+    /**
      * Save a project component as a package file another project can import, where the author chooses. `notes` says
      * what the package leaves out. Neither `ok` nor a message: the chooser was closed.
      */

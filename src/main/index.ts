@@ -47,6 +47,7 @@ import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { createPageChecker } from './page-check-window';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
+import { PastedImages } from './pasted-images';
 import { installSourceTestHosts } from './sources/test-hosts';
 import { sweepSpools } from './sources/spool';
 import { installAiJournal } from './ai-journal';
@@ -93,6 +94,8 @@ let win: BrowserWindow | null = null;
 let appearance: Appearance = 'system';
 const windowBackground = () => editorBackground(editorScheme(appearance, nativeTheme.shouldUseDarkColors));
 const controller = new Controller(() => win);
+/** Images pasted into the AI composer, written as files for the importer while it reads them (#1410). */
+const pastedImages = new PastedImages();
 /**
  * The theme packs, verified once per run while the first editor window loads (packs/gate.ts): every request the
  * editor makes waits for them (handle()), so nothing reaches a pack before it is verified.
@@ -733,6 +736,9 @@ function registerIpc() {
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
   handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));
+  // Images pasted into the AI composer with no file of their own (#1410): written where the importer reads them.
+  handle('project:stagePastedImages', (files: unknown) => pastedImages.stage(files));
+  handle('project:releasePastedImages', (batch: unknown) => pastedImages.release(batch));
   // The file is always one the author chose in the app's own chooser.
   handle('project:exportComponent', (id: unknown) => (typeof id === 'string' ? controller.exportComponent(id) : { ok: false, message: 'That component is no longer in this project.' }));
   handle('project:importComponent', () => controller.importComponent());
@@ -1484,6 +1490,7 @@ app.on('window-all-closed', () => {
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
 app.on('will-quit', () => {
   perf.stop();
+  pastedImages.releaseAll();
   controller.remote.dispose();
   stopMediaWorker();
   compileWorkers.stop();
