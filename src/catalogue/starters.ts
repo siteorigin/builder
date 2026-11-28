@@ -213,7 +213,8 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       ],
       image: img(A('a_studio'), alt('a_studio')),
       actionLabel: 'Meet the team',
-      actionLink: pageLink(about)
+      actionLink: pageLink(about),
+      linkLabel: ''
     }, 'media-end'),
     inst(s, 'stats.row', {}, 'inverse'),
     inst(s, 'media.gallery', {
@@ -230,7 +231,8 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       heading: 'Let’s make your space work better',
       lead: 'Tell us about your home or workplace and we will arrange a free first conversation.',
       primaryLabel: 'Get in touch',
-      primaryLink: pageLink(contact)
+      primaryLink: pageLink(contact),
+      secondaryLabel: ''
     })
   ];
   s.pages[home] = page(home, 'Home', '/', homeNodes, { description: s.site.description });
@@ -246,7 +248,8 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       ],
       image: img(A('a_dining'), alt('a_dining')),
       actionLabel: '',
-      actionLink: { type: 'none', target: '' }
+      actionLink: { type: 'none', target: '' },
+      linkLabel: ''
     }),
     inst(s, 'team.grid', {
       people: [
@@ -255,7 +258,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
         { id: 'i3', portrait: img(A('a_person3'), alt('a_person3')), name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Specializes in materials, color and lighting.' }
       ]
     }, 'muted'),
-    inst(s, 'cta.banner', { heading: 'Have a project in mind?', primaryLabel: 'Contact the studio', primaryLink: pageLink(contact) })
+    inst(s, 'cta.banner', { heading: 'Have a project in mind?', primaryLabel: 'Contact the studio', primaryLink: pageLink(contact), secondaryLabel: '' })
   ];
   s.pages[about] = page(about, 'About', '/about/', aboutNodes, { description: `Meet the team behind ${siteName}.` });
 

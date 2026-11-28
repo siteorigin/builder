@@ -61,6 +61,11 @@ afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true }))
  * published under /studio, so a page link that skips resolve() shows.
  */
 async function renderHome(s: ProjectState, opts: { instrument?: boolean } = {}): Promise<string> {
+  return (await renderSite(s, opts))('src/routes/+page.svelte');
+}
+
+/** The same render for any generated route file: the site is compiled once, then each file is rendered on request. */
+async function renderSite(s: ProjectState, opts: { instrument?: boolean } = {}): Promise<(file: string) => Promise<string>> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), 'unlinked-'));
   roots.push(dir);
@@ -68,7 +73,9 @@ async function renderHome(s: ProjectState, opts: { instrument?: boolean } = {}):
   writeFileSync(paths, 'export const resolve = (p) => "/studio" + p; export const asset = (p) => "/studio/" + p; export const base = "/studio";\n');
   // Navigation callbacks never run while rendering on the server.
   const navigation = join(dir, 'app-navigation.js');
-  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const snapshot = () => {};\n');
+  const state = join(dir, 'app-state.js');
+  writeFileSync(state, 'export const page = { url: new URL("https://example.com/studio/"), status: 200, error: null, params: {}, data: {}, route: { id: "/" } };\n');
   for (const [path, source] of generateProject(s, opts)) {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
@@ -78,12 +85,17 @@ async function renderHome(s: ProjectState, opts: { instrument?: boolean } = {}):
       out,
       code
         .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
+        .replace(/^\s*import\s+(["'])[^"'\n]+\.css\1;?$/gm, '')
         .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
         .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+        .replace(/(["'])\$app\/state\1/g, JSON.stringify(state))
     );
   }
-  const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
-  return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
+  return async (file) => {
+    const Page = (await import(/* @vite-ignore */ join(dir, `${file}.js`))).default as Component<Record<string, unknown>>;
+    // A layout renders what is inside it; the pages are rendered on their own.
+    return render(Page, { props: { children: () => {} } }).body.replace(/<!--[\s\S]*?-->/g, '');
+  };
 }
 
 /** The element that carries `text` as its whole content, or undefined. */
@@ -154,6 +166,20 @@ describe('buttons without a destination in visitor output', () => {
     expect(unlinkedButtons(s, home(s)).map((b) => b.label)).not.toContain('Call us today');
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED' && d.message.includes('Call us today'))).toEqual([]);
   });
+});
+
+describe('a fresh starter', () => {
+  for (const starter of ['business', 'showcase'] as const)
+    it(`has no unfinished link on any page of the ${starter} starter`, async () => {
+      const s = createStarterState(starter, 'Test Studio', false);
+      const files = [...generateProject(s, { instrument: true }).keys()].filter((f) => /^src\/routes\/.*\+(page|layout)\.svelte$/.test(f));
+      expect(files.length).toBeGreaterThan(Object.keys(s.pages).length);
+      const render = await renderSite(s, { instrument: true });
+      const found: string[] = [];
+      for (const file of files)
+        for (const m of (await render(file)).matchAll(/<(\w+)\b[^>]*data-so-unlinked[^>]*>([\s\S]*?)<\/\1>/g)) found.push(`${file}: ${m[2].replace(/<[^>]*>/g, '').trim()}`);
+      expect(found).toEqual([]);
+    });
 });
 
 describe('buttons without a destination in the editor preview', () => {
