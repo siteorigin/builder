@@ -698,7 +698,11 @@ export function joinValidation(core: CoreValidation, advice: AdviceValidation): 
  */
 function renderedDefinitions(state: ProjectState): Set<string> {
   const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
-  const trees = [...pages, ...(['header', 'footer'] as const).filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part])];
+  return definitionsRenderedBy(state, [...pages, ...(['header', 'footer'] as const).filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part])]);
+}
+
+/** The definitions `trees` render: those placed in them, those their designs place, and the code components their code imports. */
+export function definitionsRenderedBy(state: ProjectState, trees: readonly NodeTree[]): Set<string> {
   const out = new Set<string>();
   const queue = trees.flatMap((t) => Object.values(t.nodes).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : [])));
   while (queue.length) {

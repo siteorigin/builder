@@ -5106,6 +5106,13 @@ export const NOT_FOUND_ROUTE_SVELTE =
 `;
 
 /**
+ * The class of the section the site's error page shows for any error but a missing address: in the layout's main
+ * element, in place of the page's content. The website export looks for it in each built page once it has started in
+ * a browser (main/page-check).
+ */
+export const ERROR_SECTION_CLASS = 'so-error';
+
+/**
  * The site's error page. A missing address shows the not-found page, as 404.html does on a host; any other error
  * says what went wrong, in the same place, and is not listed by search engines either.
  */
@@ -5126,7 +5133,7 @@ export const ERROR_PAGE_SVELTE =
 {#if page.status === 404}
 	<NotFound />
 {:else}
-	<section class="so-error">
+	<section class="${ERROR_SECTION_CLASS}">
 		<div class="so-container">
 			<h1>Error {page.status}</h1>
 			<p>{page.error?.message || 'Something went wrong.'}</p>
@@ -5135,7 +5142,7 @@ export const ERROR_PAGE_SVELTE =
 {/if}
 
 <style>
-	.so-error {
+	.${ERROR_SECTION_CLASS} {
 		padding-block: var(--so-space-section, 5rem);
 	}
 </style>

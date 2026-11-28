@@ -14,7 +14,7 @@ import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@s
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
-import { slugify } from '@shared/routes';
+import { routeUrl, slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
 import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { exportedCounts } from '../renderer/src/lib/export-summary';
@@ -31,8 +31,9 @@ import { StaticPreviews } from './static-preview';
 import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
-import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import type { PageCheck } from './page-check';
+import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewPage, type ReviewSheetResult } from '@shared/review-edition';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, brokenPagesStop, uncheckedPagesWarning, inBatches, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -112,6 +113,10 @@ const READ_ONLY = 'This project is read-only.';
 /** The automatic versions a delivered export is listed as (#1156). */
 const EXPORTED_SITE = 'Exported website';
 const EXPORTED_SOURCE = 'Exported source project';
+
+/** How long a website export spends opening its built pages in a browser (openBuiltPages), at most, and how many at once. */
+const PAGE_CHECKS_MS = 30_000;
+const PAGE_CHECKS_AT_ONCE = 3;
 
 interface SnapshotOptions {
   forBuild?: boolean;
@@ -4390,6 +4395,13 @@ export class Controller {
 
   /** Photographs one page of a served review build at one width; set by the app (main/review-capture). */
   reviewShoot: ((url: string, width: number, signal: AbortSignal) => Promise<ReviewShot>) | null = null;
+  /**
+   * Opens one page of a served website build as a visitor's browser does, to see that it still shows its content once
+   * started; set by the app (main/page-check-window). Without it, exports open no page.
+   */
+  pageCheck: ((url: string, signal: AbortSignal) => Promise<PageCheck>) | null = null;
+  /** The website exports opening their pages, called off when their project closes. */
+  private pageChecks = new Set<AbortController>();
   /** The review edition being captured, called off when its project closes. */
   private reviewCapture: AbortController | null = null;
 
@@ -5181,6 +5193,14 @@ export class Controller {
     const pages = live.site.pageOrder.length;
     // In the Export dialog's words: "3 pages and 3 entries from Posts".
     const exported = exportedCounts(pages, siteEntries(live));
+    // A page can fail only in a browser (a code component's $effect that writes what it reads never runs while the site
+    // is built), when SvelteKit puts the site's error page in place of all of it: each page is opened as a visitor's
+    // browser opens it, before anything is delivered (#1534). A review build is pictured, and shows it there.
+    if (!opts.review) {
+      const opened = await timed('export.verify.browser', () => this.openBuiltPages(s, out, live))();
+      if (opened.stop) return { ok: false, ...opened.stop };
+      if (opened.unchecked) warn(opened.unchecked);
+    }
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
@@ -5198,6 +5218,53 @@ export class Controller {
     // The export is done either way; a preview that cannot start only loses the preview button.
     const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt, notes }, basePath(state));
     return { ok: true, path: dest, message: `Exported ${exported}.`, warnings: warnings(), notes, revision, previewUrl, hosting };
+  }
+
+  /**
+   * Open each page of the website built in `out` in a browser (pageCheck), a few at a time and for PAGE_CHECKS_MS at
+   * most, served as the exported website's preview serves it: a stop naming the first that shows the site's error
+   * page once started, or a warning for those that could not be opened. Nothing when there is no browser to open
+   * them in, or the project closes meanwhile (the export then stops as it is put in place).
+   */
+  private async openBuiltPages(s: ProjectSession, out: string, live: ProjectState): Promise<{ stop?: { message: string; warnings: string[]; details: string }; unchecked?: string }> {
+    const check = this.pageCheck;
+    const pages = reviewPages(live);
+    if (!check || !pages.length || this.session !== s) return {};
+    const job = new AbortController();
+    this.pageChecks.add(job);
+    const gone = () => job.signal.aborted || this.session !== s;
+    let server: string | undefined;
+    try {
+      try {
+        server = await this.previews.serve(out, basePath(live));
+      } catch {
+        return gone() ? {} : { unchecked: uncheckedPagesWarning(pages.map((page) => ({ page, detail: 'the built website could not be served to open it' }))) ?? undefined };
+      }
+      if (gone()) return {};
+      const at = server;
+      const deadline = Date.now() + PAGE_CHECKS_MS;
+      let failed = false;
+      const checks = await inBatches(
+        pages,
+        async (page): Promise<{ page: ReviewPage; check: PageCheck } | null> => {
+          // Once a page has failed the export stops: the rest are not opened.
+          if (failed || gone()) return null;
+          if (Date.now() >= deadline) return { page, check: { status: 'unchecked', detail: 'the export ran out of time to open it' } };
+          const r = await check(new URL(routeUrl(page.route).slice(1), at).href, job.signal).catch((e: unknown): PageCheck => ({ status: 'unchecked', detail: `The page could not be checked: ${e instanceof Error ? e.message : String(e)}` }));
+          if (r.status === 'error-page') failed = true;
+          return { page, check: r };
+        },
+        PAGE_CHECKS_AT_ONCE
+      );
+      if (gone()) return {};
+      const broken = checks.flatMap((c) => (c?.check.status === 'error-page' ? [{ page: c.page, check: c.check }] : []));
+      if (broken.length) return { stop: brokenPagesStop(live, broken) };
+      const unchecked = checks.flatMap((c) => (c?.check.status === 'unchecked' ? [{ page: c.page, detail: c.check.detail }] : []));
+      return { unchecked: uncheckedPagesWarning(unchecked) ?? undefined };
+    } finally {
+      this.pageChecks.delete(job);
+      if (server) this.previews.stop(server);
+    }
   }
 
   /**
@@ -5246,6 +5313,7 @@ export class Controller {
   private endExports() {
     // A review edition being captured belongs to the project too: it is called off, and nothing of it is kept.
     this.reviewCapture?.abort();
+    for (const job of this.pageChecks) job.abort();
     this.previews.stopAll();
     this.recentExports = [];
   }
