@@ -76,7 +76,13 @@ async function shot(state, check, { themes = BOTH, area = 'window', text = null,
     if (area === 'status') await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
     await pause(200);
     const target = text ? win.locator(check, { hasText: text }).first() : win.locator(check).first();
-    if (!(await target.isVisible().catch(() => false))) throw new Error(`state "${state}" (${theme}) did not render "${check}"${text ? ` with "${text}"` : ''}; refusing to write`);
+    // A loaded machine can take a while to settle: wait for the state, and still refuse to write without it.
+    await target.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+    if (!(await target.isVisible().catch(() => false))) {
+      // What was on screen instead, beside the captures and never counted with them.
+      await win.screenshot({ path: join(OUT, `${state}--${theme}.failed.jpg`), type: 'jpeg' }).catch(() => {});
+      throw new Error(`state "${state}" (${theme}) did not render "${check}"${text ? ` with "${text}"` : ''}; refusing to write`);
+    }
     const path = join(OUT, `${state}--${theme}.png`);
     await win.screenshot({ path, ...(area === 'window' ? {} : { clip: await region(area) }) });
     written.push(path);
@@ -159,7 +165,7 @@ await win.keyboard.press('Escape');
 await pause(200);
 
 await openHealth();
-await shot('health-clean', '.modal .health-summary.ok', { area: 'modal', text: 'No problems found' });
+await shot('health-clean', '.modal .health-summary.ok', { area: 'modal', text: 'No problems' });
 await closeHealth();
 await showOutline('Home');
 await shot('outline-clean', '.outline-view .outline-row', { area: 'panel', themes: BOTH });
@@ -169,24 +175,16 @@ await shot('outline-clean', '.outline-view .outline-row', { area: 'panel', theme
   const snap = await snapshot();
   const about = pageNamed(snap, 'About');
   const owner = { kind: 'page', id: about.id };
-  await apply([{ type: 'node.insert', owner, componentId: 'hero.centered', props: { heading: 'Meet the studio behind Harbour Lane' } }], 'Add a second title');
-  await apply(
-    [
-      {
-        type: 'node.insert',
-        owner,
-        componentId: 'content.text',
-        props: {
-          heading: 'How we work',
-          body: [
-            { type: 'h4', spans: [{ text: 'Listening first, drawing second, and building only once the whole household has signed off on the plan' }] },
-            { type: 'p', spans: [{ text: 'We start every project at your kitchen table.' }] }
-          ]
-        }
-      }
-    ],
-    'Add a section that skips a level'
-  );
+  // Two of About's own section headings: one made a second Heading 1, one a Heading 4 that skips a level.
+  const levelledOn = (page) =>
+    Object.entries(page.nodes).flatMap(([nodeId, n]) => {
+      const prop = n.kind === 'instance' ? snap.state.components[n.definitionId]?.properties?.headingLevel : null;
+      return prop ? [{ nodeId, level: n.props.headingLevel ?? prop.default }] : [];
+    });
+  const sections = levelledOn(about).filter((h) => h.level === 'h2');
+  if (sections.length < 2) throw new Error('About needs two Heading 2 sections to make heading problems from');
+  await apply([{ type: 'instance.setProp', owner, nodeId: sections[0].nodeId, prop: 'headingLevel', value: 'h1' }], 'Add a second title');
+  await apply([{ type: 'instance.setProp', owner, nodeId: sections[1].nodeId, prop: 'headingLevel', value: 'h4' }], 'Skip a level');
   const contact = pageNamed(await snapshot(), 'Contact');
   const levelled = Object.entries(contact.nodes).filter(([, n]) => {
     const prop = n.kind === 'instance' ? snap.state.components[n.definitionId]?.properties?.headingLevel : null;
@@ -201,7 +199,7 @@ await pause(800);
 await showOutline('About');
 await shot('outline-problems', '.outline-row.warn', { area: 'panel' });
 await showOutline('Contact');
-await shot('outline-no-title', '.outline-summary .scope-note', { area: 'panel', themes: LIGHT, text: 'No main heading' });
+await shot('outline-no-title', '.outline-summary .scope-note', { area: 'panel', themes: LIGHT, text: 'No Heading 1' });
 await showOutline('Holding page');
 // A page of its own with no headings still lists the shared header's and footer's.
 await shot('outline-shared-only', '.outline-view', { area: 'panel', themes: LIGHT });
@@ -211,6 +209,48 @@ await shot('sb-warnings', '.status-bar .problems.warn', { area: 'status' });
 await openHealth();
 await shot('health-warnings', '.modal .health-row.warn', { area: 'modal', themes: LIGHT });
 await closeHealth();
+
+// ---- A typical review: repeated button warnings on one page, the heading warnings, Search & AI readiness, updates ----
+{
+  const many = Array.from({ length: 15 }, (_, i) => ({ id: `foundation.part-${i}`, name: `Part ${i + 1}` }));
+  await seed((s) => {
+    const contact = pageNamed(s, 'Contact');
+    const ids = Object.keys(contact.nodes);
+    if (!ids.length) throw new Error('Contact has no elements to point the button warnings at');
+    const buttons = [0, 1, 2, 3, 4, 5].map((i) => {
+      const label = i % 2 ? 'See our work' : 'Start a project';
+      return { severity: 'warning', code: 'BUTTON_UNLINKED', message: `Contact: the “${label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner: { kind: 'page', id: contact.id }, nodeId: ids[Math.floor(i / 2) % ids.length] };
+    });
+    s.diagnostics = [...buttons, ...s.diagnostics];
+    s.themeUpdates = { available: many, kept: [] };
+  });
+  await openHealth();
+  await shot('health-review', '.modal [data-testid="health-seo"]', { area: 'modal' });
+  const scrollTo = async (sel) => {
+    await win.locator(sel).first().evaluate((el) => el.scrollIntoView({ block: 'start' }));
+    await pause(250);
+  };
+  await scrollTo('.modal [data-group="warnings"]');
+  await shot('health-review-warnings', '.modal [data-group="warnings"] h3', { area: 'modal', themes: LIGHT });
+  await scrollTo('.modal [data-testid="health-seo"]');
+  await shot('health-review-seo', '.modal [data-testid="health-seo"] h3', { area: 'modal' });
+  // The folded parts open: one finding's reason, and the optional notes.
+  await win.locator('.modal [data-testid="health-seo"] .health-details summary').first().click();
+  await win.locator('.modal .seo-notes > summary').click();
+  await pause(250);
+  await scrollTo('.modal .seo-notes');
+  await shot('health-review-open', '.modal .seo-notes[open] .health-list', { area: 'modal', themes: LIGHT });
+  await closeHealth();
+  // The whole dialog at once, in a window tall enough to hold it, as the review reads top to bottom.
+  await win.setViewportSize({ width: W, height: 2600 });
+  await pause(500);
+  await openHealth();
+  await shot('health-review-tall', '.modal [data-testid="health-seo"]', { area: 'modal', themes: LIGHT });
+  await closeHealth();
+  await win.setViewportSize({ width: W, height: H });
+  await pause(500);
+  await unseed();
+}
 
 // ---- A damaged project: every kind of problem at once ----
 const conflictsIn = (s) => [
@@ -271,7 +311,7 @@ await seed((s) => {
   s.themeUpdates = THEME_UPDATES;
 });
 await openHealth();
-await win.locator('.modal .health-details summary').first().click();
+await win.locator('.modal [data-group="updates"] .health-details summary').first().click();
 await pause(200);
 await shot('health-theme-update', '.modal .health-row', { area: 'modal', themes: BOTH, text: 'theme component' });
 await closeHealth();
