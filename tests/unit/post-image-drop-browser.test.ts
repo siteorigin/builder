@@ -54,7 +54,9 @@ const BRIDGE = `
   const answers = {
     'pathForFile': (file) => (window.drop.lookups++, file.name === 'nopath' ? '' : '/drops/' + file.name),
     // A HEIC photo is read until the test lets it go, and then needs the author to confirm its conversion.
-    'project.reviewImport': (paths, only) => {
+    'project.reviewImport': (given, only) => {
+      // No paths: the file chooser, which answers with a photo of its own.
+      const paths = given ?? ['/chosen/kiln.jpg'];
       window.drop.reviews.push({ paths, only });
       if (!paths[0].endsWith('.heic')) return Promise.resolve({ paths, rows: paths.map((path) => ({ path, action: 'import' })) });
       return new Promise((resolve) => (window.drop.read = () => resolve({ paths, rows: paths.map((path) => ({ path, action: 'convert', fingerprint: 'f', format: 'heic' })) })));
@@ -88,6 +90,20 @@ const BRIDGE = `
       (root.children[index] ?? root).dispatchEvent(e);
       await window.t.frames(2);
       return { accepted: over.defaultPrevented, line: shown, taken: e.defaultPrevented, lineAfter: !!document.querySelector('[data-testid="post-drop-line"]') };
+    },
+    // Files let go on the picture dialog's picker (or the first element matching \`selector\`).
+    dropOn: async (selector, names) => {
+      const target = document.querySelector(selector);
+      const data = new DataTransfer();
+      for (const n of names) data.items.add(new File(['x'], n, { type: 'image/jpeg' }));
+      const at = { bubbles: true, cancelable: true, dataTransfer: data };
+      const over = new DragEvent('dragover', at);
+      target.dispatchEvent(over);
+      await window.t.frames(2);
+      const e = new DragEvent('drop', at);
+      target.dispatchEvent(e);
+      await window.t.frames(2);
+      return { accepted: over.defaultPrevented, taken: e.defaultPrevented };
     },
     blocks: () => [...text().children].map((b) => (b.matches('figure') ? 'figure:' + b.dataset.assetId : b.textContent.trim())),
     figure: () => { const f = text().querySelector('figure.post-figure'); return f && { alt: f.dataset.alt, caption: f.dataset.caption ?? null, figcaption: !!f.querySelector('figcaption') }; },
@@ -361,5 +377,48 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
     await dialog().waitFor();
     await drop(['kiln.jpg'], 1);
     expect(await heard()).toMatchObject({ reviews: [], imports: [] });
+  });
+  it('offers Import… in the Add picture dialog: the imported photo is chosen, ready for its description and caption (#1375)', async () => {
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    await dialog().getByRole('button', { name: 'Import…' }).click();
+    await expect.poll(imports).toBe(1);
+    expect((await heard()).reviews).toEqual([{ paths: ['/chosen/kiln.jpg'], only: 'image' }]);
+    await t('release', 0, [kiln.id]);
+    await so('change', withKiln);
+    await dialog().getByText('Chosen: kiln.jpg').waitFor();
+    expect(await dialog().getByLabel('Description').inputValue()).toBe('The kiln, glowing orange');
+    await dialog().getByRole('button', { name: 'Add picture' }).click();
+    await expect.poll(blocks).toEqual(expect.arrayContaining(['figure:img_kiln']));
+  });
+
+  it('takes an image file dropped on the Add picture dialog, and imports nothing for a file with no path (#1375)', async () => {
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    const none = await t<{ accepted: boolean; taken: boolean }>('dropOn', '.post-picker-empty', ['nopath']);
+    expect(none.taken).toBe(true);
+    expect(await imports()).toBe(0);
+    const dropped = await t<{ accepted: boolean; taken: boolean }>('dropOn', '.post-picker-empty', ['kiln.jpg']);
+    expect(dropped.accepted && dropped.taken).toBe(true);
+    await expect.poll(imports).toBe(1);
+    expect((await heard()).imports[0].paths).toEqual(['/drops/kiln.jpg']);
+    await t('release', 0, [kiln.id]);
+    await so('change', withKiln);
+    await dialog().getByText('Chosen: kiln.jpg').waitFor();
+    // With a library, the grid's dialog offers the same: Import… beside the search, and the drop line under it.
+    expect(await dialog().getByRole('button', { name: 'Import…' }).count()).toBe(1);
+    await dialog().getByText('Or drop an image file here to use it.').waitFor();
+  });
+
+  it('keeps an import that finishes after the dialog was closed in Assets, with a note (#1375)', async () => {
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    await dialog().getByRole('button', { name: 'Import…' }).click();
+    await expect.poll(imports).toBe(1);
+    await dialog().getByRole('button', { name: 'Cancel' }).click();
+    await expect.poll(() => dialog().count()).toBe(0);
+    await land(0, [kiln.id]);
+    await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
+    expect(await dialog().count()).toBe(0);
   });
 });
