@@ -216,6 +216,7 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
         root: parseFloat(getComputedStyle(document.documentElement).fontSize),
         pan: d.scrollWidth - d.clientWidth,
         scrollLeft: d.scrollLeft,
+        natural: d.querySelector('.so-viewer__img').naturalWidth,
         focused: document.activeElement?.className ?? '',
         view: { width: innerWidth, height: innerHeight },
         parts: Object.fromEntries(Object.entries(parts).map(([k, s]) => [k, box(d.querySelector(s))]))
@@ -224,6 +225,7 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       root: number;
       pan: number;
       scrollLeft: number;
+      natural: number;
       focused: string;
       view: { width: number; height: number };
       parts: Record<string, { left: number; right: number; top: number; bottom: number; width: number; height: number }>;
@@ -240,11 +242,12 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       expect(r.top, `${label}: ${name} top`).toBeGreaterThanOrEqual(0);
       expect(r.bottom, `${label}: ${name} bottom`).toBeLessThanOrEqual(layout.view.height + 0.5);
     }
-    const { photo, close, previous } = layout.parts;
+    const { photo, close, previous, next } = layout.parts;
+    expect(layout.natural, `${label}: the photo loaded`).toBe(800);
     expect(photo.height, `${label}: photo height`).toBeGreaterThanOrEqual(layout.view.height * 0.25);
     expect(photo.width, `${label}: photo width`).toBeGreaterThan(0);
     // Close and the arrows stay at least a 44 px target.
-    for (const r of [close, previous]) expect(Math.min(r.width, r.height), label).toBeGreaterThanOrEqual(44);
+    for (const r of [close, previous, next]) expect(Math.min(r.width, r.height), label).toBeGreaterThanOrEqual(44);
     return layout;
   };
 
