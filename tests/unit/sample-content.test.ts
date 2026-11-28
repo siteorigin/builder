@@ -263,8 +263,10 @@ describe('Foundation’s sample defaults, as its release marks them (#1641)', ()
     expect(namedFields(s, placed['hero.split'])).toEqual(['eyebrow', 'heading', 'lead']);
     expect(namedFields(s, placed['data.table'])).toContain('table');
     expect(samples(s, 'SAMPLE_DEFAULT').every((d) => d.severity === 'warning')).toBe(true);
-    // A row added to the FAQ starts as the release's stub question and answer, and is named until it is written.
+    // The FAQ's own rows are its design's samples; a row added to it starts as the release's stub question and answer,
+    // and is named until it is written.
     const faq = placed['faq.list'];
+    expect(namedFields(s, faq)).toEqual(expect.arrayContaining(['heading', 'lead', 'items.question']));
     const added = applyOperations(s, [{ type: 'instance.listInsert', owner: home(s), nodeId: faq.id, prop: 'items', item: {} }]);
     const id = added.results[0].itemId as string;
     const row = samples(added.state, 'SAMPLE_DEFAULT').filter((d) => d.nodeId === faq.id && (placeOf(d) as { itemId?: string }).itemId === id);
@@ -276,6 +278,11 @@ describe('Foundation’s sample defaults, as its release marks them (#1641)', ()
     for (const id of ['site.search', 'content.news', 'blog.grid', 'blog.list', 'content.pages']) expect(namedFields(s, placed[id]), id).toEqual([]);
     // The form's lead is the house business's; its standard fields and its submit label are the visitor's to read as they are.
     expect(namedFields(s, placed['contact.form'])).toEqual(['lead']);
+    // A field the author adds starts with the release's stub label, which is named until it is written.
+    const form = placed['contact.form'];
+    const added = applyOperations(s, [{ type: 'instance.listInsert', owner: home(s), nodeId: form.id, prop: 'fields', item: {} }]);
+    const id = added.results[0].itemId as string;
+    expect(samples(added.state, 'SAMPLE_DEFAULT').filter((d) => (placeOf(d) as { itemId?: string }).itemId === id).map((d) => (placeOf(d) as { field?: string }).field)).toEqual(['label']);
   });
 
   it('offers a project’s older, unmarked Foundation sections as Updates, which keep their content and single-item styles', () => {
