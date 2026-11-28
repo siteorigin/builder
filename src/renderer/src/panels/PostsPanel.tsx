@@ -8,7 +8,7 @@ import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
 import { Marked, fold, found, shortDate } from '../components/ListText';
 import { reviewPostImport } from './PostImportReview';
-import type { PostImportKind, ProjectSnapshot } from '@shared/api';
+import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
@@ -23,6 +23,7 @@ import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, findEntry, hasD
 import type { CollectionKind, ProjectState } from '@shared/types';
 import { saveOpenPost, startOpenPost } from '../lib/post-draft';
 import { typedAhead, typedAheadSettled } from '../lib/typed-ahead';
+import { trackApply } from '../lib/pending';
 
 /**
  * Save the post open in the writer before another takes its place. False, said in a notice, when its text could not
@@ -512,10 +513,8 @@ export function PostsPanel() {
     if (!r) return notMade();
     setAdding(false);
     setTitle('');
-    // In the editor's copy of the project before it opens, so its writer is there at once to take what was typed. That
-    // copy, the new entry's text as it was made, is what anything kept for it is checked against.
+    // In the editor's copy of the project before it opens, so its writer is there at once to take what was typed.
     const shown = await shownAt(r.revision, r.workspaceKey);
-    const made = getState().snapshot;
     if (!mine()) return;
     const saved = shown && (await openSaved());
     // A composition in progress where the text was typed ahead ends first, so all of it goes in, wherever it goes.
@@ -523,27 +522,30 @@ export function PostsPanel() {
     if (!mine()) return;
     const typed = typedAhead();
     // Filters that would hide the new draft let go of it once it opens (the reveal above); a find it matches stays.
-    // Something kept in the open entry, or another choice made meanwhile: the new one waits in the list, with its text.
-    if (!saved || seq !== navigation.current) return void keepTyped(ref, t, typed.text, made);
-    // Opened and started on in one go: no key typed between the two goes anywhere else. Gone on to type somewhere else
-    // meanwhile (Find, a dialog): that is left as it is, and what was typed ahead is kept as the new entry's text.
+    // Something kept in the open entry, another choice made meanwhile, or typing gone on somewhere else (Find, a dialog,
+    // left as they are): the new one waits in the list, with what was typed for it as its text.
+    if (!saved || seq !== navigation.current || typed.elsewhere) return void keepTyped(ref, t, typed.text);
+    // Opened and started on in one go: no key typed between the two goes anywhere else.
     flushSync(() => setState({ post: ref, postView: 'write', postReveal: null, postOpening: null }));
-    if (typed.elsewhere || !startOpenPost(ref, typed.text)) void keepTyped(ref, t, typed.text, made);
+    if (!startOpenPost(ref, typed.text)) void keepTyped(ref, t, typed.text);
   };
   /**
    * What was typed for an entry made but not started on in the writer, saved as its text, so it is in the entry it was
-   * typed for: only while that text is still as it was made (in `made`, the project as it first showed it), and said
-   * either way.
+   * typed for: only while that text is still as it was made (empty; nothing else wrote it meanwhile), and said either
+   * way. Followed as a save in flight, so leaving the project waits for it.
    */
-  const keepTyped = async (ref: PostRef, t: string, text: string, made: ProjectSnapshot | null) => {
+  const keepTyped = async (ref: PostRef, t: string, text: string) => {
     const body = text
       .split('\n')
       .filter((line) => line.trim())
       .map((line) => ({ type: 'p' as const, spans: [{ text: line }] }));
     if (!body.length) return;
-    const s = made && getState().snapshot?.workspaceKey === made.workspaceKey && postAt(made.state, ref) ? made : null;
+    const s = getState().snapshot;
     const c = s && Object.hasOwn(s.state.collections, ref.collectionId) ? s.state.collections[ref.collectionId] : undefined;
-    const o = s && c && collectionHasBody(c.settings) ? await commitIfUnchanged(s, () => commitOps([{ type: 'entry.update', collectionId: ref.collectionId, entryId: ref.entryId, body }], `Edit ${noun} text`)) : null;
+    const e = s && postAt(s.state, ref);
+    const outcome = s && c && e && collectionHasBody(c.settings) && !e.body?.length ? commitIfUnchanged(s, () => commitOps([{ type: 'entry.update', collectionId: ref.collectionId, entryId: ref.entryId, body }], `Edit ${noun} text`)) : null;
+    if (outcome) trackApply(outcome.then((o) => (o.kind === 'applied' ? { ok: true } : { ok: false })));
+    const o = await outcome;
     if (o?.kind === 'applied') toast(`What you typed is saved in “${t}”.`, 'info');
     else toast(`What you typed for “${t}” was not kept: it could not be saved there.`, 'error');
   };

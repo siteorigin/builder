@@ -287,21 +287,23 @@ describe.skipIf(!browserInstalled)('typing straight on after Create draft (#1394
     await expect.poll(toasts).toContain('What you typed is saved in “Post 2”.');
   });
 
-  it('leaves typing in Find where it is, and saves what was typed ahead in the new post', async () => {
+  it('leaves typing in Find where it is, and saves what was typed ahead in the new post, waiting in the list', async () => {
     await mountBlog();
     await typeTitle('Post 2');
     await page.keyboard.press('Enter');
     await page.keyboard.type('MARKER-8', { delay: 20 });
     const find = page.getByLabel('Find a post by title, address, author or excerpt');
     await find.click();
-    await page.keyboard.type('Post');
+    // A find the new post does not match: opening it would take the find away.
+    await page.keyboard.type('oldest');
     await release();
-    await expect.poll(open).toBe('Post 2');
     await expect.poll(bodies).toEqual({ ...BEFORE, 'Post 2': 'MARKER-8' });
-    // Find kept its words and its focus.
-    expect(await find.inputValue()).toBe('Post');
+    await expect.poll(toasts).toContain('What you typed is saved in “Post 2”.');
+    // Find kept its words and its focus, and the post open stays.
+    expect(await find.inputValue()).toBe('oldest');
     expect(await focused()).toBe('Find a post by title, address, author or excerpt');
-    expect(await toasts()).toContain('What you typed is saved in “Post 2”.');
+    expect(await open()).toBe('Post 1');
+    expect(await page.locator('#writer .post-hold').getAttribute('inert')).toBeNull();
   });
 
   it('says what was typed was not kept when the draft could not be made, and only then', async () => {
