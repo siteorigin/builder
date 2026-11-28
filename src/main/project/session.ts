@@ -52,7 +52,7 @@ import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
-import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE, yieldsToOwnFile } from '@generator/host-redirects';
 import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
@@ -110,6 +110,8 @@ const OBSOLETE_FEED_REASON = 'This RSS feed was edited outside SiteOrigin Builde
 const routesVisitors = (path: string) => path === HOST_REDIRECTS_FILE || path === VERCEL_CONFIG_FILE;
 const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside SiteOrigin Builder, and the website no longer has any, so its host would still follow them, even past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 /** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
+/** vercel.json, once the site's host is no longer Vercel: it holds Vercel's caching rule as well as any redirects. */
+const OBSOLETE_VERCEL_REASON = 'This vercel.json was edited outside SiteOrigin Builder, and the website is no longer published on Vercel, so Vercel would still follow its rules if the site went back there, even its redirects past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
@@ -3120,8 +3122,10 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       if (!initial && diskHash !== null && !known(path)) {
-        // A file we never wrote already lives here: never overwrite someone's own work.
+        // A file we never wrote already lives here: never overwrite someone's own work. One that only tunes caching
+        // (the host's _headers, a vercel.json with no redirect) gives way to it unnamed.
         delete nextFiles[path];
+        if (yieldsToOwnFile(path, content)) continue;
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
@@ -3275,7 +3279,7 @@ export class ProjectSession extends EventEmitter {
         // or moved away.
         nextFiles[path] = prev[path] ?? inflight[path];
         // So would redirect rules a host follows, even past a page given one of their addresses since.
-        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
+        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : path === VERCEL_CONFIG_FILE ? OBSOLETE_VERCEL_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);
