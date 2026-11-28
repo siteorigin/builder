@@ -38,7 +38,7 @@ import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
-import { sourceApprovals, sourceSecrets, sourceSpoolRoot, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { sourceSpoolRoot, sourceStores, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { gitClient, remoteGitClient } from './git/process';
 import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
@@ -3776,8 +3776,7 @@ export class Controller {
           {
             session: s,
             runner: sourceSyncRunner,
-            secrets: sourceSecrets,
-            approvals: sourceApprovals,
+            ...sourceStores(s),
             current,
             signal: abort.signal,
             importImage: (img, known, createdAt) => importPackageImage(s.dir, img, known, this.writeFence(s), createdAt),
@@ -3801,7 +3800,7 @@ export class Controller {
     const has = Object.keys(s.state.sources ?? {}).length > 0;
     let values: string[] = [];
     try {
-      values = await sourceSecrets.values(s.state.manifest.projectId);
+      values = await sourceStores(s).secrets.values(s.state.manifest.projectId);
     } catch (e) {
       if (has) return `${(e as Error).message} The project's external sources cannot be checked for them.`;
     }
@@ -3814,7 +3813,7 @@ export class Controller {
    * secrets written into them.
    */
   private sourceDraft(s: ProjectSession, draft: SourceSettingsDraft): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
-    return sourceDraftState(s.state, draft, sourceSecrets);
+    return sourceDraftState(s.state, draft, sourceStores(s).secrets);
   }
 
   /**
@@ -3833,7 +3832,7 @@ export class Controller {
       const made = await this.sourceDraft(s, draft);
       if ('message' in made) return { ok: false, message: made.message };
       if (abort.signal.aborted || this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
-      const r = await sampleSource({ runner: sourceSyncRunner, secrets: sourceSecrets, signal: abort.signal }, made.state, made.source);
+      const r = await sampleSource({ runner: sourceSyncRunner, secrets: sourceStores(s).secrets, signal: abort.signal }, made.state, made.source);
       if (this.session !== s || opening !== this.workspaceKey) return { ok: false, message: 'The project was closed before the source was tested.' };
       return r;
     } finally {
@@ -3863,7 +3862,7 @@ export class Controller {
     if (!r.ok) return { ok: false, message: r.error?.code === 'STALE_REVISION' ? 'The project changed while the source was being tested. Save it again.' : (r.error?.message ?? 'The source could not be saved.') };
     // Tested and saved here: these settings may sign in with the user's secrets.
     const saved = s.state.sources?.[draft.sourceId];
-    if (saved) await sourceApprovals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
+    if (saved) await sourceStores(s).approvals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
     return { ok: true, revision: r.revision };
   }
 
@@ -3871,8 +3870,7 @@ export class Controller {
   private agentSourceHost = createAgentSources({
     project: () => (this.session && !this.closing ? this.session : null),
     runner: sourceSyncRunner,
-    secrets: sourceSecrets,
-    approvals: sourceApprovals,
+    stores: sourceStores,
     track: (abort) => {
       this.sourceSyncs.add(abort);
       return () => this.sourceSyncs.delete(abort);
@@ -3887,15 +3885,18 @@ export class Controller {
   /** The names of the secrets the open project's sources can sign in with, never their values. */
   async sourceSecretNames(opening: string): Promise<string[]> {
     const s = this.session;
-    return s && opening === this.workspaceKey ? sourceSecrets.names(s.state.manifest.projectId) : [];
+    return s && opening === this.workspaceKey ? sourceStores(s).secrets.names(s.state.manifest.projectId) : [];
   }
 
-  /** Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null). */
+  /**
+   * Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null):
+   * for the project in its own folder only, so a copy of it elsewhere keeps the secrets it has (#1543).
+   */
   async setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
     if (!s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'No project is open.' };
     try {
-      await sourceSecrets.set(s.state.manifest.projectId, name, value);
+      await sourceStores(s).secrets.set(s.state.manifest.projectId, name, value);
       return { ok: true };
     } catch (e) {
       return { ok: false, message: (e as Error).message };
@@ -4489,7 +4490,7 @@ export class Controller {
   /** The user's secrets and keys, to search the publication for and to keep out of what it says, or why they cannot be read. */
   private async publicationSecrets(s: ProjectSession): Promise<{ values: string[] } | { failed: string }> {
     try {
-      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues()), ...(await this.remoteCredentials.values())] };
+      return { values: [...(await sourceStores(s).secrets.values(s.state.manifest.projectId)), ...(await keyValues()), ...(await this.remoteCredentials.values())] };
     } catch (e) {
       return { failed: `${(e as Error).message} The website could not be checked for your secrets, so it was not prepared.` };
     }

@@ -41,6 +41,7 @@ const { applyOperations } = await import('@engine/apply');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { Controller } = await import('../../src/main/controller');
 const { createSecretStore } = await import('../../src/main/sources/secrets');
+const { createApprovalStore } = await import('../../src/main/sources/approvals');
 import type { EditOperation } from '@shared/ops';
 import type { SourceSettingsDraft } from '@shared/api';
 
@@ -69,8 +70,10 @@ async function opened() {
   c.send = () => undefined;
   controllers.push(c);
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
-  await createSecretStore(() => join(env.userData, 'source-secrets.json')).set(state.manifest.projectId, 'api', SECRET);
-  return { c, dir };
+  await createSecretStore(() => join(env.userData, 'source-secrets.json'))
+    .in(dir)
+    .set(state.manifest.projectId, 'api', SECRET);
+  return { c, dir, state };
 }
 
 const draft = (extra: Partial<SourceSettingsDraft> = {}): SourceSettingsDraft => ({ sourceId: 'team', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: 'https://api.example/team' }, ...extra });
@@ -100,5 +103,40 @@ describe('saving a source’s settings in the editor', () => {
     expect(await c.saveSource(draft(), 'another opening')).toMatchObject({ ok: false, message: 'The project was closed before the source was saved.' });
     expect(env.forks).toBe(forks);
     expect(existsSync(join(dir, 'siteorigin/sources'))).toBe(false);
+  });
+});
+
+describe('a copy of a project in another folder (#1543)', () => {
+  const PUBLISHED = 'tok-published-audience';
+  const STAGING = 'tok-staging-audience';
+
+  it('keeps its own source secrets and approvals, and saving one there leaves what the original signs in with', async () => {
+    const { c, dir: original, state } = await opened();
+    // An editable ZIP opened into another folder: the same project, its ID and all, somewhere else.
+    const copy = tmp('so-src-copy-');
+    await (await ProjectSession.create(copy, state)).close();
+    const projectId = state.manifest.projectId;
+    expect((await c.setSourceSecret('api', PUBLISHED, c.openingKey!)).ok).toBe(true);
+    expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
+
+    expect((await c.trustAndOpen(copy)).ok).toBe(true);
+    // Nothing saved for the original shows as saved in the copy.
+    expect(await c.sourceSecretNames(c.openingKey!)).toEqual([]);
+    expect((await c.setSourceSecret('api', STAGING, c.openingKey!)).ok).toBe(true);
+    expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
+
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    expect(await c.sourceSecretNames(c.openingKey!)).toEqual(['api']);
+    const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
+    // What the original's next sync signs in with is still its own value; the copy's is the copy's.
+    expect(await secrets.in(original).resolve(projectId, ['api'])).toEqual({ api: PUBLISHED });
+    expect(await secrets.in(copy).resolve(projectId, ['api'])).toEqual({ api: STAGING });
+
+    // Settings approved in the copy never sign in with the original's secrets.
+    const source = { id: 'team', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: 'https://staging.example/team' } } as unknown as NonNullable<typeof state.sources>[string];
+    const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
+    await approvals.in(copy).approve(projectId, source);
+    expect(await approvals.in(copy).approved(projectId, source)).toBe(true);
+    expect(await approvals.in(original).approved(projectId, source)).toBe(false);
   });
 });

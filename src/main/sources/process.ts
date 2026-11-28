@@ -6,6 +6,7 @@ import { createSyncRunner } from './client';
 import { createSecretStore } from './secrets';
 import { createApprovalStore } from './approvals';
 import { testHostsEnv } from './test-hosts';
+import { canonicalDir } from '../../runtime/policy';
 
 /**
  * Only what a process needs to start and find its temporary folder: none of the app's own settings or keys, nor a
@@ -33,3 +34,12 @@ export const sourceSecrets = createSecretStore(() => join(app.getPath('userData'
 
 /** The source settings the user approved to sign in with their secrets: `userData/source-approvals.json`. */
 export const sourceApprovals = createApprovalStore(() => join(app.getPath('userData'), 'source-approvals.json'));
+
+/**
+ * The secrets and approvals of the project open in `project.dir`: its own folder's, never those of a copy of it in
+ * another folder, which carries the same project ID (#1543). The folder is the one it was opened at, as it is now.
+ */
+export function sourceStores(project: { readonly dir: string }) {
+  const dir = canonicalDir(project.dir);
+  return { secrets: sourceSecrets.in(dir), approvals: sourceApprovals.in(dir) };
+}

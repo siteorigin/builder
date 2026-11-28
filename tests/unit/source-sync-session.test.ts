@@ -83,7 +83,7 @@ async function setup() {
     { label: 'Add the team source' }
   );
   expect(r.error?.message).toBeUndefined();
-  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
+  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json')).in(dir);
   await secrets.set(s.state.manifest.projectId, 'people-token', SECRET);
   pictures = { 'https://cdn.example/ana.png': await png(10), 'https://cdn.example/ben.png': await png(200) };
   // Another address for Ana's very picture.

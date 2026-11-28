@@ -108,7 +108,7 @@ async function setup(endpoints: { contentful?: string } = {}) {
     { label: 'Add the team' }
   );
   expect(made.error?.message).toBeUndefined();
-  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json'));
+  const secrets = createSecretStore(() => join(env.userData, 'source-secrets.json')).in(dir);
   await secrets.set(s.state.manifest.projectId, 'cda', SECRET);
   const picture = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 200, g: 40, b: 90 } } })
     .png()
@@ -123,7 +123,7 @@ async function setup(endpoints: { contentful?: string } = {}) {
       kill: () => true
     } as unknown as SyncHandle;
   };
-  const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
+  const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json')).in(dir);
   const deps = {
     session: s,
     runner: createSyncRunner(spawn),

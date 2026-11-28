@@ -20,14 +20,16 @@ import type { ApprovalStore } from './approvals';
 /** The open project as the tools read it. */
 export interface AgentSourceProject {
   readonly state: ProjectState;
+  /** The folder it is open in: its secrets and approvals are that folder's. */
+  readonly dir: string;
 }
 
 export interface AgentSourceDeps {
   /** The project open now, or null. A read or test that outlives it says so. */
   project(): AgentSourceProject | null;
   runner: SyncRunner;
-  secrets: SecretStore;
-  approvals: ApprovalStore;
+  /** The secrets and approvals of `project`, in its own folder. */
+  stores(project: AgentSourceProject): { secrets: SecretStore; approvals: ApprovalStore };
   /** Hold `abort` with the project's other syncs, which its closing ends; the returned function lets it go. */
   track?(abort: AbortController): () => void;
 }
@@ -78,7 +80,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     // Read for the settings the run read: records of other settings would be shown beside these.
     const stale = { ok: false as const, code: 'stale', message: `The source ${sourceId} changed while it was being read. Read the project again.` };
     if (sourceFingerprint(found.source) !== fingerprint) return stale;
-    const r = await inspectSource({ runner: deps.runner, secrets: deps.secrets, approvals: deps.approvals, signal }, found.project.state, found.source);
+    const r = await inspectSource({ runner: deps.runner, ...deps.stores(found.project), signal }, found.project.state, found.source);
     if (deps.project() !== found.project) return { ok: false, message: 'The project was closed before the source was read.' };
     const now = Object.hasOwn(found.project.state.sources ?? {}, sourceId) ? found.project.state.sources![sourceId] : undefined;
     return now && sourceFingerprint(now) === fingerprint ? r : stale;
@@ -91,7 +93,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
   const holdsUserSecret = async (project: AgentSourceProject, source: SourceDoc): Promise<{ ok: false; code: string; message: string } | null> => {
     let values: string[];
     try {
-      values = await deps.secrets.values(project.state.manifest.projectId);
+      values = await deps.stores(project).secrets.values(project.state.manifest.projectId);
     } catch (e) {
       return { ok: false, code: 'secrets', message: `${(e as Error).message} The source cannot be checked for them.` };
     }
@@ -118,12 +120,13 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
       ...('converter' in change ? { converter: change.converter } : { mapping: change.mapping }),
       ...(source.removal !== undefined ? { removal: source.removal } : {})
     } as SourceSettingsDraft;
-    if (!(await signInApproved(deps.approvals, project.state.manifest.projectId, source))) return fail(unapprovedMessage(source), [], false);
-    const made = await sourceDraftState(project.state, draft, deps.secrets);
+    const { secrets, approvals } = deps.stores(project);
+    if (!(await signInApproved(approvals, project.state.manifest.projectId, source))) return fail(unapprovedMessage(source), [], false);
+    const made = await sourceDraftState(project.state, draft, secrets);
     if ('message' in made) return fail(made.message, [{ stage: 'settings', message: made.message }]);
     const base = sourceFingerprint(source);
     // Offline: no name a picture's address gives is looked up while nothing is saved.
-    const r = await sampleSource({ runner: deps.runner, secrets: deps.secrets, signal }, made.state, made.source, { offline: true });
+    const r = await sampleSource({ runner: deps.runner, secrets, signal }, made.state, made.source, { offline: true });
     if (deps.project() !== project) return fail('The project was closed before the source was tested.', [], false);
     if (!r.ok) {
       // What can be put right by writing it again: its code, the records it gives, or how they fit the collection.
@@ -157,7 +160,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     if (!now || sourceFingerprint(now) !== t.candidate || readByItsCode(now)) return false;
     if (!sourceSecretNames(now).length) return true;
     try {
-      await deps.approvals.approve(project.state.manifest.projectId, now);
+      await deps.stores(project).approvals.approve(project.state.manifest.projectId, now);
       return true;
     } catch {
       return false;

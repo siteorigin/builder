@@ -1,7 +1,7 @@
 /**
  * The secrets external sources sign in with (#676): kept in the user's own source-secrets.json, readable only by their
- * account and never by the project; named, by project, so two projects keep their own; and taken out of anything a
- * source says before it is shown.
+ * account and never by the project; named, by project and by its folder, so two projects keep their own, and so do two
+ * copies of one project (#1543); and taken out of anything a source says before it is shown.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -17,12 +17,13 @@ function store() {
   const dir = mkdtempSync(join(tmpdir(), 'so-secrets-'));
   dirs.push(dir);
   const file = join(dir, 'source-secrets.json');
-  return { file, secrets: createSecretStore(() => file) };
+  const all = createSecretStore(() => file);
+  return { file, all, here: join(dir, 'work'), secrets: all.in(join(dir, 'work')) };
 }
 
 describe('the source secret store', () => {
   it('keeps each project’s secrets apart, readable only by the user, and hands out only those asked for', async () => {
-    const { file, secrets } = store();
+    const { file, here, secrets } = store();
     await secrets.set('proj_a', 'token', '  tok-aaaa-1111  ');
     await secrets.set('proj_a', 'other', 'tok-not-asked');
     await secrets.set('proj_b', 'token', 'tok-bbbb-2222');
@@ -37,7 +38,27 @@ describe('the source secret store', () => {
     if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
     await secrets.set('proj_a', 'token', null);
     expect(await secrets.names('proj_a')).toEqual([]);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ proj_b: { token: 'tok-bbbb-2222' } });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ proj_b: { [here]: { token: 'tok-bbbb-2222' } } });
+  });
+
+  it('keeps a copy of a project in another folder apart from the original, and takes out what either keeps (#1543)', async () => {
+    const { all, here: original, secrets } = store();
+    const copy = all.in(join(original, '..', 'copy'));
+    await secrets.set('proj', 'audience', 'published-token');
+    // The copy carries the project's ID, not its folder: it has nothing saved until it is given its own.
+    expect(await copy.names('proj')).toEqual([]);
+    await expect(copy.resolve('proj', ['audience'])).rejects.toThrow('The secret "audience" is not saved for this project.');
+    await copy.set('proj', 'audience', 'staging-token');
+    // Saving it there leaves what the original signs in with as it was, and forgetting it there forgets nothing here.
+    expect(await secrets.resolve('proj', ['audience'])).toEqual({ audience: 'published-token' });
+    expect(await copy.resolve('proj', ['audience'])).toEqual({ audience: 'staging-token' });
+    // What is taken out of what a source says is every value of the project's, wherever its copies are.
+    expect((await secrets.values('proj')).sort()).toEqual(['published-token', 'staging-token']);
+    expect((await copy.values('proj')).sort()).toEqual(['published-token', 'staging-token']);
+    await copy.set('proj', 'audience', null);
+    expect(await secrets.resolve('proj', ['audience'])).toEqual({ audience: 'published-token' });
+    expect(await copy.names('proj')).toEqual([]);
+    await expect(all.in('relative/folder').set('proj', 'audience', 'value-1')).rejects.toThrow(/folder/);
   });
 
   it('loses neither of two changes made at once', async () => {
@@ -48,7 +69,7 @@ describe('the source secret store', () => {
   });
 
   it('refuses a bad name or value before anything is written, and never writes over a damaged file', async () => {
-    const { file, secrets } = store();
+    const { file, here, secrets } = store();
     await expect(secrets.set('p', '1token', 'value-1')).rejects.toThrow(/name/);
     await expect(secrets.set('p', 'constructor', 'value-1')).rejects.toThrow(/name/);
     await expect(secrets.set('p', 'token', 'abc')).rejects.toThrow('A secret is at least 4 characters.');
@@ -58,8 +79,8 @@ describe('the source secret store', () => {
     await expect(secrets.names('p')).rejects.toThrow(/damaged/);
     expect(readFileSync(file, 'utf8')).toBe('{"other": {"token": "keep-me"}');
     // Sound JSON holding what no change could save (a value that is no text, or too short to be taken out of what a
-    // source says) is damaged too.
-    for (const damaged of ['{"other": {"token": 42}}', '{"other": {"token": "abc"}}']) {
+    // source says) is damaged too, and so are secrets kept for no folder.
+    for (const damaged of [{ other: { [here]: { token: 42 } } }, { other: { [here]: { token: 'abc' } } }, { other: { token: 'value-1' } }, { other: { work: { token: 'value-1' } } }].map((d) => JSON.stringify(d))) {
       writeFileSync(file, damaged);
       await expect(secrets.resolve('other', ['token'])).rejects.toThrow(/damaged/);
       await expect(secrets.set('p', 'token', 'value-1')).rejects.toThrow(/damaged/);
