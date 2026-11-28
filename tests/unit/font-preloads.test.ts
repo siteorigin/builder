@@ -94,12 +94,19 @@ describe('font preloads', () => {
     expect(preloadFontFiles(s)).toEqual([INTER]);
   });
 
-  it('follow the fonts the author chose: the body font, then the display heading’s and the main heading’s', () => {
-    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: stack('Lora') } as EditOperation, { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display' } } as EditOperation);
-    expect(preloadFontFiles(s)).toEqual([`${FONTS_DIR}/lora-latin-wght-normal.woff2`, FRAUNCES, PLAYFAIR]);
-    // A hero's heading is a display heading: its font counts even when the main heading's is another.
+  it('follow the fonts the author chose: the body font, then the headings’', () => {
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: stack('Lora') } as EditOperation, { type: 'token.set', tokenId: 'font.display', value: stack('Playfair Display') } as EditOperation);
+    expect(preloadFontFiles(s)).toEqual([`${FONTS_DIR}/lora-latin-wght-normal.woff2`, PLAYFAIR]);
+  });
+
+  it('name no heading face while the display heading and the main heading are set in different ones', () => {
+    // A page has a hero's display heading or a main heading: preloading both would fetch one it does not show.
     const hero = run(fresh(), { type: 'token.set', tokenId: 'text.display', value: { family: 'Playfair Display' } } as EditOperation);
-    expect(preloadFontFiles(hero)).toEqual([INTER, PLAYFAIR, FRAUNCES]);
+    expect(preloadFontFiles(hero)).toEqual([INTER]);
+    const main = run(fresh(), { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display' } } as EditOperation);
+    expect(preloadFontFiles(main)).toEqual([INTER]);
+    // Both set in it again: it is named.
+    expect(preloadFontFiles(run(main, { type: 'token.set', tokenId: 'text.display', value: { family: 'Playfair Display' } } as EditOperation))).toEqual([INTER, PLAYFAIR]);
   });
 
   it('take body text’s family from the body font, which the page’s body is set in', () => {
@@ -115,8 +122,8 @@ describe('font preloads', () => {
 
   it('take a family’s one upright face for a weight it does not draw, which the browser draws from the nearest', () => {
     // Playfair Display's one file draws 400 to 900: a lighter heading is drawn from it at 400.
-    const s = run(fresh(), { type: 'token.set', tokenId: 'text.h1', value: { family: 'Playfair Display', weight: 300 } } as EditOperation);
-    expect(preloadFontFiles(s)).toEqual([INTER, FRAUNCES, PLAYFAIR]);
+    const s = run(fresh(), { type: 'token.set', tokenId: 'font.display', value: stack('Playfair Display') } as EditOperation, { type: 'token.set', tokenId: 'text.h1', value: { weight: 300 } } as EditOperation, { type: 'token.set', tokenId: 'text.display', value: { weight: 300 } } as EditOperation);
+    expect(preloadFontFiles(s)).toEqual([INTER, PLAYFAIR]);
   });
 
   it('skip a family the project’s own font files may stand in for', () => {

@@ -634,14 +634,10 @@ function packFontFaceCss(state: ProjectState): string {
 }
 
 /** The text styles whose fonts a page shows first, in the order their faces are preloaded: body text, the main heading. */
-/**
- * What a page shows first, in the order its faces are preloaded: body text, which takes its family from the body font
- * itself (the theme's `body` rule) at the normal weight, then the hero's display heading and the main heading, each
- * from its text style.
- */
-const PRELOAD_ROLES: Array<{ font: string; weight: number } | { text: string }> = [{ font: 'font.body', weight: 400 }, { text: 'text.display' }, { text: 'text.h1' }];
 /** The range of a face that covers basic Latin, the space among it: a page showing the family loads that file whatever its language. */
 const BASIC_LATIN_RANGE = /(^|,)\s*U\+0000-00FF\s*(,|$)/i;
+/** The heading styles whose fonts a page's first view shows: the hero's display heading, and the main heading. */
+const HEADING_STYLES = ['text.display', 'text.h1'];
 
 /** Whether a face's weight (`400`, or a variable range such as `100 900`) draws `weight`. */
 function faceDraws(face: { weight: string }, weight: number): boolean {
@@ -651,10 +647,13 @@ function faceDraws(face: { weight: string }, weight: number): boolean {
 
 /**
  * The project files of the theme font faces every page loads first (#1487), which the server hook asks the browser
- * to fetch from <head> rather than once the stylesheet that names them has arrived. For each of PRELOAD_ROLES: the
- * upright .woff2 face covering basic Latin of the family its stack leads with, the one drawing its weight where the
- * family has several (otherwise the browser draws the nearest weight from the one it has). None for a role that
- * leads with a system font, or with a family a project font of the same name may stand in for; each file once.
+ * to fetch from <head> rather than once the stylesheet that names them has arrived. One file serves every page, so
+ * each is a face every page shows: the body font's, which the page's body, its navigation and buttons are set in,
+ * at the normal weight; and the headings', while the display heading and the main heading are set in the same face,
+ * so a page with only one of them never fetches a face it does not show. Each is the upright .woff2 face covering
+ * basic Latin of the family the stack leads with, the one drawing the weight where the family has several (otherwise
+ * the browser draws the nearest weight from the one it has). None for a stack that leads with a system font, or with a
+ * family a project font of the same name may stand in for.
  */
 export function preloadFontFiles(state: ProjectState): string[] {
   const fonts = usedFonts(state);
@@ -663,28 +662,25 @@ export function preloadFontFiles(state: ProjectState): string[] {
   const theme = getTheme(state.site.themeId);
   // CSS reads family names without regard to case, as the font token's validation does (resolveFontStack).
   const key = (family: string) => family.replace(/\s+/g, ' ').toLowerCase();
-  // The project's own fonts are read only for a role that leads with a theme font, so most edits to the media
+  // The project's own fonts are read only for a stack that leads with a theme font, so most edits to the media
   // library leave the server hook as it is.
   let own: Set<string> | undefined;
-  const files = new Set<string>();
-  for (const role of PRELOAD_ROLES) {
-    let stack: string;
-    let weight: number;
-    if ('font' in role) [stack, weight] = [followedText(tokens, role.font), role.weight];
-    else {
-      const metrics = textMetrics(tokens, role.text, theme.tokens.find((t) => t.id === role.text)?.value);
-      if (!metrics) continue;
-      const link = linkOf(metrics.family);
-      [stack, weight] = [link ? followedText(tokens, link) : typeof metrics.family === 'string' ? metrics.family : '', metrics.weight];
-    }
+  const faceFor = (stack: string, weight: number): string | undefined => {
     const lead = fontFamilies(stack)[0];
     const font = lead && fonts.find((f) => key(f.family) === key(lead));
-    if (!font || (own ??= new Set(projectFontFamilies(state).map((f) => key(f.family)))).has(key(lead))) continue;
+    if (!font || (own ??= new Set(projectFontFamilies(state).map((f) => key(f.family)))).has(key(lead))) return undefined;
     const latin = font.faces.filter((f) => f.style === 'normal' && f.file.endsWith('.woff2') && (!f.unicodeRange || BASIC_LATIN_RANGE.test(f.unicodeRange)));
     const face = latin.find((f) => faceDraws(f, weight)) ?? (latin.length === 1 ? latin[0] : undefined);
-    if (face) files.add(`${FONTS_DIR}/${face.file.slice('fonts/'.length)}`);
-  }
-  return [...files];
+    return face && `${FONTS_DIR}/${face.file.slice('fonts/'.length)}`;
+  };
+  const headings = HEADING_STYLES.map((id) => {
+    const metrics = textMetrics(tokens, id, theme.tokens.find((t) => t.id === id)?.value);
+    if (!metrics) return undefined;
+    const link = linkOf(metrics.family);
+    return faceFor(link ? followedText(tokens, link) : typeof metrics.family === 'string' ? metrics.family : '', metrics.weight);
+  });
+  const files = new Set([faceFor(followedText(tokens, 'font.body'), 400), headings.every((f) => f === headings[0]) ? headings[0] : undefined]);
+  return [...files].filter((f): f is string => !!f);
 }
 
 /** The licence notices of the theme fonts the site ships. */
