@@ -19,6 +19,8 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
+import { briefWriteIntent, updateBriefTool } from './brief-tools';
+import type { BriefWriteGrant } from '@shared/brief';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
@@ -138,7 +140,7 @@ export interface RunSession {
    */
   apply(
     batch: { operations: EditOperation[]; expectedRevision?: number },
-    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
+    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; briefWrite?: BriefWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
   ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   /** The main process's single-use grant for a form routing review the user allowed when the app asked; null when it no longer holds. */
   grantFormRouting(reviewId: string): FormRoutingGrant | null;
@@ -1824,6 +1826,9 @@ export class Orchestrator {
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
     /** The author asks to go to a page (#1357): only then is the run offered open_page. A collaborator's request never moves the host's editor. */
     const pageAsked = !run.delegation && asksToOpenPage(userMsg.text, session.state);
+    // The brief is the author's own (#518): only their own message, asking in so many words, lets a run change it
+    // (#1407). Never a guest's, a question, a layout's run (which never widens), or the request a "Continue" carries on.
+    const briefActions = !ask && !run.delegation && authority.kind !== 'template' ? briefWriteIntent(userMsg.text, session.state) : [];
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     /** The build's errors as an edit starts (a question compiles nothing). */
@@ -1894,8 +1899,11 @@ export class Orchestrator {
       const cut = (l: string) => cutAtWord(l, 120);
       return { undoTakesBack: h.undoLabel ? cut(h.undoLabel) : null, redoPutsBack: h.redoLabel ? cut(h.redoLabel) : null };
     };
+    /** The run's tools, with update_project_brief when the author's message asked to change the brief. A narrower scope
+     *  keeps it: the project's scope check asks the author to widen before it changes anything. */
+    const withBriefTool = (t: RunTools): RunTools => (briefActions.length && t.mode !== 'ask' && t.mode !== 'layout' ? { ...t, tools: [...t.tools, updateBriefTool(briefActions)] } : t);
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
-    const runTools = (): RunTools =>
+    const runTools = (): RunTools => withBriefTool(
       toolsForRun({
         editor,
         state: session.state,
@@ -1925,7 +1933,7 @@ export class Orchestrator {
         page: authority.kind === 'page' && Object.hasOwn(session.state.pages, authority.pageId) ? { route: session.state.pages[authority.pageId].route } : null,
         entry: authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId } : null,
         layout: authority.kind === 'template' ? { owner: authority.owner } : null
-      });
+      }));
     let current = runTools();
     const macros = newMacroMemory();
     /** Pages this request tried to create in a change that never landed. */
@@ -2278,6 +2286,7 @@ export class Orchestrator {
             }
           }
         : {}),
+      briefWrite: () => (briefActions.length ? { actions: briefActions } : null),
       apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
@@ -2373,7 +2382,7 @@ export class Orchestrator {
           const send = (formRouting?: FormRoutingGrant) =>
             session.apply(
               { operations, expectedRevision },
-              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
+              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(grants?.briefWrite ? { briefWrite: grants.briefWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
             );
           res = await send();
           // Asked once: a batch refused again, with the user's say, changes something they were not shown. Never asked of
