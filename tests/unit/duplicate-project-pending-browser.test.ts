@@ -2,7 +2,7 @@
  * Duplicate project copies what the project holds (#1373): a change still on its way is saved first, and one that can't
  * be saved (text a field refused, an edit kept on hold) stops the copy before any folder is made, with what it is said
  * in the dialog. The real dialog, fields and store run in a real browser, against a bridge that holds each save until
- * the test lets it through and records every copy asked for.
+ * the test lets it through or fails it, and records every copy asked for, answering it when the test says.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -24,9 +24,11 @@ const ENTRY = [
   `import { DraftInput } from ${renderer('components/ui')};`,
   `import { DuplicateProjectModal } from ${renderer('components/ProjectDialogs')};`,
   `import { applyOps, markDraft, useStore } from ${renderer('store')};`,
-  `import { HELD_DRAFT } from ${renderer('lib/pending')};`,
+  `import { HELD_DRAFT, isSettling } from ${renderer('lib/pending')};`,
   "useStore.setState({ screen: 'editor', snapshot: { state: window.__project, revision: 1, workspaceKey: 'w1', dir: '/projects/test-studio', conflicts: [], diagnostics: [] } });",
   'window.holdEdit = () => markDraft(HELD_DRAFT, true);',
+  'window.isSettling = isSettling;',
+  'window.toastCount = () => useStore.getState().toasts.length;',
   "window.saveColor = (v) => void applyOps([{ type: 'token.set', tokenId: 'color.brand', value: v }], 'Change Brand');",
   'function App() {',
   '  const [open, setOpen] = useState(false);',
@@ -44,24 +46,26 @@ const ENTRY = [
   "flushSync(() => createRoot(document.getElementById('root')).render(h(App)));"
 ].join('\n');
 
-/** The preload bridge: every call answers nothing, except a save, held for the test to land, and a copy, recorded. */
+/** The preload bridge: every call answers nothing, except a save, held for the test to land or fail, and a copy,
+ *  recorded and held for the test to answer. */
 const BRIDGE = `
   window.saves = [];
   window.copies = [];
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any(path ? path + '.' + key : key)),
     apply: (_, __, args) => {
-      if (path === 'project.apply') return new Promise((resolve) => window.saves.push({ batch: args[0], resolve }));
+      if (path === 'project.apply') return new Promise((resolve, reject) => window.saves.push({ batch: args[0], resolve, reject }));
       if (path === 'projects.duplicate') {
         window.copies.push({ ...args[0], saves: window.saves.length });
-        return Promise.resolve({ ok: true, dir: args[0].parentDir + '/test-studio-copy', name: args[0].name });
+        return new Promise((resolve) => (window.answerCopy = () => resolve({ ok: true, dir: args[0].parentDir + '/test-studio-copy', name: args[0].name })));
       }
       return any('');
     }
   });
   window.builder = any('');
-  /** Let the oldest save through. */
+  /** Let the oldest save through, or fail it as a full disk does. */
   window.land = () => window.saves.shift().resolve({ ok: true, revision: 2, results: [{}] });
+  window.fail = () => window.saves.shift().reject(new Error('ENOSPC: no space left on device'));
 `;
 
 const css = ['tokens', 'reset', 'primitives'].map((n) => readFileSync(resolve(`src/renderer/src/styles/${n}.css`), 'utf8')).join('\n');
@@ -104,10 +108,10 @@ describe.skipIf(!browserInstalled)('Duplicate project settles what is being type
   }, 60_000);
 
   beforeEach(async () => {
+    errors = [];
     context = await browser.newContext({ viewport: { width: 1100, height: 700 }, reducedMotion: 'reduce' });
     context.setDefaultTimeout(5_000);
     page = await context.newPage();
-    errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.route(`${SITE}/**`, (route) =>
       new URL(route.request().url()).pathname === '/app.js'
@@ -130,55 +134,92 @@ describe.skipIf(!browserInstalled)('Duplicate project settles what is being type
     if (by === 'click') await duplicateButton().click();
     else await dialog().getByRole('textbox', { name: 'Copy name' }).press('Enter');
   };
-  const problem = () => dialog().getByRole('alert');
+  /** What the dialog says beneath the form, once it says it. */
+  const problem = async () => {
+    await dialog().getByRole('alert').waitFor();
+    return dialog().getByRole('alert').innerText();
+  };
+  const saving = () => dialog().getByRole('status').getByText('Saving your changes first').waitFor();
+  const copying = () => dialog().getByRole('status').getByText('Copying the project').waitFor();
+  /** A change sent as the store sends every change, still being saved. */
+  const sendChange = async () => {
+    await page.evaluate("window.saveColor('#123456')");
+    await expect.poll(() => page.evaluate<number>('window.saves.length')).toBe(1);
+  };
 
   it('makes no copy while a field keeps an address it refused, and says which', async () => {
     const url = page.getByRole('textbox', { name: 'Public URL' });
     await url.fill('studio.example/new');
     await url.press('Tab');
     await duplicate();
-    await expect.poll(() => problem().innerText()).toContain('What you typed in Public URL can’t be saved.');
-    expect(await problem().innerText()).toContain('wasn’t copied');
+    const said = await problem();
+    expect(said).toContain('wasn’t copied');
+    expect(said).toContain('What you typed in Public URL can’t be saved.');
     expect(await copies()).toEqual([]);
     expect(await dialog().getByRole('heading', { name: 'Copy created' }).count()).toBe(0);
-    // Duplicate takes focus, reading the problem out, and can be tried again once the change is saved or discarded.
-    await expect.poll(() => duplicateButton().evaluate((b) => b === document.activeElement)).toBe(true);
+    // Duplicate takes focus and reads the problem out, and can be tried again once the change is saved or discarded.
+    await expect.poll(() => page.evaluate<string | null>('document.activeElement?.textContent ?? null'), { timeout: 5_000 }).toBe('Duplicate');
+    expect(await duplicateButton().getAttribute('aria-describedby')).toBe('duplicate-error');
     expect(await duplicateButton().isEnabled()).toBe(true);
     // The address stays unsaved, as typed, for the author to correct once the dialog is closed.
     await dialog().getByRole('button', { name: 'Cancel' }).click();
     expect(await url.inputValue()).toBe('studio.example/new');
+    // Corrected, it no longer holds the copy back.
+    await url.fill('https://new.example');
+    await url.press('Tab');
+    await duplicate();
+    await copying();
+    await page.evaluate('window.answerCopy()');
+    await dialog().getByRole('heading', { name: 'Copy created' }).waitFor();
+    expect(await copies()).toHaveLength(1);
   });
 
   it('makes no copy while an edit is kept on hold', async () => {
     await page.evaluate('window.holdEdit()');
     await duplicate();
-    await expect.poll(() => problem().innerText()).toContain('An edit you made has not been saved yet.');
+    expect(await problem()).toContain('An edit you made has not been saved yet.');
     expect(await copies()).toEqual([]);
     expect(await dialog().getByRole('heading', { name: 'Copy created' }).count()).toBe(0);
   });
 
   it('copies once a change still being saved has landed, never before', async () => {
-    await page.evaluate("window.saveColor('#123456')");
-    await expect.poll(() => page.evaluate<number>('window.saves.length')).toBe(1);
+    await sendChange();
     await duplicate('enter');
     // The copy waits for the save, whatever it takes, and says what it is waiting for.
-    await expect.poll(() => dialog().getByRole('status').innerText()).toContain('Saving your changes first');
-    await page.waitForTimeout(300);
+    await saving();
+    expect(await page.evaluate<boolean>('window.isSettling()')).toBe(true);
+    expect(await duplicateButton().isDisabled()).toBe(true);
     expect(await copies()).toEqual([]);
     await page.evaluate('window.land()');
-    await dialog().getByRole('heading', { name: 'Copy created' }).waitFor();
+    // Then the copy is asked for, with nothing left being saved, and the dialog says so.
+    await copying();
     expect(await copies()).toEqual([{ name: 'Test Studio copy', parentDir: '/projects', opening: 'w1', saves: 0 }]);
+    await page.evaluate('window.answerCopy()');
+    await dialog().getByRole('heading', { name: 'Copy created' }).waitFor();
     expect(await dialog().innerText()).toContain('with every change made so far');
   });
 
-  it('makes no copy once the dialog has gone with its project while a change was being saved', async () => {
-    await page.evaluate("window.saveColor('#123456')");
-    await expect.poll(() => page.evaluate<number>('window.saves.length')).toBe(1);
+  it('makes no copy when a change being saved fails, and says why', async () => {
+    await sendChange();
     await duplicate();
-    await expect.poll(() => dialog().getByRole('status').innerText()).toContain('Saving your changes first');
+    await saving();
+    await page.evaluate('window.fail()');
+    const said = await problem();
+    expect(said).toContain('wasn’t copied');
+    expect(said).toContain('That change could not be saved: ENOSPC: no space left on device');
+    expect(await copies()).toEqual([]);
+    expect(await duplicateButton().isEnabled()).toBe(true);
+  });
+
+  it('makes no copy once the dialog has gone with its project while a change was being saved', async () => {
+    await sendChange();
+    await duplicate();
+    await saving();
     await page.evaluate('window.dropDuplicate()');
     await page.evaluate('window.land()');
-    await page.waitForTimeout(300);
+    // The copy would be asked for as the settle ends, in the same turn: once it has ended, none was.
+    await expect.poll(() => page.evaluate<boolean>('window.isSettling()'), { timeout: 5_000 }).toBe(false);
     expect(await copies()).toEqual([]);
+    expect(await page.evaluate<number>('window.toastCount()')).toBe(0);
   });
 });

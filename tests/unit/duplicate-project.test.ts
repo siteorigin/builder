@@ -265,4 +265,46 @@ describe('a duplicated project (#176)', () => {
     expect(readdirSync(sites).sort()).toEqual(['fall-campaign', 'storefront']);
     expect(read(join(sites, 'fall-campaign'), 'siteorigin.project.json').workingCopyName).toBe('Fall Campaign');
   });
+
+  it('copies nothing while the project does not hold every change yet, as Export refuses (#1373)', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    const opts = { name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! };
+    const session = (c as unknown as { session: { unsettled: boolean; placeJournal: (...a: unknown[]) => Promise<void> } }).session;
+    // The AI is still making changes, which Stop would take back.
+    const aiBusy = c.aiBusy;
+    c.aiBusy = () => true;
+    expect(await c.duplicate(opts)).toEqual({ ok: false, field: 'form', message: 'Wait for the AI to finish before duplicating the project.' });
+    c.aiBusy = aiBusy;
+    // A save did not finish.
+    session.unsettled = true;
+    expect(await c.duplicate(opts)).toMatchObject({ ok: false, field: 'form', message: expect.stringMatching(/^A save did not finish/) });
+    session.unsettled = false;
+    // A change failed to save, and still stands.
+    const placeJournal = session.placeJournal.bind(session);
+    const failNext = () =>
+      (session.placeJournal = async () => {
+        session.placeJournal = placeJournal;
+        throw new Error('ENOSPC: no space left on device');
+      });
+    failNext();
+    await expect(c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).rejects.toThrow(/ENOSPC/);
+    const lost = { ok: false, field: 'form', message: expect.stringMatching(/^A change could not be saved, so the copy would leave it out/) };
+    expect(await c.duplicate(opts)).toMatchObject(lost);
+    expect(readdirSync(sites)).toEqual(['storefront']);
+    // Once a later save succeeds, nothing is left out.
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'Kept name' }] })).ok).toBe(true);
+    // A save queued ahead of the copy that fails is caught once it has run, and the folder claimed for the copy goes.
+    failNext();
+    const failing = c.apply({ operations: [{ type: 'site.update', name: 'Lost again' }] });
+    const copying = c.duplicate(opts);
+    await expect(failing).rejects.toThrow(/ENOSPC/);
+    expect(await copying).toMatchObject(lost);
+    expect(readdirSync(sites)).toEqual(['storefront']);
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'Kept name' }] })).ok).toBe(true);
+    expect(await c.duplicate(opts)).toMatchObject({ ok: true });
+    expect(siteName(join(sites, 'fall-campaign'))).toBe('Kept name');
+  });
 });
