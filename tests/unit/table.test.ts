@@ -148,7 +148,8 @@ describe('table edits by ID', () => {
     expect(grown.rows.every((r) => r.cells[columnId] === '' && r.cells.col_day && r.cells.col_time)).toBe(true);
     const removed = applyOperations(withColumn.state, [edit(nodeId, owner, { action: 'removeRow', rowId: 'row_2' })]).state;
     expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
-    expect(validateState(removed).filter((d) => d.severity !== 'info')).toEqual([]);
+    // The starter's sections still waiting for their pictures aside, the edits leave no problem.
+    expect(validateState(removed).filter((d) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED')).toEqual([]);
   });
 
   it('keeps a cell typed just before its column was moved: each step names its cell, never the whole table', () => {

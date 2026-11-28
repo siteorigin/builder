@@ -684,7 +684,7 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
   append(links, draftLinkDiagnostics(state, keep));
-  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...unfilledImageDiagnostics(state, keep), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...unfilledImageDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
   for (const d of elementContrastDiagnostics(state, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
