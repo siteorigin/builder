@@ -430,8 +430,8 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
     await expect.poll(() => dialog().count()).toBe(0);
     await page.locator('#writer [data-tool="image"]').click();
     await dialog().waitFor();
-    // The new dialog does not say Adding… for the old one's import, and is not given its picture.
-    expect(await dialog().getByRole('button', { name: 'Import…' }).count()).toBe(1);
+    // The old import is still copying, so the new dialog says so; it is not given the old one's picture.
+    expect(await dialog().getByRole('button', { name: 'Adding…' }).count()).toBe(1);
     await land(0, [kiln.id]);
     await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
     expect(await dialog().getByText('Chosen: kiln.jpg').count()).toBe(0);

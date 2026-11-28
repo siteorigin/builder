@@ -880,6 +880,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     try {
       const plan = await reviewImport(paths, 'image', () => mounted.current && getState().snapshot?.workspaceKey === opening).catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
       if (!plan || !mounted.current) return;
+      // A collection that turned read-only while the files were read takes nothing in.
+      if (readOnlyRef.current) return;
       let landed!: (o: ApplyOutcome) => void;
       trackApply(new Promise<ApplyOutcome>((done) => (landed = done)));
       setState({ pendingSave: getState().pendingSave + 1 });
@@ -1539,7 +1541,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               value={dialog.value}
               altError={dialog.altError}
               tried={dialog.tried ?? 0}
-              importing={importing === dialogSession.current}
+              importing={importing !== null}
               onImport={(paths) => void importIntoDialog(paths)}
               // A description written, decorative turned on or another picture chosen settles what was asked.
               onChange={(value) => setDialog({ ...dialog, value, altError: dialog.altError && !value.decorative && !value.alt.trim() && value.assetId === dialog.value.assetId })}
