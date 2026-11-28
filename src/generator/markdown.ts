@@ -7,14 +7,15 @@
  * header and footer; what is hidden at every size left out (its own layers, as site search leaves them out, and a
  * component's parts its design or placement hides); and the panels a component keeps in the page while its state hides
  * them (a tab not chosen yet) kept, since the page ships their words. Code components are read only where the site
- * knows what they show (the theme's table, form and video): any other code's output is unknown, so nothing of it is
- * written.
+ * knows what they show: Foundation's sections, exactly as the app ships them, through the designs that stand for their
+ * markup (shipped-outlines.ts), and its table, plan comparison, forms and video here. Any other code's output is
+ * unknown, so nothing of it is written.
  *
  * Nothing about a document agents are not told of reaches the Markdown of another: the rows of news and post lists
  * and the cards of page lists that lead to one are left out where the list is filled, before any design hands them
  * on; and a link to one keeps its words but not where it goes.
  */
-import type { ComponentDefinition, EntryDoc, GraphNode, LinkValue, PageDoc, ProjectState, TableValue } from '@shared/types';
+import type { ComponentDefinition, EntryDoc, GraphNode, InstanceNode, LinkValue, PageDoc, ProjectState, TableValue } from '@shared/types';
 import { asParagraphList, isImageBlock, isListBlock, toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
 import { findEntry } from '@shared/collections';
 import { evaluate, hiddenInDesignEverywhere, shippedCode, walkRendered, type Scope } from './checks';
@@ -23,6 +24,9 @@ import { resolveLink, sortedBrokenCards } from './index';
 import { cardKey, isCardLink } from './card-links';
 import { derived } from './cache';
 import { isFormContract } from '@shared/form-contract';
+import { selectedVariants } from '@shared/variants';
+import { shippedAsIs } from '@engine/shipped-copy';
+import { shippedOutline } from './shipped-outlines';
 
 /** What the Markdown of one document is written for. */
 export interface MarkdownContext {
@@ -339,8 +343,48 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
     }
   };
 
+  /** A link's words, linked where it goes; a button that goes nowhere, or only changes what its component shows, says nothing. */
+  const addLink = (words: string, link: LinkValue | undefined) => {
+    const href = markdownHref(ctx, link);
+    if (!words) return;
+    if (href) add(linked(words, href));
+    // A link to a document agents are not told of keeps its words.
+    else if (resolveLink(link, { state })) add(words);
+  };
+
+  /**
+   * Foundation's comparison of plans, as the release shows it: its introduction, a table of the plans (the third only
+   * while it is named) with their prices and each feature's value for each, the plans' buttons and its note.
+   */
+  const compare = (def: ComponentDefinition, props: Record<string, unknown>, n: InstanceNode) => {
+    const text = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+    const words = (...parts: unknown[]) => parts.map(text).filter(Boolean).join(' ');
+    addPlain(props.eyebrow);
+    addPlain(props.heading, TAG_LEVEL[String(props.headingLevel)]);
+    addPlain(props.lead);
+    const highlight = selectedVariants(def, n.variants).highlight;
+    const plans = (['one', 'two', 'three'] as const)
+      .map((key) => ({ key, ...((props[`plan${key[0].toUpperCase()}${key.slice(1)}`] ?? {}) as Record<string, unknown>) }))
+      .filter((p) => p.key !== 'three' || text(p.name));
+    const label = (p: (typeof plans)[number]) => (p.key === highlight && text(props.highlightLabel) ? `${text(p.name)} (${text(props.highlightLabel)})` : text(p.name));
+    // An icon says whether a plan includes a feature: its accessible name where it is given one, else its mark.
+    const value = (v: unknown) => (v === 'included' ? text(props.includedLabel) || '✓' : v === 'excluded' ? text(props.excludedLabel) || '—' : '');
+    const rows = Array.isArray(props.features) ? (props.features as Array<Record<string, unknown>>).filter((r) => r && typeof r === 'object') : [];
+    const table: TableValue = {
+      columns: [{ id: 'feature', label: '' }, ...plans.map((p) => ({ id: p.key, label: label(p) }))],
+      rows: [
+        { id: 'price', cells: Object.fromEntries(plans.map((p) => [p.key, words(p.price, p.period)])) },
+        ...rows.map((r, i) => ({ id: String(r.id ?? i), cells: { feature: text(r.detail) ? `${text(r.feature)}: ${text(r.detail)}` : text(r.feature), ...Object.fromEntries(plans.map((p) => [p.key, words(value(r[p.key]), r[`${p.key}Note`])])) } }))
+      ]
+    } as TableValue;
+    add(tableMarkdown(table));
+    for (const p of plans) addLink(inline(text(p.actionLabel)), p.actionLink as LinkValue | undefined);
+    addPlain(props.note);
+  };
+
   /** What the theme's own code components show: their words around the table, form or video, and a table's cells. */
-  const code = (def: ComponentDefinition, props: Record<string, unknown>) => {
+  const code = (def: ComponentDefinition, props: Record<string, unknown>, n: InstanceNode) => {
+    if (def.componentId === 'pricing.compare' && shippedAsIs(def)) return compare(def, props, n);
     const which = shippedCode(state, def);
     // The compact video's only words are its caption.
     if (which === 'block.video') return void addPlain(props.caption);
@@ -360,6 +404,8 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
     kept: true,
     // The rows of news and post lists, and the cards of page lists, leading to a document agents are not told of.
     listed: (link) => listedTarget(ctx, link),
+    // Foundation's sections, through the designs that stand for their markup.
+    outline: shippedOutline,
     prune: pruned,
     node: (n, scope, _reportId, _inDef, def) => void stack.push(open(n, scope, def)),
     done: () => {
@@ -379,16 +425,10 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
     },
     link: (n, scope) => {
       const label = evaluate(n.label, scope);
-      const words = typeof label === 'string' || typeof label === 'number' ? inline(String(label)) : '';
-      const link = evaluate(n.link, scope) as LinkValue | undefined;
-      const href = markdownHref(ctx, link);
-      if (!words) return;
-      if (href) add(linked(words, href));
-      // A link to a document agents are not told of keeps its words. A button that changes the component's state (a
-      // tab, a toggle) or goes nowhere says nothing of the page's content.
-      else if (resolveLink(link, { state })) add(words);
+      // A button that changes the component's state (a tab, a toggle) or goes nowhere says nothing of the page's content.
+      addLink(typeof label === 'string' || typeof label === 'number' ? inline(String(label)) : '', evaluate(n.link, scope) as LinkValue | undefined);
     },
-    code: (def, props) => code(def, props)
+    code: (def, props, _reportId, _placement, n) => code(def, props, n)
   });
   return root.blocks.join('\n\n');
 }

@@ -168,6 +168,11 @@ export interface Visit {
    * `scope` where it is placed, and `inDef` when that is inside another component's design.
    */
   code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, n: GraphNode & { kind: 'instance' }, scope: Scope, inDef: boolean) => void;
+  /**
+   * A managed design to walk in place of a code component, standing for what its markup shows (the Markdown copies
+   * read Foundation's sections through one, generator/shipped-outlines.ts); undefined walks it as code.
+   */
+  outline?: (def: ComponentDefinition) => ComponentDefinition | undefined;
   /** A page-level node (page or shell tree) about to render, before anything inside it. */
   enter?: (n: GraphNode) => void;
   /** After everything inside a page-level node has been visited. */
@@ -471,7 +476,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
         break;
       }
       case 'instance': {
-        const def = state.components[n.definitionId];
+        const placed = state.components[n.definitionId];
+        const def = placed?.kind === 'code' ? (visit.outline?.(placed) ?? placed) : placed;
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
         const props = effectiveProps(state, def, n, frame.scope, pageId, entry, visit.listed, archive);
