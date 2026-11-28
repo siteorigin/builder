@@ -35,7 +35,7 @@ function workerPath(): string {
 }
 
 /** Minimal environment for project processes. Credentials and unrelated secrets are never passed through. */
-function projectEnv(extra: Record<string, string> = {}): Record<string, string> {
+export function projectEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {
     PATH: process.platform === 'win32' ? process.env.PATH ?? '' : '/usr/bin:/bin:/usr/sbin:/sbin',
     HOME: process.env.HOME ?? app.getPath('home'),
@@ -93,6 +93,11 @@ export async function dependenciesReady(dir: string): Promise<boolean> {
 /** The npm that installs the website tools: the complete copy shipped with the app, run on Electron's own Node. */
 function npmDir(): string {
   return app.isPackaged ? join(process.resourcesPath, 'npm') : dirname(nodeRequire.resolve('npm/package.json'));
+}
+
+/** npm's command-line script, from the npm shipped with the app: what runs a project's own `npm test` (#1483). */
+export function npmCliPath(): string {
+  return join(npmDir(), 'bin', 'npm-cli.js');
 }
 
 /** The npm cache installs use, in the app's data folder; packaged builds seed it from the cache shipped with the app. */
@@ -695,6 +700,9 @@ export const DEV_SERVER_V8_FLAGS = ['--no-flush-bytecode'];
 /** How long a stopping preview process gets: asked to stop, then terminated, then killed, then no longer waited for. */
 export const STOP_LIMITS = { termMs: 1500, killMs: 3000, giveUpMs: 5000 };
 
+/** Numbers the lines every preview server logs, in one sequence for the app's life, so one started again goes on from the last. */
+let logSeq = 0;
+
 /** Dev server for one project, in its own utility process. */
 export class DevServer {
   private proc: UtilityProcess | null = null;
@@ -705,7 +713,8 @@ export class DevServer {
   private goneListeners = new Set<() => void>();
   /** Holds asked for and not yet released: a save's files are landing. */
   private activeHolds = 0;
-  logs: Array<{ level: string; message: string; time: number }> = [];
+  /** The last lines the server logged, each numbered (`seq`) in the order it was logged, for the code workspace to follow. */
+  logs: Array<{ seq: number; level: string; message: string; time: number }> = [];
   private stopped = false;
   /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
   private settleStart: (() => void) | null = null;
@@ -765,7 +774,7 @@ export class DevServer {
 
   private log(level: string, message: string) {
     const text = message.replace(/\x1b\[[0-9;]*m/g, '');
-    this.logs.push({ level, message: text, time: Date.now() });
+    this.logs.push({ seq: ++logSeq, level, message: text, time: Date.now() });
     if (this.logs.length > 200) this.logs.shift();
     // Its warnings and errors: the lines it logs for each request it answers would crowd out everything else.
     if (level !== 'info') trace('vite', `${level}: ${text.trim().slice(0, 600)}`);

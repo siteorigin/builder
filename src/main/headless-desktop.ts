@@ -143,9 +143,11 @@ export interface IntentEvent {
   type: 'intent';
   seq: number;
   at: string;
-  kind: 'open-external' | 'reveal' | 'open-path' | 'popup-menu';
-  /** The address (open-external), path (reveal, open-path), or where the application menu was asked to open, as `x,y` in the window's pixels (popup-menu). */
+  kind: 'open-external' | 'reveal' | 'open-path' | 'popup-menu' | 'open-editor';
+  /** The address (open-external), path (reveal, open-path, open-editor), or where the application menu was asked to open, as `x,y` in the window's pixels (popup-menu). */
   target: string;
+  /** The code editor application it was handed to (open-editor: the one chosen in Settings). */
+  program?: string;
 }
 
 export interface MenuEvent {
@@ -526,7 +528,7 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     record<ChooserEvent>({ ...chooser('error', true, null, { title, detail: content }), outcome: 'closed', answer: null, request: null, result: null });
   }
 
-  const intent = (k: IntentEvent['kind'], target: unknown) => void record<IntentEvent>({ type: 'intent', kind: k, target: String(target) });
+  const intent = (k: IntentEvent['kind'], target: unknown, program?: string) => void record<IntentEvent>({ type: 'intent', kind: k, target: String(target), ...(program !== undefined ? { program } : {}) });
 
   /** Whatever is left of the batch for `window` expires. */
   const expire = (window: number) => {
@@ -592,6 +594,13 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     }
   };
 
+  /** A file or folder handed to the developer's code editor (external-editor.ts): recorded, and nothing started. */
+  const codeEditor = {
+    openPath: shell.openPath,
+    reveal: shell.showItemInFolder,
+    launch: async (app: { path: string }, target: string) => intent('open-editor', target, app.path)
+  };
+
   /** The app's editor window comes and goes. */
   const windows = {
     /** An editor window was made: a batch set while there was none belongs to it. */
@@ -609,7 +618,7 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
   /** The application menu asked to open over the editor window (#1355): recorded, never shown. */
   const menuPopup = (at: { x: number; y: number }) => intent('popup-menu', `${at.x},${at.y}`);
 
-  return { fixtures, dialog, shell, windows, menuPopup };
+  return { fixtures, dialog, shell, codeEditor, windows, menuPopup };
 }
 
 export type HeadlessDesktop = ReturnType<typeof createDesktopFixtures>;

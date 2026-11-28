@@ -2,11 +2,14 @@ import '../panels/SourceModal.css';
 import { useEffect, useId, useRef, useState, type MutableRefObject } from 'react';
 import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, closeHoverTooltips, hasHoverTooltips, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet, type ViewUpdate } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab, simplifySelection } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory, simplifySelection } from '@codemirror/commands';
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { forceLinting, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { svelte } from '@replit/codemirror-lang-svelte';
 import { javascript } from '@codemirror/lang-javascript';
+import { css } from '@codemirror/lang-css';
+import type { Extension } from '@codemirror/state';
+import type { CodeLanguage } from '@shared/code-workspace';
 import { tags as t } from '@lezer/highlight';
 import { CircleAlert, CircleCheck, Lock, TriangleAlert, WrapText } from 'lucide-react';
 import type { CodePropsTaken, SourceManifest } from '@shared/api';
@@ -187,6 +190,15 @@ function savedWrap(readOnly: boolean): boolean {
   }
 }
 
+const LANGUAGE_NAMES: Record<CodeLanguage, string> = { svelte: 'Svelte', javascript: 'JavaScript', typescript: 'TypeScript', css: 'CSS', json: 'JSON' };
+
+/** The highlighting for each language the editor shows. JSON reads as a JavaScript expression does. */
+function languageOf(language: CodeLanguage): Extension {
+  if (language === 'svelte') return svelte();
+  if (language === 'css') return css();
+  return javascript({ typescript: language === 'typescript' });
+}
+
 /** Marks the transaction that tells the live check the manifest it holds the code to has changed. */
 const manifestChanged = Annotation.define<boolean>();
 
@@ -211,7 +223,8 @@ export function CodeEditor({
   problemsShown,
   manifest,
   handle,
-  language = 'svelte'
+  language = 'svelte',
+  checked = language === 'svelte'
 }: {
   value: string;
   onChange?: (v: string) => void;
@@ -233,14 +246,16 @@ export function CodeEditor({
   /** The manifest the code is checked against, as edited: a change checks the code again. */
   manifest?: SourceManifest;
   handle?: MutableRefObject<CodeEditorHandle | null>;
+  /** The language the text is in; Svelte by default. */
+  language?: CodeLanguage;
   /**
-   * What the code is: a Svelte component (the default), checked by the compiler as it is typed, or JavaScript or
-   * TypeScript (an API endpoint's), highlighted only: the project's own build checks it.
+   * Whether the text is a code component's source, checked as it is typed as a save would check it. Other files (the
+   * project's own code in the code workspace) are only highlighted: the component checks would refuse what they may do.
    */
-  language?: 'svelte' | 'js' | 'ts';
+  checked?: boolean;
 }) {
-  // Only Svelte is checked as it is typed: other code has no check to wait for.
-  const checked = !readOnly && language === 'svelte';
+  // Text nobody checks as it is typed has nothing to wait for.
+  const live = !readOnly && checked;
   const held = useRef(manifest);
   held.current = manifest;
   const manifestKey = manifest ? JSON.stringify(manifest) : '';
@@ -250,7 +265,7 @@ export function CodeEditor({
   const wrapSlot = useRef(new Compartment());
   const armed = useRef(false);
   const said = useRef('');
-  const pending = useRef(checked);
+  const pending = useRef(live);
   const lastJump = useRef(-1);
   const found = useRef<Problem[]>([]);
   const callbacks = useRef({ onChange, onSave, onErrorCount, onChecking, onProps });
@@ -260,7 +275,7 @@ export function CodeEditor({
   const [selecting, setSelecting] = useState(false);
   const [focused, setFocused] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [checking, setCheckingState] = useState(checked);
+  const [checking, setCheckingState] = useState(live);
   const [lint, setLint] = useState<Lint>({ errors: 0, warnings: 0, items: [] });
   const [wrap, setWrap] = useState(() => savedWrap(!!readOnly));
   // Where the last jump landed, said politely, since the strip then moves on to name the next finding.
@@ -392,7 +407,7 @@ export function CodeEditor({
         history(),
         indentOnInput(),
         bracketMatching(),
-        language === 'svelte' ? svelte() : javascript({ typescript: language === 'ts' }),
+        languageOf(language),
         syntaxHighlighting(highlight),
         theme,
         margins,
@@ -427,7 +442,7 @@ export function CodeEditor({
         EditorView.contentAttributes.of({ 'aria-label': label, ...(readOnly ? { 'aria-readonly': 'true' } : { 'aria-describedby': hintId }) }),
         // The gutter is there in read-only code too, so code starts at the same column in every view.
         lintGutter(),
-        ...(checked ? [svelteLint] : []),
+        ...(live ? [svelteLint] : []),
         EditorView.updateListener.of((u) => {
           if (u.focusChanged) {
             setFocused(u.view.hasFocus);
@@ -440,7 +455,7 @@ export function CodeEditor({
             setSelecting(!u.state.selection.main.empty);
           }
           if (!u.docChanged) return;
-          if (!readOnly) setChecking(true);
+          if (live) setChecking(true);
           if (!u.transactions.some((tr) => tr.annotation(external))) callbacks.current.onChange?.(u.state.doc.toString());
         })
       ]
@@ -463,13 +478,14 @@ export function CodeEditor({
       resize.disconnect();
       view.current?.destroy();
     };
-  }, [readOnly, language]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Replace the document when the value changes from outside (revert, reload, a repaired save).
   useEffect(() => {
     const v = view.current;
     if (!v || v.state.doc.toString() === value) return;
-    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value }, selection: { anchor: Math.min(v.state.selection.main.head, value.length) }, annotations: external.of(true) });
+    // Its own step of the history, however soon it follows typing, so Undo brings back exactly the text it replaced.
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value }, selection: { anchor: Math.min(v.state.selection.main.head, value.length) }, annotations: [external.of(true), isolateHistory.of('full')] });
   }, [value]);
 
   useEffect(() => {
@@ -481,7 +497,7 @@ export function CodeEditor({
   useEffect(() => {
     if (linted.current === manifestKey) return;
     linted.current = manifestKey;
-    if (!view.current || !checked) return;
+    if (!view.current || !live) return;
     setChecking(true);
     view.current.dispatch({ annotations: manifestChanged.of(true) });
     forceLinting(view.current);
@@ -518,10 +534,10 @@ export function CodeEditor({
             <span className="code-status-sep" aria-hidden="true" />
             {plural(pos.lines, 'line')}
           </span>
-        ) : !checked ? (
-          // Code that is not checked as it is typed says what it is, never "No problems".
+        ) : !live ? (
+          // Nothing checks this text as it is typed: the strip says what it is rather than that it has no problems.
           <span className="code-status-item">
-            {language === 'ts' ? 'TypeScript' : 'JavaScript'}
+            {LANGUAGE_NAMES[language]}
             <span className="code-status-sep" aria-hidden="true" />
             {plural(pos.lines, 'line')}
           </span>
@@ -559,7 +575,7 @@ export function CodeEditor({
         {!readOnly && (
           <>
             <span className="sr-only" role="status">
-              {said.current}
+              {live ? said.current : ''}
             </span>
             <span className="sr-only" role="status">
               {leaving ? 'Press Tab to leave the editor, or Escape to close.' : ''}
@@ -568,7 +584,7 @@ export function CodeEditor({
               {reached}
             </span>
             <span id={hintId} className="sr-only">
-              Tab indents. Press Escape, then Tab, to leave the editor. F8 goes to the next problem.
+              Tab indents. Press Escape, then Tab, to leave the editor.{live ? ' F8 goes to the next problem.' : ''}
             </span>
           </>
         )}

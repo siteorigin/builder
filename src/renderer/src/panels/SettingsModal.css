@@ -104,4 +104,7 @@
     .settings-row { padding: 9px 14px; }
     .settings-advanced > summary { min-height: 36px; }
   }
+  /* The code editor the code workspace hands files to: its name, then Choose and the way back to the default. */
+  .settings-code-editor { display: flex; align-items: center; gap: 8px; flex: none; }
+  .settings-code-editor-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--text); }
 }

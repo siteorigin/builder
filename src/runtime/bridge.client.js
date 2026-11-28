@@ -113,6 +113,8 @@ function askedFor(path) {
 }
 /** Load the page again when it is one the editor asked for and the server did not have yet; true when it will. */
 function reloadMissingPage() {
+  // The marker is the canvas's (frames of one origin share their session storage): a measuring frame leaves it be.
+  if (measuring) return false;
   let asked = null;
   try {
     asked = JSON.parse(sessionStorage.getItem(ASKED_KEY) || 'null');

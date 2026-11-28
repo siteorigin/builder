@@ -6,6 +6,7 @@ import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
+import type { CodeFileList, CodeFileRead, CodeFileSave, EditorOpenResult, EditorTarget, ExternalEditor, PreviewLogLine, ProjectCheckRun, ProjectCheckTask } from './code-workspace';
 import type { ShortcutSettings } from './shortcuts';
 import type { FirstStepsRecord } from './first-steps';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
@@ -75,6 +76,11 @@ export interface AppSettings {
   appearance: Appearance;
   /** Shows code components and source editing. Off by default: most users never need code. */
   developerMode: boolean;
+  /**
+   * The code editor the code workspace opens files and the project's folder in (#1483): the system's default app for
+   * each, or an application chosen with BuilderApi.app.chooseExternalEditor (a patch can only set it back to the default).
+   */
+  externalEditor: ExternalEditor;
   /**
    * Saved versions are stored as snapshots of the whole site in a Git repository of the project's own
    * (`.siteorigin/versions.git/`), written by the bundled Git. Off by default: versions then use the plain store, and no
@@ -1496,6 +1502,11 @@ export interface BuilderApi {
     quit(): Promise<void>;
     /** While on, the app's menus take no keys, so Settings can record any key press as a shortcut (#750). */
     recordShortcut(on: boolean): Promise<void>;
+    /**
+     * Choose the code editor the code workspace hands files to (#1483), from the system's chooser: the settings with it
+     * chosen, null when the chooser was closed, or why the application chosen cannot be used.
+     */
+    chooseExternalEditor(): Promise<{ ok: true; settings: AppSettings } | { ok: false; message: string } | null>;
   };
   /** The focused text field's own history (the browser's Undo and Redo), never the project's. */
   edit: {
@@ -1772,6 +1783,28 @@ export interface BuilderApi {
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;
+    /**
+     * The code workspace (#1483), in Developer mode, in the opening `opening` (its snapshot's workspaceKey): the project's
+     * own code files (see @shared/code-workspace), read and saved as an outside code editor would, never through the
+     * project's documents, History or the AI.
+     */
+    codeFiles(opening: string): Promise<CodeFileList>;
+    readCodeFile(opening: string, path: string): Promise<CodeFileRead>;
+    /** Save over a file only while it still holds what was read (`expectedHash`, CodeFileRead.hash). */
+    saveCodeFile(opening: string, path: string, text: string, expectedHash: string): Promise<CodeFileSave>;
+    /** Hand a file, a code component's file or the project's folder to the code editor chosen in Settings. */
+    openInEditor(opening: string, target: EditorTarget): Promise<EditorOpenResult>;
+    /**
+     * Start a check of the project: compile its Svelte files, or run its own `npm test`. Its progress comes as
+     * `project-check:update` events; a check of the same kind already running is given back rather than started again.
+     */
+    runCheck(opening: string, task: ProjectCheckTask): Promise<{ ok: true; run: ProjectCheckRun } | { ok: false; message: string }>;
+    /** Stop a check still running. */
+    stopCheck(opening: string, runId: string): Promise<void>;
+    /** The checks of this opening, as they last stood, newest first: what a workspace opened again shows. */
+    checks(opening: string): Promise<ProjectCheckRun[]>;
+    /** What the preview's server logged after line `since` (PreviewLogLine.seq; 0 for all it keeps), secrets masked. */
+    previewLog(opening: string, since: number): Promise<PreviewLogLine[]>;
   };
   ai: {
     providers(): Promise<ProviderStatus[]>;
@@ -1911,7 +1944,10 @@ export interface BuilderApi {
   /** A project ZIP file is being unpacked, sent as it starts and as its files are written (null: it finished, failed or was called off). */
   on(channel: 'projects:unpacking', cb: (u: Unpacking | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
-  on(channel: 'preview:load-failed', cb: (failure: { url: string }) => void): () => void;
+  /** A preview frame failed to load. `frame` is the frame's name, when the main process could tell which frame it was; a frame acts only on its own. */
+  on(channel: 'preview:load-failed', cb: (failure: { url: string; frame?: string }) => void): () => void;
+  /** A code workspace check moved on or ended (BuilderApi.project.runCheck). */
+  on(channel: 'project-check:update', cb: (run: ProjectCheckRun) => void): () => void;
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   /** The editor's Appearance, when Settings saves a new one. */
   on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;

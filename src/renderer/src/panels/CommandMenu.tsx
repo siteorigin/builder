@@ -1,7 +1,7 @@
 import './CommandMenu.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, ListChecks, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, MousePointer2, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
+import { BookmarkPlus, ListChecks, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileCode2, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, MousePointer2, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
@@ -161,6 +161,7 @@ export function CommandMenu() {
   const dockOpen = useStore((s) => s.dockOpen);
   const leftTab = useStore((s) => s.leftTab);
   const dev = useStore((s) => !!s.settings?.developerMode);
+  const remote = useStore((s) => s.remote.phase !== 'idle');
   const getStartedHidden = useStore((s) => !!s.firstSteps?.hidden);
   // Where an insert lands follows the selection and what is being edited (see currentOwner).
   const selection = useStore((s) => s.selection);
@@ -233,6 +234,8 @@ export function CommandMenu() {
       { id: 'history', label: 'History…', action: 'Open History', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },
       { id: 'save-version', label: 'Save a version of the site…', action: 'Open Versions', group: 'Project', icon: <BookmarkPlus />, run: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
       { id: 'health', label: 'Project health…', action: 'Open Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
+      // The project's own code, its checks and its tests (#1483), with Developer mode on, for a project on this computer.
+      ...(dev && !remote ? [{ id: 'code-workspace', label: 'Code workspace…', keywords: 'code files editor developer svelte javascript typescript helpers routes endpoints hooks tests vitest checks vscode cursor', action: 'Open the code workspace', group: 'Project', icon: <FileCode2 />, run: () => setState({ modal: { kind: 'code-workspace' } }) }] : []),
       { id: 'outline', label: 'Show the page outline', keywords: 'headings', action: 'Show the outline', group: 'View', icon: <ListTree />, run: () => openOutline() },
       // The sidebar's views, as the rail opens them.
       ...LEFT_TABS.map((t) => ({ id: `panel:${t.id}`, label: `Show the ${t.label} panel`, keywords: 'left sidebar panel view', group: 'View', icon: t.icon, run: () => setState({ leftTab: t.id }) })),
@@ -241,7 +244,7 @@ export function CommandMenu() {
       { id: 'dock', kbd: '⇧⌘\\', label: dockOpen ? 'Hide the right panel' : 'Show the right panel', keywords: 'show hide right panel inspector', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
-  }, [snap, mode, dockOpen, leftTab, dev, getStartedHidden, selection, slotTarget, pageId, definitionId, templateId, askKey, keyEdits]);
+  }, [snap, mode, dockOpen, leftTab, dev, remote, getStartedHidden, selection, slotTarget, pageId, definitionId, templateId, askKey, keyEdits]);
   // What is already on the site comes before what can be added: the sections placed on each page, and a few of the
   // words and destinations the search finds (the full list is in Find and replace).
   const sections = useMemo(() => (snap ? placedSections(snap.state) : []), [snap]);

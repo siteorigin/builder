@@ -182,7 +182,7 @@ export function EndpointsPanel() {
               </button>
             )}
           </div>
-          <CodeEditor key={open.file} value={open.text} language={open.language} label={`${open.file} source`} height="320px" readOnly={readOnly} locked={saving} onChange={(text) => setOpen((o) => (o ? { ...o, text } : o))} onSave={() => void save()} saveHint={dirty ? 'saves' : null} />
+          <CodeEditor key={open.file} value={open.text} language={open.language === 'ts' ? 'typescript' : 'javascript'} label={`${open.file} source`} height="320px" readOnly={readOnly} locked={saving} onChange={(text) => setOpen((o) => (o ? { ...o, text } : o))} onSave={() => void save()} saveHint={dirty ? 'saves' : null} />
         </div>
       )}
       {message && (

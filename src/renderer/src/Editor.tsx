@@ -33,6 +33,7 @@ import { CommandMenu } from './panels/CommandMenu';
 import { LEFT_TABS } from './panels/LeftTabs';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
+import { CodeWorkspace } from './panels/CodeWorkspace';
 import { CreateComponentModal, DeletePageModal, DuplicateComponentModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
 import { RemovalReviewModal } from './panels/RemovalReview';
 import { RepeatAsListModal } from './panels/RepeatAsList';
@@ -964,6 +965,7 @@ export function Editor() {
       {modal?.kind === 'cmdk' && <CommandMenu />}
       {modal?.kind === 'find' && <FindReplaceModal initial={modal.query} sample={modal.sample} />}
       {modal?.kind === 'source' && <SourceModal definitionId={modal.definitionId} />}
+      {modal?.kind === 'code-workspace' && <CodeWorkspace start={modal.file ? { kind: 'file', path: modal.file } : undefined} />}
       {modal?.kind === 'page-source' && <PageSourceModal pageId={modal.pageId} />}
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}
       {modal?.kind === 'new-component' && <NewComponentModal />}

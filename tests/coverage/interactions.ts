@@ -1527,6 +1527,23 @@ export const INTERACTIONS: Interaction[] = [
     ]
   },
   {
+    id: 'code.workspace',
+    area: 'code',
+    intent: 'Edit the project’s own code beside a preview, run its checks and tests, and open it in a code editor',
+    start: 'Blank site with a code component and hand-written files under src/, Developer mode on',
+    routes: ['command:code-workspace'],
+    outcome: 'The workspace lists the code components and the project’s own files, saves a file only over what was read, previews a page or a component in a frame that never speaks for the canvas, runs the Svelte check and the declared npm test, and hands a file or the project to the chosen code editor',
+    scenario: 'Blank starter · unit fixtures',
+    proof: [
+      { test: 'tests/unit/code-workspace-browser.test.ts', kind: 'unit' },
+      { test: 'tests/unit/code-workspace-controller.test.ts', kind: 'unit' },
+      { test: 'tests/unit/code-files.test.ts', kind: 'unit' },
+      { test: 'tests/unit/project-tests.test.ts', kind: 'unit' },
+      { test: 'tests/unit/external-editor.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'No e2e script opens the code workspace from the command menu or runs a project’s tests in the built app', owner: 'code' }]
+  },
+  {
     id: 'code.source',
     area: 'code',
     intent: 'Read the source of a theme component, or the Svelte a page generates',
