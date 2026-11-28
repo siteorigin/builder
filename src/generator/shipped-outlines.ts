@@ -12,9 +12,10 @@
  * installed pack, or one changed from what the app ships decides in its own code what it shows, which is unknown.
  * tests/unit/shipped-outlines.test.ts holds each one to the release's markup.
  */
-import type { Binding, ButtonAppearance, ComponentDefinition, TextNode } from '@shared/types';
+import type { Binding, ButtonAppearance, ComponentDefinition, ProjectState } from '@shared/types';
 import { TreeBuilder, item, prop } from '@catalogue/dsl';
 import { shippedAsIs } from '@engine/shipped-copy';
+import { derived, isTracked } from './cache';
 
 type Build = (b: TreeBuilder) => string;
 
@@ -36,12 +37,11 @@ const plainLink = (b: TreeBuilder, id: string, link: Binding, label: Binding, te
   b.text(textId, 'span', label, { unless: link })
 ];
 
-/** Rich text the code shows with its RichText helper. */
-const rich = (b: TreeBuilder, id: string, text: Binding, paragraphList?: TextNode['paragraphList']) => {
-  const made = b.rich(id, text);
-  if (paragraphList) (b.nodes[made] as TextNode).paragraphList = paragraphList;
-  return made;
-};
+/** Rich text the code shows with its RichText helper (its property's `plainAs` reads text given as plain strings). */
+const rich = (b: TreeBuilder, id: string, text: Binding) => b.rich(id, text);
+
+/** Words that name what follows them: their own, or `fallback` while they are empty, as `has(x) ? x : 'Fallback'` shows them. */
+const named = (b: TreeBuilder, id: string, words: Binding, fallback: string) => [b.text(id, 'span', words), b.text(`${id}-fallback`, 'span', fallback, { unless: words })];
 
 /** A row of a computed list (news, posts): its title as a link to it, its date and byline, and its excerpt. */
 const row = (b: TreeBuilder, p: { card: string; category?: string; title: string; meta: string; text: string }, tag: 'article' = 'article') =>
@@ -61,14 +61,27 @@ const plans = (b: TreeBuilder, prices: (b: TreeBuilder) => string[]) =>
         b.text('md-badge', 'span', item('badge')),
         b.text('md-description', 'p', item('description')),
         ...prices(b),
-        rich(b, 'md-features', item('features'), 'check'),
+        rich(b, 'md-features', item('features')),
         b.link('md-action', item('actionLink'), item('actionLabel'), 'secondary')
       ])
     ])
   ]);
 
-/** A period's price and the note beside it, as the toggle's price snippet shows them. */
-const periodPrice = (b: TreeBuilder, period: 'monthly' | 'annual') => b.el(`md-${period}`, 'p', {}, [b.text(`md-${period}-price`, 'span', item(`${period}Price`)), b.text(`md-${period}-note`, 'span', item(`${period}Note`))]);
+/**
+ * A period's price and the note beside it, as the toggle's price snippet shows them, named by the period's label on
+ * the switch that shows it (both are in the page, one shown at a time), while there is a price or a note to name.
+ */
+const periodPrice = (b: TreeBuilder, period: 'monthly' | 'annual', fallback: string) => {
+  const price = item(`${period}Price`);
+  const note = item(`${period}Note`);
+  const label = (id: string) => named(b, id, prop(`${period}Label`), fallback);
+  return b.el(`md-${period}`, 'p', {}, [
+    b.el(`md-${period}-label`, 'dt', { when: price }, label(`md-${period}-name`)),
+    b.el(`md-${period}-label-note`, 'dt', { when: note, unless: price }, label(`md-${period}-name-note`)),
+    b.text(`md-${period}-price`, 'span', price),
+    b.text(`md-${period}-note`, 'span', note)
+  ]);
+};
 
 /** By component ID, the design each of Foundation's sections is read as. */
 const OUTLINES: Readonly<Record<string, Build>> = {
@@ -117,11 +130,14 @@ const OUTLINES: Readonly<Record<string, Build>> = {
         b.repeat('md-items', 'items', [b.el('md-row', 'li', {}, [b.text('md-eyebrow', 'p', item('eyebrow')), b.text('rowTitle', 'h3', item('title')), b.text('rowText', 'p', item('text')), b.link('md-link', item('link'), item('linkLabel'), 'text')])])
       ])
     ]),
-  // Every tab's panel is in the page, chosen or not; the tabs themselves are controls.
+  // Every tab's panel is in the page, chosen or not, each named by the label of the tab that shows it.
   'tabs.showcase': (b) =>
     b.el('root', 'section', {}, [
       ...intro(b),
-      b.el('panels', 'div', {}, [b.repeat('md-tabs', 'tabs', [b.el('md-panel', 'div', {}, [b.text('md-heading', 'h3', item('heading')), rich(b, 'md-copy', item('copy')), b.link('md-action', item('actionLink'), item('actionLabel'), 'text')])])])
+      b.repeat('md-tabs', 'tabs', [
+        b.el('list', 'div', {}, [b.el('md-tab', 'dt', {}, [b.text('md-label', 'span', item('label'))])]),
+        b.el('panels', 'div', {}, [b.el('md-panel', 'div', {}, [b.text('md-heading', 'h3', item('heading')), rich(b, 'md-copy', item('copy')), b.link('md-action', item('actionLink'), item('actionLabel'), 'text')])])
+      ])
     ]),
   // Each step's title is the button that shows its picture, read as the step's heading.
   'content.steps-media': (b) =>
@@ -167,7 +183,7 @@ const OUTLINES: Readonly<Record<string, Build>> = {
       plans(b, (b) => [b.el('md-price', 'p', {}, [b.text('md-prefix', 'span', item('pricePrefix')), b.text('price', 'span', item('price')), b.text('md-period', 'span', item('period')), b.text('md-price-note', 'span', item('priceNote'))])])
     ]),
   // Both periods' prices are in the page (the switch shows one at a time), each with its own note.
-  'pricing.toggle': (b) => b.el('root', 'section', {}, [...intro(b), plans(b, (b) => [periodPrice(b, 'monthly'), periodPrice(b, 'annual')])]),
+  'pricing.toggle': (b) => b.el('root', 'section', {}, [...intro(b), plans(b, (b) => [periodPrice(b, 'monthly', 'Monthly'), periodPrice(b, 'annual', 'Annual')])]),
   'faq.list': (b) =>
     b.el('root', 'section', {}, [
       ...intro(b),
@@ -243,15 +259,24 @@ const OUTLINES: Readonly<Record<string, Build>> = {
 
 const made = new WeakMap<ComponentDefinition, ComponentDefinition | null>();
 
+/** The design `state`'s definition `id` is read as, or null; a function of the ID alone, for a derived value. */
+const outlineFor = (id: string) => (s: ProjectState) => {
+  const def = Object.hasOwn(s.components, id) ? s.components[id] : undefined;
+  return def && shippedAsIs(def) ? outlineOf(def) : null;
+};
+
 /**
- * The managed design a shipped Foundation section is read as for its Markdown, with the section's own ID, properties
- * and parts. Undefined for any other definition, and for one not exactly as the app ships it.
+ * The managed design a shipped Foundation section of `state` is read as for its Markdown, with the section's own ID,
+ * properties and parts. Undefined for any other definition, and for one not exactly as the app ships it. In a cached
+ * run it is the run's derived value for the definition, so every file that reads it depends on what went into it;
+ * otherwise it is kept for each definition object, which a change replaces.
  */
-export function shippedOutline(def: ComponentDefinition): ComponentDefinition | undefined {
+export function shippedOutline(state: ProjectState, def: ComponentDefinition): ComponentDefinition | undefined {
   if (def.kind !== 'code' || !Object.hasOwn(OUTLINES, def.componentId)) return undefined;
+  if (isTracked(state)) return derived(state, `shippedOutline:${def.id}`, outlineFor(def.id)) ?? undefined;
   let out = made.get(def);
   if (out === undefined) {
-    out = shippedAsIs(def) ? outlineOf(def, OUTLINES[def.componentId]) : null;
+    out = shippedAsIs(def) ? outlineOf(def) : null;
     made.set(def, out);
   }
   return out ?? undefined;

@@ -247,7 +247,8 @@ export function effectiveProps(
     // A list connected to a collection shows its entries, as the generator writes them, never its own items.
     const connected = connectedListItems(state, def, n, name, place);
     if (connected) {
-      props[name] = connected;
+      // Each item is one of the collection's entries, by its ID: one the walk may not show is left out, all of it.
+      props[name] = listed ? connected.filter((item) => listed({ type: 'entry', target: item.id })) : connected;
       continue;
     }
     const own = Object.hasOwn(n.props, name);
@@ -607,6 +608,15 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
  */
 export function hiddenInDesignEverywhere(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
   return hiddenEverySize(hiddenInDesign(def, nodeId, scope, false)) && hiddenEverySize(hiddenInDesign(def, nodeId, scope));
+}
+
+/**
+ * Whether a placement surely hides a code component's part at every size, by its styles for the parts `around` it
+ * (outermost first, the part itself last) and, with `itemId`, that item's own: a code component's markup is all there
+ * is to say what is inside what.
+ */
+export function codePartsHidden(def: ComponentDefinition, inst: InstanceNode, around: readonly string[], itemId?: string): boolean {
+  return hiddenEverySize(around.map((part) => hiddenSizes([inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined])));
 }
 
 /**
