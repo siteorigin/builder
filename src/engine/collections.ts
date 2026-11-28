@@ -28,6 +28,7 @@ import {
   type RouteOwner
 } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
+import { archivePages, archiveRoute, type ArchivePage } from '@shared/archives';
 import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
@@ -224,6 +225,102 @@ function claimOwnAddresses(state: ProjectState, routes: ReadonlyMap<string, stri
 function keepsAddress(entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, EntryAddress> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
   if (from === '/' || validateRoute(from) || holder(from)) return false;
   return atStart ? atStart.get(from.toLowerCase())?.entryId === entryId : published;
+}
+
+/**
+ * The old addresses of collection `collectionId`'s archive pages, kept when it moved (`archiveOf`), that its new
+ * address `prefix` takes back: the address itself and any inside its archive folders there, where its own archive
+ * pages are now. Moving back is never refused for an address it left behind.
+ */
+function releaseArchiveAddresses(state: ProjectState, collectionId: string, prefix: string) {
+  const list = keptAddresses(state);
+  const key = prefix.toLowerCase();
+  const rest = list.filter((r) => !(r?.archiveOf === collectionId && typeof r.from === 'string' && (r.from.toLowerCase() === key || underArchiveFolder(prefix, r.from))));
+  if (rest.length !== list.length) setKeptAddresses(state, rest);
+}
+
+/** The key an old address of collection `collectionId`'s archive is known by in ArchivesAtStart: its ID and the address in lowercase. */
+export const archiveAddressKey = (collectionId: string, route: string) => `${collectionId}\n${route.toLowerCase()}`;
+
+/**
+ * The addresses of collections' archive pages visitors had as a batch began, by archiveAddressKey: the pages each
+ * archive had, and the old addresses of them it kept working (`archiveOf`). Worked out the first time a collection
+ * moves; a collection removed in the batch takes its own out, so one made again under its ID inherits none of them.
+ */
+export function archiveAddressesInUse(state: ProjectState): Set<string> {
+  const out = new Set(archivePages(state).map((p) => archiveAddressKey(p.collectionId, p.route)));
+  for (const r of keptAddresses(state)) if (typeof r?.archiveOf === 'string' && typeof r.from === 'string') out.add(archiveAddressKey(r.archiveOf, r.from));
+  return out;
+}
+
+/** The batch's archive addresses at its start (see archiveAddressesInUse), worked out by `get`; `drop` takes a removed collection's out. */
+export interface ArchivesAtStart {
+  get(): ReadonlySet<string>;
+  drop(collectionId: string): void;
+}
+
+/** The archive addresses `state` has, worked out the first time they are asked for (see ArchivesAtStart). */
+export function archivesAtStartOf(state: ProjectState): ArchivesAtStart {
+  let keys: Set<string> | undefined;
+  const dropped = new Set<string>();
+  const drop = (set: Set<string>, id: string) => {
+    for (const key of [...set]) if (key.startsWith(archiveAddressKey(id, ''))) set.delete(key);
+  };
+  return {
+    get: () => {
+      if (!keys) {
+        keys = archiveAddressesInUse(state);
+        for (const id of dropped) drop(keys, id);
+      }
+      return keys;
+    },
+    drop: (id) => (keys ? drop(keys, id) : dropped.add(id))
+  };
+}
+
+/** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, or none for the index). */
+const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
+
+/**
+ * Keeps the archive pages collection `collectionId` had at `from` (`before`) working at their old addresses now it
+ * is at `prefix` (#1548): each old address of its index, of a later page or of a category's archive sends visitors on
+ * to the same page at the new address, where the website has one. Only an address visitors had as the batch began
+ * (`atStart`) is kept, not one the collection only passed through in it, and never one anything else holds now. The
+ * old addresses an earlier move kept are sent straight to the new one too, so they never lead through each other;
+ * one whose page is gone for now goes to where the page would be, and works again when it is back. While the archive
+ * is off, one is left as it is where sending it on would lead it back to itself or to something else's address.
+ */
+function keepArchiveAddresses(state: ProjectState, collectionId: string, from: string, prefix: string, before: readonly ArchivePage[], atStart?: ArchivesAtStart) {
+  const after = new Set(
+    archivePages(state)
+      .filter((p) => p.collectionId === collectionId)
+      .map((p) => p.route.toLowerCase())
+  );
+  const old = from.toLowerCase();
+  // With its archive off, an address is only sent on where nothing else has the new one, and none is taken back: the
+  // archive is not there to answer at it.
+  const archived = hasArchivePages(state.collections[collectionId].settings);
+  const held = archived ? undefined : routeIndex(state);
+  // Where an archive page's address puts it under the old address: what follows that, or null.
+  const restOf = (route: string) => (route.toLowerCase().startsWith(old) && ARCHIVE_REST.test(route.slice(old.length).toLowerCase()) ? route.slice(old.length) : null);
+  const list = keptAddresses(state).flatMap((r): SiteRedirect[] => {
+    if (r?.archiveOf !== collectionId || typeof r.to !== 'string') return [r];
+    // One leading to a page of the archive at the old address, or kept at one while the archive was off there.
+    const rest = restOf(r.to) ?? restOf(r.from);
+    if (rest === null) return [r];
+    const to = `${prefix}${rest}`;
+    if (to.toLowerCase() === r.from.toLowerCase()) return archived ? [] : [r];
+    return held?.(to, { collectionId }) ? [r] : [{ ...r, to }];
+  });
+  const holder = routeIndex({ ...state, site: { ...state.site, redirects: list } });
+  const visited = before.length ? atStart?.get() : undefined;
+  for (const p of before) {
+    const to = archiveRoute(prefix, p.category, p.page);
+    if (!after.has(to.toLowerCase()) || (visited && !visited.has(archiveAddressKey(collectionId, p.route)))) continue;
+    if (after.has(p.route.toLowerCase()) || underArchiveFolder(prefix, p.route) || holder(p.route) || archiveRouteOwner(state, p.route, collectionId)) continue;
+    list.push({ from: p.route, to, archiveOf: collectionId });
+  }
+  if (list.length !== keptAddresses(state).length || list.some((r, i) => r !== keptAddresses(state)[i])) setKeptAddresses(state, list);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,7 +556,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
-export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
+export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>, archivesAtStart?: ArchivesAtStart): OpResult {
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
   // A records layout nobody has edited keeps up with the collection: its fields, its text and its kind (see the end).
@@ -486,8 +583,12 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (pages.detail && route === undefined) fail(`The ${name} collection needs an address for its pages, such as "/${c.settings.id}/".`);
   // The collection's pages take every address they did not have: moved, or turned on.
   const moved = route !== was.route;
+  // Its archive pages as they are before the move, so their old addresses can be kept working after it (#1548).
+  const archivesBefore = moved && pages.detail && was.archive && pages.archive ? archivePages(state).filter((p) => p.collectionId === c.settings.id) : [];
   if (pages.detail && (moved || !was.detail || (pages.archive && !was.archive))) {
     const prefix = route!;
+    // An old address of its own archive kept at the new address, or inside its archive folders there, is taken back.
+    if (pages.archive) releaseArchiveAddresses(state, c.settings.id, prefix);
     // The collection and every entry move together: each new address must be free of everything else, apart from
     // an old address of the entry's own, which it takes back.
     const except = { collectionId: c.settings.id };
@@ -535,6 +636,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     if (route !== undefined) c.settings.route = route;
     if (op.pages !== undefined) c.settings.pages = pages;
   }
+  // Once the rest of the change is made, which can change what its archive has (its page size, its categories). The
+  // old addresses an earlier move kept follow it however it moves, its archive on or off.
+  const from = was.route;
+  const keepArchive = moved && from !== undefined && route !== undefined ? () => keepArchiveAddresses(state, c.settings.id, from, route, archivesBefore, archivesAtStart) : undefined;
   if (op.archiveTemplate !== undefined) {
     // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
     if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
@@ -580,6 +685,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const description = descriptionOf(op.categoryDescription.description);
     terms[termId] = description ? { ...terms[termId], description } : { label: terms[termId].label };
   }
+  keepArchive?.();
   return { collectionId: c.settings.id, ...(c.settings.route !== undefined ? { route: c.settings.route } : {}) };
 }
 
@@ -597,7 +703,7 @@ function layoutReads(c: Collection): Set<string> {
   return out;
 }
 
-export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
+export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>, archivesAtStart?: ArchivesAtStart): OpResult {
   const c = getCollection(state, op.collectionId);
   // Its entries are the source's: it is detached first, so a collection made again under its ID is never mistaken for it.
   if (isSyncedCollection(c.settings))
@@ -621,10 +727,11 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
   delete state.collections[c.settings.id];
   // Their old addresses go with them: nothing is left there to send visitors on to.
   const kept = keptAddresses(state);
-  const rest = kept.filter((r) => !(typeof r?.entryId === 'string' && members.has(r.entryId)));
+  const rest = kept.filter((r) => !(typeof r?.entryId === 'string' && members.has(r.entryId)) && r?.archiveOf !== c.settings.id);
   if (rest.length !== kept.length) setKeptAddresses(state, rest);
   // Nothing else of the batch reaches them through these IDs, even created again.
   if (atStart) for (const [key, a] of [...atStart]) if (members.has(a.entryId)) atStart.delete(key);
+  archivesAtStart?.drop(c.settings.id);
   return { collectionId: c.settings.id, removedEntries: members.size };
 }
 

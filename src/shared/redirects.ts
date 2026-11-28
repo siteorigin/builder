@@ -61,6 +61,26 @@ export function redirectTargetProblem(to: string): string | null {
   return segments.length <= 4 ? validateRoute(to) : (validateRoute(`/${segments.slice(0, 4).join('/')}/`) ?? segments.slice(4).map(validateSegment).find((e) => e !== null) ?? null);
 }
 
+/**
+ * Why `from` cannot be an old address kept working, or null: Home ("/") never is, and otherwise it may be as deep as
+ * an address a redirect leads to, since a category archive's later pages are (/blog/category/news/page/2/), and a
+ * collection that moves keeps those working (#1548).
+ */
+export function redirectSourceProblem(from: string): string | null {
+  if (from === '/') return 'The Home page address cannot send visitors elsewhere.';
+  // The website keeps a page at each one, in a folder per part of it: never more parts than an archive page has.
+  if (from.slice(1, -1).split('/').length > MAX_SOURCE_DEPTH) return `An old address can be at most ${MAX_SOURCE_DEPTH} levels deep.`;
+  // Nor longer than a page's address can be, so its folder fits where file systems allow.
+  if (new TextEncoder().encode(from).length > MAX_SOURCE_BYTES) return 'An old address is too long. Choose a shorter one.';
+  return redirectTargetProblem(from);
+}
+
+/** The most parts an old address has: a collection's at its deepest (three) and a category archive's later page under it (four more). */
+export const MAX_SOURCE_DEPTH = 7;
+
+/** The most bytes an old address has: more than any page's address (four parts of at most 120 bytes) or archive page's. */
+export const MAX_SOURCE_BYTES = 512;
+
 /** Where a redirect leads, followed to the end. */
 type Outcome =
   | { ok: true; to: string; title: string; via: string[]; hops: number; page?: PageDoc; entry?: SiteEntry }
@@ -128,7 +148,7 @@ export function resolveRedirects(state: ProjectState, view: RedirectView = 'prev
   const rules = new Map<string, SiteRedirect>();
   for (const r of list) {
     const key = r.from.toLowerCase();
-    if (r.from === '/' || validateRoute(r.from) || pageAt.has(key) || entryAt.has(key) || rules.has(key)) continue;
+    if (redirectSourceProblem(r.from) || pageAt.has(key) || entryAt.has(key) || rules.has(key)) continue;
     // One that leads to a page or an entry that is gone holds nothing, as it always has.
     if (r.pageId !== undefined && !Object.hasOwn(state.pages, r.pageId)) continue;
     if (r.entryId !== undefined && !entryById.has(r.entryId)) continue;

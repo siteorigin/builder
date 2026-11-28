@@ -13,7 +13,7 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, isCollectionLoop, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
-import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
+import { loopText, redirectRecord, redirectSourceProblem, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, languageKey, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { codeAxisProblems, variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
@@ -248,7 +248,7 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
       continue;
     }
     const { from, pageId, entryId, to } = record;
-    const err = from === '/' ? 'The Home page address cannot send visitors elsewhere.' : validateRoute(from);
+    const err = redirectSourceProblem(from);
     if (err) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `Old address ${from}: ${err}` });
     if (typeof pageId === 'string' && !Object.hasOwn(state.pages, pageId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a page that no longer exists.` });
     if (typeof entryId === 'string' && !findEntry(state, entryId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a collection entry that no longer exists.` });

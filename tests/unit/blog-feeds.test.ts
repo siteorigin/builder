@@ -705,7 +705,8 @@ describe('after the focused review', () => {
     const drafted = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: true } as EditOperation);
     const moved = run(drafted, { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: false } as EditOperation, { type: 'collection.update', collectionId: 'posts', route: '/blog/' } as EditOperation);
     expect(moved.collections.posts.settings.route).toBe('/blog/');
-    expect(moved.site.redirects ?? []).toEqual([]);
+    // No entry's address is kept; the old index's is, sent to the new one (#1548).
+    expect(moved.site.redirects ?? []).toEqual([{ from: '/blog/page/', to: '/blog/', archiveOf: 'posts' }]);
   });
 
   it('hands the rows on to code converted from a design that places another design with the feed', () => {
