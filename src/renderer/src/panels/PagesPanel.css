@@ -122,10 +122,6 @@
   .pages-order-note p { margin: 0; overflow-wrap: anywhere; }
   .pages-order-note strong { color: var(--text); font-weight: 600; }
   .pages-order-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-  /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
-  .pages-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
-  .pages-peek-title { font-weight: 500; overflow-wrap: anywhere; }
-  .pages-peek-route { font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
   /* The header (title, Edit menu, Add page) needs about 270px with the label, so the menu's icon form starts at 280.
      Below 232px the titles get more room too: a tighter indent and a stacked add form. The header menu is its icon (its name stays in the
      label and tooltip). The … keeps its reserved slot, so a title never changes length as the pointer reaches it. */

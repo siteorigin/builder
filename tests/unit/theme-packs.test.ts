@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
-import type { AuthoredPack, ThemePack } from '@catalogue/pack';
+import { comparePackVersions, PACK_VERSION_RE, type AuthoredPack, type ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
 import { builtinFont } from '@catalogue/builtin-fonts';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
@@ -251,6 +251,38 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('d1'))).toMatch(/theme "studio" 1\.0\.0, which is not installed/);
   });
 
+  it('never lets an older installed release stand in for the one the project recorded (#1493)', async () => {
+    const state = (version: string) => ({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version, digest: 'd0' } } });
+    withInstalled('d1', { version: '1.1.0' });
+    for (const recorded of ['1.2.0', '1.1.1', '1.10.0', '2.0.0']) expect(themePinProblem(state(recorded)), recorded).toMatch(new RegExp(`needs "studio" ${recorded.replace(/\./g, '\\.')} or newer, but the installed copy is 1\\.1\\.0`));
+    // A newer installed release is fine, and so is the release of a prerelease the project recorded.
+    for (const recorded of ['1.0.9', '1.1.0-beta.2', '0.9.0']) expect(themePinProblem(state(recorded)), recorded).toBeNull();
+    // An installed prerelease is older than its release.
+    withInstalled('d1', { version: '1.2.0-rc.1' });
+    expect(themePinProblem(state('1.2.0'))).toMatch(/needs "studio" 1\.2\.0 or newer, but the installed copy is 1\.2\.0-rc\.1/);
+    expect(themePinProblem(state('1.2.0-rc.0'))).toBeNull();
+    expect(themePinProblem(state('1.2.0-rc.2'))).toMatch(/or newer/);
+    await restorePacks();
+  });
+
+  it('orders pack versions by semver precedence and names each release one way', async () => {
+    const ascending = ['0.9.0', '1.0.0-1', '1.0.0-2', '1.0.0-10', '1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-rc.1', '1.0.0', '1.0.1', '1.2.0', '1.10.0', '2.0.0'];
+    for (const [i, a] of ascending.entries())
+      for (const [j, b] of ascending.entries()) expect(Math.sign(comparePackVersions(a, b)), `${a} vs ${b}`).toBe(Math.sign(i - j));
+    for (const v of ascending) expect(PACK_VERSION_RE.test(v), v).toBe(true);
+    // Past 2^53 numbers still rank exactly, in the core and in a prerelease.
+    expect(comparePackVersions('9007199254740992.1.0', '9007199254740993.0.0')).toBeLessThan(0);
+    expect(comparePackVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992')).toBeGreaterThan(0);
+    expect(comparePackVersions(`1.0.0-${'9'.repeat(400)}`, `1.0.0-${'9'.repeat(401)}`)).toBeLessThan(0);
+    // Leading zeros and empty parts would give one release two spellings, and the same-version check would miss it.
+    for (const v of ['1.02.0', '01.2.0', '1.2.00', '1.2.0-01', '1.2.0-', '1.2.0-a..b', '1.2', 'v1.2.0']) expect(PACK_VERSION_RE.test(v), v).toBe(false);
+    withInstalled('d1', { version: '1.1.0' });
+    expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: '1.02.0', digest: 'd0' } } })).toMatch(/records "1\.02\.0", which is not a release version/);
+    // A lock edited by hand into another type is refused the same way, never thrown on.
+    expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: ['1.2.0'] as unknown as string, digest: 'd0' } } })).toMatch(/which is not a release version/);
+    await restorePacks();
+  });
+
   it('opens a project whose theme is not installed read-only', async () => {
     const d = tmp();
     withInstalled('d1');
@@ -292,6 +324,23 @@ describe('pinning an installed pack', () => {
     expect((err as ProjectFormatError).readOnly).toBe(true);
     expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
     withInstalled('d1');
+    await (await ProjectSession.open(d, 'test')).close();
+  });
+
+  it('opens a project read-only rather than restyle it from an older release of its pack (#1493)', async () => {
+    const d = tmp();
+    withInstalled('d1', { version: '1.2.0' });
+    const s = await ProjectSession.create(d, applyOperations(createStarterState('business', 'Older', false), [{ type: 'theme.apply', themeId: 'studio' }]).state);
+    await s.close();
+    const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
+    withInstalled('d0', { version: '1.1.0', baseCss: 'body { color: red; }' });
+    const err = await ProjectSession.open(d, 'test').catch((e) => e);
+    expect(err).toBeInstanceOf(ProjectFormatError);
+    expect((err as ProjectFormatError).readOnly).toBe(true);
+    expect((err as Error).message).toMatch(/needs "studio" 1\.2\.0 or newer, but the installed copy is 1\.1\.0/);
+    expect(readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8')).toBe(theme);
+    // A newer release opens it.
+    withInstalled('d3', { version: '1.2.1' });
     await (await ProjectSession.open(d, 'test')).close();
   });
 });

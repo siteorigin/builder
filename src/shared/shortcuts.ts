@@ -1,5 +1,5 @@
 /**
- * Shortcuts the author can reassign (spec §4.5): for now only Ask AI. A binding is kept as text such as `Mod+J` or
+ * Shortcuts the author can reassign: for now only Ask AI. A binding is kept as text such as `Mod+J` or
  * `Mod+Shift+L`, where Mod is Command on macOS and Ctrl elsewhere. It always holds Mod, may hold Shift, and ends in a
  * letter or a digit. Alt is never part of one: Option changes the letter a Mac reports, and Ctrl+Alt is AltGr, which
  * types characters, on many Windows layouts.

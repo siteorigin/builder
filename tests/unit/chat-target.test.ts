@@ -313,6 +313,12 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
       const empty = composerScope(state, { pageId: behind, selection: picked, definitionMode: null, post: open, writer: true });
       expect(empty).toEqual({ page: null, component: null, selection: null, selectionLabel: null, empty: true });
       expect(chatContextFor(state, empty, { enabled, viewport: 1280, ask: true })).toEqual({ pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId].title, selection: null, selectionLabel: null, viewport: 1280, mode: 'ask' });
+      // An edit goes to the whole site, from the home page, whatever scope was chosen before the writer showed (#1424):
+      // never limited to the page or selection out of sight under it.
+      for (const chosen of ['selection', 'page', 'site'] as const) {
+        expect(editScope(empty, chosen)).toBe('site');
+        expect(chatContextFor(state, empty, { enabled: { page: true, scope: chosen }, viewport: 1280 })).toEqual({ pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId].title, selection: null, selectionLabel: null, scope: 'site', viewport: 1280 });
+      }
     }
     // The writer with a post open is still about the post.
     expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post, writer: true }).post).toMatchObject(post);

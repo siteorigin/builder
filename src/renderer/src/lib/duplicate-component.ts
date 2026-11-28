@@ -1,5 +1,5 @@
 /**
- * Duplicate component (spec §8.4): a definition copied under a new project component, with every placement left on
+ * Duplicate component: a definition copied under a new project component, with every placement left on
  * the original. The engine copies whatever name it is given, so telling copies apart is the editor's job.
  */
 import type { EditOperation } from '@shared/ops';

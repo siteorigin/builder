@@ -1,8 +1,8 @@
 /**
- * While a save is publishing to the preview, the page can still show the project as it was before it (spec §18.2).
+ * While a save is publishing to the preview, the page can still show the project as it was before it.
  * Picks and edits made through the page wait for it: until the page says it shows the editor's revision, until the
  * page reports that the update failed, or, for a page that never says either, PAGE_CATCH_UP_MS after the editor took
- * the revision. Nothing else waits (§18.1): navigating, scrolling, widths, Layers and the Inspector go on as usual.
+ * the revision. Nothing else waits: navigating, scrolling, widths, Layers and the Inspector go on as usual.
  *
  * A click held meanwhile is taken again once the gate opens, and resolves against the project as it is then (or picks
  * nothing when what was clicked is gone). Only the latest click is kept.

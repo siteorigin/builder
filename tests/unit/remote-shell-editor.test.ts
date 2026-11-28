@@ -422,6 +422,15 @@ describe('following the session', () => {
     expect(session.loadedRevision({ snapshot: { revision: 4, workspaceKey: '/sites/acme#1' } as ProjectSnapshot, remote: admitted({ previewRevision: 9 }) })).toBe(4);
   });
 
+  it('lets the canvas open another of the host’s pages, with no preview here to check its route on first (#1529)', async () => {
+    await shown();
+    offs.push(...session.followRemote());
+    // The canvas asks whether a page it opens is served before sending the frame there. The host's preview is the
+    // host's: this computer has none to ask, so the answer is "nothing to check" (null), never a refusal that would
+    // leave the frame on the page it was showing. This computer's own main process is not asked either.
+    await expect(store.api.project.previewRouteReady('/about/', 7)).resolves.toBeNull();
+  });
+
   it('never answers an edit as made once its join has ended while it waited for the project', async () => {
     await shown();
     const applying = store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });

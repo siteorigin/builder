@@ -1,6 +1,6 @@
 /**
  * A posts import's plan kept on disk while the author reviews it (#1047). A plan carries every post's text (up to 1,000
- * posts of up to 100,000 characters each), and a review can sit open for as long as the author likes, so the main
+ * posts, each up to what a post holds), and a review can sit open for as long as the author likes, so the main
  * process keeps only where the plan is and the digest of what was written. It is written once, whole, into a private
  * folder of its own under the app's data folder, and read back only by the import it was made for, which takes it
  * only when the bytes are exactly the ones written. It is removed when the review is imported, cancelled or replaced,

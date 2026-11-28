@@ -32,13 +32,13 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
-import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, inspectLibraryImage, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, measuredWebCopyPlan, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
-import { sourceApprovals, sourceSecrets, sourceSpoolRoot, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { sourceSpoolRoot, sourceStores, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { gitClient, remoteGitClient } from './git/process';
 import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
@@ -151,6 +151,12 @@ const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true
 const STALE_INSERT = 'The page changed while the component was being inserted. Insert it again.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
+
+/**
+ * How often the open project's folder is looked for. A folder moved with a parent of it, or renamed as a whole, may tell
+ * no watch, and the preview must not go on serving (and writing at) an address with no project there (#1454).
+ */
+export const FOLDER_POLL_MS = 1000;
 
 /** A project only a newer version can generate has no preview here (spec 16.6): its kind of read-only cannot be unlocked. */
 function previewUnavailable(s: ProjectSession): boolean {
@@ -2353,9 +2359,18 @@ export class Controller {
     for (const w of this.watchers) w.close();
     this.watchers = [];
     this.unwatched.clear();
-    // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
+    // A folder moved with a parent of it may tell no watch, and the lock heartbeat (none while read-only) is slow: the
+    // folder is looked for every second, one look at a time, whatever the watches are reporting.
     if (this.folderPoll) clearInterval(this.folderPoll);
-    this.folderPoll = setInterval(() => this.checkFolderSoon(session), LOCK_HEARTBEAT_MS);
+    let lookingForFolder = false;
+    this.folderPoll = setInterval(() => {
+      if (lookingForFolder || this.session !== session) return;
+      lookingForFolder = true;
+      void session
+        .checkFolder()
+        .catch(() => false)
+        .finally(() => (lookingForFolder = false));
+    }, FOLDER_POLL_MS);
     this.folderPoll.unref?.();
     if (this.assetTimer) clearTimeout(this.assetTimer);
     this.assetTimer = null;
@@ -2992,7 +3007,7 @@ export class Controller {
   }
 
   /** Restore saved version `id` as reviewed at `revision` with the `reviewed` files to put back, in the opening `key` only. */
-  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, key: string): Promise<RestoreVersionResult> {
+  async restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[]; others?: string[] }, key: string): Promise<RestoreVersionResult> {
     const s = this.openedAs(key);
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
@@ -3243,17 +3258,29 @@ export class Controller {
             { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
           );
           const started = outcomes.findIndex((o) => !o);
-          for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
+          // The files that came to each record, by name: those that matched are one record, and the author is told which.
+          const matched = new Map<string, { record: AssetRecord; names: string[] }>();
+          for (const [i, o] of (started < 0 ? outcomes : outcomes.slice(0, started)).entries()) {
             if (!o) continue;
             if ('error' in o) {
               errors.push(o.error.message);
               continue;
             }
             const { record, existing, font, note } = o;
-            if (note) notes.push(note);
-            if (!ids.includes(record.id)) ids.push(record.id);
+            const name = originalNameOf(picked[i]);
+            const same = matched.get(record.id);
+            if (same) same.names.push(name);
+            else {
+              matched.set(record.id, { record, names: [name] });
+              ids.push(record.id);
+              // A later match is not added, so nothing about it says it was.
+              if (note) notes.push(note);
+            }
             if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
             if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+          }
+          for (const { record, names } of matched.values()) {
+            if (names.length > 1) notes.push(`${listNames(names)} match, so Assets keeps only one file for them: ${record.originalName ?? record.name}.`);
           }
           if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
           if (backfills.length) {
@@ -3654,23 +3681,23 @@ export class Controller {
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
    * does. Refused once the project has changed since the review.
    */
-  commitPostImport(id: string, opening: string): Promise<PostImportResult> {
-    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  commitPostImport(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening, addToNavigation), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
   }
 
-  private async commitPostImportNow(id: string, opening: string): Promise<PostImportResult> {
+  private async commitPostImportNow(id: string, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     // Taken, once: its plan on disk goes whatever comes of it.
     this.postImport = null;
     try {
-      return await this.commitPending(pending, opening);
+      return await this.commitPending(pending, opening, addToNavigation);
     } finally {
       this.dropReview(pending.stored);
     }
   }
 
-  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string): Promise<PostImportResult> {
+  private async commitPending(pending: NonNullable<Controller['postImport']>, opening: string, addToNavigation: boolean): Promise<PostImportResult> {
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
     const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
@@ -3740,12 +3767,15 @@ export class Controller {
         if (!open()) return closed;
         if (this.aiBusy()) return busy;
         const n = plan.posts.length;
-        const r = await s.apply({ operations: planOperations(plan, assetIds, added), expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        const operations = planOperations(plan, assetIds, added, { addToNavigation });
+        const r = await s.apply({ operations, expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
         if (!r.ok) {
           if (r.error?.code === 'STALE_REVISION') return stale;
           return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
-        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
+        // Whether the blog's link joined the header menu, when one was asked for.
+        const joined = r.results?.[operations.findIndex((o) => o.type === 'collection.create')]?.addedToNavigation;
+        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(typeof joined === 'boolean' ? { addedToNavigation: joined } : {}), ...(notes.length ? { notes } : {}) };
       })
     );
   }
@@ -3776,8 +3806,7 @@ export class Controller {
           {
             session: s,
             runner: sourceSyncRunner,
-            secrets: sourceSecrets,
-            approvals: sourceApprovals,
+            ...sourceStores(s),
             current,
             signal: abort.signal,
             importImage: (img, known, createdAt) => importPackageImage(s.dir, img, known, this.writeFence(s), createdAt),
@@ -3801,7 +3830,7 @@ export class Controller {
     const has = Object.keys(s.state.sources ?? {}).length > 0;
     let values: string[] = [];
     try {
-      values = await sourceSecrets.values(s.state.manifest.projectId);
+      values = await sourceStores(s).secrets.values(s.state.manifest.projectId);
     } catch (e) {
       if (has) return `${(e as Error).message} The project's external sources cannot be checked for them.`;
     }
@@ -3814,7 +3843,7 @@ export class Controller {
    * secrets written into them.
    */
   private sourceDraft(s: ProjectSession, draft: SourceSettingsDraft): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
-    return sourceDraftState(s.state, draft, sourceSecrets);
+    return sourceDraftState(s.state, draft, sourceStores(s).secrets);
   }
 
   /**
@@ -3833,7 +3862,7 @@ export class Controller {
       const made = await this.sourceDraft(s, draft);
       if ('message' in made) return { ok: false, message: made.message };
       if (abort.signal.aborted || this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
-      const r = await sampleSource({ runner: sourceSyncRunner, secrets: sourceSecrets, signal: abort.signal }, made.state, made.source);
+      const r = await sampleSource({ runner: sourceSyncRunner, secrets: sourceStores(s).secrets, signal: abort.signal }, made.state, made.source);
       if (this.session !== s || opening !== this.workspaceKey) return { ok: false, message: 'The project was closed before the source was tested.' };
       return r;
     } finally {
@@ -3863,7 +3892,7 @@ export class Controller {
     if (!r.ok) return { ok: false, message: r.error?.code === 'STALE_REVISION' ? 'The project changed while the source was being tested. Save it again.' : (r.error?.message ?? 'The source could not be saved.') };
     // Tested and saved here: these settings may sign in with the user's secrets.
     const saved = s.state.sources?.[draft.sourceId];
-    if (saved) await sourceApprovals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
+    if (saved) await sourceStores(s).approvals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
     return { ok: true, revision: r.revision };
   }
 
@@ -3871,8 +3900,7 @@ export class Controller {
   private agentSourceHost = createAgentSources({
     project: () => (this.session && !this.closing ? this.session : null),
     runner: sourceSyncRunner,
-    secrets: sourceSecrets,
-    approvals: sourceApprovals,
+    stores: sourceStores,
     track: (abort) => {
       this.sourceSyncs.add(abort);
       return () => this.sourceSyncs.delete(abort);
@@ -3887,15 +3915,20 @@ export class Controller {
   /** The names of the secrets the open project's sources can sign in with, never their values. */
   async sourceSecretNames(opening: string): Promise<string[]> {
     const s = this.session;
-    return s && opening === this.workspaceKey ? sourceSecrets.names(s.state.manifest.projectId) : [];
+    return s && opening === this.workspaceKey ? sourceStores(s).secrets.names(s.state.manifest.projectId) : [];
   }
 
-  /** Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null). */
+  /**
+   * Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null):
+   * for the project in its own folder only, so a copy of it elsewhere keeps the secrets it has (#1543).
+   */
   async setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
     if (!s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'No project is open.' };
+    // A project open only to look at changes nothing it signs in with, as it saves and syncs no source.
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
     try {
-      await sourceSecrets.set(s.state.manifest.projectId, name, value);
+      await sourceStores(s).secrets.set(s.state.manifest.projectId, name, value);
       return { ok: true };
     } catch (e) {
       return { ok: false, message: (e as Error).message };
@@ -4277,7 +4310,7 @@ export class Controller {
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
-      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       // The library files only drafts use, which a build of the handoff would publish from static/ (#1450): held apart
       // just before it is delivered, once everything said about the copy's files has looked at them where they are.
       const draftOnly = await timed('export.draftAssets', () => draftOnlyAssetFiles(folder, snap.state, snap.drafts ?? new Map()))();
@@ -4489,7 +4522,7 @@ export class Controller {
   /** The user's secrets and keys, to search the publication for and to keep out of what it says, or why they cannot be read. */
   private async publicationSecrets(s: ProjectSession): Promise<{ values: string[] } | { failed: string }> {
     try {
-      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues()), ...(await this.remoteCredentials.values())] };
+      return { values: [...(await sourceStores(s).secrets.values(s.state.manifest.projectId)), ...(await keyValues()), ...(await this.remoteCredentials.values())] };
     } catch (e) {
       return { failed: `${(e as Error).message} The website could not be checked for your secrets, so it was not prepared.` };
     }
@@ -5135,7 +5168,7 @@ export class Controller {
     if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
     if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    warn(...blankPageWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     warn(...missingUnusedWarnings(missingFiles));

@@ -29,10 +29,10 @@ export const stylesShortcutCloses = (s: Parameters<typeof activeWorkspace>[0] & 
 
 /**
  * Whether a change asked of the AI now has nothing to be about: the SEO view is in front with no page or post chosen
- * (or the one chosen has gone), or the writer with no post open (#895), so it would reach the page out of sight under
- * the view. A question changes nothing.
+ * (or the one chosen has gone), so it would reach the page out of sight under the view. A question changes nothing.
+ * The writer with no post open sends a change to the whole site instead (#1424, lib/chatTarget editScope).
  */
-export const changeWithoutDocument = (w: Workspace, chosen: boolean, ask: boolean): boolean => (w === 'seo' || w === 'write') && !chosen && !ask;
+export const changeWithoutDocument = (w: Workspace, chosen: boolean, ask: boolean): boolean => w === 'seo' && !chosen && !ask;
 
 /** The sidebar panel showing before the SEO view opened, which leaving it brings back. */
 let panelBeforeSeo: string = 'pages';

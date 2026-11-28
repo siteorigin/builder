@@ -863,7 +863,7 @@ export const OPERATION_SCHEMAS = {
   'component.setInsertAs': z
     .object({ type: z.literal('component.setInsertAs'), definitionId: z.string(), insertAs: z.enum(['section', 'element']).nullable() })
     .describe('Where Insert puts a new placement: one of a page\'s sections, or an element inside a layout; null lets the editor tell from the design.'),
-  // A project copy of a component that can be changed on its own (§8.4): for every placement, or only some.
+  // A project copy of a component that can be changed on its own: for every placement, or only some.
   'component.fork': z.object({
     type: z.literal('component.fork'),
     definitionId: z.string(),
@@ -1143,7 +1143,7 @@ export interface EditBatch {
 }
 
 /**
- * Every code a change or an AI tool result can fail with (specification §13.3). BUSY: the project is held by another
+ * Every code a change or an AI tool result can fail with. BUSY: the project is held by another
  * writer for now. ONE_CHANGE_PER_TURN: a second change in one model step, skipped. UPDATE_HELD: a theme component update
  * this project cannot take yet. SAVE_FAILED: the editor's change could not be written to the project's folder (its
  * `details.save` says whether reopening the project finishes it); an AI run's save that fails ends the run instead.

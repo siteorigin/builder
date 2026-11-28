@@ -5669,7 +5669,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(result?.status).toBe('completed');
   });
 
-  it('lets a selection convert its placement to code and then patch that copy (§13.4)', async () => {
+  it('lets a selection convert its placement to code and then patch that copy', async () => {
     let session: ProjectSession;
     let id = '';
     let read = { hash: '', revision: -1 };
@@ -5917,7 +5917,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(requestedAuthority(state, { kind: 'selection', targetIds: [heroId] }, { kind: 'entry', collectionId: 'c', entryId: 'e', label: 'the post' })).toMatchObject({ code: 'SCOPE_MISMATCH' });
   });
 
-  it('keeps the source of a patch refused by validation, names it on the result and leaves the project unchanged (§14.3)', async () => {
+  it('keeps the source of a patch refused by validation, names it on the result and leaves the project unchanged', async () => {
     let session: ProjectSession;
     let id = '';
     let attempted = '';
@@ -5945,7 +5945,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(readFileSync(join(session.dir, path), 'utf8')).toBe(attempted);
   });
 
-  it('restores the pre-run source when a run that patched it is stopped, and keeps what it wrote (§12.5)', async () => {
+  it('restores the pre-run source when a run that patched it is stopped, and keeps what it wrote', async () => {
     let session: ProjectSession;
     let orchRef: Orchestrator | null = null;
     let id = '';
