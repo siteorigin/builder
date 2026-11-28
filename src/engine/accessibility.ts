@@ -98,7 +98,8 @@ export function duplicateIdDiagnostics(state: ProjectState, page: PageDoc): Diag
     if (uses.length < 2) continue;
     const own = uses.filter((u) => u.owner.kind === 'page');
     const at = own[1] ?? own[0] ?? uses[1];
-    const places = [...new Set(uses.map((u) => (u.owner.kind === 'shell' ? `in ${PLACE_NAMES[u.owner.id]}` : 'on the page')))];
+    // The page's own content first, then the shared parts it shows.
+    const places = [...new Set(uses.map((u) => (u.owner.kind === 'shell' ? `in ${PLACE_NAMES[u.owner.id]}` : 'on the page')))].sort((a, b) => Number(a !== 'on the page') - Number(b !== 'on the page'));
     const where = at.owner.kind === 'page' ? page.title : partLabel(at.owner.id);
     out.push({
       severity: 'warning',
