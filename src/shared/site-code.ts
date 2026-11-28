@@ -525,7 +525,7 @@ interface ScannedValue {
   /** The value at its own length, only its own tokens left: what is left is never part of a string, comment or address. */
   masked: string;
   /** Each address the value names (a url() or an image-set() string), with where it starts. */
-  addresses: Array<{ target: string; at: number; set: boolean; escaped?: boolean }>;
+  addresses: Array<{ target: string; at: number; set: boolean }>;
 }
 
 /** Reads a value as CSS tokenizes it: strings, comments and url() tokens first, so none of them hides another. */
@@ -563,17 +563,11 @@ function scanValue(value: string): ScannedValue {
       j = to;
       continue;
     }
-    const fn = /[-a-zA-Z0-9_\\]/.test(value[j - 1] ?? '') ? null : /^(-?(?:[a-zA-Z_]|\\[^\n\r\f])(?:[-a-zA-Z0-9_]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n\r\f])*)\(/.exec(value.slice(j, j + 64));
-    // A function named with an escape (im\61 ge-set) is read by the build as the function it spells: refused here.
-    if (fn && fn[1].includes('\\')) {
-      addresses.push({ target: '', at: j, set: false, escaped: true });
-      j += fn[0].length;
-      fns.push('');
-      continue;
-    }
-    if (fn) {
-      const name = fn[1].toLowerCase();
-      j += fn[0].length;
+    // A function, read by name as the build reads it, escapes spelled out (im\61 ge-set is image-set).
+    const nameEnd = /[-a-zA-Z0-9_\\]/.test(value[j - 1] ?? '') ? j : identEnd(value, j);
+    if (nameEnd > j && value[nameEnd] === '(') {
+      const name = value.slice(j, nameEnd).replace(/\\([0-9a-fA-F]{1,6})\s?|\\(.)/g, (_, hex: string | undefined, ch: string | undefined) => (hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)) : ch!)).toLowerCase();
+      j = nameEnd + 1;
       if (name === 'url') {
         let k = j;
         while (k < value.length && WS.test(value[k])) k++;
@@ -616,8 +610,7 @@ function checkValue(r: CssReader, value: string, at: number, custom: boolean): v
 
 /** Each address points somewhere every page can load it from. */
 function checkAddresses(r: CssReader, addresses: ScannedValue['addresses'], at: number): void {
-  for (const a of addresses) if (a.escaped) r.fail('A function’s name cannot hold an escape.', at + a.at);
-  else if (!usableUrl(a.target)) r.fail(a.set ? `“${a.target.slice(0, 60)}” in image-set() ${URL_NEEDS}` : `url(${a.target.slice(0, 60)}) ${URL_NEEDS}`, at + a.at);
+  for (const a of addresses) if (!usableUrl(a.target)) r.fail(a.set ? `“${a.target.slice(0, 60)}” in image-set() ${URL_NEEDS}` : `url(${a.target.slice(0, 60)}) ${URL_NEEDS}`, at + a.at);
 }
 
 const URL_NEEDS = 'needs a full https:// address, a data: URL or a path from the site’s root (/…): a relative path would break from pages at other addresses.';

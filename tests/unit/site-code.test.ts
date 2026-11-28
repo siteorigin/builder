@@ -254,15 +254,19 @@ describe('custom CSS', () => {
       ['a { content: "__VITE_ASSET__AAAAAAAAAAAAAAAAAAAAAA__" }', /build’s own marker/],
       ['a { color: red !important"x"; background: url(#x) }', /!important at its end/],
       ['a { background: url(https://:443/x) }', /https:\/\//],
-      ['a { background: im\\61 ge-set("relative.png" 1x) }', /function’s name cannot hold an escape/]
+      // A function named with escapes is the function it spells.
+      ['a { background: im\\61 ge-set("relative.png" 1x) }', /in image-set\(\)/],
+      ['a { background: u\\72 l(images/x.png) }', /url\(images/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });
   });
 
   it('reads any input in time linear in its length, refusing a bad one at once', () => {
-    // Escapes that could be read two ways, then a bad end: an attribute name read by token, never by backtracking.
+    // Escapes that could be read two ways, then a bad end: names read by token, never by backtracking.
     const started = performance.now();
+    expect(globalCssProblem(`a { --x: foo${'\\a'.repeat(28)}; }`)).toBeNull();
+    expect(globalCssProblem(`a { width: c\\61 lc(1px + 2px) }`)).toBeNull();
     expect(globalCssProblem(`[a${'\\31'.repeat(40)}!] { color: red }`)?.message).toMatch(/attribute selector/);
     // The longest stylesheet kept, of many small rules.
     const many = Array.from({ length: 2400 }, (_, i) => `.c${i} { color: red; margin: 0 }`).join('\n').slice(0, 65000);

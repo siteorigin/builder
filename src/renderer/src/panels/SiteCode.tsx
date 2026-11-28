@@ -121,6 +121,8 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
   const [adding, setAdding] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
   const [addProblem, setAddProblem] = useState<string | null>(null);
+  // While an Add is saving, its form holds still: what it shows is what is being saved.
+  const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const stopAdding = () => (setAdding(null), setTyped(''), setAddProblem(null));
   return (
@@ -137,7 +139,10 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
           const p = fathomSiteIdProblem(typed);
           if (p) return setAddProblem(p);
           // The form keeps the ID until the change is taken: refused (the AI is changing the site), it is still there.
-          if ((await onChange({ integrations: { [id]: { siteId: fathomIdText(typed) } } })) !== null) stopAdding();
+          setSaving(true);
+          const done = await onChange({ integrations: { [id]: { siteId: fathomIdText(typed) } } });
+          setSaving(false);
+          if (done !== null) stopAdding();
         };
         return (
           <div className={`site-integration${on ? ' on' : ''}`} key={id} role="group" aria-labelledby={`integration-${id}`}>
@@ -180,13 +185,13 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
             {!on && adding === id && (
               <form className="site-integration-add" onSubmit={add} onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), stopAdding())}>
                 <Field label="Site ID" info={SITE_ID_INFO} error={addProblem && <span role="alert">{addProblem}</span>}>
-                  <input id={`integration-${id}-new-id`} className="input site-code-id" value={typed} maxLength={FATHOM_ID_MAX} placeholder="ABCDEFGH" spellCheck={false} autoComplete="off" autoFocus onChange={(e) => (setTyped(e.target.value), setAddProblem(null))} />
+                  <input id={`integration-${id}-new-id`} className="input site-code-id" value={typed} readOnly={saving} maxLength={FATHOM_ID_MAX} placeholder="ABCDEFGH" spellCheck={false} autoComplete="off" autoFocus onChange={(e) => (setTyped(e.target.value), setAddProblem(null))} />
                 </Field>
                 <div className="site-integration-actions">
                   <button type="button" className="btn btn-sm" onClick={stopAdding}>
                     Cancel<span className="sr-only"> adding {name}</span>
                   </button>
-                  <button type="submit" className="btn btn-sm btn-primary">
+                  <button type="submit" className="btn btn-sm btn-primary" disabled={saving}>
                     Add<span className="sr-only"> {name}</span>
                   </button>
                 </div>
