@@ -43,7 +43,7 @@ import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definiti
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -1312,14 +1312,16 @@ export function Canvas() {
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
           const live = getState().snapshot?.state;
           const rich = dom ? blocksFromDom(dom, live?.pages ?? {}, undefined, live ? collectionIndexRoutes(live) : {}) : null;
-          const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
+          // Plain text of any length the page could send is held to its field's own limit when it is saved (#1447).
+          const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' ? p.text : null;
           if (rich?.droppedLinks) {
             toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
             reportRefused('A link pointed to something that is not a page, web address, email or phone number, so it was removed.');
           }
-          if (value === null || (Array.isArray(value) && value.length > 500)) {
-            toast('That text change could not be saved. Try editing it in the Inspector.', 'error');
-            reportRefused('That text change could not be saved. Try editing it in the Inspector.');
+          // Rich text with more blocks than a field takes goes on to be refused there, with its text offered back.
+          if (value === null) {
+            toast('That text change could not be saved.', 'error');
+            reportRefused('That text change could not be saved.');
             putBack();
             break;
           }
@@ -1359,14 +1361,19 @@ export function Canvas() {
             reportRefused('The link you were typing on the page was not applied, so it was left out.');
           }
           break;
-        case 'textCancel':
-          if (!pendingEdits.current.has(String(p.editId))) break;
+        case 'textCancel': {
+          const edit = pendingEdits.current.get(String(p.editId));
+          if (!edit) break;
           endInlineEdit(String(p.editId));
           if (p.reason === 'too-large') {
-            toast('That text is too long to edit on the page. Edit it in the Inspector instead.', 'error');
-            reportRefused('That text is too long to edit on the page. Edit it in the Inspector instead.');
+            // Said with the limit of the field the text was for, which no other panel lifts (#1447).
+            const snap = getState().snapshot;
+            const message = canvasTooLargeReport(p, snap ? canvasTextLimit(snap, edit) : null);
+            toast(message, 'error');
+            reportRefused(message);
           }
           break;
+        }
         case 'key':
           // Shortcuts are taken from trusted keyboard input (see App), never from the page. Escape only hides the
           // hover name (WCAG 1.4.13), which changes nothing in the project, so the page's report of it counts.
