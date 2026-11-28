@@ -154,7 +154,7 @@ describe('what a Node.js server goes out with', () => {
   });
 
   it('a project README that says it is a Node.js server, which the app still knows as its own', () => {
-    const node = projectReadme('Harbour Lane', false, undefined, false, 'cloudflare', false, true);
+    const node = projectReadme('Harbour Lane', false, undefined, false, 'cloudflare', false, null, true);
     expect(node).toContain('node build/index.js');
     expect(node).toContain('src/env.js');
     expect(node).not.toContain('### Not-found page');
