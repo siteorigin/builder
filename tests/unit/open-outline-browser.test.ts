@@ -273,7 +273,7 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(async () => (await card().count()) ? await card().first().textContent() : '').toContain('The preview couldn’t start');
     // A preview that cannot run from the project's folder (#1366) says why, and the project it is in is still edited.
     const why = 'The preview can’t run from this project’s location, because the folder “Client #47” has “#” in its name.';
-    await so('status', { runtime: { state: 'unavailable', message: why }, outlined: true, slow: false });
+    await so('status', { runtime: { state: 'unavailable', message: why }, outlined: false, slow: false });
     await expect.poll(async () => (await card().count()) ? await card().first().textContent() : '').toContain(why);
     const text = await card().first().textContent();
     expect(text).toContain('Preview unavailable');

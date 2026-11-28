@@ -235,12 +235,25 @@ describe('a duplicated project (#176)', () => {
     const asked = join(sites, 'Archive ?8');
     mkdirSync(asked);
     symlinkSync(hashed, join(sites, 'linked'));
-    for (const parentDir of [hashed, asked, join(sites, 'linked')]) {
-      const r = await c.duplicate({ name: 'Copy', parentDir, opening: c.openingKey! });
-      expect(r).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/^The preview can’t run from a folder whose path contains “[#?]”, and “(Client #47|Archive \?8)” does\. Choose a folder with no “#” or “\?” anywhere in its path/) });
+    mkdirSync(join(asked, 'clean'));
+    for (const [parentDir, folder, char] of [
+      [hashed, 'Client #47', '#'],
+      [asked, 'Archive ?8', '?'],
+      [join(asked, 'clean'), 'Archive ?8', '?'],
+      [join(sites, 'linked'), 'Client #47', '#']
+    ] as const) {
+      expect(await c.duplicate({ name: 'Copy', parentDir, opening: c.openingKey! })).toEqual({
+        ok: false,
+        field: 'location',
+        message: `The preview can’t run from a folder whose path contains “${char}”, and “${folder}” does. Choose a folder with no “#” or “?” anywhere in its path, or rename that folder.`
+      });
     }
     expect(readdirSync(hashed)).toEqual(['storefront']);
-    expect(readdirSync(asked)).toEqual([]);
+    expect(readdirSync(asked)).toEqual(['clean']);
+    expect(readdirSync(join(asked, 'clean'))).toEqual([]);
+    // Nor is the editable project exported as a folder there; a ZIP file of it can be.
+    expect(await c.exportSourceTo(join(hashed, 'export'), 'folder')).toMatchObject({ ok: false, message: expect.stringMatching(/^The preview can’t run from a folder whose path contains “#”, and “Client #47” does\./) });
+    expect(existsSync(join(hashed, 'export'))).toBe(false);
     // A folder without them is where the project goes on from.
     expect(await c.duplicate({ name: 'Copy', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true });
     expect(existsSync(join(sites, 'copy', 'siteorigin.project.json'))).toBe(true);

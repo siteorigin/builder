@@ -980,11 +980,12 @@ export class Controller {
     if (opts.themeId !== undefined && findTheme(opts.themeId)?.devOnly) return { ok: false, message: `The theme "${opts.themeId}" is a development fixture, which cannot start a project. Choose another theme.` };
     const themeProblem = starterProblem(opts.starter, opts.themeId);
     if (themeProblem) return { ok: false, message: themeProblem };
-    // A folder whose path the preview cannot run under (#1366) is refused before anything is made there.
-    const unservable = unservableLocation(opts.parentDir);
-    if (unservable) return { ok: false, message: unservable };
     const { folder, fallback } = projectFolder(name);
     let dir = join(opts.parentDir, folder);
+    // A folder whose path the preview cannot run under (#1366) is refused before anything is made there: judged where
+    // the project would really be, so an empty folder of its name that links elsewhere is judged by where it leads.
+    const unservable = unservableLocation(dir);
+    if (unservable) return { ok: false, message: unservable };
     // Told the same way whenever the folder turns out to be taken. A name with nothing a folder can keep ("🌸🌸") always
     // leads to the same folder, so then the name is what to change, and the message says how.
     const taken = () =>
@@ -1851,6 +1852,9 @@ export class Controller {
       return;
     }
     const ready = await dependenciesReady(session.dir);
+    // A project in a folder the preview cannot run from (#1366) still gets its tools (an export copies them), but a
+    // setup that fails there says what would stop the preview anyway, not that the tools need reinstalling.
+    const unservableHere = session.readOnly ? null : unservableProject(session.dir);
     // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
     if (this.session !== session) return;
     if (!ready) {
@@ -1867,7 +1871,7 @@ export class Controller {
       } catch (e) {
         // Taken over by another app or closed: a restart already queued previews it from a copy instead.
         if (abort.signal.aborted) return;
-        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        this.status(unservableHere ? { state: 'unavailable', message: unservableHere } : { state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         this.broadcast();
         return;
       } finally {
@@ -4304,7 +4308,7 @@ export class Controller {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session!;
-    const bad = this.badExportTarget(s, dest, format);
+    const bad = this.badExportTarget(s, dest, format) ?? (format === 'folder' ? unservableLocation(dest) : null);
     if (bad) return { ok: false, message: bad, warnings: [] };
     // Images just added carry the copies being made of them (#979).
     await this.copiesMade();
