@@ -199,7 +199,9 @@ describe('generated not-found page', () => {
       expect(files.get(ERROR_PAGE_FILE)).toContain("import NotFound from '../lib/siteorigin/runtime/NotFound.svelte';");
       expect(files.get(`${NOT_FOUND_DIR}/+page.js`)).toBe(NOT_FOUND_PAGE_JS);
       expect(NOT_FOUND_PAGE_JS).toMatch(/^export const trailingSlash = 'never';$/m);
-      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(fresh()));
+      expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(fresh(), instrument));
+      // The editor's preview alone keeps the message of an error a page met while it rendered (#1526).
+      expect(files.get(SERVER_HOOK_FILE)!.includes('export function handleError(')).toBe(instrument);
       expect(files.get(`${RUNTIME_DIR}/not-found.js`)).toBe(NOT_FOUND_JS);
       // No editor instrumentation, in the export or in the editor's preview.
       for (const f of [NOT_FOUND_COMPONENT, `${NOT_FOUND_DIR}/+page.svelte`, ERROR_PAGE_FILE, 'src/hooks.server.js', `${RUNTIME_DIR}/not-found.js`]) expect(files.get(f)).not.toMatch(/data-so-|siteorigin-bridge|builderTest/);
@@ -279,7 +281,7 @@ describe('generated not-found page', () => {
     expect(run(worded)).toEqual(['not-found']);
     const sectioned = structuredClone(worded);
     sectioned.pages[sectioned.site.homePageId].nodes[anchored.id].anchor = 'pricing';
-    expect(run(sectioned)).toEqual(expect.arrayContaining(['not-found', 'hooks.server.js']));
+    expect(run(sectioned)).toEqual(expect.arrayContaining(['not-found', 'hooks.server.js#clean']));
     expect(generateProject(sectioned, {}, cache).get(SERVER_HOOK_FILE)).toContain('const SECTIONS = {"pricing":"/"};');
   });
 

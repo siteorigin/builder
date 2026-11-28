@@ -774,7 +774,7 @@ function Control({
   // Gone for good once left: coming back to the same size, state and value never opens it again.
   useEffect(() => setDraftingAt((at) => (at === here ? at : null)), [here]);
   const setDrafting = (on: boolean) => setDraftingAt(on ? here : null);
-  const tokOpts = tokenOptions(tokens, def.tokenGroup);
+  const tokOpts = tokenOptions(tokens, def.tokenGroup, def.containerTokens);
   const set = value !== undefined;
   const state = set ? ' is-set' : ' is-inherited';
   const ghostText = underText || 'Default';
