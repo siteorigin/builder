@@ -25,7 +25,8 @@ export const MAX_PACKAGE_IMAGES_BYTES = 40 * 1024 * 1024;
 export const MAX_PACKAGE_DEFINITIONS = 60;
 const MAX_PACKAGE_TOKENS = 400;
 const MAX_PACKAGE_IMAGES = 100;
-const MAX_PACKAGE_FONTS = 100;
+/** Font families one package names. */
+export const MAX_PACKAGE_FONTS = 100;
 /** How deep a package's JSON may nest. Real definitions stay far shallower; this only stops a runaway file. */
 const MAX_DEPTH = 64;
 

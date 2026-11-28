@@ -6,7 +6,7 @@ import { createStarterState } from '@catalogue/starters';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
-import { familyUses, fontFaceCss, importedFontStack, projectFontFamilies, renameFontFamily, stackUsesFamily } from '@shared/fonts';
+import { familiesUsedBy, familyUses, fontFaceCss, importedFontStack, projectFontFamilies, renameFontFamily, stackUsesFamily } from '@shared/fonts';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -33,6 +33,16 @@ const face = (id: string, weight: string, style: 'normal' | 'italic' = 'normal',
 const add = (a: AssetRecord) => ({ type: 'asset.add' as const, asset: a });
 
 describe('imported fonts', () => {
+  it('finds the families a component package uses: element fonts, site style stacks, and code naming them in its source or a default (#1418)', () => {
+    const families = ['Brand Sans', 'Shore', 'Harbour', 'Unused'];
+    const managed = { kind: 'managed', tree: { nodes: { a: { styles: { base: { fontFamily: "'Brand Sans', serif" } }, variants: { hover: { fontFamily: 'Shore' } } } } } };
+    const code = { kind: 'code', source: '<p style:font-family={face}>Hi</p>', properties: { face: { type: 'string', default: "'Harbour', serif" } } };
+    expect(familiesUsedBy(families, [managed, code])).toEqual(['Brand Sans', 'Shore', 'Harbour']);
+    expect(familiesUsedBy(families, [], ["'Unused', sans-serif"])).toEqual(['Unused']);
+    // A managed component's property default is no font: only its styles are.
+    expect(familiesUsedBy(families, [{ kind: 'managed', properties: { t: { default: 'Harbour' } } }])).toEqual([]);
+  });
+
   it('keeps font metadata through the operation schema and rejects unsafe family names', () => {
     const ok = validateOperation(add(face('f1', '700', 'italic')));
     expect(ok.ok && ok.op.type === 'asset.add' && ok.op.asset.font).toEqual({ family: 'Brand Sans', weight: '700', style: 'italic' });

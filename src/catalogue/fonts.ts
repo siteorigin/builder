@@ -35,6 +35,15 @@ const SYSTEM_FONTS = new Set(
   ]
 );
 
+/**
+ * Whether every site on this theme has a family without a file of its own: a system font, a generic family, or one
+ * the theme ships (by its family or its plain name).
+ */
+export function siteHasFamily(state: Pick<ProjectState, 'site'>, family: string): boolean {
+  const key = familyKey(family);
+  return SYSTEM_FONTS.has(key) || FAMILY_KEYWORDS.has(key) || installedFonts(state).some((f) => familyKey(f.family) === key || familyKey(f.name) === key);
+}
+
 /** The entries of a font stack as written, split on commas outside quotes. */
 function stackEntries(stack: string): string[] {
   const out: string[] = [];

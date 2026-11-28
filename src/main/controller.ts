@@ -3555,7 +3555,9 @@ export class Controller {
         const definitionId = last?.definitionId;
         const notes = Array.isArray(last?.notes) ? last.notes.filter((n): n is string => typeof n === 'string') : [];
         // The package's own fonts stay with the project it came from: one this project lacks is named (#1418).
-        const fonts = missingFontNote(s.state, pkg, name);
+        const fontAssets = Object.fromEntries(Object.entries(s.state.assets.assets).filter(([, a]) => a?.kind === 'font'));
+        const gone = new Set((await findMissingAssetFiles(s.dir, fontAssets).catch(() => [])).map((m) => m.assetId));
+        const fonts = missingFontNote(s.state, pkg, name, gone);
         if (fonts) notes.push(fonts);
         return {
           ok: true,

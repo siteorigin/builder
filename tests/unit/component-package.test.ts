@@ -1039,8 +1039,15 @@ describe('component packages: export and import (#371)', () => {
     expect(dest.state.tokens.custom.find((t) => t.label === 'Harbour')?.value).toBe(src.s.state.tokens.custom.find((t) => t.id === fontToken)!.value);
     expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
     expect(r.results!.at(-1)!.definitionId).toBeTruthy();
-    // Once the fonts are added, nothing is missing.
-    ok(await dest.apply({ operations: [shoreline, harbour].map((asset) => ({ type: 'asset.add' as const, asset })) }, { label: 'Fonts' }));
+    // Exported again from there, before its fonts are added, it still names them, and another project still takes it.
+    const again = await exportTo(dest, r.results!.at(-1)!.definitionId as string);
+    expect((JSON.parse(readFileSync(again.path, 'utf8')) as ComponentPackage).fonts).toEqual(['Harbour Sans', 'Shoreline Display']);
+    expect(again.notes).toEqual(notes);
+    // As each font is added, only the others are missing; one whose file has gone is missing still.
+    ok(await dest.apply({ operations: [{ type: 'asset.add', asset: shoreline }] }, { label: 'Font' }));
+    expect(missingPackageFonts(dest.state, pkg)).toEqual(['Harbour Sans']);
+    expect(missingPackageFonts(dest.state, pkg, new Set([shoreline.id]))).toEqual(['Harbour Sans', 'Shoreline Display']);
+    ok(await dest.apply({ operations: [{ type: 'asset.add', asset: harbour }] }, { label: 'Font' }));
     expect(missingPackageFonts(dest.state, pkg)).toEqual([]);
     await Promise.all([src.s.close(), dest.close()]);
   });

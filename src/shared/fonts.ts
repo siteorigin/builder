@@ -175,27 +175,36 @@ export function familyUses(state: ProjectState, family: string, fontTokens: Read
   return uses;
 }
 
-/**
- * Which of `families` the given definitions and font stacks use, by the rules `familyUses` reads a site with: the font
- * of an element, override or variant (`fontFamily`), a code component's source that names the family, and a stack
- * (a site style's font). Each family is listed once, as `families` spells it.
- */
-export function familiesUsedBy(families: readonly string[], defs: readonly unknown[], stacks: readonly string[] = []): string[] {
-  const all = [...stacks];
-  const sources: string[] = [];
+/** Every font stack the given definitions write: the font of an element, override or variant (`fontFamily`). */
+export function fontStacksIn(defs: readonly unknown[]): string[] {
+  const out: string[] = [];
   const walk = (v: unknown) => {
     if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === 'object') {
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-        if (k === 'fontFamily' && typeof x === 'string') all.push(x);
+        if (k === 'fontFamily' && typeof x === 'string') out.push(x);
         else walk(x);
       }
     }
   };
+  defs.forEach(walk);
+  return out;
+}
+
+/**
+ * Which of `families` the given definitions and font stacks use, by the rules `familyUses` reads a site with: the font
+ * of an element, override or variant, a code component's source that names the family (or a default of one of its
+ * properties, which its code may set a font from), and a stack (a site style's font). Each family is listed once, as
+ * `families` spells it.
+ */
+export function familiesUsedBy(families: readonly string[], defs: readonly unknown[], stacks: readonly string[] = []): string[] {
+  const all = [...fontStacksIn(defs), ...stacks];
+  const sources: string[] = [];
   for (const d of defs) {
-    walk(d);
-    const def = d as { kind?: unknown; source?: unknown };
-    if (def?.kind === 'code' && typeof def.source === 'string') sources.push(searchText(def.source));
+    const def = d as { kind?: unknown; source?: unknown; properties?: Record<string, { default?: unknown }> };
+    if (def?.kind !== 'code') continue;
+    if (typeof def.source === 'string') sources.push(searchText(def.source));
+    for (const p of Object.values(def.properties ?? {})) if (typeof p?.default === 'string') sources.push(searchText(p.default));
   }
   return families.filter((family) => {
     const named = namedIn(family);

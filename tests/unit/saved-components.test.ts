@@ -376,12 +376,18 @@ describe('the library through the app (#372)', () => {
     expect(await b.insertSavedComponent(saved.id, saved.digest, { owner: home(s), parentId: null }, b.openingKey!, s.revision)).toMatchObject({ ok: true, notes: [missing] });
     await b.close();
 
-    // One that has it, in another case, is told nothing.
+    // One that has it, in another case, is told nothing, while its file is there; with the file gone, it is told.
     const withFont = applyOperations(blank('Studio C'), [{ ...shoreline('c_font'), asset: { ...shoreline('c_font').asset, font: { family: 'shoreline display', weight: '700', style: 'normal' as const } } }]);
-    const c = await opened(await projectFolder(withFont.state));
+    const cDir = await projectFolder(withFont.state);
+    const fontFile = join(cDir, withFont.state.assets.assets.c_font.file);
+    mkdirSync(join(fontFile, '..'), { recursive: true });
+    writeFileSync(fontFile, 'wOF2');
+    const c = await opened(cDir);
     const landed = await c.importComponent(file);
     expect(landed.ok).toBe(true);
     expect(landed.notes).toBeUndefined();
+    rmSync(fontFile);
+    expect(await c.importComponent(file)).toMatchObject({ ok: true, notes: [missing] });
     await c.close();
   });
 
