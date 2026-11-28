@@ -254,9 +254,12 @@ describe('custom CSS', () => {
       ['a { content: "__VITE_ASSET__AAAAAAAAAAAAAAAAAAAAAA__" }', /build’s own marker/],
       ['a { color: red !important"x"; background: url(#x) }', /!important at its end/],
       ['a { background: url(https://:443/x) }', /https:\/\//],
-      // A function named with escapes is the function it spells.
-      ['a { background: im\\61 ge-set("relative.png" 1x) }', /in image-set\(\)/],
-      ['a { background: u\\72 l(images/x.png) }', /url\(images/]
+      // A function named with escapes is the function it spells, so none is kept.
+      ['a { background: im\\61 ge-set("relative.png" 1x) }', /function’s name cannot hold an escape/],
+      ['a { background: \\75 r\\6c (relative.png) }', /function’s name cannot hold an escape/],
+      ['a { background: im\\61\r\nge-s\\65 t("relative.png" 1x) }', /function’s name cannot hold an escape/],
+      // An escaped "(" opens nothing, so the missed semicolon after it is still seen.
+      ['a { width: --mark\\((1px) color: red }', /is a “;” missing/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });
@@ -266,7 +269,8 @@ describe('custom CSS', () => {
     // Escapes that could be read two ways, then a bad end: names read by token, never by backtracking.
     const started = performance.now();
     expect(globalCssProblem(`a { --x: foo${'\\a'.repeat(28)}; }`)).toBeNull();
-    expect(globalCssProblem(`a { width: c\\61 lc(1px + 2px) }`)).toBeNull();
+    expect(globalCssProblem(`a { --x: ${'é'.repeat(65000)}; }`)).toBeNull();
+    expect(globalCssProblem(`a { --x: ${'a\\61 '.repeat(12000)}; }`)).toBeNull();
     expect(globalCssProblem(`[a${'\\31'.repeat(40)}!] { color: red }`)?.message).toMatch(/attribute selector/);
     // The longest stylesheet kept, of many small rules.
     const many = Array.from({ length: 2400 }, (_, i) => `.c${i} { color: red; margin: 0 }`).join('\n').slice(0, 65000);

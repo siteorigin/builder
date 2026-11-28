@@ -183,12 +183,12 @@ export function IntegrationFields({ site, onChange }: { site: SiteDoc; onChange:
               </Field>
             )}
             {!on && adding === id && (
-              <form className="site-integration-add" onSubmit={add} onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), stopAdding())}>
+              <form className="site-integration-add" onSubmit={add} onKeyDown={(e) => e.key === 'Escape' && !saving && (e.preventDefault(), stopAdding())}>
                 <Field label="Site ID" info={SITE_ID_INFO} error={addProblem && <span role="alert">{addProblem}</span>}>
                   <input id={`integration-${id}-new-id`} className="input site-code-id" value={typed} readOnly={saving} maxLength={FATHOM_ID_MAX} placeholder="ABCDEFGH" spellCheck={false} autoComplete="off" autoFocus onChange={(e) => (setTyped(e.target.value), setAddProblem(null))} />
                 </Field>
                 <div className="site-integration-actions">
-                  <button type="button" className="btn btn-sm" onClick={stopAdding}>
+                  <button type="button" className="btn btn-sm" disabled={saving} onClick={stopAdding}>
                     Cancel<span className="sr-only"> adding {name}</span>
                   </button>
                   <button type="submit" className="btn btn-sm btn-primary" disabled={saving}>
