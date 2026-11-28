@@ -899,7 +899,7 @@ export function Chat() {
   /** What the next message may change (Edit) or is about (Ask), shown as one chip whose menu holds the other choices.
    *  An element inside a placed component is limited by that component (agent/scope.ts), so it is named by it. A
    *  question changes nothing, so it is about the selection or the page, never "the whole site". */
-  type ScopeChoice = { value: ChatEditScope; label: string; description: string; icon: ReactNode; title: string; chip: string; where?: string };
+  type ScopeChoice = { value: ChatEditScope; label: string; description: string; icon: ReactNode; title: string; chip: string; where?: string; keepWhere?: boolean };
   // An edit is limited by the containing placement; a question is about the element itself.
   const selName = askMode ? selLabel : (boundary ?? selLabel);
   // An entry is called by its collection's own noun (an essay, an advisor): the open one's, or with none open, that of
@@ -912,14 +912,14 @@ export function Chat() {
   const emptyTitle = listedNow && !isReadOnlyCollection(listedNow) ? `Whole site · ${emptyChip}. To change one ${openNoun} alone, ${nothingOpenStep(listedNow)} first` : `Whole site · ${emptyChip}`;
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
-      [{ value: 'page' as const, label: `This ${openNoun}`, description: askMode ? `The ${openNoun} you have open` : 'Its words and details', icon: <Pencil />, title: askMode ? `The ${openNoun} “${scope.post.title}”` : `Only the ${openNoun} “${scope.post.title}”`, chip: scope.post.title, where: `this ${openNoun}` }]
+      [{ value: 'page' as const, label: `This ${openNoun}`, description: askMode ? `The ${openNoun} you have open` : 'Its words and details', icon: <Pencil />, title: askMode ? `The ${openNoun} “${scope.post.title}”` : `Only the ${openNoun} “${scope.post.title}”`, chip: scope.post.title, where: `this ${openNoun}`, keepWhere: true }]
     : scope.empty
     ? // The writer with no post open shows no page: a change reaches the whole site, never the page out of sight under
       // the writer (#895, #1424), and a question reads the site.
       [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, styles and collections', icon: <Globe />, title: emptyTitle, chip: 'Whole site', where: listedNow ? `no ${openNoun} open` : 'nothing open' }]
     : scope.template
     ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
-      [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
+      [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry', keepWhere: true }]
     : component
     ? [
         ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
@@ -944,6 +944,7 @@ export function Chat() {
   const scopeChoices = askMode ? (scopeNow ? [scopeNow] : []) : scopeOptions;
   // The chip says how far an edit reaches in the house hues: plum for a component edited everywhere, amber for the
   // whole site, green for the shared header or footer. A question changes nothing, so it stays neutral.
+  const keepWhere = scopeNow?.keepWhere && !shell ? ' keep-where' : '';
   const scopeTone = component ? ' def' : askMode || !scopeNow ? '' : scopeNow.value === 'site' ? ' site' : shell ? ' shared' : '';
   /** The chip's name: its visible words first, then the full sentence of what it allows. */
   const scopeName = scopeNow ? `${askMode ? 'Your question is about' : 'What the AI may change'}: ${scopeNow.chip}${scopeNow.where ? ` · ${scopeNow.where}` : ''}` : '';
@@ -1923,7 +1924,7 @@ export function Chat() {
                 {scopeChoices.length > 1 ? (
                   <button
                     type="button"
-                    className={`chip scope-chip${scopeTone}`}
+                    className={`chip scope-chip${scopeTone}${keepWhere}`}
                     title={`${scopeNow.title}. Change what ${askMode ? 'your question is about' : 'the AI may change'}`}
                     aria-label={scopeName}
                     {...scopeMenu.triggerProps()}
@@ -1940,7 +1941,7 @@ export function Chat() {
                     <ChevronDown className="caret" aria-hidden="true" />
                   </button>
                 ) : (
-                  <span id={scope.empty && !askMode ? `${headroomId}-scope` : undefined} className={`chip scope-chip${scopeTone}`} title={scopeNow.title}>
+                  <span id={scope.empty && !askMode ? `${headroomId}-scope` : undefined} className={`chip scope-chip${scopeTone}${keepWhere}`} title={scopeNow.title}>
                     <span className="sr-only">{askMode ? 'Your question is about: ' : 'What the AI may change: '}</span>
                     {scopeNow.icon}
                     <span className="ellipsis">{scopeNow.chip}</span>
