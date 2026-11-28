@@ -2003,11 +2003,11 @@ export function Toasts() {
       const notices = [...el.querySelectorAll<HTMLElement>('.toast')];
       root.style.setProperty('--toast-band', notices.length && box.height ? `${Math.ceil(innerHeight - box.top + 16)}px` : '0px');
       // The room the notices have: below the toolbar, and while a dialog is open, below the least of it a dialog keeps
-      // (its 240px floor under the 11vh it starts at), so a crowded stack never reaches a dialog's controls.
+      // (its 240px floor, centred between the 32px top margin and the band), so a crowded stack never reaches a dialog's controls.
       const bottom = parseFloat(getComputedStyle(el).getPropertyValue('--notices-bottom')) || 40;
       const toolbar = parseFloat(getComputedStyle(root).getPropertyValue('--toolbar-h')) || 52;
       let room = innerHeight - bottom - toolbar - 16;
-      if (openDialogs.length) room = Math.min(room, Math.max(120, 0.89 * innerHeight - 240 - bottom - 16));
+      if (openDialogs.length) room = Math.min(room, Math.max(120, innerHeight - 32 - 240 - bottom - 16));
       el.style.setProperty('--notices-room', `${Math.floor(room)}px`);
       // More notices than fit: the stack is bounded and scrolls (primitives.css), so none is lost off the top of the
       // window. Measured against the room it has, not its bounded height. Crowded, the cards are a little shorter (a

@@ -178,8 +178,8 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
 
   // The smallest window the app allows (src/main/index.ts), and the common laptop size in the report.
   it.each([
-    [1100, 700],
-    [1440, 900]
+    [1100, 640],
+    [1440, 760]
   ])('keeps both exports in reach at %i×%i while the warnings scroll', async (width, height) => {
     await open(width, height);
     await openReviews();
@@ -200,6 +200,22 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(source.y).toBe(site.y);
     expect(close.y).toBeGreaterThanOrEqual(site.y + site.height);
     expect(close.y + close.height).toBeLessThanOrEqual(700);
+  });
+
+  // #1632: a dialog tall enough to fill the window sits centred, not hung from a gap at the top.
+  it.each([
+    ['a plain window', 1100, 700, 0],
+    ['under tall notices', 1100, 700, 360]
+  ])('centres a tall dialog between its margins, %s (#1632)', async (_, width, height, band) => {
+    await open(width, height);
+    await page.evaluate(`document.documentElement.style.setProperty('--toast-band', '${band}px')`);
+    await openReviews();
+    const modal = (await page.locator('.modal').boundingBox())!;
+    const above = modal.y;
+    const below = height - (modal.y + modal.height);
+    expect(Math.abs(above - below)).toBeLessThanOrEqual(band ? Math.max(0, band - 32) + 1 : 1);
+    expect(above).toBeGreaterThanOrEqual(31);
+    expect(below).toBeGreaterThanOrEqual(Math.max(31, band));
   });
 
   // Where the header, the exports and a strip of body don't fit: zoomed to 150% and 200% in the smallest window, and
