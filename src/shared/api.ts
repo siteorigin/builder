@@ -73,7 +73,7 @@ export interface AppSettings {
    * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
    */
   liveRelayUrl: string | null;
-  /** Shortcuts the author has reassigned (spec §4.5), as `shared/shortcuts.ts` writes them. */
+  /** Shortcuts the author has reassigned, as `shared/shortcuts.ts` writes them. */
   shortcuts: ShortcutSettings;
   ai: {
     provider: ProviderId | null;

@@ -802,7 +802,7 @@ export class ProjectSession extends EventEmitter {
   /**
    * Set by whatever runs the preview. Asked before the first file of a publication the preview watches is replaced,
    * it resolves once the preview holds its hot updates, with the call that hands it the files the publication changed,
-   * so the page takes them as one update (spec §18.2).
+   * so the page takes them as one update.
    */
   previewHold: (() => Promise<(files: string[]) => void>) | null = null;
   /** The files the publication under way has changed on disk, project-relative, while the preview holds for it. */

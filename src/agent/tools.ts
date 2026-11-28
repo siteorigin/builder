@@ -974,7 +974,7 @@ export type { ToolOutcome } from './result';
  * read wherever the tool does not name the one it reflects (a change names the revision it made).
  */
 /**
- * How a theme's code is changed (§8.4): on a project copy for the placements the request covers, which then reads and
+ * How a theme's code is changed: on a project copy for the placements the request covers, which then reads and
  * patches like any project code, while the theme's own stays for every other placement, for inserting and for theme
  * switches. Says which copy this run may make, and lists the placements it may move to one.
  */

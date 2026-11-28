@@ -214,7 +214,7 @@ Other providers will keep working through the same adapter, as optional extras r
 
 ## Development
 
-The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules, and the [specification](docs/specification.md) records the original design decisions; where they differ (it plans one theme, for example), this README describes what ships. Development uses the same Node as above; the packaged app bundles its own. Some unit tests and the packaging commands also need Playwright's Chromium: `npx playwright install chromium` (on Linux add `--with-deps`; see [CONTRIBUTING.md](CONTRIBUTING.md#setup)).
+The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules. Development uses the same Node as above; the packaged app bundles its own. Some unit tests and the packaging commands also need Playwright's Chromium: `npx playwright install chromium` (on Linux add `--with-deps`; see [CONTRIBUTING.md](CONTRIBUTING.md#setup)).
 
 ```sh
 npm run dev                  # the app with hot reload

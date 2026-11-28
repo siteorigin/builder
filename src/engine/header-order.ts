@@ -1,5 +1,5 @@
 /**
- * The header menu's order beside the Pages order (spec §4.2). The menu keeps an order of its own unless the site says
+ * The header menu's order beside the Pages order. The menu keeps an order of its own unless the site says
  * it follows the pages (`site.headerMenuOrder: 'follow'`): then every edit leaves its page links in Pages order, a
  * page added to it goes in at its place in that order, and a page deleted takes its links out of it. Either way the
  * same rules decide which links sort: only a link straight to a page that appears once in the menu, and only among

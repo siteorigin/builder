@@ -1,6 +1,6 @@
 # Contributing to SiteOrigin Builder
 
-Thanks for helping. This guide covers setting up the app, the checks every change needs, and the few rules that keep projects safe and portable. The product and technical decisions live in the [specification](docs/specification.md); the [README](README.md) has an architecture overview.
+Thanks for helping. This guide covers setting up the app, the checks every change needs, and the few rules that keep projects safe and portable. The [README](README.md) describes what ships and has an architecture overview.
 
 ## Setup
 

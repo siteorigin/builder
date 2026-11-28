@@ -437,7 +437,7 @@ export function Canvas() {
   };
   /**
    * Whether the page still shows an older version of the project than the editor has: a save's update has not reached
-   * it yet (spec §18.2, lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
+   * it yet (lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
    * edits wait, and work again once the page says it shows the new version, reports that the update failed, or has
    * been waited for long enough. A click made meanwhile is taken again then.
    */
@@ -955,7 +955,7 @@ export function Canvas() {
       // editing it was made in, while nothing else has been selected since (in Layers, say), and only when the element clicked is still in
       // the project, inside what the page showed around it.
       if (held && (held.session !== session || m.navigationId !== viewNow()?.navigationId || held.scene !== sceneKey(s) || held.selection !== selectionKey(s) || !st || !clickTargetIn(st, chainOf(p.chain)))) return;
-      // While a save is publishing, a pick waits for the page to show it (spec §18.2, #755): a click is taken again
+      // While a save is publishing, a pick waits for the page to show it (#755): a click is taken again
       // once the page catches up, resolved against the project as it is then; a double-click or menu is dropped, and so
       // is any pick the canvas would not take anyway (one from a page that is leaving).
       const gated = gatedPick(m.type, s.mode);
