@@ -332,6 +332,7 @@ const ENTRY_FIELDS = {
   author: z.string().max(80).nullable().optional(),
   excerpt: z.string().max(320).nullable().optional(),
   featuredImage: z.string().nullable().optional().describe('A library image\'s asset ID; null removes it.'),
+  featuredImageAlt: limited(TEXT_LIMITS.imageAlt).nullable().optional().describe('What the featured image shows, for people who cannot see it, on one line. null or "" goes back to the library\'s suggested alt text for the picture. A different featured image given without it starts with none.'),
   terms: z.record(z.string(), z.array(z.string()).max(50)).optional().describe('Term IDs by taxonomy ID. Each taxonomy given replaces that taxonomy\'s terms; others stay.'),
   values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay. A date is "YYYY-MM-DD" or ""; a reference is an entry ID ("" for none), or a list of them.'),
   body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`),

@@ -1528,6 +1528,11 @@ export interface EntryDoc {
   excerpt?: string;
   /** A library image's asset ID. */
   featuredImage?: string;
+  /**
+   * What the featured image shows, in this entry's own words, on one line. Left out, the library's suggested alt text
+   * for the picture is published; it is the entry's own, so another entry showing the same file says its own.
+   */
+  featuredImageAlt?: string;
   /** Search settings. Absent on every entry stored before they existed. */
   seo?: EntrySeo;
   /** Assigned term IDs, by taxonomy ID. */

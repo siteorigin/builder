@@ -6,7 +6,7 @@
  * - `title`, `slug`, `author`, `excerpt`: the entry's own text (`slug` is its address segment, read-only).
  * - `publishedAt`, `updatedAt`: the dates, written as readers of the site's language write them; a text's `datetime`
  *   reads the date itself (YYYY-MM-DD).
- * - `featuredImage`: the entry's library picture, with the library's suggested alt text.
+ * - `featuredImage`: the entry's library picture, with its own description of it, else the library's suggested alt text.
  * - `body`: the entry's text, as rich text.
  * - `categories`: the labels of the entry's categories, in the order they were assigned; `terms.<taxonomy>` reads
  *   any other grouping the same way.
@@ -207,6 +207,15 @@ function storedPicture(state: Pick<ProjectState, 'assets'>, value: unknown): Ima
   return { assetId: found.assetId, alt: typeof v.alt === 'string' && v.alt.trim() ? v.alt : found.alt };
 }
 
+/**
+ * An entry's featured picture as it is published: the entry's own description of it, else the library's suggested
+ * alt text for the file, so two entries showing one picture each say their own. Nothing for a picture the library
+ * no longer has.
+ */
+export function featuredPicture(state: Pick<ProjectState, 'assets'>, entry: Pick<EntryDoc, 'featuredImage' | 'featuredImageAlt'>): ImageValue {
+  return storedPicture(state, { assetId: entry.featuredImage, alt: typeof entry.featuredImageAlt === 'string' ? entry.featuredImageAlt.trim() : '' });
+}
+
 const entryLink = (e: EntryDoc | undefined): LinkValue => (e ? { type: 'entry', target: e.id } : { type: 'none', target: '' });
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 const siteWords = (state: Pick<ProjectState, 'site'>) => visitorTextFor(state.site, siteLanguage(state.site));
@@ -259,7 +268,7 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     case 'excerpt':
       return str(entry.excerpt);
     case 'featuredImage':
-      return pictureValue(state, entry.featuredImage);
+      return featuredPicture(state, entry);
     case 'categories':
       return termLabels(collection, entry, CATEGORIES);
     case 'body':
