@@ -2717,9 +2717,9 @@ export function pageSections(state: ProjectState, pageId: string): PageSection[]
     },
     text: (n, scope) => {
       const top = open[open.length - 1];
+      // A heading inside a nested section names that section (the innermost one open), not the one around it; one
+      // after it, back in the outer section's own content, names the outer one.
       if (!top || top.label || !HEADING.test(String(evaluate(n.tag, scope) ?? ''))) return;
-      // A heading inside a nested section names that section, not the one around it.
-      if (top.children) return;
       top.label = headingText(n, scope);
     },
     leave: (n) => {

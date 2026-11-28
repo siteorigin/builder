@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { instancesOf } from '@engine/tree';
+import { anchorCapable, entranceCapable, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { partStyleControls, placementStyleControls } from '@shared/styles';
@@ -156,9 +156,20 @@ describe('where Create component… is offered (#173)', () => {
     const { s, page, section, empty, at } = library();
     expect(s.components[(s.pages[page.id].nodes[section] as InstanceNode).definitionId].kind).toBe('code');
     expect(createComponentTarget({ state: s }, at(page, section))).toEqual(at(page, section));
-    // The empty one below has nothing of its own to package.
+    // The empty one below has nothing of its own to package, nor content kept under a slot it does not declare.
     expect(createComponentTarget({ state: s }, at(page, empty))).toBeNull();
-    expect(() => applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }])).not.toThrow();
+    const stray = structuredClone(s);
+    (stray.pages[page.id].nodes[empty] as InstanceNode).slots = { sidebar: [(stray.pages[page.id].nodes[section] as InstanceNode).slots!.content[0]] };
+    expect(createComponentTarget({ state: stray }, at(page, empty))).toBeNull();
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
+    const made = r.state.components[r.results[0].definitionId as string];
+    expect(made.kind).toBe('managed');
+    expect(r.state.components[(made.tree!.nodes[made.tree!.rootIds[0]] as InstanceNode).definitionId].kind).toBe('code');
+    // The new component's root is the theme's Section, so its placements take an anchor through it, and no entrance.
+    expect(anchorCapable(r.state, made)).toBe(true);
+    expect(entranceCapable(r.state, made)).toBe(false);
+    const placed = r.results[0].nodeId as string;
+    expect(applyOperations(r.state, [{ type: 'node.setContent', owner: page, nodeId: placed, field: 'anchor', value: 'intro' }]).state.pages[page.id].nodes[placed].anchor).toBe('intro');
   });
 
   it('leaves out a node that is not attached to the page', () => {
@@ -188,6 +199,7 @@ describe('where Create component… is offered (#173)', () => {
     expect(createComponentTarget({ state: stray }, at(page, empty))).toBeNull();
     // A section converted to code keeps its content in the slot its code declares: offered as Foundation's is.
     const coded = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: section }]).state;
+    expect(coded.components[(coded.pages[page.id].nodes[section] as InstanceNode).definitionId].kind).toBe('code');
     expect((coded.pages[page.id].nodes[section] as InstanceNode).slots!.content.length).toBeGreaterThan(0);
     expect(createComponentTarget({ state: coded }, at(page, section))).toEqual(at(page, section));
   });

@@ -2766,9 +2766,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'anchor': {
       if (node.kind === 'repeat' || node.kind === 'slot') fail('Anchors can be set on sections, elements, text, images, buttons, icons and dividers.');
-      // A section's anchor becomes the id of its component's root element, which only managed components place.
-      if (node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, or on code components whose markup places id={so_id}.');
       const a = String(v ?? '').replace(/^#/, '');
+      // A section's anchor becomes the id of its component's root element, or where its code places id={so_id}. One
+      // its code no longer places can still be cleared.
+      if (a && node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, or on code components whose markup places id={so_id}.');
       if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) fail('Anchors start with a letter and use letters, numbers, - and _.');
       if (a && anchorsInUse(state, owner, node.id).has(a)) fail(RESERVED_ANCHORS.has(a) ? `"${a}" is used by the site itself. Choose another anchor.` : `Another element on this page already uses the anchor "${a}".`);
       if (a) node.anchor = a;

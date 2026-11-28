@@ -5,6 +5,7 @@ import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, anchorCapable, codeTakesOverrides, enclosingRepeatProp, entranceCapable } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
+import { pageSections, planSectionPick } from '@generator/checks';
 import { columnLayoutPart } from '@shared/styles';
 import { P, item, prop } from '@catalogue/dsl';
 import { foundationDesign } from './fixtures/packs';
@@ -124,10 +125,47 @@ describe('which components take an anchor', () => {
     expect(anchorCapable(s, as('<section class="x" id={so_id}></section>'))).toBe(true);
     expect(anchorCapable(s, as('<section id={ so_id ?? "top" }></section>'))).toBe(true);
     // Another attribute holding it, or code that never places it, gives links nothing to jump to.
+    expect(anchorCapable(s, as('<section id = {so_id}></section>'))).toBe(true);
+    // Handed on to the component it places, as a design converted to code does when its root is a component.
+    expect(anchorCapable(s, as('<Inner so_id={so_id} />'))).toBe(true);
+    // Another attribute holding it, another value made from it, or code that never places it: nothing to jump to.
     expect(anchorCapable(s, as('<section data-id={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<section id={so_id_suffix}></section>'))).toBe(false);
+    expect(anchorCapable(s, as("<section id={so_id + '-x'}></section>"))).toBe(false);
     expect(anchorCapable(s, as('<section id={sectionId}></section>'))).toBe(false);
     expect(anchorCapable(s, as(''))).toBe(false);
     expect(entranceCapable(s, def)).toBe(false);
+  });
+
+  it('clears an anchor that code no longer places, and refuses a new one', () => {
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'top' }]).state;
+    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id }]);
+    s = r.state;
+    const def = s.components[(home(s).nodes[hero.id] as InstanceNode).definitionId];
+    expect(def).toMatchObject({ kind: 'code', owner: 'project' });
+    def.source = def.source!.replace(/\s+id=\{\s*so_id[^}]*\}/g, '');
+    rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'other' }]), /code components/);
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '' }]).state;
+    expect(Object.hasOwn(home(s).nodes[hero.id], 'anchor')).toBe(false);
+  });
+
+  it('names a theme Section by its own heading after a theme block inside it, with the block under it', () => {
+    const s0 = fresh();
+    const page: OwnerRef = { kind: 'page', id: s0.site.homePageId };
+    const r = applyOperations(s0, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const section = r.results[0].nodeId as string;
+    const inner = applyOperations(r.state, [
+      { type: 'node.insert', owner: page, parentId: section, slot: 'content', index: 0, componentId: 'block.callout' },
+      { type: 'node.insert', owner: page, parentId: section, slot: 'content', index: 1, primitive: 'heading', text: 'Opening hours' }
+    ]);
+    const s = inner.state;
+    const callout = inner.results[0].nodeId as string;
+    const listed = pageSections(s, page.id);
+    expect(listed.find((x) => x.nodeId === section)).toMatchObject({ label: 'Opening hours', nested: false });
+    expect(listed.find((x) => x.nodeId === callout)).toMatchObject({ nested: true });
+    expect(planSectionPick(s, page.id, section)?.anchor).toBe('opening-hours');
   });
 });
 

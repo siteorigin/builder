@@ -294,6 +294,10 @@ describe('instance.swapComponent', () => {
     expect(inst(toCode.state, id).anchor).toBe('studio');
     expect(inst(toCode.state, id).appear).toBeUndefined();
     expect(toCode.results[0].restyled).toContain('Entrance');
+    // A design built in the editor takes it on.
+    const toBand = swap(entering, id, { definitionId: band.id }, true);
+    expect(inst(toBand.state, id).appear).toBe('lift');
+    expect(toBand.results[0].restyled).not.toContain('Entrance');
     const plain = anchorlessCode(s);
     expect(() => swap(plain.state, id, { definitionId: plain.definitionId }, true)).toThrow(/can’t take the anchor #studio/);
     const contact = editorHero(s, 'hero.contact', 'Contact hero', { anchor: 'contact' }, split);

@@ -429,8 +429,11 @@ export function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?
   return out;
 }
 
-/** Code that places the id its placement gives it (`so_id`) as an element's id, as every theme section does. */
-export const SO_ID_ATTR = /(?<![\w-])id=\{\s*so_id\b/;
+/**
+ * Code that places the id its placement gives it (`so_id`) as an element's id, as every theme section does, or hands it
+ * on to the component it places (`so_id={so_id}`, as a design converted to code does when its root is a component).
+ */
+export const SO_ID_ATTR = /(?<![\w-])(?:so_)?id\s*=\s*\{\s*so_id\s*(?:\}|\?\?)/;
 
 /**
  * Whether a placement's anchor reaches the page: a managed definition places it on its root (through a root that

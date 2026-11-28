@@ -1478,7 +1478,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], editLabel(state, 'Rename', here, v.trim() ? `to ${v.trim()}` : undefined))} />
         </Field>
-        {anchorCapable(state, def) && (
+        {(anchorCapable(state, def) || !!node.anchor) && (
           <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell && noun === 'section' ? 'part of every page that shows it' : noun}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], forLabel(state, v.trim() ? 'Set anchor' : 'Clear anchor', here))} />
           </Field>
