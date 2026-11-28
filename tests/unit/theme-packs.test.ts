@@ -270,10 +270,16 @@ describe('pinning an installed pack', () => {
     for (const [i, a] of ascending.entries())
       for (const [j, b] of ascending.entries()) expect(Math.sign(comparePackVersions(a, b)), `${a} vs ${b}`).toBe(Math.sign(i - j));
     for (const v of ascending) expect(PACK_VERSION_RE.test(v), v).toBe(true);
+    // Past 2^53 numbers still rank exactly, in the core and in a prerelease.
+    expect(comparePackVersions('9007199254740992.1.0', '9007199254740993.0.0')).toBeLessThan(0);
+    expect(comparePackVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992')).toBeGreaterThan(0);
+    expect(comparePackVersions(`1.0.0-${'9'.repeat(400)}`, `1.0.0-${'9'.repeat(401)}`)).toBeLessThan(0);
     // Leading zeros and empty parts would give one release two spellings, and the same-version check would miss it.
     for (const v of ['1.02.0', '01.2.0', '1.2.00', '1.2.0-01', '1.2.0-', '1.2.0-a..b', '1.2', 'v1.2.0']) expect(PACK_VERSION_RE.test(v), v).toBe(false);
     withInstalled('d1', { version: '1.1.0' });
     expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: '1.02.0', digest: 'd0' } } })).toMatch(/records "1\.02\.0", which is not a release version/);
+    // A lock edited by hand into another type is refused the same way, never thrown on.
+    expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: ['1.2.0'] as unknown as string, digest: 'd0' } } })).toMatch(/which is not a release version/);
     await restorePacks();
   });
 

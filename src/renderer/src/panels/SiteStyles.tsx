@@ -8,7 +8,8 @@ import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
 import { PaletteHarmony } from './PaletteHarmony';
 import { getTheme, listThemes, themePinProblem, type ThemePack } from '@catalogue/index';
-import { comparePackVersions } from '@catalogue/pack';
+import { comparePackVersions, PACK_VERSION_RE } from '@catalogue/pack';
+import { isRemoteOpening } from '../lib/remote-snapshot';
 import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
@@ -839,7 +840,9 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
   const [done, setDone] = useState<{ from: ThemePack; to: string; kept: number; undo: ReturnType<typeof undoAction> } | null>(null);
   const missing = theme.id !== st.site.themeId;
   // Why the project is open read-only because of its theme: not installed, or not the copy it was made with.
-  const pin = themePinProblem(st);
+  // A live guest edits the host's project, whose pin the host judges against its own packs: its read-only reason
+  // arrives in the snapshot, and this computer's copy of the theme says nothing about it.
+  const pin = isRemoteOpening(snap?.workspaceKey) ? null : themePinProblem(st);
   const readOnly = snap?.readOnly;
   const live = !!done && done.to === st.site.themeId && !!done.undo?.undoes && undoAvailable(done.undo.undoes, snap);
   // Undone, by any route: said once. The switch is kept, so a redo brings its receipt and Undo back.
@@ -927,9 +930,11 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
       ? 'The site doesn’t record which copy of the theme it was made with. Open it in the copy of SiteOrigin Builder it was made with and switch its theme there.'
       : lock?.digest && theme.source !== 'user'
         ? 'A theme that comes with SiteOrigin Builder now has the same name as the theme this site was made with. Open the site in the version of SiteOrigin Builder it was made with and switch it to another theme there.'
-        : lock && comparePackVersions(theme.version, lock.version) < 0
-          ? `The site was made with version ${lock.version} of this theme, and the installed copy is the older ${theme.version}. Install ${lock.version} or a newer version, then restart SiteOrigin Builder.`
-          : 'The installed copy isn’t the one the site was made with: reinstall that copy, then restart SiteOrigin Builder.';
+        : lock && (typeof lock.version !== 'string' || !PACK_VERSION_RE.test(lock.version))
+          ? 'The site’s record of its theme version is damaged: restore siteorigin/theme-lock.json from the copy the site was made with.'
+          : lock && comparePackVersions(theme.version, lock.version) < 0
+            ? `The site was made with version ${lock.version} of this theme, and the installed copy is the older ${theme.version}. Install ${lock.version} or a newer version, then restart SiteOrigin Builder.`
+            : 'The installed copy isn’t the one the site was made with: reinstall that copy, then restart SiteOrigin Builder.';
   const kept = changedCount ? `Your content and the ${plural(changedCount, 'style', 'styles')} you changed are kept.` : 'Your content and any style changes are kept.';
   const nextLook = next.id !== theme.id ? lookOf(next.id) : null;
   // The picked theme's own picture, once it has loaded: without one, the sample takes the room.

@@ -144,13 +144,18 @@ export const PACK_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(
  * the same, positive when it is newer. A prerelease ranks below its release.
  */
 export function comparePackVersions(a: string, b: string): number {
+  // Canonical numbers (no leading zeros) rank by length, then digit by digit: exact past 2^53, never NaN.
+  const num = (p: string, q: string) => (p.length !== q.length ? p.length - q.length : p < q ? -1 : p > q ? 1 : 0);
   const split = (v: string) => {
     const dash = v.indexOf('-');
-    return { core: (dash < 0 ? v : v.slice(0, dash)).split('.').map(Number), pre: dash < 0 ? [] : v.slice(dash + 1).split('.') };
+    return { core: (dash < 0 ? v : v.slice(0, dash)).split('.'), pre: dash < 0 ? [] : v.slice(dash + 1).split('.') };
   };
   const x = split(a);
   const y = split(b);
-  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return (x.core[i] ?? 0) - (y.core[i] ?? 0);
+  for (let i = 0; i < 3; i++) {
+    const order = num(x.core[i] ?? '0', y.core[i] ?? '0');
+    if (order) return order;
+  }
   if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length;
   for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
     const p = x.pre[i];
@@ -159,7 +164,7 @@ export function comparePackVersions(a: string, b: string): number {
     if (p === q) continue;
     const pn = /^\d+$/.test(p);
     const qn = /^\d+$/.test(q);
-    if (pn && qn) return Number(p) - Number(q);
+    if (pn && qn) return num(p, q);
     if (pn !== qn) return pn ? -1 : 1;
     return p < q ? -1 : 1;
   }

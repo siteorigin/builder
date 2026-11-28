@@ -81,7 +81,7 @@ export function themePinProblem(state: { site: { themeId: string }; themeLock?: 
   if (lock?.digest && pack.source !== 'user')
     return `This project uses an installed theme "${id}" ${lock.version}, but SiteOrigin Builder now has a built-in theme with that ID, which is a different design. Open the project in the version of SiteOrigin Builder it was made with and switch it to another theme to edit it here.`;
   if (!lock?.digest) return null;
-  if (!PACK_VERSION_RE.test(lock.version))
+  if (typeof lock.version !== 'string' || !PACK_VERSION_RE.test(lock.version))
     return `This project uses the theme "${id}", but its theme lock records "${lock.version}", which is not a release version. Restore siteorigin/theme-lock.json from the copy the site was made with to edit it here.`;
   const order = comparePackVersions(pack.version, lock.version);
   if (order === 0 && pack.digest !== lock.digest)
