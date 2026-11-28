@@ -13,7 +13,7 @@ import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry, hasDetailPages, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
-import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
+import { SO_ID_ATTR, anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
@@ -295,7 +295,6 @@ export function effectiveProps(
  * evaluated properties, and the placement's slot content where the definition places that slot. Callbacks
  * report against the page node (the outermost instance for anything inside a component).
  */
-const SO_ID_ATTR = /\bid=\{\s*so_id\b/;
 
 /** Whether a property is a computed list (a News list, an article header). */
 const isFeed = (schema: PropSchema | undefined) => schema?.type === 'list' && !!schema.feed;

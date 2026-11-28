@@ -81,7 +81,7 @@ describe('entrance operations', () => {
     expect(Object.hasOwn(home(s).nodes[hero.id], 'appear')).toBe(false);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  // Release gap: the engine refuses entrances on code components (entranceCapable in src/engine/tree.ts): the generator hands so_appear to designs built in the editor only.
   it.fails('sets, changes, turns off and clears the entrance of a section of the shipped theme', () => {
     let s = fresh();
     const hero = section(s, 'hero.split');

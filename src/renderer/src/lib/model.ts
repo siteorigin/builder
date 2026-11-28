@@ -417,7 +417,7 @@ export function createComponentTarget(snap: { state: ProjectState; readOnly?: un
   if (!node || node.kind === 'slot' || node.kind === 'repeat' || !findParent(tree, node.id)) return null;
   if (node.kind === 'instance') {
     const def = own(state.components, node.definitionId);
-    const declared = def?.kind === 'managed' ? (def.slots ?? {}) : {};
+    const declared = def?.slots ?? {};
     if (!Object.entries(node.slots ?? {}).some(([slot, ids]) => Object.hasOwn(declared, slot) && ids.length > 0)) return null;
   }
   return { owner: ref.owner, instancePath: [], nodeId: node.id };

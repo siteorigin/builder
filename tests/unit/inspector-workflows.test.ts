@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ElementNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, captureClipboard } from '@engine/apply';
-import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
+import { EngineError, anchorCapable, codeTakesOverrides, enclosingRepeatProp, entranceCapable } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
 import { columnLayoutPart } from '@shared/styles';
@@ -14,7 +14,7 @@ const fresh = () => createStarterState('business', 'Test Studio', false);
 /**
  * The business starter with designs built in the editor installed as Foundation's own and placed first on Home, in
  * this order: a Split hero (test.hero), a Services grid (test.grid) and Statistics (test.stats); and an empty Section
- * (test.section) installed. Foundation's own sections are code components, which take no anchor and have no design to
+ * (test.section) installed. Foundation's own sections are code components, which have no design to
  * paste into, so what copy and paste do with a design's tree is checked on these.
  */
 const managed = () => {
@@ -85,8 +85,7 @@ describe('section anchors', () => {
     expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }])).not.toThrow();
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
+  it('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
     let s = fresh();
     const hero = firstInstance(s, 'hero.split');
     expect(s.components[hero.definitionId].source).toMatch(/id=\{so_id\}/);
@@ -95,18 +94,40 @@ describe('section anchors', () => {
     expect(generateProject(s).get('src/routes/+page.svelte')).toContain('so_id={"pricing"}');
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('puts a section anchor on the shipped theme’s footer', () => {
+  it('puts a section anchor on the shipped theme’s footer', () => {
     const s = fresh();
     const footer = s.site.shell.footer.rootIds[0];
     expect(applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state.site.shell.footer.nodes[footer].anchor).toBe('contact');
   });
 
-  it('refuses anchors on code components', () => {
+  it('puts an anchor on code that places id={so_id}, and refuses it on code that places none', () => {
     let s = managed();
     const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id }]).state;
+    // A design converted to code places the placement's id on its root, as the theme's sections do.
+    const def = s.components[(home(s).nodes[hero.id] as InstanceNode).definitionId];
+    expect(def.source).toMatch(/id=\{so_id/);
+    expect(applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'x' }]).state.pages[s.site.homePageId].nodes[hero.id].anchor).toBe('x');
+    def.source = def.source!.replace(/\s+id=\{\s*so_id[^}]*\}/g, '');
+    expect(def.source).not.toMatch(/id=\{\s*so_id/);
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'x' }]), /code components/);
+  });
+});
+
+describe('which components take an anchor', () => {
+  it('reads code for an element placing id={so_id}, and never takes an entrance on it', () => {
+    const s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const def = s.components[hero.definitionId];
+    const as = (source: string) => ({ ...def, source });
+    expect(anchorCapable(s, def)).toBe(true);
+    expect(anchorCapable(s, as('<section class="x" id={so_id}></section>'))).toBe(true);
+    expect(anchorCapable(s, as('<section id={ so_id ?? "top" }></section>'))).toBe(true);
+    // Another attribute holding it, or code that never places it, gives links nothing to jump to.
+    expect(anchorCapable(s, as('<section data-id={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<section id={sectionId}></section>'))).toBe(false);
+    expect(anchorCapable(s, as(''))).toBe(false);
+    expect(entranceCapable(s, def)).toBe(false);
   });
 });
 

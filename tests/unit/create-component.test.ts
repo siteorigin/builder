@@ -152,10 +152,13 @@ describe('where Create component… is offered (#173)', () => {
     expect(createComponentTarget({ state: designed.s }, designed.at(designed.page, designed.section))).toEqual(designed.at(designed.page, designed.section));
   });
 
-  // Release gap: createComponentTarget (src/renderer/src/lib/model.ts) counts slots on managed designs only, so Create component is never offered on the release's Section.
-  it.fails('offers the release’s Section holding content', () => {
-    const { s, page, section, at } = library();
+  it('offers the release’s Section holding content, which becomes a component with it', () => {
+    const { s, page, section, empty, at } = library();
+    expect(s.components[(s.pages[page.id].nodes[section] as InstanceNode).definitionId].kind).toBe('code');
     expect(createComponentTarget({ state: s }, at(page, section))).toEqual(at(page, section));
+    // The empty one below has nothing of its own to package.
+    expect(createComponentTarget({ state: s }, at(page, empty))).toBeNull();
+    expect(() => applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }])).not.toThrow();
   });
 
   it('leaves out a node that is not attached to the page', () => {
@@ -165,8 +168,8 @@ describe('where Create component… is offered (#173)', () => {
     expect(createComponentTarget({ state: stray }, at(page, 'n_stray0000'))).toBeNull();
   });
 
-  it('leaves out an empty section, a plain placement, a code component and a slot that is not declared', () => {
-    // Sections designed in the editor: Foundation's is never offered (the Release gap test above).
+  it('leaves out an empty section, a plain placement and a slot that is not declared', () => {
+    // Sections designed in the editor (Foundation's, which is code, is above).
     const { s, page, section, empty, hero, card, at } = library(true);
     expect(createComponentTarget({ state: s }, at(page, empty))).toBeNull();
     // A section whose content was all removed keeps an empty slot list: still nothing to package.
@@ -183,10 +186,10 @@ describe('where Create component… is offered (#173)', () => {
     const sec = stray.pages[page.id].nodes[empty] as InstanceNode;
     sec.slots = { sidebar: [(stray.pages[page.id].nodes[section] as InstanceNode).slots!.content[0]] };
     expect(createComponentTarget({ state: stray }, at(page, empty))).toBeNull();
-    // A section converted to code keeps its content, but it is source now: offered only for designs built here.
+    // A section converted to code keeps its content in the slot its code declares: offered as Foundation's is.
     const coded = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: section }]).state;
     expect((coded.pages[page.id].nodes[section] as InstanceNode).slots!.content.length).toBeGreaterThan(0);
-    expect(createComponentTarget({ state: coded }, at(page, section))).toBeNull();
+    expect(createComponentTarget({ state: coded }, at(page, section))).toEqual(at(page, section));
   });
 
   it('leaves out the shared header and footer, parts inside a placement, missing nodes and a read-only project', () => {
@@ -305,7 +308,7 @@ describe('a component made from a section (#173)', () => {
   });
 
   it('keeps the section’s own anchor on the placement, not in the design', () => {
-    // A section designed in the editor: Foundation's takes no anchor (the Release gap test below).
+    // A section designed in the editor (Foundation's, which is code, is below).
     const { s: base, page, section } = library(true);
     const s = applyOperations(base, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }]).state;
     const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
@@ -314,8 +317,7 @@ describe('a component made from a section (#173)', () => {
     expect((r.state.pages[page.id].nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBe('intro');
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('takes an anchor on the release’s Section', () => {
+  it('takes an anchor on the release’s Section', () => {
     const { s, page, section } = library();
     expect(() => applyOperations(s, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }])).not.toThrow();
   });

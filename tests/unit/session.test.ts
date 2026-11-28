@@ -22,7 +22,7 @@ async function make(start = createStarterState('business', 'Persist', false)) {
 
 /**
  * A grid of cards built in the editor, the project's own design: Foundation's sections are code components, which
- * have no design tree to edit and take no anchor. Each card has an icon in a badge and a title from its list item.
+ * have no design tree to edit. Each card has an icon in a badge and a title from its list item.
  */
 function cardGrid(state: ProjectState) {
   return projectDesign(state, {

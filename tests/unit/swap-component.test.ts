@@ -50,6 +50,19 @@ function editorHero(s: ProjectState, componentId: string, name: string, at: { an
   });
 }
 
+/**
+ * A copy of the split hero as code of the project's own whose markup places no `id={so_id}`, so it cannot show
+ * the anchor its placement carries.
+ */
+function anchorlessCode(s: ProjectState): { state: ProjectState; definitionId: string } {
+  const r = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Plain hero' }]);
+  const def = r.state.components[r.results[0].definitionId as string];
+  expect(def.kind).toBe('code');
+  def.source = def.source!.replace(/\s+id=\{\s*so_id[^}]*\}/g, '');
+  expect(def.source).not.toMatch(/id=\{\s*so_id/);
+  return { state: r.state, definitionId: def.id };
+}
+
 /** Errors the project has after the change that it did not have before. */
 function newErrors(before: ProjectState, after: ProjectState) {
   const was = new Set(validateState(before).filter((d) => d.severity === 'error').map((d) => `${d.code}:${d.message}`));
@@ -57,8 +70,8 @@ function newErrors(before: ProjectState, after: ProjectState) {
 }
 
 describe('instance.swapComponent', () => {
-  // Theme sections are code components, which take no anchor (the anchor moving with a change of design is below,
-  // between designs built in the editor).
+  // Theme sections are code components (the anchor moving with a change of design is below, between designs built in
+  // the editor).
   it('changes a split hero to a centered hero in place, keeping its words, links, name and tone', () => {
     const { s, find } = project();
     const id = find('hero.split');
@@ -232,9 +245,11 @@ describe('instance.swapComponent', () => {
     ]).state;
     expect(() => swap(withSlot, 'n_wrapper', { componentId: 'hero.centered' })).toThrow(/has no “Content” slot/);
     expect(withSlot.components['foundation.hero.centered']).toBeUndefined();
-    // A code component cannot render the anchor links on the page go to.
+    // Code that places no `id={so_id}` cannot render the anchor links on the page go to; a theme section can.
     inst(s, hero).anchor = 'top';
-    expect(() => swap(s, hero, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #top/);
+    const plain = anchorlessCode(s);
+    expect(() => swap(plain.state, hero, { definitionId: plain.definitionId }, true)).toThrow(/can’t take the anchor #top/);
+    expect(inst(swap(s, hero, { componentId: 'media.video' }, true).state, hero).anchor).toBe('top');
   });
 
   it('moves slot content to the new design’s slot of the same name, which must take it, and fits the slot it sits in', () => {
@@ -259,7 +274,7 @@ describe('instance.swapComponent', () => {
   it('keeps the anchor and the default look its old design gave it, and says when a list the site fills goes', () => {
     const { s, find } = project();
     const id = find('hero.split');
-    // Anchors render only in designs built in the editor: the hero shows one whose root carries #studio and which
+    // The hero shows a design built in the editor whose root carries #studio and which
     // defaults to dark, and changes to one with neither.
     const split = s.components[inst(s, id).definitionId];
     const studio = editorHero(s, 'hero.studio', 'Studio hero', { anchor: 'studio', tone: 'inverse' }, split);
@@ -269,10 +284,18 @@ describe('instance.swapComponent', () => {
     const r = swap(s, id, { definitionId: band.id });
     // Links to #studio still land, and the hero stays dark although the band defaults to light.
     expect(inst(r.state, id)).toMatchObject({ anchor: 'studio', variants: { tone: 'inverse' } });
-    // A design that can't render it (a theme section, which is code) is refused; one that gives its root an anchor of
-    // its own would lose it.
-    expect(() => swap(s, id, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #studio/);
-    expect(() => swap(s, id, { componentId: 'hero.centered' }, true)).toThrow(/can’t take the anchor #studio/);
+    // A theme section, which is code placing `id={so_id}`, keeps it too; code that places no id is refused; one that
+    // gives its root an anchor of its own would lose it.
+    expect(inst(swap(s, id, { componentId: 'hero.centered' }, true).state, id).anchor).toBe('studio');
+    // Its entrance has nowhere to land in code, so the change says it goes.
+    const entering = structuredClone(s);
+    inst(entering, id).appear = 'lift';
+    const toCode = swap(entering, id, { componentId: 'hero.centered' }, true);
+    expect(inst(toCode.state, id).anchor).toBe('studio');
+    expect(inst(toCode.state, id).appear).toBeUndefined();
+    expect(toCode.results[0].restyled).toContain('Entrance');
+    const plain = anchorlessCode(s);
+    expect(() => swap(plain.state, id, { definitionId: plain.definitionId }, true)).toThrow(/can’t take the anchor #studio/);
     const contact = editorHero(s, 'hero.contact', 'Contact hero', { anchor: 'contact' }, split);
     expect(() => swap(s, id, { definitionId: contact.id })).toThrow(/would drop Anchor #studio \(the new design gives the section its own anchor, #contact\)/);
     expect(inst(swap(s, id, { definitionId: contact.id }, true).state, id).anchor).toBeUndefined();
