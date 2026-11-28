@@ -257,16 +257,26 @@ describe.skipIf(!browserInstalled)('the video player in a browser', () => {
   it('grows in a narrow, short flex column rather than cut off its words, and returns to its shape to play (issue #1449)', async () => {
     const { page, site } = await open('clean', { url: `https://youtu.be/${YT}`, title: `Tour-${'readingroom'.repeat(20)}` });
     try {
-      await site.addStyleTag({ content: '#app { display: flex; flex-direction: column; width: 220px; height: 200px }' });
+      // With Foundation's rule for pictures, which must not squash the play circle.
+      await site.addStyleTag({ content: '#app { display: flex; flex-direction: column; width: 220px; height: 200px } svg { max-width: 100% }' });
       const player = site.locator('.so-video');
       const button = site.locator('.so-video__play');
       expect((await player.boundingBox())!.height).toBeGreaterThan(200);
       expect(await button.boundingBox()).toEqual(await player.boundingBox());
+      await site.addStyleTag({ content: '.so-video { max-width: 90px }' });
+      const icon = (await site.locator('.so-video__icon').boundingBox())!;
+      expect(icon.width).toBe(icon.height);
+      expect(icon.width).toBeGreaterThanOrEqual(64);
+      await site.evaluate('document.head.lastElementChild.remove()');
       // Nothing spills out of the button, down or sideways.
-      expect(await button.evaluate((el) => el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect(await site.evaluate(`(() => { const el = document.querySelector('.so-video__play'); return el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth; })()`)).toBe(true);
       await button.click();
       await expect.poll(() => frames(site)).toBe(1);
       expect((await player.boundingBox())!.height).toBe(200);
+      expect(await site.locator('iframe').boundingBox()).toEqual(await player.boundingBox());
+      // A site's own cap on the height still holds for the player.
+      await site.addStyleTag({ content: '#app { width: 800px; height: auto } #app > * { max-height: 240px }' });
+      expect((await player.boundingBox())!.height).toBe(240);
       expect(await site.locator('iframe').boundingBox()).toEqual(await player.boundingBox());
     } finally {
       await page.close();
@@ -277,13 +287,15 @@ describe.skipIf(!browserInstalled)('the video player in a browser', () => {
     const { page, site } = await open('dev', { url: 'https://example.com/tour.mp4' });
     try {
       await page.setViewportSize({ width: 320, height: 900 });
-      await site.addStyleTag({ content: 'html { font-size: 32px; line-height: 1.625 } body { margin: 0 }' });
+      await site.addStyleTag({ content: 'html { font-size: 32px; line-height: 1.625 } body, p { margin: 0 }' });
       await settle(site);
       const box = (await site.locator('.so-video--empty').boundingBox())!;
       const note = (await site.locator('.so-video__message').boundingBox())!;
       expect(note.y).toBeGreaterThanOrEqual(box.y);
       expect(note.y + note.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
       expect(note.x + note.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+      // The note shares the frame's one cell: the box is only as tall as the taller of the two.
+      expect(Math.abs(box.height - 4 - Math.max(200, note.height))).toBeLessThan(1); // 4: its dashed border
     } finally {
       await page.close();
     }

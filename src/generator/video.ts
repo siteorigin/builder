@@ -217,13 +217,17 @@ export function videoPlayerSvelte(instrument = false): string {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr);
 		width: 100%;
-		/* A grid or flex row around it never stretches it, and a short flex column never squeezes it. */
+		/* A grid or flex row around it never stretches it. */
 		align-self: start;
-		min-block-size: min-content;
+		min-height: 200px;
 		overflow: hidden;
 		border-radius: var(--so-radius-lg, 0);
 		background: #111214;
 		color: #ffffff;
+	}
+	/* While its button shows, a short flex column never squeezes it. */
+	.so-video:has(> .so-video__play) {
+		min-height: min-content;
 	}
 	/* Holds the frame's shape in the one cell it shares with the button, which may be taller. */
 	.so-video::before {
@@ -261,6 +265,9 @@ export function videoPlayerSvelte(instrument = false): string {
 		cursor: pointer;
 	}
 	.so-video__icon {
+		/* Stays a circle in the narrowest column, whatever the site's rule for pictures. */
+		flex: none;
+		max-width: none;
 		width: 4rem;
 		height: 4rem;
 		margin-block-end: 0.4rem;
