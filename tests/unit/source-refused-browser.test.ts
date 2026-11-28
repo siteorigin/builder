@@ -24,18 +24,27 @@ const ENTRY = [
   `import { useStore } from ${renderer('store')};`,
   "flushSync(() => useStore.setState({ screen: 'editor', modal: { kind: 'source', definitionId: window.__id }, settings: { ai: {} }, providers: [], snapshot: { dir: '/projects/site', state: window.__project, revision: 1, workspaceKey: 'w1', conflicts: [], diagnostics: window.__diagnostics } }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(SourceModal, { definitionId: window.__id })));",
-  // The file put right: the refusal goes, as the next snapshot brings it.
-  "window.__settle = () => flushSync(() => useStore.setState((s) => ({ snapshot: { ...s.snapshot, revision: 1, diagnostics: [] } })));"
+  // The file put right: the refusal goes, as the next snapshot brings it; or the refusal changes.
+  "window.__settle = (diagnostics = []) => flushSync(() => useStore.setState((s) => ({ snapshot: { ...s.snapshot, diagnostics } })));"
 ].join('\n');
 
-/** The preload bridge: the component's source is read, and each file revealed is recorded; every other call answers nothing. */
+/**
+ * The preload bridge: the component's source is read, its code checks clean, and each file revealed and each edit
+ * applied is recorded; every other call answers nothing.
+ */
 const BRIDGE = `
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any(path ? path + '.' + key : key)),
     apply: () => any('')
   });
   window.__revealed = [];
-  const project = new Proxy({}, { get: (_, key) => (key === 'readSource' ? async () => window.__source : any('project.' + String(key))) });
+  window.__applied = [];
+  const answers = {
+    readSource: async () => window.__source,
+    validateSource: async () => ({ ok: true, errors: [], diagnostics: [] }),
+    apply: async (batch) => (window.__applied.push(batch), { ok: true, revision: 2 })
+  };
+  const project = new Proxy({}, { get: (_, key) => answers[key] ?? any('project.' + String(key)) });
   const projects = new Proxy({}, { get: (_, key) => (key === 'reveal' ? async (p) => void window.__revealed.push(p) : any('projects.' + String(key))) });
   window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'projects' ? projects : key === 'then' ? undefined : any(String(key))) });
 `;
@@ -78,11 +87,11 @@ describe.skipIf(!browserInstalled)('the source editor of a component whose outsi
     expect(errors).toEqual([]);
   });
 
-  const open = async () => {
+  const open = async (diagnostics: unknown[] = [refusal]) => {
     page = await (await browser.newContext({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' })).newPage();
     errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    const globals = `window.__project = ${json(state)}; window.__id = ${json(def.id)}; window.__diagnostics = ${json([refusal])}; window.__source = ${json({ source, hash: sourceHash(source), path, editable: true })};`;
+    const globals = `window.__project = ${json(state)}; window.__id = ${json(def.id)}; window.__diagnostics = ${json(diagnostics)}; window.__source = ${json({ source, hash: sourceHash(source), path, editable: true })};`;
     await page.route(`${SITE}/**`, (route) => {
       if (new URL(route.request().url()).pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}${globals}</script><script src="/app.js"></script>` });
@@ -106,9 +115,23 @@ describe.skipIf(!browserInstalled)('the source editor of a component whose outsi
     await page.keyboard.type(' typed');
     await page.getByText('This is the last version that loaded, and your edits are based on it.', { exact: false }).waitFor();
     expect(await page.locator('button.code-save').isDisabled()).toBe(true);
+    // Past the live check (which reads the code a moment after it changes), saving still waits, and nothing is written.
+    await page.waitForTimeout(900);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+    expect(await page.locator('button.code-save').isDisabled()).toBe(true);
+    expect(await page.evaluate('window.__applied')).toEqual([]);
     // The file put right: the notice goes, and the edit can be saved.
     await page.evaluate('window.__settle()');
     await notice.waitFor({ state: 'detached' });
     await page.waitForFunction(`!document.querySelector('button.code-save').disabled`);
+  });
+
+  it('says a fixed file waits on the others refused with it', async () => {
+    const held = { ...refusal, severity: 'warning', message: `The edited code for "Greeting" (${path}) has not loaded yet: it waits, because other edited code has problems.` };
+    await open([held]);
+    const notice = page.getByRole('alert').filter({ hasText: 'The file on disk has an edit that is waiting to load.' });
+    await notice.waitFor();
+    expect(await notice.textContent()).toContain(held.message);
+    expect(await page.locator('.code-foot-note').textContent()).toBe('Showing the last version that loaded. Saving waits until the file on disk loads.');
   });
 });

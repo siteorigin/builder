@@ -468,6 +468,8 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
+  /** Look at what the watches were told while an AI request held the project, now that it has ended (#1533). */
+  private lookAfterAi: () => void = () => undefined;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -706,6 +708,11 @@ export class Controller {
   broadcast() {
     this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /** An AI request that held the project ended: what the file watches were told meanwhile is looked at. */
+  aiEnded() {
+    this.lookAfterAi();
   }
 
   /**
@@ -2421,6 +2428,13 @@ export class Controller {
     const onChange = (path: string | null) => {
       if (path === null) owed = true;
       else named.add(path);
+      lookSoon();
+    };
+    // A change told while an AI request held the project waited for it, with no later one to bring it to a look.
+    this.lookAfterAi = () => {
+      if (current() && (named.size || owed)) lookSoon();
+    };
+    const lookSoon = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         // The watch has seen the documents change and gone quiet: what follows is the look at them.

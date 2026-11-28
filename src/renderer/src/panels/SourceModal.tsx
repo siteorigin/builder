@@ -453,6 +453,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       if (!r.ok) return setErrors(r.problems);
       while (discarding.current) if ((await discarding.current) === true) return;
       if (!alive()) return;
+      // The file was edited outside the app while the code was checked: the banner says so, and nothing is written.
+      if (useStore.getState().snapshot?.diagnostics.some((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.owner?.id === definitionId)) return;
       const properties = propsDirty ? propertiesFromRows(rows) : undefined;
       // A renamed property takes every placement's content with it.
       const renames = properties ? renamesFromRows(rows) : [];
@@ -508,7 +510,9 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const propIssues = propsDirty && !typing ? schemaProblems(rows).length : 0;
   // Save waits: for an edit when the listed errors can't be repaired here, for a choice between two versions, for
   // the latest code to load, for the file edited outside the app to be put right, or for the property problems to be fixed.
-  const blocked = (reviewing && listed) || codeStale || refreshFailed || !!refused || propIssues > 0;
+  // A newer version of the code is in the project but not yet in the editor: saving waits for it to load.
+  const behind = !!src?.editable && def.kind === 'code' && src.source !== (def.source ?? '');
+  const blocked = (reviewing && listed) || codeStale || refreshFailed || !!refused || behind || propIssues > 0;
   const reviewErrors = () => {
     if (saving) return;
     const line = firstLine(errors);
@@ -534,14 +538,15 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   };
   latest.current = { close, save: () => void save(), request: requestSave };
   // Saved stays on screen only while nothing new is waiting, typed-in-but-uncommitted fields included.
-  const justSaved = saved && !dirty && !status;
+  const justSaved = saved && !dirty && !status && !refused;
   const busy = !!status || writing;
   const action = reviewing ? 'Review errors' : dirty && settledErrors && canFix ? 'Fix and save' : 'Save';
   // What the footer says, in order of what matters most right now.
   const footNote = () => {
     if (status) return tidy(status);
     if (writing) return 'Saving…';
-    if (refused) return 'Showing the last version that loaded. Saving waits until the file on disk is fixed.';
+    if (refused) return refused.severity === 'error' ? 'Showing the last version that loaded. Saving waits until the file on disk is fixed.' : 'Showing the last version that loaded. Saving waits until the file on disk loads.';
+    if (behind) return 'Loading the latest code…';
     if (justSaved) return 'Saved. Every page using this component is updated.';
     if (!dirty) return 'No unsaved changes';
     if (refreshFailed) return 'Saving waits until the latest code loads.';
