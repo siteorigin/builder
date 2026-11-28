@@ -218,14 +218,19 @@ describe('web font metadata', async () => {
     await expect(info('IBM Plex Mono Medium', 500)).resolves.toEqual({ family: 'IBM Plex Mono Medium', weight: '500', style: 'normal', joins: ['IBM Plex Mono'] });
     await expect(info('Source Code Pro Semi Bold', 600)).resolves.toMatchObject({ joins: ['Source Code Pro'] });
     await expect(info('Brand ExtraLight', 200)).resolves.toMatchObject({ joins: ['Brand'] });
+    // Older fonts give Thin and Extra Light the weights 250 and 275, which Windows once needed.
+    await expect(info('Brand Thin', 250)).resolves.toMatchObject({ weight: '250', joins: ['Brand'] });
+    await expect(info('Brand Extra-Light', 275)).resolves.toMatchObject({ joins: ['Brand'] });
     await expect(info('Brand Light Italic', 300, true)).resolves.toMatchObject({ family: 'Brand Light Italic', style: 'italic', joins: ['Brand', 'Brand Light'] });
     await expect(info('Brand Italic', 400, true)).resolves.toMatchObject({ joins: ['Brand'] });
     // A word the font's own weight or slant does not bear out is part of its name: Archivo Black is a regular weight.
-    for (const [family, weight, italic] of [['Archivo Black', 400, false], ['Brand Italic', 400, false], ['Brand Bold', 400, false], ['Roboto Condensed', 400, false], ['Medium', 500, false]] as const) {
+    for (const [family, weight, italic] of [['Archivo Black', 400, false], ['Brand Italic', 400, false], ['Brand Bold', 400, false], ['Roboto Condensed', 400, false], ['Medium', 500, false], ['Brand Medium', 450, false], ['Brand Thin', 300, false], ['Gotham Book', 400, false]] as const) {
       expect(await info(family, weight, italic)).not.toHaveProperty('joins');
     }
     // A typographic family (name ID 16) is already the whole family.
     await expect(info('Source Serif 4 Black', 900, false, { 16: 'Source Serif 4' })).resolves.toEqual({ family: 'Source Serif 4', weight: '900', style: 'normal' });
+    // A font with no OS/2 table has no weight of its own to bear the word out.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Italic', { 2: 'Italic' })]]))).not.toHaveProperty('joins');
     // A variable font holds every weight, so a word in its name says nothing about one.
     expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(100, 900)]]))).not.toHaveProperty('joins');
   });

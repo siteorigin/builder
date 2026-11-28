@@ -114,8 +114,30 @@ describe('a legacy-named weight of a static font family (#1469)', () => {
     // Archivo Black is a regular weight, so it is no weight of Archivo.
     const records = await importFonts([['archivo.woff', woff('Archivo', 400)], ['archivo-black.woff', woff('Archivo Black', 400)]]);
     expect(faces(records).map((f) => f[1]).sort()).toEqual(['Archivo', 'Archivo Black']);
-    // A typographic family is taken as it is.
+    // A typographic family is taken as it is, even one that reads like a weight of another.
+    const typographic = await importFonts([['brand.woff', woff('Brand', 400)], ['medium.woff', woff('Brand Medium', 500, { typographic: 'Brand Medium' })]]);
+    expect(faces(typographic).map((f) => f[1]).sort()).toEqual(['Brand', 'Brand Medium']);
     const named = await importFonts([['serif.woff', woff('Source Serif 4', 400)], ['black.woff', woff('Source Serif 4 Black', 900, { typographic: 'Source Serif 4 Display' })]]);
     expect(faces(named).map((f) => f[1]).sort()).toEqual(['Source Serif 4', 'Source Serif 4 Display']);
+  });
+
+  it('follows a family that moves in the same import to where it goes', async () => {
+    const records = await importFonts([['x.woff', woff('Brand', 400)], ['medium.woff', woff('Brand Medium', 500)], ['medium-bold.woff', woff('Brand Medium Bold', 700)]]);
+    expect(faces(records).map((f) => [f[1], f[2]])).toEqual([['Brand', '400'], ['Brand', '500'], ['Brand', '700']]);
+    // A family the library keeps stays one to join.
+    const [kept] = await importFonts([['medium.woff', woff('Brand Medium', 500)]]);
+    expect(faces(await importFonts([['medium-bold.woff', woff('Brand Medium Bold', 700)]], [kept]))).toEqual([['Brand Medium Bold', 'Brand Medium', '700', 'normal']]);
+  });
+
+  it('gives a library font recorded without its details the family it joins', async () => {
+    const [plex] = await importFonts([['regular.woff', regular]]);
+    const [stored] = await importFonts([['medium.woff', woff('Plex Medium', 500)]]);
+    const bare = { ...stored, font: undefined } as AssetRecord;
+    const src = temp();
+    writeFileSync(join(src, 'again.woff'), woff('Plex Medium', 500));
+    // The same bytes as the library's bare record, imported beside a family it is a weight of.
+    const plain = { ...plex, font: { ...plex.font!, family: 'Plex' } };
+    const [o] = await importAssetBatch(temp(), [{ path: join(src, 'again.woff'), opts: {} }], [plain, bare], fence, { parallel: 1, go: () => true });
+    expect(o && !('error' in o) && [o.existing, o.record.id, o.font]).toEqual([true, bare.id, { family: 'Plex', weight: '500', style: 'normal' }]);
   });
 });

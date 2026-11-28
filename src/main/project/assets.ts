@@ -694,21 +694,35 @@ export async function importAssetBatch(
  * no such family keeps its own name: "Arial Black" imported alone is a family.
  */
 function joinFontFamilies(out: Array<BatchOutcome | undefined>, joins: Array<string[] | undefined>, known: AssetRecord[]): void {
-  // As CSS reads them, case aside, and named as the library already names them.
-  const families = new Map<string, string>();
-  for (const a of known) if (a.kind === 'font' && a.font && !families.has(a.font.family.toLowerCase())) families.set(a.font.family.toLowerCase(), a.font.family);
-  const moves: Array<{ face: NonNullable<AssetRecord['font']>; record?: AssetRecord; family: string }> = [];
+  // The family each font of the library and the batch has, by its lowercase name (CSS ignores case); a library record
+  // given its details by this batch counts with them.
+  const backfilled = new Map<string, NonNullable<AssetRecord['font']>>();
+  for (const o of out) if (o && !('error' in o) && o.existing && o.font) backfilled.set(o.record.id, o.font);
+  const faces = known.map((a) => (a.kind === 'font' ? (a.font ?? backfilled.get(a.id)) : undefined)).filter((f): f is NonNullable<AssetRecord['font']> => typeof f?.family === 'string');
+  const moves: Array<{ face: NonNullable<AssetRecord['font']>; record?: AssetRecord; to: string }> = [];
+  const has = (f: string) => faces.some((face) => face.family.toLowerCase() === f.toLowerCase());
   out.forEach((o, i) => {
     if (!o || 'error' in o || !joins[i]) return;
-    const family = joins[i]!.map((f) => families.get(f.toLowerCase())).find(Boolean);
-    if (!family) return;
+    const to = joins[i]!.find(has);
+    if (!to) return;
     // A new record, or the details an old record without them is given.
-    if (!o.existing && o.record.font) moves.push({ face: o.record.font, record: o.record, family });
-    else if (o.font) moves.push({ face: o.font, family });
+    if (!o.existing && o.record.font) moves.push({ face: o.record.font, record: o.record, to });
+    else if (o.font) moves.push({ face: o.font, to });
   });
-  // Settled against the families as they were, so one file's move never decides another's.
+  // A family every face of which moves on is no family to join: follow it to where its faces go ("X Medium Bold"
+  // into "X Medium" into "X"). Settled against the families as they were, so the files' order never matters.
+  const moving = new Set(moves.map((m) => m.face));
+  const stays = new Set(faces.filter((f) => !moving.has(f)).map((f) => f.family.toLowerCase()));
+  const onward = new Map(moves.map((m) => [m.face.family.toLowerCase(), m.to]));
+  const named = new Map(faces.filter((f) => !moving.has(f)).reverse().map((f) => [f.family.toLowerCase(), f.family]));
   for (const m of moves) {
-    m.face.family = m.family;
+    let to = m.to;
+    for (let hops = 0; !stays.has(to.toLowerCase()) && onward.has(to.toLowerCase()) && hops < moves.length; hops++) to = onward.get(to.toLowerCase())!;
+    m.to = named.get(to.toLowerCase()) ?? to;
+  }
+  for (const m of moves) {
+    // Named as the library already names the family.
+    m.face.family = m.to;
     if (m.record) m.record.name = fontName(m.face);
   }
 }

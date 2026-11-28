@@ -550,19 +550,26 @@ async function readFontInfo(buf: Buffer): Promise<FontInfo> {
   }
   const clean = (f: string) => f.replace(/[^\p{L}\p{N} _-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60);
   const shown = clean(family) || 'Custom font';
-  // A typographic family (16) is already the whole family; a variable font's name holds no single weight.
-  const joins = name && !nameString(name, [16]) && !weight.includes(' ') ? legacyFamilies(shown, Number(weight), italic).map(clean).filter(Boolean) : [];
+  // A typographic family (16) is already the whole family, a variable font's name holds no single weight or slant, and
+  // a font without an OS/2 table has no weight of its own to bear a weight word out.
+  const declared = !!os2 && os2.length >= 64 && !fvar;
+  const joins = name && declared && !nameString(name, [16]) ? legacyFamilies(shown, Number(weight), italic).map(clean).filter(Boolean) : [];
   return { family: shown, weight, style: italic ? 'italic' : 'normal', ...(joins.length ? { joins } : {}) };
 }
 
-/** The CSS weights each weight word in a legacy family name (name ID 1) stands for. */
+/**
+ * The OS/2 weight classes each weight word in a legacy family name (name ID 1) stands for: its CSS weight, and for Thin
+ * and Extra Light the 250 and 275 that older Windows-compatible fonts use. "Book" is left out: it is a regular weight
+ * in some families and a light one in others, so it can't say which face it is.
+ */
 const WEIGHT_WORDS: Record<string, number[]> = {
-  thin: [100, 200],
+  thin: [100, 250],
   hairline: [100],
-  extralight: [200],
-  ultralight: [200],
+  extralight: [200, 275],
+  ultralight: [200, 275],
   light: [300],
-  book: [300, 400],
+  regular: [400],
+  normal: [400],
   medium: [500],
   semibold: [600],
   demibold: [600],
@@ -589,12 +596,11 @@ function legacyFamilies(family: string, weight: number, italic: boolean): string
     words = words.slice(0, -1);
     out.push(words.join(' '));
   }
-  const nearest = Math.min(900, Math.max(100, Math.round(weight / 100) * 100));
   // "SemiBold", "Semi Bold" and "Semi-Bold" are one word.
   for (const n of [2, 1]) {
     if (words.length <= n) continue;
     const word = words.slice(-n).join('').replace(/-/g, '').toLowerCase();
-    if (!WEIGHT_WORDS[word]?.includes(nearest)) continue;
+    if (!WEIGHT_WORDS[word]?.includes(weight)) continue;
     out.unshift(words.slice(0, -n).join(' '));
     break;
   }
