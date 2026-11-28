@@ -43,7 +43,7 @@ import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definiti
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, canvasTextLimit, canvasTooLargeReport, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers, inspectElement } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -2060,6 +2060,7 @@ export function Canvas() {
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
+        { label: 'Inspect', icon: <PanelRight />, onSelect: () => inspectElement(ref) },
         { label: 'Edit with AI…', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
         // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
         ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),

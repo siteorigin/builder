@@ -656,7 +656,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'layers',
     intent: 'Pick an element on the page or in Layers, or the one around it',
     start: 'Business site open, nothing selected',
-    routes: ['canvas:click', 'canvas:double-click', 'item:Canvas:Select *', 'item:Inspector:Select *', 'key:Escape', 'tab:layers', 'panel:Layers › row', 'item:Inspector:<data>', 'item:StatusBar:<data>'],
+    routes: ['canvas:click', 'canvas:double-click', 'item:Canvas:Select *', 'item:Canvas:Inspect', 'item:Layers:Inspect', 'item:Inspector:Select *', 'key:Escape', 'tab:layers', 'panel:Layers › row', 'item:Inspector:<data>', 'item:StatusBar:<data>'],
     outcome: 'A first click picks the section and the next the card or heading inside it; the editor’s selection is the element clicked; a code component’s placement, then its marked part, are picked in turn; a section picked in Layers is selected and scrolled into view, and picking it again brings it back after the page has scrolled away',
     scenario: 'Business starter · none',
     proof: [
@@ -668,10 +668,11 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/keep-selection.mjs', kind: 'e2e', step: 'Gallery picked in Layers shows at desktop width' },
       { test: 'tests/e2e/keep-selection.mjs', kind: 'e2e', step: 'clicking the selected Gallery row again brings it back once the page has scrolled away' },
       { test: 'tests/e2e/reveal.mjs', kind: 'e2e', step: 'open the FAQ on Contact from Layers' },
+      { test: 'tests/unit/layers-panel-browser.test.ts', kind: 'unit' },
       { test: 'tests/unit/layers.test.ts', kind: 'unit' },
       { test: 'tests/unit/keep-selection.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'Select <the element around it> in the canvas and Inspector menus, and Escape stepping out to it, are never chosen by an e2e script', owner: 'layers' }]
+    gaps: [{ missing: 'Select <the element around it> in the canvas and Inspector menus, and Escape stepping out to it, are never chosen by an e2e script', owner: 'layers' }, { missing: 'Inspect in the canvas and Layers menus is never chosen by an e2e script', owner: 'layers' }]
   },
   {
     id: 'layers.multi-select',
