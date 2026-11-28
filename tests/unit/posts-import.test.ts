@@ -694,6 +694,22 @@ describe('reading a WordPress export: galleries (#1513)', () => {
     expect(text(two.body)).toEqual(['Text']);
     expect(two.notes).toEqual(['Left out a gallery: the export lists no pictures for it.']);
   });
+
+  it('keeps a picture’s description as written, ignores exclude beside ids, and caps what a post’s galleries bring', async () => {
+    const many = Array.from({ length: 300 }, (_, i) => attachment(6000 + i, `https://site.example/wp-content/uploads/2018/01/p${i}.jpg`, '<wp:post_parent>1</wp:post_parent>'));
+    const path = withUploads(
+      wxr([
+        item(1, published, '[gallery ids="5000" exclude="5000"]\n\n[gallery]\n\n[gallery]'),
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('Band [audio] live')),
+        ...many
+      ]),
+      ['g1-100.jpg']
+    );
+    const [post] = (await readWordPress(path, {})).posts;
+    expect(post.body[0]).toEqual({ type: 'image', assetId: 'm1', alt: 'Band [audio] live' });
+    expect(post.body).toHaveLength(500);
+    expect(post.notes).toEqual(['Left out 101 gallery pictures past the first 500: a post brings at most 500 from its galleries.']);
+  });
 });
 
 /** A folder of Markdown files, by name. */

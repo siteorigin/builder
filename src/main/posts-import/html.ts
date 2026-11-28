@@ -28,11 +28,13 @@ export interface HtmlReport {
   shortcodes: string[];
   /** Galleries some of whose pictures were left out: how many each named, and how many of those the export lacks. */
   galleries: Array<{ pictures: number; missing: number }>;
+  /** Gallery pictures left out because the post's galleries already brought as many as a post may. */
+  galleryOverflow: number;
   /** Links whose address could not be kept (a script, or an address on the old site that is not a post): their words stay. */
   droppedLinks: number;
 }
 
-export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], droppedLinks: 0 });
+export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], galleryOverflow: 0, droppedLinks: 0 });
 
 /** A picture the HTML shows, as written. */
 export interface HtmlImage {
@@ -193,19 +195,22 @@ export function readShortcodes(html: string, report: HtmlReport, gallery?: Galle
     report.embedLinks++;
     return `<p><a href="${url}">${url}</a></p>`;
   });
-  if (gallery) text = text.replace(/\[gallery\b((?:[^\]["']|"[^"\][]{0,2000}"|'[^'\][]{0,2000}'){0,4000})\]/gi, (_m, attrs: string) => galleryFigures(attrs, gallery, report));
+  // How many more gallery pictures this post may show.
+  const budget = { left: MAX_POST_GALLERY_PICTURES };
   // Attributes never hold a bracket, and each part is either quoted or not, so a shortcode left open is given up on at
-  // the next bracket: one pass, whatever the post holds.
-  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,500}"|'[^'\][]{0,500}'){0,2000})\]/gi, (whole, _slash: string, name: string) => {
+  // the next bracket: one pass, whatever the post holds. A gallery's pictures are written in that same pass, so nothing
+  // they say (a description with "[audio]" in it) is read as a shortcode.
+  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,2000}"|'[^'\][]{0,2000}'){0,2000})\]/gi, (whole, slash: string, name: string, attrs: string) => {
     const n = name.toLowerCase();
+    if (n === 'gallery' && gallery && !slash) return galleryFigures(attrs, gallery, report, budget);
     if (!isShortcode(n)) return whole;
     note(n);
     return '';
   });
 }
 
-/** The most pictures one gallery brings. */
-const MAX_GALLERY_PICTURES = 500;
+/** The most pictures one post's galleries bring, together. */
+export const MAX_POST_GALLERY_PICTURES = 500;
 
 /** A shortcode attribute's value, quoted or not, or null when it is not given. */
 function shortcodeAttr(attrs: string, name: string): string | null {
@@ -220,18 +225,26 @@ const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;
 /**
  * A [gallery] as its pictures, one figure after another, as WordPress chose them: the attachments `ids` (or `include`)
  * names, in that order, or else those attached to the post (`id` names another), less any `exclude` names. A picture
- * the export does not list is counted in the report.
+ * the export does not list is counted in the report, as is one past what the post's galleries may bring.
  */
-function galleryFigures(attrs: string, gallery: GalleryPictures, report: HtmlReport): string {
+function galleryFigures(attrs: string, gallery: GalleryPictures, report: HtmlReport, budget: { left: number }): string {
   const named = attachmentIds(shortcodeAttr(attrs, 'ids') ?? shortcodeAttr(attrs, 'include'));
-  const exclude = new Set(attachmentIds(shortcodeAttr(attrs, 'exclude')));
-  const ids = [...new Set(named.length ? named : gallery.attached(attachmentIds(shortcodeAttr(attrs, 'id'))[0] ?? null))].filter((id) => !exclude.has(id)).slice(0, MAX_GALLERY_PICTURES);
+  let ids: string[];
+  if (named.length) ids = [...new Set(named)];
+  else {
+    const exclude = new Set(attachmentIds(shortcodeAttr(attrs, 'exclude')));
+    ids = gallery.attached(attachmentIds(shortcodeAttr(attrs, 'id'))[0] ?? null).filter((id) => !exclude.has(id));
+  }
   let missing = 0;
   let out = '';
   for (const id of ids) {
     const pic = gallery.picture(id);
     if (!pic) missing++;
-    else out += `<figure><img src="${escapeAttr(pic.src)}" alt="${escapeAttr(pic.alt)}"></figure>`;
+    else if (budget.left <= 0) report.galleryOverflow++;
+    else {
+      budget.left--;
+      out += `<figure><img src="${escapeAttr(pic.src)}" alt="${escapeAttr(pic.alt)}"></figure>`;
+    }
   }
   if (missing || !ids.length) report.galleries.push({ pictures: ids.length, missing });
   return out;

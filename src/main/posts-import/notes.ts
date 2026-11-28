@@ -1,5 +1,5 @@
 /** What reading a post left out or changed, as the import's report says it. */
-import type { HtmlReport } from './html';
+import { MAX_POST_GALLERY_PICTURES, type HtmlReport } from './html';
 
 const count = (n: number, one: string, many: string) => (n === 1 ? `${/^[aeiou]/i.test(one) ? 'an' : 'a'} ${one}` : `${n} ${many}`);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -31,6 +31,7 @@ export function reportNotes(r: HtmlReport): string[] {
           : `${one} of a gallery’s ${pictures} pictures`;
     out.push(`Left out ${what}: the export does not include ${missing === 1 ? 'it' : 'them'}. Export All content to bring pictures’ details along.`);
   }
+  if (r.galleryOverflow) out.push(`Left out ${count(r.galleryOverflow, 'gallery picture', 'gallery pictures')} past the first ${MAX_POST_GALLERY_PICTURES}: a post brings at most ${MAX_POST_GALLERY_PICTURES} from its galleries.`);
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }
