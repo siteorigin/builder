@@ -181,7 +181,8 @@ export function adaptFormSource(source: string): string | null {
 \tlet so_answering = $state(false);
 \t// The form's controls through the prototype, in case a field is named "elements".
 \tconst so_controls = (form) => [...Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(form)];
-\tconst so_values = (form) => JSON.stringify(so_controls(form).map((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value)));
+\t// What the visitor and the agent filled in: a hidden field is the page's, and follows the visitor to another page.
+\tconst so_values = (form) => JSON.stringify(so_controls(form).filter((el) => el.type !== 'hidden').map((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value)));
 \tfunction so_reset(form) {
 \t\tconst expected = so_sent;
 \t\tconst reset = () => {

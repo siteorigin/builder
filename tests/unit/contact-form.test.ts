@@ -821,7 +821,9 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       { id: 'f4', label: 'Arrival', name: 'arrival', type: 'date', required: true, placeholder: '' },
       { id: 'f5', label: 'Check-in time', name: 'check-in', type: 'time', required: false, placeholder: '' },
       { id: 'f6', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' },
-      { id: 'f7', label: 'Campaign', name: 'campaign', type: 'hidden', required: false, placeholder: '', value: ' Spring campaign ' }
+      { id: 'f7', label: 'Campaign', name: 'campaign', type: 'hidden', required: false, placeholder: '', value: ' Spring campaign ' },
+      // Only spaces is no value of its own: it sends the page too.
+      { id: 'f8', label: 'Page', name: 'page', type: 'hidden', required: false, placeholder: '', value: '   ' }
     ];
     const hidden = (page: Page) => page.evaluate<Array<[string, string]>>(`[...document.querySelectorAll('main form input[type="hidden"]')].map((i) => [i.name, i.value])`);
     const optionsOf = (page: Page, label: string) => page.locator('form').getByLabel(label).locator('option').allInnerTexts();
@@ -845,7 +847,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     it('asks with a labelled dropdown, date and time, holds back what is missing, and sends the answers with the hidden fields', async () => {
       const props = { provider: 'netlify', formName: 'contact', fields: STAY };
       await withForm(props, async ({ page, field, button, status, nextPost, fetches, leave, arrive, onPage }) => {
-        expect(await field('Suite').evaluate((el) => el.tagName)).toBe('SELECT');
+        expect(await page.evaluate<string[]>(`[...document.querySelectorAll('main form select')].map((el) => el.id)`)).toEqual([await field('Suite').getAttribute('id'), await field('Budget').getAttribute('id')]);
         // Until an answer is picked the dropdown says so in the site's words, or in its own placeholder.
         expect(await optionsOf(page, 'Suite')).toEqual(['Choose an answer', 'Garden suite', 'Harbour suite']);
         expect(await optionsOf(page, 'Budget')).toEqual(['No preference', 'Under 500']);
@@ -856,7 +858,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         expect(await hidden(page)).toEqual([
           ['form-name', 'contact'],
           ['listing', '/contact/'],
-          ['campaign', 'Spring campaign']
+          ['campaign', 'Spring campaign'],
+          ['page', '/contact/']
         ]);
 
         await field('Name').fill('Ada');
@@ -883,6 +886,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
           ['check-in', '09:30'],
           ['listing', '/contact/'],
           ['campaign', 'Spring campaign'],
+          ['page', '/contact/'],
           ['bot-field', '']
         ]);
         // While the reply is held back the dropdown is locked, as the text fields are.
@@ -896,7 +900,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         expect(await field('Suite').isEnabled()).toBe(true);
         expect((await hidden(page)).slice(1)).toEqual([
           ['listing', '/contact/'],
-          ['campaign', 'Spring campaign']
+          ['campaign', 'Spring campaign'],
+          ['page', '/contact/']
         ]);
         // On a listing's own page the same form sends that page.
         await leave();
@@ -904,7 +909,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await arrive([props]);
         expect((await hidden(page)).slice(1)).toEqual([
           ['listing', '/suites/oak/'],
-          ['campaign', 'Spring campaign']
+          ['campaign', 'Spring campaign'],
+          ['page', '/suites/oak/']
         ]);
       });
     }, 20_000);
@@ -923,7 +929,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
 
     it('sends the page it was rendered for without JavaScript, and the browser holds back an unpicked required dropdown', async () => {
       const props = { provider: 'endpoint', endpoint: ENDPOINT, fields: STAY };
-      (globalThis as { soTestPagePath?: string }).soTestPagePath = '/suites/oak/';
+      // The address the page was rendered for, query and fragment included: only its path is sent.
+      (globalThis as { soTestPagePath?: string }).soTestPagePath = '/suites/oak/?campaign=spring#enquire';
       let html: string;
       try {
         html = render(serverForm, { props }).body;
@@ -962,6 +969,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
             ['check-in', ''],
             ['listing', '/suites/oak/'],
             ['campaign', 'Spring campaign'],
+            ['page', '/suites/oak/'],
             ['_gotcha', '']
           ]
         ]);
@@ -972,7 +980,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
 
     it('keeps the signup to one row when its one field has a hidden field beside it', async () => {
       const signup = await bundleForm('block.signup');
-      const fields = [FIELDS[1], { id: 'f6', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' }];
+      // Before the field, so the one row is the one visible field, not the first.
+      const fields = [{ id: 'f6', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' }, FIELDS[1]];
       await withForm(
         { provider: 'endpoint', endpoint: ENDPOINT, fields },
         async ({ page, field, nextPost }) => {
@@ -982,8 +991,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
           await page.locator('.so-form__send').click();
           const post = await nextPost();
           expect(post.entries).toEqual([
-            ['email', 'ada@example.com'],
             ['listing', '/contact/'],
+            ['email', 'ada@example.com'],
             ['_gotcha', '']
           ]);
           await post.respond(200);
@@ -1445,8 +1454,10 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         // A text answer never picks anything: a question that became a dropdown is another form.
         const TYPED = { ...PICK, fields: PICK.fields.map((f) => (f.id === 'f2' ? { ...f, type: 'text' } : f)) };
         await arrive([TYPED]);
-        await field('Suite').fill('Harbour');
+        // Typed as the id of a choice, so only the kind of control keeps it from picking that choice.
+        await field('Suite').fill('c2');
         const typed = await leave();
+        expect(kept(typed)?.drafts[0]).toMatchObject({ key: 'page f1 f2', values: [['f1', ''], ['f2', 'c2']] });
         await arrive([PICK], typed);
         expect(await picked()).toBe('');
       });

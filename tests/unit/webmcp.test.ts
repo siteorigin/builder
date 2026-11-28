@@ -116,6 +116,9 @@ describe('the contact form’s code', () => {
     expect(adapted).toContain('\tfunction submit(event) {');
     expect(adapted).toContain('\tasync function so_send(event) {\n\t\tevent.preventDefault();');
     expect(adapted.match(/so_reset\(form\);/g)!.length).toBe(FORM_SOURCE_FOR_TESTS.match(/HTMLFormElement\.prototype\.reset\.call\(form\);/g)!.length);
+    // Whether the form still holds what was sent reads only what was filled in: a hidden field follows the page, and a
+    // visitor who moved to another page while it sent still has the sent answers emptied (issue #1337).
+    expect(adapted).toContain("so_controls(form).filter((el) => el.type !== 'hidden')");
     // The one place left that empties the form, inside so_reset.
     expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(1);
   });
@@ -126,6 +129,8 @@ describe('the contact form’s code', () => {
     expect(adapted).toContain('toolname={so_webmcpName}');
     expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(6);
     expect(adapted.match(/(?:readonly|disabled)=\{status === 'sending' && !so_answering\}/g)).toHaveLength(5);
+    // Its hidden field, as the contact form's, takes no description.
+    expect(adapted).toMatch(/\n\t+<input type="hidden" name=\{names\[i\]\} value=\{String\(field\.value \?\? ''\)\.trim\(\) \|\| page\.url\.pathname\} \/>\n/);
     // The snippet is written once, wherever the one-row layout places it.
     expect(adapted.match(/\{#snippet control\(field, i\)\}/g)).toHaveLength(1);
   });
@@ -182,6 +187,7 @@ describe('the contact form’s code', () => {
     const HIDDEN = `<input type="hidden" name={names[i]} value={String(field.value ?? '').trim() || page.url.pathname} />`;
     expect(changed(HIDDEN, HIDDEN.replace('type="hidden"', 'type="text"'))).toBeNull();
     expect(changed(HIDDEN, `${HIDDEN}\n${HIDDEN}`)).toBeNull();
+    expect(changed(HIDDEN, HIDDEN.replace("String(field.value ?? '').trim() || page.url.pathname", 'field.secret'))).toBeNull();
     // No snippet, no loop, or either twice: the form is not the theme's.
     expect(changed('{#snippet control(field, i)}', '{#snippet field(field, i)}')).toBeNull();
     expect(changed('{#each fields as field, i (field.id)}', '{#each fields as field, i}')).toBeNull();
