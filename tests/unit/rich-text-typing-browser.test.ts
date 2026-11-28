@@ -102,36 +102,62 @@ describe.skipIf(!browserInstalled)('typing in a rich text field', { timeout: 30_
 
   const field = () => page.getByRole('textbox', { name: 'Text' });
   const commits = () => page.evaluate<string[]>('window.commits');
+  /** The Text field's selection, as [start, end]. */
+  const selection = () => page.evaluate<[number, number]>("(() => { const t = document.querySelector('textarea'); return [t.selectionStart, t.selectionEnd]; })()");
+  /** Put the caret at `at` in the Text field, as a click there would. */
+  const caretAt = (at: number) => page.evaluate(`document.querySelector('textarea').setSelectionRange(${at}, ${at})`);
+  /** Select everything in the Text field from the keyboard, and check it is selected. */
+  const selectAll = async () => {
+    await page.keyboard.press('ControlOrMeta+A');
+    expect(await selection()).toEqual([0, (await field().inputValue()).length]);
+  };
+  /** Past the field's own work once it has been left: the saved value is put back 400 ms after the change lands. */
+  const settle = () => page.waitForTimeout(800);
 
-  it('keeps each character typed at the end of the text, and saves them on leaving', async () => {
+  it('keeps each character typed at the end of the text, and saves them once on leaving', async () => {
     await field().click();
-    await page.keyboard.press('End');
-    await page.keyboard.type(' Today');
-    expect(await field().inputValue()).toBe(`${TEXT} Today`);
+    await caretAt(TEXT.length);
+    let typed = TEXT;
+    for (const ch of ' Today') {
+      await page.keyboard.type(ch);
+      typed += ch;
+      expect(await field().inputValue()).toBe(typed);
+    }
+    expect(await commits()).toEqual([]);
     await page.keyboard.press('Tab');
+    expect(await page.evaluate<string | undefined>("document.activeElement?.getAttribute('aria-label')")).not.toBe('Text');
     await expect.poll(commits).toEqual([`${TEXT} Today`]);
+    await settle();
+    expect(await commits()).toEqual([`${TEXT} Today`]);
     expect(await field().inputValue()).toBe(`${TEXT} Today`);
   });
 
   it('replaces selected text with a typed sentence', async () => {
     await field().click();
-    await page.keyboard.press('ControlOrMeta+A');
+    await selectAll();
     await page.keyboard.type('A new sentence.');
     expect(await field().inputValue()).toBe('A new sentence.');
+    expect(await commits()).toEqual([]);
     await page.getByRole('textbox', { name: 'Heading' }).click();
     await expect.poll(commits).toEqual(['A new sentence.']);
+    await settle();
+    expect(await commits()).toEqual(['A new sentence.']);
+    expect(await field().inputValue()).toBe('A new sentence.');
   });
 
-  it('follows text that arrives without a key (an input method, dictation) in the toolbar', async () => {
+  it('follows text that arrives without a key in the toolbar', async () => {
     const addItem = page.getByRole('button', { name: 'Add item' });
-    await field().click();
-    await page.keyboard.press('ControlOrMeta+A');
-    await page.keyboard.press('Backspace');
     const off = () => addItem.getAttribute('aria-disabled');
+    await field().click();
+    await caretAt(0);
+    // A paragraph, not a list item: nothing to add an item to.
     await expect.poll(off).toBe('true');
-    // Only an input event: no key goes down or up, so nothing but the text changing can tell the toolbar.
-    await page.keyboard.insertText('- First item');
-    expect(await field().inputValue()).toBe('- First item');
+    // Only the text changing may tell the toolbar: no key goes down or up, and the caret moving (which Chromium says with
+    // select and selectionchange after the text has changed) is held back.
+    await page.evaluate("for (const t of ['select', 'selectionchange']) window.addEventListener(t, (e) => e.stopImmediatePropagation(), true)");
+    await page.keyboard.insertText('- ');
+    expect(await field().inputValue()).toBe(`- ${TEXT}`);
+    expect(await selection()).toEqual([2, 2]);
     await expect.poll(off).toBe(null);
   });
 
@@ -139,13 +165,15 @@ describe.skipIf(!browserInstalled)('typing in a rich text field', { timeout: 30_
     const bold = page.getByRole('button', { name: 'Bold' });
     const off = () => bold.getAttribute('aria-disabled');
     await field().click();
-    await page.keyboard.press('ControlOrMeta+A');
+    await selectAll();
     // Words selected: they can be made bold.
     await expect.poll(off).toBe(null);
     // As pasting the same words from a menu does: the text does not change, so the field reports no change, but the
     // selection is now a caret after them, with nothing to make bold.
-    await page.evaluate((t) => document.execCommand('insertText', false, t), TEXT);
+    await page.keyboard.insertText(TEXT);
     expect(await field().inputValue()).toBe(TEXT);
+    expect(await selection()).toEqual([TEXT.length, TEXT.length]);
     await expect.poll(off).toBe('true');
+    expect(await commits()).toEqual([]);
   });
 });
