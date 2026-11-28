@@ -25,7 +25,7 @@ import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
-import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { chatBusy, clearRefusal, composerAction, imageLabels, isClearCommand, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { requestRoutingReview } from '../lib/formRoutingReview';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
@@ -1147,6 +1147,8 @@ export function Chat() {
   };
 
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
+    // `/clear` never goes to the AI, from Enter or the Send button (#1356).
+    if (!context && isClearCommand(text)) return (void clearCommand(), false);
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
     if (getState().settingsSaving) return false;
@@ -1352,6 +1354,39 @@ export function Chat() {
     show(opened, (c) => (moveWidened(from, c.id), { chatDrafts: moveDraft(getState().chatDrafts, from, c.id), chatImages: moveImages(getState().chatImages, from, c.id) }));
   };
 
+  /**
+   * `/clear` typed in the composer (#1356): once confirmed, the same new conversation as the New conversation button,
+   * with the earlier one kept under Earlier conversations. When the button would not start one, or a request is still
+   * running, the chat says why and the text stays in the box.
+   */
+  const composerNow = useRef({ configured, clearingHistory, sending });
+  const clearCommand = async () => {
+    const refusal = () => {
+      const s = getState();
+      const shown = s.conversation;
+      return clearRefusal({ ...composerNow.current, loaded: !!shown, running: !!s.runStatus, messages: shown?.messages.length ?? 0 });
+    };
+    const why = refusal();
+    if (why) return toast(why, 'info');
+    const from = conversation!.id;
+    const ok = await confirmDialog({
+      title: 'Start a new conversation?',
+      body: 'The chat is cleared so the AI starts fresh, without this conversation’s messages.',
+      details: [
+        { kind: 'keep', text: 'This conversation stays under Earlier conversations.' },
+        { kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }
+      ],
+      confirmLabel: 'Clear chat'
+    });
+    // Cancelled, or the project, the conversation or what the chat is doing changed while the question was open.
+    if (ok !== true || !stillOpen() || getState().conversation?.id !== from) return;
+    const late = refusal();
+    if (late) return toast(late, 'info');
+    // The command itself is not left behind as the earlier conversation's unsent message.
+    if (isClearCommand(draftFor(getState().chatDrafts, from))) setChatDraft(from, '');
+    show(api.ai.newConversation());
+  };
+
 
   // What leaves this computer with a message. A server that is not this computer already says where content goes,
   // in its own warning above the box, so the note does not say it twice.
@@ -1361,6 +1396,7 @@ export function Chat() {
   const modelShown = modelLines(msgs, next);
   useLayoutEffect(() => {
     turnActions.current = { undoTurn, reviewTurn, continueRequest, retryRequest, msgs };
+    composerNow.current = { configured, clearingHistory, sending };
   });
   const previousRequest: (ChatMessage | undefined)[] = [];
   let lastRequest: ChatMessage | undefined;
@@ -1857,6 +1893,7 @@ export function Chat() {
                 if (action === 'answer') void answer(asking!, composerText, true);
                 else if (action === 'hold') toast('Your message is kept here. You can send it when the current request finishes.', 'info');
                 else if (action === 'send') void send();
+                else if (action === 'clear') void clearCommand();
               }
             }}
           />
