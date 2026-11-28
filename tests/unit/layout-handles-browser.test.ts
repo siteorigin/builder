@@ -8,6 +8,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium, type Page } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { gutters } from '../../src/renderer/src/lib/layout-drag';
+import { layoutOf } from '../../src/renderer/src/lib/payload';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -30,6 +32,8 @@ body{margin:0;font:16px/20px sans-serif}
 #tall i{display:block;height:100px}
 #half{display:flex;flex-direction:column;row-gap:10%;height:50%}
 #hole{display:grid;grid-template-columns:100px 0px 100px 100px;column-gap:20px}
+#span{display:grid;grid-template-columns:100px 100px;grid-auto-rows:40px;gap:10px}
+#span i{display:block}
 /* A page rule that would size anything put straight into the document: the bridge's measuring box keeps its own size. */
 html > :not(head):not(body){max-width:300px;padding:7px}
 </style><style id="site"></style></head><body><div id="wrap">
@@ -37,6 +41,7 @@ html > :not(head):not(body){max-width:300px;padding:7px}
 <div id="row" data-so-ctx="page:p" data-so-node="row"><span>1</span><span>2</span><span style="position:absolute">x</span><span>3</span></div>
 <div id="pct" data-so-ctx="page:p" data-so-node="pct"><i>a</i><i>b</i></div>
 <div id="fit" data-so-ctx="page:p" data-so-node="fit"><i>a</i><i>b</i></div>
+<div id="span" data-so-ctx="page:p" data-so-node="span"><i style="grid-column:span 2">a</i><i>b</i><i>c</i></div>
 <div id="cards"><div id="item" data-so-ctx="page:p" data-so-node="item">x</div></div>
 <div id="flat" data-so-ctx="page:p" data-so-node="flat"><span>1</span><div style="display:contents"><span>2</span><span style="position:fixed">f</span><span>3</span></div></div>
 <div id="tall" data-so-ctx="page:p" data-so-node="tall"><i>a</i><i>b</i></div>
@@ -104,6 +109,22 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     expect(layout.box).toMatchObject({ width: 800 });
     // Centred by auto margins inside the 1000px its container gives it, its max width sizing its content box.
     expect(layout.width).toEqual({ centered: true, max: 800, content: true, basis: 1000 });
+  });
+
+  it('reports a grid\u2019s items, so a gutter an item spans across is drawn only where it shows (#1478)', async () => {
+    await send('track', { selected: sel('span'), hovered: null });
+    const layout = layoutOf((await lastReply('rects')).spacing.layout)!;
+    const at = (r: { x: number; y: number; width: number; height: number }) => ({ x: Math.round(r.x - layout.box.x), y: Math.round(r.y - layout.box.y), width: Math.round(r.width), height: Math.round(r.height) });
+    expect(layout.items.map(at)).toEqual([
+      { x: 0, y: 0, width: 210, height: 40 },
+      { x: 0, y: 50, width: 100, height: 40 },
+      { x: 110, y: 50, width: 100, height: 40 }
+    ]);
+    const NONE = { top: 0, right: 0, bottom: 0, left: 0 };
+    const [column] = gutters(layout, { padding: NONE, border: NONE }, false).filter((g) => g.axis === 'x');
+    // The first item spans both columns: their gutter shows only from the row gap down, between the other two.
+    expect(at(column.rect)).toEqual({ x: 100, y: 40, width: 10, height: 50 });
+    expect(column.pieces!.map(at)).toEqual([{ x: 100, y: 40, width: 10, height: 50 }]);
   });
 
   it('reports a stack’s items in flow, and margins of a length as not centring it', async () => {

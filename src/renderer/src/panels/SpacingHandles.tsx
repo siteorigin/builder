@@ -382,8 +382,8 @@ export function SpacingHandles({ state, selection, desc, box, frame, spacing, zo
             split
           },
           { x: r.left + r.width / 2, y: r.top + 12 },
-          // Above the grid when its gutter has no room.
-          { along: 'y', from: r.top - 24, to: r.top + r.height }
+          // Above the grid when its gutter has no room; on the stretch it sits on where items span the rest.
+          { along: 'y', from: r.top - (g.pieces ? 0 : 24), to: r.top + r.height }
         );
       }
     }
@@ -393,10 +393,11 @@ export function SpacingHandles({ state, selection, desc, box, frame, spacing, zo
       const mine = all.filter((g) => g.axis === axis);
       if (!plan || start === null || !mine.length) continue;
       // Every gutter the edit moves: Gap moves the other axis's too, where nothing keeps that one.
-      const bands = all.filter((g) => plan.axes.includes(g.axis)).map((g) => onScreen(g.rect));
+      const bands = all.filter((g) => plan.axes.includes(g.axis)).flatMap((g) => (g.pieces ?? [g.rect]).map(onScreen));
       const scale = axis === 'x' ? 'gapX' : 'gapY';
       for (const g of mine) {
         const r = onScreen(g.rect);
+        const past = g.pieces ? 0 : 24;
         put(
           {
             id: `layout-gap-${axis}-${g.index}`,
@@ -423,8 +424,9 @@ export function SpacingHandles({ state, selection, desc, box, frame, spacing, zo
             text: dragLabel
           },
           { x: r.left + r.width / 2, y: r.top + r.height / 2 },
-          // Just past either end of a gutter with no room in it (a short row whose padding handles fill its height).
-          axis === 'x' ? { along: 'y', from: r.top - 24, to: r.top + r.height + 24 } : { along: 'x', from: r.left - 24, to: r.left + r.width + 24 }
+          // Just past either end of a gutter with no room in it (a short row whose padding handles fill its height), but
+          // never past the stretch it sits on onto an item spanning the rest.
+          axis === 'x' ? { along: 'y', from: r.top - past, to: r.top + r.height + past } : { along: 'x', from: r.left - past, to: r.left + r.width + past }
         );
       }
     }
@@ -475,7 +477,9 @@ export function SpacingHandles({ state, selection, desc, box, frame, spacing, zo
     const placed: Spot[] = out.map((g) => ({ ...g.at, axis: g.axis }));
     const mine = held ? wanted.find((w) => w.grip.id === held.id) : undefined;
     if (held && mine) {
-      const at = held.axis === 'x' ? { x: mine.prefer.x, y: held.at.y } : { x: held.at.x, y: mine.prefer.y };
+      // Kept on its gutter's stretch, which an item spanning the rest may move as the drag resizes it.
+      const keep = (v: number) => Math.max(mine.slide.from, Math.min(v, mine.slide.to));
+      const at = held.axis === 'x' ? { x: mine.prefer.x, y: keep(held.at.y) } : { x: keep(held.at.x), y: mine.prefer.y };
       placed.push({ ...at, axis: held.axis });
       out.push({ ...mine.grip, at });
     } else if (held && held.kind !== 'padding' && held.kind !== 'margin') placed.push({ ...held.at, axis: held.axis });

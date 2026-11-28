@@ -78,7 +78,7 @@ export interface FrameLayout {
   wrap: boolean;
   /** A stack spreads its spare room between its items (space between, around or evenly), so a gap may not show. */
   spread: boolean;
-  /** A stack's items in the page's order, each one's border box. */
+  /** A stack's or a grid's items in the page's order, each one's border box (a grid's break the gutters they span). */
   items: FrameRect[];
   /** A grid's columns and rows as the page sizes them, in order (the first column is on the right of a right-to-left page). */
   cols: number[];
@@ -125,7 +125,7 @@ export function layoutOf(v: unknown): FrameLayout | null {
     column: r.column === true,
     wrap: r.wrap === true,
     spread: r.spread === true,
-    items: r.kind === 'flex' ? items : [],
+    items: r.kind === 'flex' || r.kind === 'grid' ? items : [],
     cols: (r.kind === 'grid' && sizes(r.cols, MAX_COLUMNS)) || [],
     rows: (r.kind === 'grid' && sizes(r.rows, MAX_LAYOUT_ITEMS)) || [],
     packedCols: r.packedCols === true,
