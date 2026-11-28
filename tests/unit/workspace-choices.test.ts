@@ -383,17 +383,27 @@ describe('Undo or Redo held down (#1452)', () => {
     await lands(nothingLeft);
   });
 
-  it('waits for the reply as well when the editor shows the step first', async () => {
+  it('lets the next press go once the editor shows the step, though the rest of its save has not answered yet', async () => {
     open('opening#a');
     show('opening#a', 4);
     store.projectHistory('undo');
+    store.projectHistory('redo');
+    expect(sent).toEqual(['undo']);
+    // The project announces a step as soon as its journal is on disk, before it replies.
     show('opening#a', 5);
     await tick();
+    store.projectHistory('redo');
+    expect(sent).toEqual(['undo', 'redo']);
+    // The Undo's reply, coming late, does not let a press go past the Redo still on its way.
+    undos[0]({ ok: true, revision: 5 });
+    await tick();
     store.projectHistory('undo');
-    expect(sent).toEqual(['undo']);
-    await lands({ ok: true, revision: 5 });
+    expect(sent).toEqual(['undo', 'redo']);
+    show('opening#a', 6);
+    await tick();
     store.projectHistory('undo');
-    expect(sent).toEqual(['undo', 'undo']);
+    expect(sent).toEqual(['undo', 'redo', 'undo']);
+    undos[1]({ ok: true, revision: 6 });
     await lands(nothingLeft);
   });
 
@@ -409,6 +419,9 @@ describe('Undo or Redo held down (#1452)', () => {
     await tick();
     store.projectHistory('redo');
     expect(sent).toEqual(['undo', 'undo', 'redo']);
+    await lands({ ok: false, revision: 9, error: { code: 'CONFLICT', message: 'Cannot redo “Edit 2” because site.json has changed since.', recoverable: false } });
+    store.projectHistory('redo');
+    expect(sent).toEqual(['undo', 'undo', 'redo', 'redo']);
     await lands(nothingLeft);
   });
 
@@ -470,6 +483,7 @@ describe('Undo or Redo held down (#1452)', () => {
     expect(flushes.map((f) => f.opening)).toEqual(['opening#a']);
     flushes[0].resolve(true);
     await done;
+    expect(notices()).toEqual([SAVED]);
     store.projectHistory('undo');
     expect(sent).toEqual(['undo']);
     show('opening#a', 5);

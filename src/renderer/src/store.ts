@@ -761,9 +761,9 @@ export function setPageOpener(open: (pageId: string) => void) {
   pageOpener = open;
 }
 
-/** How long an Undo or Redo waits for the editor to show it before asking for the whole project again (projectHistory). */
+/** How long a saved Undo or Redo waits for the editor to show it before asking for the whole project again (projectHistory). */
 const HISTORY_SHOWN_MS = 3000;
-/** An Undo or Redo is on its way (projectHistory): sent, and not yet shown. */
+/** An Undo or Redo is on its way (projectHistory): sent, and not shown yet. */
 let historyBusy = false;
 
 /**
@@ -787,31 +787,51 @@ export function projectHistory(action: 'undo' | 'redo') {
     },
     (e: unknown) => toast(errorText(e), 'error')
   );
-  void run
-    .then(
-      (r) => (r?.ok && before ? caughtUp(r.revision, before.workspaceKey, HISTORY_SHOWN_MS) : undefined),
-      () => undefined
-    )
-    .then(() => void (historyBusy = false));
+  // It settles once, and only then can the next go.
+  void stepShown(before, run, HISTORY_SHOWN_MS).then(() => void (historyBusy = false));
 }
 
-/** Resolves once the editor shows `revision` of the opening `workspaceKey`, or that opening is no longer shown. Not shown
- *  after `ms`, it asks for the whole project again, every `ms` until it shows: an update lost on its way neither lets
- *  a step go that the editor has not shown nor holds Undo and Redo back once the editor has caught up. */
-function caughtUp(revision: number, workspaceKey: string, ms: number): Promise<void> {
-  const done = () => {
-    const s = getState().snapshot;
-    return !s || s.workspaceKey !== workspaceKey || s.revision >= revision;
-  };
-  if (done()) return Promise.resolve();
+/**
+ * Resolves once the editor shows a change after `before` in its opening, that opening is no longer shown, or `run` was
+ * refused or failed. A step shows before its reply comes: the project announces it as soon as its journal is on disk
+ * (ProjectSession.persist), while the rest of its save goes on. Saved and still not shown after `ms`, it asks for the
+ * whole project again, every `ms` until it shows: an update lost on its way never lets a step go that the editor has
+ * not shown, nor holds Undo and Redo back once the editor has caught up.
+ */
+function stepShown(before: ProjectSnapshot | null, run: Promise<ApplyResult | null | undefined>, ms: number): Promise<void> {
+  // With no project shown there is nothing to see: the reply is enough.
+  if (!before)
+    return run.then(
+      () => undefined,
+      () => undefined
+    );
+  const { workspaceKey } = before;
+  let target = before.revision + 1;
   return new Promise((resolve) => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let over = false;
+    const shown = () => {
+      const s = getState().snapshot;
+      return !s || s.workspaceKey !== workspaceKey || s.revision >= target;
+    };
     const finish = () => {
+      over = true;
       stop();
       clearInterval(timer);
       resolve();
     };
-    const stop = useStore.subscribe(() => void (done() && finish()));
-    const timer = setInterval(() => void Promise.resolve().then(() => api.project.resync()).catch(() => undefined), ms);
+    const stop = useStore.subscribe(() => void (shown() && finish()));
+    void run.then(
+      (r) => {
+        if (over) return;
+        if (!r?.ok) return finish();
+        // Its own revision, should the project not have moved on from the one shown when it was pressed.
+        target = Math.min(target, r.revision);
+        if (shown()) return finish();
+        timer = setInterval(() => void Promise.resolve().then(() => api.project.resync()).catch(() => undefined), ms);
+      },
+      () => finish()
+    );
   });
 }
 
