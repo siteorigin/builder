@@ -5,7 +5,7 @@
  * project's own fonts, or system fonts.
  */
 import type { ProjectState } from '@shared/types';
-import { FAMILY_KEYWORDS, importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { FAMILY_KEYWORDS, projectFontFamilies, projectFontStack } from '@shared/fonts';
 import { isFrozenThrough } from '@engine/draft';
 import { getTheme, listThemes } from './index';
 import type { PackFont } from './pack';
@@ -102,7 +102,7 @@ export function resolveFontStack(state: ProjectState, value: string, carried: re
   }
   // An unquoted entry that names a project font, spelled as the font's own files spell it.
   const bare = (i: number) => (/^['"]/.test(entries[i]) || FAMILY_KEYWORDS.has(keys[i]) ? undefined : own.get(keys[i]));
-  if (entries.length === 1 && bare(0)) return { stack: importedFontStack(bare(0)!) };
+  if (entries.length === 1 && bare(0)) return { stack: projectFontStack(state, bare(0)!) };
   const alias = (key: string) => (own.has(key) ? undefined : installed.find((f) => familyKey(f.name) === key && !keys.includes(familyKey(f.family))));
   if (entries.length === 1 && alias(keys[0])) return { stack: alias(keys[0])!.stack };
   // A name CSS would drop ("1984 Display") is quoted where it stands; a valid one is left as written.

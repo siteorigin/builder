@@ -169,6 +169,10 @@
   @container (min-width: 340px) { .font-face-edit { grid-template-columns: minmax(0, 160px) minmax(0, 130px); } }
   /* A font select with its own Import button beside it (Site styles). */
   .font-select { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  /* An imported font of no known kind, with its fallback chosen below it (#1490). */
+  .font-select-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .font-select-fallback { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-2); }
+  .font-select-fallback .select { flex: 1; min-width: 0; }
   .font-select .select { flex: 1; min-width: 0; }
   /* Removing a used file: the choices are the app's option cards in a fieldset whose legend asks the question. */
   .font-remove-uses { margin: -4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; line-height: 1.45; }

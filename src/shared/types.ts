@@ -1231,10 +1231,15 @@ export interface AssetRecord {
   createdAt: string;
 }
 
+/** The kind of face a font is, which decides the generic fallback a stack using it ends in. */
+export type FontCategory = 'serif' | 'sans-serif' | 'monospace';
+
 export interface FontFace {
   family: string;
   weight: string;
   style: 'normal' | 'italic';
+  /** The kind of face the file says it is (#1490); absent when its tables do not say. */
+  category?: FontCategory;
 }
 
 export interface AssetsDoc {

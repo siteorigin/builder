@@ -6,6 +6,7 @@
 import { promisify } from 'node:util';
 import { brotliDecompress, inflate } from 'node:zlib';
 import { fontCoverageOf, type FontCoverage } from '@shared/font-scripts';
+import type { FontCategory } from '@shared/types';
 
 const inflateAsync = promisify(inflate);
 const brotliDecompressAsync = promisify(brotliDecompress);
@@ -400,6 +401,8 @@ export interface FontInfo {
   /** A CSS font-weight: one weight ("700") or a variable font's range ("100 900"). */
   weight: string;
   style: 'normal' | 'italic';
+  /** The kind of face, as the file describes it, which picks the fallback a stack using it ends in. Absent when the file does not say. */
+  category?: FontCategory;
   /**
    * The families a static font named the legacy way may belong to, most likely first: its name ID 1 with the trailing
    * weight and style words its OS/2 table agrees with taken off ("IBM Plex Mono Medium" at 500 → "IBM Plex Mono").
@@ -422,14 +425,14 @@ const MAX_META_TABLE = 2 * 1024 * 1024;
 const MAX_WOFF2_OUTPUT = 64 * 1024 * 1024;
 
 /** Tables read when they are there and sound, and skipped otherwise. */
-const OPTIONAL_TABLES = new Set(['cmap']);
+const OPTIONAL_TABLES = new Set(['cmap', 'post']);
 
 /** A message the import dialog can show. Anything else thrown while parsing means the file is damaged. */
 class FontFileError extends Error {}
 
 /** The sfnt tables a font's metadata comes from, out of a WOFF or WOFF2 file. */
 async function fontTables(buf: Buffer): Promise<Map<string, Buffer>> {
-  const want = new Set(['name', 'OS/2', 'fvar', 'cmap']);
+  const want = new Set(['name', 'OS/2', 'fvar', 'cmap', 'post']);
   const tables = new Map<string, Buffer>();
   const sig = buf.toString('ascii', 0, 4);
   if (sig === 'wOFF') {
@@ -567,7 +570,29 @@ async function readFontInfo(buf: Buffer): Promise<FontInfo> {
   // a font without an OS/2 table has no weight of its own to bear a weight word out.
   const declared = !!os2 && os2.length >= 64 && os2.readUInt16BE(4) !== 0 && !fvar;
   const joins = name && declared && !nameString(name, [16]) ? legacyFamilies(shown, Number(weight), italic).map(clean).filter(Boolean) : [];
-  return { family: shown, weight, style: italic ? 'italic' : 'normal', ...(joins.length ? { joins } : {}) };
+  const category = fontCategory(os2, tables.get('post'));
+  return { family: shown, weight, style: italic ? 'italic' : 'normal', ...(category ? { category } : {}), ...(joins.length ? { joins } : {}) };
+}
+
+/**
+ * The kind of face a font is, from what its tables say: fixed pitch in `post` (or a monospaced PANOSE proportion) is
+ * monospace; otherwise the OS/2 family class, then the PANOSE serif style, tell serif from sans. Undefined when none of
+ * them says (class 0 and PANOSE "any", as many fonts ship), or when they describe a script, ornamental or symbol face.
+ */
+export function fontCategory(os2: Buffer | undefined, post: Buffer | undefined): FontCategory | undefined {
+  // PANOSE's ten bytes start at 32. Its other bytes describe Latin text (family kind 2), or nothing in particular
+  // when the kind is 0 ("any"): Roboto Mono sets only its monospaced proportion (9).
+  const panose = os2 && os2.length >= 42 && (os2[32] === 2 || os2[32] === 0) ? os2.subarray(32, 42) : undefined;
+  if ((post && post.length >= 16 && post.readUInt32BE(12) !== 0) || panose?.[3] === 9) return 'monospace';
+  const familyClass = os2 && os2.length >= 32 ? os2[30] : 0;
+  if ([1, 2, 3, 4, 5, 7].includes(familyClass)) return 'serif';
+  if (familyClass === 8) return 'sans-serif';
+  if (familyClass) return undefined;
+  // The serif style means this only for Latin text.
+  const serifStyle = panose?.[0] === 2 ? panose[1] : 0;
+  if (serifStyle >= 2 && serifStyle <= 10) return 'serif';
+  if (serifStyle >= 11 && serifStyle <= 15) return 'sans-serif';
+  return undefined;
 }
 
 /**
