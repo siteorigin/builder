@@ -12,7 +12,8 @@ import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameL
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
-import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { formNameClashMessage, pixelLimitMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { overPixelLimit } from '@shared/picture-formats';
 import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
@@ -748,6 +749,21 @@ export function missingSourceWarnings(state: ProjectState, missing: MissingAsset
     const a = state.assets.assets[m.assetId];
     return `${unnamed(a)} is missing ${missingParts(m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
   });
+}
+
+/**
+ * The notes on library images the website ships that are heavy for its pages: one too large to make copies of (which
+ * goes out whole, however small its file, #1444), or else a large file. `omitted` were left out of the website and
+ * `absent` (asset ids) have no original in the project, so neither ships.
+ */
+export function assetSizeWarnings(state: ProjectState, omitted: readonly AssetRecord[], absent: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const a of Object.values(state.assets.assets)) {
+    if (omitted.includes(a) || absent.has(a.id)) continue;
+    if (a.kind === 'image' && overPixelLimit(a.mime, a.width, a.height)) out.push(pixelLimitMessage(a));
+    else if (a.bytes > 1_500_000) out.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+  }
+  return out;
 }
 
 /**

@@ -20,3 +20,13 @@ export function copyMime(file: unknown): CopyMime | null {
 
 /** The formats a page offers before a picture's own, best first: a browser takes the first it can show. */
 export const MODERN_FORMATS = ['image/avif', 'image/webp'] as const satisfies readonly CopyMime[];
+
+/**
+ * Decoding allocates by pixel count, which a small file can inflate: a picture larger than this is never decoded, so
+ * no web-sized or responsive copy can be made of it and the library refuses it.
+ */
+export const MAX_VARIANT_PIXELS = 100_000_000;
+
+/** Whether a picture of these recorded dimensions is too large for the library to make copies of (an SVG never is). */
+export const overPixelLimit = (mime: unknown, width: unknown, height: unknown): boolean =>
+  mime !== 'image/svg+xml' && typeof width === 'number' && typeof height === 'number' && width * height > MAX_VARIANT_PIXELS;
