@@ -72,7 +72,8 @@ describe.skipIf(!browserInstalled)('Command menu Enter (#1371)', { timeout: 60_0
   const packs = JSON.stringify(listThemes()).replace(/</g, '\\u003c');
 
   beforeAll(async () => {
-    [built, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
+    // Held as soon as it launches, so a bundle that fails still leaves it for afterAll to close.
+    [built] = await Promise.all([bundle(), chromium.launch({ headless: true }).then((b) => (browser = b))]);
     page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })).newPage();
     page.on('pageerror', (e) => errors.push(e.message));
     await page.route(`${SITE}/**`, (route) => {
@@ -98,6 +99,9 @@ describe.skipIf(!browserInstalled)('Command menu Enter (#1371)', { timeout: 60_0
     // The case is the real one: Export lists Project health's notes, and opened on the link to them.
     expect(await page.getByTestId('export-health-summary').count()).toBe(1);
     expect(await page.evaluate('document.activeElement?.classList.contains("export-health-go")')).toBe(true);
+    // The link itself still works: Enter pressed again, on purpose, opens Project health.
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate('window.__modals.filter(Boolean)')).toEqual(['export', 'health']);
     expect(errors).toEqual([]);
   });
 });
