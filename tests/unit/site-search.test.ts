@@ -420,6 +420,9 @@ describe('site search as the website runs it', () => {
     // Text after many composed marks is found, and its passage starts at the right place.
     const long = [{ route: '/l/', title: 'Long', text: 'き\u3099'.repeat(240) + ' needle here' }];
     expect(read(searchPages(long, 'needle').results[0].excerpt)).toContain('needle here');
+    // A stray accent between a kana and its voicing mark, and a kana that folds to two letters, still compose.
+    expect(searchPages([{ route: '/a/', title: 'かき\u0301\u3099', text: '' }], kagi).total).toBe(1);
+    expect(searchPages([{ route: '/a/', title: '\u30ff\u3099', text: '' }], '\u30b3\u30c9').total).toBe(1);
     // Hangul written as separate jamo still matches the syllable.
     expect(searchPages([{ route: '/g/', title: '\uac00', text: '' }], '\u1100\u1161').total).toBe(1);
   });

@@ -227,10 +227,12 @@ function foldChar(c) {
  * spells it, precomposed or not: that adds none.
  */
 function join(parts, f) {
+	if (!f) return 0;
 	if (parts.length && (f === '\\u3099' || f === '\\u309a')) {
-		const c = (parts[parts.length - 1] + f).normalize('NFC');
+		const last = parts[parts.length - 1];
+		const c = (last.slice(-1) + f).normalize('NFC');
 		if (c.length === 1) {
-			parts[parts.length - 1] = c;
+			parts[parts.length - 1] = last.slice(0, -1) + c;
 			return 0;
 		}
 	}
@@ -259,7 +261,7 @@ function foldMap(text) {
 	for (const c of text) {
 		const f = foldChar(c);
 		const added = join(parts, f);
-		if (!added) to[to.length - 1] = i + c.length;
+		if (!added && f) to[to.length - 1] = i + c.length;
 		for (let k = 0; k < added; k++) {
 			from.push(i);
 			to.push(i + c.length);
