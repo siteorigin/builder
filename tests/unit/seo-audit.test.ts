@@ -581,14 +581,16 @@ describe('issue 1635: placeholder addresses, canonical URLs, collection indexes 
     const header = headerOf(unlinked);
     header.props.links = (header.props.links as Array<{ id: string }>).filter((i) => i.id !== 'i_journal');
     const owner = { kind: 'page', id: unlinked.site.homePageId } as const;
-    const looped = (bound: boolean) => {
-      let s = run(unlinked, { type: 'node.insert', newNodeId: 'n_box', owner, parentId: null, primitive: 'container' }, { type: 'node.insert', newNodeId: 'n_loop', owner, parentId: 'n_box', primitive: 'repeat', query: { collectionId: 'posts' } }, { type: 'node.insert', newNodeId: 'n_view', owner, parentId: 'n_loop', primitive: 'button', text: 'Read the post' });
-      if (bound) s = run(s, { type: 'node.setBinding', owner, nodeId: 'n_view', field: 'link', binding: { $item: 'entryLink' } });
+    const looped = (field: 'link' | 'when' | null) => {
+      let s = run(unlinked, { type: 'node.insert', newNodeId: 'n_box', owner, parentId: null, primitive: 'container' }, { type: 'node.insert', newNodeId: 'n_loop', owner, parentId: 'n_box', primitive: 'repeat', query: { collectionId: 'posts' } }, { type: 'node.insert', newNodeId: 'n_card', owner, parentId: 'n_loop', primitive: 'container' }, { type: 'node.insert', newNodeId: 'n_view', owner, parentId: 'n_card', primitive: 'button', text: 'Read the post' });
+      if (field) s = run(s, { type: 'node.setBinding', owner, nodeId: 'n_view', field, binding: { $item: 'entryLink' } });
       return s;
     };
-    expect(codes(looped(true))).not.toContain('SEO_ARCHIVE_UNLINKED');
-    // A loop that lists the posts without linking to them leads nowhere.
-    expect(codes(looped(false))).toContain('SEO_ARCHIVE_UNLINKED');
+    // The row's button, inside its card, links to the post.
+    expect(codes(looped('link'))).not.toContain('SEO_ARCHIVE_UNLINKED');
+    // A loop that lists the posts without linking to them leads nowhere, even one that shows a button only when a post has a page.
+    expect(codes(looped(null))).toContain('SEO_ARCHIVE_UNLINKED');
+    expect(codes(looped('when'))).toContain('SEO_ARCHIVE_UNLINKED');
     // The index's own layout: its placeholder link is reported, and its link to another collection reaches it.
     const archive = { kind: 'archive', id: 'posts' } as const;
     const s = run(

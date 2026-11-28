@@ -12,6 +12,7 @@ import type { EditorDestination } from '@shared/api';
 import type { EffectiveSeo, SeoFinding, SeoPillar } from '@shared/seo';
 import { checkCanonicalUrl, seoLength, seoText } from '@shared/seo';
 import type { Collection, EntryDoc, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { slotChildren } from '@shared/types';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
 import { isDraftEntry, siteEntries } from '@shared/collections';
@@ -840,15 +841,22 @@ const canonicalOverrides: SeoAuditRule = {
   }
 };
 
-/** Whether the nodes under a collection loop link each row to its entry's page (a binding to the row's `entryLink`). */
+/** Whether a value binds to the row's own `entryLink`: the row's page, as a link. */
+const isEntryLink = (v: unknown) => !!v && typeof v === 'object' && (v as { $item?: unknown }).$item === 'entryLink';
+
+/**
+ * Whether the nodes under a collection loop link each row to its entry's page: an element's link, or a placement's
+ * property, bound to the row's `entryLink`, in the loop's children or a placement's slots. A condition that reads it
+ * shows something, and links nowhere.
+ */
 function linksEntries(nodes: Record<string, GraphNode>, children: readonly string[], seen = new Set<string>()): boolean {
   return children.some((id) => {
     if (seen.has(id) || !Object.hasOwn(nodes, id)) return false;
     seen.add(id);
-    const n = nodes[id] as GraphNode & { children?: unknown };
-    // A binding is kept where the value it fills is (a button's `link`, a placement's prop).
-    if (/"\$item":"entryLink"/.test(JSON.stringify({ ...n, children: undefined }))) return true;
-    return Array.isArray(n.children) && linksEntries(nodes, n.children as string[], seen);
+    const n = nodes[id] as GraphNode & { link?: unknown; props?: Record<string, unknown>; children?: unknown; slots?: Record<string, string[]> };
+    if (isEntryLink(n.link) || (n.kind === 'instance' && Object.values(n.props ?? {}).some(isEntryLink))) return true;
+    const inner = [...(Array.isArray(n.children) ? (n.children as string[]) : []), ...Object.keys(n.slots ?? {}).flatMap((slot) => slotChildren(n, slot))];
+    return linksEntries(nodes, inner, seen);
   });
 }
 
