@@ -28,7 +28,7 @@ import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestinat
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
 import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
-import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
+import { askFrame, followed, followReport, newFrameNav, samePath, sendsFrame } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
@@ -437,7 +437,7 @@ export function Canvas() {
   };
   /**
    * Whether the page still shows an older version of the project than the editor has: a save's update has not reached
-   * it yet (spec §18.2, lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
+   * it yet (lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
    * edits wait, and work again once the page says it shows the new version, reports that the update failed, or has
    * been waited for long enough. A click made meanwhile is taken again then.
    */
@@ -955,7 +955,7 @@ export function Canvas() {
       // editing it was made in, while nothing else has been selected since (in Layers, say), and only when the element clicked is still in
       // the project, inside what the page showed around it.
       if (held && (held.session !== session || m.navigationId !== viewNow()?.navigationId || held.scene !== sceneKey(s) || held.selection !== selectionKey(s) || !st || !clickTargetIn(st, chainOf(p.chain)))) return;
-      // While a save is publishing, a pick waits for the page to show it (spec §18.2, #755): a click is taken again
+      // While a save is publishing, a pick waits for the page to show it (#755): a click is taken again
       // once the page catches up, resolved against the project as it is then; a double-click or menu is dropped, and so
       // is any pick the canvas would not take anyway (one from a page that is leaving).
       const gated = gatedPick(m.type, s.mode);
@@ -1889,9 +1889,13 @@ export function Canvas() {
     // A newly published entry can be on disk before Vite serves its route. This applies to ordinary pages as well
     // as template pages: navigating during that gap can leave the canvas on Vite's error page.
     // Ask the preview to compile the route first. The request remains authoritative while the old page reports
-    // its final state during the wait.
+    // its final state during the wait. A guest in a live session has no preview of its own to ask (#1529).
+    const asked = nav.current;
+    const remote = isRemoteShell(s);
     void api.project.previewRouteReady(shown.route, s.snapshot!.revision).catch(() => false).then((canServe) => {
-      if (canServe) post('navigate', { path: shown.route, navId, fullReload: true });
+      // Another page asked for meanwhile, or another frame since: a late answer sends neither frame back here.
+      if (nav.current !== asked || asked.request?.id !== navId) return;
+      if (sendsFrame(canServe, remote)) post('navigate', { path: shown.route, navId, fullReload: true });
       recoverRoute(shown.route!, s.snapshot!.revision, session);
     });
   }

@@ -162,4 +162,25 @@ describe.skipIf(!browserInstalled)('the toolbar’s Notes (#770)', { timeout: 60
     expect(at).toMatchObject({ pageId: other, selection: null });
     expect(at.toasts).toContain('What that note was pinned to is no longer on the page.');
   });
+
+  it('keeps a guest’s unsent note while the host pauses notes, and sends it once they are back (#1508)', async () => {
+    await open();
+    await page.evaluate(`window.__store.setState({ remote: { phase: 'admitted', joinId: 'j1', role: 'viewer' }, snapshot: { ...window.__store.getState().snapshot, workspaceKey: 'remote:j1' }, notes: { ...window.__notes, guestNotes: true, opening: 'remote:j1' } })`);
+    await page.click('.notes-btn');
+    await page.fill('.notes-form textarea', 'Swap the banner');
+    const pause = (on: boolean) => page.evaluate(`window.__store.setState({ notes: { ...window.__store.getState().notes, guestNotes: ${on} } })`);
+    await pause(false);
+    await page.getByText('The host has turned off notes from guests.').waitFor();
+    expect(await page.inputValue('.notes-form textarea')).toBe('Swap the banner');
+    expect(await page.isDisabled('.notes-form button[type="submit"]')).toBe(true);
+    expect(await page.getAttribute('.notes-form textarea', 'readonly')).not.toBeNull();
+    await page.locator('.notes-form textarea').press('Enter');
+    expect(await page.evaluate<unknown[]>('window.__calls')).toEqual([]);
+    await pause(true);
+    expect(await page.inputValue('.notes-form textarea')).toBe('Swap the banner');
+    expect(await page.isDisabled('.notes-form button[type="submit"]')).toBe(false);
+    await page.click('.notes-form button[type="submit"]');
+    await page.waitForFunction('window.__calls.length === 1');
+    expect(((await page.evaluate<unknown[][]>('window.__calls'))[0][2] as { text: string }).text).toBe('Swap the banner');
+  });
 });

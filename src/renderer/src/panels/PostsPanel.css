@@ -109,8 +109,9 @@
   /* The Content tab (#675): the Posts panel (PostsPanel.tsx), the Pages panel's sibling, built the same way. The head
      is the collection's name (a menu of collections once there is more than one), New <entry> and the collection's …
      options (sort, groupings, import, settings, layout, source). Under it only the find and the status filter stay
-     put; forms, notes and the list scroll in the body. Each row is the Pages row: a glyph, the title over a quieter
-     line with Draft (published is unmarked) and the date, and a … in a slot every row reserves. */
+     put; forms, notes and the list scroll in the body. Each row is the Pages row's family: a glyph, then the title in
+     up to two lines over a quieter line with Draft (published is unmarked) and the date. Its … sits at the end of that
+     line, so the title has the row's whole width (#1520); a row with no such line keeps the … in a slot of its own. */
   .posts-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; container: posts / inline-size; }
   .posts-head-title { flex: 1; min-width: 0; display: flex; }
   .posts-head-title h3 { min-width: 0; }
@@ -199,8 +200,16 @@
   .posts-tools { flex: none; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
   /* A category filter takes its own line when the status filter leaves it too little room. */
   .posts-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 10px; }
-  .posts-filters .segmented { flex: none; }
+  /* The tray never runs past the sidebar: should its options not fit even with their counts under their labels (larger
+     text spacing), whole options go to a second line of the same tray. */
+  .posts-filters .segmented { flex: 0 1 auto; max-width: 100%; flex-wrap: wrap; }
   .posts-filters .segmented button { padding: 0 7px; white-space: nowrap; }
+  .posts-filter-option { display: inline-flex; align-items: baseline; gap: 0 5px; }
+  /* A row too narrow for each count beside its label (measured: PostsPanel.tsx countsNeedStacking) puts each count
+     under its label, rather than dropping any (#1520). The options keep their side padding, so the measure holds. */
+  .posts-filters.stacked .segmented button { height: auto; min-height: 22px; padding: 2px 7px; }
+  .posts-filters.stacked .posts-filter-option { flex-direction: column; align-items: center; line-height: 14px; }
+  .posts-filter-count { font-variant-numeric: tabular-nums; }
   .posts-category { flex: 1 1 90px; min-width: 90px; }
   .posts-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; color: var(--text-2); font-size: 13px; }
   .posts-empty > svg { width: 20px; height: 20px; color: var(--text-3); }
@@ -209,19 +218,28 @@
   .posts-count { margin: 8px 14px 0; font-size: 12px; line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums; }
   .posts-list.list { gap: 2px; }
   .posts-list.list[hidden] { display: none; }
-  .posts-list .post-row { align-items: flex-start; gap: 8px; min-height: 42px; padding: 3px 4px 3px 8px; cursor: default; }
+  /* A row is as tall as what it says: a title of one or two lines, then Draft and the date. A one-line row (a record with
+     no date) is the house's compact 30px row. */
+  .posts-list .post-row { align-items: flex-start; gap: 8px; min-height: 30px; padding: 6px 4px 6px 8px; cursor: default; }
+  .posts-list .post-row:has(.post-meta) { padding-block: 4px; }
   .posts-list .post-row.selected { font-weight: 400; }
-  .posts-list .post-row .actions { align-self: center; }
-  /* The glyph says what the entry is (a draft, an article, a record); on the open entry it sits in a filled tile. */
-  .post-glyph { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
+  /* A row with no Draft or date line keeps its … in a slot of its own, level with the title's first line; it overhangs
+     that 18px line so a one-line row stays 30px. */
+  .posts-list .post-row > .actions { align-self: flex-start; margin-block: -3px; }
+  /* The glyph says what the entry is (a draft, an article, a record); on the open entry it sits in a filled tile. Its
+     20px box is centred on the title's first 18px line. */
+  .post-glyph { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-top: -1px; border-radius: var(--r-xs); color: var(--text-3); }
   .posts-list .post-glyph svg { width: 15px; height: 15px; color: inherit; }
   .posts-list .post-row.selected .post-glyph { background: var(--accent-fill); color: var(--on-accent); }
   .posts-list .post-row.selected .post-glyph svg { width: 14px; height: 14px; }
-  /* A one-line row (a record with no date) centres its glyph on the title. */
-  .post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 36px; }
-  .post-title { line-height: 20px; }
+  .post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  /* Two lines before a title is cut, so titles that share their opening words still differ on screen (#1520). The whole
+     title is the row's name and tooltip, and keyboard focus on a row cut short shows it in the peek card. */
+  .post-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: break-word; line-height: 18px; }
   .posts-list .post-row.selected .post-title { font-weight: 600; }
-  .post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--text-3); white-space: nowrap; }
+  /* Draft and the date on one line, with room kept at its end for the row's …, which never takes the title's width. */
+  .post-meta { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; min-width: 0; padding-right: 22px; font-size: 12px; line-height: 16px; color: var(--text-3); white-space: nowrap; }
+  .post-meta > .actions { position: absolute; top: 50%; right: -2px; transform: translateY(-50%); }
   .post-meta time { font-variant-numeric: tabular-nums; }
   /* The badge size (11px, 600) on the meta line's 16px, on an opaque ground so a hovered row's tint cannot thin it. */
   .post-status.badge { flex: none; height: auto; min-height: 16px; padding: 0 5px; border-radius: var(--r-sm); background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--panel); }
@@ -230,31 +248,27 @@
   .posts-list .post-row.selected :is(.post-meta, .post-found) { color: var(--text-2); }
   /* While finding, what matched when it is not in the title: the byline, the address or the excerpt around it. */
   .post-found { font-size: 12px; line-height: 16px; color: var(--text-3); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .posts-list.finding .post-title { white-space: normal; overflow-wrap: anywhere; }
+  .posts-list.finding .post-title { display: block; -webkit-line-clamp: none; overflow-wrap: anywhere; }
+  /* Show full titles (the collection's options): every title whole. */
+  .posts-list.full-titles .post-title { display: block; -webkit-line-clamp: none; }
   .posts-list mark { background: none; color: inherit; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
   .posts-list .post-row.selected .actions .icon-btn.hover-only,
   .posts-list .post-row.menu-open .actions .icon-btn.hover-only { opacity: 1; }
   /* Focus on the open entry's row: the 2px focus outline, a 1px gap of panel, then the fill (as in Pages). */
   .posts-list .post-row.selected:focus-visible { box-shadow: inset 0 0 0 3px var(--panel); }
   .posts-list-wrap { position: relative; }
-  /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
-  .posts-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
-  .posts-peek-title { font-weight: 500; overflow-wrap: anywhere; }
-  .posts-peek-route { font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
   /* With a collection switcher the head's name comes first: below 280px New <entry> is its icon (as Pages' Edit menu). */
   @container posts (max-width: 280px) {
     .panel-head:has(.posts-switch) .posts-head-label { display: none; }
     .panel-head:has(.posts-switch) .posts-head-add { width: 26px; padding: 0; justify-content: center; gap: 0; }
   }
   /* Narrow sidebars (below 232px): the head's buttons are their icons (their names stay in the label and tooltip),
-     the rows and the filter tighten so titles keep their room, and only Drafts keeps its count. */
+     and the rows tighten so titles keep their room. */
   @container posts (max-width: 232px) {
     .posts-head-label { display: none; }
     .posts-panel .panel-head .btn { width: 26px; padding: 0; justify-content: center; gap: 0; }
     .posts-panel .posts-list { padding-inline: 4px; }
     .posts-list .post-row { padding-left: 6px; gap: 6px; }
-    .posts-filters .segmented button { padding: 0 5px; gap: 4px; }
-    .posts-count-quiet { display: none; }
   }
 
   .posts-previewing { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 2px 6px 8px; padding: 8px 10px; border-radius: var(--r-md); background: var(--accent-soft); font-size: 12px; color: var(--text-2); }

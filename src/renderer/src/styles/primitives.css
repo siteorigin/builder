@@ -86,6 +86,8 @@
     .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%236b768c' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   }
   .input::placeholder, .textarea::placeholder { color: var(--text-3); }
+  /* An empty date field's yyyy/mm/dd mask is a placeholder, so it takes a placeholder's ink until it has focus. */
+  .input.date-empty:not(:focus) { color: var(--text-3); }
   .textarea { height: auto; min-height: 64px; max-height: 260px; padding: 7px 9px; resize: vertical; line-height: 1.5; field-sizing: content; }
   .input.sm, .select.sm { height: 26px; font-size: 12px; }
   /* Read only: selectable but not editable, so it recedes (below the panel in dark, where --panel-2 sits above it). */
@@ -491,7 +493,7 @@
   .toast svg { width: 16px; height: 16px; flex: none; }
   .toast > svg { margin-top: 5px; }
   .toast .toast-body { display: flex; flex-direction: column; min-width: 0; padding-block: 3px; }
-  .toast .toast-text { overflow-wrap: anywhere; user-select: text; }
+  .toast .toast-text { overflow-wrap: anywhere; user-select: text; white-space: pre-line; }
   .toast-dismiss { display: grid; place-items: center; width: 24px; height: 24px; margin: 1px -4px 0 0; padding: 0; flex: none; border: 0; border-radius: var(--r-xs); background: transparent; }
   .toast-dismiss:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   /* Long text wraps, then scrolls in whole lines, so a message that waits to be dismissed never fills the window. Its

@@ -24,7 +24,7 @@ import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tre
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { syncedEntryChange } from '@engine/collections';
+import { foreignSyncedEntry, syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
@@ -60,9 +60,9 @@ import { checkHeld, readFields, sameValue } from '../../renderer/src/lib/held';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
-import { heldAsMedia, isVersionMedia, newVersionId, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
+import { claimedFiles, heldAsMedia, isVersionMedia, newVersionId, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
-import { captureSnapshotInventory, foldName } from './snapshot-inventory';
+import { captureSnapshotInventory, foldName, GENERATED_MANIFEST, listSnapshotFiles, MAX_SNAPSHOT_FILE } from './snapshot-inventory';
 import { GitError, type FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -412,6 +412,11 @@ export interface HistoryEntry {
   revertsRunId?: string;
   /** The live-session guest who made this change, by the name the host let them in under (#765); on an AI step, the guest the AI ran for (#769). */
   guestName?: string;
+  /**
+   * A saved version's restore (#1474). It may rewrite a synced collection's entries, as no edit may, so taking it back
+   * or putting it back again may too: Undo returns what the last sync wrote, Redo the version's own.
+   */
+  restore?: true;
 }
 
 interface HistoryFile {
@@ -674,6 +679,8 @@ type PersistOptions = CommitOptions & {
   cursor?: number;
   wholeProject?: boolean;
   amendHistory?: boolean;
+  /** The change is a saved version's restore (see HistoryEntry.restore). */
+  restore?: boolean;
   /**
    * The active run's checkpoint with this change made to it too (#1281): an author's edit saved while the run waits for
    * an answer. Its History step goes from the checkpoint to this, and the run's checkpoint becomes this in the same
@@ -802,7 +809,7 @@ export class ProjectSession extends EventEmitter {
   /**
    * Set by whatever runs the preview. Asked before the first file of a publication the preview watches is replaced,
    * it resolves once the preview holds its hot updates, with the call that hands it the files the publication changed,
-   * so the page takes them as one update (spec §18.2).
+   * so the page takes them as one update.
    */
   previewHold: (() => Promise<(files: string[]) => void>) | null = null;
   /** The files the publication under way has changed on disk, project-relative, while the preview holds for it. */
@@ -3893,7 +3900,7 @@ export class ProjectSession extends EventEmitter {
    * The history after recording `docs` as one step at `revision`, built on a copy: nothing changes until it is
    * installed, so it can be journaled with the change it records. `entryId` is the entry that holds the step.
    */
-  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
+  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string; restore?: boolean }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
     const h = structuredClone(this.history);
     noteDropped(h, h.entries.slice(h.cursor), 'undone');
     h.entries = h.entries.slice(0, h.cursor);
@@ -3922,7 +3929,8 @@ export class ProjectSession extends EventEmitter {
         coalesceKey: opts.coalesceKey,
         runId: opts.runId,
         ...(opts.revertsRunId ? { revertsRunId: opts.revertsRunId } : {}),
-        ...(opts.guestName ? { guestName: opts.guestName } : {})
+        ...(opts.guestName ? { guestName: opts.guestName } : {}),
+        ...(opts.restore ? { restore: true as const } : {})
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
@@ -4818,7 +4826,7 @@ export class ProjectSession extends EventEmitter {
    * project's own manifest (its identity stays, whichever version of the site it holds), and the files to put back.
    * Every object it needs is read and checked, and the project it leaves validated, before anything is written.
    */
-  private async restorePlan(v: SavedVersion): Promise<{ ok: false; message: string } | { ok: true; state: ProjectState; docs: Map<string, string>; files: Array<{ path: string; hash: string; replaces: boolean }>; left: string[] }> {
+  private async restorePlan(v: SavedVersion): Promise<{ ok: false; message: string } | { ok: true; state: ProjectState; docs: Map<string, string>; files: Array<{ path: string; hash: string; replaces: boolean }>; left: string[]; others: string[] }> {
     const refuse = (message: string) => ({ ok: false as const, message });
     if (v.schemaVersion > SCHEMA_VERSION) return refuse(`“${v.name}” was saved by a newer version of SiteOrigin Builder. Update the app to restore it.`);
     const stored = new Map<string, string>();
@@ -4880,7 +4888,68 @@ export class ProjectSession extends EventEmitter {
       const abs = safeJoin(this.dir, path);
       if ((await fs.lstat(abs).catch(() => null))?.isFile() && sha(await fs.readFile(abs)) === h) left.push(path);
     }
-    return { ok: true, state, docs: stateToDocs(state), files, left };
+    const docs = stateToDocs(state);
+    let others: string[] = [];
+    if (v.git) {
+      try {
+        others = await this.otherFiles(v, docs, docs.size !== this.docs.size || [...docs].some(([p, c]) => this.docs.get(p) !== c));
+      } catch (e) {
+        return refuse((e as Error).message);
+      }
+    }
+    return { ok: true, state, docs, files, left, others };
+  }
+
+  /**
+   * The files of the site a restore of `v`, a version in Git, doesn't copy from it that differ from what the project
+   * folder holds now (#1396): the code, setup and public files besides Builder's documents and the media they name. A
+   * file counts where either side holds it as written by hand, not by the generator (each side's record of what it
+   * generated says which of its files were): generated output follows the documents restored, and the media a restore
+   * puts back are reviewed as ever. Compared by Git's name for the bytes, so only a file both sides hold is read.
+   * `docs` are the documents the restore leaves; `retires`, whether they differ from the project's, so the generator
+   * may rewrite or remove a file it writes now.
+   */
+  private async otherFiles(v: SavedVersion, docs: Map<string, string>, retires: boolean): Promise<string[]> {
+    const saved = await this.versions.gitFiles(v);
+    const now = new Map((await listSnapshotFiles(this.dir)).map((f) => [f.path, f]));
+    // Builder's own: the documents on every side, the media the version holds and either side's library.
+    const builders = new Set([...docs.keys(), ...this.docs.keys(), ...Object.keys(v.docs), ...Object.keys(v.media), ...libraryFiles(docs.get(ASSETS_DOC)), ...libraryFiles(this.docs.get(ASSETS_DOC))]);
+    // A project open read-only never loaded the generator's record: it is read for this (never waiting on a pipe), and
+    // nothing written.
+    const current = this.readOnly ? claimedFiles((await readTextAt(join(this.dir, GENERATED_MANIFEST)))?.text) : [...Object.keys(this.generated.files), ...Object.keys(this.generated.pending ?? {})];
+    const generatedNow = new Set(current);
+    const generatedThen = new Set(saved.generated);
+    // A file listed under another spelling of a name Builder knows it by, where the disk ignores case, is that file (as
+    // captureGitVersion finds a document): the same entry, never through a link. Two files whose names differ only so are two.
+    const folded = (p: string) => p.split('/').map(foldName).join('/');
+    const known = new Map([...builders, ...generatedNow].map((p) => [folded(p), p]));
+    const sameEntry = async (a: string, b: string) => {
+      const [x, y] = await Promise.all([a, b].map((p) => fs.lstat(join(this.dir, p), { bigint: true }).catch(() => null)));
+      return !!x && !!y && x.dev === y.dev && x.ino === y.ino;
+    };
+    const out: string[] = [];
+    for (const path of new Set([...saved.files.keys(), ...now.keys()])) {
+      if (path === MANIFEST_FILE || path.startsWith('siteorigin/') || builders.has(path)) continue;
+      const was = saved.files.get(path);
+      const is = now.get(path);
+      const alias = is && !generatedNow.has(path) ? known.get(folded(path)) : undefined;
+      const aliased = alias !== undefined && alias !== path && (await sameEntry(alias, path));
+      // Builder's own file under the disk's spelling: a document or a media file, which a restore puts back by its own
+      // spelling, or generated output where the version has nothing by this spelling either.
+      if (aliased && (!was || builders.has(alias))) continue;
+      // Whether the file at this path now is Builder's: its generated output, or a file it knows by another spelling.
+      const buildersNow = !!is && (generatedNow.has(path) || aliased);
+      const byHandThen = !!was && !generatedThen.has(path);
+      if (!byHandThen && !(is && !buildersNow)) continue;
+      // The version's own copy of a file Builder has taken over since: with other documents restored, the generator may
+      // rewrite or remove it, and the version's copy isn't put back, however alike the two are now.
+      const retired = retires && byHandThen && buildersNow;
+      // Git's mode says whether a file runs, which Windows doesn't keep: there only the bytes are compared. A file too
+      // large for a snapshot is none the version could hold, so it is never read.
+      if (!retired && was && is && is.size <= MAX_SNAPSHOT_FILE && (process.platform === 'win32' || (was.mode === '100755') === is.executable) && (await is.blobOid()) === was.oid) continue;
+      out.push(path);
+    }
+    return out.sort();
   }
 
   /** What restoring saved version `id` would change in the project as it is now. Changes nothing. */
@@ -4892,6 +4961,8 @@ export class ProjectSession extends EventEmitter {
       const review: VersionReview = {
         revision: this.revision,
         pages: { back: [], gone: [], changed: [] },
+        entries: { back: [], gone: [], changed: [] },
+        collections: { back: [], gone: [], changed: [] },
         site: false,
         styles: false,
         components: 0,
@@ -4899,6 +4970,7 @@ export class ProjectSession extends EventEmitter {
         files: [],
         replaced: [],
         left: [],
+        others: [],
         missing: Object.keys(v.media).filter((p) => v.media[p] === null),
         unchanged: false
       };
@@ -4914,6 +4986,19 @@ export class ProjectSession extends EventEmitter {
           if (!this.docs.has(p)) review.pages.back.push(title(plan.state, pageId));
           else if (!plan.docs.has(p)) review.pages.gone.push(title(this.state, pageId));
           else review.pages.changed.push(title(plan.state, pageId));
+        } else if (collectionPathOf(p)) {
+          const at = collectionPathOf(p)!;
+          const text = (v: unknown, fallback: string) => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
+          const name = (s: ProjectState) => text(s.collections[at.collectionId]?.settings.name, at.collectionId);
+          const entry = (s: ProjectState) => text(s.collections[at.collectionId]?.entries[at.entryId!]?.title, 'Untitled entry');
+          if (at.entryId === undefined) {
+            if (!this.docs.has(p)) review.collections.back.push(name(plan.state));
+            else if (!plan.docs.has(p)) review.collections.gone.push(name(this.state));
+            else review.collections.changed.push(name(plan.state));
+          }
+          else if (!this.docs.has(p)) review.entries.back.push(entry(plan.state));
+          else if (!plan.docs.has(p)) review.entries.gone.push(entry(this.state));
+          else review.entries.changed.push(entry(plan.state));
         } else if (p === `${DOC_DIR}/site.json`) review.site = true;
         else if (p === `${DOC_DIR}/tokens.json`) review.styles = true;
         else if (p === ASSETS_DOC) review.library = true;
@@ -4923,6 +5008,7 @@ export class ProjectSession extends EventEmitter {
       review.files = plan.files.map((f) => f.path);
       review.replaced = plan.files.filter((f) => f.replaces).map((f) => f.path);
       review.left = plan.left;
+      review.others = plan.others;
       review.unchanged = !differs && !plan.files.length;
       return { ok: true, review };
     }, false);
@@ -4937,7 +5023,7 @@ export class ProjectSession extends EventEmitter {
    * is never removed, so every step history keeps still finds the files it names. If anything fails before the
    * documents' save is journaled, the files go back to what they held; a stop part way is reported on reopening.
    */
-  restoreVersion(id: string, expectedRevision: number, reviewed?: { files: string[]; replaced: string[] }): Promise<RestoreVersionResult> {
+  restoreVersion(id: string, expectedRevision: number, reviewed?: { files: string[]; replaced: string[]; others?: string[] }): Promise<RestoreVersionResult> {
     return this.serialize(async () => {
       const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
       if (why) return { ok: false, message: why };
@@ -4950,8 +5036,13 @@ export class ProjectSession extends EventEmitter {
       // A file changed outside the app since the review would be put back without the author having been told.
       const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
       if (reviewed && (!same(reviewed.files, plan.files.map((f) => f.path)) || !same(reviewed.replaced, plan.files.filter((f) => f.replaces).map((f) => f.path)))) return stale;
+      // So would one of the other files a restore doesn't copy, come to differ or stopped differing since (#1396): a
+      // route written by hand where the version's page goes, say.
+      if (reviewed?.others && !same(reviewed.others, plan.others)) return stale;
       const docsChange = plan.docs.size !== this.docs.size || [...plan.docs].some(([p, c]) => this.docs.get(p) !== c);
-      if (!docsChange && !plan.files.length) return { ok: true, unchanged: true, revision: this.revision };
+      // What it doesn't copy from the version, as of now (#1396).
+      const others = plan.others.length ? { others: plan.others } : {};
+      if (!docsChange && !plan.files.length) return { ok: true, unchanged: true, revision: this.revision, ...others };
       // A change made outside the app and not loaded yet would vanish under the restore: it waits for it.
       const unloaded = await this.unloadedEdit(new Set());
       if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
@@ -5032,7 +5123,7 @@ export class ProjectSession extends EventEmitter {
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
           // Read from the version's files, every document is a new object: those that read the same are the project's
           // own (shareUnchanged), so the editor is sent only the documents the restore changes (#967).
-          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user' }) : null;
+          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user', restore: true }) : null;
         });
       } catch (e) {
         // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
@@ -5056,7 +5147,7 @@ export class ProjectSession extends EventEmitter {
         notice = await this.recordRestore(v, way, op, plan.files.map((f) => f.path));
       } else if (damaged) notice = 'The project’s version history is damaged, so the site as restored was not added to it.';
       await clear();
-      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left, ...(notice ? { notice } : {}) };
+      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left, ...others, ...(notice ? { notice } : {}) };
     });
   }
 
@@ -5254,9 +5345,13 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
-    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
-    // Nor one that takes away what such an entry needs, or leaves a collection synced from a source that is gone.
-    const synced = syncedEntryChange(this.state, next) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
+    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may,
+    // except a collection only restores of saved versions on the way change (#1474): a restore may rewrite its entries,
+    // so taking one back, or putting it back again, may too. Nor one that takes away what such an entry needs, or
+    // leaves a collection synced from a source that is gone.
+    // A collection left out must still hold only entries its source wrote: one synced since from another, say.
+    const byRestore = restoredOnly(steps);
+    const synced = syncedEntryChange(this.state, next, byRestore) ?? foreignSyncedEntry(next, byRestore) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
     if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
@@ -6370,6 +6465,18 @@ function readableJournalHistory(h: unknown): h is HistoryFile {
 /** A history file from a journal is installed only when it is well formed and in this format: undo steps hold whole documents. */
 function usableJournalHistory(h: unknown): h is HistoryFile {
   return readableJournalHistory(h) && h.schemaVersion === SCHEMA_VERSION;
+}
+
+/** The collections whose documents, among `steps`, only restores of saved versions change (HistoryEntry.restore). */
+function restoredOnly(steps: HistoryEntry[]): Set<string> {
+  const [restored, edited] = [new Set<string>(), new Set<string>()];
+  for (const step of steps)
+    for (const path of Object.keys(step.docs)) {
+      const c = collectionPathOf(path)?.collectionId;
+      if (c) (step.restore ? restored : edited).add(c);
+    }
+  for (const c of edited) restored.delete(c);
+  return restored;
 }
 
 function emptyHistory(): HistoryFile {

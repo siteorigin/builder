@@ -46,7 +46,7 @@ const SOCIAL_IMAGE_DESCRIPTION = 'Link preview image assetId. "" uses the site\'
 const NOINDEX_DESCRIPTION = 'true keeps the page out of search engines and AI answers.';
 const CANONICAL_DESCRIPTION = 'The original https:// address, when published elsewhere first. "" uses its own.';
 
-const ARTICLE_DATE_DESCRIPTION = 'YYYY-MM-DD: makes a dated article, shown in News lists.';
+const ARTICLE_DATE_DESCRIPTION = 'YYYY-MM-DD: makes a dated announcement page, shown in News lists. Blog posts are entries of the "posts" collection, never dated pages.';
 /** Placed first on a new article unless the call places a header of its own: it shows the page's title and details. */
 const ARTICLE_HEADER = 'content.article';
 const ARTICLE_KEYS = ['articleDate', 'byline', 'excerpt', 'newsHidden'] as const;

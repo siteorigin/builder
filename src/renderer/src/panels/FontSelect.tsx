@@ -59,8 +59,9 @@ export function FontSelect({
   const selected = all.find((f) => f.value === stack) ?? all.find((f) => fontFamilies(f.value)[0]?.toLowerCase() === primary);
   /** Bring in a web font and use it straight away. */
   const importFont = async () => {
-    const r = await api.project.importAssets(undefined, 'font').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The font couldn’t be added: ${e.message}` }));
-    if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
+    const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(undefined, 'font').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The font couldn’t be added: ${e.message}` }));
+    const said = [r.note, r.message].filter(Boolean).join(' ');
+    if (said) toast(said, r.message && !r.assetIds.length ? 'error' : 'info');
     const doc = getState().snapshot?.state.assets.assets ?? {};
     const font = r.assetIds.map((a) => doc[a]).find((a) => a?.kind === 'font' && a.font);
     if (font?.font) onChoose(importedFontStack(font.font.family));

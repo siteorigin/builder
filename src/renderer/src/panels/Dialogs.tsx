@@ -1127,7 +1127,7 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
 }
 
 /**
- * Copy a component's definition as a new project component (spec §8.4). Nothing placed moves to the copy, which is
+ * Copy a component's definition as a new project component. Nothing placed moves to the copy, which is
  * what sets it apart from Make unique.
  */
 export function DuplicateComponentModal({ definitionId, openedIn }: { definitionId: string; openedIn?: string }) {

@@ -1,5 +1,5 @@
 /**
- * The one shape every AI tool result takes (specification §13.3): whether the call worked and the project revision it
+ * The one shape every AI tool result takes: whether the call worked and the project revision it
  * reflects, then the tool's own fields beside them on success, or why it failed. A model handles every tool's failure
  * the same way: read `ok`, look at `error.code`, and try again only when `error.recoverable` is true.
  */
