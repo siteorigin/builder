@@ -5,7 +5,7 @@ import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus
 import { PROVIDER_LABELS } from '@shared/turn-model';
 import { BRIEF_FILE, storedBriefDescription } from '@shared/brief';
 import { APPLE_TOUCH_ICON } from '@shared/site-icons';
-import { atomicWrite } from './project/fsutil';
+import { atomicWrite, readIfExists } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
@@ -417,11 +417,6 @@ async function siteIcon(dir: string): Promise<string> {
   }
 }
 
-/**
- * The most of a workspace file a card reads. Its layout is a few numbers, though unsent AI messages share the file, so
- * only a file far past any project's is left out: the project then opens on a layout the outline did not draw.
- */
-const MAX_WORKSPACE_BYTES = 4 * 1024 * 1024;
 /** What each of the layout's fields can be (shared/api LocalWorkspaceState): anything else is left out. */
 const LAYOUT_FIELDS: Record<keyof SavedLayout, (v: unknown) => boolean> = {
   leftTab: (v) => typeof v === 'string',
@@ -432,17 +427,15 @@ const LAYOUT_FIELDS: Record<keyof SavedLayout, (v: unknown) => boolean> = {
 };
 
 /**
- * Where the editor last drew the project in `dir`'s panels and page, from its workspace file (the one the controller
- * writes, in the project's LOCAL_DIR), or null when there is none that can be read. Only those fields are kept, each
- * as the file has it when it is of the right kind: the editor checks each as it opens the project, and the outline drawn from the card checks them
- * the same way (renderer store.ts restoreLayout). Nothing else in the file (unsent messages) reaches Welcome.
+ * Where the editor last drew the project in `dir`'s panels and page, from its workspace file, or null when it has none
+ * that can be read. The file is read just as opening the project reads it (controller openTrusted), whatever its size
+ * and wherever a link leads, so the outline drawn from the card and the editor that replaces it start from the same
+ * state, each checking the fields the same way (renderer store.ts restoreLayout). Only these fields are kept, each when
+ * it is of the right kind: nothing else in the file (unsent messages) reaches Welcome.
  */
 async function savedLayout(dir: string): Promise<SavedLayout | null> {
   try {
-    const file = join(dir, '.siteorigin', 'workspace.json');
-    const st = await fs.lstat(file);
-    if (!st.isFile() || st.size > MAX_WORKSPACE_BYTES) return null;
-    const saved: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
+    const saved: unknown = JSON.parse((await readIfExists(join(dir, '.siteorigin', 'workspace.json'))) ?? 'null');
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null;
     const layout: Record<string, unknown> = {};
     for (const [key, fits] of Object.entries(LAYOUT_FIELDS)) {

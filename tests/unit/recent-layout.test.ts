@@ -61,14 +61,15 @@ describe('Recent projects saved layout', () => {
     expect(await layoutOf(await listed('a-list', (p) => writeFileSync(p, '[300, 400]')))).toBeUndefined();
     expect(await layoutOf(await listed('nothing-of-it', (p) => writeFileSync(p, JSON.stringify({ pageId: 'home' }))))).toBeUndefined();
     expect(await layoutOf(await listed('a-folder', (p) => mkdirSync(p)))).toBeUndefined();
-    // Far past what a workspace file holds: not read at all.
-    expect(await layoutOf(await listed('oversized', (p) => writeFileSync(p, JSON.stringify({ leftWidth: 300, pad: 'x'.repeat(4 * 1024 * 1024) }))))).toBeUndefined();
   });
 
-  it('does not follow a link in place of the file', async () => {
+  it('reads the file as opening the project does: a large one, and one a link leads to', async () => {
+    // Unsent messages share the file: however long they are, the outline is drawn where the editor will draw.
+    const large = await listed('long-draft', (p) => writeFileSync(p, JSON.stringify({ rightWidth: 400, chatDrafts: { c1: 'x'.repeat(5 * 1024 * 1024) } })));
+    expect(await layoutOf(large)).toEqual({ rightWidth: 400 });
     const elsewhere = join(root, 'elsewhere.json');
     writeFileSync(elsewhere, JSON.stringify({ leftWidth: 300 }));
-    expect(await layoutOf(await listed('linked', (p) => symlinkSync(elsewhere, p)))).toBeUndefined();
+    expect(await layoutOf(await listed('linked', (p) => symlinkSync(elsewhere, p)))).toEqual({ leftWidth: 300 });
   });
 
   it('has no layout for a missing folder', async () => {
