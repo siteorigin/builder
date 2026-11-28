@@ -323,8 +323,8 @@ const genericLinkText: SeoAuditRule = {
   }
 };
 
-/** Query keys a WordPress site read a post, page, category, tag, author, month or search by (`/?p=88`): a static site answers none of them. */
-const WORDPRESS_QUERIES = ['p', 'page_id', 'cat', 'tag', 'author', 'm', 's'];
+/** Query keys a WordPress site read a post, page, category or tag by (`/?p=88`), when they have a value: a static site answers none of them. */
+const WORDPRESS_QUERIES = ['p', 'page_id', 'cat', 'tag'];
 /** Endings of an old site's page addresses (`/contact.html`, `/index.php`): a page of this website is never at one. */
 const PAGE_FILE = /\.(html?|php|aspx?|jsp)$/i;
 
@@ -364,7 +364,7 @@ const brokenOwnLinks: SeoAuditRule = {
     const broken = new Map<string, SiteLink[]>();
     for (const { l, at } of own) {
       const last = at.route.slice(0, -1).split('/').pop() ?? '';
-      const byQuery = WORDPRESS_QUERIES.some((k) => at.url.searchParams.has(k));
+      const byQuery = WORDPRESS_QUERIES.some((k) => !!at.url.searchParams.get(k)?.trim());
       if (!byQuery && last.includes('.') && !PAGE_FILE.test(last)) continue;
       if (!byQuery && answered.has(at.route.toLowerCase())) continue;
       const list = broken.get(l.link.target) ?? [];

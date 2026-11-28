@@ -147,7 +147,7 @@ function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks'
   const list = (
     <>
       <p className="import-review-what">
-        The posts keep these links as they are. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found: Project health lists those links then.
+        The posts keep these links as they are. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found: Project health then lists those on published posts.
       </p>
       <ul className="import-names single" data-testid="post-import-old-links">
         {links.map((l) => (

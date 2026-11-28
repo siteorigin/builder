@@ -308,6 +308,7 @@ describe('baseline rules', () => {
       'https://example.com/studio/services/index.html#prices',
       'https://example.com/studio/blog/',
       'https://example.com/studio/files/price-list.pdf',
+      'https://example.com/studio/services/?m=spring&s=',
       'https://example.com/about/team/',
       'https://other.example/studio/about/team/'
     );

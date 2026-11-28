@@ -630,8 +630,11 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const source = await readWordPress(
       wxr([
         // The category twice and a relative link to the team page: each address is counted once for the post.
-        post(1, 'First', '<p><a href="https://old.example/category/soil-science/">Soil</a>, <a href="/about/team/">the team</a> and <a href="https://old.example/category/soil-science/">soil again</a>.</p>'),
-        post(2, 'Second', '<p>Meet <a href="https://old.example/about/team/">the team</a>, or <a href="/category/soil-science/page/2/">older soil posts</a>.</p>'),
+        // A category WordPress called "page" is a category, not a later page of an archive.
+        post(1, 'First', '<p><a href="https://old.example/category/soil-science/">Soil</a>, <a href="/about/team/">the team</a>, <a href="/category/page/">pages</a> and <a href="https://old.example/category/soil-science/">soil again</a>.</p>', soil + '<category domain="category" nicename="page"><![CDATA[Page]]></category>'),
+        // A query WordPress reads nothing by leaves a post's address the post's; a link spelled otherwise than its
+        // address is kept is never sent on from an address it doesn't ask for.
+        post(2, 'Second', '<p>Meet <a href="https://old.example/about/team/">the team</a>, read <a href="/2020/1/?m=spring&amp;s=">the first</a>, or <a href="/category/soil-science/page/2/">older soil posts</a> and <a href="/category/Soil-Science/">Soil</a>.</p>'),
         // A category no imported post is filed under has no archive to send visitors to; one only a draft is filed
         // under has one once the draft is published. WordPress read a category by its query, whatever the path.
         post(3, 'Third', '<p><a href="https://old.example/category/rain/">Rain</a>, <a href="/category/clay/">clay</a>, <a href="/?cat=8">a category</a> and <a href="https://other.example/about/team/">another site</a>.</p>', ''),
@@ -644,7 +647,9 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const rows = [
       { url: 'https://old.example/about/team/', posts: 2 },
       { url: 'https://old.example/?cat=8', posts: 1 },
+      { url: 'https://old.example/category/Soil-Science/', posts: 1 },
       { url: 'https://old.example/category/clay/', posts: 1, to: '/blog/category/clay/', pending: true },
+      { url: 'https://old.example/category/page/', posts: 1, to: '/blog/category/page/' },
       { url: 'https://old.example/category/rain/', posts: 1 },
       { url: 'https://old.example/category/soil-science/', posts: 1, to: '/blog/category/soil-science/' },
       { url: 'https://old.example/category/soil-science/page/2/', posts: 1 }
@@ -654,11 +659,18 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(planPostImport(s, structuredClone(source), '2026-11-24', { consume: true }).oldSiteLinks).toEqual(rows);
     // No post has anything left to check for its links.
     expect(postImportPreview('r', plan).posts.map((p) => p.notes)).toEqual([[], [], [], []]);
+    const first = Object.values(after.collections.posts.entries).find((e) => e.title === 'First')!;
+    const second = Object.values(after.collections.posts.entries).find((e) => e.title === 'Second')!;
+    expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}"}}`);
     expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
       { from: '/category/clay/', custom: true, to: '/blog/category/clay/' },
+      { from: '/category/page/', custom: true, to: '/blog/category/page/' },
       { from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/' }
     ]);
-    expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([['/category/soil-science/', '/blog/category/soil-science/']]);
+    expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([
+      ['/category/page/', '/blog/category/page/'],
+      ['/category/soil-science/', '/blog/category/soil-science/']
+    ]);
     expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
     const own = (state: ProjectState) => runSeoAudit(state).filter((f) => f.code === 'SEO_LINK_OWN_MISSING');
     // While the site's address is elsewhere, the old site may still be up there.

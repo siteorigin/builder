@@ -383,9 +383,17 @@ function oldCategoryAddress(url: string): { from: string; slug: string } | null 
   }
   if (u.search) return null;
   const from = normalizeRoute(u.pathname);
+  // Only an address the link asks for as it is kept: one spelled otherwise would be kept at an address it never asks for.
+  let typed = u.pathname;
+  try {
+    typed = decodeURIComponent(typed);
+  } catch {
+    return null;
+  }
+  if (`${typed.replace(/\/+$/, '')}/` !== from) return null;
   const parts = from.slice(1, -1).split('/');
   // A later page of an archive (`/category/news/page/2/`) is no category of its own.
-  if (parts.length < 2 || parts[0] !== 'category' || parts.includes('page')) return null;
+  if (parts.length < 2 || parts[0] !== 'category' || (parts.length >= 4 && parts[parts.length - 2] === 'page' && /^\d+$/.test(parts[parts.length - 1]))) return null;
   return { from, slug: parts[parts.length - 1] };
 }
 
