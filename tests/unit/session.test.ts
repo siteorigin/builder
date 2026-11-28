@@ -321,7 +321,8 @@ describe('project session', () => {
       { operations: [{ type: 'page.update', pageId: home, description: 'One' }, { type: 'page.update', pageId: about, description: 'Two' }] },
       { label: 'Two pages' }
     );
-    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: false, message: expect.stringMatching(/reopen/) } });
+    // Said of this save, which reopening finishes: the editor keeps the typed text only to copy (#1435).
+    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: false, message: expect.stringMatching(/while this change was being saved.*reopen/), details: { save: 'unfinished' } } });
     // The journal stays for reopening to finish.
     expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(true);
     // The save indicator shows it until the project is reopened (#753).

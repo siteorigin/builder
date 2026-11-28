@@ -101,7 +101,7 @@ interface StoreModule {
   applyHeld(id: number, opts?: { replace?: boolean; stopRunId?: string }): Promise<void>;
   saveHeldNow(id: number): Promise<void>;
   discardHeld(id: number): void;
-  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean }): void;
+  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean; refused?: () => void }): void;
   holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts?: { text?: string | null; seq?: number }): { id: number | null } | null;
   applyAiEvent(e: AiEvent): void;
   aiActivity(): number;
@@ -1179,10 +1179,13 @@ describe('a typed edit the project folder cannot be written for (#1435)', () => 
     const before = onDisk(dir, home).seo.description;
     const base = store.getState().snapshot;
     const allow = denyAccess(pagesDir(dir), 'write');
-    // Leaving as the save is on its way hears that leaving loses nothing of it: reopening finishes it.
+    // Leaving as the save is on its way hears that leaving loses nothing of it: reopening finishes it. The field it was
+    // typed in keeps nothing of it either, so leaving finds no draft there.
     let settled: ReturnType<typeof settle>;
+    let refused = 0;
     try {
-      const committing = typeAndCommit(description(home, 'A description I spent ages on'), 'Change description', 'A description I spent ages on', base);
+      let committing: Promise<unknown> = Promise.resolve();
+      store.commitDraft(base, () => (committing = store.applyOps([description(home, 'A description I spent ages on')], 'Change description')), 'A description I spent ages on', { refused: () => refused++ });
       settled = settle({ leaving: true, blur: () => undefined, wait: (ms) => new Promise((r) => setTimeout(r, ms)) });
       await committing;
     } finally {
@@ -1191,6 +1194,7 @@ describe('a typed edit the project folder cannot be written for (#1435)', () => 
     const { problems, finish } = await settled;
     finish();
     expect(problems).toEqual([]);
+    expect(refused).toBe(0);
     expect(onDisk(dir, home).seo.description).toBe(before);
     // Its journal is on disk, so reopening finishes it: the toast says so, in plain words, and names the folder.
     expect(session.saveFailure).toMatchObject({ kind: 'unfinished', label: 'Change description' });
@@ -1282,12 +1286,14 @@ describe('a typed edit the project folder cannot be written for (#1435)', () => 
     const base = store.getState().snapshot;
     // The journal was written beside its place but could not be moved there: nothing of the change is on disk, and yet
     // nothing more is saved until the project is reopened.
+    // What is in the journal's place already names the revision this save makes, and is still not its journal.
     failJournal(session, async (beforeReplace) => {
+      writeFileSync(join(dir, '.siteorigin', 'journal.json'), JSON.stringify({ revision: session.revision + 1 }));
       await beforeReplace();
       throw denied(dir, 'EPERM', 'rename', { dest: join(dir, '.siteorigin', 'journal.json') });
     });
     await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
-    expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(false);
+    rmSync(join(dir, '.siteorigin', 'journal.json'));
     expect(lastError()).toBe('That change could not be saved: the folder “.siteorigin” cannot be written to. Check that you can save files there, then close and reopen the project, and make the change again.');
     plain(lastError(), dir);
     // The save indicator names no change for reopening to finish.
@@ -1329,6 +1335,44 @@ describe('a typed edit the project folder cannot be written for (#1435)', () => 
     expect(lastError()).toBe('That change is saved, but saving did not finish: the folder “src/routes” cannot be written to. Check that you can save files there, then close and reopen the project to finish.');
     expect(store.getState().heldEdits).toEqual([]);
     expect(session.saveFailure?.kind).toBe('unfinished');
+  });
+
+  it('keeps an edit checked after the AI ran, whose save did not finish, to copy, and loses nothing by leaving', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    const allow = denyAccess(pagesDir(dir), 'write');
+    let settled: ReturnType<typeof settle>;
+    try {
+      // Typed while the AI ran: held, checked and then saved, as the AI has finished.
+      const committing = typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base, true);
+      settled = settle({ leaving: true, blur: () => undefined, wait: (ms) => new Promise((r) => setTimeout(r, ms)) });
+      await committing;
+      await until(() => store.getState().heldEdits[0]?.phase === 'failed', 'the held edit to fail');
+    } finally {
+      allow();
+    }
+    const { problems, finish } = await settled;
+    finish();
+    expect(problems).toEqual([]);
+    expect(store.getState().heldEdits[0]).toMatchObject({ save: 'unfinished', text: 'Typed in the inspector' });
+  });
+
+  it('keeps a typed edit stopped part way by a file changed outside the app to copy, as reopening finishes it', async () => {
+    const { session } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    const message = 'A file was changed outside SiteOrigin Builder while this change was being saved, so the save did not finish. Close and reopen the project to finish it: Project health then shows the file in conflict.';
+    const restore = bridgeApply(() => Promise.resolve({ ok: false, revision: session.revision, error: { code: 'CONFLICT', message, recoverable: false, details: { save: 'unfinished' } } }));
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      restore();
+    }
+    const [held] = store.getState().heldEdits;
+    expect(held).toMatchObject({ phase: 'failed', save: 'unfinished', note: message });
+    expect(heldPrompt(held, false).actions).toEqual(['copy', 'dismiss']);
+    expect(draftCount()).toBe(0);
   });
 
   it('keeps the typed text, in plain words, when main does not answer with what became of the save', async () => {

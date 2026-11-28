@@ -212,6 +212,20 @@ describe('canonical conflicts (spec 18.5)', () => {
   });
 });
 
+describe('an interrupted save that cannot be read (#1435)', () => {
+  it('is never taken for none: the project does not open, and the journal is left as it was', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    // Something is in the journal's place, and cannot be read as one.
+    mkdirSync(join(dir, '.siteorigin', 'journal.json'));
+    await expect(reopen(dir)).rejects.toThrow(/interrupted save that could not be read/);
+    expect(statSync(join(dir, '.siteorigin', 'journal.json')).isDirectory()).toBe(true);
+    // Once it is out of the way, the project opens.
+    rmSync(join(dir, '.siteorigin', 'journal.json'), { recursive: true });
+    expect((await reopen(dir)).state.site.name).toBe('Persist');
+  });
+});
+
 describe('generated files edited outside the app', () => {
   it('drops the editor variant so the preview shows the external version', async () => {
     const { dir, s } = await make();

@@ -1158,7 +1158,12 @@ export async function commitOps(operations: EditOperation[], label: string, coal
     if (held) {
       const id = held.id;
       if (id === null) landed({ ok: true });
-      else void applyHeld(id).then(() => landed(heldById(id) ? { ok: false, message: HELD_MESSAGE } : { ok: true }));
+      // A row left whose save reopening finishes loses nothing by leaving (#1435).
+      else
+        void applyHeld(id).then(() => {
+          const left = heldById(id);
+          landed(left && left.save !== 'unfinished' ? { ok: false, message: HELD_MESSAGE } : { ok: true });
+        });
       return null;
     }
   }
@@ -1193,9 +1198,11 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // whose documents landed is on the page already.
       const save = saveKind(r.error);
       const kept = save && save !== 'landed' && typed?.base ? keepUnwritten(typed, operations, label, heldNote(r.error, save), save) : null;
-      if (r.error?.code !== 'BUSY') typed?.refused?.();
-      // Leaving loses nothing of one reopening finishes, so a leave waiting on it never says it would.
-      landed(keptOnLeave(r) ? { ok: true } : (kept ?? { ok: false, message }));
+      // Leaving loses nothing of one reopening finishes (or whose documents landed), so a leave waiting on it never says
+      // it would, and the field it was typed in keeps nothing of it.
+      const lost = !keptOnLeave(r);
+      if (r.error?.code !== 'BUSY' && lost) typed?.refused?.();
+      landed(lost ? (kept ?? { ok: false, message }) : { ok: true });
       return null;
     }
     landed({ ok: true });
@@ -1225,7 +1232,8 @@ type HeldSave = 'failed' | 'unfinished' | 'blocked';
  */
 function saveKind(error: { code: string; details?: unknown } | undefined): HeldSave | 'landed' | null {
   const save = (error?.details as { save?: unknown } | null | undefined)?.save;
-  if (error?.code === 'CONFLICT') return save === 'blocked' ? 'blocked' : null;
+  // A refusal until reopening (`blocked`), or a file changed outside the app part way through a save reopening finishes.
+  if (error?.code === 'CONFLICT') return save === 'blocked' || save === 'unfinished' ? save : null;
   if (error?.code !== 'SAVE_FAILED') return null;
   return save === 'unfinished' || save === 'landed' || save === 'blocked' ? save : 'failed';
 }
@@ -1335,8 +1343,10 @@ async function writeTyped(
       }
       continue;
     }
-    // Refused because an earlier save did not finish: kept to copy and make again once the project is reopened.
-    if (saveKind(r.error) === 'blocked') return hold({ phase: 'failed', note: blockedNote(r.error?.message), save: 'blocked' });
+    // Refused because an earlier save did not finish (kept to copy and make again once the project is reopened), or
+    // stopped part way through a save reopening finishes (kept to copy).
+    const save = saveKind(r.error);
+    if (save === 'blocked' || save === 'unfinished') return hold({ phase: 'failed', note: heldNote(r.error, save), save });
     // Still refused (a file in conflict, one that cannot be read): kept, with why, so nothing typed is lost.
     return hold({ phase: 'failed', note: r.error?.message });
   }

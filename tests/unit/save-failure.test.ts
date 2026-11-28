@@ -239,9 +239,16 @@ describe("the editor's change as main answers it (#1435)", () => {
     ).toMatchObject({ recoverable: true, details: { save: "failed" } });
     // Only a save nothing was written of can be tried again here.
     for (const kind of ["landed", "blocked"] as const)
-      expect(
-        (await written(session(kind), Promise.reject(eacces()))).error,
-      ).toMatchObject({ recoverable: false, details: { save: kind } });
+      expect(await written(session(kind), Promise.reject(eacces()))).toEqual({
+        ok: false,
+        revision: 7,
+        error: {
+          code: "SAVE_FAILED",
+          message: saveFailureMessage(eacces(), project, kind),
+          recoverable: false,
+          details: { save: kind },
+        },
+      });
   });
 
   it("answers a file system failure that never reached the save as one that wrote nothing", async () => {
