@@ -199,7 +199,7 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
       await row.click({ button: 'right' });
       // With the other ways into the element, ahead of the AI's.
       const labels = await page.locator('[role="menu"] [role="menuitem"]').allInnerTexts();
-      expect(labels.findIndex((l) => l.startsWith('Ask AI'))).toBe(labels.findIndex((l) => l.trim() === 'Inspect') + 1);
+      expect(labels.findIndex((l) => l.startsWith('Edit with AI'))).toBe(labels.findIndex((l) => l.trim() === 'Inspect') + 1);
       await inspectItem().click();
       await expect.poll(focusedLabel).toBe('First field');
       expect(await storeRead('[s.dockOpen, s.rightTab, s.selection?.nodeId, s.layerSet]')).toEqual([true, 'inspect', node, null]);
