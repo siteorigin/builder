@@ -63,7 +63,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { checkPixels, importAsset, importAssetBatch, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { checkPixels, importAsset, importAssetBatch, importPackageImage, locateAssetFile, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
 const { generateProject } = await import('../../src/generator/index');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
@@ -203,6 +203,15 @@ describe('reviewing an import before anything is written', () => {
     expect(await reviewOf(disguised, false)).toMatchObject({ action: 'refuse', reason });
     expect(later.requests).toEqual([]);
     expect(existsSync(join(project, 'static/assets')) ? readdirSync(join(project, 'static/assets')) : []).toEqual([]);
+    // Nor can one stand in for a library image whose file is missing.
+    const lost = { id: 'a_lost', name: 'Lost', kind: 'image', file: 'static/assets/lost-00000000.png', mime: 'image/png', bytes: 10, hash: 'other', createdAt: '2026-01-01T00:00:00.000Z' } as const;
+    await expect(locateAssetFile(project, lost, path)).rejects.toThrow(/^poster\.png can't be used because it is over 100 megapixels/);
+    // A sync or a package bringing one stores it as it is, with no copies, rather than hold up everything else it
+    // brings: Project health names it instead.
+    const synced = await importPackageImage(project, { name: 'Poster', mime: 'image/png', ext: '.png', bytes: poster }, []);
+    expect(synced.record).toMatchObject({ width: 20_000, height: 6_000 });
+    expect(synced.record.variants).toBeUndefined();
+    expect(later.requests).toEqual([]);
     // At the cap a picture is still added, with its copies.
     const atCap = sourceFile('square.png', await sharp({ create: { width: 10_000, height: 10_000, channels: 3, background: '#335577' } }).png().toBuffer());
     expect((await reviewOf(atCap)).action).toBe('import');

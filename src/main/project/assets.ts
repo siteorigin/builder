@@ -521,10 +521,10 @@ async function planStore(p: PreparedFile, refuse: Refusal, later = false): Promi
   }
   const isFont = kind === 'font';
   const info = isFont ? null : imageInfo(p.buf, p.mime);
-  // Decoding allocates by pixel count, which a small file can inflate: a picture too large to decode gets no copies,
-  // so it is refused rather than stored to be sent whole to every visitor (#1444).
-  if (info && overPixelLimit(p.mime, info.width, info.height)) throw refuse(TOO_MANY_PIXELS);
-  const decodable = !!info && p.mime !== 'image/svg+xml';
+  // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
+  // and keep only the original. A file the author chose is refused before this (refuseOverPixelLimit); one a sync or
+  // a package brings is kept, for Project health to name, rather than hold up everything else it brings.
+  const decodable = !!info && p.mime !== 'image/svg+xml' && !overPixelLimit(p.mime, info.width, info.height);
   // Copies made later are made of a picture that is first proved to decode, unless this app just made it.
   const pending = later && decodable && isCopyMime(p.mime);
   const pixels = info ? checkPixels(p.buf, p.mime, info) : 0;
@@ -595,9 +595,19 @@ export async function importAsset(
 /** The library record already holding a prepared file's bytes. The same bytes under another format's name (a .txt and a .csv) are a file of their own. */
 const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) => a.hash === p.hash && a.mime === p.mime);
 
+/**
+ * Refuse a picture the author chose that no copy can be made of: stored, it would be sent whole to every visitor,
+ * however small its file (#1444).
+ */
+function refuseOverPixelLimit(p: PreparedFile, refuse: Refusal): void {
+  const info = kindOfMime(p.mime) === 'image' ? imageInfo(p.buf, p.mime) : null;
+  if (info && overPixelLimit(p.mime, info.width, info.height)) throw refuse(TOO_MANY_PIXELS);
+}
+
 /** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
 async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const kind = kindOfMime(p.mime);
+  refuseOverPixelLimit(p, refuse);
   const { stored, files, copiesPending } = await planStore(p, refuse, !!opts.copiesLater);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
@@ -861,6 +871,7 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
   if (!document && !isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
   const p = await prepareFile(sourcePath, refuse);
   if (p.hash === record.hash && p.mime === record.mime) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
+  refuseOverPixelLimit(p, refuse);
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, library)))) throw refuse(`${NOT_WRITTEN}.`);
   return { same: false, stored: { ...stored, originalName: originalNameOf(sourcePath) } };

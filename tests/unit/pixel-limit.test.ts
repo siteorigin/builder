@@ -33,7 +33,7 @@ describe('a picture too large to make copies of (#1444)', () => {
       {
         severity: 'warning',
         code: 'ASSET_PIXEL_LIMIT',
-        message: 'Poster is 20,000 × 6,000 pixels, too large to make smaller web copies of, so every visitor downloads all of it. Add a copy under 100 megapixels and use Replace everywhere in Assets.',
+        message: 'Poster is 20,000 × 6,000 pixels, too large to make smaller web copies of, so a page showing it sends all of it. Replace it everywhere in Assets with a copy under 100 megapixels, then remove it.',
         owner: { kind: 'asset', id: 'a_poster' }
       },
       expect.objectContaining({ code: 'ASSET_PIXEL_LIMIT', owner: { kind: 'asset', id: 'a_heavy' } })
@@ -50,9 +50,12 @@ describe('a picture too large to make copies of (#1444)', () => {
     for (const id of Object.keys(s.assets.assets)) delete s.assets.assets[id];
     s.assets.assets.a_poster = image('a_poster', 20_000, 6_000);
     s.assets.assets.a_heavy = image('a_heavy', 2_000, 1_500, { name: 'Heavy', bytes: 2_000_000 });
+    // Over both limits, it is named once, by its pixels.
+    s.assets.assets.a_both = image('a_both', 12_000, 9_000, { name: 'Both', bytes: 2_000_000 });
+    const both = expect.stringMatching(/^Both is 12,000 × 9,000 pixels/);
     const poster = expect.stringMatching(/^Poster is 20,000 × 6,000 pixels, too large to make smaller web copies of/);
-    expect(assetSizeWarnings(s, [], new Set())).toEqual([poster, 'Heavy is 2.0 MB; consider a smaller image.']);
-    expect(assetSizeWarnings(s, [s.assets.assets.a_poster], new Set())).toEqual(['Heavy is 2.0 MB; consider a smaller image.']);
-    expect(assetSizeWarnings(s, [], new Set(['a_poster', 'a_heavy']))).toEqual([]);
+    expect(assetSizeWarnings(s, [], new Set())).toEqual([poster, 'Heavy is 2.0 MB; consider a smaller image.', both]);
+    expect(assetSizeWarnings(s, [s.assets.assets.a_poster], new Set())).toEqual(['Heavy is 2.0 MB; consider a smaller image.', both]);
+    expect(assetSizeWarnings(s, [], new Set(['a_poster', 'a_heavy', 'a_both']))).toEqual([]);
   });
 });

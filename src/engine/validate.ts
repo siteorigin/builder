@@ -611,7 +611,7 @@ function defaultDiagnostics(state: ProjectState): Diagnostic[] {
 
 /** What Project health and a website export say of a library image too large to make copies of (overPixelLimit). */
 export const pixelLimitMessage = (a: { name: string; width?: number; height?: number }) =>
-  `${a.name} is ${(a.width ?? 0).toLocaleString('en-US')} × ${(a.height ?? 0).toLocaleString('en-US')} pixels, too large to make smaller web copies of, so every visitor downloads all of it. Add a copy under 100 megapixels and use Replace everywhere in Assets.`;
+  `${a.name} is ${(a.width ?? 0).toLocaleString('en-US')} × ${(a.height ?? 0).toLocaleString('en-US')} pixels, too large to make smaller web copies of, so a page showing it sends all of it. Replace it everywhere in Assets with a copy under 100 megapixels, then remove it.`;
 
 /** Library images too large for fast pages: what coreValidation reports last. */
 function assetSizeDiagnostics(state: ProjectState): Diagnostic[] {
