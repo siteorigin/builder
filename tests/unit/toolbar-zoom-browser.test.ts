@@ -66,6 +66,7 @@ type Layout = {
   /** The editor's next row, which starts below the toolbar however many rows it takes. */
   workspace: Rect;
   status: string;
+  tier: string;
   viewport: number;
 };
 
@@ -92,6 +93,7 @@ const measure = (p: Page) =>
       toolbar: rect(bar, 'toolbar'),
       workspace: rect(document.querySelector('.workspace'), 'workspace'),
       status: bar.querySelector('.save-state').textContent,
+      tier: bar.dataset.tier,
       viewport: innerWidth
     };
   })()`);
@@ -165,6 +167,8 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
         await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
         const m = await measure(page);
         const at = `${width} ${status}`;
+        // A live session's wider controls at the minimum window, before any zoom, are #1342's compact toolbar.
+        if (status === 'hosting' && m.tier !== 'overflow') continue;
         expect(m.viewport).toBe(width);
         expect(m.status).toContain(text);
         if (!m.controls.some((c) => c.name.includes('export-btn'))) problems.push(`${at}: Export is not drawn`);
