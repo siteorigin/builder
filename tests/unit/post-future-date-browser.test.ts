@@ -1,7 +1,7 @@
 /**
  * A published entry's Publication date changed to a day still to come (#1317): nothing makes the website wait for it,
- * so the field's note says the entry goes in the next export all the same, in place of the backdating note, and so
- * does a message as the change lands. The real
+ * so the field's note says the entry goes in the next export all the same, in place of the backdating note, and the
+ * bar above the writer, which shows with the details closed, marks it and announces it. The real
  * writer and store run in a real browser, over a stand-in for the preload bridge.
  */
 import { existsSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
+import { todayArticleDate } from '@shared/articles';
 import { createStarterState } from '@catalogue/starters';
 import { run } from './fixtures/seo-site';
 
@@ -47,7 +48,7 @@ const ENTRY = [
 const BRIDGE = `
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
-    apply: () => (path === 'on' ? () => {} : Promise.resolve(path === 'project.apply' ? { ok: true } : undefined))
+    apply: () => (path === 'on' ? () => {} : Promise.resolve(undefined))
   });
   window.builder = any('');
 `;
@@ -88,19 +89,14 @@ describe.skipIf(!browserInstalled)('a published entry dated after today (#1317)'
 
   /** What the Publication date field is described by: the note under it. */
   const note = () =>
-    page.evaluate(() => {
-      const label = [...document.querySelectorAll('label')].find((l) => l.textContent === 'Publication date')!;
-      const input = document.getElementById(label.htmlFor)!;
-      return document.getElementById(input.getAttribute('aria-describedby')!)!.textContent;
+    page.getByLabel('Publication date').evaluate((input) => {
+      const el = input as unknown as { getAttribute(n: string): string; ownerDocument: { getElementById(id: string): { textContent: string } } };
+      return el.ownerDocument.getElementById(el.getAttribute('aria-describedby')).textContent;
     });
+  const badge = () => page.locator('#writer .post-bar').getByText('Future date', { exact: true });
+  const announced = () => page.locator('#writer .post-bar .sr-only[role="status"]').textContent();
+  const openDetails = () => page.locator('#writer .post-details:not(.post-seo) .section-head').click();
   const mount = (state: ProjectState) => page.evaluate((state) => (globalThis as unknown as { mount(s: unknown, post: string, usage: unknown): void }).mount(state, 'en_spring', {}), state);
-  const toasts = () => page.evaluate(() => (globalThis as unknown as { so: { toasts(): string[] } }).so.toasts());
-  /** The date typed into the field, the details opened for it, and committed with Enter. */
-  async function type(date: string) {
-    await page.locator('#writer .post-details:not(.post-seo) .section-head').click();
-    await page.getByLabel('Publication date').fill(date);
-    await page.getByLabel('Publication date').press('Enter');
-  }
   const change = (state: ProjectState) => page.evaluate((state) => (globalThis as unknown as { so: { change(s: unknown): void } }).so.change(state), state);
 
   beforeAll(async () => {
@@ -127,38 +123,36 @@ describe.skipIf(!browserInstalled)('a published entry dated after today (#1317)'
     expect(errors).toEqual([]);
   });
 
-  it('says the post stays in the next export once its date is moved past today, until it is moved back', async () => {
+  const SAID = 'This post is published, so it is still in the next export, dated January 1, 2099.';
+  const WHY = 'Static exports don’t schedule publishing.';
+
+  it('warns once a published post’s date is moved past today, with the details closed or open, until it is moved back', async () => {
     await mount(site('2001-06-01'));
-    expect(await note()).toBe(BACKDATE);
+    expect(await badge().count()).toBe(0);
+    expect(await announced()).toBe('');
     await change(site('2099-01-01'));
-    const warned = await note();
-    expect(warned).toContain('still in the next export');
-    expect(warned).toContain('2099');
-    expect(warned).toContain('don’t schedule publishing');
-    expect(warned).not.toContain(BACKDATE);
+    // The details have not been opened: the bar says it.
+    await badge().waitFor({ state: 'visible' });
+    expect(await announced()).toBe(`${SAID} ${WHY}`);
+    await openDetails();
+    await page.getByText(SAID, { exact: true }).and(page.locator('.field-warning')).waitFor({ state: 'visible' });
+    expect(await note()).toBe(`${SAID}${WHY}`);
     await change(site('2001-06-01'));
     expect(await note()).toBe(BACKDATE);
-  });
-
-  it('keeps the backdating note for a draft dated after today, which stays off the website', async () => {
-    await mount(site('2099-01-01', true));
-    expect(await note()).toBe(BACKDATE);
-  });
-
-  it('says so as a published post’s new date lands, which closing the details does not hide', async () => {
-    await mount(site('2001-06-01'));
-    await type('2099-01-01');
-    await expect.poll(toasts).toHaveLength(1);
-    expect((await toasts())[0]).toMatch(/still in the next export, dated .*2099.*don’t schedule publishing/);
+    expect(await badge().count()).toBe(0);
+    expect(await announced()).toBe('');
   });
 
   it.each([
-    ['a draft’s date moved past today', true, '2099-01-01'],
-    ['a published post backdated', false, '2000-01-01']
-  ])('says nothing as %s lands', async (_, draft, date) => {
-    await mount(site('2001-06-01', draft));
-    await type(date);
-    await page.waitForTimeout(100);
-    expect(await toasts()).toEqual([]);
+    ['a draft dated after today, which stays off the website', () => site('2099-01-01', true)],
+    ['a published post dated today', () => site(todayArticleDate())]
+  ])('says nothing of the future for %s', async (_, state) => {
+    const made = state();
+    await mount(made);
+    await openDetails();
+    expect(await page.getByLabel('Publication date').inputValue()).toBe(made.collections.posts.entries.en_spring.publishedAt);
+    expect(await note()).toBe(BACKDATE);
+    expect(await badge().count()).toBe(0);
+    expect(await announced()).toBe('');
   });
 });

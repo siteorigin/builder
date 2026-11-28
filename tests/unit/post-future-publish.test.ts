@@ -73,6 +73,8 @@ describe('a published entry dated ahead (#1317)', () => {
 
   it('says it is still in the next export, naming the date and the collection’s noun', () => {
     expect(warn('2026-11-28', false)).toBe('This event is published, so it is still in the next export, dated 28 November 2026.');
+    // The collection's own noun and the site's own language, whatever they are.
+    expect(futureDateWarning({ publishedAt: '2026-12-03', draft: false }, 'case study', 'en-US', today)).toBe('This case study is published, so it is still in the next export, dated December 3, 2026.');
   });
 
   it('says nothing for a date today or earlier, an invalid one, or a draft', () => {

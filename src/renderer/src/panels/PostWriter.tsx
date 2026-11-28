@@ -1020,16 +1020,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   // canvas's page, so only the link is kept.
   const setValue = (name: string, value: unknown, label: string, edit?: PendingEdit) =>
     edit && (value as { type?: unknown } | null)?.type !== 'anchor' ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
-  // A published entry dated ahead is still on the website: said under its date, and again as the change lands, since
-  // the details may be closed by then (#1317).
-  const dateWarning = (publishedAt: string) => futureDateWarning({ draft: entry.draft, publishedAt }, nounLower, state.site.language, todayArticleDate());
-  const futureDate = dateWarning(entry.publishedAt);
-  const changeDate = (v: string) =>
-    update({ publishedAt: v }, `Change ${nounLower} date`).then((r) => {
-      const warning = r && dateWarning(v);
-      if (warning) toast(`${warning} Static exports don’t schedule publishing.`, 'info');
-      return r;
-    });
+  // A published entry dated ahead is still on the website: said under its date, and in the bar, which shows with the
+  // details closed. Read from the saved entry, so it follows a change made anywhere (#1317).
+  const futureDate = futureDateWarning(entry, nounLower, state.site.language, todayArticleDate());
   const details = (
     <div className="post-fields">
       <Field
@@ -1045,7 +1038,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           )
         }
       >
-        <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? changeDate(v) : undefined) : refuse())} />
+        <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, `Change ${nounLower} date`) : undefined) : refuse())} />
       </Field>
       <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
         <RevisionDateField
@@ -1157,6 +1150,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             {published ? 'Published' : 'Draft'}
           </span>
         )}
+        {!gone && futureDate && (
+          <span className="badge amber" title={`${futureDate} Static exports don’t schedule publishing.`}>
+            <Clock aria-hidden="true" />
+            Future date
+          </span>
+        )}
+        {/* Always there, so a date moved ahead is announced, however it was changed. */}
+        <span className="sr-only" role="status">
+          {!gone && futureDate ? `${futureDate} Static exports don’t schedule publishing.` : ''}
+        </span>
         {readOnly && (
           <span className="badge" data-testid="entry-read-only" title="Synced from an external source: change it there, or detach the collection to edit it here.">
             Read-only
