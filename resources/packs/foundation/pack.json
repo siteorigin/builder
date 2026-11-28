@@ -2837,7 +2837,8 @@
 				"siteName": {
 					"type": "string",
 					"label": "Site name",
-					"default": "Studio"
+					"default": "Studio",
+					"sampleDefault": true
 				},
 				"logo": {
 					"type": "image",
@@ -2881,7 +2882,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "Page"
+							"default": "Page",
+							"sampleDefault": true
 						},
 						"link": {
 							"type": "link",
@@ -3084,13 +3086,15 @@
 				"siteName": {
 					"type": "string",
 					"label": "Site name",
-					"default": "Studio"
+					"default": "Studio",
+					"sampleDefault": true
 				},
 				"tagline": {
 					"type": "string",
 					"label": "Tagline",
 					"default": "Thoughtful design for homes and small workplaces.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"linksHeading": {
 					"type": "string",
@@ -3105,7 +3109,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "Page"
+							"default": "Page",
+							"sampleDefault": true
 						},
 						"link": {
 							"type": "link",
@@ -3133,7 +3138,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "hello@example.com"
+							"default": "hello@example.com",
+							"sampleDefault": true
 						},
 						"link": {
 							"type": "link",
@@ -3171,13 +3177,15 @@
 						}
 					],
 					"max": 8,
-					"titleField": "label"
+					"titleField": "label",
+					"sampleDefault": true
 				},
 				"copyright": {
 					"type": "string",
 					"label": "Copyright",
 					"default": "© {year} Studio. All rights reserved.",
-					"description": "{year} after the © shows the year the site is built in."
+					"description": "{year} after the © shows the year the site is built in.",
+					"sampleDefault": true
 				},
 				"legal": {
 					"type": "list",
@@ -3405,13 +3413,15 @@
 					"type": "string",
 					"label": "Eyebrow",
 					"default": "Interior design studio",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
 					"label": "Heading",
 					"default": "Designed for living in, not just for photographs",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -3451,7 +3461,8 @@
 					"label": "Supporting text",
 					"default": "We plan homes and small workplaces around the way you use them, with fixed fees and drawings your builder can price.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"primaryLabel": {
 					"type": "string",
@@ -3488,7 +3499,8 @@
 					"label": "Note",
 					"default": "The first consultation is free, at the studio or on site.",
 					"description": "A short line under the buttons with the practical detail a visitor wants before they click: a fee, opening hours, who it is for. Leave it empty to hide it.",
-					"group": "Actions"
+					"group": "Actions",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -3643,13 +3655,15 @@
 					"type": "string",
 					"label": "Eyebrow",
 					"default": "Interior design studio",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
 					"label": "Heading",
 					"default": "Calm, considered rooms for the way you actually live",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -3689,7 +3703,8 @@
 					"label": "Supporting text",
 					"default": "We plan, design and furnish homes and small workplaces, from the first measured drawing to the last cushion.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"primaryLabel": {
 					"type": "string",
@@ -3864,13 +3879,15 @@
 					"type": "string",
 					"label": "Eyebrow",
 					"default": "The design pack",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
 					"label": "Heading",
 					"default": "Every room drawn, specified and priced before work begins",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -3910,7 +3927,8 @@
 					"label": "Supporting text",
 					"default": "One pack gives you and your builder the floor plans, elevations, a finishes schedule and a priced shopping list, so everyone agrees before work starts.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"primaryLabel": {
 					"type": "string",
@@ -3931,7 +3949,8 @@
 					"type": "string",
 					"label": "Secondary button label",
 					"default": "See a sample pack",
-					"group": "Actions"
+					"group": "Actions",
+					"sampleDefault": true
 				},
 				"secondaryLink": {
 					"type": "link",
@@ -3957,14 +3976,16 @@
 					"label": "Window title",
 					"default": "Sample design pack",
 					"description": "Shown in the window frame’s title bar, such as the page or project name. Leave it empty for a bar with only its dots.",
-					"group": "Picture"
+					"group": "Picture",
+					"sampleDefault": true
 				},
 				"caption": {
 					"type": "string",
 					"label": "Caption",
 					"default": "Pages from a sample pack. The project shown is illustrative.",
 					"description": "A short line under the picture, such as saying the names and figures in it are samples.",
-					"group": "Picture"
+					"group": "Picture",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -4139,7 +4160,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "A small team with a long view"
+					"default": "A small team with a long view",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -4177,7 +4199,8 @@
 					"type": "string",
 					"label": "Description",
 					"default": "Learn how we work, what we value and the people behind every project.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -4409,7 +4432,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Cafés, clinics and homes we have designed for"
+					"default": "Cafés, clinics and homes we have designed for",
+					"sampleDefault": true
 				},
 				"logos": {
 					"type": "list",
@@ -4419,7 +4443,8 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Company"
+							"default": "Company",
+							"sampleDefault": true
 						},
 						"logo": {
 							"type": "image",
@@ -4473,7 +4498,8 @@
 						}
 					],
 					"max": 12,
-					"titleField": "name"
+					"titleField": "name",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -4568,7 +4594,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Services shaped around your project"
+					"default": "Services shaped around your project",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -4606,7 +4633,8 @@
 					"type": "string",
 					"label": "Supporting text",
 					"default": "Take one service on its own or the whole project from first visit to handover. Every stage has a fixed fee, agreed before work begins.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"items": {
 					"type": "list",
@@ -4621,13 +4649,15 @@
 						"title": {
 							"type": "string",
 							"label": "Title",
-							"default": "Service"
+							"default": "Service",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
 							"label": "Description",
 							"default": "Describe what this service includes and who it is for.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"linkLabel": {
 							"type": "string",
@@ -4712,7 +4742,8 @@
 						}
 					],
 					"max": 12,
-					"titleField": "title"
+					"titleField": "title",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -4879,7 +4910,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "One studio, from first sketch to last cushion",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -4919,7 +4951,8 @@
 					"label": "Supporting text",
 					"default": "What every project with us includes, whichever rooms you start with.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"featured": {
 					"type": "object",
@@ -4928,13 +4961,15 @@
 						"title": {
 							"type": "string",
 							"label": "Title",
-							"default": "One designer, start to finish"
+							"default": "One designer, start to finish",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
 							"label": "Description",
 							"default": "The designer who walks your rooms on the first visit draws the plans, chooses the finishes with you and is there on handover day.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"image": {
 							"type": "image",
@@ -4981,13 +5016,15 @@
 						"title": {
 							"type": "string",
 							"label": "Title",
-							"default": "Feature"
+							"default": "Feature",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
 							"label": "Description",
 							"default": "Say what this is and who it is for, in a sentence or two.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"image": {
 							"type": "image",
@@ -5085,7 +5122,8 @@
 					],
 					"max": 8,
 					"titleField": "title",
-					"min": 2
+					"min": 2,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -5273,7 +5311,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "Good projects start with listening",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -5329,7 +5368,8 @@
 						}
 					],
 					"group": "Text",
-					"codeForm": "blocks"
+					"codeForm": "blocks",
+					"sampleDefault": true
 				},
 				"points": {
 					"type": "list",
@@ -5339,7 +5379,8 @@
 						"text": {
 							"type": "string",
 							"label": "Point",
-							"default": "A short detail worth checking off"
+							"default": "A short detail worth checking off",
+							"sampleDefault": true
 						}
 					},
 					"default": [
@@ -5358,7 +5399,8 @@
 					],
 					"max": 6,
 					"titleField": "text",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"image": {
 					"type": "image",
@@ -5567,7 +5609,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "From the first visit to the last cushion",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -5607,7 +5650,8 @@
 					"label": "Supporting text",
 					"default": "Most projects take six to ten weeks from the first meeting to final drawings. This is what happens along the way.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"items": {
 					"type": "list",
@@ -5623,13 +5667,15 @@
 							"type": "string",
 							"label": "Title",
 							"default": "Feature",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"text": {
 							"type": "string",
 							"label": "Text",
 							"default": "Say what this is and why it matters, in two or three sentences.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"image": {
 							"type": "image",
@@ -5721,7 +5767,8 @@
 					],
 					"max": 6,
 					"titleField": "title",
-					"min": 1
+					"min": 1,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -5872,7 +5919,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "From first sketch to finished room",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -5912,7 +5960,8 @@
 					"label": "Supporting text",
 					"default": "Every project moves through the same three stages. Choose one to see what it involves.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"tabs": {
 					"type": "list",
@@ -5924,7 +5973,8 @@
 						"label": {
 							"type": "string",
 							"label": "Tab label",
-							"default": "Tab"
+							"default": "Tab",
+							"sampleDefault": true
 						},
 						"icon": {
 							"type": "enum",
@@ -6020,7 +6070,8 @@
 						"heading": {
 							"type": "string",
 							"label": "Heading",
-							"default": "What this tab covers"
+							"default": "What this tab covers",
+							"sampleDefault": true
 						},
 						"copy": {
 							"type": "richtext",
@@ -6035,7 +6086,8 @@
 									]
 								}
 							],
-							"codeForm": "blocks"
+							"codeForm": "blocks",
+							"sampleDefault": true
 						},
 						"actionLabel": {
 							"type": "string",
@@ -6144,7 +6196,8 @@
 						}
 					],
 					"min": 2,
-					"max": 6
+					"max": 6,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -6243,7 +6296,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "From first call to finished project",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -6283,7 +6337,8 @@
 					"label": "Supporting text",
 					"default": "Three clear stages, each with a picture of what it looks like in practice.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"steps": {
 					"type": "list",
@@ -6293,13 +6348,15 @@
 						"title": {
 							"type": "string",
 							"label": "Title",
-							"default": "Step"
+							"default": "Step",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
 							"label": "Description",
 							"default": "Describe what happens at this step and what the client gets from it.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"image": {
 							"type": "image",
@@ -6340,7 +6397,8 @@
 						}
 					],
 					"max": 8,
-					"titleField": "title"
+					"titleField": "title",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -6471,7 +6529,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "What happens after you get in touch",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -6511,7 +6570,8 @@
 					"label": "Supporting text",
 					"default": "Four steps from a first call to a finished room. Each has a fixed fee, agreed before it starts.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"steps": {
 					"type": "list",
@@ -6526,13 +6586,15 @@
 						"title": {
 							"type": "string",
 							"label": "Title",
-							"default": "Step"
+							"default": "Step",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
 							"label": "Description",
 							"default": "Say what happens at this step and what the client gets from it.",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						}
 					},
 					"default": [
@@ -6563,13 +6625,15 @@
 					],
 					"max": 6,
 					"titleField": "title",
-					"min": 2
+					"min": 2,
+					"sampleDefault": true
 				},
 				"actionLabel": {
 					"type": "string",
 					"label": "Action label",
 					"default": "Book a home visit",
-					"group": "Action"
+					"group": "Action",
+					"sampleDefault": true
 				},
 				"actionLink": {
 					"type": "link",
@@ -6723,7 +6787,8 @@
 				"eyebrow": {
 					"type": "string",
 					"label": "Eyebrow",
-					"default": "The studio"
+					"default": "The studio",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
@@ -6798,7 +6863,8 @@
 							]
 						}
 					],
-					"codeForm": "blocks"
+					"codeForm": "blocks",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -6900,12 +6966,14 @@
 				"eyebrow": {
 					"type": "string",
 					"label": "Eyebrow",
-					"default": "The studio in numbers"
+					"default": "The studio in numbers",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "A small studio with a long record"
+					"default": "A small studio with a long record",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -6953,7 +7021,8 @@
 						"value": {
 							"type": "string",
 							"label": "Value",
-							"default": "100"
+							"default": "100",
+							"sampleDefault": true
 						},
 						"unit": {
 							"type": "string",
@@ -6963,7 +7032,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "What this figure counts"
+							"default": "What this figure counts",
+							"sampleDefault": true
 						},
 						"context": {
 							"type": "string",
@@ -7002,13 +7072,15 @@
 						}
 					],
 					"max": 8,
-					"titleField": "label"
+					"titleField": "label",
+					"sampleDefault": true
 				},
 				"note": {
 					"type": "string",
 					"label": "Source note",
 					"default": "Typical figures, not promises: your schedule and fee are agreed in writing before work begins.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -7157,7 +7229,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "What clients say once the builders have gone"
+					"default": "What clients say once the builders have gone",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -7195,7 +7268,8 @@
 					"type": "string",
 					"label": "Supporting text",
 					"default": "Illustrative quotes for a sample studio. Replace them with your clients’ own words, and say where each one came from.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"items": {
 					"type": "list",
@@ -7207,12 +7281,14 @@
 							"label": "Quote",
 							"default": "A short quote from a client, in their own words.",
 							"multiline": true,
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Client name"
+							"default": "Client name",
+							"sampleDefault": true
 						},
 						"role": {
 							"type": "string",
@@ -7303,7 +7379,8 @@
 						}
 					],
 					"max": 12,
-					"titleField": "name"
+					"titleField": "name",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -7424,7 +7501,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "The people you will work with"
+					"default": "The people you will work with",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -7462,7 +7540,8 @@
 					"type": "string",
 					"label": "Supporting text",
 					"default": "A small, experienced team who care about getting the details right.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"people": {
 					"type": "list",
@@ -7481,7 +7560,8 @@
 							"type": "string",
 							"label": "Name",
 							"default": "Name",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"role": {
 							"type": "string",
@@ -7528,7 +7608,8 @@
 						}
 					],
 					"max": 16,
-					"titleField": "name"
+					"titleField": "name",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -7630,7 +7711,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Clear packages, fixed fees"
+					"default": "Clear packages, fixed fees",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -7668,7 +7750,8 @@
 					"type": "string",
 					"label": "Supporting text",
 					"default": "Every fee is agreed in writing before work begins, and nothing is added without your say-so.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"plans": {
 					"type": "list",
@@ -7678,7 +7761,8 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Plan"
+							"default": "Plan",
+							"sampleDefault": true
 						},
 						"pricePrefix": {
 							"type": "string",
@@ -7689,7 +7773,8 @@
 						"price": {
 							"type": "string",
 							"label": "Price",
-							"default": "$0"
+							"default": "$0",
+							"sampleDefault": true
 						},
 						"period": {
 							"type": "string",
@@ -7731,7 +7816,8 @@
 								}
 							],
 							"plainAs": "check",
-							"codeForm": "blocks"
+							"codeForm": "blocks",
+							"sampleDefault": true
 						},
 						"actionLabel": {
 							"type": "string",
@@ -7860,7 +7946,8 @@
 						}
 					],
 					"max": 6,
-					"titleField": "name"
+					"titleField": "name",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -8006,7 +8093,8 @@
 					"type": "string",
 					"label": "Heading",
 					"default": "Train on your schedule",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -8046,7 +8134,8 @@
 					"label": "Supporting text",
 					"default": "Pay month to month, or pay for the year and get two months free.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"monthlyLabel": {
 					"type": "string",
@@ -8075,7 +8164,8 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Plan"
+							"default": "Plan",
+							"sampleDefault": true
 						},
 						"description": {
 							"type": "string",
@@ -8125,7 +8215,8 @@
 								}
 							],
 							"plainAs": "check",
-							"codeForm": "blocks"
+							"codeForm": "blocks",
+							"sampleDefault": true
 						},
 						"actionLabel": {
 							"type": "string",
@@ -8260,7 +8351,8 @@
 						}
 					],
 					"max": 6,
-					"titleField": "name"
+					"titleField": "name",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -8449,7 +8541,8 @@
 					"label": "Supporting text",
 					"default": "Every package starts with the same site visit. Fees are fixed and agreed in writing before any work begins.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"planOne": {
 					"type": "object",
@@ -8458,17 +8551,20 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Consultation"
+							"default": "Consultation",
+							"sampleDefault": true
 						},
 						"price": {
 							"type": "string",
 							"label": "Price",
-							"default": "$350"
+							"default": "$350",
+							"sampleDefault": true
 						},
 						"period": {
 							"type": "string",
 							"label": "Period",
-							"default": "One session"
+							"default": "One session",
+							"sampleDefault": true
 						},
 						"actionLabel": {
 							"type": "string",
@@ -8504,12 +8600,14 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Design"
+							"default": "Design",
+							"sampleDefault": true
 						},
 						"price": {
 							"type": "string",
 							"label": "Price",
-							"default": "$4,800"
+							"default": "$4,800",
+							"sampleDefault": true
 						},
 						"period": {
 							"type": "string",
@@ -8550,7 +8648,8 @@
 						"name": {
 							"type": "string",
 							"label": "Name",
-							"default": "Full service"
+							"default": "Full service",
+							"sampleDefault": true
 						},
 						"price": {
 							"type": "string",
@@ -8560,7 +8659,8 @@
 						"period": {
 							"type": "string",
 							"label": "Period",
-							"default": "Quoted after the visit"
+							"default": "Quoted after the visit",
+							"sampleDefault": true
 						},
 						"actionLabel": {
 							"type": "string",
@@ -8605,7 +8705,8 @@
 							"type": "string",
 							"label": "Feature",
 							"default": "A feature",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"detail": {
 							"type": "string",
@@ -8776,7 +8877,8 @@
 						}
 					],
 					"max": 30,
-					"titleField": "feature"
+					"titleField": "feature",
+					"sampleDefault": true
 				},
 				"includedLabel": {
 					"type": "string",
@@ -8798,7 +8900,8 @@
 					"default": "Fees exclude furniture and building work, which are quoted separately.",
 					"multiline": true,
 					"description": "A short line under the comparison, such as what the prices include.",
-					"group": "Labels"
+					"group": "Labels",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -9011,7 +9114,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Workshop timetable"
+					"default": "Workshop timetable",
+					"sampleDefault": true
 				},
 				"lead": {
 					"type": "string",
@@ -9023,7 +9127,8 @@
 					"type": "string",
 					"label": "Caption",
 					"default": "Weekly workshops",
-					"description": "A short title for the table, read out before it. It also names the table’s scrolling area."
+					"description": "A short title for the table, read out before it. It also names the table’s scrolling area.",
+					"sampleDefault": true
 				},
 				"table": {
 					"type": "table",
@@ -9069,7 +9174,8 @@
 								}
 							}
 						]
-					}
+					},
+					"sampleDefault": true
 				},
 				"rowHeaders": {
 					"type": "boolean",
@@ -9143,7 +9249,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "What clients ask before we start"
+					"default": "What clients ask before we start",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -9181,7 +9288,8 @@
 					"type": "string",
 					"label": "Supporting text",
 					"default": "If yours is not here, email the studio and we will reply within two working days.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"items": {
 					"type": "list",
@@ -9192,14 +9300,16 @@
 							"type": "string",
 							"label": "Question",
 							"default": "Question?",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"answer": {
 							"type": "string",
 							"label": "Answer",
 							"default": "Answer.",
 							"multiline": true,
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						}
 					},
 					"default": [
@@ -9230,7 +9340,8 @@
 						}
 					],
 					"max": 30,
-					"titleField": "question"
+					"titleField": "question",
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -11098,13 +11209,15 @@
 					"type": "string",
 					"label": "Eyebrow",
 					"default": "Consultations",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"heading": {
 					"type": "string",
 					"label": "Heading",
 					"default": "Bring us the room that isn’t working",
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -11144,7 +11257,8 @@
 					"label": "Supporting text",
 					"default": "A two-hour visit, a written summary and honest budget guidance, for a fixed $350. We reply within two working days.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"primaryLabel": {
 					"type": "string",
@@ -11337,7 +11451,8 @@
 					"label": "Supporting text",
 					"default": "The quickest way to reach us is by email or phone. We reply to every inquiry within two working days.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"items": {
 					"type": "list",
@@ -11357,7 +11472,8 @@
 						"value": {
 							"type": "string",
 							"label": "Value",
-							"default": "hello@example.com"
+							"default": "hello@example.com",
+							"sampleDefault": true
 						},
 						"link": {
 							"type": "link",
@@ -11411,7 +11527,8 @@
 						}
 					],
 					"max": 8,
-					"titleField": "label"
+					"titleField": "label",
+					"sampleDefault": true
 				},
 				"actionLabel": {
 					"type": "string",
@@ -11534,7 +11651,8 @@
 					"label": "Supporting text",
 					"default": "Tell us which rooms you are planning and roughly when, and we will reply within two working days.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"provider": {
 					"type": "enum",
@@ -11585,7 +11703,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "Field"
+							"default": "Field",
+							"sampleDefault": true
 						},
 						"name": {
 							"type": "string",
@@ -12223,7 +12342,8 @@
 				"title": {
 					"type": "string",
 					"label": "Title",
-					"default": "Two-hour site visit"
+					"default": "Two-hour site visit",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -12260,18 +12380,21 @@
 				"badge": {
 					"type": "string",
 					"label": "Badge",
-					"default": "Fixed fee"
+					"default": "Fixed fee",
+					"sampleDefault": true
 				},
 				"description": {
 					"type": "string",
 					"label": "Description",
 					"default": "We measure every room, photograph what is there and talk through how you use the space, then send a written summary within the week.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"linkLabel": {
 					"type": "string",
 					"label": "Link label",
-					"default": "What the visit covers"
+					"default": "What the visit covers",
+					"sampleDefault": true
 				},
 				"link": {
 					"type": "link",
@@ -12406,7 +12529,8 @@
 				"value": {
 					"type": "string",
 					"label": "Value",
-					"default": "6–10"
+					"default": "6–10",
+					"sampleDefault": true
 				},
 				"unit": {
 					"type": "string",
@@ -12416,13 +12540,15 @@
 				"label": {
 					"type": "string",
 					"label": "Label",
-					"default": "First meeting to final drawings"
+					"default": "First meeting to final drawings",
+					"sampleDefault": true
 				},
 				"footnote": {
 					"type": "string",
 					"label": "Footnote",
 					"default": "For most projects. We agree your schedule with you at the start.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -12535,17 +12661,20 @@
 					"type": "string",
 					"label": "Quote",
 					"default": "We had a narrow terrace and no idea what to do with the back room. After the site visit we had a plan and a fixed fee, and ten weeks later a kitchen we actually cook in.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"name": {
 					"type": "string",
 					"label": "Name",
-					"default": "Amelia Hart"
+					"default": "Amelia Hart",
+					"sampleDefault": true
 				},
 				"role": {
 					"type": "string",
 					"label": "Role or project",
-					"default": "Kitchen and dining room, Ashford"
+					"default": "Kitchen and dining room, Ashford",
+					"sampleDefault": true
 				},
 				"portrait": {
 					"type": "image",
@@ -12559,7 +12688,8 @@
 					"type": "string",
 					"label": "Initials",
 					"default": "AH",
-					"description": "Shown in a disc in place of the portrait when there is none."
+					"description": "Shown in a disc in place of the portrait when there is none.",
+					"sampleDefault": true
 				},
 				"sourceLabel": {
 					"type": "string",
@@ -12579,7 +12709,8 @@
 					"type": "string",
 					"label": "Disclosure",
 					"default": "A sample testimonial: replace it with a client’s own words, used with their permission.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -12711,7 +12842,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Free first consultation"
+					"default": "Free first consultation",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -12749,7 +12881,8 @@
 					"type": "string",
 					"label": "Text",
 					"default": "Tell us about the rooms you have in mind and we will suggest a sensible next step, with no obligation.",
-					"multiline": true
+					"multiline": true,
+					"sampleDefault": true
 				},
 				"actionLabel": {
 					"type": "string",
@@ -12871,7 +13004,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "Before your first visit"
+					"default": "Before your first visit",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -12914,7 +13048,8 @@
 							"type": "string",
 							"label": "Name",
 							"default": "Price list",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"format": {
 							"type": "string",
@@ -12981,7 +13116,8 @@
 					],
 					"max": 12,
 					"titleField": "title",
-					"min": 1
+					"min": 1,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -13113,7 +13249,8 @@
 				"heading": {
 					"type": "string",
 					"label": "Heading",
-					"default": "A consultation at a glance"
+					"default": "A consultation at a glance",
+					"sampleDefault": true
 				},
 				"headingLevel": {
 					"type": "enum",
@@ -13156,13 +13293,15 @@
 							"type": "string",
 							"label": "Label",
 							"default": "Label",
-							"required": true
+							"required": true,
+							"sampleDefault": true
 						},
 						"value": {
 							"type": "string",
 							"label": "Value",
 							"default": "Value",
-							"multiline": true
+							"multiline": true,
+							"sampleDefault": true
 						},
 						"link": {
 							"type": "link",
@@ -13214,7 +13353,8 @@
 					],
 					"max": 16,
 					"titleField": "label",
-					"min": 1
+					"min": 1,
+					"sampleDefault": true
 				}
 			},
 			"parts": {
@@ -13386,7 +13526,8 @@
 					"label": "Supporting text",
 					"default": "A short note when there is something new. No spam, and you can leave at any time.",
 					"multiline": true,
-					"group": "Text"
+					"group": "Text",
+					"sampleDefault": true
 				},
 				"provider": {
 					"type": "enum",
@@ -13437,7 +13578,8 @@
 						"label": {
 							"type": "string",
 							"label": "Label",
-							"default": "Field"
+							"default": "Field",
+							"sampleDefault": true
 						},
 						"name": {
 							"type": "string",
