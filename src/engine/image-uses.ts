@@ -1,20 +1,24 @@
 import type { BackgroundImageValue, ImageUseTarget, ImageValue, OwnerRef, ProjectState, ValuePlace } from '@shared/types';
 import { allTrees } from './tree';
 import { orderedEntries } from '@shared/collections';
+import { galleryRows } from '@shared/gallery-field';
 
 /**
- * A use in a collection entry: its featured image, the image it is shared with, or the `n`th picture in its text
- * (counted from 1, as the Posts writer shows them).
+ * A use in a collection entry: its featured image, the image it is shared with, the `n`th picture in its text
+ * (counted from 1, as the Posts writer shows them), or the `n`th photo of one of its galleries.
  */
 export interface EntryImagePlace {
   collectionId: string;
   /** Empty for a collection's own default of a picture field, which no one entry holds. */
   entryId: string;
   title: string;
-  field: 'featured' | 'sharing' | 'body' | 'value' | 'default';
+  field: 'featured' | 'sharing' | 'body' | 'value' | 'default' | 'gallery';
   n?: number;
-  /** A picture field's label (`value`, `default`). */
+  /** A picture or gallery field's label (`value`, `default`, `gallery`). */
   label?: string;
+  /** A gallery's field name and the photo's own ID (`gallery`), which stay the photo's however the gallery is reordered. */
+  name?: string;
+  photo?: string;
 }
 
 /**
@@ -153,6 +157,7 @@ export function entryImageUses(state: ProjectState, assetId: string): ImageUse[]
     if (!c?.entries || typeof c.entries !== 'object') continue;
     // Picture fields: each one's default, and each entry's own value below, change with every other use too.
     const pictures = Object.entries(c.settings?.fields ?? {}).filter(([, f]) => f?.type === 'image');
+    const galleries = Object.entries(c.settings?.fields ?? {}).filter(([, f]) => f?.type === 'gallery');
     for (const [, f] of pictures) if ((f.default as { assetId?: unknown } | undefined)?.assetId === assetId) out.push({ target: null, entry: { collectionId: id, entryId: '', title: c.settings.name, field: 'default', label: f.label } });
     for (const e of orderedEntries(c)) {
       if (!e || typeof e !== 'object') continue;
@@ -160,6 +165,8 @@ export function entryImageUses(state: ProjectState, assetId: string): ImageUse[]
       if (e.featuredImage === assetId) out.push({ target: null, entry: { ...at, field: 'featured' } });
       if (e.seo && typeof e.seo === 'object' && e.seo.socialImage === assetId) out.push({ target: null, entry: { ...at, field: 'sharing' } });
       for (const [name, f] of pictures) if ((e.values?.[name] as { assetId?: unknown } | undefined)?.assetId === assetId) out.push({ target: null, entry: { ...at, field: 'value', label: f.label } });
+      // Each photo of a gallery showing it, by its place in the gallery.
+      for (const [name, f] of galleries) galleryRows(e.values?.[name]).forEach((row, i) => row.image.assetId === assetId && out.push({ target: null, entry: { ...at, field: 'gallery', label: f.label, name, photo: row.id, n: i + 1 } }));
       let n = 0;
       for (const b of Array.isArray(e.body) ? e.body : []) {
         if (!b || typeof b !== 'object' || b.type !== 'image') continue;

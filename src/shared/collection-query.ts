@@ -245,6 +245,12 @@ function fieldReader(state: ProjectState, collection: Collection, field: string)
         const v = entryFieldValue(ctx(e), field, 'raw');
         return Array.isArray(v) ? v.filter((id): id is string => typeof id === 'string') : typeof v === 'string' ? v : '';
       };
+    // A gallery reads as the pictures its photos show, in order: set while it has any.
+    if (schema.type === 'gallery')
+      return (e) => {
+        const v = entryFieldValue(ctx(e), field);
+        return Array.isArray(v) ? v.flatMap((p) => (typeof p?.image?.assetId === 'string' ? [p.image.assetId as string] : [])) : [];
+      };
     if (schema.type === 'image')
       return (e) => {
         const v = entryFieldValue(ctx(e), field) as { assetId?: unknown };

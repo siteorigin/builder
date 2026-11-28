@@ -12,6 +12,7 @@ import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/int
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, isCollectionLoop, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
+import { galleryFitProblem } from '@shared/gallery-field';
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectSourceProblem, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, languageKey, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
@@ -1060,6 +1061,16 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
     const choice = slot.field === 'prop' ? entryChoiceProblem(schema, nested?.[slot.prop!]) : null;
     if (choice) {
       out.push(`shows "${schema.label}" in "${slot.prop}", but it ${choice}`);
+      continue;
+    }
+    // A gallery's photos fill a list of pictures (see shared/gallery-field.ts), not one a collection fills.
+    const fit = slot.field === 'prop' && schema.type === 'list' ? galleryFitProblem(schema, nested?.[slot.prop!]) : null;
+    if (fit) {
+      out.push(`shows "${schema.label}" in "${slot.prop}", but ${fit}`);
+      continue;
+    }
+    if (slot.field === 'prop' && schema.type === 'list' && n.kind === 'instance' && n.listSources && Object.hasOwn(n.listSources, slot.prop!)) {
+      out.push(`shows "${schema.label}" in "${slot.prop}", which also shows entries of a collection.`);
       continue;
     }
     const comparison = condition && isComparison(slot.value) ? slot.value : undefined;

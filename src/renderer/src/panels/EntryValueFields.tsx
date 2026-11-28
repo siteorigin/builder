@@ -8,13 +8,15 @@
 import './PostTerms.css';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
-import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
+import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, GalleryFieldSchema, ListItem, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
 import { isDraftEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { MAX_REFERENCES } from '@engine/collections';
 import { DraftInput, Field } from '../components/ui';
-import { ScalarField } from './PropEditors';
-import type { PendingEdit } from '../store';
+import { PropField, ScalarField, type ListOp } from './PropEditors';
+import { galleryListProp, galleryRows } from '@shared/gallery-field';
+import { editGallery, nextBase, type GalleryEdit, type GallerySending } from '../lib/gallery-value';
+import { getState, type PendingEdit } from '../store';
 
 /** The value an entry shows for a field: its own, else the field's default. */
 export function entryValue(entry: EntryDoc, name: string, schema: CollectionFieldSchema): unknown {
@@ -42,11 +44,18 @@ export function EntryValueFields({
 }) {
   const fields = Object.entries(collection.settings.fields ?? {});
   if (!fields.length) return null;
+  // A field's value as the project holds it now (an edit that waited for the one before builds on it); undefined once
+  // the entry is gone.
+  const readValue = (name: string): unknown => {
+    const c = getState().snapshot?.state.collections;
+    const e = c && Object.hasOwn(c, collection.settings.id) && Object.hasOwn(c[collection.settings.id].entries, entry.id) ? c[collection.settings.id].entries[entry.id] : undefined;
+    return e ? (e.values && Object.hasOwn(e.values, name) ? e.values[name] : []) : undefined;
+  };
   return (
     <fieldset className="entry-values" disabled={readOnly} data-testid="entry-values">
       {fields.map(([name, schema]) => (
         <div key={name} data-entry-value={name} className="entry-value">
-          <EntryValueField state={state} name={name} schema={schema} value={entryValue(entry, name, schema)} self={entry.id} readOnly={readOnly} set={set} refuse={refuse} />
+          <EntryValueField state={state} name={name} schema={schema} value={entryValue(entry, name, schema)} self={entry.id} readOnly={readOnly} set={set} refuse={refuse} readValue={readValue} />
         </div>
       ))}
     </fieldset>
@@ -61,7 +70,8 @@ function EntryValueField({
   self,
   readOnly,
   set,
-  refuse
+  refuse,
+  readValue
 }: {
   state: ProjectState;
   name: string;
@@ -71,12 +81,57 @@ function EntryValueField({
   readOnly?: boolean;
   set: (name: string, value: unknown, label: string, edit?: PendingEdit) => unknown;
   refuse: () => boolean;
+  readValue: (name: string) => unknown;
 }) {
   const label = `Change ${schema.label.toLowerCase()}`;
   if (schema.type === 'date') return <DateValue schema={schema} value={value} onSet={(v) => set(name, v, label)} refuse={refuse} />;
   if (schema.type === 'reference') return <ReferenceValue key={schema.collection} state={state} schema={schema} value={value} self={self} disabled={readOnly} onSet={(v) => set(name, v, label)} />;
+  if (schema.type === 'gallery') return <GalleryValue state={state} name={name} schema={schema} value={value} read={() => readValue(name)} set={set} />;
   // A link to a section can come with the change that gives the section its anchor (`edit`): sent together.
   return <ScalarField schema={schema as ScalarPropSchema} value={value} state={state} onChange={(v, edit) => (JSON.stringify(v) === JSON.stringify(value) && !edit?.operations.length ? undefined : set(name, v, label, edit))} />;
+}
+
+/**
+ * A gallery's photos (#1320), in the list editor a Gallery's images have in the Inspector: Choose images… adds several
+ * from Assets at once, in the order chosen, and each photo can be moved, removed, given a caption, or described. Each
+ * of those is the gallery's whole new value, one undo step. A photo is only ever added with its picture.
+ */
+function GalleryValue({ state, name, schema, value, read, set }: { state: ProjectState; name: string; schema: GalleryFieldSchema; value: unknown; /** The gallery as the project holds it now; undefined once the entry is gone. */ read: () => unknown; set: (name: string, value: unknown, label: string) => unknown }) {
+  const list = galleryListProp(schema);
+  const rows = galleryRows(value);
+  const field = schema.label.toLowerCase();
+  // Each change builds on the gallery as the project has it now (`read`), so one made elsewhere stays; while the last
+  // change sent from here has not landed yet, on the gallery it sent, so two photos removed in quick succession both
+  // go. Sent at once, as every other field's change is, so the writer's checks and Save draft see it.
+  // `known`: the gallery as it was saved when this run of changes began, and each gallery the run sent since; while the
+  // project holds one of them, the run's last is still to land.
+  const sent = useRef<GallerySending | null>(null);
+  const onList = (op: ListOp) => {
+    const edit: GalleryEdit | null =
+      op.kind === 'pick' ? { kind: 'pick', assetIds: op.assetIds } : op.kind === 'remove' ? { kind: 'remove', itemId: op.itemId } : op.kind === 'move' ? { kind: 'move', itemId: op.itemId, index: op.index } : op.kind === 'field' ? { kind: 'field', itemId: op.itemId, field: op.field, value: op.value } : null;
+    if (!edit) return undefined;
+    const latest = read();
+    const saved = latest === undefined ? rows : galleryRows(latest);
+    const { base, send } = nextBase(sent.current, saved);
+    const next = editGallery(base, edit, getState().snapshot?.state.assets.assets ?? state.assets.assets);
+    if (!next) return op.kind === 'pick' ? Promise.resolve(null) : undefined;
+    const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : next.rows.length < base.length ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
+    const mine = send(next.rows);
+    sent.current = mine;
+    // Once it lands or is refused, the project's gallery is the one to build on again.
+    const done = () => {
+      if (sent.current === mine) sent.current = null;
+    };
+    const result = set(name, next.rows, label);
+    Promise.resolve(result).then(done, done);
+    // Choose images… opens the photos it added once they show.
+    return op.kind === 'pick' ? Promise.resolve(result).then((ok) => (ok ? { added: next.added, replaced: 0 } : null)) : result;
+  };
+  return (
+    <div className="entry-gallery" data-testid={`entry-gallery-${name}`}>
+      <PropField name={name} schema={list} value={rows as unknown as ListItem[]} label={schema.label} hint={schema.description} onChange={() => undefined} onList={onList} onTable={() => Promise.resolve(false)} state={state} pickImages="image" pickOnly />
+    </div>
+  );
 }
 
 /**

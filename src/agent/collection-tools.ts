@@ -9,7 +9,9 @@
 import { z } from 'zod';
 import { MAX_BROWSE_KEYS } from '@shared/collection-browse';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
-import { COLLECTION_FIELD_TYPES } from '@shared/types';
+import { COLLECTION_FIELD_TYPES, MAX_GALLERY_PHOTOS } from '@shared/types';
+import { GALLERY_CAPTION_MAX, galleryRows } from '@shared/gallery-field';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
@@ -35,9 +37,20 @@ const collectionId = z.string().min(1).max(60).describe('From read_project colle
 const MAX_GROUPINGS = 10;
 const MAX_VALUES = 40;
 /** A custom field's value as a call sends it, read as the field's type takes it (see entryValue). */
-const FIELD_VALUE = z.union([z.string().max(MAX_ENTRY_CHARS), z.number(), z.boolean(), z.array(z.string().max(MAX_ENTRY_CHARS)).max(50), z.null()]);
+/** One photo of a gallery field as a call sends it: its picture, its own words, and its ID to keep the one it edits or moves. */
+const GALLERY_PHOTO = z
+  .object({
+    id: z.string().min(1).max(64).optional().describe('The photo\'s ID as values shows it, to keep that photo (its place, words, description); leave it out for a new photo.'),
+    assetId: z.string().min(1).max(80).describe('A library image\'s assetId.'),
+    alt: z.string().max(TEXT_LIMITS.imageAlt).optional().describe('Its description; left out, a kept photo keeps its own and a new one shows the library\'s suggestion.'),
+    decorative: z.boolean().optional().describe('true: the picture says nothing a visitor needs, so screen readers pass it over. Left out, a kept photo keeps its own.'),
+    caption: z.string().max(GALLERY_CAPTION_MAX).optional().describe('"" or left out for none.')
+  })
+  .strict();
+type GalleryPhoto = z.infer<typeof GALLERY_PHOTO>;
+const FIELD_VALUE = z.union([z.string().max(MAX_ENTRY_CHARS), z.number(), z.boolean(), z.array(z.string().max(MAX_ENTRY_CHARS)).max(50), z.array(GALLERY_PHOTO).max(MAX_GALLERY_PHOTOS), z.null()]);
 const VALUE_FORMAT =
-  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId ("" for none; the one it shows, sent back, keeps its alt text); a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown; a reference an entry ID of its collection ("" for none), a list of them when it takes several. null goes back to the field\'s default.';
+  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId ("" for none; the one it shows, sent back, keeps its alt text); a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown; a reference an entry ID of its collection ("" for none), a list of them when it takes several; a gallery every photo in order, each { id?, assetId, alt?, caption? } ([] for none). null goes back to the field\'s default.';
 const entryId = z.string().min(1).max(40).describe('en_… from list_collection_entries.');
 const offset = z.number().int().min(0).optional().describe('Go on from the next a previous call returned.');
 
@@ -138,6 +151,10 @@ function otherTerms(collection: Collection, entry: EntryDoc): Array<{ taxonomyId
 
 /** Most characters a custom text or rich text value shows in a read, and most entries a list of them; more are read whole with `field`. */
 const VALUE_CHARS = 400;
+/** How much of a gallery an entry's read shows before it is clipped (read whole with field): a few photos' words. */
+const GALLERY_CHARS = 2000;
+/** How much of a gallery one read of the field shows: offset goes on from the photo after it (next). */
+const GALLERY_PART_CHARS = 8000;
 const REFERENCES_SHOWN = 10;
 
 /** A custom text or rich text value as text: rich text as its Markdown. */
@@ -174,6 +191,14 @@ function linkShown(v: CollectionFieldValue, pages: ProjectState['pages']): strin
 
 /** A custom field's value as values writes it back, and whether it was cut short or is the editor's to change. */
 function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; clipped?: true; editorOnly?: true } {
+  // A gallery's photos in order, each by its ID, so a call sending them back edits or moves the ones it names.
+  // A long one is shown in part (its first photos whole), and read whole with field.
+  if (schema.type === 'gallery') {
+    const photos = galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.image.decorative ? { decorative: true } : {}), ...(r.caption ? { caption: r.caption } : {}) }));
+    let shown = photos;
+    while (shown.length > 1 && JSON.stringify(shown).length > GALLERY_CHARS) shown = shown.slice(0, -1);
+    return shown.length < photos.length ? { value: shown, clipped: true } : { value: photos };
+  }
   // An image by its asset ID ("" for one emptied on purpose); written back as read, it keeps its alt text as it is.
   if (schema.type === 'image') return { value: v && typeof v === 'object' && 'assetId' in v ? (v.assetId ?? '') : null };
   // A long list of entries is shown in part, and read whole with field.
@@ -190,6 +215,7 @@ function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, page
 /** One custom value whole (read with field): a list of entries in full. */
 function valueShownWhole(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; editorOnly?: true } {
   if (schema.type === 'reference') return { value: v };
+  if (schema.type === 'gallery') return { value: galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.image.decorative ? { decorative: true } : {}), ...(r.caption ? { caption: r.caption } : {}) })) };
   const { clipped: _c, ...shown } = valueShown(schema, v, pages);
   return shown;
 }
@@ -295,6 +321,14 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
     const schema = Object.hasOwn(fields, args.field) ? fields[args.field] : undefined;
     const stored = entry.values && Object.hasOwn(entry.values, args.field) ? entry.values[args.field] : schema?.default;
     if (!schema || typeof schema !== 'object') return fieldError([{ field: 'field', message: `the ${collection.settings.name} collection has no field "${args.field}"` }], 'Nothing was read.');
+    // A gallery a few photos at a time, each part whole photos, so one with long words is read to its end.
+    if (schema.type === 'gallery') {
+      const photos = (valueShownWhole(schema, stored as CollectionFieldValue, state.pages).value as unknown[]) ?? [];
+      const start = Math.min(args.offset ?? 0, photos.length);
+      let end = start;
+      while (end < photos.length && (end === start || JSON.stringify(photos.slice(start, end + 1)).length <= GALLERY_PART_CHARS)) end++;
+      return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, type: 'gallery', total: photos.length, offset: start, next: end < photos.length ? end : null, value: photos.slice(start, end) } };
+    }
     const whole = valueText(schema, stored as CollectionFieldValue, state.pages);
     // Anything but text is read whole at once, as values writes it.
     if (whole === null) return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, type: schema.type, ...valueShownWhole(schema, stored as CollectionFieldValue, state.pages) } };
@@ -474,7 +508,7 @@ function termsValue(collection: Collection, categories: string[] | undefined, te
  * One custom field's value as the operation takes it, read as the field's type takes it: the engine checks the rest
  * (an enum's options, a reference's entries, an image in the library). Null goes back to the field's default.
  */
-function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue, library?: ProjectState['assets']['assets']): unknown {
+function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | GalleryPhoto[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue, library?: ProjectState['assets']['assets']): unknown {
   if (v === null) return null;
   const wrong = (wants: string) => (issues.push({ field: at, message: `“${field}” is a ${schema.type} field: ${wants}` }), undefined);
   switch (schema.type) {
@@ -483,12 +517,25 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
     case 'boolean':
       return typeof v === 'boolean' ? v : wrong('send true or false');
     case 'reference':
-      if (schema.multiple) return Array.isArray(v) ? v : wrong('send a list of entry IDs ([] for none)');
+      if (schema.multiple) return Array.isArray(v) && v.every((id) => typeof id === 'string') ? v : wrong('send a list of entry IDs ([] for none)');
       return typeof v === 'string' ? v : wrong('send one entry ID ("" for none)');
+    case 'gallery': {
+      if (!Array.isArray(v) || !v.every((p) => p && typeof p === 'object')) return wrong('send every photo in order, each { id?, assetId, alt?, caption? } ([] for none)');
+      // A photo sent with its ID and the picture it shows keeps its description and whether it is decorative unless
+      // the call gives another; the engine checks the rest (the ID, the picture in the library).
+      const before = new Map(galleryRows(stored).map((r) => [r.id, r]));
+      return (v as GalleryPhoto[]).map((p) => {
+        const was = p.id !== undefined ? before.get(p.id) : undefined;
+        const kept = was && was.image.assetId === p.assetId ? was.image : undefined;
+        const decorative = p.decorative ?? (kept?.decorative === true);
+        const image = { assetId: p.assetId, alt: p.alt ?? (kept ? kept.alt : ''), ...(decorative ? { decorative: true } : {}) };
+        return { ...(p.id !== undefined ? { id: p.id } : {}), image, caption: p.caption ?? '' };
+      });
+    }
     case 'richtext':
       // Markdown as read: one string, which the field reads as its text is written (a hard break stays in its block),
       // or one block per line.
-      return typeof v === 'string' || Array.isArray(v) ? v : wrong('send its text as Markdown');
+      return typeof v === 'string' || (Array.isArray(v) && v.every((line) => typeof line === 'string')) ? v : wrong('send its text as Markdown');
     case 'link':
       if (typeof v !== 'string') return wrong('send an address: "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"');
       return v.trim().startsWith(ENTRY_LINK_PREFIX) ? { type: 'entry', ...entryTarget(v.trim().slice(ENTRY_LINK_PREFIX.length)) } : v.trim();
