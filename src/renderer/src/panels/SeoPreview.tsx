@@ -1,7 +1,7 @@
 import './SeoPreview.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { ArrowRight, Globe, Search, SearchCheck } from 'lucide-react';
+import { Check, EyeOff, Globe, Minus, Search, SearchCheck, TriangleAlert } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
@@ -18,6 +18,7 @@ import { destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import type { GraphSection } from '../lib/structured-summary';
 import { AiHandoffButton } from '../components/AiHandoff';
+import { CopyText } from '../components/CopyText';
 import { perfCount } from '../lib/perf';
 
 type PreviewTab = 'search' | 'link' | 'data';
@@ -81,7 +82,7 @@ export function LengthMeter({ kind, doc }: { kind: 'title' | 'description'; doc:
   if (!doc) return null;
   const meter: Meter = lengthMeter(kind, doc);
   return (
-    <span className={`seo-meter ${meter.tone}`} data-tone={meter.tone} data-meter={kind}>
+    <span className={`seo-meter ${meter.tone}`} data-tone={meter.tone} data-meter={kind} data-cut={meter.cutOn.join(' ') || undefined}>
       <span className="seo-meter-bar" aria-hidden="true">
         <span style={{ width: `${Math.round(meter.fill * 100)}%` }} />
       </span>
@@ -105,9 +106,13 @@ function SiteIcon({ state }: { state: ProjectState }) {
  * so the slot around the page is given the size the page shows at.
  */
 /** The width of the margin left of the results page, where the marker for the site's own result sits. */
-const SERP_GUTTER = 28;
+const SERP_GUTTER = 76;
 
-function ScaledPage({ device, children }: { device: SerpDevice; children: ReactNode }) {
+/**
+ * `mark` names the site's own result in the margin ("Your page"): a label level with its first line and a rule the
+ * height of the result, so it reads as a note on that result rather than as a control.
+ */
+function ScaledPage({ device, mark: markLabel, children }: { device: SerpDevice; mark: string; children: ReactNode }) {
   const fit = useRef<HTMLDivElement>(null);
   const page = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ room: 0, height: 0, mark: null as { top: number; height: number } | null });
@@ -147,8 +152,9 @@ function ScaledPage({ device, children }: { device: SerpDevice; children: ReactN
       <div className="serp-row">
         <span className="serp-mark" aria-hidden="true">
           {size.mark && (
-            <span className="serp-mark-tag" style={{ top: size.mark.top, height: Math.min(22, size.mark.height) }}>
-              <ArrowRight />
+            <span className="serp-mark-tag" style={{ top: size.mark.top, height: size.mark.height }}>
+              <span className="serp-mark-label">{markLabel}</span>
+              <span className="serp-mark-rule" />
             </span>
           )}
         </span>
@@ -175,8 +181,11 @@ function ResultSite({ icon, name, url }: { icon: ReactNode; name: string; url: s
   );
 }
 
+/** The address line over a result: a phone's results show the site's host alone, a computer's its path after it. */
+const resultUrl = (parts: readonly string[], device: SerpDevice) => (device === 'mobile' ? parts[0] : parts.join(' › '));
+
 /** Another site's result, made up: there to be read against, and not read out. */
-function Filler({ result }: { result: FillerResult }) {
+function Filler({ result, device }: { result: FillerResult; device: SerpDevice }) {
   return (
     <div className="serp-result serp-filler" aria-hidden="true">
       <ResultSite
@@ -186,7 +195,7 @@ function Filler({ result }: { result: FillerResult }) {
           </span>
         }
         name={result.site}
-        url={result.url}
+        url={resultUrl(result.url.split(' › '), device)}
       />
       <div className="serp-title">{result.title}</div>
       <div className="serp-desc">{result.description}</div>
@@ -198,8 +207,11 @@ function Filler({ result }: { result: FillerResult }) {
  * The document on a sample results page, a computer's or a phone's, among placeholder results. The page has its own
  * light and dark colours, whatever the editor looks like.
  */
-function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPreview }) {
+function SearchResults({ state, doc, kind }: { state: ProjectState; doc: DocumentPreview; kind: 'page' | 'post' }) {
   const { address } = doc;
+  // Said over the results page itself, which stays in sight while the settings scroll: a hidden page or a draft only
+  // shows how it would look.
+  const unlisted = doc.meta.draft ? `A draft isn’t in search results. This is how it would show once it’s published.` : doc.meta.noindex ? `Hidden from search engines. This is how it would show if they listed it.` : null;
   const { device, dark } = useStore((s) => s.serpView);
   const darkId = useId();
   const r = doc.serp[device];
@@ -225,8 +237,15 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
           <Switch id={darkId} checked={dark} onChange={(v) => setSerpView({ dark: v })} labelledBy={`${darkId}-l`} />
         </span>
       </div>
+      <p className="field-hint serp-note">Your {kind} among sample results. Search engines may shorten your title and description, or choose other words.</p>
+      {unlisted && (
+        <p className="seo-note seo-preview-state">
+          <EyeOff aria-hidden="true" />
+          {unlisted}
+        </p>
+      )}
       <div role="group" aria-label={device === 'desktop' ? 'Search result on a computer' : 'Search result on a phone'}>
-        <ScaledPage device={device}>
+        <ScaledPage device={device} mark={`Your ${kind}`}>
           <div
             className={`serp-page serp-page-${device}`}
             data-serp-theme={dark ? 'dark' : 'light'}
@@ -243,10 +262,10 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
               <Search />
               <span>{SAMPLE_QUERY}</span>
             </div>
-            <Filler result={first} />
+            <Filler result={first} device={device} />
             <div className={`serp-result serp serp-${device}`} data-device={device} data-serp-own="">
-              <span className="sr-only">Your page’s result</span>
-              <ResultSite icon={<SiteIcon state={state} />} name={doc.siteName || address.host || 'Your site'} url={[address.host ?? 'No public URL', ...address.trail].join(' › ')} />
+              <span className="sr-only">Your {kind}’s result</span>
+              <ResultSite icon={<SiteIcon state={state} />} name={doc.siteName || address.host || 'Your site'} url={resultUrl([address.host ?? 'No public URL', ...address.trail], device)} />
               {/* The document's own words read in its language and direction, so a right-to-left "…" falls at their end. */}
               <div className={`serp-title${r.title.text ? '' : ' none'}`} {...(r.title.text ? own : {})}>
                 {r.title.lines.length
@@ -263,23 +282,11 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
               </div>
             </div>
             {rest.map((f) => (
-              <Filler key={f.url} result={f} />
+              <Filler key={f.url} result={f} device={device} />
             ))}
           </div>
         </ScaledPage>
       </div>
-      <p className="field-hint serp-note">
-        Where results likely cut the title and description short, from their width in the type search results use. The other results are placeholders. Search engines may still choose other words.
-        {!address.host && (
-          <>
-            {' '}
-            The site has no public URL yet, so results show the page’s address within the site.{' '}
-            <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
-              Open Site details
-            </button>
-          </>
-        )}
-      </p>
     </div>
   );
 }
@@ -290,9 +297,8 @@ function GraphSummary({ sections }: { sections: GraphSection[] }) {
     <div className="seo-summary">
       {sections.map((s) => (
         <section key={s.id} className="seo-entity" data-entity={s.id} aria-label={s.heading}>
-          <h4>{s.heading}</h4>
+          <h5>{s.heading}</h5>
           <p className="seo-entity-statement">{s.statement}</p>
-          {s.use && <p className="field-hint">{s.use}</p>}
           {s.rows.length > 0 && (
             <dl>
               {s.rows.map((r, i) => (
@@ -325,27 +331,50 @@ function GraphSummary({ sections }: { sections: GraphSection[] }) {
   );
 }
 
+/** The JSON-LD laid out a value to a line, as the page writes it but readable: only the spaces between tokens differ. */
+function readableJson(json: string): string {
+  try {
+    return JSON.stringify(JSON.parse(json), null, 2);
+  } catch {
+    return json;
+  }
+}
+
 /**
  * Where the document is published, what its typed structured data still needs, and the structured data its exported
  * page carries: in words, with the exact JSON-LD a click away.
  */
-function StructuredData({ structured, noAddress }: { structured: StructuredPreview | null | undefined; noAddress: boolean }) {
+function StructuredData({ structured, noAddress, onEditType }: { structured: StructuredPreview | null | undefined; noAddress: boolean; onEditType?: () => void }) {
+  const uid = useId();
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   if (structured === undefined) return <p className="field-hint">Working out the structured data…</p>;
   if (structured === null) return <p className="field-hint">This document is no longer in the project.</p>;
   const { status, problem, graph } = structured;
   return (
     <div className="seo-data">
-      <dl className="seo-status">
-        {status.map((line) => (
-          <div key={line.id} className={`seo-status-row${line.on ? ' on' : ''}`} data-status={line.id}>
-            <dt>{line.label}</dt>
-            <dd>{line.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <section className="seo-data-part" aria-labelledby={`${uid}-where`}>
+        <h4 id={`${uid}-where`} className="seo-data-head">
+          Where it appears
+        </h4>
+        <dl className="seo-status">
+          {status.map((line) => (
+            <div key={line.id} className={`seo-status-row${line.on ? ' on' : ''}`} data-status={line.id}>
+              {/* The mark leads the row, so the values start on the same line as the facts below. */}
+              <dt>
+                {line.on ? <Check aria-hidden="true" /> : <Minus aria-hidden="true" />}
+                <span>{line.label}</span>
+              </dt>
+              <dd>{line.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
       {problem && (
         <div className="seo-data-problem" data-code={problem.code}>
-          <p>{problem.message}</p>
+          <p>
+            <TriangleAlert aria-hidden="true" />
+            <span>{problem.message}</span>
+          </p>
           <p className="field-hint">{problem.explanation}</p>
           {problem.destination && (
             <button type="button" className="link-btn" onClick={() => openEditorDestination(problem.destination!)}>
@@ -355,28 +384,48 @@ function StructuredData({ structured, noAddress }: { structured: StructuredPrevi
         </div>
       )}
       {graph.kind === 'graph' ? (
-        <>
-          <p className="field-hint">What the exported page tells search engines and AI answer engines, as Schema.org structured data.</p>
+        <section className="seo-data-part" aria-labelledby={`${uid}-what`}>
+          <div className="seo-data-headrow">
+            <h4 id={`${uid}-what`} className="seo-data-head">
+              What it tells search engines
+            </h4>
+            {/* From what it says to where it is set: the page type and its facts, beside the previews. */}
+            {onEditType && (
+              <button type="button" className="link-btn" onClick={onEditType}>
+                {readOnly ? 'Show the page type' : 'Edit the page type'}
+              </button>
+            )}
+          </div>
+          <p className="field-hint">What the exported page says about itself to search engines and AI answer engines, as Schema.org structured data.</p>
           <GraphSummary sections={graph.sections} />
           <Disclosure className="seo-json" summary="Exact JSON-LD">
+            <div className="seo-json-tools">
+              <span className="field-hint">Paste it into a structured data checker, such as the Schema Markup Validator.</span>
+              <CopyText text={graph.json} what="JSON-LD" />
+            </div>
             <pre className="code-view seo-graph" tabIndex={0} aria-label="Structured data as the exported page writes it" data-testid="seo-graph">
-              {graph.json}
+              {readableJson(graph.json)}
             </pre>
           </Disclosure>
-        </>
+        </section>
       ) : graph.kind === 'none' ? (
-        <p className="field-hint seo-graph-none">
-          {graph.reason}
-          {/* The remedy where the reason is, as the other tabs offer it. */}
-          {noAddress && (
-            <>
-              {' '}
-              <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
-                Open Site details
-              </button>
-            </>
-          )}
-        </p>
+        <section className="seo-data-part" aria-labelledby={`${uid}-what`}>
+          <h4 id={`${uid}-what`} className="seo-data-head">
+            What it tells search engines
+          </h4>
+          <p className="field-hint seo-graph-none">
+            {graph.reason}
+            {/* The remedy where the reason is. */}
+            {noAddress && (
+              <>
+                {' '}
+                <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
+                  {readOnly ? 'Show Site details' : 'Set the public URL'}
+                </button>
+              </>
+            )}
+          </p>
+        </section>
       ) : (
         <p className="field-error" role="alert">
           The structured data couldn’t be worked out: {graph.message}
@@ -392,7 +441,7 @@ function StructuredData({ structured, noAddress }: { structured: StructuredPrevi
  * fields now (`typed`, laid over the project as `overlay`). `from` says where it is pressed: beside the document's own
  * settings (the Inspector, the post writer), or in the SEO view on the document chosen there.
  */
-export function SeoAiAction({ subject, overlay, typed, from }: { subject: SeoSubject; overlay: ProjectState; typed: TypedSeo; from: 'inline' | 'view' }) {
+export function SeoAiAction({ subject, overlay, typed, from, hint = true }: { subject: SeoSubject; overlay: ProjectState; typed: TypedSeo; from: 'inline' | 'view'; hint?: boolean }) {
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   if (readOnly) return null;
   return (
@@ -406,7 +455,7 @@ export function SeoAiAction({ subject, overlay, typed, from }: { subject: SeoSub
           subject.kind === 'page' ? previewHandoff(overlay, subject) : postPreviewHandoff(subject, typed, from === 'view' ? 'view' : 'writer')
         }
       />
-      {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
+      {hint && subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
     </div>
   );
 }
@@ -451,23 +500,25 @@ export function SeoInlineActions({ subject, overlay, typed }: { subject: SeoSubj
 /**
  * A page's or a post's Search & sharing previews in the SEO view, in tabs: its search result on a computer or a phone,
  * the card a shared link makes, and its structured data with where it is published. `shown` says whether the previews
- * are on screen: the structured data, which reads the whole website, is worked out only while its tab shows. `typed`
- * is the text typed into the document's fields and not saved yet, which `overlay` lays over the project.
+ * are on screen: the structured data, which reads the whole website, is worked out only while its tab shows. `overlay`
+ * lays the text typed into the document's fields and not saved yet over the project. Optimize with AI sits with the
+ * settings it changes (SeoView), not under the previews.
  */
 export function SeoPreview({
   state,
   subject,
   overlay,
-  typed,
   doc,
-  shown = true
+  shown = true,
+  onEditType
 }: {
   state: ProjectState;
   subject: SeoSubject;
   overlay: ProjectState;
-  typed: TypedSeo;
   doc: DocumentPreview | null;
   shown?: boolean;
+  /** A page's way from its structured data to the Page type field that sets it. */
+  onEditType?: () => void;
 }) {
   const key = subjectKey(subject);
   // Ids of their own, so the tabs never share one with another mount's.
@@ -505,12 +556,11 @@ export function SeoPreview({
         label="Preview surface"
         idBase={`seo-preview-${uid.replace(/[^A-Za-z0-9_-]/g, '')}-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`}
         options={[
-          { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
+          { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} kind={subject.kind === 'page' ? 'page' : 'post'} /> },
           { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
-          { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} noAddress={!!doc.card.addressNote} /> }
+          { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} noAddress={!!doc.card.addressNote} onEditType={onEditType} /> }
         ]}
       />
-      <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="view" />
     </div>
   );
 }

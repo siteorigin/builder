@@ -71,7 +71,7 @@ describe('previewDocument', () => {
     expect(p.date).toBeNull();
     expect(p.card).toMatchObject({ host: 'example.com', title: 'Classes and commissions · Riverside Studio', addressNote: null });
     expect(p.card.image?.id).toBe('img_share');
-    expect(p.card.imageSaid).toMatch(/, the site’s\.$/);
+    expect(p.card.imageSaid).toMatch(/, the site’s sharing image\.$/);
     expect(p.own).toEqual({ title: true, description: true });
   });
 

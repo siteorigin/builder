@@ -86,6 +86,8 @@
     .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%236b768c' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   }
   .input::placeholder, .textarea::placeholder { color: var(--text-3); }
+  /* An empty date field's yyyy/mm/dd mask is a placeholder, so it takes a placeholder's ink until it has focus. */
+  .input.date-empty:not(:focus) { color: var(--text-3); }
   .textarea { height: auto; min-height: 64px; max-height: 260px; padding: 7px 9px; resize: vertical; line-height: 1.5; field-sizing: content; }
   .input.sm, .select.sm { height: 26px; font-size: 12px; }
   /* Read only: selectable but not editable, so it recedes (below the panel in dark, where --panel-2 sits above it). */
