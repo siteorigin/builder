@@ -89,7 +89,7 @@ export const SITE_SEO_ARGS = z
     markdownMirrors: z.boolean().optional(),
     llmsSummary: text(TEXT_LIMITS.siteDescription),
     webmcp: z.boolean().optional().describe('WebMCP: contact and signup forms and site search as tools AI agents in visitors\' browsers can use.'),
-    identity: IDENTITY_ARG.nullable().optional().describe('The publisher, for search and AI answer engines.'),
+    identity: IDENTITY_ARG.nullable().optional().describe('The publisher, for search and AI answer engines. Its email, telephone, address and hours also show in every section, link and footer row that shows the old value or a sample.'),
     crawlerPolicy: CRAWLER_POLICY_ARG.nullable().optional().describe('robots.txt.')
   })
   .strict();
