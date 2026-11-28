@@ -38,7 +38,8 @@ describe('pasted images written for the importer (#1410)', () => {
     await pasted.release('unknown');
     await pasted.release(7);
     expect(readdirSync(root)).toHaveLength(1);
-    pasted.releaseAll();
+    // Quitting removes what is left at once.
+    pasted.removeAll();
     expect(readdirSync(root)).toHaveLength(0);
   });
 
@@ -66,5 +67,41 @@ describe('pasted images written for the importer (#1410)', () => {
     // Released, there is room again.
     if (staged[0].ok) await pasted.release(staged[0].batch);
     expect((await pasted.stage([{ type: 'image/png', bytes: png }])).ok).toBe(true);
+  });
+
+  it('keeps a paste an import is reading until it is done, when the editor that would release it goes', async () => {
+    const { root, pasted } = store();
+    const staged = await pasted.stage([{ type: 'image/png', bytes: png }]);
+    const idle = await pasted.stage([{ type: 'image/gif', bytes: png }]);
+    if (!staged.ok || !idle.ok) throw new Error('not staged');
+    let finish!: () => void;
+    let seen = false;
+    const importing = pasted.reading(staged.paths, async () => {
+      await new Promise<void>((r) => (finish = r));
+      seen = existsSync(staged.paths[0]);
+    });
+    // The editor reloads: the paste no import is reading goes now, the other once its import is done.
+    pasted.releaseAll();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(dirname(idle.paths[0]))).toBe(false);
+    expect(existsSync(staged.paths[0])).toBe(true);
+    finish();
+    await importing;
+    expect(seen).toBe(true);
+    expect(readdirSync(root)).toHaveLength(0);
+  });
+
+  it('counts a paste from the moment it is asked for, and removes one released while it is still being written', async () => {
+    const { root, pasted } = store();
+    // Every one asked for at once: the cap holds before any folder exists.
+    const all = await Promise.all(Array.from({ length: MAX_PASTED_BATCHES + 2 }, () => pasted.stage([{ type: 'image/png', bytes: png }])));
+    expect(all.filter((r) => r.ok)).toHaveLength(MAX_PASTED_BATCHES);
+    pasted.removeAll();
+    // Released while its folder is being made: nothing of it is left, and it is not handed out.
+    const writing = pasted.stage([{ type: 'image/png', bytes: png }]);
+    pasted.releaseAll();
+    expect(await writing).toEqual({ ok: false, message: expect.stringMatching(/reloaded/) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(readdirSync(root)).toHaveLength(0);
   });
 });

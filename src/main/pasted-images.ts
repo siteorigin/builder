@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 /** The pictures a paste can carry, by type, with the extension the importer knows each one by. */
 export const PASTED_IMAGE_TYPES: Readonly<Record<string, string>> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif' };
@@ -42,9 +42,17 @@ export function readPasted(files: unknown): PastedImage[] | string {
   return out;
 }
 
+/** One paste's folder: none until it is made, and how many imports are reading it. */
+interface Batch {
+  dir: string | null;
+  reading: number;
+  /** Released while still being made or read: removed as soon as neither is going on. */
+  released: boolean;
+}
+
 export class PastedImages {
-  /** Each paste's folder, by the batch ID the renderer releases it with. */
-  private readonly batches = new Map<string, string>();
+  /** Each paste, by the batch ID the renderer releases it with: counted from the moment it is asked for. */
+  private readonly batches = new Map<string, Batch>();
 
   constructor(private readonly root: () => string = tmpdir) {}
 
@@ -53,38 +61,79 @@ export class PastedImages {
     const read = readPasted(files);
     if (typeof read === 'string') return { ok: false, message: read };
     if (this.batches.size >= MAX_PASTED_BATCHES) return { ok: false, message: 'Too many pasted images are still being added. Paste again once they show under your message.' };
-    const dir = await mkdtemp(join(this.root(), 'siteorigin-paste-'));
+    // Held before anything is awaited, so the cap counts it and a release meanwhile removes what it goes on to make.
     const batch = randomUUID();
-    this.batches.set(batch, dir);
+    const entry: Batch = { dir: null, reading: 1, released: false };
+    this.batches.set(batch, entry);
     try {
+      entry.dir = await mkdtemp(join(this.root(), 'siteorigin-paste-'));
+      const dir = entry.dir;
       const paths = read.map((f, i) => join(dir, `Pasted image${read.length > 1 ? ` ${i + 1}` : ''}.${PASTED_IMAGE_TYPES[f.type]}`));
       await Promise.all(read.map((f, i) => writeFile(paths[i], f.bytes, { mode: 0o600 })));
+      if (entry.released) return { ok: false, message: 'The pasted image could not be added: the editor was reloaded.' };
       return { ok: true, batch, paths };
     } catch (e) {
-      await this.release(batch);
+      entry.released = true;
       return { ok: false, message: `The pasted image could not be added: ${e instanceof Error ? e.message : String(e)}` };
+    } finally {
+      entry.reading--;
+      await this.settle(batch, entry);
+    }
+  }
+
+  /**
+   * Run an import of `paths`, keeping any pasted folder they are in until it is done: a release meanwhile (the editor
+   * reloaded, say) waits for the import to have read its pictures.
+   */
+  async reading<T>(paths: readonly string[] | undefined, run: () => Promise<T>): Promise<T> {
+    const held = [...this.batches].filter(([, b]) => b.dir && (paths ?? []).some((p) => p.startsWith(b.dir + sep)));
+    for (const [, b] of held) b.reading++;
+    try {
+      return await run();
+    } finally {
+      for (const [id, b] of held) {
+        b.reading--;
+        await this.settle(id, b);
+      }
     }
   }
 
   /** Remove one paste's folder, once its import is done with it. An unknown batch is nothing to remove. */
   async release(batch: unknown): Promise<void> {
     if (typeof batch !== 'string') return;
-    const dir = this.batches.get(batch);
-    if (!dir) return;
-    this.batches.delete(batch);
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    const entry = this.batches.get(batch);
+    if (!entry) return;
+    entry.released = true;
+    await this.settle(batch, entry);
   }
 
-  /** Remove every paste's folder still here, at once: the editor that would release them is gone, or the app is
-   *  quitting and waits for nothing. */
+  /** Release every paste: the editor that would release them is gone. A folder still being made or read goes once it
+   *  is not. */
   releaseAll(): void {
-    for (const dir of this.batches.values()) {
+    for (const [id, entry] of [...this.batches]) {
+      entry.released = true;
+      void this.settle(id, entry);
+    }
+  }
+
+  /** Remove every paste's folder still here, at once, whatever is reading it: the app is quitting and waits for nothing. */
+  removeAll(): void {
+    for (const entry of this.batches.values()) {
+      entry.released = true;
+      if (!entry.dir) continue;
       try {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(entry.dir, { recursive: true, force: true });
       } catch {
         // The system's temporary folder is cleared in time anyway.
       }
     }
     this.batches.clear();
+  }
+
+  /** A released paste no longer being made or read is removed. */
+  private async settle(batch: string, entry: Batch): Promise<void> {
+    if (!entry.released || entry.reading > 0 || this.batches.get(batch) !== entry) return;
+    this.batches.delete(batch);
+    if (entry.dir) await rm(entry.dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

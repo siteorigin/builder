@@ -735,7 +735,11 @@ function registerIpc() {
   const kindOf = (only: unknown) => (only === 'image' || only === 'font' || only === 'document' ? only : undefined);
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
-  handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));
+  handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => {
+    const files = pathList(paths);
+    // A pasted picture being imported stays on disk until the importer has read it, whatever happens to the editor.
+    return pastedImages.reading(files, () => controller.importAssets(files, kindOf(only), importChoices(choices)));
+  });
   // Images pasted into the AI composer with no file of their own (#1410): written where the importer reads them.
   handle('project:stagePastedImages', (files: unknown) => pastedImages.stage(files));
   handle('project:releasePastedImages', (batch: unknown) => pastedImages.release(batch));
@@ -1493,7 +1497,7 @@ app.on('window-all-closed', () => {
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
 app.on('will-quit', () => {
   perf.stop();
-  pastedImages.releaseAll();
+  pastedImages.removeAll();
   controller.remote.dispose();
   stopMediaWorker();
   compileWorkers.stop();

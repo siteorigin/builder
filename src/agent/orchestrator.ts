@@ -1414,6 +1414,7 @@ export class Orchestrator {
       // Checked again, as after loading the conversations: something may have started or changed while the setting was read.
       if (code && this.run) return { ok: false, message: 'The AI is already working on a request.' };
       if (code && this.clearing) return clearing;
+      if (code && this.closing) return { ok: false, message: 'The project is closing.' };
       if (code && (this.conversation !== conv || this.deps.session() !== session)) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
       if (context.selection && (context.selection.owner.kind !== 'component' || context.selection.owner.id !== def.id)) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
       if (context.selection && !Object.hasOwn(def!.tree!.nodes, context.selection.instancePath[0] ?? context.selection.nodeId))
