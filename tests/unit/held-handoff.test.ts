@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProjectSnapshot, RunStatus } from '@shared/api';
@@ -88,7 +88,7 @@ interface StoreState {
   runMode: 'ask' | 'edit' | null;
   runSaveable: boolean;
   pendingSave: number;
-  toasts: Array<{ action?: { label: string } }>;
+  toasts: Array<{ text: string; kind: string; action?: { label: string } }>;
   renameOffer: { opening: string; pageId: string; from: string; to: string; revision: number } | null;
 }
 interface StoreModule {
@@ -1133,5 +1133,43 @@ describe('a field changed somewhere else while it was typed (#82)', () => {
     expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', text: 'Typed in the inspector' });
     expect(held.note).toMatch(/changed outside SiteOrigin Builder/);
     expect(session.state.pages[home].seo.description).not.toBe('Typed in the inspector');
+  });
+});
+
+describe('a typed edit the project folder cannot be written for (#1435)', () => {
+  const description = (pageId: string, value: string): EditOperation => ({ type: 'page.update', pageId, description: value });
+  const pagesDir = (dir: string) => join(dir, 'siteorigin', 'pages');
+  const pageFile = (dir: string, pageId: string) => join(pagesDir(dir), `${pageId}.json`);
+  const onDisk = (dir: string, pageId: string) => JSON.parse(readFileSync(pageFile(dir, pageId), 'utf8')) as { seo: Record<string, unknown> };
+  /** As Electron rejects an invoke whose handler threw: the handler's error behind its own prefix. */
+  function overIpc() {
+    const bridge = (globalThis as unknown as { window: { builder: { project: { apply: (...a: unknown[]) => Promise<unknown> } } } }).window.builder.project;
+    const apply = bridge.apply;
+    bridge.apply = (...a: unknown[]) => apply(...a).catch((e: unknown) => Promise.reject(new Error(`Error invoking remote method 'project:apply': ${String(e)}`)));
+    return () => (bridge.apply = apply);
+  }
+
+  it('says which folder could not be written, in plain words, and keeps the typed text to copy', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const before = onDisk(dir, home).seo.description;
+    const base = store.getState().snapshot;
+    const restore = overIpc();
+    chmodSync(pagesDir(dir), 0o555);
+    try {
+      await typeAndCommit(description(home, 'A description I spent ages on'), 'Change description', 'A description I spent ages on', base);
+    } finally {
+      chmodSync(pagesDir(dir), 0o755);
+      restore();
+    }
+    expect(onDisk(dir, home).seo.description).toBe(before);
+    const error = store.getState().toasts.filter((t) => t.kind === 'error').at(-1)!;
+    expect(error.text).toMatch(/siteorigin\/pages/);
+    expect(error.text).not.toMatch(/remote method|EACCES|\.tmp|permission denied/i);
+    // The typed text is kept, to copy, rather than lost with the canvas putting the saved value back.
+    const held = store.getState().heldEdits;
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ cause: 'elsewhere', phase: 'failed', text: 'A description I spent ages on' });
+    expect(heldPrompt(held[0], false).actions).toContain('copy');
   });
 });
