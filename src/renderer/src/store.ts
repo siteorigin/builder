@@ -788,17 +788,27 @@ export function projectHistory(action: 'undo' | 'redo') {
     (e: unknown) => toast(errorText(e), 'error')
   );
   // It settles once, and only then can the next go.
-  void stepShown(before, run, HISTORY_SHOWN_MS).then(() => void (historyBusy = false));
+  void stepShown(action, before, run, HISTORY_SHOWN_MS).then(() => void (historyBusy = false));
+}
+
+/** The History entry an Undo takes back, or a Redo brings back, by History as `snap` shows it. */
+function historyEntryFor(action: 'undo' | 'redo', snap: ProjectSnapshot): string | undefined {
+  const entries = snap.history?.entries ?? [];
+  const next = entries.findIndex((e) => !e.applied);
+  const cursor = next < 0 ? entries.length : next;
+  return (action === 'undo' ? entries[cursor - 1] : entries[cursor])?.id;
 }
 
 /**
- * Resolves once the editor shows a change after `before` in its opening, that opening is no longer shown, or `run` was
- * refused or failed. A step shows before its reply comes: the project announces it as soon as its journal is on disk
- * (ProjectSession.persist), while the rest of its save goes on. Saved and still not shown after `ms`, it asks for the
- * whole project again, every `ms` until it shows: an update lost on its way never lets a step go that the editor has
- * not shown, nor holds Undo and Redo back once the editor has caught up.
+ * Resolves once the editor shows the step `run` takes, that opening is no longer shown, or the step was refused or
+ * failed. A step shows before its reply comes: the project announces it as soon as its journal is on disk
+ * (ProjectSession.persist), while the rest of its save goes on. Until the reply it is known by its History entry
+ * changing (another change shown meanwhile, an edit saved ahead of it, says nothing about it); once saved, by its own
+ * revision. Saved and still not shown after `ms`, it asks for the whole project again, every `ms` until it shows: an
+ * update lost on its way never lets a step go that the editor has not shown, nor holds Undo and Redo back once the
+ * editor has caught up.
  */
-function stepShown(before: ProjectSnapshot | null, run: Promise<ApplyResult | null | undefined>, ms: number): Promise<void> {
+function stepShown(action: 'undo' | 'redo', before: ProjectSnapshot | null, run: Promise<ApplyResult | null | undefined>, ms: number): Promise<void> {
   // With no project shown there is nothing to see: the reply is enough.
   if (!before)
     return run.then(
@@ -806,13 +816,17 @@ function stepShown(before: ProjectSnapshot | null, run: Promise<ApplyResult | nu
       () => undefined
     );
   const { workspaceKey } = before;
-  let target = before.revision + 1;
+  const entry = historyEntryFor(action, before);
+  /** The step's own revision, once its reply has come. */
+  let saved: number | null = null;
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setInterval> | undefined;
     let over = false;
     const shown = () => {
       const s = getState().snapshot;
-      return !s || s.workspaceKey !== workspaceKey || s.revision >= target;
+      if (!s || s.workspaceKey !== workspaceKey) return true;
+      if (saved !== null && s.revision >= saved) return true;
+      return entry !== undefined && s.history?.entries.find((e) => e.id === entry)?.applied === (action === 'redo');
     };
     const finish = () => {
       over = true;
@@ -825,8 +839,7 @@ function stepShown(before: ProjectSnapshot | null, run: Promise<ApplyResult | nu
       (r) => {
         if (over) return;
         if (!r?.ok) return finish();
-        // Its own revision, should the project not have moved on from the one shown when it was pressed.
-        target = Math.min(target, r.revision);
+        saved = r.revision;
         if (shown()) return finish();
         timer = setInterval(() => void Promise.resolve().then(() => api.project.resync()).catch(() => undefined), ms);
       },

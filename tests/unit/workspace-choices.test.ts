@@ -349,6 +349,9 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
 
 describe('Undo or Redo held down (#1452)', () => {
   const show = (workspaceKey: string, revision: number) => store.setState({ snapshot: { workspaceKey, revision } as unknown as ProjectSnapshot });
+  /** The project at `revision`, with History's entries h0, h1, … applied or not. */
+  const showHistory = (revision: number, applied: boolean[]) =>
+    store.setState({ snapshot: { workspaceKey: 'opening#a', revision, history: { entries: applied.map((a, i) => ({ id: `h${i}`, applied: a })) } } as unknown as ProjectSnapshot });
   const lands = async (r: ApplyResult = { ok: true, revision: 5 }) => {
     undos.at(-1)!(r);
     await tick();
@@ -385,25 +388,46 @@ describe('Undo or Redo held down (#1452)', () => {
 
   it('lets the next press go once the editor shows the step, though the rest of its save has not answered yet', async () => {
     open('opening#a');
-    show('opening#a', 4);
+    showHistory(4, [true, true]);
     store.projectHistory('undo');
     store.projectHistory('redo');
     expect(sent).toEqual(['undo']);
-    // The project announces a step as soon as its journal is on disk, before it replies.
-    show('opening#a', 5);
+    // The project announces a step as soon as its journal is on disk, before it replies: h1 is taken back.
+    showHistory(5, [true, false]);
     await tick();
     store.projectHistory('redo');
     expect(sent).toEqual(['undo', 'redo']);
-    // The Undo's reply, coming late, does not let a press go past the Redo still on its way.
+    // The Undo's reply, coming late, does not let a press go past the Redo still on its way, nor the project handed
+    // to the editor again as it was (a resync, say).
     undos[0]({ ok: true, revision: 5 });
+    showHistory(5, [true, false]);
     await tick();
     store.projectHistory('undo');
     expect(sent).toEqual(['undo', 'redo']);
-    show('opening#a', 6);
+    showHistory(6, [true, true]);
     await tick();
     store.projectHistory('undo');
     expect(sent).toEqual(['undo', 'redo', 'undo']);
     undos[1]({ ok: true, revision: 6 });
+    await lands(nothingLeft);
+  });
+
+  it('does not take another change shown meanwhile for the step', async () => {
+    open('opening#a');
+    showHistory(4, [true, true]);
+    store.projectHistory('undo');
+    // An edit saved ahead of the Undo shows first, as a step of its own; then the Undo takes that edit back, not h1.
+    showHistory(5, [true, true, true]);
+    await tick();
+    store.projectHistory('undo');
+    showHistory(6, [true, true, false]);
+    await tick();
+    store.projectHistory('undo');
+    expect(sent).toEqual(['undo']);
+    // Its reply names the revision it was saved at, which the editor shows already.
+    await lands({ ok: true, revision: 6 });
+    store.projectHistory('undo');
+    expect(sent).toEqual(['undo', 'undo']);
     await lands(nothingLeft);
   });
 
