@@ -1566,7 +1566,9 @@ export class Controller {
       // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
       let workspace: LocalWorkspaceState = {};
       try {
-        workspace = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+        // Only an object is saved state: anything else in the file (`null`, a list) is read as none.
+        const saved: unknown = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+        if (saved && typeof saved === 'object' && !Array.isArray(saved)) workspace = saved as LocalWorkspaceState;
       } catch {
         workspace = {};
       }
