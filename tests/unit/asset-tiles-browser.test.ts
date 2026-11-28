@@ -279,6 +279,27 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     expect(await page.getByRole('img', { name: '1 font is missing its file:' }).count()).toBe(0);
   });
 
+  it('names a damaged smaller copy in the image’s details and offers to make it again (#1459)', async () => {
+    const id = order()[0];
+    const hurt = structuredClone(state);
+    const avif = `static/assets/${id}-480w.avif`;
+    hurt.assets.assets[id] = { ...hurt.assets.assets[id], width: 1200, height: 900, variants: [{ width: 480, file: `static/assets/${id}-480w.png` }, { width: 480, file: avif }] };
+    const send = (m: unknown[]) => page.evaluate(([x, y]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, y), [hurt, m] as unknown[]);
+    await send([{ assetId: id, original: false, variants: [avif], damaged: [avif] }]);
+    expect(await page.locator(`[data-asset="${id}"]`).textContent()).toContain('Copy damaged');
+    await page.evaluate((x) => (globalThis as unknown as { so: { show(id: string): void } }).so.show(x), id);
+    const note = page.locator('.asset-detail .asset-missing');
+    await note.waitFor();
+    expect(await note.textContent()).toContain(`A smaller copy is damaged. Damaged: ${id}-480w.avif. Some screen sizes may show a broken picture until it is made again from the original.`);
+    expect(await note.getByRole('button', { name: 'Make the copy again' }).count()).toBe(1);
+    // One gone beside it: both are counted, and the damaged one still named.
+    const png = `static/assets/${id}-480w.png`;
+    await send([{ assetId: id, original: false, variants: [png, avif], damaged: [avif] }]);
+    expect(await note.textContent()).toContain(`2 smaller copies are missing or damaged. Damaged: ${id}-480w.avif.`);
+    await send([]);
+    expect(await page.locator('.asset-detail .asset-missing').count()).toBe(0);
+  });
+
   it('opens on the image “Show image” asked for when that showing is what builds the panel', async () => {
     const id = order()[40];
     await page.evaluate((x) => (globalThis as unknown as { so: { showUnbuilt(id: string): void } }).so.showUnbuilt(x), id);
