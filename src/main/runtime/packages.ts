@@ -11,7 +11,7 @@ import { NETWORK_CODES } from './availability';
 import { npmModule } from './manager';
 
 /** The packages a new project is made with (templates/sveltekit-brochure): the website's own tools. */
-export const STARTER_PACKAGES: ReadonlySet<string> = new Set(['@sveltejs/adapter-static', '@sveltejs/kit', '@sveltejs/vite-plugin-svelte', 'svelte', 'vite']);
+export const STARTER_PACKAGES: ReadonlySet<string> = new Set(['@sveltejs/adapter-node', '@sveltejs/adapter-static', '@sveltejs/kit', '@sveltejs/vite-plugin-svelte', 'svelte', 'vite']);
 
 type Section = ProjectPackage['section'];
 

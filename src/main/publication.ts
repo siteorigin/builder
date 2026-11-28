@@ -27,6 +27,7 @@ import { keptPublishedAddresses } from '@shared/collections';
 import { getTheme } from '@catalogue/index';
 import { defFile, publishedState, webMcpFormFile } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
+import { runsOnNode } from '@shared/deploy-target';
 import { holdsSecret } from './sources/sync';
 import { withoutCodeMarkers } from './codecheck';
 import { GIT_LIMITS, GitError, PUBLISH_BRANCH, PUBLISH_EMAIL, type GitRepository, type Identity, type Oid } from './git/protocol';
@@ -399,7 +400,7 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   await writePublicationDocs(dir, projected);
   await leaveOutSyncScript(dir);
   const readme = await readIfExists(join(dir, 'README.md'));
-  if (readme !== null && isGeneratedReadme(readme)) await fs.writeFile(join(dir, 'README.md'), projectReadme(projected.site.name, false, themeNotice(getTheme(projected.site.themeId)), false, redirectHost(projected.site), false));
+  if (readme !== null && isGeneratedReadme(readme)) await fs.writeFile(join(dir, 'README.md'), projectReadme(projected.site.name, false, themeNotice(getTheme(projected.site.themeId)), false, redirectHost(projected.site), false, null, runsOnNode(projected.site)));
   const listed = await publicationFiles(dir);
   if (!listed.ok) return stop(listed.message);
   return { ok: true, state: projected, files: listed.files };

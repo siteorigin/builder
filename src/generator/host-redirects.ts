@@ -20,11 +20,15 @@
  * `_app/immutable/` for a year without asking again. The build names each of those files by its contents, so a file
  * that changes gets a new address. Nothing else is: `static/assets/` keeps an author's own file at the name they gave
  * it, and a responsive copy shares its original's hash, so those addresses keep the host's own caching.
+ *
+ * A website built as a Node.js server (SiteDoc.deployTarget) is not served by these hosts' own static serving, so it
+ * gets neither redirect file: each old address keeps its page, which sends visitors on.
  */
 import { routeUrl } from '@shared/routes';
 import { siteMount } from '@shared/crawler-policy';
 import { resolveRedirects } from '@shared/redirects';
 import type { ProjectState, RedirectHost, SiteDoc } from '@shared/types';
+import { runsOnNode } from '@shared/deploy-target';
 import { derived } from './cache';
 
 /** Where the generated project keeps the rules Cloudflare Pages and Netlify read. */
@@ -59,6 +63,8 @@ const withoutSlash = (path: string) => path.replace(/\/$/, '');
  * Rules keep the order the old addresses were kept in.
  */
 export function generateHostRedirects(state: ProjectState): string | null {
+  // A Node.js server reads no host's rules: its old addresses are their pages alone (shared/deploy-target.ts).
+  if (runsOnNode(state.site)) return null;
   const pairs = redirectPairs(state);
   if (!pairs.length) return null;
   const mount = siteMount(state.site);
@@ -109,7 +115,7 @@ export function yieldsToOwnFile(path: string, content: string | Uint8Array): boo
  * generateHostHeaders), and the HTTP 301 rules while the site keeps an old address.
  */
 export function generateVercelConfig(state: ProjectState): string | null {
-  if (redirectHost(state.site) !== 'vercel') return null;
+  if (redirectHost(state.site) !== 'vercel' || runsOnNode(state.site)) return null;
   const pairs = redirectPairs(state);
   const mount = siteMount(state.site);
   const headers = [{ source: `${mount}${IMMUTABLE_DIR}(.*)`, headers: [{ key: 'Cache-Control', value: IMMUTABLE_CACHE_CONTROL }] }];

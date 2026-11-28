@@ -3489,6 +3489,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.redirectHost === 'cloudflare') delete s.redirectHost;
     else s.redirectHost = op.redirectHost;
   }
+  // How the website is built (shared/deploy-target.ts), stored only while it is not the default static website.
+  if (op.deployTarget !== undefined) {
+    if (op.deployTarget === 'node') s.deployTarget = 'node';
+    else delete s.deployTarget;
+  }
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
   // The crawler policy (shared/crawler-policy.ts) is kept only while it differs from the default.
   if (op.crawlerPolicy !== undefined) {

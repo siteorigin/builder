@@ -119,6 +119,7 @@ import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, archiveLoopId
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
+import { runsOnNode } from '@shared/deploy-target';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { createSeoResolver, entryMetadata, pageMetadata, sameAddress, type SeoMetadata } from './seo-metadata';
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
@@ -5671,9 +5672,12 @@ export function basePath(state: ProjectState): string {
   return siteMount(state.site);
 }
 
-/** Read by vite.config.js: SvelteKit's paths.base for production builds. */
+/**
+ * Read by vite.config.js for production builds: SvelteKit's paths.base, and the adapter the website is built with
+ * (`deployTarget`, named only for a Node.js server; shared/deploy-target.ts).
+ */
 export function generatePathsJson(state: ProjectState): string {
-  return JSON.stringify({ base: basePath(state) }, null, '\t') + '\n';
+  return JSON.stringify({ base: basePath(state), ...(runsOnNode(state.site) ? { deployTarget: 'node' } : {}) }, null, '\t') + '\n';
 }
 
 // ---------------------------------------------------------------------------
@@ -5886,7 +5890,8 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   const hostRedirects = file('_redirects', (s) => generateHostRedirects(s) ?? '');
   if (hostRedirects) files.set(HOST_REDIRECTS_FILE, hostRedirects);
   // How long browsers and the host's CDN keep the built files named by their contents (see ./host-redirects).
-  files.set(HOST_HEADERS_FILE, file('_headers', generateHostHeaders));
+  // A Node.js server reads no host's rules, and caches its hashed files itself (shared/deploy-target.ts).
+  if (!runsOnNode(state.site)) files.set(HOST_HEADERS_FILE, file('_headers', generateHostHeaders));
   const vercelConfig = file('vercel.json', (s) => generateVercelConfig(s) ?? '');
   if (vercelConfig) files.set(VERCEL_CONFIG_FILE, vercelConfig);
   // The RSS feed of the published posts, once the site has a public URL to give their full addresses (see ./rss).

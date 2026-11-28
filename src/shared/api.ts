@@ -1,3 +1,5 @@
+import type { EndpointFile, EndpointLanguage, EndpointRequest, EndpointResponse, EndpointWrite } from './endpoints';
+import type { EndpointEnvironment, EnvChange } from './endpoint-env';
 import type { PerformanceStatus } from './performance';
 import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
@@ -673,6 +675,8 @@ export interface ExportResult {
   basePath?: string;
   /** A review build's pages, with their titles, from the snapshot it was built from: what a review edition can capture. */
   pages?: ReviewPage[];
+  /** A review build of a website built as a Node.js server (shared/deploy-target.ts): served by starting it. */
+  nodeServer?: boolean;
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */
@@ -1672,6 +1676,24 @@ export interface BuilderApi {
     locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string; entryId?: string; revision?: number; altReview?: AltReview[] }>;
     /** Make again the smaller copies a library image is missing. */
     regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }>;
+    /** The project's own API endpoints (src/routes/**\/+server.js or .ts), by route; Developer mode only (#1481). */
+    listEndpoints(opening: string): Promise<{ ok: true; endpoints: EndpointFile[] } | { ok: false; message: string }>;
+    /** One endpoint's text, with the hash saving it names. */
+    readEndpoint(file: string, opening: string): Promise<{ ok: true; text: string; hash: string } | { ok: false; message: string }>;
+    /** Save an endpoint's text while it still holds what was read (`hash`); a change made meanwhile is a conflict. */
+    saveEndpoint(file: string, text: string, hash: string, opening: string): Promise<EndpointWrite>;
+    /** Make a new endpoint at an address under /api/, with a starter GET and POST. */
+    createEndpoint(route: string, language: EndpointLanguage, opening: string): Promise<EndpointWrite>;
+    /** Send one test request to the project's preview server, calling off any still under way. */
+    sendEndpointRequest(req: EndpointRequest, opening: string): Promise<EndpointResponse>;
+    /** Call off the test request under way. */
+    stopEndpointRequest(): Promise<void>;
+    /** The endpoints' environment variables: their names and whether each has a local value in .env, never a value. */
+    endpointEnvironment(opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
+    /** Declare a variable or take it away, and set or remove its local value; the preview starts again after a change. */
+    changeEndpointVariable(change: EnvChange, opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
+    /** Start the preview again so endpoints read .env as it is now, after it was changed outside the app. */
+    reloadEndpointEnvironment(opening: string): Promise<{ ok: true; environment: EndpointEnvironment } | { ok: false; message: string }>;
     /** What the project of the opening `workspaceKey` takes on disk; null once another opening is current. */
     storage(workspaceKey: string): Promise<StorageInfo | null>;
     /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */

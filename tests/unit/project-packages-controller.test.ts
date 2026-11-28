@@ -180,7 +180,7 @@ describe('changing the project’s npm packages (#1480)', () => {
     const list = await c.projectPackages();
     expect(list.locked).toBeNull();
     expect(list.packages.find((p) => p.name === 'zod')).toMatchObject({ wanted: '4.1.0', section: 'dependencies', tool: false });
-    expect(list.packages.filter((p) => p.tool).map((p) => p.name)).toEqual(['@sveltejs/adapter-static', '@sveltejs/kit', '@sveltejs/vite-plugin-svelte', 'svelte', 'vite']);
+    expect(list.packages.filter((p) => p.tool).map((p) => p.name)).toEqual(['@sveltejs/adapter-node', '@sveltejs/adapter-static', '@sveltejs/kit', '@sveltejs/vite-plugin-svelte', 'svelte', 'vite']);
     // A developer's code may now import it, as saved and as the code editor checks it.
     const source = `<script>\n\timport { z } from 'zod';\n\tconst name = z.string().parse('Hi');\n</script>\n\n<p>{name}</p>\n`;
     const saved = await c.session!.apply({ operations: [{ type: 'component.createCode', name: 'Greeting', source }] }, { label: 'Create Greeting', codeAllowed: true });
