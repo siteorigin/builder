@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
   utilityProcess: {}
 }));
 
-const { Controller } = await import('../../src/main/controller');
+const { Controller, FOLDER_POLL_MS } = await import('../../src/main/controller');
 const { LOCK_HEARTBEAT_MS, ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 
@@ -138,6 +138,20 @@ describe('an open project whose folder goes away', { timeout: 30_000 }, () => {
     await expect(session.refreshLock()).resolves.toBe('unknown');
     await expectReportedGone(c);
     await expect(session.stillOwner()).resolves.toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('is reported as gone within a second of a rename that no watch reports, well before the lock check', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { dir, c, watchers } = await openProject();
+    for (const w of watchers) w.close();
+    // The looks the watches last asked for (300 ms, 400 ms) have been and gone: only the app's own timing can notice.
+    await new Promise((r) => setTimeout(r, 800));
+    renameSync(dir, `${dir}-moved`);
+    expect(FOLDER_POLL_MS).toBeLessThan(LOCK_HEARTBEAT_MS);
+    vi.advanceTimersByTime(FOLDER_POLL_MS);
+    // The preview stops (lock-lost) and the editor shows the folder gone, with no edit and no lock check.
+    await expectReportedGone(c);
     expect(existsSync(dir)).toBe(false);
   });
 
