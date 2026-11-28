@@ -1,6 +1,6 @@
 @layer layout {
   /* ---------- Editor shell ---------- */
-  .editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; }
+  .editor { display: grid; grid-template-rows: auto 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; }
   .workspace { display: flex; min-height: 0; position: relative; }
   .rail { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 5px 0 8px; background: var(--panel); border-right: 1px solid var(--border); }
   /* The first rail button is centred on the 44px panel heads beside it, so the rail, the sidebar's title and the

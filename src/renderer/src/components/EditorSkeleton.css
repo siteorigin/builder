@@ -3,14 +3,21 @@
      The same grid and panel geometry as the editor (styles/layout.css, Toolbar.css), under classes of its own, so
      nothing that looks for the editor's parts finds them here. Every shape is a flat, quiet bar: the one thing that
      moves is the indicator on the canvas. */
-  .editor-skeleton { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; width: 100%; background: var(--bg); }
+  .editor-skeleton { display: grid; grid-template-rows: auto 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; width: 100%; background: var(--bg); }
   .editor-skeleton .sk-bar { display: block; height: 10px; border-radius: var(--r-xs); background: var(--hover); }
 
   /* The window is still dragged by its top bar while the outline shows. */
   /* The toolbar's own tracks (Toolbar.css), tier by tier, so its centre group sits where the real one will. */
-  .sk-toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+  .sk-toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; min-height: var(--toolbar-h); padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
   .sk-toolbar.mac { grid-template-columns: minmax(min(460px, 36vw), 1fr) auto minmax(max-content, 1fr); }
   .sk-toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
+  /* The overflow toolbar wraps under its identity's floor as the real one does (Toolbar.css); its end group is held at
+     the real one's width, so the outline wraps where the toolbar will. */
+  .sk-toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 0; }
+  .sk-toolbar[data-tier='overflow'] .sk-toolbar-start { flex: 1 1 0; min-width: min(100%, 400px); min-height: calc(var(--toolbar-h) - 2px); }
+  .sk-toolbar.mac[data-tier='overflow'] .sk-toolbar-start { min-width: min(100%, 470px); }
+  .sk-toolbar[data-tier='overflow'] :is(.sk-toolbar-mid, .sk-toolbar-end) { flex: none; min-height: 40px; }
+  .sk-toolbar[data-tier='overflow'] .sk-toolbar-end { min-width: 276px; margin-left: auto; }
   .sk-toolbar.mac .sk-toolbar-start { padding-left: 70px; }
   .sk-toolbar-start, .sk-toolbar-mid, .sk-toolbar-end { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .sk-toolbar-end { justify-content: flex-end; }

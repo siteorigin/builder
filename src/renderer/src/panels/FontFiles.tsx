@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 import { FileSearch, Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { MissingAssetFiles } from '@shared/api';
-import { familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
+import { familyCategory, familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
 import { scriptLabels } from '@shared/font-scripts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
@@ -123,7 +123,7 @@ export function FontList({
       for (const a of faces) next.set(a.id, open);
       return next;
     });
-  const faceOf = (a: AssetRecord) => ({ family: a.font?.family ?? a.name, weight: a.font?.weight ?? '400', style: a.font?.style ?? ('normal' as const) });
+  const faceOf = (a: AssetRecord) => ({ family: a.font?.family ?? a.name, weight: a.font?.weight ?? '400', style: a.font?.style ?? ('normal' as const), ...(a.font?.category ? { category: a.font.category } : {}) });
   /** A face's correction can re-sort its row (italic after upright): the control that made it keeps focus. */
   const update = async (a: AssetRecord, patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => {
     const was = document.activeElement instanceof HTMLElement && document.activeElement.closest(`[data-font="${a.id}"]`) ? document.activeElement.id : null;
@@ -277,7 +277,7 @@ function FontFamily({
           <h4>
             <button type="button" className="font-family-toggle" aria-expanded={open} aria-controls={`${uid}-body`} onClick={onToggle}>
               <DisclosureMark />
-              <span id={`${uid}-name`} style={{ fontFamily: shownStack(importedFontStack(family)) }}>
+              <span id={`${uid}-name`} style={{ fontFamily: shownStack(importedFontStack(family, familyCategory(faces))) }}>
                 {family}
               </span>
             </button>
