@@ -565,6 +565,9 @@ export interface ExportNote {
   destination?: EditorDestination;
 }
 
+/** A production build's failure when nothing in its output names where it was: no page, address or component (#1395). */
+export const BUILD_FAILED_UNPLACED = 'The production build failed.';
+
 export interface ExportResult {
   ok: boolean;
   path?: string;

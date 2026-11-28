@@ -32,7 +32,9 @@ const ENTRY = [
   "flushSync(() => useStore.setState({ screen: 'editor', modal: { kind: 'export' }, keptSamples: [], snapshot: { state, revision: 1, workspaceKey: 'w1', conflicts: [], recentExports: window.__recent, diagnostics: [] } }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(ExportModal)));",
   // What the dialog hands over to, for a test to read: the dialog itself stays drawn.
-  'useStore.subscribe((s) => void (window.__modal = s.modal));'
+  'useStore.subscribe((s) => void (window.__modal = s.modal));',
+  // What the main process reports later (the preview's state), for a test to send.
+  'window.__setRuntime = (runtime) => flushSync(() => useStore.setState({ runtime }));'
 
 ].join('\n');
 
@@ -66,6 +68,20 @@ const REVIEW_BRIDGE = `
     : any('project.' + String(key)) });
   window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'then' ? undefined : any(String(key))) });
   window.__edition = edition;
+`;
+
+/** The bridge with the website export counted on window.__exports, answering as a build that names nothing would. */
+const EXPORT_BRIDGE = `
+  const any = (path) => new Proxy(function () {}, {
+    get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any(path ? path + '.' + key : key)),
+    apply: () => any('')
+  });
+  window.__exports = 0;
+  const project = new Proxy({}, { get: (_, key) =>
+    key === 'exportStatic' ? async () => (window.__exports++, { ok: false, message: 'The production build failed.', warnings: ['Error: boom'], details: 'Error: boom' })
+    : key === 'reviewEditions' ? async () => []
+    : any('project.' + String(key)) });
+  window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'then' ? undefined : any(String(key))) });
 `;
 
 /** The search audit with nothing to say, for the dialog alone. */
@@ -266,6 +282,42 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.getByTestId('export-visitor-review').count()).toBe(0);
     await expect.poll(() => page.evaluate<string>(`document.activeElement?.textContent?.trim() ?? ''`)).toBe('Review them again');
     expect(await inReach()).toEqual([true, true]);
+  });
+
+  it('holds the website export while the website tools are set up, and not while the preview only starts (#1395)', async () => {
+    await open(1480, 920, { quiet: true, bridge: EXPORT_BRIDGE });
+    const site = page.locator('.export-card:not(.secondary)');
+    const source = page.locator('.export-card.secondary');
+    await page.evaluate(`window.__setRuntime({ state: 'preparing', message: 'Setting up website tools…' })`);
+    const note = page.getByTestId('export-blocked-tools');
+    expect(await note.innerText()).toMatch(/still setting up the website tools\. The website can be exported once they are ready; the editable project can be exported now\./);
+    expect(await site.getAttribute('aria-disabled')).toBe('true');
+    expect(await site.getAttribute('aria-describedby')).toBe('export-blocked-tools');
+    expect(await source.getAttribute('aria-disabled')).toBeNull();
+    // The dialog says why as it opens on it.
+    expect(await page.getByRole('dialog').getAttribute('aria-describedby')).toBe('export-blocked-tools');
+    // Capturing review pages builds the website too, so it waits as well.
+    await page.getByRole('button', { name: 'Client review pages' }).click();
+    const capture = page.getByRole('button', { name: /^Capture/ });
+    expect(await capture.getAttribute('aria-disabled')).toBe('true');
+    expect(await page.locator('.client-review').innerText()).toContain('Capturing waits until the website can be exported.');
+    // Clicked all the same, it starts nothing.
+    await site.dispatchEvent('click');
+    await capture.dispatchEvent('click');
+    expect(await site.locator('.export-card-end').innerText()).not.toMatch(/Building/);
+    // Tools ready, preview still starting: the website exports.
+    await page.evaluate(`window.__setRuntime({ state: 'starting' })`);
+    expect(await note.count()).toBe(0);
+    expect(await site.getAttribute('aria-disabled')).toBeNull();
+    expect(await capture.getAttribute('aria-disabled')).toBeNull();
+    await site.click();
+    // A failure that names no page or component is never told to check one.
+    const result = page.locator('.export-result');
+    await expect.poll(() => result.count()).toBe(1);
+    // Only the click made once the tools were ready started an export.
+    expect(await page.evaluate<number>('window.__exports')).toBe(1);
+    expect(await result.innerText()).toMatch(/Try exporting again\./);
+    expect(await result.innerText()).not.toMatch(/named above/);
   });
 
   it('opens on the format, not on a recent export below, when there is nothing to see to', async () => {
