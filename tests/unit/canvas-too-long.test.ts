@@ -15,6 +15,7 @@ import { createStarterState } from '@catalogue/starters';
 import { P } from '@catalogue/dsl';
 import { ProjectSession } from '../../src/main/project/session';
 import { codeTextTarget, type CodeTextTarget } from '../../src/renderer/src/lib/model';
+import { richDom } from '../../src/renderer/src/lib/richtext';
 import { projectDesign } from './fixtures/packs';
 
 let session: ProjectSession;
@@ -54,9 +55,9 @@ function withBand(state: ProjectState): ProjectState {
   projectDesign(state, {
     componentId: 'test.band',
     name: 'Band',
-    properties: { eyebrow: P.str('Eyebrow', 'Welcome'), note: P.str('Note', 'Short', { maxLength: 300 }) },
+    properties: { eyebrow: P.str('Eyebrow', 'Welcome'), note: P.str('Note', 'Short', { maxLength: 300 }), body: P.rich('Body', ['Hello']) },
     parts: { root: { nodeId: 'root', label: 'Section', styleControls: [] } },
-    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow' }), b.text('note', 'p', { $prop: 'note' }, { name: 'Note' })])
+    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow' }), b.text('note', 'p', { $prop: 'note' }, { name: 'Note' }), b.rich('body', { $prop: 'body' }, { name: 'Body' })])
   });
   return state;
 }
@@ -83,7 +84,7 @@ function heroHeading(): CodeTextTarget {
   return codeText(id, 'heading')!;
 }
 /** The band, placed on the home page the first time it is asked for, and its text bound to `prop`. */
-async function bandText(prop: 'eyebrow' | 'note'): Promise<ElementRef> {
+async function bandText(prop: 'eyebrow' | 'note' | 'body'): Promise<ElementRef> {
   if (!Object.hasOwn(session.state.pages[homeId()].nodes, 'n_band')) {
     const placed = await bridge.project.apply({ operations: [{ type: 'node.insert', newNodeId: 'n_band', owner: home(), parentId: null, index: 0, definitionId: 'foundation.test.band' }] }, { label: 'Add Band' });
     expect(placed.ok).toBe(true);
@@ -120,6 +121,17 @@ describe('text on the canvas longer than its field takes (#1447)', () => {
     expect(lastToast()?.action?.copies?.text).toBe(text);
   });
 
+  it('takes one rich run longer than 20,000 characters from the page, and offers it back when its field refuses it', async () => {
+    const run = 'w'.repeat(25000);
+    expect(richDom([{ tag: 'p', children: [run] }]), 'the page’s copy of it is read').not.toBeNull();
+    const body = await bandText('body');
+    const revision = session.revision;
+    expect(await actions.commitText(body, [{ type: 'p', spans: [{ text: run }] }])).toBe('restore');
+    expect(session.revision).toBe(revision);
+    expect(lastToast()?.text).toMatch(/longer than 20000 characters/);
+    expect(lastToast()?.action?.copies?.text).toBe(run);
+  });
+
   it('knows the limit of the field each canvas text writes, or that nothing limits it', async () => {
     const snap = () => store.getState().snapshot;
     expect(actions.canvasTextLimit(snap(), { ref: { owner: home(), instancePath: [], nodeId: 'x' }, code: heroHeading() })).toBe(2000);
@@ -127,6 +139,7 @@ describe('text on the canvas longer than its field takes (#1447)', () => {
     const note = await bandText('note');
     expect(actions.canvasTextLimit(snap(), { ref: eyebrow })).toBe(2000);
     expect(actions.canvasTextLimit(snap(), { ref: note })).toBe(300);
+    expect(actions.canvasTextLimit(snap(), { ref: await bandText('body') })).toBe(20000);
     // A page's own text, not bound to any field: nothing limits it but what the page can send.
     const added = await bridge.project.apply(
       {

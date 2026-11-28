@@ -965,6 +965,7 @@ function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; va
  * text itself (longer than its field takes, say) is said with the text offered back to copy, never only dropped (#1447).
  */
 function applyTyped(operations: EditOperation[], label: string, text: string | RichText, state: ProjectState) {
+  // `text` is what the author typed, before it is put in its stored form (a copyright line's `{year}`).
   const typed = typeof text === 'string' ? text : richTextToMarkdown(text, state.pages);
   return claimRefusals((e) => {
     if (e.code !== 'INVALID_ARGUMENT' || !typed.trim()) return false;
@@ -1054,6 +1055,8 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   const r = resolveRef(snapshot.state, ref);
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return 'restore';
+  // Offered back as typed if the field refuses it.
+  const typed = text;
   // A repeated item without the field shows the field's default, which is what the edit started from.
   const current = shownOrDefault(snapshot.state, ref, target.value);
   text = storedEdit(r.node as GraphNode | undefined, current, text);
@@ -1074,7 +1077,7 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   // The element as the page shows it ("Edit Heading on About"), in a component's design when edited everywhere.
   const label = editLabel(snapshot.state, 'Edit', ref);
-  if (!ref.instancePath.length) return (await applyTyped([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label, text, snapshot.state)) ? undefined : 'restore';
+  if (!ref.instancePath.length) return (await applyTyped([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label, typed, snapshot.state)) ? undefined : 'restore';
   if (ref.instancePath.length > 1) {
     toast('Edit nested component text from the inspector.', 'error');
     return 'restore';
@@ -1087,14 +1090,14 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   }
   if ('$prop' in binding) {
     // Text bound to one field of an object property changes that field alone.
-    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label, text, snapshot.state))) return 'restore';
+    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label, typed, snapshot.state))) return 'restore';
   } else {
     // The list the repeated item belongs to: the one the enclosing repeat shows (matching field names alone
     // cannot tell a footer's links from its contact links).
     const listProp = listPropFor(r.def!, ref.nodeId);
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
     if (!listProp || !itemId) return 'restore';
-    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label, text, snapshot.state))) return 'restore';
+    if (!(await applyTyped([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label, typed, snapshot.state))) return 'restore';
   }
 }
 
