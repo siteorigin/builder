@@ -822,6 +822,17 @@ describe('update_site_brand', () => {
     expect(session.state.tokens.overrides).toEqual({});
   });
 
+  it("gives an imported font named as a brand font the fallback of its kind (#1490)", async () => {
+    const font = (id: string, family: string, category: 'serif' | 'monospace') => ({ id, name: family, file: `static/assets/${id}-1a2b3c4d.woff2`, mime: 'font/woff2', bytes: 1000, hash: `hash-${id}`, kind: 'font' as const, createdAt: '2026-01-01T00:00:00.000Z', font: { family, weight: '400', style: 'normal' as const, category } });
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { headingFont: 'Source Serif 4', bodyFont: 'ibm plex mono' })], () => finish()], {}, 'business', (s) => {
+      s.assets.assets.serif = font('serif', 'Source Serif 4', 'serif');
+      s.assets.assets.mono = font('mono', 'IBM Plex Mono', 'monospace');
+    });
+    await run('Use my serif for headings and my mono for body text');
+    expect(session.state.tokens.overrides['font.display']).toBe("'Source Serif 4', Georgia, 'Times New Roman', serif");
+    expect(session.state.tokens.overrides['font.body']).toBe("'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace");
+  });
+
   it('refuses a type scale it does not have, naming the field, and changes nothing', async () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'huge' })], () => finish()]);
     await run('Make the type huge');
