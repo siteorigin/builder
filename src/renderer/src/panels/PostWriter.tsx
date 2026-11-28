@@ -4,7 +4,7 @@ import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Headin
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
-import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
+import { collectionHasBody, collectionKind, entryPickerLabel, entryRoute, entryTitleCounts, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
 import { COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, entryTarget, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { linkIndexes } from '../lib/link-indexes';
@@ -1768,7 +1768,11 @@ function linkablePosts(state: ProjectState, self: string) {
   return Object.keys(state.collections ?? {})
     .filter((id) => hasDetailPages(state.collections[id].settings))
     .sort()
-    .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collectionId: id, collection: state.collections[id].settings.name })))
+    .flatMap((id) => {
+      const collection = state.collections[id];
+      const titles = entryTitleCounts(collection);
+      return orderedEntries(collection).map((e) => ({ id: e.id, title: entryPickerLabel(collection, e, titles), collectionId: id, collection: collection.settings.name }));
+    })
     .filter((p) => p.id !== self);
 }
 

@@ -141,6 +141,23 @@ export function entryRoute(collection: Collection, entry: EntryDoc): string | un
   return prefix === undefined ? undefined : `${prefix}${entry.slug}/`;
 }
 
+/** How many entries of a collection carry each title, counted once for a whole picker. */
+export function entryTitleCounts(collection: Collection): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const e of Object.values(collection.entries)) if (e) counts.set(e.title, (counts.get(e.title) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * How a picker names an entry: its title, with its address and, when another entry in the same collection has the same
+ * title, its publication date too, so recurring items can be told apart. The entry ID stays the stored target.
+ */
+export function entryPickerLabel(collection: Collection, entry: EntryDoc, titles: ReadonlyMap<string, number> = entryTitleCounts(collection)): string {
+  const twin = (titles.get(entry.title) ?? 0) > 1;
+  const parts = [entryRoute(collection, entry), twin && entry.publishedAt ? entry.publishedAt : undefined].filter(Boolean);
+  return parts.length ? `${entry.title} (${parts.join(', ')})` : entry.title;
+}
+
 /** The entry with this ID, wherever it is, with the collection that holds it. */
 export function findEntry(state: ProjectState, entryId: string): { collection: Collection; entry: EntryDoc } | undefined {
   for (const collection of Object.values(state.collections ?? {})) {
