@@ -170,6 +170,33 @@ export function findTokenCycle(state: ProjectState): string | null {
 }
 
 /** The first token that refers back to itself in one palette. */
+/**
+ * Theme styles to put back to their theme values, in an order that never passes through a loop. Each reset is checked
+ * as it is made, and a theme value can follow a style the owner made follow it back (Pill set to follow the button
+ * corners, whose theme value follows Pill) until that one is put back too. Each step takes the first style, in the
+ * order given, whose reset leaves neither palette looping; any that never can come last, for the engine to refuse.
+ */
+export function tokenResetOrder(state: ProjectState, ids: readonly string[]): string[] {
+  const overrides = { ...state.tokens.overrides };
+  const trial: ProjectState = { ...state, tokens: { ...state.tokens, overrides } };
+  const left = [...ids];
+  const out: string[] = [];
+  while (left.length) {
+    const i = left.findIndex((id) => {
+      const saved = overrides[id];
+      delete overrides[id];
+      const loops = !!findTokenCycleIn(trial, 'light') || !!findTokenCycleIn(trial, 'dark');
+      overrides[id] = saved;
+      return !loops;
+    });
+    if (i < 0) break;
+    const [id] = left.splice(i, 1);
+    delete overrides[id];
+    out.push(id);
+  }
+  return [...out, ...left];
+}
+
 export function findTokenCycleIn(state: ProjectState, scheme: 'light' | 'dark'): string | null {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));

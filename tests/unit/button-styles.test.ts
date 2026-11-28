@@ -13,7 +13,8 @@ import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { STYLES_DIR, generateProject, generateTokensCss } from '@generator/index';
 import { TYPE_SCALE_ROLES } from '@shared/type-scale';
-import { buttonStyleIds, resetOrder, tokenFollowers } from '@shared/button-styles';
+import { buttonStyleIds, tokenFollowers } from '@shared/button-styles';
+import { tokenResetOrder } from '@engine/tokens';
 
 const THEMES = ['foundation', 'foundation-alt'];
 const starter = (themeId = 'foundation') => {
@@ -41,8 +42,10 @@ describe.each(THEMES)('the %s theme', (themeId) => {
     expect(rule).not.toMatch(/radius-pill|font-body|font-weight: 550|letter-spacing: -0\.005em|font-size: 0\.97rem/);
     // The header's call to action, the pricing switch's track and the search and signup rows follow the buttons.
     const source = (id: string) => theme.components.find((c) => c.componentId === id)!.source!;
-    expect(source('shell.header')).not.toMatch(/\.so-header__cta \{[^}]*font-size: (0\.92rem|1rem)/);
-    expect(source('shell.header').match(/\.so-header__cta \{[^}]*font-size: calc\(var\(--so-text-button-size\)/g)).toHaveLength(3);
+    // As it is, never in calc(), where a size such as x-large is not valid: on the bar, and in both phone menus.
+    const cta = [...source('shell.header').matchAll(/\.so-header__cta \{([^}]*)\}/g)].map((m) => m[1]).filter((d) => d.includes('font-size'));
+    expect(cta).toHaveLength(3);
+    for (const d of cta) expect(d).toContain('font-size: var(--so-text-button-size);');
     expect(source('pricing.toggle')).toMatch(/\.billing__switch \{[^}]*border-radius: var\(--so-radius-button\)/);
     for (const id of ['site.search', 'block.signup']) {
       expect(source(id), id).toContain('calc(var(--so-radius-button) - var(--so-space-2xs) - 1px)');
@@ -60,8 +63,10 @@ describe.each(THEMES)('the %s theme', (themeId) => {
     expect(css0).toContain('--so-text-button-family: var(--so-font-body);');
     expect(css0).toContain('--so-text-button-weight: 550;');
     let s = set(s0, 'radius.button', '0px');
-    s = set(s, 'text.button', { family: { token: 'font.display' }, transform: 'uppercase', tracking: '0.08em', weight: 700, size: '1.125rem' });
+    s = set(s, 'text.button', { family: { token: 'font.display' }, transform: 'uppercase', tracking: '0.08em', weight: 700, size: '1.125rem', lineHeight: '1.4' });
     const css = generateTokensCss(s);
+    expect(css).toContain('--so-text-button-weight: 700;');
+    expect(css).toContain('--so-text-button-line-height: 1.4;');
     expect(css).toContain('--so-radius-button: 0px;');
     expect(css).toContain('--so-text-button-family: var(--so-font-display);');
     expect(css).toContain('--so-text-button-transform: uppercase;');
@@ -70,7 +75,7 @@ describe.each(THEMES)('the %s theme', (themeId) => {
     // Pill itself is untouched.
     expect(css).toContain(`--so-radius-pill: ${declared(themeId, 'radius.pill')!.value};`);
     // A partial change keeps the other metrics; a reset goes back to following Pill.
-    expect(set(s0, 'text.button', { weight: 700 }).tokens.overrides['text.button']).toMatchObject({ weight: 700, tracking: '-0.005em', lineHeight: '1.2' });
+    expect(set(s0, 'text.button', { weight: 700 }).tokens.overrides['text.button']).toEqual({ family: { token: 'font.body' }, size: '0.97rem', lineHeight: '1.2', weight: 700, tracking: '-0.005em', transform: 'none' });
     expect(generateTokensCss(set(s, 'radius.button', null))).toContain('--so-radius-button: var(--so-radius-pill);');
   });
 });
@@ -88,18 +93,19 @@ describe('the Buttons styles a theme declares', () => {
     expect(buttonStyleIds([])).toEqual({ radius: null, text: null });
     // A theme with only one of them still shows it; one of the wrong kind is not a button style.
     expect(buttonStyleIds([tok('radius.button', 'radius', '4px')])).toEqual({ radius: 'radius.button', text: null });
+    expect(buttonStyleIds([tok('text.button', 'text', { family: 'serif', size: '1rem', lineHeight: '1.2', weight: 500, tracking: '0' })])).toEqual({ radius: null, text: 'text.button' });
     expect(buttonStyleIds([tok('radius.button', 'space', '4px'), tok('text.button', 'font', 'serif')])).toEqual({ radius: null, text: null });
   });
 
   it('name the styles that already follow one, directly or along a chain, so a link to them is never offered', () => {
-    const tokens = [tok('radius.sm', 'radius', '6px'), tok('radius.pill', 'radius', { token: 'radius.button' }), tok('radius.md', 'radius', { token: 'radius.pill' }), tok('radius.button', 'radius', '0px'), tok('color.brand', 'color', { token: 'radius.button' })];
+    // The indirect follower comes first, so one pass over the list would miss it.
+    const tokens = [tok('radius.md', 'radius', { token: 'radius.pill' }), tok('radius.sm', 'radius', '6px'), tok('radius.pill', 'radius', { token: 'radius.button' }), tok('radius.button', 'radius', '0px'), tok('color.brand', 'color', { token: 'radius.button' })];
     expect([...tokenFollowers(tokens, 'radius.button', 'radius')].sort()).toEqual(['radius.md', 'radius.pill']);
     expect([...tokenFollowers(tokens, 'radius.sm', 'radius')]).toEqual([]);
-  });
-
-  it('are put back after what their theme values follow, so putting everything back never makes a loop', () => {
-    const theme = [tok('radius.pill', 'radius', '999px'), tok('radius.button', 'radius', { token: 'radius.pill' }), tok('radius.card', 'radius', { token: 'radius.button' }), tok('space.md', 'space', '16px')];
-    expect(resetOrder(['radius.card', 'radius.button', 'space.md', 'radius.pill'], theme)).toEqual(['space.md', 'radius.pill', 'radius.button', 'radius.card']);
+    // The colour picker's loop filter reads the same helper, within its own group.
+    const colors = [tok('color.accent', 'color', { token: 'color.link' }), tok('color.link', 'color', { token: 'color.brand' }), tok('color.brand', 'color', '#123456')];
+    expect([...tokenFollowers(colors, 'color.brand', 'color')].sort()).toEqual(['color.accent', 'color.link']);
+    expect([...tokenFollowers(colors, 'color.brand', 'radius')]).toEqual([]);
   });
 
   it('can all be put back in one step after Pill was made to follow the button corners', () => {
@@ -107,8 +113,11 @@ describe('the Buttons styles a theme declares', () => {
     s = set(s, 'radius.pill', { token: 'radius.button' });
     // Putting the button corners back first would make them follow Pill, which follows them.
     expect(() => applyOperations(s, [{ type: 'token.set', tokenId: 'radius.button', value: null }])).toThrow(/loop/);
-    const theme = getTheme(s.site.themeId).tokens;
-    const ids = resetOrder(Object.keys(s.tokens.overrides), theme);
+    // Given in the order that fails, Pill is put back first.
+    const ids = tokenResetOrder(s, ['radius.button', 'radius.pill']);
+    expect(ids).toEqual(['radius.pill', 'radius.button']);
+    // Ids it can never put back are kept, last, for the engine to refuse.
+    expect(tokenResetOrder(s, ['radius.button'])).toEqual(['radius.button']);
     const back = applyOperations(s, ids.map((tokenId) => ({ type: 'token.set' as const, tokenId, value: null }))).state;
     expect(back.tokens.overrides).toEqual({});
   });
@@ -123,7 +132,7 @@ afterAll(async () => {
   await browser?.close();
 });
 
-type Look = { radius: string; family: string; size: string; weight: string; transform: string; tracking: string; height: number; paddingTop: string };
+type Look = { radius: string; family: string; size: string; weight: string; transform: string; tracking: string; lineHeight: string; height: number; paddingTop: string };
 
 describe.runIf(BROWSER)('a button in a browser', () => {
   /** A primary button, a text button and a filter pill, under the stylesheets a site loads, in the order it loads them. */
@@ -136,7 +145,7 @@ describe.runIf(BROWSER)('a button in a browser', () => {
       return (await tab.evaluate(`(() => Object.fromEntries(['primary', 'text', 'pill'].map((id) => {
         const el = document.getElementById(id);
         const c = getComputedStyle(el);
-        return [id, { radius: c.borderTopLeftRadius, family: c.fontFamily, size: c.fontSize, weight: c.fontWeight, transform: c.textTransform, tracking: c.letterSpacing, height: Math.round(el.getBoundingClientRect().height), paddingTop: c.paddingTop }];
+        return [id, { radius: c.borderTopLeftRadius, family: c.fontFamily, size: c.fontSize, weight: c.fontWeight, transform: c.textTransform, tracking: c.letterSpacing, lineHeight: c.lineHeight, height: Math.round(el.getBoundingClientRect().height), paddingTop: c.paddingTop }];
       })))()`)) as Record<'primary' | 'text' | 'pill', Look>;
     } finally {
       await tab.close();
@@ -154,15 +163,17 @@ describe.runIf(BROWSER)('a button in a browser', () => {
 
   it('takes its corners and label from Buttons, while pills stay pills and text buttons stay flat', async () => {
     let s = set(starter(), 'radius.button', '4px');
-    s = set(s, 'text.button', { family: { token: 'font.display' }, transform: 'uppercase', tracking: '0.08em', weight: 700, size: '1.25rem' });
+    s = set(s, 'text.button', { family: { token: 'font.display' }, transform: 'uppercase', tracking: '0.08em', weight: 700, size: '1.25rem', lineHeight: '1.5' });
     const { primary, text, pill } = await looks(s);
+    expect(primary.lineHeight).toBe('30px');
     expect(primary).toMatchObject({ radius: '4px', weight: '700', transform: 'uppercase', size: '20px', tracking: '1.6px' });
     expect(primary.family).toMatch(/Fraunces/);
     // The padding is in em, so a bigger label makes a bigger button.
     expect(primary.paddingTop).toBe('14px');
     expect(primary.height).toBeGreaterThan(46);
     // A text button takes the label's type, and keeps its own flat shape.
-    expect(text).toMatchObject({ radius: '0px', transform: 'uppercase', paddingTop: '4px' });
+    expect(text).toMatchObject({ radius: '0px', transform: 'uppercase', weight: '700', size: '20px', tracking: '1.6px', paddingTop: '4px' });
+    expect(text.family).toMatch(/Fraunces/);
     expect(pill.radius).toBe('999px');
   });
 
@@ -172,5 +183,9 @@ describe.runIf(BROWSER)('a button in a browser', () => {
     const own = await looks(set(set(starter(), 'radius.button', '2px'), 'radius.pill', '10px'));
     expect(own.primary.radius).toBe('2px');
     expect(own.pill.radius).toBe('10px');
+    // Linked to another step, it follows that step instead.
+    const md = await looks(set(set(starter(), 'radius.button', { token: 'radius.md' }), 'radius.md', '3px'));
+    expect(md.primary.radius).toBe('3px');
+    expect(md.pill.radius).toBe('999px');
   });
 });

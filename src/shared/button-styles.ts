@@ -28,24 +28,3 @@ export function tokenFollowers(tokens: readonly TokenDef[], id: string, group: T
   }
   return out;
 }
-
-/**
- * Styles to put back to their theme values, in an order that never passes through a loop: each one after the styles
- * its theme value follows. Each reset is checked as it is made, and a theme default that follows a style the owner
- * made follow it back (Pill set to follow the button corners) is a loop until that style is put back too.
- */
-export function resetOrder(ids: readonly string[], themeTokens: readonly TokenDef[]): string[] {
-  const byId = new Map(themeTokens.map((t) => [t.id, t]));
-  const depth = new Map<string, number>();
-  const depthOf = (id: string, seen: Set<string> = new Set()): number => {
-    const known = depth.get(id);
-    if (known !== undefined) return known;
-    const t = byId.get(id);
-    const to = t ? linkOf(t.value, t.group) : null;
-    // A theme's own links never loop; a loop or a link out of the theme counts as the end of the chain.
-    const d = to && byId.has(to) && !seen.has(id) ? depthOf(to, seen.add(id)) + 1 : 0;
-    depth.set(id, d);
-    return d;
-  };
-  return ids.map((id, i) => ({ id, i, d: depthOf(id) })).sort((a, b) => a.d - b.d || a.i - b.i).map((x) => x.id);
-}

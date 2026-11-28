@@ -3,7 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { Check, CircleAlert, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
-import { buttonStyleIds, resetOrder, tokenFollowers } from '@shared/button-styles';
+import { buttonStyleIds, tokenFollowers } from '@shared/button-styles';
 import { effectiveTokens } from '@generator/index';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
@@ -14,7 +14,7 @@ import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
-import { forEachTokenPropRef } from '@engine/tokens';
+import { forEachTokenPropRef, tokenResetOrder } from '@engine/tokens';
 import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, undoAvailable, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 import { afterEditsSettle } from '../lib/pending';
@@ -1248,8 +1248,8 @@ export function SiteStyles() {
     const panel = e.currentTarget.closest('.ss');
     const trigger = e.currentTarget;
     const n = changedIds.length;
-    // Each style after the ones its theme value follows, so no reset on the way passes through a loop.
-    void applyOps(resetOrder(savedIds, theme.tokens).map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
+    // In an order that never passes through a loop: each reset is checked as it is made.
+    void applyOps(tokenResetOrder(st, savedIds).map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
     // The changes bar goes with the reset: focus moves to the theme, the next thing down, not back to the top.
     refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.ss-theme-change, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
   };
@@ -1755,7 +1755,8 @@ export function SiteStyles() {
     const ref = refOf(t.value);
     const value = resolvedText(tokens, t.id);
     const loops = tokenFollowers(tokens, t.id, 'radius');
-    const steps = group('radius').filter((x) => x.id !== t.id && !loops.has(x.id));
+    // Only steps with a value to follow: one whose own link leads nowhere would be refused.
+    const steps = group('radius').filter((x) => x.id !== t.id && !loops.has(x.id) && !!resolvedText(tokens, x.id));
     const id = `${uid}-button-corners`;
     const stepName = (x: TokenDef) => {
       const v = resolvedText(tokens, x.id);
@@ -1790,7 +1791,7 @@ export function SiteStyles() {
           <option value="">Its own value</option>
         </select>
         {!ref && <SizeControl value={value} name="Button corners" onCommit={(v) => set(t.id, v)} />}
-        <div className="field-hint">{ref ? `Changes with ${byId(ref)?.label ?? 'that step'} in Layout > Corners.` : 'Buttons only. 0px makes them square.'}</div>
+        <div className="field-hint">{ref ? (value && byId(ref) ? `Changes with ${byId(ref)!.label} in Layout > Corners.` : 'The corner it followed is no longer available. Choose another, or give it its own value.') : 'Buttons only. 0px makes them square.'}</div>
       </div>
     );
   };
@@ -1803,15 +1804,18 @@ export function SiteStyles() {
     const famRef = v ? refOf(v.family) : null;
     const stack = v ? (famRef ? fontStack(famRef) : String(v.family)) : fontStack('font.body');
     const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
-    // At its real size, as far as the dock has room for; the padding is in em, as the theme's is, so it scales with it.
-    const size = v ? (toPx(v.size) ?? clampRange(v.size)?.[1] ?? 16) : 16;
+    // At its real size, as far as the dock has room for (a size that grows with the window, at its largest); the padding
+    // is in em, as the theme's is, so it scales with it. A size written some other way is drawn as written.
+    const px = v ? (toPx(v.size) ?? clampRange(v.size)?.[1] ?? null) : 16;
     const look: React.CSSProperties = {
       borderRadius: r ? resolvedText(tokens, r.id) || undefined : undefined,
       fontFamily: shownStack(stack),
-      fontSize: Math.max(11, Math.min(24, size)),
+      fontSize: px !== null ? Math.max(11, Math.min(24, px)) : v?.size,
       ...(v ? { fontWeight: v.weight, lineHeight: v.lineHeight, letterSpacing: v.tracking, textTransform: (v.transform as React.CSSProperties['textTransform']) ?? 'none' } : {})
     };
     const ink = shownHex('color.text') || undefined;
+    // Named as Colors names them, so the owner can find them there.
+    const colorNames = ['color.brand', 'color.brand-strong', 'color.on-brand'].flatMap((id) => byId(id)?.label ?? []).join(', ');
     return (
       <>
         <div className="ss-btn-sample" style={{ background: shownHex('color.background') || undefined, color: ink }} aria-hidden="true">
@@ -1823,7 +1827,7 @@ export function SiteStyles() {
           </span>
         </div>
         <p className="ss-btn-note">
-          {v ? `${friendlySize(v.size)} · ${weightWords(v.weight)} · ${famLabel}. ` : ''}Every button the theme draws. Hover and focus colors follow Brand.
+          {v ? `${friendlySize(v.size)} · ${weightWords(v.weight)} · ${famLabel}. ` : ''}Every button the theme draws.{colorNames ? ` Their colors are ${colorNames}, in Colors.` : ''}
         </p>
         <div className="ss-btn-fields">
           {r && cornerField(r)}
