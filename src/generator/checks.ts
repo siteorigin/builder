@@ -1284,17 +1284,25 @@ function foundationText(def: ComponentDefinition): Set<string> | undefined {
   );
 }
 
-/** What decides whether a Foundation section shows a piece of marked text: the placement, the item, and its variants. */
-type GateContext = { state: ProjectState; props: Record<string, unknown>; item: Record<string, unknown>; variant: (axis: string) => unknown };
+/**
+ * What decides whether a Foundation section shows a piece of marked text: the placement, the item, and the option it
+ * shows on an axis (undefined for an axis bound to UI state, which can change while the page is open).
+ */
+type GateContext = { state: ProjectState; props: Record<string, unknown>; item: Record<string, unknown>; variant: (axis: string) => string | undefined };
 
 /**
  * Marked text a Foundation section's markup shows only in some states, where having words is not enough: the
- * screenshot hero's frame title only in its window frame, the comparison's highlight label only while a plan is
- * highlighted, and a testimonial's initials only without a portrait. An axis bound to state may show it any time.
+ * screenshot hero's frame title only in its window frame, the comparison's highlight label only over a highlighted
+ * plan it shows (its third only while that has a name), and a testimonial's initials only without a portrait.
  */
 const FOUNDATION_GATES: Record<string, Record<string, (c: GateContext) => boolean>> = {
-  'hero.screenshot': { frameTitle: ({ variant }) => typeof variant('frame') !== 'string' || variant('frame') === 'window' },
-  'pricing.compare': { highlightLabel: ({ variant }) => variant('highlight') !== 'none' },
+  'hero.screenshot': { frameTitle: ({ variant }) => [undefined, 'window'].includes(variant('frame')) },
+  'pricing.compare': {
+    highlightLabel: ({ state, props, variant }) => {
+      const plan = variant('highlight');
+      return plan === undefined || plan === 'one' || plan === 'two' || (plan === 'three' && shown((props.planThree as { name?: unknown } | undefined)?.name, state));
+    }
+  },
   'block.testimonial': { initials: ({ state, props }) => !shown(props.portrait, state) }
 };
 
@@ -1426,6 +1434,15 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
        * the site leaves out while it goes nowhere, and some marked text shows only in some states (FOUNDATION_GATES):
        * `hidden`, then. Anything else is up to its code.
        */
+      // The option shown on an axis: chosen, bound to a field the placement has (its default unless that names an option,
+      // as the generator writes it), or undefined while bound to UI state.
+      const variant = (axis: string): string | undefined => {
+        const v = selectedVariants(def, n.variants)[axis];
+        if (typeof v === 'string' || isStateRef(v)) return typeof v === 'string' ? v : undefined;
+        const chosen = evaluate(v, scope);
+        const a = def.variantAxes?.[axis];
+        return typeof chosen === 'string' && a && Object.hasOwn(a.options, chosen) ? chosen : a?.default;
+      };
       const known = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, list?: string): 'shown' | 'hidden' | undefined => {
         const path = (k: string) => (list ? `${list}.${k}` : k);
         const value = (k: string) => (Object.hasOwn(values, k) ? values[k] : (schemas[k] as { default?: unknown } | undefined)?.default);
@@ -1435,7 +1452,7 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
         const link = Object.keys(schemas).find((k) => schemas[k].type === 'link' && labelKeyFor(k) === key);
         if (link && !resolveLink(value(link) as LinkValue | undefined, { state })) return 'hidden';
         const gate = FOUNDATION_GATES[def.componentId]?.[path(key)];
-        return !gate || gate({ state, props, item: values, variant: (axis) => selectedVariants(def, n.variants)[axis] }) ? 'shown' : 'hidden';
+        return !gate || gate({ state, props, item: values, variant }) ? 'shown' : 'hidden';
       };
       /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
       const guard = (f: PlacementField | undefined) => {

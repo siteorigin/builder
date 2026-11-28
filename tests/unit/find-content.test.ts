@@ -685,12 +685,43 @@ describe('the release’s own sections (#1341)', () => {
     expect(labels(compare.s, 'Best value').map(([, blocked]) => blocked)).toEqual([undefined]);
     compare.node.variants = { ...compare.node.variants, highlight: 'none' };
     expect(findContent(compare.s, 'Best value')).toEqual([]);
+    compare.node.variants = { ...compare.node.variants, highlight: 'one' };
+    expect(findContent(compare.s, 'Best value')).toHaveLength(1);
+    // The third plan, and its label with it, shows only while it has a name.
+    compare.node.variants = { ...compare.node.variants, highlight: 'three' };
+    expect(findContent(compare.s, 'Best value')).toHaveLength(1);
+    compare.node.props.planThree = { ...(compare.s.components[compare.node.definitionId].properties.planThree as { default: object }).default, name: '' };
+    expect(findContent(compare.s, 'Best value')).toEqual([]);
     // A testimonial's initials show only without a portrait.
     const quote = insert(fresh(), 'block.testimonial', { initials: 'QZ' });
     expect(labels(quote.s, 'QZ').map(([, blocked]) => blocked)).toEqual([undefined]);
     quote.s.assets.assets.a_portrait = { id: 'a_portrait' } as never;
     quote.node.props.portrait = { assetId: 'a_portrait', alt: '' };
     expect(findContent(quote.s, 'QZ')).toEqual([]);
+  });
+
+  it('reads the frame a design chooses for a screenshot hero it places from what that design is given', () => {
+    const { s } = insert(fresh(), 'hero.screenshot');
+    const hero = Object.values(s.components).find((d) => d.owner === 'theme' && d.componentId === 'hero.screenshot')!;
+    const options = Object.keys(hero.variantAxes!.frame.options);
+    const design = projectDesign(s, {
+      componentId: 'project.showcase',
+      name: 'Showcase',
+      properties: { frame: { type: 'enum', label: 'Frame', default: 'window', options: options.map((value) => ({ value, label: value })) } },
+      parts: { root: { nodeId: 'root', label: 'Showcase' } },
+      build: (b) => b.el('root', 'section', { name: 'Showcase' }, [])
+    });
+    design.tree!.nodes.shot = { id: 'shot', kind: 'instance', definitionId: hero.id, props: { frameTitle: 'Quarterly report' }, variants: { frame: { $prop: 'frame' } } } as InstanceNode;
+    (design.tree!.nodes.root as { children: string[] }).children.push('shot');
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, definitionId: design.id }]);
+    const node = placed.state.pages[s.site.homePageId].nodes[placed.results[0].nodeId as string] as InstanceNode;
+    const titled = (st: ProjectState) => renderedContent(st, home(st)).filter((c) => c.value === 'Quarterly report');
+    expect(titled(placed.state)).toHaveLength(1);
+    node.props.frame = options.find((f) => f !== 'window')!;
+    expect(titled(placed.state)).toEqual([]);
+    // A value that names no frame shows the default one, as the generated site does.
+    node.props.frame = 'no such frame';
+    expect(titled(placed.state)).toHaveLength(1);
   });
 
   it('leaves to the inspector what the release’s markup does not mark, a section made unique, and another theme’s', () => {
