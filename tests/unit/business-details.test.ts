@@ -102,11 +102,13 @@ describe('the site’s business details on its pages', () => {
     s = apply(s, identity({ address: '4 BREE STREET' }));
     s = apply(s, identity({ address: '4 Bree Street' }));
     expect(details(s)[2][0]).toBe('4 Bree Street');
+    s = apply(s, identity({ email: 'Orders@FernField.co.za' }));
+    expect(details(s)[0]).toEqual(['Orders@FernField.co.za', { type: 'email', target: 'orders@fernfield.co.za' }]);
   });
 
   it('leaves the places as they are when a detail is cleared', () => {
     const s0 = apply(business(), identity(FLORIST));
-    let s = apply(s0, identity({ email: null }));
+    let s = apply(s0, identity({ email: null, telephone: null, address: null }));
     expect(s.site.identity?.email).toBeUndefined();
     expect(details(s)).toEqual(details(s0));
     expect(footerRows(s)).toEqual(footerRows(s0));
@@ -138,6 +140,20 @@ describe('the site’s business details on its pages', () => {
     s = apply(s, { type: 'instance.setProp', owner: page, nodeId: contactSection(s).id, prop: 'actionLink', value: { type: 'email', target: 'press@fernfield.co.za' } });
     s = apply(s, identity({ email: 'hello@fernfield.co.za' }));
     expect(contactSection(s).props.actionLink).toEqual({ type: 'email', target: 'hello@fernfield.co.za' });
+    // A text of the author's own is kept the same way; editing another row of its list leaves it kept, and so does a
+    // copy of the section.
+    let k = apply(business(), identity({ email: 'info@fernfield.co.za' }));
+    const kPage = { kind: 'page' as const, id: contactPage(k).id };
+    const [emailRow, phoneRow] = rows(contactSection(k), 'items');
+    k = apply(k, { type: 'instance.setProp', owner: kPage, nodeId: contactSection(k).id, prop: 'items', itemId: emailRow.id, value: { value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } } });
+    k = apply(k, identity({ email: 'press@fernfield.co.za' }));
+    k = apply(k, { type: 'instance.setProp', owner: kPage, nodeId: contactSection(k).id, prop: 'items', itemId: phoneRow.id, field: 'value', value: '+27 21 555 0100' });
+    k = apply(k, { type: 'node.duplicate', owner: kPage, nodeId: contactSection(k).id } as EditOperation);
+    k = apply(k, identity({ email: 'bookings@fernfield.co.za' }));
+    const sections = Object.values(k.pages[kPage.id].nodes).filter((n): n is InstanceNode => n.kind === 'instance' && k.components[n.definitionId]?.componentId === 'contact.details');
+    expect(sections).toHaveLength(2);
+    for (const section of sections) expect(rows(section, 'items')[0]).toMatchObject({ value: 'press@fernfield.co.za', link: { type: 'email', target: 'press@fernfield.co.za' } });
+    expect(footerRows(k)[0][0]).toBe('bookings@fernfield.co.za');
     // A detail the site fills in for the first time is taken up by the places that already show it.
     let t = business();
     const tPage = { kind: 'page' as const, id: contactPage(t).id };
@@ -153,8 +169,15 @@ describe('the site’s business details on its pages', () => {
     const fields = (s.pages[page.id].nodes.n_form as InstanceNode).props.fields as ListItem[];
     s = apply(s, { type: 'instance.setProp', owner: page, nodeId: 'n_form', prop: 'fields', itemId: fields[0].id, field: 'placeholder', value: SAMPLE_CONTACT.email } as EditOperation);
     const before = structuredClone((s.pages[page.id].nodes.n_form as InstanceNode).props);
+    // A copy of the theme's form, under a name of its own, is a form too.
+    const form = s.pages[page.id].nodes.n_form as InstanceNode;
+    const copy = { ...structuredClone(s.components[form.definitionId]), id: 'project.my-form', componentId: 'my.form', owner: 'project' as const, provenance: { pack: 'foundation', packVersion: '0', componentId: 'contact.form' } };
+    s.components[copy.id] = copy as never;
+    s.pages[page.id].nodes.n_copy = { ...structuredClone(form), id: 'n_copy', definitionId: copy.id };
+    s.pages[page.id].rootIds.push('n_copy');
     s = apply(s, identity({ address: '4 Bree Street', email: 'orders@fernfield.co.za' }), identity({ address: '9 Long Street' }));
     expect((s.pages[page.id].nodes.n_form as InstanceNode).props).toEqual(before);
+    expect((s.pages[page.id].nodes.n_copy as InstanceNode).props).toEqual(before);
   });
 
   it('fills the details into a Contact section placed afterwards, and into a new Contact page', () => {
@@ -192,12 +215,21 @@ describe('the site’s business details on its pages', () => {
     expect(short.props.actionLink).toEqual({ type: 'email', target: SAMPLE_CONTACT.email });
   });
 
+  it('fills an object’s fields an insert leaves to the design', () => {
+    let s = apply(business(), identity({ email: 'orders@fernfield.co.za' }));
+    const def = s.components[contactSection(s).definitionId];
+    def.properties.card = { type: 'object', label: 'Card', fields: { title: { type: 'string', label: 'Title', default: 'Write' }, link: { type: 'link', label: 'Link', default: { type: 'email', target: SAMPLE_CONTACT.email } } }, default: { title: 'Write', link: { type: 'email', target: SAMPLE_CONTACT.email } } } as never;
+    const about = { kind: 'page' as const, id: Object.values(s.pages).find((p) => p.route === '/about/')!.id };
+    s = apply(s, { type: 'node.insert', owner: about, definitionId: def.id, newNodeId: 'n_card', props: { card: { title: 'Say hello' } } } as EditOperation);
+    expect((s.pages[about.id].nodes.n_card as InstanceNode).props.card).toEqual({ title: 'Say hello', link: { type: 'email', target: 'orders@fernfield.co.za' } });
+  });
+
   it('follows the footer’s design defaults when it keeps none of its own, keeping the rows’ IDs and styles', () => {
     const s0 = business();
     delete footer(s0).props.contact;
     const defaults = s0.components[footer(s0).definitionId].properties.contact.default as ListItem[];
     const was = structuredClone(defaults);
-    footer(s0).itemOverrides = { [defaults[0].id]: { link: { base: { color: 'red' } } } } as never;
+    footer(s0).itemOverrides = { link: { list: 'contact', items: { [defaults[0].id]: { base: { color: 'red' } } } } } as never;
     const s = apply(s0, identity({ address: '4 Bree Street, Cape Town' }));
     const list = rows(footer(s), 'contact');
     expect(list.map((i) => [i.id, i.label])).toEqual([
@@ -205,7 +237,7 @@ describe('the site’s business details on its pages', () => {
       [defaults[1].id, SAMPLE_CONTACT.phone],
       [defaults[2].id, '4 Bree Street, Cape Town']
     ]);
-    expect(Object.keys(footer(s).itemOverrides ?? {})).toEqual([defaults[0].id]);
+    expect(footer(s).itemOverrides).toEqual({ link: { list: 'contact', items: { [defaults[0].id]: { base: { color: 'red' } } } } });
     expect(s.components[footer(s).definitionId].properties.contact.default).toEqual(was);
   });
 
@@ -217,9 +249,13 @@ describe('the site’s business details on its pages', () => {
     const s = apply(s0, identity({ email: 'orders@fernfield.co.za' }));
     // The object's default opens the press desk, which the placement shows: that is not the sample.
     expect(contactSection(s).props.card).toEqual({ title: 'Press desk' });
+    // A field the placement shows the sample in follows.
+    const t = structuredClone(s0);
+    contactSection(t).props.card = { title: 'Write', link: { type: 'email', target: SAMPLE_CONTACT.email } };
+    expect(contactSection(apply(t, identity({ email: 'orders@fernfield.co.za' }))).props.card).toEqual({ title: 'Write', link: { type: 'email', target: 'orders@fernfield.co.za' } });
   });
 
-  it('follows in the project’s own designs and in plain links and texts', () => {
+  it('follows in the project’s own designs, and leaves a plain button the author filled in', () => {
     let s = business();
     const page = { kind: 'page' as const, id: contactPage(s).id };
     s = apply(s, { type: 'component.createFromNode', owner: page, nodeId: contactSection(s).id, name: 'Our contact card' } as EditOperation);
@@ -228,11 +264,27 @@ describe('the site’s business details on its pages', () => {
     expect(button.kind).toBe('link');
     Object.assign(button, { label: SAMPLE_CONTACT.email, link: { type: 'email', target: SAMPLE_CONTACT.email } });
     s = apply(s, identity({ email: 'orders@fernfield.co.za' }));
-    const link = s.pages[page.id].nodes.n_write as unknown as { label: string; link: unknown };
-    expect([link.label, link.link]).toEqual(['orders@fernfield.co.za', { type: 'email', target: 'orders@fernfield.co.za' }]);
     const card = Object.values(s.components).find((d) => d.name === 'Our contact card')!;
     expect(JSON.stringify(card.tree)).toContain('orders@fernfield.co.za');
     expect(JSON.stringify(card.tree)).not.toContain(SAMPLE_CONTACT.email);
+    // A primitive holds only what the author typed into it.
+    const link = s.pages[page.id].nodes.n_write as unknown as { label: string; link: unknown };
+    expect([link.label, link.link]).toEqual([SAMPLE_CONTACT.email, { type: 'email', target: SAMPLE_CONTACT.email }]);
+  });
+
+  it('never touches a design’s property that it hands on to a form inside it', () => {
+    let s = business();
+    const page = { kind: 'page' as const, id: contactPage(s).id };
+    s = apply(s, { type: 'node.insert', owner: page, componentId: 'contact.form', newNodeId: 'n_form', props: { provider: 'netlify' } } as EditOperation);
+    s = apply(s, { type: 'component.createFromNode', owner: page, nodeId: 'n_form', name: 'Booking form' } as EditOperation);
+    const design = Object.values(s.components).find((d) => d.name === 'Booking form')!;
+    const inner = Object.values(design.tree!.nodes).find((n): n is InstanceNode => n.kind === 'instance')!;
+    design.properties.bookingName = { type: 'string', label: 'Booking name', default: '' } as never;
+    inner.props.formName = { $prop: 'bookingName' };
+    const placedDesign = Object.values(s.pages[page.id].nodes).find((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === design.id)!;
+    placedDesign.props.bookingName = '4 Bree Street';
+    s = apply(s, identity({ address: '4 Bree Street' }), identity({ address: '9 Long Street' }));
+    expect((s.pages[page.id].nodes[placedDesign.id] as InstanceNode).props.bookingName).toBe('4 Bree Street');
   });
 
   it('refuses a detail too long for a place that shows it, changing nothing', () => {
@@ -252,6 +304,8 @@ describe('the site’s business details on its pages', () => {
     let s = apply(business(), identity(FLORIST));
     s = apply(s, { type: 'site.update', language: 'fr' });
     expect(details(s)[3][0]).toBe('Lundi – vendredi, 8:30 – 17:30; Samedi, 9:00 – 13:00');
+    s = apply(s, { type: 'site.update', language: 'de' });
+    expect(details(s)[3][0]).toBe('Montag – Freitag, 8:30 – 17:30; Samstag, 9:00 – 13:00');
   });
 
   it('says where each detail shows, and where only its sample is left', () => {
@@ -272,6 +326,23 @@ describe('the site’s business details on its pages', () => {
       ['Contact', 'actionLink', 'link', 'site']
     ]);
     expect(sample(s, 'telephone')).toEqual(sample(s0, 'telephone'));
+    expect(sample(s, 'address')).toEqual([
+      ['Footer', 'contact', 'text', 'sample'],
+      ['Contact', 'items', 'text', 'sample']
+    ]);
+    expect(sample(s, 'openingHours')).toEqual([['Contact', 'items', 'text', 'sample']]);
+  });
+
+  it('replaces samples left behind only for the details an edit names', () => {
+    let s = apply(business(), identity({ email: 'orders@fernfield.co.za', address: '4 Bree Street' }));
+    const about = { kind: 'page' as const, id: Object.values(s.pages).find((p) => p.route === '/about/')!.id };
+    s = apply(s, { type: 'node.insert', owner: about, componentId: 'contact.details', newNodeId: 'n_left' } as EditOperation);
+    const left = s.pages[about.id].nodes.n_left as InstanceNode;
+    left.props = { ...left.props, items: rows(left, 'items').map((i, n) => (n === 0 ? { ...i, value: SAMPLE_CONTACT.email } : n === 2 ? { ...i, value: SAMPLE_CONTACT.address } : i)) };
+    s = apply(s, identity({ twitterSite: '@fernfield' }));
+    expect(rows(s.pages[about.id].nodes.n_left as InstanceNode, 'items').map((i) => i.value).slice(0, 3)).toEqual([SAMPLE_CONTACT.email, '+1 555 0134', SAMPLE_CONTACT.address]);
+    s = apply(s, identity({ email: 'orders@fernfield.co.za' }));
+    expect(rows(s.pages[about.id].nodes.n_left as InstanceNode, 'items').map((i) => i.value).slice(0, 3)).toEqual(['orders@fernfield.co.za', '+1 555 0134', SAMPLE_CONTACT.address]);
   });
 });
 
@@ -334,8 +405,10 @@ describe('opening hours as visitors read them', () => {
 
   it('writes a language the platform does not know in English, or in its language alone', () => {
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'fr-12')).toBe('Lundi – vendredi, 9:00 – 17:00');
-    expect(() => openingHoursText(['Mo-Fr 09:00-17:00'], 'zh-cmn-Hans')).not.toThrow();
+    expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'zh-cmn-Hans')).toMatch(/^星期一 – 星期五/);
     expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'xx-invalid-tag-!')).toBe(SAMPLE_CONTACT.hours);
+    // A language the platform has no names for at all is written in English, not the computer's own language.
+    expect(openingHoursText(['Mo-Fr 09:00-17:00'], 'qaa')).toBe(SAMPLE_CONTACT.hours);
   });
 });
 
@@ -368,5 +441,10 @@ describe('what the AI’s checks count as changed', () => {
     expect([refused.shared, refused.pages.size]).toEqual([false, 0]);
     // Working it out changes nothing.
     expect(open).toEqual(snapshot);
+    // A design shows wherever it is placed.
+    const designed = apply(s, { type: 'component.createFromNode', owner: { kind: 'page', id: contact }, nodeId: contactSection(s).id, name: 'Our contact card' } as EditOperation);
+    const card = visibleReach([identity({ openingHours: ['Sa 09:00-12:00'], kind: 'LocalBusiness' })], designed);
+    expect(card.shared).toBe(true);
+    expect(card.components.size).toBe(1);
   });
 });

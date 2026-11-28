@@ -9,11 +9,17 @@
  * What a place shows decides, as for the site's name (shared/site-name.ts), so an edit made anywhere, by hand or by
  * the AI, gives a place its own value simply by showing another one. The one case the text cannot tell is a value of
  * the author's own that a change of the site's detail makes equal to it (a "press" address the site's email then
- * becomes): the placement keeps it through later changes (`InstanceNode.keepsText`, as `detail:` and its field)
- * until the author edits that property. Clearing a detail changes nothing on the pages: each place keeps what it
- * shows, as its own from then on. A contact form's settings, submission keys and placeholders are never touched.
+ * becomes): the placement keeps it through later changes (`InstanceNode.keepsText`, as `detail:`, the detail and its
+ * field) until the author edits that field. Clearing a detail changes nothing on the pages: each place keeps what it
+ * shows, as its own from then on.
+ *
+ * Only placements' fields follow: their properties, objects and list items, where the theme's sections and the
+ * project's designs show contact details. A primitive text or button holds only what the author typed into it. A
+ * contact form's settings, submission keys and placeholders are never touched, nor a design's property that it hands
+ * on to a form inside it.
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, PropSchema, SiteDoc } from '@shared/types';
+import { isBinding } from '@shared/types';
 import { openingHoursText, sitePublisher } from '@shared/site-identity';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
@@ -105,8 +111,8 @@ export interface DetailPlace {
   owner: OwnerRef;
   /** Where it is: "Footer", or the page's title. */
   where: string;
-  node: GraphNode;
-  /** The placement's property, or a primitive's own field (`text`, `label`, `link`). */
+  node: InstanceNode;
+  /** The placement's property. */
   prop: string;
   itemId?: string;
   field?: string;
@@ -135,15 +141,19 @@ interface Spot {
 /** A node's new value for one property, worked out on a copy and written only when the whole change can be made. */
 interface Write {
   owner: OwnerRef;
-  node: GraphNode;
+  node: InstanceNode;
   prop: string;
   value: unknown;
 }
 
 const KEEP = 'detail:';
+/** A kept value's name: the detail it matched, and the field that shows it (`items[i1].value`, `actionLink`). */
+const keepKey = (detail: BusinessDetail, path: string) => `${KEEP}${detail}:${path}`;
+/** The field a kept value's name names. */
+const keptPath = (key: string) => key.slice(key.indexOf(':', KEEP.length) + 1);
 
 /** The detail values a placement keeps through changes of the site's details. */
-const keptOf = (node: GraphNode): Set<string> => new Set(node.kind === 'instance' && Array.isArray(node.keepsText) ? node.keepsText.filter((k): k is string => typeof k === 'string' && k.startsWith(KEEP)) : []);
+const keptOf = (node: InstanceNode): Set<string> => new Set(Array.isArray(node.keepsText) ? node.keepsText.filter((k): k is string => typeof k === 'string' && k.startsWith(KEEP)) : []);
 
 /** Sets which detail values a placement keeps, leaving what it keeps through renames of the site (shared/site-name.ts). */
 function setKept(node: InstanceNode, keys: Set<string>) {
@@ -153,13 +163,61 @@ function setKept(node: InstanceNode, keys: Set<string>) {
   else delete node.keepsText;
 }
 
-/** An edit of a property makes its values the author's choice again: each follows the site's details if it shows them. */
-export function releaseDetailKeeps(node: InstanceNode, prop: string): void {
+/**
+ * An edit makes what it changes the author's choice again: each value follows the site's details if it shows them.
+ * A whole property, one list item (`itemId`), or one field of an item or an object (`field`).
+ */
+export function releaseDetailKeeps(node: InstanceNode, prop: string, itemId?: string, field?: string): void {
   const kept = keptOf(node);
-  const mine = [...kept].filter((k) => k === `${KEEP}${prop}` || k.startsWith(`${KEEP}${prop}.`) || k.startsWith(`${KEEP}${prop}[`));
+  const edited = (path: string) => {
+    if (itemId !== undefined) return field === undefined ? path.startsWith(`${prop}[${itemId}].`) : path === `${prop}[${itemId}].${field}`;
+    if (field !== undefined) return path === `${prop}.${field}`;
+    return path === prop || path.startsWith(`${prop}.`) || path.startsWith(`${prop}[`);
+  };
+  const mine = [...kept].filter((k) => edited(keptPath(k)));
   if (!mine.length) return;
   for (const k of mine) kept.delete(k);
   setKept(node, kept);
+}
+
+/** A copy's list items take new IDs (`before` holds its properties with the old ones): its kept values move with them. */
+export function remapDetailKeeps(node: InstanceNode, before: Record<string, unknown>): void {
+  const kept = keptOf(node);
+  if (!kept.size) return;
+  const out = new Set<string>();
+  for (const key of kept) {
+    const path = keptPath(key);
+    const m = /^([^.[]+)\[([^\]]+)\](\..+)$/.exec(path);
+    const from = m ? before[m[1]] : undefined;
+    const to = m ? node.props[m[1]] : undefined;
+    if (!m || !Array.isArray(from) || !Array.isArray(to) || from === to) {
+      out.add(key);
+      continue;
+    }
+    const at = from.findIndex((it) => (it as ListItem | undefined)?.id === m[2]);
+    const id = at >= 0 ? (to[at] as ListItem | undefined)?.id : undefined;
+    if (typeof id === 'string') out.add(`${key.slice(0, key.length - path.length)}${m[1]}[${id}]${m[3]}`);
+  }
+  setKept(node, out);
+}
+
+/**
+ * A design's own properties it hands on to a contact form inside it, however deep: a form's settings, fields and
+ * submission keys, which a change of the site's details must never rewrite.
+ */
+function formFed(state: ProjectState, def: ComponentDefinition, seen = new Map<string, Set<string>>()): Set<string> {
+  const known = seen.get(def.id);
+  if (known) return known;
+  const out = new Set<string>();
+  seen.set(def.id, out);
+  for (const n of Object.values(def.tree?.nodes ?? {})) {
+    if (n?.kind !== 'instance') continue;
+    const inner = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+    if (!inner) continue;
+    const fed = isForm(inner) ? null : formFed(state, inner, seen);
+    for (const [k, v] of Object.entries(n.props)) if (isBinding(v) && '$prop' in v && typeof v.$prop === 'string' && (fed === null || fed.has(k))) out.add(v.$prop);
+  }
+  return out;
 }
 
 /** A text or link field, of a placement's property or of one of its objects or items. */
@@ -171,36 +229,19 @@ const kindOf = (schema: PropSchema): 'text' | 'link' => (schema.type === 'link' 
 const isForm = (def: ComponentDefinition) => isFormContract(def.componentId) || isFormContract(def.provenance?.componentId);
 
 /**
- * Visits every plain text and link a node shows: a placement's own properties, its objects' fields and each list
- * item's fields, using the design's defaults for what it leaves out, or a primitive text's, link's or card's own.
+ * Visits every plain text and link a placement shows: its own properties, its objects' fields and each list item's
+ * fields, using the design's defaults for what it leaves out.
  * `visit` returns the spot's new value, or undefined to leave it; the properties that change are returned with their
  * new values, each a copy, and nothing is written.
  */
-function visitNode(state: ProjectState, owner: OwnerRef, node: GraphNode, visit: (spot: Spot) => unknown): Write[] {
+function visitNode(state: ProjectState, owner: OwnerRef, node: InstanceNode, visit: (spot: Spot) => unknown): Write[] {
   const writes: Write[] = [];
   const put = (prop: string, value: unknown) => writes.push({ owner, node, prop, value });
-  if (node.kind === 'text') {
-    if (!node.rich && typeof node.text === 'string') {
-      const next = visit({ key: ':text', prop: 'text', kind: 'text', value: node.text, max: DEFAULT_TEXT_MAX, label: 'Text' });
-      if (next !== undefined) put('text', next);
-    }
-    return writes;
-  }
-  if (node.kind === 'link' || node.kind === 'element') {
-    if (node.kind === 'link' && typeof node.label === 'string') {
-      const next = visit({ key: ':label', prop: 'label', kind: 'text', value: node.label, max: DEFAULT_TEXT_MAX, label: 'Label' });
-      if (next !== undefined) put('label', next);
-    }
-    if (isLink(node.link)) {
-      const next = visit({ key: ':link', prop: 'link', kind: 'link', value: node.link, max: Infinity, label: 'Link' });
-      if (next !== undefined) put('link', next);
-    }
-    return writes;
-  }
-  if (node.kind !== 'instance') return writes;
   const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
   if (!def || isForm(def)) return writes;
+  const toForm = def.tree ? formFed(state, def) : null;
   for (const [prop, schema] of Object.entries(def.properties)) {
+    if (toForm?.has(prop)) continue;
     const own = Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
     if (textOrLink(schema)) {
       const next = visit({ key: prop, prop, kind: kindOf(schema), value: own === undefined ? schema.default : own, max: maxOf(schema), label: schema.label });
@@ -208,7 +249,8 @@ function visitNode(state: ProjectState, owner: OwnerRef, node: GraphNode, visit:
     } else if (schema.type === 'object') {
       // What the site build shows of each field: the placement's own, then the object's default, then the field's.
       const value = own === undefined ? schema.default : own;
-      if (!isRecord(value)) continue;
+      // An object handed in from the design around it is that design's to change.
+      if (!isRecord(value) || isBinding(value)) continue;
       const base = isRecord(schema.default) ? schema.default : {};
       let copy: Record<string, unknown> | null = null;
       for (const [field, f] of Object.entries(schema.fields)) {
@@ -249,10 +291,10 @@ function trees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; la
 }
 
 /** The nodes of the trees that show content (only `only`'s, when it is given), with where they are. */
-function* nodesOf(state: ProjectState, only?: { owner: OwnerRef; node: GraphNode }): Generator<{ owner: OwnerRef; where: string; node: GraphNode }> {
+function* nodesOf(state: ProjectState, only?: { owner: OwnerRef; node: GraphNode }): Generator<{ owner: OwnerRef; where: string; node: InstanceNode }> {
   for (const { owner, tree, label } of trees(state)) {
     if (only && (only.owner.kind !== owner.kind || only.owner.id !== owner.id)) continue;
-    for (const node of Object.values(tree.nodes)) if (node && (!only || node === only.node)) yield { owner, where: label, node };
+    for (const node of Object.values(tree.nodes)) if (node?.kind === 'instance' && (!only || node === only.node)) yield { owner, where: label, node };
   }
 }
 
@@ -282,9 +324,9 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { o
     const refused: { problem?: string } = {};
     const writes = visitNode(state, owner, node, (spot) => {
       if (refused.problem) return undefined;
-      const k = `${KEEP}${spot.key}`;
       for (const s of swaps) {
         if (spot.kind === 'link' && !linkable(s.detail)) continue;
+        const k = keepKey(s.detail, spot.key);
         const follows = s.from.some((f) => shows(s.detail, spot.kind, spot.value, f));
         const already = shows(s.detail, spot.kind, spot.value, s.to);
         if (!follows && !already) continue;
@@ -296,16 +338,16 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { o
         }
         if (!follows) {
           // A value of the author's own that the site's new one happens to match stays the author's.
-          if (s.keepOwn && node.kind === 'instance') {
+          if (s.keepOwn) {
             kept.add(k);
             keepsChanged = true;
           }
-          return undefined;
+          continue;
         }
         const next = nextValue(s, spot);
         if (typeof next === 'string' && next.length > spot.max) {
           const name = DETAIL_NAMES[s.detail];
-          const def = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+          const def = state.components[node.definitionId];
           const placed = owner.kind === 'shell' ? `The ${where.toLowerCase()}` : `${displayName(state, node, def)} in “${where}”`;
           refused.problem = `${placed} shows the site's ${name} in ${spot.label}, which holds at most ${spot.max} characters. Use a shorter ${name}, or give it its own text first.`;
           return undefined;
@@ -316,24 +358,23 @@ function planSwaps(state: ProjectState, swaps: readonly DetailSwap[], only?: { o
     });
     if (refused.problem) return { problem: refused.problem };
     plan.writes.push(...writes);
-    if (node.kind === 'instance' && keepsChanged) plan.keeps.push({ node, keys: kept });
+    if (keepsChanged) plan.keeps.push({ node, keys: kept });
   }
   return plan;
 }
 
 function commit(plan: Plan): void {
-  for (const w of plan.writes) {
-    if (w.node.kind === 'instance') w.node.props[w.prop] = w.value;
-    else (w.node as unknown as Record<string, unknown>)[w.prop] = w.value;
-  }
+  for (const w of plan.writes) w.node.props[w.prop] = w.value;
   for (const { node, keys } of plan.keeps) setKept(node, keys);
 }
 
 /**
  * The swaps that take the site's details from `before` to `after`: each detail given a new value, from its old one and
- * the sample. With `samples`, a detail that stays as it was still replaces any sample left (a section pasted in).
+ * the sample. A detail in `samples` (one an edit names) that stays as it was still replaces any sample left (a
+ * section pasted in).
  */
-export function detailSwaps(before: Texts, after: Texts, samples = false): DetailSwap[] {
+export function detailSwaps(before: Texts, after: Texts, samples: Iterable<BusinessDetail> = []): DetailSwap[] {
+  const resent = new Set(samples);
   const out: DetailSwap[] = [];
   for (const detail of BUSINESS_DETAILS) {
     const to = after[detail];
@@ -341,17 +382,17 @@ export function detailSwaps(before: Texts, after: Texts, samples = false): Detai
     if (!to) continue;
     const was = before[detail];
     if (to !== was) out.push({ detail, from: [was, SAMPLES[detail]].filter((v): v is string => !!v), to, keepOwn: !!was });
-    else if (samples) out.push({ detail, from: [SAMPLES[detail]], to, keepOwn: false });
+    else if (resent.has(detail)) out.push({ detail, from: [SAMPLES[detail]], to, keepOwn: false });
   }
   return out;
 }
 
 /**
- * Carries a change of the site's details from `before` into every place that showed the old value or the sample. With
- * `samples`, an edit of the details also replaces any sample still shown of one that did not change. Returns why it
- * cannot be carried, changing nothing, when a text would grow past what its field holds.
+ * Carries a change of the site's details from `before` into every place that showed the old value or the sample. The
+ * details in `samples` (those an edit names) also replace any sample still shown when their value stays as it was.
+ * Returns why it cannot be carried, changing nothing, when a text would grow past what its field holds.
  */
-export function carryBusinessDetails(state: ProjectState, before: Texts, samples = false): string | null {
+export function carryBusinessDetails(state: ProjectState, before: Texts, samples: Iterable<BusinessDetail> = []): string | null {
   const plan = planSwaps(state, detailSwaps(before, detailTexts(state.site), samples));
   if ('problem' in plan) return plan.problem;
   commit(plan);
@@ -362,7 +403,7 @@ export function carryBusinessDetails(state: ProjectState, before: Texts, samples
  * Where the site's details becoming `site`'s would change what visitors see: the trees whose texts or links change.
  * Empty when nothing shows a detail that changes, or when the change would be refused.
  */
-export function changedDetailOwners(state: ProjectState, site: SiteDoc, samples = false): OwnerRef[] {
+export function changedDetailOwners(state: ProjectState, site: SiteDoc, samples: Iterable<BusinessDetail> = []): OwnerRef[] {
   const plan = planSwaps(state, detailSwaps(detailTexts(state.site), detailTexts(site), samples));
   if ('problem' in plan) return [];
   const seen = new Map<string, OwnerRef>();
@@ -372,16 +413,23 @@ export function changedDetailOwners(state: ProjectState, site: SiteDoc, samples 
 
 /**
  * A newly placed section shows the site's details where its design shows the samples, so a Contact section added
- * after Site details are filled in says the real ones from the start. Run before the values the placement is given:
- * those are its own. A section with a field too short for one keeps every sample, as the design gives them.
+ * after Site details are filled in says the real ones from the start. The values the placement was `given` are its own
+ * and stay as they are (an object's fields it was not given are its design's). A section with a field too short for a
+ * detail keeps every sample, as the design gives them.
  */
-export function fillBusinessDetails(state: ProjectState, owner: OwnerRef, node: InstanceNode): void {
+export function fillBusinessDetails(state: ProjectState, owner: OwnerRef, node: InstanceNode, given: Record<string, unknown> = {}): void {
   const site = detailTexts(state.site);
   const swaps = BUSINESS_DETAILS.filter((d) => site[d]).map((d): DetailSwap => ({ detail: d, from: [SAMPLES[d]], to: site[d]!, keepOwn: false }));
   if (!swaps.length) return;
+  const own = (spot: Spot) => {
+    if (!Object.hasOwn(given, spot.prop)) return false;
+    const v = given[spot.prop];
+    return spot.itemId !== undefined || spot.field === undefined || !isRecord(v) || Object.hasOwn(v, spot.field);
+  };
   let fits = true;
   // Placed but not yet in its tree, so it is visited on its own.
   const writes = visitNode(state, owner, node, (spot) => {
+    if (own(spot)) return undefined;
     for (const s of swaps) {
       if (spot.kind === 'link' && !linkable(s.detail)) continue;
       if (!s.from.some((f) => shows(s.detail, spot.kind, spot.value, f))) continue;
@@ -405,7 +453,7 @@ export function detailPlaces(state: ProjectState, only?: { owner: OwnerRef; node
         if (spot.kind === 'link' && !linkable(detail)) continue;
         const as = site[detail] && shows(detail, spot.kind, spot.value, site[detail]!) ? 'site' : shows(detail, spot.kind, spot.value, SAMPLES[detail]) ? 'sample' : null;
         if (!as) continue;
-        const own = as === 'site' && kept.has(`${KEEP}${spot.key}`);
+        const own = as === 'site' && kept.has(keepKey(detail, spot.key));
         out.push({ owner, where, node, prop: spot.prop, detail, kind: spot.kind, shows: as, ...(own ? { kept: true } : {}), ...(spot.itemId !== undefined ? { itemId: spot.itemId } : {}), ...(spot.field !== undefined ? { field: spot.field } : {}) });
         break;
       }

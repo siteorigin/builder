@@ -136,6 +136,8 @@ function localWords(language: string): LocalWords | null {
     } catch {
       continue;
     }
+    // A language the platform has no words for resolves to its own default, which is no answer.
+    if (locale.split('-')[0].toLowerCase() !== tag.split('-')[0].toLowerCase()) continue;
     if (/^en\b/i.test(locale)) return null;
     const day = new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' });
     const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
