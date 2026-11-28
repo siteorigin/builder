@@ -28,7 +28,7 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
   const paths = join(dir, 'app-paths.js');
   writeFileSync(paths, 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";\n');
   const navigation = join(dir, 'app-navigation.js');
-  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {};\n');
   for (const [path, source] of files) {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
@@ -48,7 +48,7 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
 }
 
 /** SvelteKit's navigation hooks in a page that never navigates: they are never called. */
-const NO_NAVIGATION = 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};';
+const NO_NAVIGATION = 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {};';
 
 /**
  * The site's page and the editor's variant of it, compiled for the browser into one script. `navigation` is the
