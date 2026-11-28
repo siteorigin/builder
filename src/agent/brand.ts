@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { importedFontStack, projectFontFamilies, stackLeadsWith } from '@shared/fonts';
 import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { parseColor } from '@shared/color';
@@ -108,7 +108,7 @@ export function installedFontNames(state: ProjectState): string[] {
 export function fontStackFor(state: ProjectState, input: string): { stack: string } | { error: string } {
   const name = input.trim().replace(/^['"]|['"]$/g, '');
   const imported = projectFontFamilies(state).find((f) => f.family.toLowerCase() === name.toLowerCase());
-  return imported ? { stack: importedFontStack(imported.family) } : resolveFontStack(state, name);
+  return imported ? { stack: importedFontStack(imported.family, imported.category) } : resolveFontStack(state, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +252,11 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     const name = args[field];
     if (name === undefined) continue;
     const font = fontStackFor(state, name);
+    const current = state.tokens.overrides[tokenId];
+    const unknownKind = projectFontFamilies(state).find((f) => !f.category && f.family.toLowerCase() === name.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
     if ('error' in font) issues.push({ field, message: font.error });
-    else setToken(tokenId, font.stack);
+    // An imported font of no known kind that the style already uses keeps the fallback the author chose for it (#1490).
+    else if (!(unknownKind && typeof current === 'string' && stackLeadsWith(current, unknownKind.family))) setToken(tokenId, font.stack);
   }
   if (args.typeScale !== undefined) {
     const themeTokens = getTheme(state.site.themeId).tokens;
