@@ -36,6 +36,7 @@ import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
+import { elementContrastDiagnostics } from './element-contrast';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
 import { formConnectionProblem, formNoun, isFormDefinition, readsFormServices, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
@@ -627,8 +628,8 @@ function assetSizeDiagnostics(state: ProjectState): Diagnostic[] {
 
 /**
  * The advice only Project health shows, never a reason to refuse a save: links to sections that do not exist, then the
- * pages' heading outlines, form names, fonts code may choose at run time, layout guardrails and how reusable each project
- * component is. `joinValidation` puts each in its place among the core's findings.
+ * pages' heading outlines, form names, fonts code may choose at run time, layout guardrails, text the elements' own colours
+ * make hard to read and how reusable each project component is. `joinValidation` puts each in its place among the core's findings.
  */
 export function adviceValidation(state: ProjectState, cache?: ValidationCache): AdviceValidation {
   const keep = cache ? cache.keeper(state) : freshKeeper(state);
@@ -672,6 +673,7 @@ export function adviceValidation(state: ProjectState, cache?: ValidationCache): 
   }
   const rest: Diagnostic[] = [...blankPageDiagnostics(state), ...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
   for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
+  for (const d of elementContrastDiagnostics(state, keep)) rest.push(d);
   append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
   return [links, rest];
 }
