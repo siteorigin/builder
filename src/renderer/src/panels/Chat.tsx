@@ -34,6 +34,7 @@ import { externalLink } from '@shared/links';
 import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu, type MenuItem } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { ConversationsModal } from './Conversations';
 import { activityHint, runLabel } from '../lib/conversations';
 import './Chat.css';
@@ -495,6 +496,8 @@ export function Chat() {
   // in the composer must not render them all again.
   const asking = useMemo(() => waitingQuestion(conversation, activeRunId, runStatus), [conversation, activeRunId, runStatus]);
   const askingKey = asking ? `${asking.runId}:${asking.question.id}` : null;
+  // The form-routing review open over the chat (#1322): the card's hint points at it, not at the covered answer field.
+  const reviewing = useRoutingReviewShown();
   // Summarising a long conversation's older messages is for the length warning alone, which a local model shows while
   // a message is written: worked out only then, and again only when they change, never at every key typed nor at every
   // piece of a reply that streams while the box is empty.
@@ -1777,7 +1780,7 @@ export function Chat() {
           {/* How to answer sits with the question, ahead of the options, so it is never scrolled out of sight. */}
           <p className="question-hint" id="ai-question-hint">
             {/* A picture opens larger and a labelled Choose answers, which the hint says in the same words everywhere. */}
-            {questionHint(asking.question)}
+            {questionHint(asking.question, reviewing)}
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>

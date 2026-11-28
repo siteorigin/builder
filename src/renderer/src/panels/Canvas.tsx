@@ -50,6 +50,7 @@ import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
 import { CanvasSkeleton } from '../components/EditorSkeleton';
+import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { isRemoteOpening } from '../lib/remote-snapshot';
 import { outlinesFirstPage } from '../lib/first-page';
 import { projectDisplayName } from '@shared/project-name';
@@ -169,6 +170,9 @@ export function Canvas() {
   const asked = useStore((s) => s.runStatus === 'awaiting-input' && !!s.runConversationId);
   // The chat already shows that question, so the notice would only repeat it over the page.
   const askedInView = useStore(questionShownInChat);
+  // While the form-routing review is the dialog on screen, it is where the question is answered (#1322): the canvas's
+  // own prompt to answer in chat steps back, and comes back if the dialog is taken away with the question still open.
+  const reviewing = useRoutingReviewShown();
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -3579,7 +3583,7 @@ export function Canvas() {
             maxHeight={practiceMax}
           />
         )}
-        {runStatus && !askedInView && (
+        {runStatus && !askedInView && !(runStatus === 'awaiting-input' && reviewing) && (
           // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
           // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
           // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an

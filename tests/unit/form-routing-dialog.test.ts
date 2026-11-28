@@ -7,13 +7,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 import type { ChatQuestion, FormRoutingPrompt } from '@shared/api';
 import { questionHint, type WaitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
-import { askRoutingDialog, routingAnswer, routingAnswered, routingDialog, routingKey, routingQuestion, type RoutingQuestion } from '../../src/renderer/src/lib/formRoutingReview';
+import { askRoutingDialog, routingAnswer, routingAnswered, routingDialog, routingKey, routingQuestion, routingReviewShown, type RoutingQuestion } from '../../src/renderer/src/lib/formRoutingReview';
 
 type Confirm = { id: number; title: string; key?: string; formRouting?: FormRoutingPrompt; resolve: (ok: boolean | null) => void };
 type Store = {
   confirmDialog: (req: { title: string; body: string; confirmLabel: string; key?: string }) => Promise<boolean | null>;
   withdrawConfirm: (key: string) => void;
   getConfirm: () => Confirm | null;
+  onConfirmChange: (fn: () => void) => () => void;
   pendingConfirms: () => readonly Confirm[];
 };
 let store: Store;
@@ -128,6 +129,50 @@ describe('the app’s dialog for where forms send', () => {
     await tick();
     expect(sent).toHaveLength(1);
     expect(failed()).toBe(1);
+  });
+});
+
+describe('the other prompts while the review is open (#1322)', () => {
+  it('step back only while the review is the dialog on screen, and come back once it is gone', async () => {
+    let changes = 0;
+    const off = store.onConfirmChange(() => changes++);
+    const shown = () => routingReviewShown(store.getConfirm());
+    expect(shown()).toBe(false);
+
+    // On screen: the canvas notice hides and the hints point at the dialog, not at the chat it covers.
+    const first = open(routingQuestion(question())!);
+    expect(shown()).toBe(true);
+    expect(changes).toBe(1);
+    const q = question().question;
+    expect(questionHint(q, true)).not.toMatch(/typed|below|chat/i);
+    expect(questionHint(q, true)).toMatch(/review that is open/);
+    expect(questionHint(q, false)).toMatch(/A typed “yes” allows it too/);
+
+    // Taken back with the question still waiting (it moved threads, or the chat answered it): the prompts return.
+    first.withdraw();
+    expect(shown()).toBe(false);
+    expect(changes).toBe(2);
+
+    // Waiting behind another dialog, the review is not on screen: nothing steps back until it is.
+    const other = store.confirmDialog({ title: 'Something else', body: '', confirmLabel: 'OK' });
+    const behind = open(routingQuestion(question())!);
+    expect(shown()).toBe(false);
+    store.getConfirm()!.resolve(false);
+    await other;
+    expect(shown()).toBe(true);
+
+    // Dismissed: the answer goes, and the prompts are back for whatever the AI does next.
+    store.getConfirm()!.resolve(null);
+    await tick();
+    expect(behind.sent).toEqual(['run_1:q_1:Keep it as it is']);
+    expect(shown()).toBe(false);
+    off();
+  });
+
+  it('only the review counts, not any dialog', () => {
+    expect(routingReviewShown(null)).toBe(false);
+    expect(routingReviewShown({})).toBe(false);
+    expect(routingReviewShown({ formRouting: review })).toBe(true);
   });
 });
 
