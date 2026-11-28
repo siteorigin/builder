@@ -3,7 +3,10 @@
  * and the Business starter's copy and photos, while the published site still shows them; each leads to its field or
  * element, and keeping one as it is quiets that value at that place alone.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AssetRecord, ComponentDefinition, InstanceNode, ListItem, OwnerRef, ProjectState, TableProp } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { P, item, prop } from '@catalogue/dsl';
@@ -15,6 +18,7 @@ import { keptSampleKey, sampleFixtures, samplePlace, withoutKeptSamples } from '
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { ELEMENT_STUBS } from '@shared/element-stubs';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
+import { ProjectSession } from '../../src/main/project/session';
 import { projectDesign } from './fixtures/packs';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -320,5 +324,43 @@ describe('the Component showcase', () => {
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((d) => d.nodeId === added.id)).toBe(true);
     void s;
+  });
+});
+
+describe('keeping sample content as it is', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  it('leaves the project’s diagnostics, which Project health and the AI read, for that value at that place alone', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-sample-keep-')));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, createStarterState('business', 'Keep Studio', false));
+    try {
+      const all = session.diagnostics();
+      // Nothing kept: the very list validation made.
+      expect(session.diagnostics()).toBe(all);
+      const found = all.filter((d) => d.code === 'SAMPLE_STARTER_COPY');
+      const [first, second] = found;
+      session.keepSamples([keptSampleKey(first)], []);
+      const left = session.diagnostics();
+      expect(left).not.toContainEqual(first);
+      expect(left).toContainEqual(second);
+      expect(left).toHaveLength(all.length - 1);
+      // A kept value written over and then back is still kept; another value at the same place is named again.
+      const node = first.nodeId!;
+      const prop = (placeOf(first) as { prop: string }).prop;
+      const owner = first.owner as OwnerRef;
+      const tree = session.state.pages[owner.id];
+      const was = (tree.nodes[node] as InstanceNode).props[prop];
+      await session.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: node, prop, value: 'Our own words' }] }, { label: 'Edit', source: 'user' });
+      expect(session.diagnostics().some((d) => d.nodeId === node && (placeOf(d) as { prop?: string }).prop === prop)).toBe(false);
+      await session.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: node, prop, value: was }] }, { label: 'Edit back', source: 'user' });
+      expect(session.diagnostics()).not.toContainEqual(first);
+      // The showcase's own placements, remembered as it is made, are never named.
+      session.keepSamples([], sampleFixtures(session.state));
+      expect(session.diagnostics().filter((d) => d.code.startsWith('SAMPLE_') && d.nodeId)).toEqual([]);
+    } finally {
+      await session.close();
+    }
   });
 });
