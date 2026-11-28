@@ -182,8 +182,7 @@ describe('dated articles', () => {
     expect(pageText(s, p)).toContain('Write the article here.');
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('shows a new article’s date under its title, over its body, with the release’s sections', () => {
+  it('shows a new article’s date under its title, over its body, with the release’s sections', () => {
     const s = applyOperations(createStarterState('business', 'Riverside Market', false), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
     const p = s.pages.pg_newone;
     expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
@@ -285,8 +284,7 @@ describe('dated articles', () => {
     expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('tells search what the release’s News list and article header show', () => {
+  it('tells search what the release’s News list and article header show', () => {
     const { s, home } = market();
     expect(pageText(s, s.pages[home])).toContain('Spring makers announced');
     expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);

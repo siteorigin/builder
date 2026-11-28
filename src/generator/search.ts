@@ -11,13 +11,15 @@
  * header and footer, which every page has), or an entry's excerpt and text. Old addresses kept for renamed pages and
  * posts only send visitors on, so they are never results; a page found always links to where it is now.
  */
-import type { Collection, ComponentDefinition, EntryDoc, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
-import { isEntryBinding, slotChildren } from '@shared/types';
+import type { Collection, ComponentDefinition, EntryDoc, InstanceNode, LinkValue, NodeTree, PageDoc, ProjectState, ResponsiveStyles, TableValue } from '@shared/types';
+import { isBinding, isEntryBinding, slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { entryArticle, renderedContent, type RenderedContent } from './checks';
+import { codePartsHidden, entryArticle, evaluate, hiddenInDesignEverywhere, renderedContent, shippedCode, walkRendered, type RenderedContent } from './checks';
 import { showsBody } from './entry-template';
 import { collectionKind, siteEntries } from '@shared/collections';
-import { isDraftPage, publishedState } from './index';
+import { isDraftPage, publishedState, resolveLink } from './index';
+import { shippedOutline } from './shipped-outlines';
+import { rendersAsShipped } from '@engine/shipped-copy';
 
 /** The search code, imported by the Site search component from the runtime folder. */
 export const SEARCH_HELPER_FILE = 'site-search.js';
@@ -81,9 +83,59 @@ export function hiddenLayers(tree: NodeTree): Set<string> {
   return out;
 }
 
-/** The words a page shows, one line per field that shows any: its text, rich text, button labels and list items. */
+/**
+ * The words a page shows, one line per field that shows any, in the order the page shows them: its text, rich text,
+ * button labels and list items, with the words of Foundation's sections that only the designs standing for their
+ * markup know of (shownWords), a section's before its layer's other words and its table's or comparison's after them.
+ * A line shown twice is listed once.
+ */
 export function pageText(state: ProjectState, page: PageDoc): string {
-  return treeText(state, page);
+  const hidden = hiddenLayers(page);
+  const shown = shownWords(state, page, hidden);
+  const content: Array<{ layer: string; line: string }> = [];
+  for (const c of renderedContent(state, page)) {
+    // Where a link goes is not something the visitor reads, and what custom code shows of a setting is unknown.
+    if (c.kind !== 'text' || c.custom || hidden.has(c.nodeId)) continue;
+    const line = oneLine(textOf(c.value, c.rich));
+    if (line) content.push({ layer: c.nodeId, line });
+  }
+  const last = new Map(content.map((c, i) => [c.layer, i]));
+  const at = new Map(shown.order.map((l, i) => [l, i]));
+  const out = new Set<string>();
+  const put = (lines: readonly string[]) => {
+    for (const line of lines) out.add(line);
+  };
+  const done = new Set<string>();
+  // A layer whose words only the second walk finds goes where that walk met it, after the layers before it.
+  let next = 0;
+  const through = (layer: string | undefined) => {
+    const stop = layer === undefined ? shown.order.length : (at.get(layer) ?? -1);
+    for (; next < stop; next++) {
+      const l = shown.order[next];
+      if (done.has(l) || last.has(l)) continue;
+      done.add(l);
+      put(shown.outline(l));
+      put(shown.extra(l));
+    }
+    if (next === stop) next++;
+  };
+  content.forEach((c, i) => {
+    if (!done.has(c.layer)) {
+      through(c.layer);
+      done.add(c.layer);
+      put(shown.outline(c.layer));
+    }
+    out.add(c.line);
+    if (last.get(c.layer) === i) put(shown.extra(c.layer));
+  });
+  through(undefined);
+  return [...out].join('\n');
+}
+
+/** A field's words as plain text: rich text as its words, a number as written. */
+function textOf(value: unknown, rich: boolean | undefined): string {
+  if (typeof value === 'string' || typeof value === 'number') return rich && typeof value === 'string' ? plain(value) : String(value);
+  return rich && Array.isArray(value) ? plain(value) : '';
 }
 
 /** The words a tree shows, one line per field that shows any, less the content `skip` says is found otherwise. */
@@ -93,13 +145,108 @@ function treeText(state: ProjectState, tree: NodeTree, skip?: (c: RenderedConten
   for (const c of renderedContent(state, tree)) {
     // Where a link goes is not something the visitor reads, and what custom code shows of a setting is unknown.
     if (c.kind !== 'text' || c.custom || hidden.has(c.nodeId) || skip?.(c)) continue;
-    let text = '';
-    if (typeof c.value === 'string' || typeof c.value === 'number') text = c.rich && typeof c.value === 'string' ? plain(c.value) : String(c.value);
-    else if (c.rich && Array.isArray(c.value)) text = plain(c.value);
-    text = oneLine(text);
-    if (text) lines.push(text);
+    const line = oneLine(textOf(c.value, c.rich));
+    if (line) lines.push(line);
   }
   return lines.join('\n');
+}
+
+/**
+ * The words of Foundation's sections as the Markdown copies read them (generator/markdown.ts): through the designs
+ * that stand for their markup (shipped-outlines.ts), which know the words the canvas cannot type over (a featured
+ * card, both prices of a billing switch, a tab's name), and the cells of the theme's table and plan comparison. Like
+ * the Markdown, it reads the panels a page ships while its state hides them (a tab not chosen yet), which visitors
+ * reach, and leaves out what is hidden at every size: the page's own layers (`hidden`), and a section's parts its
+ * placement hides.
+ */
+function shownWords(state: ProjectState, page: PageDoc, hidden: Set<string>): { order: string[]; outline: (layer: string) => string[]; extra: (layer: string) => string[] } {
+  const order: string[] = [];
+  const outlined = new Map<string, string[]>();
+  const extras = new Map<string, string[]>();
+  const add = (to: Map<string, string[]>, layer: string, values: readonly unknown[]) => {
+    for (const v of values) {
+      const text = oneLine(typeof v === 'number' ? String(v) : v);
+      if (!text) continue;
+      const lines = to.get(layer);
+      if (lines) lines.push(text);
+      else to.set(layer, [text]);
+    }
+  };
+  const outlines = new WeakSet<ComponentDefinition>();
+  walkRendered(state, page, {
+    kept: true,
+    // Every layer of the page in its order, for the words of one that shows nothing else.
+    enter: (n) => void order.push(n.id),
+    outline: (def) => {
+      const o = shippedOutline(state, def);
+      if (o) outlines.add(o);
+      return o;
+    },
+    prune: (n, scope, reportId, def) => hidden.has(reportId) || (!!def?.tree && def.tree.nodes[n.id] === n && hiddenInDesignEverywhere(def, n.id, scope)),
+    text: (n, scope, reportId, _inDef, def) => {
+      if (def && outlines.has(def)) add(outlined, reportId, [textOf(evaluate(n.text, scope), n.rich)]);
+    },
+    link: (n, scope, reportId, _inDef, _ownId, def) => {
+      if (!def || !outlines.has(def)) return;
+      // A button with nowhere to go is left out of the site; a plain link still shows its words.
+      const appearance = String(evaluate(n.appearance, scope) ?? '');
+      if (appearance === 'plain' || appearance === 'link' || resolveLink(evaluate(n.link, scope) as LinkValue | undefined, { state })) add(outlined, reportId, [evaluate(n.label, scope)]);
+    },
+    code: (def, props, reportId, _placement, n) => {
+      if (codePartsHidden(def, n, ['root'])) return;
+      // The theme's own table and comparison, as the app ships them: any other code's markup decides what it shows.
+      if (!rendersAsShipped(def)) return;
+      if (def.componentId === 'pricing.compare') add(extras, reportId, comparisonWords(state, def, props, n));
+      else if (shippedCode(state, def) === 'data.table') add(extras, reportId, tableWords(props.table));
+    }
+  });
+  return { order, outline: (layer) => outlined.get(layer) ?? [], extra: (layer) => extras.get(layer) ?? [] };
+}
+
+/** A table's words: its column names, then each row's cells in the columns' order. */
+function tableWords(value: unknown): unknown[] {
+  const table = value as Partial<TableValue> | null;
+  const columns = Array.isArray(table?.columns) ? table.columns.filter((c) => c && typeof c === 'object' && typeof c.id === 'string') : [];
+  const rows = (Array.isArray(table?.rows) ? table.rows : []).filter((r) => r && typeof r === 'object' && r.cells && typeof r.cells === 'object');
+  const out: unknown[] = columns.map((c) => c.label);
+  for (const r of rows) for (const c of columns) out.push(Object.hasOwn(r.cells, c.id) ? r.cells[c.id] : '');
+  return out;
+}
+
+/**
+ * Foundation's comparison of plans, as the release shows it (and its Markdown writes it): each plan (the third only
+ * while it is named) with its price and period, each feature with its detail and each plan's value and note (the
+ * included and excluded labels where a plan uses them), and the plans' buttons that go somewhere. A part its
+ * placement hides at every size is left out.
+ */
+function comparisonWords(state: ProjectState, def: ComponentDefinition, props: Record<string, unknown>, n: InstanceNode): unknown[] {
+  const hiddenPart = (part: string, itemId?: string) => codePartsHidden(def, n, [part], itemId);
+  type Plan = { key: 'one' | 'two' | 'three'; name?: unknown; price?: unknown; period?: unknown; actionLabel?: unknown; actionLink?: unknown };
+  const plans: Plan[] = (['one', 'two', 'three'] as const)
+    .map((key) => {
+      const v = props[`plan${key[0].toUpperCase()}${key.slice(1)}`];
+      return { ...(v && typeof v === 'object' ? (v as Omit<Plan, 'key'>) : {}), key };
+    })
+    .filter((p) => p.key !== 'three' || oneLine(p.name));
+  const schema = def.properties.features;
+  const fields = schema?.type === 'list' ? schema.fields : {};
+  // A row's value the placement never set is its field's default, as the site fills it in; a list handed in by the
+  // design around it arrives as that design gives it.
+  const filled = !isBinding(n.props.features);
+  const field = (r: Record<string, unknown>, k: string) => (Object.hasOwn(r, k) || !filled ? r[k] : Object.hasOwn(fields, k) ? (fields[k] as { default?: unknown }).default : undefined);
+  const features = Array.isArray(props.features) ? (props.features as Array<Record<string, unknown>>).filter((r) => r && typeof r === 'object') : [];
+  const shown = !hiddenPart('plans');
+  const out: unknown[] = plans.flatMap((p) => [p.name, ...(shown ? [hiddenPart('price') ? '' : p.price, p.period] : [])]);
+  for (const r of features) {
+    const id = typeof r.id === 'string' ? r.id : undefined;
+    out.push(hiddenPart('feature', id) ? '' : field(r, 'feature'), field(r, 'detail'));
+    for (const p of plans) {
+      const v = field(r, p.key);
+      out.push(v === 'included' ? props.includedLabel : v === 'excluded' ? props.excludedLabel : '', field(r, `${p.key}Note`));
+    }
+  }
+  for (const p of plans) if (resolveLink(p.actionLink as LinkValue | undefined, { state })) out.push(p.actionLabel);
+  return out;
 }
 
 function plain(value: unknown): string {

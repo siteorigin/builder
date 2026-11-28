@@ -27,7 +27,7 @@ import { cardKey, isCardLink } from './card-links';
 import { derived } from './cache';
 import { isFormContract } from '@shared/form-contract';
 import { selectedVariants } from '@shared/variants';
-import { shippedAsIs } from '@engine/shipped-copy';
+import { rendersAsShipped } from '@engine/shipped-copy';
 import { shippedOutline } from './shipped-outlines';
 
 /** What the Markdown of one document is written for. */
@@ -419,7 +419,7 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
   const code = (def: ComponentDefinition, props: Record<string, unknown>, n: InstanceNode, scope: Scope) => {
     // Hidden whole by its placement inside a design (a page's own placements are left out before they are walked).
     if (codePartsHidden(def, n, ['root'])) return;
-    if (def.componentId === 'pricing.compare' && shippedAsIs(def)) return compare(def, props, n, scope);
+    if (def.componentId === 'pricing.compare' && rendersAsShipped(def)) return compare(def, props, n, scope);
     const which = shippedCode(state, def);
     // The compact video's only words are its caption.
     if (which === 'block.video') return void addPlain(props.caption);

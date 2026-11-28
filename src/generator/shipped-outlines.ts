@@ -8,13 +8,13 @@
  * the website leaves it out. Nothing else of the markup is here: no styles, pictures, icons, controls (tabs, toggles,
  * filters) or decoration (a window frame's title, a speaker's initials).
  *
- * Only a definition exactly as the app bundles it (shippedAsIs) is read this way: a copy made unique, one from an
+ * Only a definition as the app bundles it (rendersAsShipped, its editor markers taken out or not) is read this way: a copy made unique, one from an
  * installed pack, or one changed from what the app ships decides in its own code what it shows, which is unknown.
  * tests/unit/shipped-outlines.test.ts holds each one to the release's markup.
  */
 import type { Binding, ButtonAppearance, ComponentDefinition, ProjectState } from '@shared/types';
 import { TreeBuilder, item, prop } from '@catalogue/dsl';
-import { shippedAsIs } from '@engine/shipped-copy';
+import { rendersAsShipped } from '@engine/shipped-copy';
 import { derived, isTracked } from './cache';
 
 type Build = (b: TreeBuilder) => string;
@@ -262,7 +262,7 @@ const made = new WeakMap<ComponentDefinition, ComponentDefinition | null>();
 /** The design `state`'s definition `id` is read as, or null; a function of the ID alone, for a derived value. */
 const outlineFor = (id: string) => (s: ProjectState) => {
   const def = Object.hasOwn(s.components, id) ? s.components[id] : undefined;
-  return def && shippedAsIs(def) ? outlineOf(def) : null;
+  return def && rendersAsShipped(def) ? outlineOf(def) : null;
 };
 
 /**
@@ -276,7 +276,7 @@ export function shippedOutline(state: ProjectState, def: ComponentDefinition): C
   if (isTracked(state)) return derived(state, `shippedOutline:${def.id}`, outlineFor(def.id)) ?? undefined;
   let out = made.get(def);
   if (out === undefined) {
-    out = shippedAsIs(def) ? outlineOf(def) : null;
+    out = rendersAsShipped(def) ? outlineOf(def) : null;
     made.set(def, out);
   }
   return out ?? undefined;
