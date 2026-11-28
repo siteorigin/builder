@@ -32,15 +32,15 @@ import './SourceDialog.css';
 const REMOVALS = {
   unpublish: {
     label: 'Make it a draft (comes off the website)',
-    hint: 'Its entry stays in the project as a draft and comes off the next exported website. Links and references to it stay in the editor. Reference fields leave it off the website, but a link to it on a published page or post stops the website export until that link changes.'
+    hint: 'Its entry stays in the project as a draft and comes off the next exported website. Links and references to it stay in the editor. Reference fields leave it off the website, but a link to it on a published page or post stops the website export.'
   },
   remove: {
     label: 'Delete it (comes off the website)',
-    hint: 'Its entry is deleted from the project and comes off the next exported website. While a link or reference field elsewhere in the project points to it, or a redirect you added goes to it, the whole sync stops.'
+    hint: 'Its entry is deleted from the project and comes off the next exported website. The whole sync stops while it is still picked elsewhere in the project: in a link, a reference field or a redirect you added.'
   },
   keep: {
-    label: 'Keep it as last synced (stays on the website if published)',
-    hint: 'Its entry stays as it was last synced. A published one stays on the website, and a draft stays a draft.'
+    label: 'Keep it as it is (stays on the website if published)',
+    hint: 'Its entry stays as it is. A published one stays on the website, and a draft stays a draft.'
   }
 } as const;
 
