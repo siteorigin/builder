@@ -5,6 +5,7 @@ import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, Sq
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, dismissToast, toastWithId, errorText, getState, leaveSeoView, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
+import { nearbyOffer } from './lib/nearby-project';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
@@ -501,7 +502,8 @@ export function Editor() {
           else if (!r.ok) {
             // Leaving was agreed but the switch did not happen: this project takes input again.
             endEditingHold();
-            if (r.message) toast(r.message, 'error');
+            // A folder beside a project offers that project (#1433).
+            if (r.message) toast(r.message, 'error', nearbyOffer(r.nearby, (d) => openProject(d)));
           }
         },
         (e: unknown) => {

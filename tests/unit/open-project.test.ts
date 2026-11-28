@@ -18,6 +18,7 @@ vi.mock('electron', () => ({
 
 import { dialog } from 'electron';
 import { Controller, readManifestSummary } from '../../src/main/controller';
+import { NOT_A_PROJECT } from '../../src/main/near-project';
 import { loadSettings, trust, untrust } from '../../src/main/settings';
 import { NOT_A_PROJECT_ZIP, WEBSITE_ZIP } from '../../src/main/unzip';
 import { zipDirectory } from '../../src/main/zip';
@@ -90,7 +91,25 @@ describe('opening a received project', () => {
     const dir = tmp('so-chosen-');
     vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [dir] });
     const r = await new Controller(() => ({}) as never).open(undefined, { folder: true });
-    expect(r).toEqual({ ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' });
+    expect(r).toEqual({ ok: false, message: NOT_A_PROJECT });
+  });
+
+  // #1433: the folder the project is kept in, or one inside it, names that project and offers it.
+  it('offers the project beside a chosen folder that is not one', async () => {
+    const holder = tmp('so-websites-');
+    const dir = join(holder, 'fynbos-and-fern');
+    mkdirSync(join(dir, 'siteorigin'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin.project.json'), JSON.stringify({ name: 'Fynbos and Fern' }));
+    const c = new Controller(() => ({}) as never);
+    for (const chosen of [holder, join(dir, 'siteorigin')]) {
+      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [chosen] });
+      const r = await c.open(undefined, { folder: true });
+      expect(r).toEqual({ ok: false, message: expect.stringContaining('“Fynbos and Fern”'), nearby: { dir, name: 'Fynbos and Fern' } });
+    }
+    // Asked for by its folder (a Recent projects card), the folder above is still just not found.
+    expect((await c.open(holder)).nearby).toBeUndefined();
+    // The offer opens the project like any other: it asks for trust.
+    expect((await c.open(dir)).needsTrust).toEqual({ dir, name: 'Fynbos and Fern', reason: 'new' });
   });
 
   it('still asks for trust on a healthy manifest, naming the project', async () => {
