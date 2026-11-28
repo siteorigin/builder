@@ -7,7 +7,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({ windows: [] as Array<{ options: Record<string, unknown>; destroyed: boolean; openHandler?: () => unknown; steps: string[] }>, cleared: [] as string[], clearFails: false }));
+const env = vi.hoisted(() => ({
+  windows: [] as Array<{ options: Record<string, unknown>; destroyed: boolean; openHandler?: () => unknown; steps: string[] }>,
+  cleared: [] as string[],
+  clearFails: false,
+  clearMs: 0,
+  requests: [] as Array<(details: { resourceType: string }, done: (r: { cancel: boolean }) => void) => void>
+}));
 
 type Listener = (e: unknown, method: string, params: Record<string, unknown>) => void;
 
@@ -82,7 +88,8 @@ vi.mock('electron', () => {
         setPermissionRequestHandler: () => undefined,
         setPermissionCheckHandler: () => undefined,
         on: () => undefined,
-        clearStorageData: () => (env.cleared.push(name), env.clearFails ? Promise.reject(new Error('locked')) : Promise.resolve())
+        webRequest: { onBeforeRequest: (l: (typeof env.requests)[number]) => void env.requests.push(l) },
+        clearStorageData: () => (env.cleared.push(name), env.clearFails ? Promise.reject(new Error('locked')) : new Promise<void>((r) => setTimeout(r, env.clearMs)))
       });
     return sessions.get(name);
   };
@@ -95,6 +102,8 @@ beforeEach(() => {
   env.windows.length = 0;
   env.cleared.length = 0;
   env.clearFails = false;
+  env.clearMs = 0;
+  env.requests.length = 0;
 });
 
 describe('the export’s page check windows', () => {
@@ -109,6 +118,20 @@ describe('the export’s page check windows', () => {
     expect(w.steps.slice(0, 2)).toEqual(['load about:blank', 'attach']);
     expect(w.steps.indexOf('Page.addScriptToEvaluateOnNewDocument')).toBeLessThan(w.steps.indexOf('Page.navigate'));
     expect(w.steps.slice(-2)).toEqual(['detach', 'destroy']);
+    // The page's frames are never loaded; everything else it asks for is.
+    const answer = (resourceType: string) => new Promise<boolean>((r) => env.requests.at(-1)!({ resourceType }, ({ cancel }) => r(cancel)));
+    expect(await answer('subFrame')).toBe(true);
+    expect(await answer('script')).toBe(false);
+    expect(await answer('mainFrame')).toBe(false);
+  });
+
+  it('opens no window for a check whose windows were disposed of while its session was emptied', async () => {
+    env.clearMs = 30;
+    const checker = createPageChecker();
+    const checking = checker.check('http://127.0.0.1:1/');
+    checker.dispose();
+    expect(await checking).toEqual({ status: 'unchecked', detail: 'The check was stopped.' });
+    expect(env.windows).toHaveLength(0);
   });
 
   it('gives checks under way at once sessions of their own, each emptied before its page, and uses them again after', async () => {

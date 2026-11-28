@@ -55,11 +55,14 @@ const errorShown = (root: string) => `(() => {
 })()`;
 
 /** Run in the page: the error page's heading when it shows, whether its main element is empty, and whether SvelteKit says it has started. */
-const LOOK = `(() => ({
-  error: ${errorShown('document')},
-  empty: document.querySelector('main#main')?.children.length === 0,
-  started: !!document.getElementById('svelte-announcer')
-}))()`;
+const LOOK = `(() => {
+  const main = document.querySelector('main#main');
+  return {
+    error: ${errorShown('document')},
+    empty: !!main && main.children.length === 0 && !main.textContent.trim(),
+    started: !!document.getElementById('svelte-announcer')
+  };
+})()`;
 
 /** Run in the page: what the HTML the server sent showed before any script ran. */
 const BUILT = (html: string) => `(() => {
@@ -82,8 +85,9 @@ function described(arg: unknown): string {
 
 /** Open the page at `url` through the DevTools session `page` and say whether it still shows what was built once started. */
 export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheckOptions = {}): Promise<PageCheck> {
-  /** The scripts on their way, by request ID. */
+  /** The website's own scripts on their way, by request ID: another host's, however slow, hold nothing up. */
   const pending = new Set<string>();
+  const origin = new URL(url).origin;
   /** The latest errors the page logged or threw, with when. */
   const logged: Array<{ at: number; text: string }> = [];
   let lastScript = 0;
@@ -100,11 +104,13 @@ export async function checkBuiltPage(page: CdpPage, url: string, opts: PageCheck
   const stopListening = page.listen((method, p) => {
     const id = String(p.requestId);
     switch (method) {
-      case 'Network.requestWillBeSent':
-        if (p.type !== 'Script') return;
+      case 'Network.requestWillBeSent': {
+        const at = String((p.request as { url?: string } | undefined)?.url ?? '');
+        if (p.type !== 'Script' || !at.startsWith(`${origin}/`)) return;
         pending.add(id);
         lastScript = Date.now();
         break;
+      }
       case 'Network.responseReceived': {
         const response = p.response as { status: number; url: string };
         if (p.type === 'Document' && p.frameId === mainFrame && !document) document = { requestId: id, status: response.status, url: response.url };

@@ -69,6 +69,10 @@ beforeAll(async () => {
   route('own-only', `document.querySelector('main#main > section').classList.add('${ERROR_SECTION_CLASS}'); ${STARTED}`, '<section class="hours"><h1>Opening hours</h1></section>');
   // A page that asks to be printed as it starts: the hidden window opens no print dialog (the page fails when it would).
   route('prints', `if (String(window.print).includes('[native code]')) { ${ERROR_PAGE} } else window.print(); ${STARTED}`);
+  // A component that puts plain text in place of the page's only section, as it may once it has started: it works.
+  route('text-only', `document.querySelector('main#main').textContent = 'Open every day'; ${STARTED}`, '<section class="hours"><p>Loading…</p></section>');
+  // A healthy page that asks another host for a script that never arrives, once it has started: it works.
+  route('slow-remote', `${STARTED} const s = document.createElement('script'); s.src = '${held.replace('hero.png', 'widget.js')}'; document.head.append(s);`);
   // A page that logs more errors than a check keeps before the one that broke it.
   route('chatty', `for (let i = 0; i < 30; i++) console.error('Could not load widget ' + i); console.error(new Error(${JSON.stringify(LOOP)})); ${ERROR_PAGE} ${STARTED}`);
   // A page that logs an error of its own (a fetch it could not make) and goes on showing its content.
@@ -150,6 +154,14 @@ describe.skipIf(!browserInstalled)('opening a built page in a browser', () => {
 
   it('takes a page whose own only section is given the error page’s class as working', async () => {
     expect(await check('own-only')).toEqual({ status: 'working' });
+  });
+
+  it('takes a page whose main element holds only text once started as working, without waiting it out', async () => {
+    expect(await check('text-only', { timeoutMs: 2000 })).toEqual({ status: 'working' });
+  });
+
+  it('is not held up by another host’s script that never arrives', async () => {
+    expect(await check('slow-remote', { timeoutMs: 2000 })).toEqual({ status: 'working' });
   });
 
   it('opens no print dialog for a page that asks to be printed', async () => {
