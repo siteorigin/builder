@@ -160,8 +160,6 @@ export function knownPosts(state: ProjectState): KnownPosts {
     if (!from) continue;
     const ids = Object.hasOwn(out.ids, from.site) ? out.ids[from.site] : (out.ids[from.site] = {});
     ids[from.postId] = e.id;
-    // A post whose old address is its address here, so none was kept.
-    if (hasDetailPages(c.settings)) out.paths[lower(`${c.settings.route}${e.slug}/`)] = { entryId: e.id, site: from.site };
   }
   for (const r of redirectRecords(state)) {
     const from = r.entryId !== undefined && Object.hasOwn(c.entries, r.entryId) ? origin(c.entries[r.entryId]) : undefined;

@@ -459,7 +459,7 @@ describe('planning an import', () => {
     expect(planPostImport(local, await readWordPress(join(dir, 'export.xml'), {}), '2026-11-24').posts.some((p) => p.existing)).toBe(false);
   });
 
-  it('links to the posts an export leaves out only within the site’s own installation, by ID or by address', async () => {
+  it('links to the posts an export leaves out by ID only within the site’s own installation, never by their address here', async () => {
     const dir = wordpressFolder();
     // The site lives under /a/ on its host.
     const at = (xml: string) => xml.replace('<wp:base_blog_url>https://riverside.example</wp:base_blog_url>', '<wp:base_blog_url>https://riverside.example/a</wp:base_blog_url>');
@@ -475,12 +475,15 @@ describe('planning an import', () => {
     };
     const entry = `{"type":"entry","target":"${spring.id}"}`;
     expect(await withLink('https://riverside.example/a/?p=13')).toContain(entry);
-    // Another installation on the same host has a post 13 of its own.
+    expect(await withLink('https://riverside.example/a/index.php?p=13')).toContain(entry);
+    // Another installation on the same host, beside it or under it, has a post 13 of its own.
     expect(await withLink('https://riverside.example/b/?p=13')).not.toContain(entry);
-    // A site at its host's root whose post's address here was its address there, so none was kept: still known by it.
+    expect(await withLink('https://riverside.example/a/team/?p=13')).not.toContain(entry);
+    // Its address here is no address of the old site: something else may have had it there.
+    expect(await withLink(`https://riverside.example/a/blog/${spring.slug}/`)).not.toContain(entry);
     const root = commit(site(), await readWordPress(join(dir, 'export.xml'), {})).after;
     const rootSpring = Object.values(root.collections.posts.entries)[1];
-    expect(await withLink(`https://riverside.example/blog/${rootSpring.slug}/`, root, (x) => x)).toContain(`{"type":"entry","target":"${rootSpring.id}"}`);
+    expect(await withLink(`https://riverside.example/blog/${rootSpring.slug}/`, root, (x) => x)).not.toContain(rootSpring.id);
   });
 
   it('brings only the new posts, linking them to the posts already here, or updates those in place', async () => {
