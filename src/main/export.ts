@@ -104,14 +104,13 @@ const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'buil
  * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it. External
  * sources' settings (#676) are never copied: a copy that keeps them writes the project's own (writeExportedSources).
  */
-export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
+export async function copyProjectSource(src: string, dest: string, opts: { keepBrief?: boolean } = {}) {
   // An entry's own type says whether it is a link, which is never copied, so nothing is looked at twice.
   await copyTree(src, dest, (p, e) => {
     if (e.isSymbolicLink() || !sourcePathKept(src, p)) return false;
     if (!opts.keepBrief && isProjectBrief(src, p)) return false;
     // Sources' settings are written from the project's own (writeExportedSources), never copied as the folder has them.
-    if (isSourcesFolder(src, p)) return false;
-    return !opts.keepAsset || !e.isFile() || opts.keepAsset(relative(src, p).split(sep).join('/'));
+    return !isSourcesFolder(src, p);
   });
 }
 
@@ -285,22 +284,6 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
 /** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
 const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
-/**
- * Which project files an export carries. Every library file stays, used or not, because the editable project
- * keeps them for later; imported images that no asset record or code component uses any more (deleted images
- * kept for undo) stay behind. Anything else in static/ was put there on purpose. The website build narrows
- * this further with pruneWebsiteAssets.
- */
-export function exportedAssetFilter(state: ProjectState): (rel: string) => boolean {
-  const library = libraryAssetFiles(state);
-  const code = Object.values(state.components).map((d) => d.source ?? '').join('\n');
-  return (rel) => {
-    if (!rel.startsWith('static/assets/') || library.has(rel)) return true;
-    const name = rel.slice('static/assets/'.length);
-    return !IMPORTED_ASSET.test(name) || code.includes(name);
-  };
-}
-
 /** The eight hash characters the importer names a file by, which an original shares with all its responsive copies. */
 const importedToken = (name: string) => name.match(/-([a-f0-9]{8})(?:-\d+w)?\.[a-z0-9]+$/)?.[1] ?? name;
 
@@ -317,8 +300,12 @@ const importedToken = (name: string) => name.match(/-([a-f0-9]{8})(?:-\d+w)?\.[a
  * the hash its name gives, so an owner's dated file (`rates-20240131.pdf`) is never taken for one. Anything that can't
  * be read for what it names leaves every file in place. Read from the copy, so it decides by exactly what was copied.
  * Returns the files it removed; one that can't be removed fails the copy, which would otherwise publish it.
+ *
+ * An export (#1391) passes `authoring: false`, once its drafts are left out of the generated files: there only what the
+ * published site is built from names a file (the source, public files, project files and the sources' settings), never
+ * the authoring documents, which carry the drafts, so a file only a draft names stays behind as it did before.
  */
-export async function leaveOutRetiredAssets(copy: string, state: ProjectState): Promise<string[]> {
+export async function leaveOutRetiredAssets(copy: string, state: ProjectState, opts: { authoring?: boolean } = {}): Promise<string[]> {
   const library = libraryAssetFiles(state);
   try {
     const text = await fs.readFile(join(copy, 'siteorigin', 'assets.json'), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
@@ -339,15 +326,18 @@ export async function leaveOutRetiredAssets(copy: string, state: ProjectState): 
   const closed = process.platform !== 'win32' && (mode & 0o700) !== 0o700;
   if (closed && !(await fs.chmod(dir, mode | 0o700).then(() => true, () => false))) return [];
   try {
-    return await leaveOutRetired(copy, dir, listed, shared);
+    return await leaveOutRetired(copy, dir, listed, shared, opts.authoring ?? true);
   } finally {
     // Left open only to its owner, if at all: what the pass found, or why it failed, is what matters.
     if (closed) await fs.chmod(dir, mode).catch(() => undefined);
   }
 }
 
-/** leaveOutRetiredAssets, once the copy's static/assets/ can be read: `listed` and `shared` are its library's files and their hash characters. */
-async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, shared: Set<string>): Promise<string[]> {
+/**
+ * leaveOutRetiredAssets, once the copy's static/assets/ can be read: `listed` and `shared` are its library's files and
+ * their hash characters, and `authoring` whether the authoring documents count.
+ */
+async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, shared: Set<string>, authoring: boolean): Promise<string[]> {
   const media = new Map<string, string>();
   const documents = new Set<string>();
   for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -382,6 +372,9 @@ async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, s
     for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
       if (unreadable || done) return;
       const child = rel ? `${rel}/${e.name}` : e.name;
+      // Without the authoring documents, by any spelling of their folder, the sources' settings still count: the
+      // website's build runs their converters.
+      if (!authoring && rel.toLowerCase() === 'siteorigin' && e.name.toLowerCase() !== 'sources') continue;
       if (e.isDirectory()) await walk(child);
       else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) await look(child);
     }
