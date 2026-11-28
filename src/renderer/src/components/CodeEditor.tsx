@@ -224,8 +224,8 @@ export function CodeEditor({
   onErrorCount?: (n: number, line?: number) => void;
   /** Whether the live check is still to report on the text as it stands. */
   onChecking?: (pending: boolean) => void;
-  /** The props the code takes from $props(), each time the check reports on it; null when it could not say. */
-  onProps?: (taken: CodePropsTaken | null) => void;
+  /** The props the code takes from $props(), with the code it read, each time the check reports; null when it could not say. */
+  onProps?: (taken: CodePropsTaken | null, source: string) => void;
   /** A list of the problems is on screen below the editor, so the strip keeps to the count. */
   problemsShown?: boolean;
   /** The manifest the code is checked against, as edited: a change checks the code again. */
@@ -313,7 +313,7 @@ export function CodeEditor({
           if (doc.eq(v.state.doc)) {
             setLint({ errors: 0, warnings: 0, items: [], failed: true });
             callbacks.current.onErrorCount?.(0);
-            callbacks.current.onProps?.(null);
+            callbacks.current.onProps?.(null, doc.toString());
             setChecking(false);
           }
           return [];
@@ -334,7 +334,7 @@ export function CodeEditor({
         const errors = items.filter((p) => p.severity === 'error');
         setLint({ errors: errors.length, warnings: items.length - errors.length, items });
         callbacks.current.onErrorCount?.(errors.length, errors[0]?.line);
-        callbacks.current.onProps?.(taken);
+        callbacks.current.onProps?.(taken, doc.toString());
         setChecking(false);
         return diagnostics;
       },

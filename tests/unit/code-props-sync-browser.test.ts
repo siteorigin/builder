@@ -24,8 +24,8 @@ const ENTRY = [
 ].join('\n');
 
 /**
- * The preload bridge: the code checks clean and takes what `window.__taken` says (the pricing component's props),
- * and each edit applied is recorded; every other call answers nothing.
+ * The preload bridge: the code checks clean and takes the pricing component's props once it is the pricing code (the
+ * starter's before), and each edit applied is recorded; every other call answers nothing.
  */
 const BRIDGE = `
   const any = (path) => new Proxy(function () {}, {
@@ -34,7 +34,7 @@ const BRIDGE = `
   });
   window.__applied = [];
   const answers = {
-    validateSource: async () => ({ ok: true, errors: [], diagnostics: [], props: window.__taken }),
+    validateSource: async (source) => ({ ok: true, errors: [], diagnostics: [], props: source.includes('monthly') ? window.__taken : window.__starter }),
     apply: async (batch) => (window.__applied.push(batch), { ok: true, revision: 2 })
   };
   const project = new Proxy({}, { get: (_, key) => answers[key] ?? any('project.' + String(key)) });
@@ -61,6 +61,8 @@ describe.skipIf(!browserInstalled)('declaring a new code component’s propertie
   let page: Page;
   let errors: string[];
   const taken = { props: [{ name: 'heading', default: { value: 'Simple pricing' } }, { name: 'monthly', default: { value: 29 } }, { name: 'discount', default: { value: 20 } }], handed: false, axes: [] };
+  const starter = { props: [{ name: 'heading', default: { value: 'Hello' } }, { name: 'text', default: { value: 'A custom component.' } }], handed: false, axes: [] };
+  const PRICING = `<script>\n\tlet { heading = 'Simple pricing', monthly = 29, discount = 20, class: className = '', so_o } = $props();\n</script>\n\n<section class={className}><h2 class={so_o?.heading} data-so-part="heading">{heading}</h2><p>{monthly} less {discount}%</p></section>\n`;
 
   beforeAll(async () => {
     [script, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
@@ -79,11 +81,19 @@ describe.skipIf(!browserInstalled)('declaring a new code component’s propertie
     page.on('pageerror', (e) => errors.push(e.message));
     await page.route(`${SITE}/**`, (route) => {
       if (new URL(route.request().url()).pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
-      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}window.__taken = ${JSON.stringify(taken)};</script><script src="/app.js"></script>` });
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><body><div id="root"></div><script>${BRIDGE}window.__taken = ${JSON.stringify(taken)}; window.__starter = ${JSON.stringify(starter)};</script><script src="/app.js"></script>` });
     });
     await page.goto(`${SITE}/`);
     await page.locator('.cm-content').waitFor();
     const note = page.locator('.code-props-sync');
+    // The starter's code takes the starter's properties: nothing to say.
+    await page.waitForFunction(`!document.querySelector('.cm-editor')?.textContent?.includes('Checking')`);
+    await page.waitForTimeout(900);
+    expect(await note.count()).toBe(0);
+    // The pasted component's code replaces the starter's.
+    await page.locator('.cm-content').click();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a');
+    await page.keyboard.insertText(PRICING);
     await note.waitFor();
     expect(await note.textContent()).toContain('The code takes monthly and discount, which are not properties.');
     expect(await note.textContent()).toContain('It writes “Simple pricing” as the default for “Heading”, which has “Hello”.');
@@ -95,7 +105,8 @@ describe.skipIf(!browserInstalled)('declaring a new code component’s propertie
     await page.getByLabel('Name', { exact: true }).fill('Pricing');
     await page.locator('button.code-save').click();
     await page.waitForFunction('window.__applied.length > 0');
-    const [batch] = (await page.evaluate('window.__applied')) as Array<{ operations: Array<{ properties: Record<string, { type: string; default: unknown }> }> }>;
+    const [batch] = (await page.evaluate('window.__applied')) as Array<{ operations: Array<{ source: string; properties: Record<string, { type: string; default: unknown }> }> }>;
+    expect(batch.operations[0].source).toBe(PRICING);
     const properties = batch.operations[0].properties;
     expect(Object.keys(properties)).toEqual(['heading', 'monthly', 'discount']);
     expect(properties.heading.default).toBe('Simple pricing');

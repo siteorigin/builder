@@ -226,59 +226,114 @@ describe('schema problems', () => {
 
 describe('properties from the props the code takes (#1527)', () => {
   const taken = (props: CodePropsTaken['props'], handed = false, axes: string[] = []): CodePropsTaken => ({ props, handed, axes });
+  const none = { add: [], defaults: [], manual: [], invalid: [], unread: [], ambiguous: false };
 
   it('types each new property from the default the code writes, falsy ones included, and text for none', () => {
-    const sync = codePropsSync([], taken([{ name: 'count', default: { value: 0 } }, { name: 'open', default: { value: false } }, { name: 'note', default: { value: '' } }, { name: 'ctaURL' }, { name: 'image', default: { value: null } }]));
+    const sync = codePropsSync([], taken([{ name: 'count', default: { value: 0 } }, { name: 'open', default: { value: false } }, { name: 'shown', default: { value: true } }, { name: 'note', default: { value: '' } }, { name: 'lead', default: { value: 'Hi there' } }, { name: 'ctaURL' }]));
     expect(sync.add).toEqual([
       { name: 'count', schema: { type: 'number', label: 'Count', default: 0 } },
       { name: 'open', schema: { type: 'boolean', label: 'Open', default: false } },
+      { name: 'shown', schema: { type: 'boolean', label: 'Shown', default: true } },
       { name: 'note', schema: { type: 'string', label: 'Note', default: '' } },
-      { name: 'ctaURL', schema: { type: 'string', label: 'Cta url', default: '' } },
-      { name: 'image', schema: { type: 'string', label: 'Image', default: '' } }
+      { name: 'lead', schema: { type: 'string', label: 'Lead', default: 'Hi there' } },
+      { name: 'ctaURL', schema: { type: 'string', label: 'Cta url', default: '' } }
     ]);
     expect(sync.manual).toEqual([]);
   });
 
-  it('leaves a list, an object or a worked-out default to declare by hand, and skips a name no property can have', () => {
-    const sync = codePropsSync([], taken([{ name: 'tiers', default: { value: [] } }, { name: 'meta', default: { value: { a: 1 } } }, { name: 'total', computed: true }, { name: 'snake_case', default: { value: 'x' } }]));
-    expect(sync.add).toEqual([]);
-    expect(sync.manual).toEqual(['tiers', 'meta', 'total']);
+  it('makes text with a line break multiline, so the code is handed it as written', () => {
+    expect(codePropsSync([], taken([{ name: 'body', default: { value: 'One\nTwo' } }])).add).toEqual([{ name: 'body', schema: { type: 'string', label: 'Body', default: 'One\nTwo', multiline: true } }]);
   });
 
-  it('takes the code’s default only where the property’s type and range take it', () => {
+  it('leaves to declare by hand a default no property would hand the code as written, and names a code name none can have', () => {
+    const sync = codePropsSync(
+      [],
+      taken([
+        { name: 'tiers', default: { value: [] } },
+        { name: 'meta', default: { value: { a: 1 } } },
+        { name: 'image', default: { value: null } },
+        { name: 'total', computed: true },
+        { name: 'essay', default: { value: 'x'.repeat(2001) } },
+        { name: 'snake_case', default: { value: 'x' } },
+        { name: 'hero-title' }
+      ])
+    );
+    expect(sync.add).toEqual([]);
+    expect(sync.manual).toEqual(['tiers', 'meta', 'image', 'total', 'essay']);
+    expect(sync.invalid).toEqual(['snake_case', 'hero-title']);
+  });
+
+  it('takes the code’s default only where the property takes it as it is', () => {
     const rows = rowsFromProperties({
       title: { type: 'string', label: 'Title', default: 'Hi' },
-      price: { type: 'number', label: 'Price', default: 5, min: 0, max: 10 },
+      price: { type: 'number', label: 'Price', default: 5, min: 2, max: 10 },
+      low: { type: 'number', label: 'Low', default: 5, min: 2, max: 10 },
+      fine: { type: 'number', label: 'Fine', default: 5, min: 2, max: 10 },
       body: { type: 'richtext', label: 'Body', default: '' },
-      same: { type: 'boolean', label: 'Same', default: true }
+      shown: { type: 'boolean', label: 'Shown', default: true },
+      short: { type: 'string', label: 'Short', default: 'a', maxLength: 3 },
+      needed: { type: 'string', label: 'Needed', default: 'a', required: true },
+      line: { type: 'string', label: 'Line', default: 'a' }
     });
-    const sync = codePropsSync(rows, taken([{ name: 'title', default: { value: 'Hello' } }, { name: 'price', default: { value: 50 } }, { name: 'body', default: { value: 'x' } }, { name: 'same', default: { value: true } }]));
-    expect(sync.defaults).toEqual([{ name: 'title', was: 'Hi', value: 'Hello' }]);
+    const sync = codePropsSync(
+      rows,
+      taken([
+        { name: 'title', default: { value: 'Hello' } },
+        { name: 'price', default: { value: 50 } },
+        { name: 'low', default: { value: 1 } },
+        { name: 'fine', default: { value: 7 } },
+        { name: 'body', default: { value: 'x' } },
+        { name: 'shown', default: { value: false } },
+        { name: 'short', default: { value: 'abcd' } },
+        { name: 'needed', default: { value: '' } },
+        { name: 'line', default: { value: 'a\nb' } }
+      ])
+    );
+    expect(sync.defaults).toEqual([
+      { name: 'title', was: 'Hi', value: 'Hello' },
+      { name: 'fine', was: 5, value: 7 },
+      { name: 'shown', was: true, value: false }
+    ]);
     const next = declareFromCode(rows, sync);
     expect(next.map((r) => r.key)).toEqual(rows.map((r) => r.key));
-    expect((propertiesFromRows(next).title as { default: unknown }).default).toBe('Hello');
+    const props = propertiesFromRows(next) as Record<string, { default: unknown }>;
+    expect([props.title.default, props.fine.default, props.shown.default, props.low.default]).toEqual(['Hello', 7, false, 5]);
   });
 
-  it('matches a renamed row by its code name now, keeping it a rename', () => {
+  it('matches a renamed row by its code name now, keeping it a rename with the default it takes', () => {
     const rows = rowsFromProperties({ title: { type: 'string', label: 'Title', default: 'Hi' } }).map((r) => ({ ...r, name: 'heading' }));
-    const sync = codePropsSync(rows, taken([{ name: 'heading', default: { value: 'Hi' } }]));
-    expect(sync).toEqual({ add: [], defaults: [], manual: [], unread: [] });
-    expect(renamesFromRows(declareFromCode(rows, sync))).toEqual([{ from: 'title', to: 'heading' }]);
+    const sync = codePropsSync(rows, taken([{ name: 'heading', default: { value: 'Hello' } }]));
+    expect(sync).toEqual({ ...none, defaults: [{ name: 'heading', was: 'Hi', value: 'Hello' }] });
+    const next = declareFromCode(rows, sync);
+    expect(renamesFromRows(next)).toEqual([{ from: 'title', to: 'heading' }]);
+    expect((propertiesFromRows(next).heading as { default: unknown }).default).toBe('Hello');
   });
 
-  it('lists the properties the code never reads, but not its axes’ or any while it hands its props on', () => {
+  it('lists the properties the code never reads, by trimmed name, but not its axes’ or any while it hands its props on', () => {
     const rows = rowsFromProperties({ a: { type: 'string', label: 'A', default: '' }, tone: { type: 'string', label: 'Tone', default: '' } });
     expect(codePropsSync(rows, taken([])).unread).toEqual(['a', 'tone']);
     expect(codePropsSync(rows, taken([], false, ['tone'])).unread).toEqual(['a']);
     expect(codePropsSync(rows, taken([], true)).unread).toEqual([]);
+    const padded = [{ ...rows[0], name: ' a ' }, { ...rows[1], name: '' }];
+    expect(codePropsSync(padded, taken([{ name: 'a' }])).unread).toEqual([]);
     expect(removeProperties(rows, ['a']).map((r) => r.name)).toEqual(['tone']);
+  });
+
+  it('works nothing out while two rows share a code name', () => {
+    const rows = rowsFromProperties({ a: { type: 'string', label: 'A', default: '' }, b: { type: 'string', label: 'B', default: '' } }).map((r) => ({ ...r, name: 'a' }));
+    expect(codePropsSync(rows, taken([{ name: 'a', default: { value: 'x' } }, { name: 'c' }]))).toEqual({ ...none, ambiguous: true });
+  });
+
+  it('drops only the rows it is given the keys of', () => {
+    const rows = rowsFromProperties({ a: { type: 'string', label: 'A', default: '' }, b: { type: 'string', label: 'B', default: '' } });
+    expect(declareFromCode(rows, none, [rows[0].key]).map((r) => r.name)).toEqual(['b']);
   });
 
   it('tells an untouched starter property from one that was edited or saved', () => {
     const starter = rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES) as Record<string, unknown>, false);
     expect(starter.map(starterUntouched)).toEqual([true, true]);
     expect(starterUntouched({ ...starter[0], schema: { ...starter[0].schema, label: 'Title' } })).toBe(false);
-    expect(starterUntouched({ ...starter[0], drafts: { default: { text: 'x', message: 'no' } } })).toBe(false);
+    expect(starterUntouched({ ...starter[0], name: 'text' })).toBe(false);
     expect(rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES) as Record<string, unknown>).map(starterUntouched)).toEqual([false, false]);
   });
 

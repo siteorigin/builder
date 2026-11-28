@@ -192,8 +192,11 @@ describe('declaring a code component’s properties from its code (#1527)', () =
   });
 
   it('reads a bindable default, flags one the code works out, and adds reads of the whole props', async () => {
-    const source = `<script>\n\tlet { open = $bindable(false), total = price * 2, plain, ...rest } = $props();\n\tconst price = 3;\n</script>\n<p>{open}{total}{plain}{rest.extra}</p>\n`;
-    expect((await codePropsTaken(source))!.props).toEqual([{ name: 'open', default: { value: false } }, { name: 'total', computed: true }, { name: 'plain' }, { name: 'extra' }]);
+    const source = `<script>\n\tlet { open = $bindable(false), total = price * 2, when = format(1), 'hero': title = 'Hi', slot_aside, plain, ...rest } = $props();\n\tconst price = 3;\n\tconst format = (n) => n;\n</script>\n<p>{open}{total}{when}{title}{plain}{rest.extra}{rest.so_o}</p>\n`;
+    expect((await codePropsTaken(source))!.props).toEqual([{ name: 'open', default: { value: false } }, { name: 'total', computed: true }, { name: 'when', computed: true }, { name: 'hero', default: { value: 'Hi' } }, { name: 'plain' }, { name: 'extra' }]);
+    const whole = `<script>\n\tlet props = $props();\n</script>\n<p>{props.title}{props.tone}</p>\n`;
+    const axes = { tone: { label: 'Tone', prop: 'tone', default: 'light', options: { light: { label: 'Light' }, dark: { label: 'Dark' } } } } as unknown as ComponentDefinition['variantAxes'];
+    expect(await codePropsTaken(whole, { variantAxes: axes })).toEqual({ props: [{ name: 'title' }], handed: false, axes: ['tone'] });
   });
 
   it('leaves out the axes’ props, says when the props are handed on, and says nothing of code it cannot read', async () => {
@@ -214,12 +217,12 @@ describe('declaring a code component’s properties from its code (#1527)', () =
     ]);
     expect(sync.defaults).toEqual([{ name: 'heading', was: 'Hello', value: 'Simple pricing' }]);
     expect(sync.unread).toEqual(['text']);
-    const drop = sync.unread.filter((n) => starter.some((r) => r.name === n && starterUntouched(r)));
-    expect(drop).toEqual(['text']);
-    const properties = propertiesFromRows(declareFromCode(starter, sync, drop)) as Record<string, PropSchema>;
+    const drop = starter.filter((r) => sync.unread.includes(r.name) && starterUntouched(r));
+    expect(drop.map((r) => r.name)).toEqual(['text']);
+    const properties = propertiesFromRows(declareFromCode(starter, sync, drop.map((r) => r.key))) as Record<string, PropSchema>;
     expect(Object.keys(properties)).toEqual(['heading', 'monthly', 'discount']);
     expect(await codeManifestProblems(PRICING, props(properties), false)).toEqual([]);
     // Once declared, there is nothing left to declare.
-    expect(codePropsSync(rowsFromProperties(properties), taken)).toEqual({ add: [], defaults: [], manual: [], unread: [] });
+    expect(codePropsSync(rowsFromProperties(properties), taken)).toEqual({ add: [], defaults: [], manual: [], invalid: [], unread: [], ambiguous: false });
   });
 });

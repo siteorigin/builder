@@ -12,7 +12,7 @@ import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
 import { EXTERNAL_SOURCE_REFUSED, type CodePropsTaken, type SourceManifest } from '@shared/api';
-import { codePropsSync, declareFromCode, removeProperties, starterUntouched } from '../lib/prop-schema';
+import { MAX_PROPERTIES, codePropsSync, declareFromCode, removeProperties, starterUntouched } from '../lib/prop-schema';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -277,8 +277,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const [liveLine, setLiveLine] = useState<number | undefined>();
   // The live check is still to report on the code as it stands: until it does, its last count says nothing.
   const [liveChecking, setLiveChecking] = useState(true);
-  // What the code took from $props() when the live check last reported on it.
-  const [taken, setTaken] = useState<CodePropsTaken | null>(null);
+  // What the code took from $props() when the live check last reported on it, and the code it read.
+  const [taken, setTaken] = useState<{ source: string; props: CodePropsTaken | null } | null>(null);
   const editor = useRef<CodeEditorHandle | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const problemsList = useRef<HTMLElement | null>(null);
@@ -638,7 +638,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
                     saveHint={saveHint}
                     onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                     onChecking={setLiveChecking}
-                    onProps={setTaken}
+                    onProps={(props, checked) => setTaken({ source: checked, props })}
                     problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
                     manifest={manifest}
                     handle={editor}
@@ -714,7 +714,17 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             </button>
           </div>
         )}
-        {src?.editable && !liveChecking && <CodePropsNote rows={rows} taken={taken} disabled={saving || propsStale} onRows={syncRows} stored />}
+        {src?.editable && (
+          <CodePropsNote
+            rows={rows}
+            taken={taken?.source === code ? taken.props : null}
+            // A newer version of the code or the properties on its way, or one refused: settle that first.
+            disabled={saving || loading || refreshFailed || !!refused || codeStale || propsStale}
+            onRows={syncRows}
+            onReview={() => setTab('manifest')}
+            stored
+          />
+        )}
         <SaveProblems problems={errors} onGoTo={goToLine} focusRef={problemsList} />
         <span className="sr-only" role="status">
           {refusal(errors)}
@@ -733,36 +743,42 @@ const quoted = (v: unknown) => (typeof v === 'string' ? `“${v.length > 40 ? `$
 /**
  * Where the properties and the props the code takes disagree, with one action that declares the props the code takes
  * (each undeclared one added, each default the code writes taken, and the properties `untouched` says nothing has
- * been done to removed when the code never reads them) and one that removes the other properties it never reads.
- * Either shows its result in the Properties tab, to review before saving, and works out what it does from the rows
- * as they are when it is pressed. The host shows it only once the check has reported on the code as it stands.
+ * been done to removed when the code never reads them). The other properties it never reads are removed in the
+ * Properties tab, with that tab's Undo, or here for a new component's, which nothing has set yet. Either action shows
+ * its result in the Properties tab, to review before saving, and works out what it does from the rows as they are
+ * when it is pressed. `taken` is what the check found in the code as it stands, or null while it has yet to say.
  */
-function CodePropsNote({ rows, taken, disabled, onRows, untouched, stored }: {
+function CodePropsNote({ rows, taken, disabled, onRows, onReview, untouched, stored }: {
   rows: SchemaRow[];
   taken: CodePropsTaken | null;
   disabled: boolean;
   onRows: (edit: (rows: SchemaRow[]) => SchemaRow[]) => void;
+  /** Show the properties to remove the unread ones by hand. */
+  onReview: () => void;
   /** Properties nothing has been done to yet (a new component's starter ones), which declaring removes when unread. */
   untouched?: (row: SchemaRow) => boolean;
-  /** The properties are saved ones, which placements may have set. */
+  /** The properties are saved ones, which placements may have set: unread ones are removed by hand. */
   stored?: boolean;
 }) {
   if (!taken) return null;
   const plan = (r: SchemaRow[]) => {
     const sync = codePropsSync(r, taken);
     const declares = sync.add.length > 0 || sync.defaults.length > 0;
-    const drop = declares && untouched ? sync.unread.filter((n) => r.some((x) => x.name.trim() === n && untouched(x))) : [];
-    return { sync, declares, drop, unread: sync.unread.filter((n) => !drop.includes(n)) };
+    const drop = declares && untouched ? r.filter((x) => sync.unread.includes(x.name.trim()) && untouched(x)) : [];
+    const unread = sync.unread.filter((n) => !drop.some((x) => x.name.trim() === n));
+    return { sync, declares, drop, unread, fits: r.length - drop.length + sync.add.length <= MAX_PROPERTIES };
   };
-  const { sync, declares, drop, unread } = plan(rows);
-  if (!declares && !sync.manual.length && !unread.length) return null;
+  const { sync, declares, drop, unread, fits } = plan(rows);
+  if (sync.ambiguous || (!declares && !sync.manual.length && !sync.invalid.length && !unread.length)) return null;
   const labelOf = (name: string) => `“${String(rows.find((x) => x.name.trim() === name)?.schema.label || name)}”`;
   const said: string[] = [];
   if (sync.add.length) said.push(`The code takes ${joined(sync.add.map((a) => a.name))}, which ${sync.add.length === 1 ? 'is not a property' : 'are not properties'}.`);
   if (sync.defaults.length === 1) said.push(`It writes ${quoted(sync.defaults[0].value)} as the default for ${labelOf(sync.defaults[0].name)}, which has ${sync.defaults[0].was === undefined ? 'none' : quoted(sync.defaults[0].was)}.`);
   else if (sync.defaults.length) said.push(`It writes other defaults for ${joined(sync.defaults.map((d) => labelOf(d.name)))}.`);
-  if (drop.length) said.push(`Declaring removes ${joined(drop.map(labelOf))}, which it never reads.`);
-  if (sync.manual.length) said.push(`Declare ${joined(sync.manual)} by hand: ${sync.manual.length === 1 ? 'its default is' : 'their defaults are'} not text, a number or on/off.`);
+  if (drop.length) said.push(`Declaring removes ${joined(drop.map((x) => labelOf(x.name.trim())))}, which it never reads.`);
+  if (declares && !fits) said.push(`That would make more than ${MAX_PROPERTIES} properties, the most a component can have: take fewer props in the code first.`);
+  if (sync.manual.length) said.push(`Declare ${joined(sync.manual)} by hand: no property declared from ${sync.manual.length === 1 ? 'its default' : 'their defaults'} would hand the code ${sync.manual.length === 1 ? 'it' : 'them'} as written.`);
+  if (sync.invalid.length) said.push(`Rename ${joined(sync.invalid)} in the code: a property can’t have that code name.`);
   if (unread.length) said.push(`It never reads ${joined(unread.map(labelOf))}${stored ? ': removing a property clears what placements set in it' : ''}.`);
   return (
     <div className="scope-note code-props-sync" role="status">
@@ -773,22 +789,27 @@ function CodePropsNote({ rows, taken, disabled, onRows, untouched, stored }: {
       {declares && (
         <button
           className="btn btn-sm"
-          disabled={disabled}
+          disabled={disabled || !fits}
           onClick={() =>
             onRows((r) => {
               const now = plan(r);
-              return declareFromCode(r, now.sync, now.drop);
+              return now.sync.ambiguous || !now.fits ? r : declareFromCode(r, now.sync, now.drop.map((x) => x.key));
             })
           }
         >
           Declare from code
         </button>
       )}
-      {unread.length > 0 && (
-        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => removeProperties(r, plan(r).unread))}>
-          {unread.length === 1 ? `Remove ${labelOf(unread[0])}` : `Remove ${unread.length} unread`}
-        </button>
-      )}
+      {unread.length > 0 &&
+        (stored ? (
+          <button className="btn btn-sm" onClick={onReview}>
+            Review properties
+          </button>
+        ) : (
+          <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => removeProperties(r, plan(r).unread))}>
+            {unread.length === 1 ? `Remove ${labelOf(unread[0])}` : `Remove ${unread.length} unread`}
+          </button>
+        ))}
     </div>
   );
 }
@@ -886,7 +907,7 @@ export function NewCodeComponentModal() {
   const [liveLine, setLiveLine] = useState<number | undefined>();
   const [liveChecking, setLiveChecking] = useState(true);
   const [checkedOk, setCheckedOk] = useState(false);
-  const [taken, setTaken] = useState<CodePropsTaken | null>(null);
+  const [taken, setTaken] = useState<{ source: string; props: CodePropsTaken | null } | null>(null);
   const alive = useAlive();
   const tabNow = useRef(tab);
   tabNow.current = tab;
@@ -1053,7 +1074,7 @@ export function NewCodeComponentModal() {
                   saveHint={saveHint}
                   onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                   onChecking={setLiveChecking}
-                  onProps={setTaken}
+                  onProps={(props, checked) => setTaken({ source: checked, props })}
                   problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
                   manifest={manifest}
                   handle={editor}
@@ -1080,19 +1101,18 @@ export function NewCodeComponentModal() {
             }
           ]}
         />
-        {!liveChecking && (
-          <CodePropsNote
+        <CodePropsNote
             rows={rows}
-            taken={taken}
+            taken={taken?.source === source ? taken.props : null}
             disabled={saving}
             untouched={starterUntouched}
+            onReview={() => setTab('manifest')}
             onRows={(edit) => {
               setRows(edit);
               setErrors((e) => (e.length ? [] : e));
               setTab('manifest');
             }}
           />
-        )}
         <SaveProblems problems={errors} onGoTo={goToLine} focusRef={problemsList} heading="Not created" />
         <span className="sr-only" role="status">
           {refusal(errors, 'Not created')}

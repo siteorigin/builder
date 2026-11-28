@@ -2,6 +2,7 @@ import type { PropSchema } from '@shared/types';
 import type { CodePropsTaken } from '@shared/api';
 import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { checkPropName } from '@engine/schema';
+import { DEFAULT_TEXT_MAX } from '@engine/values';
 
 /** Text as a valid code name, or null when it makes none: "Hero Title" becomes heroTitle. */
 export function toCodeName(text: string): string | null {
@@ -284,44 +285,56 @@ export interface CodePropsSync {
   /** Properties whose default is not the one the code writes for them, with the default they have and the code's. */
   defaults: Array<{ name: string; was: unknown; value: string | number | boolean }>;
   /**
-   * Props the code takes that no property declares, whose default is not text, a number or on/off (a list, an object,
-   * a value it works out): a property of the wrong type would hand it something else, so they are declared by hand.
+   * Props the code takes that no property declares, whose default no property declared from it would hand the code
+   * as it is (a list, an object, null, a value it works out, text too long for a default): declared by hand.
    */
   manual: string[];
+  /** Props the code takes under a name no property can have, which the code has to take under another. */
+  invalid: string[];
   /** Properties the code never takes, by code name. */
   unread: string[];
+  /** Two rows share a code name: nothing is worked out until that is fixed, as which one the code reads is unclear. */
+  ambiguous: boolean;
 }
+
+/** The most properties a component can have (engine/schema.ts normalizeProperties). */
+export const MAX_PROPERTIES = 60;
 
 /** A label for a code name: `monthlyPrice` reads "Monthly price". */
 export function labelFromCodeName(name: string): string {
   const words = name
-    .replace(/[_-]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .trim()
     .toLowerCase();
-  return words ? words[0].toUpperCase() + words.slice(1) : name;
+  return words[0].toUpperCase() + words.slice(1);
 }
 
 const isPrimitive = (v: unknown): v is string | number | boolean => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)) || typeof v === 'boolean';
 
-/** Whether a property of its type takes `value` as its default as it is: the same kind, and a number in its range. */
+/**
+ * Whether a property takes `value` as its default as it is: the same kind, a number in its range, and text within
+ * its length that a required property is not left empty by, on one line unless it is multiline.
+ */
 function takesDefault(schema: Record<string, unknown>, value: string | number | boolean): boolean {
   if (schema.type !== typeof value) return false;
-  if (typeof value !== 'number') return true;
-  return !(typeof schema.min === 'number' && value < schema.min) && !(typeof schema.max === 'number' && value > schema.max);
+  if (typeof value === 'number') return !(typeof schema.min === 'number' && value < schema.min) && !(typeof schema.max === 'number' && value > schema.max);
+  if (typeof value !== 'string') return true;
+  const max = typeof schema.maxLength === 'number' ? schema.maxLength : DEFAULT_TEXT_MAX;
+  return value.length <= max && !(schema.required && !value.trim()) && (!!schema.multiline || !/[\r\n]/.test(value));
 }
 
 /**
  * What declaring a component's properties from its code would change: a property for each prop the code takes that
  * none declares, typed from the default the code writes (text, number, on/off; text when it writes none), and the
- * default of each property whose code writes another its type takes. Props whose default is some other value are left
- * to declare by hand. The properties the code never takes are listed, though none while the code hands its props on,
- * as a property may be read where the check cannot follow.
+ * default of each property whose code writes another it takes as it is. Props whose default is some other value are
+ * left to declare by hand. The properties the code never takes are listed, though none while the code hands its props
+ * on, as a property may be read where the check cannot follow.
  */
 export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePropsSync {
+  const out: CodePropsSync = { add: [], defaults: [], manual: [], invalid: [], unread: [], ambiguous: false };
+  const names = rows.map((r) => r.name.trim());
+  if (new Set(names).size !== names.length) return { ...out, ambiguous: true };
   const byName = new Map(rows.map((r) => [r.name.trim(), r]));
-  const out: CodePropsSync = { add: [], defaults: [], manual: [], unread: [] };
   for (const { name, default: written, computed } of taken.props) {
     const value = written?.value;
     const row = byName.get(name);
@@ -332,26 +345,26 @@ export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePro
     try {
       checkPropName(name);
     } catch {
-      // A name no property can have: the check still says the code reads it.
+      out.invalid.push(name);
       continue;
     }
-    // No default, or none in particular (null), reads as text.
-    if (isPrimitive(value)) out.add.push({ name, schema: { type: typeof value, label: labelFromCodeName(name), default: value } });
-    else if (!computed && (value === undefined || value === null)) out.add.push({ name, schema: { type: 'string', label: labelFromCodeName(name), default: '' } });
-    else out.manual.push(name);
+    const schema: Record<string, unknown> = { type: isPrimitive(value) ? typeof value : 'string', label: labelFromCodeName(name), default: isPrimitive(value) ? value : '' };
+    if (typeof value === 'string' && /[\r\n]/.test(value)) schema.multiline = true;
+    if ((written || computed) && !(isPrimitive(value) && takesDefault(schema, value))) out.manual.push(name);
+    else out.add.push({ name, schema });
   }
   const reads = new Set([...taken.props.map((p) => p.name), ...taken.axes]);
-  if (!taken.handed) out.unread = rows.map((r) => r.name.trim()).filter((n) => n && !reads.has(n));
+  if (!taken.handed) out.unread = names.filter((n) => n && !reads.has(n));
   return out;
 }
 
 /**
  * Declare from the code what `sync` found: the defaults it writes, then the properties it adds after those there
- * are. `drop` names properties to take out at the same time (a new component's starter properties, never edited).
+ * are. `drop` holds the keys of rows to take out at the same time (a new component's starter properties, never edited).
  */
 export function declareFromCode(rows: SchemaRow[], sync: CodePropsSync, drop: string[] = []): SchemaRow[] {
   const defaults = new Map(sync.defaults.map((d) => [d.name, d.value]));
-  const next = removeProperties(rows, drop).map((r) => (defaults.has(r.name.trim()) ? { ...r, schema: { ...r.schema, default: defaults.get(r.name.trim()) } } : r));
+  const next = rows.filter((r) => !drop.includes(r.key)).map((r) => (defaults.has(r.name.trim()) ? { ...r, schema: { ...r.schema, default: defaults.get(r.name.trim()) } } : r));
   return [...next, ...sync.add.map((a): SchemaRow => ({ key: rowKey(), name: a.name, schema: structuredClone(a.schema) }))];
 }
 
