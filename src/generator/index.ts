@@ -80,7 +80,7 @@ import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@shared/icons';
-import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, HISTORY_SCROLL_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
+import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, HISTORY_SCROLL_JS, IMAGE_SVELTE, SEARCH_HISTORY_JS, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
@@ -4491,7 +4491,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { page } from '$app/state';
 	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
-	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';${appearImport}${searchImport}${toggleImport}
+	import { keepHistoryScroll } from '../lib/siteorigin/runtime/history-scroll.js';
+	import { keepSearches } from '../lib/siteorigin/runtime/search-history.js';${appearImport}${searchImport}${toggleImport}
 	import { ${multilingual ? 'speak, ' : ''}visitorText, visitorTextLang } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -4502,7 +4503,9 @@ ${imports}${languages}${devBridge}
 	// they left while it was sending went.
 	keepDrafts(text);
 	// Back and Forward put the page back where the visitor left it at once, even with a theme's smooth scrolling.
-	keepHistoryScroll();${appearStart}${searchStart}
+	keepHistoryScroll();
+	// A search comes back with Back as the visitor left it, its results ready to open another.
+	keepSearches();${appearStart}${searchStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
@@ -5390,6 +5393,7 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   put(`${RUNTIME_DIR}/util.js`, () => UTIL_JS);
   put(`${RUNTIME_DIR}/drafts.js`, () => DRAFTS_JS);
   put(`${RUNTIME_DIR}/history-scroll.js`, () => HISTORY_SCROLL_JS);
+  put(`${RUNTIME_DIR}/search-history.js`, () => SEARCH_HISTORY_JS);
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
   // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
   // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.

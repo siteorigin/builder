@@ -1168,6 +1168,55 @@ export function keepDrafts(text) {
 `;
 
 /**
+ * Brings each Site search back on Back and Forward as the visitor left it in that history entry (#1436). The root
+ * layout calls keepSearches once; each search on the page hands rememberSearch its box when it mounts.
+ */
+export const SEARCH_HISTORY_JS = `/**
+ * Back and Forward bring every search on the page back as the visitor left it there: the words in its box and the
+ * results of its last search, ready to open another one. SvelteKit's snapshot() holds them for each history entry,
+ * in memory and in the tab's session storage, never in the address.
+ *
+ * One snapshot serves the whole site, from the root layout: the searches showing are told apart by their order on the
+ * page, which is the same each time an entry is shown, so a search in the header and one in the page each get their
+ * own back. The layout mounts after the searches inside it, so on a fresh load every one of them is here to restore.
+ */
+import { snapshot } from '$app/navigation';
+
+// The searches on screen, by the box each one searches from.
+const searches = new Map();
+
+/** The searches on screen, in their order on the page. */
+function inOrder() {
+	return [...searches]
+		.filter(([box]) => box.isConnected)
+		.sort(([a], [b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+		.map(([, search]) => search);
+}
+
+/** Called once, from the root layout. */
+export function keepSearches() {
+	snapshot({
+		id: 'siteorigin-searches',
+		capture: () => inOrder().map((search) => search.capture()),
+		restore: (kept) => {
+			if (!Array.isArray(kept)) return;
+			inOrder().forEach((search, at) => {
+				if (kept[at]) search.restore(kept[at]);
+			});
+		}
+	});
+}
+
+/** A search on screen, from its box: what it keeps for the entry, and how it takes that back. Returns its removal. */
+export function rememberSearch(box, search) {
+	searches.set(box, search);
+	return () => {
+		if (searches.get(box) === search) searches.delete(box);
+	};
+}
+`;
+
+/**
  * Puts the page back where the visitor left it at once on Back and Forward (#1542). The root layout calls it once.
  */
 export const HISTORY_SCROLL_JS = `/**
