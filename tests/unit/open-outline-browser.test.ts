@@ -281,6 +281,14 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(async () => (await card().count()) ? await card().first().textContent() : '').toContain('Starting preview');
     await so('status', { runtime: { state: 'error', message: 'The preview server failed to start.' }, outlined: true, slow: false });
     await expect.poll(async () => (await card().count()) ? await card().first().textContent() : '').toContain('The preview couldn’t start');
+    // A preview that cannot run from the project's folder (#1366) says why, and the project it is in is still edited.
+    const why = 'The preview can’t run from this project’s location, because the folder “Client #47” has “#” in its name.';
+    await so('status', { runtime: { state: 'unavailable', message: why }, outlined: false, slow: false });
+    await expect.poll(async () => (await card().count()) ? await card().first().textContent() : '').toContain(why);
+    const text = await card().first().textContent();
+    expect(text).toContain('Preview unavailable');
+    expect(text).toContain('You can keep editing in Layers and the Inspector.');
+    expect(text).not.toContain('look through it');
   });
 
   it('times a start as slow 15 seconds after it began, afresh for each wait', async () => {

@@ -9,7 +9,7 @@ import { newId } from '@shared/ids';
 import { FONT_FILE_RE } from '@shared/fonts';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
-import { COPY_EXTENSIONS, copyMime, isCopyMime, type CopyMime } from '@shared/picture-formats';
+import { COPY_EXTENSIONS, copyMime, isCopyMime, overPixelLimit, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
 import { countMediaRead, perf } from '../perf';
 import { readRegularFile } from '../packs/files';
@@ -50,6 +50,9 @@ export const IMPORT_IMAGE_EXTENSIONS = [...IMAGE_EXTENSIONS, ...PHOTO_EXTENSIONS
 export const LARGE_PHOTO_BYTES = 1_500_000;
 /** The largest photo the importer reads to make a web-sized copy of; what it stores is still held to MAX_BYTES. */
 const CONVERT_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Why a picture over the decode cap (MAX_VARIANT_PIXELS) is not added, as the end of "{file} was not imported because …". */
+const TOO_MANY_PIXELS = 'it is over 100 megapixels, too large to make web-sized copies of. Save a smaller copy of it in an image editor, then add that.';
 
 const isPhotoToConvert = (path: string) => PHOTO_EXTENSIONS.includes(extname(path).slice(1).toLowerCase());
 export { DOCUMENT_EXTENSIONS };
@@ -282,7 +285,8 @@ type Classified =
  */
 function classify(sourcePath: string, buf: Buffer, converter: boolean): Classified {
   const name = basename(sourcePath);
-  const tooLarge = { kind: 'refuse' as const, reason: 'it is over 100 megapixels, too large to resize here. Export a smaller JPEG copy of it, then add that.' };
+  const tooLarge = { kind: 'refuse' as const, reason: TOO_MANY_PIXELS };
+  const over = (info: ReturnType<typeof imageInfo>, mime: string) => !!info && overPixelLimit(mime, info.width, info.height);
   if (buf.length > CONVERT_MAX_BYTES) return { kind: 'refuse', reason: `${name} is larger than 64 MB.`, whole: true };
   if (isPhotoToConvert(sourcePath)) {
     const type = photoType(buf);
@@ -292,6 +296,7 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
       const problem = imageProblem(buf, type.stored);
       // Its name never said what it holds, so a picture that can't be read is only called damaged.
       if (problem) return { kind: 'refuse', reason: unusableReason(problem === 'unreadable' ? 'damaged' : problem, type.stored) };
+      if (over(imageInfo(buf, type.stored), type.stored)) return tooLarge;
       return { kind: 'stored', mime: type.stored, ext: type.ext, info: null, offer: false };
     }
     const problem = imageProblem(buf, 'image/heic');
@@ -299,7 +304,7 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
     if (problem) return { kind: 'refuse', reason: 'it is damaged: its picture data cannot be read. Open the original in Photos or Preview and export a new copy as JPEG.' };
     if (!converter) return { kind: 'refuse', reason: noConverterReason() };
     const info = imageInfo(buf, 'image/heic');
-    if (info && info.width * info.height > MAX_VARIANT_PIXELS) return tooLarge;
+    if (over(info, 'image/heic')) return tooLarge;
     return { kind: 'heic', info };
   }
   const ext = extname(sourcePath).toLowerCase();
@@ -307,7 +312,8 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
   const problem = imageProblem(buf, mime);
   if (problem) return { kind: 'refuse', reason: unusableReason(problem, mime) };
   const info = imageInfo(buf, mime);
-  if (info && info.width * info.height > MAX_VARIANT_PIXELS) return buf.length > MAX_BYTES ? tooLarge : { kind: 'stored', mime, ext, info, offer: false };
+  // No copy of it can be made, so the library never takes it: a site would send every visitor all of its pixels (#1444).
+  if (over(info, mime)) return tooLarge;
   // A resized animation would be one still frame.
   const offer = !!info && !(mime === 'image/png' && isAnimatedPng(buf));
   return { kind: 'stored', mime, ext, info, offer };
@@ -517,8 +523,9 @@ async function planStore(p: PreparedFile, refuse: Refusal, later = false): Promi
   const isFont = kind === 'font';
   const info = isFont ? null : imageInfo(p.buf, p.mime);
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
-  // and keep only the original.
-  const decodable = !!info && p.mime !== 'image/svg+xml' && info.width * info.height <= MAX_VARIANT_PIXELS;
+  // and keep only the original. A file the author chose is refused before this (refuseOverPixelLimit); one a sync or
+  // a package brings is kept, for Project health to name, rather than hold up everything else it brings.
+  const decodable = !!info && p.mime !== 'image/svg+xml' && !overPixelLimit(p.mime, info.width, info.height);
   // Copies made later are made of a picture that is first proved to decode, unless this app just made it.
   const pending = later && decodable && isCopyMime(p.mime);
   const pixels = info ? checkPixels(p.buf, p.mime, info) : 0;
@@ -613,9 +620,19 @@ export async function restoreFontFile(projectDir: string, record: AssetRecord, b
 /** The library record already holding a prepared file's bytes. The same bytes under another format's name (a .txt and a .csv) are a file of their own. */
 const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) => a.hash === p.hash && a.mime === p.mime);
 
+/**
+ * Refuse a picture the author chose that no copy can be made of: stored, it would be sent whole to every visitor,
+ * however small its file (#1444).
+ */
+function refuseOverPixelLimit(p: PreparedFile, refuse: Refusal): void {
+  const info = kindOfMime(p.mime) === 'image' ? imageInfo(p.buf, p.mime) : null;
+  if (info && overPixelLimit(p.mime, info.width, info.height)) throw refuse(TOO_MANY_PIXELS);
+}
+
 /** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
 async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const kind = kindOfMime(p.mime);
+  refuseOverPixelLimit(p, refuse);
   const { stored, files, copiesPending } = await planStore(p, refuse, !!opts.copiesLater);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
@@ -897,6 +914,7 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
   if (!document && !isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
   const p = await prepareFile(sourcePath, refuse);
   if (p.hash === record.hash && p.mime === record.mime) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
+  refuseOverPixelLimit(p, refuse);
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, library)))) throw refuse(`${NOT_WRITTEN}.`);
   return { same: false, stored: { ...stored, originalName: originalNameOf(sourcePath) } };

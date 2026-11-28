@@ -12,7 +12,8 @@ import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameL
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
-import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { formNameClashMessage, pixelLimitMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
+import { overPixelLimit } from '@shared/picture-formats';
 import { assetUsages } from '@engine/apply';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
@@ -20,7 +21,7 @@ import { blankPages, describeDraftLink, draftTarget, emptySections, netlifyFormC
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
@@ -91,7 +92,7 @@ import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName, missingFiles } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
-import type { ExportNote, MissingAssetFiles } from '@shared/api';
+import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
@@ -740,6 +741,21 @@ export function missingSourceWarnings(state: ProjectState, missing: MissingAsset
     const a = state.assets.assets[m.assetId];
     return `${libraryName(a)} is missing ${missingFiles(a, m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
   });
+}
+
+/**
+ * The notes on library images the website ships that are heavy for its pages: one too large to make copies of (which
+ * goes out whole, however small its file, #1444), or else a large file. `omitted` were left out of the website and
+ * `absent` (asset ids) have no original in the project, so neither ships.
+ */
+export function assetSizeWarnings(state: ProjectState, omitted: readonly AssetRecord[], absent: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const a of Object.values(state.assets.assets)) {
+    if (omitted.includes(a) || absent.has(a.id)) continue;
+    if (a.kind === 'image' && overPixelLimit(a.mime, a.width, a.height)) out.push(pixelLimitMessage(a));
+    else if (a.bytes > 1_500_000) out.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+  }
+  return out;
 }
 
 /**
@@ -1645,9 +1661,10 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
 }
 
 /**
- * Why the exported site has no canonical links, social image URLs or sitemap (nor an RSS feed, when it publishes
- * posts): no public URL is set, or the one saved can't be used (saved by hand or by an earlier version). Null when the
- * site has a public URL it was built from.
+ * Why the exported site has no canonical links, social image URLs or sitemap (nor the links that tell search engines
+ * about each page's translations, when pages are linked as translations, nor an RSS feed, when it publishes posts): no
+ * public URL is set, or the one saved can't be used (saved by hand or by an earlier version). Null when the site has a
+ * public URL it was built from.
  */
 export function publicUrlWarning(state: ProjectState): string | null {
   // A value of another kind (a number written by hand) is a URL that can't be used, not a missing one.
@@ -1655,8 +1672,12 @@ export function publicUrlWarning(state: ProjectState): string | null {
   const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
   const check = checkPublicUrl(saved);
   if (check.ok && check.url) return null;
-  // A feed reader needs each post's full address, so a site that publishes posts loses its feed too.
-  const omitted = hasFeedEntries(state) ? 'canonical links, social image URLs, the sitemap and the RSS feed' : 'canonical links, social image URLs and the sitemap';
+  // Search engines read a page's translations only at full addresses, and a feed reader needs each post's, so a site
+  // with translated pages loses those links and a site that publishes posts loses its feed.
+  const live = publishedState(state);
+  const translated = live.site.pageOrder.some((id) => live.pages[id] && pageAlternates(live, live.pages[id]).length > 0);
+  const parts = ['canonical links', 'social image URLs', ...(translated ? ['search-engine links between translations'] : []), 'the sitemap', ...(hasFeedEntries(state) ? ['the RSS feed'] : [])];
+  const omitted = `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   if (!check.ok) return `The public site URL “${saved}” can’t be used, so ${omitted} were omitted. ${check.message} Correct the Public URL in Site styles › Site details.`;
   // Optional: a site handed over without a domain of its own is still a whole website.
   return `No public site URL is set, so ${omitted} were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.`;
@@ -1809,7 +1830,7 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
   const place = file ? `${file}${line ? `, line ${line}` : ''}` : '';
   // A project component is named as the author knows it; its file is how a developer finds it.
   const at = component ? `the “${component}” component (${place})` : place;
-  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : 'The production build failed.';
+  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : BUILD_FAILED_UNPLACED;
   const warnings = [...read.causes];
   if (at && (page || route)) warnings.push(`The build was working in ${at}.`);
   if (!warnings.length) warnings.push('The build did not say what went wrong. The technical details list everything it printed.');
