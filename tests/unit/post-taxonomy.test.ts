@@ -4,7 +4,8 @@
  * in one change, and deleted from every post it was on, refused while a list of posts chooses it.
  */
 import { describe, expect, it } from 'vitest';
-import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
+import { queryEntries } from '@shared/collection-query';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -16,6 +17,8 @@ import { archivePages } from '@shared/archives';
 import { codeEntryQueries, entryQuery, entryRows } from '@shared/entry-feed';
 import { defFile, publishedState } from '@generator/index';
 import { toolDefinitions } from '@agent/tools';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const result = (s: ProjectState, op: EditOperation) => applyOperations(s, [op]).results[0] as Record<string, unknown>;
@@ -240,6 +243,94 @@ describe('renaming a term', () => {
     // Filed under the old ID first, the post moves with the rest.
     const t = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_wheel', terms: { categories: ['news'] } }, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' });
     expect(t.collections.posts.entries.en_wheel.terms.categories).toEqual(['studio-updates']);
+  });
+
+  /** A collection loop on Home over the posts `where` keeps, and the IDs of the posts it lists. */
+  const withLoop = (s: ProjectState, where: Array<Record<string, unknown>>) => {
+    const r = applyOperations(s, [{ type: 'node.insert', owner: page(s.site.homePageId), parentId: null, primitive: 'repeat', query: { collectionId: 'posts', where } }]);
+    return { s: r.state, loop: r.results[0].nodeId as string };
+  };
+  const loopQuery = (s: ProjectState, loop: string) => (s.pages[s.site.homePageId].nodes[loop] as RepeatNode).list as { $query: { where: Array<{ value: unknown }> } };
+  const loopLists = (s: ProjectState, loop: string) => queryEntries(s, loopQuery(s, loop).$query).map((e) => e.id).sort();
+
+  it('a collection loop filtering by the term follows it (#1523)', () => {
+    const { s, loop } = withLoop(blog(), [{ field: 'categories', op: 'eq', value: 'news' }]);
+    const before = loopLists(s, loop);
+    expect(before).toEqual(['en_glaze', 'en_kiln']);
+    const r = applyOperations(s, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(r.results[0]).toMatchObject({ termId: 'studio-updates', feeds: 1 });
+    expect(loopQuery(r.state, loop).$query.where[0].value).toBe('studio-updates');
+    expect(loopLists(r.state, loop)).toEqual(before);
+  });
+
+  it('a loop naming the term by its label, among others, follows it and keeps the others (#1523)', () => {
+    const { s, loop } = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['NEWS', 'craft'] }]);
+    const before = loopLists(s, loop);
+    const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' });
+    expect(loopQuery(after, loop).$query.where[0].value).toEqual(['studio-updates', 'craft']);
+    expect(loopLists(after, loop)).toEqual(before);
+    // A loop filtering by a tag is left alone by a category's rename, and follows its own tag.
+    const tagged = withLoop(after, [{ field: 'terms.tags', op: 'ne', value: 'Glaze' }]);
+    const renamed = run(tagged.s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'tags', termId: 'glaze', label: 'Glazes' });
+    expect(loopQuery(renamed, tagged.loop).$query.where[0].value).toBe('glazes');
+    expect(loopLists(renamed, tagged.loop)).toEqual(loopLists(tagged.s, tagged.loop));
+  });
+
+  it('a loop filtering by the term keeps listing it when only its name changes (#1523)', () => {
+    const named = run(blog(), { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio news', newTermId: 'news' });
+    const { s, loop } = withLoop(named, [{ field: 'categories', op: 'eq', value: 'Studio news' }]);
+    const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Latest news', newTermId: 'news' });
+    expect(loopQuery(after, loop).$query.where[0].value).toBe('news');
+    expect(loopLists(after, loop)).toEqual(['en_glaze', 'en_kiln']);
+  });
+
+  it('a loop in the posts layout, reading its own collection, follows the term however it spells the grouping (#1523)', () => {
+    const owner: OwnerRef = { kind: 'template', id: 'posts' };
+    const r = applyOperations(blog(), [{ type: 'node.insert', owner, parentId: null, primitive: 'repeat', query: { collectionId: '$current', where: [{ field: 'terms.categories', op: 'in', value: [' NEWS ', 'craft'] }] } }]);
+    const loop = r.results[0].nodeId as string;
+    const query = (s: ProjectState) => ((s.collections.posts.settings.template.nodes[loop] as RepeatNode).list as { $query: { where: Array<{ value: unknown }> } }).$query;
+    const renamed = applyOperations(r.state, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(renamed.results[0]).toMatchObject({ feeds: 1 });
+    expect(query(renamed.state).where[0].value).toEqual(['studio-updates', 'craft']);
+  });
+
+  it('a list connected to the posts, filtering by the term, follows it (#1523)', () => {
+    const s = structuredClone(blog());
+    const def = projectDesign(s, {
+      componentId: 'project.titles',
+      name: 'Titles',
+      properties: { items: P.list('Items', 'Item', { name: P.str('Name', 'Name') }, [{ name: 'Sample' }]) },
+      parts: { root: { nodeId: 'root', label: 'Titles' } },
+      build: (b) => b.el('root', 'ul', { name: 'Titles' }, [])
+    });
+    const owner = page(s.site.homePageId);
+    const ins = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, definitionId: def.id }]);
+    const id = ins.results[0].nodeId as string;
+    const linked = run(ins.state, { type: 'instance.setListSource', owner, nodeId: id, prop: 'items', source: { query: { collectionId: 'posts', where: [{ field: 'categories', op: 'eq', value: 'News' }] }, fields: { name: 'title' } } });
+    const r = applyOperations(linked, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(r.results[0]).toMatchObject({ feeds: 1 });
+    const query = (r.state.pages[r.state.site.homePageId].nodes[id] as InstanceNode).listSources!.items.query as { where: Array<{ value: unknown }> };
+    expect(query.where[0].value).toBe('studio-updates');
+  });
+
+  it('a loop keeps the term it names when a rename gives another term its words (#1523)', () => {
+    // “updates” names Craft by its name, until News is renamed to the ID "updates".
+    const s0 = run(blog(), { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'craft', label: 'Updates', newTermId: 'craft' });
+    const { s, loop } = withLoop(s0, [{ field: 'categories', op: 'eq', value: 'updates' }]);
+    const before = loopLists(s, loop);
+    expect(before).toEqual(['en_glaze', 'en_wheel']);
+    const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Latest', newTermId: 'updates' });
+    expect(loopQuery(after, loop).$query.where[0].value).toBe('craft');
+    expect(loopLists(after, loop)).toEqual(before);
+    // Words that named no term would come to name the renamed one, and the list would grow: refused.
+    const dangling = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['craft', 'Late News'] }]);
+    expect(refused(dangling.s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'late news', newTermId: 'late' })).toMatch(/“Repeated items” in Home filters by “Late News”, which names no categories term now and would name “late news”/);
+    // Beside words that already name the renamed term, they list nothing more: the rename goes ahead.
+    const redundant = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['news', ' News ', 'later'] }]);
+    const kept = applyOperations(redundant.s, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Later' }]);
+    expect(kept.results[0]).toMatchObject({ termId: 'later', feeds: 1 });
+    expect(loopQuery(kept.state, redundant.loop).$query.where[0].value).toEqual(['later', 'later', 'later']);
+    expect(loopLists(kept.state, redundant.loop)).toEqual(loopLists(redundant.s, redundant.loop));
   });
 });
 
