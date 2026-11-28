@@ -55,7 +55,7 @@ import { loopText, redirectSourceProblem, redirectTargetProblem, resolveRedirect
 import { publishedPageAt, wasPublishedFor, withDroppedAddress } from '@shared/published';
 import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
-import { POSTS_PRESET_NAME, archiveAddressesInUse, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
+import { POSTS_PRESET_NAME, archivesAtStartOf, collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type ArchivesAtStart, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -191,7 +191,7 @@ export interface ApplyContext {
    * out the first time a collection moves: a collection that moves keeps only these old addresses working, not ones it
    * passed through in the batch. A collection removed in the batch takes its own out. applyOperations fills it.
    */
-  archivesAtStart?: () => Set<string>;
+  archivesAtStart?: ArchivesAtStart;
   /**
    * A sync of an external source (see engine/sources.ts), which only the main process's sync gives: never an edit,
    * never the assistant. The batch's entry operations may write that one synced collection's entries.
@@ -1070,7 +1070,9 @@ function redirectUpdate(state: ProjectState, op: Op<'redirect.update'>): OpResul
   const i = kept ? state.site.redirects!.length - 1 : namedRedirect(state, op.from);
   const was = state.site.redirects![i];
   const target = redirectTarget(state, op, was.from);
-  state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target } as SiteRedirect;
+  // Saved with the destination it had, one a collection's move kept stays the collection's (see SiteRedirect.archiveOf).
+  const archiveOf = was.archiveOf !== undefined && target.to !== undefined && target.to === was.to ? { archiveOf: was.archiveOf } : {};
+  state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target, ...archiveOf } as SiteRedirect;
   // Sent somewhere else, it never goes back to the page an export delivered it for, should this redirect go later.
   if (target.pageId === undefined || target.pageId !== publishedPageAt(state, was.from)) dropAddress(state, was.from);
   refuseRedirectLoop(state, was.from);
@@ -4394,7 +4396,7 @@ export function walkChecks(state: ProjectState, given: EditOperation[], checks: 
   const open = new Set(checks.keys());
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? lazyArchives(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? archivesAtStartOf(state) };
   for (const [i, op] of ops.entries()) {
     for (const c of [...open]) {
       const reason = checks[c](draft ?? state, op);
@@ -4416,12 +4418,6 @@ export function walkChecks(state: ProjectState, given: EditOperation[], checks: 
   return reasons;
 }
 
-/** The archive addresses `state` has, worked out the first time they are asked for (see ApplyContext.archivesAtStart). */
-function lazyArchives(state: ProjectState): () => Set<string> {
-  let keys: Set<string> | undefined;
-  return () => (keys ??= archiveAddressesInUse(state));
-}
-
 /** The addresses in use in `state`, lowercased: its pages' routes and the old addresses it keeps working. */
 function addressesInUse(state: ProjectState): Set<string> {
   const out = new Set<string>(Object.values(state.pages).map((p) => p.route.toLowerCase()));
@@ -4437,7 +4433,7 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
   const working = draftOf(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? lazyArchives(state) };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)), archivesAtStart: ctx.archivesAtStart ?? archivesAtStartOf(state) };
   const span = ctx.span ?? (() => UNTIMED);
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.

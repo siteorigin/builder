@@ -277,8 +277,41 @@ describe('a collection that moves (#1548)', () => {
     expect(s.site.redirects).toContainEqual({ from: '/blog/page/2/', to: '/notes/page/2/', archiveOf: 'posts' });
     // Gone for now: nothing is there to send visitors to, and Project health says so.
     expect(liveRedirects(s).map((r) => r.from)).not.toContain('/blog/page/2/');
+    expect(validateState(s).filter((d) => d.code === 'REDIRECT_PATH_MISSING').map((d) => d.message)).toEqual([expect.stringContaining('/blog/page/2/ sends visitors to /notes/page/2/')]);
     s = run(s, { type: 'collection.update', collectionId: 'posts', pageSize: 2 });
     expect(Object.fromEntries(liveRedirects(s).map((r) => [r.from, r.to]))['/blog/page/2/']).toBe('/notes/page/2/');
+  });
+
+  it('sends the old addresses on when the collection moves with its archive off, and keeps them when saved as they are', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/notes/', pages: { detail: true, archive: false } });
+    s = run(s, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: true } });
+    expect(s.site.redirects).toContainEqual({ from: '/blog/', to: '/notes/', archiveOf: 'posts' });
+    // Saved again with the same destination in Redirects, it is still the collection's: moving back takes it back.
+    s = run(s, { type: 'redirect.update', from: '/blog/', to: '/notes/' });
+    expect(s.site.redirects).toContainEqual({ from: '/blog/', to: '/notes/', archiveOf: 'posts' });
+    const back = run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' });
+    expect(back.collections.posts.settings.route).toBe('/blog/');
+    expect((back.site.redirects ?? []).map((r) => r.from)).not.toContain('/blog/');
+    // Sent somewhere else, it is the author's.
+    expect(run(s, { type: 'redirect.update', from: '/blog/', to: '/about/' }).site.redirects).toContainEqual({ from: '/blog/', to: '/about/' });
+  });
+
+  it('gives a collection made again under a removed one’s ID in the same batch none of its old addresses', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 1 });
+    const t = run(
+      s,
+      { type: 'collection.remove', collectionId: 'posts' },
+      { type: 'collection.create', collectionId: 'posts', route: '/blog/' } as EditOperation,
+      { type: 'collection.update', collectionId: 'posts', route: '/journal/' }
+    );
+    expect((t.site.redirects ?? []).filter((r) => r.archiveOf)).toEqual([]);
+  });
+
+  it('keeps the collection’s mark on its old addresses in the website a draft is left out of, and refuses one too deep', () => {
+    const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_draft', title: 'Draft', body: ['Soon.'] } as EditOperation, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    expect(publishedState(s).site.redirects).toContainEqual({ from: '/blog/', to: '/journal/', archiveOf: 'posts' });
+    expect(() => run(s, { type: 'redirect.add', from: '/a/b/c/d/e/f/g/h/', to: '/journal/' })).toThrow(/at most 7 levels/);
   });
 
   it('keeps no old address for a page the moved archive no longer has, and none while the archive is turned off', () => {

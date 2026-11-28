@@ -67,8 +67,14 @@ export function redirectTargetProblem(to: string): string | null {
  * collection that moves keeps those working (#1548).
  */
 export function redirectSourceProblem(from: string): string | null {
-  return from === '/' ? 'The Home page address cannot send visitors elsewhere.' : redirectTargetProblem(from);
+  if (from === '/') return 'The Home page address cannot send visitors elsewhere.';
+  // The website keeps a page at each one, in a folder per part of it: never more parts than an archive page has.
+  if (from.slice(1, -1).split('/').length > MAX_SOURCE_DEPTH) return `An old address can be at most ${MAX_SOURCE_DEPTH} levels deep.`;
+  return redirectTargetProblem(from);
 }
+
+/** The most parts an old address has: a collection's at its deepest (three) and a category archive's later page under it (four more). */
+export const MAX_SOURCE_DEPTH = 7;
 
 /** Where a redirect leads, followed to the end. */
 type Outcome =

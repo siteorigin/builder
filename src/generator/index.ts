@@ -4911,7 +4911,7 @@ export function publishedState(state: ProjectState): ProjectState {
   // Each followed to where it ends, so one leading to a draft through other old addresses is left out with it, and kept
   // as leading straight there: what is left of a chain still arrives.
   const redirects = resolveRedirects(state, 'website').live.flatMap((r): SiteRedirect[] =>
-    r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : r.entry ? (unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]) : [{ from: r.from, to: r.to }]
+    r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : r.entry ? (unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]) : [{ from: r.from, to: r.to, ...(r.rule.archiveOf !== undefined ? { archiveOf: r.rule.archiveOf } : {}) }]
   );
   const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };
   if (redirects.length) site.redirects = redirects;

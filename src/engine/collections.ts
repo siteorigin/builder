@@ -253,6 +253,31 @@ export function archiveAddressesInUse(state: ProjectState): Set<string> {
   return out;
 }
 
+/** The batch's archive addresses at its start (see archiveAddressesInUse), worked out by `get`; `drop` takes a removed collection's out. */
+export interface ArchivesAtStart {
+  get(): ReadonlySet<string>;
+  drop(collectionId: string): void;
+}
+
+/** The archive addresses `state` has, worked out the first time they are asked for (see ArchivesAtStart). */
+export function archivesAtStartOf(state: ProjectState): ArchivesAtStart {
+  let keys: Set<string> | undefined;
+  const dropped = new Set<string>();
+  const drop = (set: Set<string>, id: string) => {
+    for (const key of [...set]) if (key.startsWith(archiveAddressKey(id, ''))) set.delete(key);
+  };
+  return {
+    get: () => {
+      if (!keys) {
+        keys = archiveAddressesInUse(state);
+        for (const id of dropped) drop(keys, id);
+      }
+      return keys;
+    },
+    drop: (id) => (keys ? drop(keys, id) : dropped.add(id))
+  };
+}
+
 /** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, or none for the index). */
 const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
 
@@ -264,7 +289,7 @@ const ARCHIVE_REST = /^(?:page\/\d+\/|category\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/
  * old addresses an earlier move kept are sent straight to the new one too, so they never lead through each other;
  * one whose page is gone for now goes to where the page would be, and works again when it is back.
  */
-function keepArchiveAddresses(state: ProjectState, collectionId: string, from: string, prefix: string, before: readonly ArchivePage[], atStart?: () => ReadonlySet<string>) {
+function keepArchiveAddresses(state: ProjectState, collectionId: string, from: string, prefix: string, before: readonly ArchivePage[], atStart?: ArchivesAtStart) {
   const after = new Set(
     archivePages(state)
       .filter((p) => p.collectionId === collectionId)
@@ -279,14 +304,14 @@ function keepArchiveAddresses(state: ProjectState, collectionId: string, from: s
     return to.toLowerCase() === r.from.toLowerCase() ? [] : [{ ...r, to }];
   });
   const holder = routeIndex({ ...state, site: { ...state.site, redirects: list } });
-  const visited = atStart?.();
+  const visited = before.length ? atStart?.get() : undefined;
   for (const p of before) {
     const to = archiveRoute(prefix, p.category, p.page);
     if (!after.has(to.toLowerCase()) || (visited && !visited.has(archiveAddressKey(collectionId, p.route)))) continue;
     if (after.has(p.route.toLowerCase()) || underArchiveFolder(prefix, p.route) || holder(p.route) || archiveRouteOwner(state, p.route, collectionId)) continue;
     list.push({ from: p.route, to, archiveOf: collectionId });
   }
-  setKeptAddresses(state, list);
+  if (list.length !== keptAddresses(state).length || list.some((r, i) => r !== keptAddresses(state)[i])) setKeptAddresses(state, list);
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +547,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
-export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>, archivesAtStart?: () => ReadonlySet<string>): OpResult {
+export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>, archivesAtStart?: ArchivesAtStart): OpResult {
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
   // A records layout nobody has edited keeps up with the collection: its fields, its text and its kind (see the end).
@@ -549,11 +574,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (pages.detail && route === undefined) fail(`The ${name} collection needs an address for its pages, such as "/${c.settings.id}/".`);
   // The collection's pages take every address they did not have: moved, or turned on.
   const moved = route !== was.route;
-  let keepArchive: (() => void) | undefined;
+  // Its archive pages as they are before the move, so their old addresses can be kept working after it (#1548).
+  const archivesBefore = moved && pages.detail && was.archive && pages.archive ? archivePages(state).filter((p) => p.collectionId === c.settings.id) : [];
   if (pages.detail && (moved || !was.detail || (pages.archive && !was.archive))) {
     const prefix = route!;
-    // Its archive pages as they are before the move, so their old addresses can be kept working after it (#1548).
-    const archivesBefore = moved && was.archive && pages.archive ? archivePages(state).filter((p) => p.collectionId === c.settings.id) : [];
     // An old address of its own archive kept at the new address, or inside its archive folders there, is taken back.
     if (pages.archive) releaseArchiveAddresses(state, c.settings.id, prefix);
     // The collection and every entry move together: each new address must be free of everything else, apart from
@@ -597,14 +621,16 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
       fail(`Moving the collection to ${prefix} would keep “${c.entries[stranded.entryId!].title}”'s address ${stranded.from} working inside ${prefix}${folder}/, which is kept for the collection's archive pages. Choose another address for the collection.`);
     }
     if (kept.length) setKeptAddresses(state, [...keptAddresses(state), ...kept]);
-    // Once the rest of the change is made, which can change what its archive has (its page size, its categories).
-    if (archivesBefore.length) keepArchive = () => keepArchiveAddresses(state, c.settings.id, was.route!, prefix, archivesBefore, archivesAtStart);
   } else {
     // Pages turned off, or an address kept for when they are on again: nothing new is claimed. Links to its entries
     // show their words alone meanwhile, as links to drafts do.
     if (route !== undefined) c.settings.route = route;
     if (op.pages !== undefined) c.settings.pages = pages;
   }
+  // Once the rest of the change is made, which can change what its archive has (its page size, its categories). The
+  // old addresses an earlier move kept follow it however it moves, its archive on or off.
+  const from = was.route;
+  const keepArchive = moved && from !== undefined && route !== undefined ? () => keepArchiveAddresses(state, c.settings.id, from, route, archivesBefore, archivesAtStart) : undefined;
   if (op.archiveTemplate !== undefined) {
     // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
     if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
@@ -668,7 +694,7 @@ function layoutReads(c: Collection): Set<string> {
   return out;
 }
 
-export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>, archivesAtStart?: () => Set<string>): OpResult {
+export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>, archivesAtStart?: ArchivesAtStart): OpResult {
   const c = getCollection(state, op.collectionId);
   // Its entries are the source's: it is detached first, so a collection made again under its ID is never mistaken for it.
   if (isSyncedCollection(c.settings))
@@ -696,10 +722,7 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
   if (rest.length !== kept.length) setKeptAddresses(state, rest);
   // Nothing else of the batch reaches them through these IDs, even created again.
   if (atStart) for (const [key, a] of [...atStart]) if (members.has(a.entryId)) atStart.delete(key);
-  if (archivesAtStart) {
-    const known = archivesAtStart();
-    for (const key of [...known]) if (key.startsWith(archiveAddressKey(c.settings.id, ''))) known.delete(key);
-  }
+  archivesAtStart?.drop(c.settings.id);
   return { collectionId: c.settings.id, removedEntries: members.size };
 }
 

@@ -185,7 +185,8 @@ describe('old addresses of entries', () => {
     const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
     expect(entryKept(run(unlinked, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }))).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
     s = run(exported(s), { type: 'page.update', pageId: about, route: '/about-us/' });
-    expect(entryKept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
+    // The collection's archive's old address goes with it too.
+    expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
   });
 
   it('refuses to hand links and old addresses to a record with no page of its own (#1495)', () => {
