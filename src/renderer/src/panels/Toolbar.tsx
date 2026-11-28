@@ -480,8 +480,9 @@ export function Toolbar() {
           options={[
             { value: 'edit', icon: <MousePointer2 aria-hidden="true" />, label: tier === 'full' ? 'Edit' : undefined, name: 'Edit', title: 'Edit: click things on the page to select and change them' },
             { value: 'preview', icon: <Eye aria-hidden="true" />, label: tier === 'full' ? 'Preview' : undefined, name: 'Preview', title: 'Preview: use the site as a visitor would' },
-            // The SEO view (#700) is the third way of working on the site (#1583), in the canvas's place.
-            { value: 'seo', icon: <SearchCheck aria-hidden="true" />, label: tier === 'full' ? 'SEO' : undefined, name: 'SEO', title: 'SEO: how each page and post shows in search results and when shared' }
+            // The SEO view (#700) is the third way of working on the site (#1583), in the canvas's place. A guest in a live
+            // session has no SEO view: it is the host's.
+            ...(remoteShell ? [] : [{ value: 'seo' as const, icon: <SearchCheck aria-hidden="true" />, label: tier === 'full' ? 'SEO' : undefined, name: 'SEO', title: 'SEO: how each page and post shows in search results and when shared' }])
           ]}
         />
       </div>
