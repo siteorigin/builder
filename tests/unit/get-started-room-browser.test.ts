@@ -211,7 +211,7 @@ describe.skipIf(!browserInstalled)('Get started beside the Pages list (#1316)', 
       expect(whole).toEqual(whole.map(() => true));
       // What the card no longer has room for scrolls inside it, under its heading, to the last step, by wheel too.
       expect(room.steps.scroll).toBeGreaterThan(room.steps.client);
-      expect(await page.locator('.get-started-body').evaluate((el) => getComputedStyle(el).overflowY)).toBe('auto');
+      expect(await page.evaluate<string>(`getComputedStyle(document.querySelector('.get-started-body')).overflowY`)).toBe('auto');
       expect(await reachable(page, '.gs-step', 4)).toBe(true);
       expect((await measure(page)).cardHead).toBe(true);
     } finally {
