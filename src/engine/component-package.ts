@@ -9,11 +9,12 @@
  * Nothing here reads or writes files: the main process reads the images for an export, and checks and stores them
  * for an import before the edit that lands the definitions runs.
  */
-import type { AssetRecord, ComponentDefinition, GraphNode, OwnerRef, ProjectState, TextStyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, DarkColorValue, GraphNode, OwnerRef, ProjectState, TextStyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
 import { COMPONENT_CATEGORIES, SCHEMA_VERSION } from '@shared/types';
 import { COMPONENT_PACKAGE_FORMAT, COMPONENT_PACKAGE_VERSION, MAX_PACKAGE_DEFINITIONS, PACKAGE_IMAGE_MIMES, PackageError, type ComponentPackage, type PackageToken } from '@shared/component-package';
 import { LATEST_SCHEMA_VERSION, definitionHash, migrateProject, newestDocumentVersion } from '@shared/migrations';
 import { linkOf, tokenVar } from '@shared/styles';
+import { darkValue, hasDarkPalette, resolvedCss } from '@shared/color-scheme';
 import { slugify } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { codeAxisProblems } from '@shared/variants';
@@ -287,8 +288,19 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     });
   // Site styles: every one named, and every one those follow.
   const tokens = effectiveTokens(state);
+  const darkTokens = effectiveTokens(state, 'dark');
   const byVar = varIndex(tokens);
   const wanted: Array<{ id: string; by: string }> = [];
+  /**
+   * A colour's look in the dark palette here (see PackageToken.dark): a style of the site's own takes its own dark
+   * colour, links and all, and a theme style the colour it shows there when that differs from its light one.
+   */
+  const darkOf = (t: TokenDef, resolved: string | TextStyleValue): DarkColorValue | undefined => {
+    if (t.group !== 'color') return undefined;
+    if (state.tokens.custom.some((c) => c.id === t.id)) return darkValue(own(state.tokens.darkOverrides, t.id)) ?? undefined;
+    const css = resolvedCss(darkTokens, t.id);
+    return css !== null && css !== resolved ? css : undefined;
+  };
   for (const def of defs)
     mapTokenRefs(def, byVar, (id) => {
       wanted.push({ id, by: def.name });
@@ -299,6 +311,8 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     const { id, by } = wanted.shift()!;
     if (carried.has(id)) continue;
     const t = tokens.find((x) => x.id === id) ?? fail(`${quoted(by)} uses the site style "${id}", which this project no longer has. Choose another style for it first.`);
+    const resolved = resolvedValue(tokens, t);
+    const dark = darkOf(t, resolved);
     carried.set(id, {
       id,
       group: t.group,
@@ -306,8 +320,13 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
       ...(t.description ? { description: t.description } : {}),
       custom: state.tokens.custom.some((c) => c.id === id),
       value: clone(t.value),
-      resolved: resolvedValue(tokens, t)
+      resolved,
+      ...(dark !== undefined ? { dark: clone(dark) } : {})
     });
+    // The styles its dark colour follows go with it, as those its light one does.
+    const darkLink = linkOf(dark, 'color');
+    if (darkLink) wanted.push({ id: darkLink, by: t.label });
+    else if (typeof dark === 'string') mapVars(dark, byVar, (ref) => void wanted.push({ id: ref, by: t.label }));
     const link = linkOf(t.value, t.group);
     if (link) wanted.push({ id: link, by: t.label });
     if (t.group === 'text' && isRecord(t.value)) {
@@ -601,7 +620,9 @@ function tokenShapeOk(t: PackageToken): boolean {
   const literal = (v: unknown) => (t.group === 'text' ? isRecord(v) && 'family' in v && TEXT_KEYS.every((k) => v[k] === undefined || typeof v[k] === 'string' || typeof v[k] === 'number' || (k === 'family' && isRecord(v[k]))) : typeof v === 'string');
   // A text style may still follow another as a whole, as older sites stored it; it lands with the metrics it resolves to.
   const link = (v: unknown) => isRecord(v) && Object.keys(v).length === 1 && typeof v.token === 'string';
-  return t.id.startsWith(`${t.group}.`) && (literal(t.value) || link(t.value)) && literal(t.resolved);
+  // A dark colour is a colour's alone: a theme style's with its links followed, a style of the site's own's either way.
+  const dark = t.dark === undefined || (t.group === 'color' && darkValue(t.dark) !== null && (t.custom || typeof t.dark === 'string'));
+  return t.id.startsWith(`${t.group}.`) && (literal(t.value) || link(t.value)) && literal(t.resolved) && dark;
 }
 
 /**
@@ -668,6 +689,10 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   const created: string[] = [];
   const visiting = new Set<string>();
   const byVar = varIndex(pkg.tokens);
+  // Visitors here see a dark palette: a style of the site's own is the package's only when it looks the same in both.
+  const dual = hasDarkPalette(state.tokens);
+  /** Styles of this site's own used as they are, whose dark colour differs from the package's (said after the import). */
+  const keptDark = new Set<string>();
   // A name taken here, or kept for one of the package's own styles that is free here, is never given to another.
   const freeId = (base: string) => {
     let id = base;
@@ -676,6 +701,56 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     return id;
   };
   const same = (existing: TokenDef | undefined, group: TokenGroup, value: unknown) => !!existing && existing.group === group && canonical(existing.value) === canonical(value);
+  /**
+   * A package colour's dark colour with its links, and the style variables in its CSS, pointed at what they became
+   * here: undefined when it has none, null when it names a style of the package's not decided yet. Only `land` decides
+   * the styles it names: a style its dark colour follows may follow it back in light, which is no loop, as each palette
+   * is checked alone, so those are decided once every light link is (see landDark).
+   */
+  const darkFor = (t: PackageToken, how: 'land' | 'look'): DarkColorValue | null | undefined => {
+    if (t.dark === undefined) return undefined;
+    let unknown = false;
+    const to = (ref: string): string => {
+      const r = tokenIds.get(ref) ?? (how === 'land' || !tokens.has(ref) ? tokenFor(ref, t.label) : undefined);
+      if (r === undefined) unknown = true;
+      return r ?? ref;
+    };
+    const link = linkOf(t.dark, 'color');
+    const v: DarkColorValue = link ? { token: to(link) } : mapVars(t.dark as string, byVar, to);
+    return unknown ? null : v;
+  };
+  /** Whether this site's style `id` has the dark colour the package's `t` has (anything, when the package has none). */
+  const sameDark = (id: string, t: PackageToken) => {
+    const theirs = darkFor(t, 'look');
+    if (theirs === undefined) return true;
+    const mine = darkValue(own(state.tokens.darkOverrides, id));
+    return theirs !== null && mine !== null && canonical(mine) === canonical(theirs);
+  };
+  /** Whether this site's style `id` stands for the package's `t`; with one palette, its dark colour is the site's own. */
+  const fits = (id: string, t: PackageToken, value: unknown) => {
+    if (!same(here.get(id), t.group, value)) return false;
+    if (dual) return sameDark(id, t);
+    if (!sameDark(id, t)) keptDark.add(t.label);
+    return true;
+  };
+  /** Styles made here that take the package's dark colour, once every style the definitions name is decided. */
+  const darkToLand: Array<{ t: PackageToken; id: string }> = [];
+  /**
+   * Give each style made here the package's dark colour, deciding the styles those follow (which may make more, with
+   * dark colours of their own). A site with no dark palette yet keeps them for when it first has one.
+   */
+  const landDark = () => {
+    for (let next = darkToLand.shift(); next; next = darkToLand.shift()) {
+      const dark = darkFor(next.t, 'land');
+      if (!dark) continue;
+      const doc = state.tokens;
+      if (!isRecord(doc.darkOverrides)) {
+        doc.darkOverrides = {};
+        if (!dual) doc.darkPending = true;
+      }
+      doc.darkOverrides[next.id] = clone(dark);
+    }
+  };
   const make = (t: PackageToken, id: string, value: unknown) => {
     if (state.tokens.custom.length >= MAX_CUSTOM_TOKENS) fail(`Importing it would give the site more than ${MAX_CUSTOM_TOKENS} styles of its own. Remove some in Site styles first.`);
     const v = t.group === 'text' && isRecord(value) ? Object.fromEntries(TEXT_KEYS.filter((k) => value[k] !== undefined).map((k) => [k, value[k]])) : value;
@@ -712,6 +787,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     visiting.add(id);
     const existing = here.get(id);
     let to: string;
+    let made = false;
     if (!t!.custom) {
       // The theme's own style: this site's version of it, or a look-alike of the site's own when its theme lacks it
       // (the same look-alike an earlier import made, under whichever name it took, when it still looks the same).
@@ -720,24 +796,29 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
         const base = `${t!.group}.custom-${slugify(t!.label) || 'style'}`;
         const value = relinked(t!.resolved, t!.group, t!.label);
         let match: string | undefined;
-        for (let i = 1, at = base; here.has(at); at = `${base}-${++i}`) if (same(here.get(at), t!.group, value)) match = at;
-        if (match) to = match;
-        else {
+        for (let i = 1, at = base; here.has(at); at = `${base}-${++i}`) if (same(here.get(at), t!.group, value) && (!dual || sameDark(at, t!))) match = at;
+        if (match) {
+          to = match;
+          if (!dual && !sameDark(to, t!)) keptDark.add(t!.label);
+        } else {
           to = freeId(base);
           make(t!, to, value);
+          made = true;
         }
       }
     } else {
       const value = relinked(t!.group === 'text' && linkOf(t!.value) ? t!.resolved : t!.value, t!.group, t!.label);
-      if (same(existing, t!.group, value)) to = id;
+      if (existing && fits(id, t!, value)) to = id;
       else {
         // Free here: it keeps its name, which was kept for it. Taken by a different style: the next free name.
         to = existing ? freeId(id) : id;
         make(t!, to, value);
+        made = true;
       }
     }
     visiting.delete(id);
     tokenIds.set(id, to);
+    if (made) darkToLand.push({ t: t!, id: to });
     return to;
   };
   // Each definition as it lands: its identity, the components it uses, its styles and its images.
@@ -777,6 +858,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (!(COMPONENT_CATEGORIES as readonly string[]).includes(def.category)) def.category = 'custom';
     landed.push(def);
   }
+  landDark();
   // A form a package brings never sends visitors' messages to the package author's account. Every setting that decides
   // where (the form's own, and any property of a component around it that passes one on, however deep) is emptied, so
   // whoever imports it sets the service up here.
@@ -817,5 +899,11 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (installed !== def.id) fail(`${quoted(def.name)} could not be installed from the theme.`);
   }
   for (const def of landed) state.components[def.id] = def;
-  return { definitionId: ids.get(pkg.rootId), definitionIds: pkg.definitions.map((d) => ids.get(d.id)), tokenIds: created, guarded: [...destinations.keys()] };
+  const kept = [...keptDark].map(quoted);
+  const notes = kept.length
+    ? [
+        `This site’s own ${kept.length === 1 ? kept[0] : `${kept.slice(0, -1).join(', ')} and ${kept.at(-1)}`} ${kept.length === 1 ? 'is' : 'are'} used as ${kept.length === 1 ? 'it is' : 'they are'}, so the dark ${kept.length === 1 ? 'color' : 'colors'} from the project the component came from ${kept.length === 1 ? 'was' : 'were'} left out.`
+      ]
+    : [];
+  return { definitionId: ids.get(pkg.rootId), definitionIds: pkg.definitions.map((d) => ids.get(d.id)), tokenIds: created, guarded: [...destinations.keys()], ...(notes.length ? { notes } : {}) };
 }

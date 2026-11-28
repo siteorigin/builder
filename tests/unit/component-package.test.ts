@@ -113,6 +113,30 @@ async function pricingCard() {
   return { s, rootId, childId, token, imageId };
 }
 
+/** A blank site whose visitors get a dark palette, following their device. */
+async function darkSite(name: string): Promise<Session> {
+  const s = await blank(name);
+  ok(await s.apply({ operations: [{ type: 'token.setColorScheme', mode: 'system' }] }, { label: 'Dark' }));
+  return s;
+}
+
+/** The Pricing card on a site with a dark palette, its Sea a mint there. */
+async function darkSea() {
+  const src = await pricingCard();
+  ok(
+    await src.s.apply(
+      {
+        operations: [
+          { type: 'token.setColorScheme', mode: 'system' },
+          { type: 'token.set', tokenId: src.token, scheme: 'dark', value: '#8bf0de' }
+        ]
+      },
+      { label: 'Dark' }
+    )
+  );
+  return src;
+}
+
 /** Export a component to a package file, and the file's path. */
 async function exportTo(s: Session, defId: string): Promise<{ path: string; notes: string[] }> {
   const { text, notes } = await buildComponentPackage(s.dir, s.state, defId, 'SiteOrigin Builder test');
@@ -306,28 +330,133 @@ describe('component packages: export and import (#371)', () => {
   });
 
   it('carries a custom colour’s dark value, so a recipient with a dark palette shows the component as styled for dark (#1441)', async () => {
-    const src = await pricingCard();
+    const src = await darkSea();
+    const { path } = await exportTo(src.s, src.rootId);
+    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).tokens.find((t) => t.id === src.token)).toMatchObject({ value: '#0a6e8a', dark: '#8bf0de' });
+
+    const dest = await darkSite('Dark recipient');
+    ok(await importInto(dest, path));
+    expect(dest.state.tokens.custom.find((t) => t.id === 'color.custom-sea')).toMatchObject({ value: '#0a6e8a' });
+    expect(dest.state.tokens.darkOverrides?.['color.custom-sea']).toBe('#8bf0de');
+    expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
+    await Promise.all([src.s.close(), dest.close()]);
+  });
+
+  it('reuses a custom colour in a dark-palette site only when its dark colour matches too, and says when a one-palette site keeps its own (#1441)', async () => {
+    const src = await darkSea();
+    const { path } = await exportTo(src.s, src.rootId);
+    const childToken = (s: Session, defId: string) => {
+      const child = Object.values(s.state.components[defId].tree!.nodes).flatMap((n) => (n.kind === 'instance' && s.state.components[n.definitionId]?.owner === 'project' ? [s.state.components[n.definitionId]] : []))[0];
+      return [...refs(child).tokens].filter((t) => t.startsWith('color.'));
+    };
+
+    // Same light colour, a different dark one: the recipient's Sea stays as it is, and the import's is a Sea of its own.
+    const other = await darkSite('Other dark');
+    ok(await other.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' }));
+    ok(await other.apply({ operations: [{ type: 'token.set', tokenId: 'color.custom-sea', scheme: 'dark', value: '#ffff00' }] }, { label: 'Dark' }));
+    const r = ok(await importInto(other, path));
+    expect(other.state.tokens.custom.map((t) => [t.id, t.value])).toEqual([
+      ['color.custom-sea', '#0a6e8a'],
+      ['color.custom-sea-2', '#0a6e8a']
+    ]);
+    expect(other.state.tokens.darkOverrides).toMatchObject({ 'color.custom-sea': '#ffff00', 'color.custom-sea-2': '#8bf0de' });
+    expect(childToken(other, r.results!.at(-1)!.definitionId as string)).toEqual(['color.custom-sea-2']);
+    expect(r.results!.at(-1)!.notes).toBeUndefined();
+
+    // The same in both: used as it is.
+    const same = await darkSite('Same dark');
+    ok(await same.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' }));
+    ok(await same.apply({ operations: [{ type: 'token.set', tokenId: 'color.custom-sea', scheme: 'dark', value: '#8bf0de' }] }, { label: 'Dark' }));
+    ok(await importInto(same, path));
+    expect(same.state.tokens.custom.map((t) => t.id)).toEqual(['color.custom-sea']);
+
+    // One palette: the site's own Sea is used, as before, and the import says its dark colour was left out.
+    const single = await blank('One palette');
+    ok(await single.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' }));
+    const s = ok(await importInto(single, path));
+    expect(single.state.tokens.custom.map((t) => t.id)).toEqual(['color.custom-sea']);
+    expect(single.state.tokens.darkOverrides).toBeUndefined();
+    expect(s.results!.at(-1)!.notes).toEqual(['This site’s own “Sea” is used as it is, so the dark color from the project the component came from was left out.']);
+    await Promise.all([src.s.close(), other.close(), same.close(), single.close()]);
+  });
+
+  it('keeps an imported dark colour in a site that never had a dark palette, beside the dark palette made when it is first turned on (#1441)', async () => {
+    const src = await darkSea();
+    const { path } = await exportTo(src.s, src.rootId);
+    const dest = await blank('Light only');
+    ok(await importInto(dest, path));
+    expect(dest.state.tokens.darkOverrides).toEqual({ 'color.custom-sea': '#8bf0de' });
+    expect(dest.state.tokens.darkPending).toBe(true);
+    // Its light palette changes before the dark one is first made: the theme's dark colours are made from it as it is then.
+    ok(await dest.apply({ operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#b00020' }] }, { label: 'Brand' }));
+    ok(await dest.apply({ operations: [{ type: 'token.setColorScheme', mode: 'system' }] }, { label: 'Dark' }));
+    const fresh = await blank('Fresh');
+    ok(await fresh.apply({ operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#b00020' }, { type: 'token.setColorScheme', mode: 'system' }] }, { label: 'Dark' }));
+    expect(Object.keys(fresh.state.tokens.darkOverrides!).length).toBeGreaterThan(0);
+    expect(dest.state.tokens.darkOverrides).toEqual({ ...fresh.state.tokens.darkOverrides, 'color.custom-sea': '#8bf0de' });
+    expect(dest.state.tokens.darkPending).toBeUndefined();
+    await Promise.all([src.s.close(), dest.close(), fresh.close()]);
+  });
+
+  it('relinks a dark colour that follows another style, which may follow it back in light, and stands in for a theme colour with its dark look (#1441)', async () => {
+    const src = await darkSea();
+    // Deep follows Sea in light and has a colour of its own in dark; Sea follows Deep in dark. Neither palette loops.
+    const deep = ok(await src.s.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Deep', value: { token: src.token } }] }, { label: 'Add' })).results![0].tokenId as string;
     ok(
       await src.s.apply(
         {
           operations: [
-            { type: 'token.setColorScheme', mode: 'system' },
-            { type: 'token.set', tokenId: src.token, scheme: 'dark', value: '#8bf0de' }
+            { type: 'token.set', tokenId: deep, scheme: 'dark', value: '#112233' },
+            { type: 'token.set', tokenId: src.token, scheme: 'dark', value: { token: deep } }
           ]
         },
         { label: 'Dark' }
       )
     );
     const { path } = await exportTo(src.s, src.rootId);
-    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).tokens.find((t) => t.id === src.token)).toMatchObject({ value: '#0a6e8a', dark: '#8bf0de' });
-
-    const dest = await blank('Dark recipient');
-    ok(await dest.apply({ operations: [{ type: 'token.setColorScheme', mode: 'system' }] }, { label: 'Dark' }));
+    const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
+    expect(pkg.tokens.find((t) => t.id === deep)).toMatchObject({ value: { token: src.token }, dark: '#112233' });
+    // Deep's name is taken here by a different style: the link follows it to the name it lands under.
+    const dest = await darkSite('Linked');
+    ok(await dest.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Deep', value: '#000000' }] }, { label: 'Add' }));
     ok(await importInto(dest, path));
-    expect(dest.state.tokens.custom.find((t) => t.id === 'color.custom-sea')).toMatchObject({ value: '#0a6e8a' });
-    expect(dest.state.tokens.darkOverrides?.['color.custom-sea']).toBe('#8bf0de');
+    expect(dest.state.tokens.custom.find((t) => t.id === 'color.custom-deep-2')).toMatchObject({ value: { token: 'color.custom-sea' } });
+    expect(dest.state.tokens.darkOverrides).toMatchObject({ 'color.custom-sea': { token: 'color.custom-deep-2' }, 'color.custom-deep-2': '#112233' });
+    expect(dest.state.tokens.darkOverrides?.['color.custom-deep']).toBeUndefined();
     expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
-    await Promise.all([src.s.close(), dest.close()]);
+
+    // The component's colour follows Sea in light; Deep, which Sea follows in dark, follows that colour back in light.
+    // Light: Wave → Sea, Deep → Wave → Sea. Dark: Wave → Sea → Deep. Neither palette loops, so it lands.
+    const wave = structuredClone(pkg);
+    for (const d of wave.definitions) Object.assign(d, JSON.parse(JSON.stringify(d).replaceAll(`"${src.token}"`, '"color.custom-wave"')));
+    wave.tokens.push({ id: 'color.custom-wave', group: 'color', label: 'Wave', custom: true, value: { token: src.token }, resolved: '#0a6e8a' });
+    Object.assign(wave.tokens.find((t) => t.id === deep)!, { value: { token: 'color.custom-wave' } });
+    const waves = await darkSite('Waves');
+    ok(await importInto(waves, writePackage(JSON.stringify(wave))));
+    expect(waves.state.tokens.darkOverrides).toMatchObject({ 'color.custom-sea': { token: 'color.custom-deep' }, 'color.custom-deep': '#112233' });
+    expect(waves.state.tokens.darkOverrides?.['color.custom-wave']).toBeUndefined();
+    expect(validateState(waves.state).filter((d) => d.severity === 'error')).toEqual([]);
+    await waves.close();
+
+    // A theme colour the recipient's theme lacks: its stand-in takes the colour it showed in dark as well as in light.
+    const sea = pkg.tokens.find((t) => t.id === src.token)!;
+    Object.assign(sea, { id: 'color.lagoon', label: 'Lagoon', custom: false, value: { token: 'color.brand' }, resolved: '#123456', dark: '#abcdef' });
+    pkg.tokens = pkg.tokens.filter((t) => t.id !== deep);
+    const text = JSON.stringify(pkg).replaceAll(`"${src.token}"`, '"color.lagoon"');
+    const theme = await darkSite('Theme');
+    ok(await importInto(theme, writePackage(text)));
+    expect(theme.state.tokens.custom).toEqual([expect.objectContaining({ id: 'color.custom-lagoon', value: '#123456' })]);
+    expect(theme.state.tokens.darkOverrides?.['color.custom-lagoon']).toBe('#abcdef');
+
+    // A dark value that is not a colour, or a theme colour's that still follows a link, is a damaged package.
+    for (const dark of ['not a colour', { token: 'color.brand' }]) {
+      const bad = text.replace('"dark":"#abcdef"', `"dark":${JSON.stringify(dark)}`);
+      expect(bad).not.toBe(text);
+      const r = await importInto(theme, writePackage(bad));
+      expect(r.ok).toBe(false);
+      expect(r.error?.message).toMatch(/“Lagoon” in the package is damaged/);
+    }
+    await Promise.all([src.s.close(), dest.close(), theme.close()]);
   });
 
   it('carries a site style a design uses only at part strength, and keeps the strength where the style is renamed (#353)', async () => {
