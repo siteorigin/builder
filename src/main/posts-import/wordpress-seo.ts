@@ -6,54 +6,69 @@
  */
 import { checkCanonicalUrl } from '@shared/seo';
 import { childElements, childText, type XmlElement } from './xml';
-import { htmlToPlain } from './html';
+import { decodeEntities } from './html';
 import type { SourceSeo } from './source';
 
-/** The most characters of a meta value read: the plan shortens what it keeps to the project's limits, and says so. */
+/** The most characters of a search title or description read: the plan shortens what it keeps to the project's limits, and says so. */
 const META_CHARS = 4000;
 
-/** Each plugin's meta keys, in the order they are read. */
+/**
+ * Each plugin's meta keys, in the order they are read, and how it writes a placeholder: `%%title%%` (Yoast, SEOPress),
+ * or `%title%` and `%date(F j, Y)%` (Rank Math, whose names are lowercase), so other text with percent signs stays text.
+ */
 const PLUGINS = [
-  { title: '_yoast_wpseo_title', description: '_yoast_wpseo_metadesc', canonical: '_yoast_wpseo_canonical' },
-  { title: 'rank_math_title', description: 'rank_math_description', canonical: 'rank_math_canonical_url' },
-  { title: '_seopress_titles_title', description: '_seopress_titles_desc', canonical: '_seopress_robots_canonical' }
+  { title: '_yoast_wpseo_title', description: '_yoast_wpseo_metadesc', canonical: '_yoast_wpseo_canonical', token: /%%([a-z0-9_]+)%%/gi },
+  { title: 'rank_math_title', description: 'rank_math_description', canonical: 'rank_math_canonical_url', token: /%([a-z_]+)(?:\([^()%]*\))?%/g },
+  { title: '_seopress_titles_title', description: '_seopress_titles_desc', canonical: '_seopress_robots_canonical', token: /%%([a-z0-9_]+)%%/gi }
 ] as const;
 
 /** Placeholders the plugins write, by name: a post's title, the site's name, the separator, and the page number (none on a post's own page). */
 const TITLE_TOKENS = new Set(['title', 'post_title']);
 const SITE_TOKENS = new Set(['sitename', 'sitetitle', 'site_title']);
-const TOKEN = /%%([a-z_]+)%%|%([a-z_]+)%/gi;
 
 /** The separator a plugin puts between a post's title and the site's name unless its settings choose another. */
 const SEPARATOR = '-';
 
+/** A meta value as the plugin saved it, trimmed. */
 function metaText(item: XmlElement, key: string): string {
   const m = childElements(item, 'wp:postmeta').find((p) => childText(p, 'wp:meta_key') === key);
-  return m ? childText(m, 'wp:meta_value').slice(0, META_CHARS).trim() : '';
+  return m ? childText(m, 'wp:meta_value').trim() : '';
 }
 
 type Filled = { text: string } | { stock: true } | { unknown: string };
 
-/** `raw` with its placeholders filled in, or the placeholder that can't be. */
-function fill(raw: string, title: string, site: string): Filled {
-  const text = htmlToPlain(raw);
-  const names = [...text.matchAll(TOKEN)].map((m) => (m[1] ?? m[2]).toLowerCase());
-  // Only the post's title and the site's name, as every page here is titled without one of its own.
-  const words = text.replace(TOKEN, '').replace(/[\s\-–—|·•:]+/g, '');
-  if (!words && names.some((n) => TITLE_TOKENS.has(n)) && names.some((n) => SITE_TOKENS.has(n))) return { stock: true };
+/**
+ * `raw`, plain text as the plugins save it (its character references read, never parsed as HTML), with its
+ * placeholders filled in; or the placeholder that can't be; or, for a title, `stock` when it is only the post's title
+ * and the site's name, as every page here is titled without one of its own.
+ */
+function fill(raw: string, token: RegExp, title: string, site: string, isTitle: boolean): Filled {
+  const text = decodeEntities(raw.slice(0, META_CHARS), true);
+  const names = [...text.matchAll(token)].map((m) => m[1].toLowerCase());
   const unknown = names.find((n) => !TITLE_TOKENS.has(n) && !(SITE_TOKENS.has(n) && site) && n !== 'sep' && n !== 'page');
   if (unknown) return { unknown };
-  const filled = text.replace(TOKEN, (_m, a?: string, b?: string) => {
-    const n = (a ?? b ?? '').toLowerCase();
+  const words = text.replace(token, '').replace(/[\s\-–—|·•:]+/g, '');
+  if (isTitle && !words && names.some((n) => TITLE_TOKENS.has(n)) && names.some((n) => SITE_TOKENS.has(n))) return { stock: true };
+  const filled = text.replace(token, (_m, name: string) => {
+    const n = name.toLowerCase();
     return TITLE_TOKENS.has(n) ? title : SITE_TOKENS.has(n) ? site : n === 'sep' ? SEPARATOR : '';
   });
   return { text: filled.replace(/\s+/g, ' ').trim() };
 }
 
-/** Whether `a` and `b` are one address, whatever slash ends its path. */
+/** A URL part with its percent escapes read, so `%C3%A9` and `%c3%a9` are one letter. */
+function decoded(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** Whether `a` and `b` are one address, whatever slash ends its path and however its letters are escaped. */
 function sameAddress(a: URL, b: URL): boolean {
-  const path = (u: URL) => u.pathname.replace(/\/+$/, '');
-  return a.origin === b.origin && path(a) === path(b) && a.search === b.search;
+  const path = (u: URL) => decoded(u.pathname.replace(/\/+$/, ''));
+  return a.origin === b.origin && path(a) === path(b) && decoded(a.search) === decoded(b.search);
 }
 
 /** What the post's robots settings say: `true` asks search engines not to list it, `false` to list it, undefined leaves it to the site. */
@@ -87,7 +102,7 @@ export function wordpressSeo(item: XmlElement, title: string, site: string, ownL
     for (const plugin of PLUGINS) {
       const raw = metaText(item, plugin[field]);
       if (!raw) continue;
-      const f = fill(raw, title, site);
+      const f = fill(raw, plugin.token, title, site, field === 'title');
       if ('stock' in f) break;
       if ('unknown' in f) {
         refused ??= `Its ${what} was left out: it uses the SEO plugin’s “${f.unknown}” placeholder, which the import can’t fill in.`;

@@ -196,7 +196,8 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   it.each([
     { more: { ...wordpress, searchSettings: 300 }, said: '300 posts bring their own from the SEO plugin' },
     { more: { ...wordpress, searchSettings: 1 }, said: '1 post brings its own from the SEO plugin' },
-    { more: wordpress, said: 'None in the export: each post’s title and excerpt stand in' }
+    { more: wordpress, said: 'No new post brings its own from the SEO plugin' },
+    { more: { ...wordpress, collection: { name: 'Posts', route: '/blog/', create: false }, searchSettings: 2 }, said: '2 posts bring their own from the SEO plugin' }
   ])('counts the posts that bring their SEO plugin’s search settings (#1514): $said', async ({ more, said }) => {
     await mount(site, preview(true, more));
     expect(await page.getByTestId('post-import-search-settings').textContent()).toBe(said);

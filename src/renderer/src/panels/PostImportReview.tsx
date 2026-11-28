@@ -498,7 +498,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           ],
           newTerms.length > 0 && ['New categories and tags', newTerms.join(' · ')],
           // A WordPress site's SEO plugin keeps each post's search title and description: the review says whether they came.
-          preview.kind === 'wordpress' && n > 0 && ['Search settings', <span data-testid="post-import-search-settings">{preview.searchSettings ? `${plural(preview.searchSettings, 'post brings its', 'posts bring their')} own from the SEO plugin` : 'None in the export: each post’s title and excerpt stand in'}</span>]
+          preview.kind === 'wordpress' && n > 0 && ['Search settings', <span data-testid="post-import-search-settings">{preview.searchSettings ? `${plural(preview.searchSettings, 'post brings its', 'posts bring their')} own from the SEO plugin` : 'No new post brings its own from the SEO plugin'}</span>]
         ]}
       >
         {blocked || nothing ? 'Nothing has been imported.' : 'Nothing changes until you import, and you can undo the import in one step.'}

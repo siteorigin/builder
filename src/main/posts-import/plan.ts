@@ -114,7 +114,10 @@ function clip(text: string, max: number): { text: string; cut: boolean } {
   const t = text.trim();
   if (t.length <= max) return { text: t, cut: false };
   const at = t.lastIndexOf(' ', max - 1);
-  return { text: `${t.slice(0, at > max / 2 ? at : max - 1).trimEnd()}…`, cut: true };
+  let end = at > max / 2 ? at : max - 1;
+  // Never half of a character written in two code units (an emoji).
+  if (/[\uD800-\uDBFF]/.test(t[end - 1] ?? '')) end--;
+  return { text: `${t.slice(0, end).trimEnd()}…`, cut: true };
 }
 
 /** Why an old address something already holds can't keep working for an imported post. */
@@ -416,7 +419,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     if (authorClip?.cut) notes.push('Its author’s name was shortened to 80 characters.');
     const author = authorClip?.text;
     let seo: SourceSeo | undefined;
-    if (p.seo) {
+    // Only a new entry is given them: a post already here keeps its own.
+    if (p.seo && !was) {
       const seoTitle = p.seo.title ? clip(p.seo.title, TEXT_LIMITS.seoTitle) : undefined;
       if (seoTitle?.cut) notes.push(`Its search title was shortened to ${TEXT_LIMITS.seoTitle} characters.`);
       const description = p.seo.description ? clip(p.seo.description, TEXT_LIMITS.pageDescription) : undefined;
