@@ -3,7 +3,7 @@
  * reflects, then the tool's own fields beside them on success, or why it failed. A model handles every tool's failure
  * the same way: read `ok`, look at `error.code`, and try again only when `error.recoverable` is true.
  */
-import type { FieldLocation } from '@shared/api';
+import type { EditorOpening, FieldLocation } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 
 export type { ToolError, ToolErrorCode };
@@ -22,6 +22,8 @@ interface Landed {
   location?: FieldLocation;
   /** The page open_page resolved, for the editor to show (#1357). Nothing in the site changes. */
   openPage?: string;
+  /** The entry, section or editor view open_in_editor resolved, for the editor to show (#1406). Nothing in the site changes. */
+  openEditor?: EditorOpening;
   mutated?: boolean;
   ops?: EditOperation[];
   results?: unknown[];

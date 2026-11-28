@@ -7,6 +7,8 @@ import { findEntry } from '@shared/collections';
 import { publishedState } from '@generator/index';
 import { treeFor } from './model';
 import { requiredSite } from '@engine/required';
+import { CONTRAST_CODE, contrastPlaceOf } from '@engine/accessibility';
+import { getTheme } from '@catalogue/index';
 import { samplePlace, type SamplePlace } from '@engine/sample-content';
 
 type FormDestination = Extract<EditorDestination, { kind: 'form' }>;
@@ -23,7 +25,7 @@ const FORM_SETTINGS: Record<string, FormDestination['setting']> = {
 const isContactForm = (def: ComponentDefinition | undefined) => !!def && def.kind === 'code' && (isFormContract(def.componentId) || isFormContract(def.provenance?.componentId));
 
 /**
- * Where a Project health finding is fixed, when that is a contact form's settings or a field of Site details: the
+ * Where a Project health finding is fixed, when that is a contact form's settings, a field of Site details or Colors: the
  * same places an export's notes lead to. Null for any other finding, which keeps its own action (Show on page).
  */
 export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): EditorDestination | null {
@@ -32,6 +34,12 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
   if (sample) return sampleDestination(d, sample);
   // The site's icon and sharing image are set in Site details, not on any page.
   if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage' || d.site === 'logo')) return { kind: 'site', field: d.site };
+  // A theme colour pair too faint to read is fixed in Colors, in its palette, at the text colour a fix changes.
+  const contrast = d.code === CONTRAST_CODE && !d.owner ? contrastPlaceOf(d.site) : null;
+  if (contrast) {
+    const pair = getTheme(state.site.themeId).contrastPairs?.find((p) => p.id === contrast.pairId);
+    return { kind: 'colors', scheme: contrast.scheme, ...(pair ? { token: pair.fg } : {}) };
+  }
   // An old address that sends visitors nowhere, or not straight there, is fixed in its row of Redirects.
   if (!d.owner && d.site?.startsWith('redirect:')) return { kind: 'site', field: 'redirects' };
   // A placement missing a value its component requires: its field, in the Inspector.
@@ -121,6 +129,8 @@ export function destinationLabel(dest: EditorDestination): string {
       return dest.field === 'structuredData' ? 'Go to Structured data' : dest.field === 'pageTitle' ? 'Go to page title' : dest.field === 'canonical' ? 'Go to canonical URL' : 'Go to Search & sharing';
     case 'entry':
       return dest.field === 'body' && dest.picture ? 'Go to picture' : dest.field === 'canonical' ? 'Go to canonical URL' : 'Open post';
+    case 'colors':
+      return 'Go to Colors';
     case 'element':
       return 'Show on page';
     case 'prop':

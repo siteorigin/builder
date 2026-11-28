@@ -52,7 +52,7 @@ import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
-import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE, yieldsToOwnFile } from '@generator/host-redirects';
 import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
@@ -110,6 +110,8 @@ const OBSOLETE_FEED_REASON = 'This RSS feed was edited outside SiteOrigin Builde
 const routesVisitors = (path: string) => path === HOST_REDIRECTS_FILE || path === VERCEL_CONFIG_FILE;
 const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside SiteOrigin Builder, and the website no longer has any, so its host would still follow them, even past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 /** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
+/** vercel.json, once the site's host is no longer Vercel: it holds Vercel's caching rule as well as any redirects. */
+const OBSOLETE_VERCEL_REASON = 'This vercel.json was edited outside SiteOrigin Builder, and the website is no longer published on Vercel, so Vercel would still follow its rules if the site went back there, even its redirects past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
 const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
@@ -3120,8 +3122,10 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       if (!initial && diskHash !== null && !known(path)) {
-        // A file we never wrote already lives here: never overwrite someone's own work.
+        // A file we never wrote already lives here: never overwrite someone's own work. One that only tunes caching
+        // (the host's _headers, a vercel.json with no redirect) gives way to it unnamed.
         delete nextFiles[path];
+        if (yieldsToOwnFile(path, content)) continue;
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
@@ -3275,7 +3279,7 @@ export class ProjectSession extends EventEmitter {
         // or moved away.
         nextFiles[path] = prev[path] ?? inflight[path];
         // So would redirect rules a host follows, even past a page given one of their addresses since.
-        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
+        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : path === VERCEL_CONFIG_FILE ? OBSOLETE_VERCEL_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);
@@ -4920,31 +4924,53 @@ export class ProjectSession extends EventEmitter {
    * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
    * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
    */
-  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
+  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+    return this.serialize(async () => this.storeVersion(name, await this.versionsBlocked()));
+  }
+
+  /**
+   * Save a named version for the AI request `runId`, which the author asked for (#1406). Only a run that has changed
+   * nothing can: its documents are then the author's own, settled, and the version holds no provisional work. A
+   * version is no change to the site, so the run keeps the project and may go on to change it.
+   */
+  saveVersionForRun(runId: string, name: string, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
     return this.serialize(async () => {
-      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
-      if (why) return { ok: false, message: why };
-      const clean = name.replace(/\s+/g, ' ').trim();
-      if (!clean) return { ok: false, message: 'Give the version a name.' };
-      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
-      // A change made outside the app and not loaded yet would be missing from it, under the author's chosen name.
-      const unloaded = await this.unloadedEdit(new Set());
-      if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
-      let v: SavedVersion;
-      try {
-        v = await this.captureVersion(clean);
-        // Storing a large library takes a while: something may have changed outside the app meanwhile, or an Unlock
-        // from another app taken the project over.
-        const late = await this.unloadedEdit(new Set());
-        if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
-        if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-        v = await this.versions.add(v);
-      } catch (e) {
-        return { ok: false, message: (e as Error).message };
-      }
-      this.emit('history');
-      return { ok: true, id: v.id, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
+      const run = this.activeRun;
+      if (!run || run.id !== runId) return { ok: false, message: 'This request no longer holds the project.' };
+      if (this.runChanged() || this.revision !== run.startRevision) return { ok: false, message: 'This request has already changed the site, so a version saved now would hold its unfinished changes. Nothing was saved: the author can save it from History, Versions, once this request finishes.' };
+      const blocked = await this.writeBlocked();
+      return this.storeVersion(name, blocked ? (blocked.error?.message ?? LOCK_UNCHECKED) : this.versions.problem, stopped);
     });
+  }
+
+  /**
+   * saveVersion's work, run inside serialize once `why` (what stops a version being saved now, if anything) is known.
+   * `stopped`: the request that asked was stopped meanwhile, so the version it captured is never listed.
+   */
+  private async storeVersion(name: string, why: string | null, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+    why ??= await this.pendingVersionBlocks();
+    if (why) return { ok: false, message: why };
+    const clean = name.replace(/\s+/g, ' ').trim();
+    if (!clean) return { ok: false, message: 'Give the version a name.' };
+    if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+    // A change made outside the app and not loaded yet would be missing from it, under the author's chosen name.
+    const unloaded = await this.unloadedEdit(new Set());
+    if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
+    let v: SavedVersion;
+    try {
+      v = await this.captureVersion(clean);
+      // Storing a large library takes a while: something may have changed outside the app meanwhile, or an Unlock
+      // from another app taken the project over.
+      const late = await this.unloadedEdit(new Set());
+      if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+      if (stopped?.()) return { ok: false, message: 'Canceled' };
+      v = await this.versions.add(v);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+    this.emit('history');
+    return { ok: true, id: v.id, name: clean, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
   }
 
   /**

@@ -605,6 +605,8 @@ export type EditorDestination =
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'canonical' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'canonical' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
+  /** Colors in Site styles, showing one of the site's palettes, with a colour's row (`token`) focused when there is one. */
+  | { kind: 'colors'; scheme: 'light' | 'dark'; token?: string }
   /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
   | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
 
@@ -706,6 +708,12 @@ export interface ChatContext {
    * collection's name then, for the transcript.
    */
   template?: { collectionId: string; archive?: true; entryId?: string; name: string };
+  /**
+   * The page the editor showed when the request was sent, when that is not `pageId` (the page's context was left out
+   * of the request, so `pageId` names the home page). Only for finding a section the author asks to go to (#1406):
+   * the model is never told it.
+   */
+  shownPageId?: string;
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their names and IDs alone, never the pictures or their files (search_assets reads what the library says about them). */
   assetIds?: string[];
@@ -795,6 +803,8 @@ export interface ChatMessage {
     /** The same checks with their status; `validation` is their text. */
     checks?: ChatCheck[];
     canUndo: boolean;
+    /** Versions of the site the request saved when the author asked (#1406), by name: kept however it ended, and no change to Undo. */
+    versionsSaved?: string[];
     error?: string;
     /** The run's tokens in all, and each answered model turn's in order: null where the provider did not report them. */
     usage?: TokenUsage & { turns?: Array<TokenUsage | null> };
@@ -943,7 +953,7 @@ export interface ConversationSummary {
 export interface AiEvent {
   runId: string;
   conversationId: string;
-  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page';
+  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page' | 'open-editor';
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
@@ -962,7 +972,19 @@ export interface AiEvent {
   message?: ChatMessage;
   /** With `open-page`: the page the author asked the request to go to, for the editor to show (#1357). */
   pageId?: string;
+  /** With `open-editor`: the entry, section or editor view the author asked the request to open (#1406). */
+  opening?: EditorOpening;
 }
+
+/** The editor's views the assistant can open when the author asks it to (open_in_editor, #1406). */
+export const EDITOR_VIEWS = ['site_styles', 'seo', 'content', 'pages', 'layers', 'assets', 'settings', 'project_health', 'history', 'versions', 'project_brief', 'export', 'share'] as const;
+export type EditorView = (typeof EDITOR_VIEWS)[number];
+
+/**
+ * What the assistant opens in the editor for the author (#1406): an entry in Content's writer, a placed section on a
+ * page (selected and brought into view), or one of the editor's views. Opening one changes nothing in the site.
+ */
+export type EditorOpening = { kind: 'entry'; collectionId: string; entryId: string } | { kind: 'section'; pageId: string; ref: ElementRef } | { kind: 'view'; view: EditorView };
 
 /** One file in an import review: what it is, and what importing it would add to Assets. */
 export interface ImportReviewRow {
