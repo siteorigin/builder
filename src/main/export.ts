@@ -371,8 +371,9 @@ async function leaveOutRetired(copy: string, dir: string, listed: Set<string>, s
     for (const e of await fs.readdir(join(copy, rel), { withFileTypes: true })) {
       if (unreadable || done) return;
       const child = rel ? `${rel}/${e.name}` : e.name;
-      // Without the authoring documents, the sources' settings still count: the website's build runs their converters.
-      if (!authoring && rel === 'siteorigin' && e.name !== 'sources') continue;
+      // Without the authoring documents, by any spelling of their folder, the sources' settings still count: the
+      // website's build runs their converters.
+      if (!authoring && rel.toLowerCase() === 'siteorigin' && e.name.toLowerCase() !== 'sources') continue;
       if (e.isDirectory()) await walk(child);
       else if (e.isFile() && searched(e.name) && !media.has(child) && !documents.has(child) && child !== 'siteorigin/assets.json' && !isProjectBrief(copy, join(copy, child))) await look(child);
     }

@@ -80,6 +80,8 @@ async function projectWithOldEditions() {
   const routed = doc('price-list', 'Old prices.');
   const retired = doc('guide', 'Draft edition.');
   const drafted = doc('winter-list', 'Winter list.');
+  // A deleted picture, as the importer names one: by eight hash characters, whatever its bytes.
+  const pictured = { rel: 'static/assets/old-shopfront-1a2b3c4d.svg', text: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"><title>Old shopfront</title></svg>\n' };
   const blank = createStarterState('blank', 'Bookshop', false);
   const state = applyOperations(blank, [{ type: 'page.create', pageId: 'pg_winter01', title: `Winter ${drafted.rel.split('/').pop()}`, route: '/winter/' }, { type: 'page.update', pageId: 'pg_winter01', draft: true }]).state;
   state.site.baseUrl = 'https://books.example';
@@ -90,8 +92,8 @@ async function projectWithOldEditions() {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
     writeFileSync(join(dir, rel), text);
   };
-  for (const d of [archived, routed, retired, drafted]) put(d.rel, d.text);
-  put('static/archive-notes.html', `<!doctype html><p><a href="assets/${archived.rel.split('/').pop()}">First edition</a></p>\n`);
+  for (const d of [archived, routed, retired, drafted, pictured]) put(d.rel, d.text);
+  put('static/archive-notes.html', `<!doctype html><p><a href="assets/${archived.rel.split('/').pop()}">First edition</a><img src="assets/${pictured.rel.split('/').pop()}" alt="" /></p>\n`);
   put('src/routes/archive/+page.svelte', `<a href="/${routed.rel.slice('static/'.length)}">Old prices</a>\n`);
   const c = new Controller(() => null);
   c.send = () => undefined;
@@ -99,35 +101,36 @@ async function projectWithOldEditions() {
   controllers.push(c);
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
   await vi.waitFor(() => expect(c.snapshot()).not.toBeNull());
-  return { c, dir, archived, routed, retired, drafted };
+  return { c, dir, archived, routed, retired, drafted, pictured };
 }
 
 describe('an imported file no asset record lists any more', () => {
   it('goes out with the editable project while the author’s own source names it, and stays behind otherwise', async () => {
-    const { c, dir, archived, routed, retired, drafted } = await projectWithOldEditions();
+    const { c, dir, archived, routed, retired, drafted, pictured } = await projectWithOldEditions();
     const out = join(temp('out'), 'handoff');
     const r = await c.exportSourceTo(out);
     expect(r.ok, r.message).toBe(true);
     expect(readFileSync(join(out, archived.rel), 'utf8')).toBe(archived.text);
     expect(readFileSync(join(out, routed.rel), 'utf8')).toBe(routed.text);
+    expect(readFileSync(join(out, pictured.rel), 'utf8')).toBe(pictured.text);
     expect(existsSync(join(out, 'static/archive-notes.html'))).toBe(true);
     expect(existsSync(join(out, retired.rel))).toBe(false);
     // The draft's page is left out of the copy, and its authoring document keeps nothing a plain build would serve.
     expect(readFileSync(join(out, 'siteorigin/pages/pg_winter01.json'), 'utf8')).toContain(drafted.rel.split('/').pop());
     expect(existsSync(join(out, drafted.rel))).toBe(false);
     // The project keeps every edition for recovery.
-    for (const d of [archived, routed, retired, drafted]) expect(existsSync(join(dir, d.rel)), d.rel).toBe(true);
+    for (const d of [archived, routed, retired, drafted, pictured]) expect(existsSync(join(dir, d.rel)), d.rel).toBe(true);
   });
 
   it('goes out with the website while a hand-written page or route links to it, and stays behind otherwise', async () => {
-    const { c, dir, archived, routed, retired, drafted } = await projectWithOldEditions();
+    const { c, dir, archived, routed, retired, drafted, pictured } = await projectWithOldEditions();
     const r = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(r.ok, r.message).toBe(true);
     const at = (rel: string) => rel.slice('static/'.length);
-    expect(env.built).toEqual(expect.arrayContaining(['archive-notes.html', at(archived.rel), at(routed.rel)]));
+    expect(env.built).toEqual(expect.arrayContaining(['archive-notes.html', at(archived.rel), at(routed.rel), at(pictured.rel)]));
     expect(env.built).not.toContain(at(retired.rel));
     expect(env.built).not.toContain(at(drafted.rel));
     expect(readFileSync(join(r.path!, at(archived.rel)), 'utf8')).toBe(archived.text);
-    for (const d of [archived, routed, retired, drafted]) expect(existsSync(join(dir, d.rel)), d.rel).toBe(true);
+    for (const d of [archived, routed, retired, drafted, pictured]) expect(existsSync(join(dir, d.rel)), d.rel).toBe(true);
   });
 });

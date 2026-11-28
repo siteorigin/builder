@@ -243,9 +243,6 @@ describe('copies of the project', () => {
     await copyProjectSource(src, exported);
     expect(existsSync(join(exported, 'siteorigin/site.json'))).toBe(true);
     expect(existsSync(join(exported, BRIEF_FILE))).toBe(false);
-    const plain = join(temp('plain'), 'site');
-    await copyProjectSource(src, plain);
-    expect(existsSync(join(plain, BRIEF_FILE))).toBe(false);
     const duplicate = join(temp('dup'), 'site');
     await copyProjectSource(src, duplicate, { keepBrief: true });
     expect(readFileSync(join(duplicate, BRIEF_FILE), 'utf8')).toBe(readFileSync(join(src, BRIEF_FILE), 'utf8'));
