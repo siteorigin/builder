@@ -8,19 +8,26 @@
 
   /* The window is still dragged by its top bar while the outline shows. */
   /* The toolbar's own tracks (Toolbar.css), tier by tier, so its centre group sits where the real one will. */
-  .sk-toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; min-height: var(--toolbar-h); padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
-  .sk-toolbar.mac { grid-template-columns: minmax(min(460px, 36vw), 1fr) auto minmax(max-content, 1fr); }
-  .sk-toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
+  /* The start column takes what the identity needs, capped by the centre and end groups' widths, which the toolbar
+     measures and the outline takes as typical figures for each tier. */
+  .sk-toolbar { --start-need: 430px; --sk-rest: 774px; display: grid; grid-template-columns: minmax(max(0px, min(var(--start-need), 100% - var(--sk-rest) - 36px)), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 18px; min-height: var(--toolbar-h); padding: 1px 12px 0; background: var(--panel); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+  .sk-toolbar.mac { --start-need: 496px; }
+  .sk-toolbar:not([data-tier='full']) { --sk-rest: 608px; }
   /* The overflow toolbar wraps under its identity's floor as the real one does (Toolbar.css); its end group is held at
      the real one's width, so the outline wraps where the toolbar will. */
-  .sk-toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 0; }
-  .sk-toolbar[data-tier='overflow'] .sk-toolbar-start { flex: 1 1 0; min-width: min(100%, 400px); min-height: calc(var(--toolbar-h) - 2px); }
-  .sk-toolbar.mac[data-tier='overflow'] .sk-toolbar-start { min-width: min(100%, 470px); }
-  .sk-toolbar[data-tier='overflow'] :is(.sk-toolbar-mid, .sk-toolbar-end) { flex: none; min-height: 40px; }
+  .sk-toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; align-items: center; column-gap: 18px; row-gap: 8px; padding-top: 12px; padding-bottom: 11px; }
+  .sk-toolbar[data-tier='overflow'] .sk-toolbar-start { flex: 1 1 0; min-width: min(100%, 260px); max-width: var(--start-need); }
+  .sk-toolbar.mac[data-tier='overflow'] .sk-toolbar-start { min-width: min(100%, 330px); }
+  .sk-toolbar[data-tier='overflow'] :is(.sk-toolbar-mid, .sk-toolbar-end) { flex: none; }
+  .sk-toolbar[data-tier='overflow'] .sk-toolbar-mid { margin-inline: auto; }
   .sk-toolbar[data-tier='overflow'] .sk-toolbar-end { min-width: 276px; margin-left: auto; }
-  .sk-toolbar.mac .sk-toolbar-start { padding-left: 70px; }
+  .sk-toolbar.mac .sk-toolbar-start { padding-left: 68px; }
   /* The window's chrome off macOS, kept free as the toolbar keeps it (Toolbar.css). */
-  .sk-toolbar:not(.mac) { padding-left: calc(10px + var(--chrome-start, 0px)); padding-right: calc(10px + var(--chrome-end, 0px)); min-height: max(var(--toolbar-h), env(titlebar-area-height, 0px)); }
+  .sk-toolbar:not(.mac) { --start-need: calc(430px + var(--chrome-start, 0px)); --sk-rest: calc(774px + var(--chrome-end, 0px)); min-height: max(var(--toolbar-h), env(titlebar-area-height, 0px)); }
+  .sk-toolbar:not(.mac):not([data-tier='full']) { --sk-rest: calc(608px + var(--chrome-end, 0px)); }
+  .sk-toolbar:not(.mac):not([data-tier='overflow']) .sk-toolbar-start { padding-left: var(--chrome-start, 0px); }
+  .sk-toolbar:not(.mac):not([data-tier='overflow']) .sk-toolbar-end { padding-right: var(--chrome-end, 0px); }
+  .sk-toolbar:not(.mac)[data-tier='overflow'] { --start-need: 430px; padding-left: calc(12px + var(--chrome-start, 0px)); padding-right: calc(12px + var(--chrome-end, 0px)); }
   .sk-toolbar-start, .sk-toolbar-mid, .sk-toolbar-end { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .sk-toolbar-end { justify-content: flex-end; }
   .sk-toolbar .sk-bar { height: 28px; border-radius: var(--r-sm); }

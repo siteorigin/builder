@@ -590,8 +590,10 @@ export interface DividerNode extends NodeBase {
  * entry a collection query finds (`$query`: a collection loop, anywhere), or an entry the archive page it is on lists
  * (`$archive`, in a collection's archive layout only). Inside a collection loop, `{ $item: field }` reads a field of
  * the entry (see shared/collection-rows.ts): `title`, `field.<name>`, `featuredImage`, `entryLink`, `terms.<taxonomy>`...
+ * A query's loop with `browse: true` lets visitors search, filter and sort the entries it shows (as a connected list's
+ * does, see ListConnection), the query alone deciding which those are.
  */
-export type RepeatSource = { $prop: string } | { $query: CollectionQuery } | { $archive: true };
+export type RepeatSource = { $prop: string } | { $query: CollectionQuery; browse?: true } | { $archive: true };
 
 /** The list property a repeat shows, or undefined for a collection loop. */
 export function repeatProp(node: { list?: unknown }): string | undefined {
@@ -693,6 +695,12 @@ export interface InstanceNode extends NodeBase {
 export interface ListConnection {
   query: CollectionQuery;
   fields: Record<string, string>;
+  /**
+   * Whether visitors can search, filter and sort the entries the list shows, with the controls the collection's
+   * `browse` setting offers (see generator/collection-browse.ts): only those entries, never the rest of the collection.
+   * Absent: they cannot. Kept apart from the query, so it never changes which entries show.
+   */
+  browse?: true;
 }
 
 /** A slot outlet's fallback: what its design shows while a placement gives the slot nothing (none for a list damaged by hand). */
@@ -1038,6 +1046,12 @@ export interface PageDoc extends NodeTree {
   showHeader: boolean;
   /** Whether this page shows the site's shared footer, independently of the header. */
   showFooter: boolean;
+  /**
+   * The author prefers this page as plain HTML on the website, without SvelteKit's scripts, while nothing it shows needs
+   * them (see generator/static-pages.ts). A page that gains something that does keeps the preference and loads its
+   * scripts again until that is gone. Absent: the page loads the site's scripts, as every page does by default.
+   */
+  preferStaticHtml?: boolean;
   /**
    * A draft stays in the project (editable, previewed, in the editable project export) but is left out of the
    * website: no page file, no sitemap entry, no old address leading to it. Unlike seo.noindex, which publishes the

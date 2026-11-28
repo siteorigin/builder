@@ -1,5 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { storedBrowse } from '@shared/collection-browse';
+import { archiveLoopIds } from '@generator/collection-browse';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { searchService } from '@shared/site-search';
@@ -15,6 +16,7 @@ import { slotDecl } from '@engine/slots';
 import { shownSlots } from '@engine/theme-updates';
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
+import { staticHtmlReason, staticHtmlVerdict } from '@generator/static-pages';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { hasCollections } from '@shared/entry-feed';
@@ -241,7 +243,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
       const parent = parents.get(id);
-      return { id, title: p.title, route: p.route, ...(parent ? { parentPageId: parent } : {}), sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...pageSeoSummary(p), ...(p.article ? { article: p.article } : {}) };
+      return { id, title: p.title, route: p.route, ...(parent ? { parentPageId: parent } : {}), sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(p.preferStaticHtml === true ? { preferStaticHtml: true } : {}), ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...pageSeoSummary(p), ...(p.article ? { article: p.article } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
@@ -325,9 +327,9 @@ export function collectionsSummary(state: ProjectState) {
         published: entries.filter((e) => e?.draft === false).length,
         ...(fields.length ? { fields } : {}),
         taxonomies,
-        // What visitors can do on its index (define_collection's browse replaces it whole), and whether the index's own
-        // design keeps it from showing.
-        ...(s && storedBrowse(s) ? { browse: storedBrowse(s), ...(s.archiveTemplate ? { browseOff: 'the index has its own design' } : {}) } : {})
+        // What visitors can do on its index and in the listings that browse it (define_collection's browse replaces it
+        // whole), and whether the index's own design keeps it from the index: one with no loop over the page's entries.
+        ...(s && storedBrowse(s) ? { browse: storedBrowse(s), ...(s.archiveTemplate && !archiveLoopIds(s.archiveTemplate).length ? { browseOff: "the index's own design has no loop over the page's entries" } : {}) } : {})
       };
     });
 }
@@ -474,6 +476,12 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
   return base;
 }
 
+/** A page that asks for plain HTML (see generator/static-pages.ts), and what keeps its scripts while something does. */
+function staticHtmlDetail(state: ProjectState, pageId: string): { preferStaticHtml: true; loadsScriptsBecause?: string } {
+  const verdict = staticHtmlVerdict(state, pageId);
+  return verdict.static ? { preferStaticHtml: true } : { preferStaticHtml: true, loadsScriptsBecause: staticHtmlReason(verdict) };
+}
+
 export function pageDetail(state: ProjectState, pageId: string) {
   const p = state.pages[pageId];
   if (!p) return null;
@@ -485,6 +493,8 @@ export function pageDetail(state: ProjectState, pageId: string) {
     ...(p.updatedAt !== undefined ? { updatedAt: p.updatedAt } : {}),
     showHeader: p.showHeader,
     showFooter: p.showFooter,
+    // Asked for plain HTML: while something on the page needs scripts, what keeps them.
+    ...(p.preferStaticHtml === true ? staticHtmlDetail(state, p.id) : {}),
     ...(isDraftPage(state, p) ? { draft: true } : {}),
     language: pageLanguage(state.site, p),
     ...(translationPeers(state, p).length ? { translations: translationPeers(state, p).map((t) => ({ id: t.id, title: t.title, route: t.route, language: pageLanguage(state.site, t) })) } : {}),

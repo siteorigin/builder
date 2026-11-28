@@ -48,6 +48,7 @@ import {
   projectReadme,
   pruneWebsiteAssets,
   settleServerHook,
+  settlePageModules,
   SYNC_COMMAND,
   SYNC_SCRIPT,
   themeNotice,
@@ -368,6 +369,7 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   projected = cleaned.state;
   await leaveOutDrafts(dir, live, projected);
   await settleServerHook(dir);
+  await settlePageModules(dir);
   // A route file the generator does not own (one of the author's own beside a draft's page, or a page it no longer
   // lists as its own) would still answer at an address kept back.
   // A route group's folder (`(shop)`) is no part of the address. An archive's own page at such an address, or an old

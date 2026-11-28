@@ -146,6 +146,19 @@ export function Toolbar() {
       root.style.removeProperty('--toolbar-bottom');
     };
   }, []);
+  // The start column takes what the identity needs but never more than the centre and end groups leave (Toolbar.css),
+  // so their widths are measured as they change: a tier's labels, a live session's pill, the Notes count.
+  const hasSnapshot = !!snap;
+  useLayoutEffect(() => {
+    const el = header.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const parts = [...el.querySelectorAll<HTMLElement>(':scope > .toolbar-center, :scope > .toolbar-end')];
+    const measure = () => el.style.setProperty('--toolbar-rest', `${Math.ceil(parts.reduce((sum, p) => sum + p.getBoundingClientRect().width, 0))}px`);
+    const observer = new ResizeObserver(measure);
+    for (const p of parts) observer.observe(p);
+    measure();
+    return () => observer.disconnect();
+  }, [hasSnapshot]);
   const replacement = () => header.current?.querySelector<HTMLElement>(tier === 'overflow' ? '.toolbar-more' : '.toolbar-settings');
   useLayoutEffect(() => {
     const was = focused.current;
@@ -298,15 +311,16 @@ export function Toolbar() {
     ...(remoteShell
       ? [{ label: 'Leave live session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }]
       : [
-          { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
-          { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
-          { separator: true },
+          // This project's own actions under its full name, which the trigger may have had to shorten.
+          { heading: projectName },
           { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
           { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
           { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
           { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
+          { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() },
           { separator: true },
-          { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
+          { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
+          { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') }
         ])
   ];
 
@@ -323,7 +337,8 @@ export function Toolbar() {
           onMouseDown={(e) => e.button === 0 && e.preventDefault()}
           onClick={() => void (remoteShell ? confirmLeaveLive() : closeProject())}
         >
-          <AppMark size={22} />
+          {/* Addo on the button's own face, 2px clear of its edge. */}
+          <AppMark size={24} tile={false} />
         </button>
         <div className="toolbar-group">
           <button className="icon-btn" aria-pressed={!!leftTab} title={`Show or hide the sidebar (${keys('⌘\\')})`} aria-label="Sidebar" onClick={() => setState({ leftTab: leftTab ? null : 'pages' })}>
@@ -376,13 +391,13 @@ export function Toolbar() {
             {save.kind !== 'saved' && save.kind !== 'pending' ? (
               <button className={`save-state ${save.kind}`} title={save.title} onClick={act}>
                 {save.icon}
-                {save.text}
+                <span className="save-text">{save.text}</span>
                 <ChevronRight className="go" aria-hidden="true" />
               </button>
             ) : (
               <span className={`save-state ${save.kind}`} title={save.title}>
                 {save.icon}
-                {save.text}
+                <span className="save-text">{save.text}</span>
               </span>
             )}
           </span>
@@ -490,7 +505,6 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-end">
-        {tier !== 'full' && <div className="toolbar-divider" role="presentation" />}
         <button className="icon-btn" disabled={!snap.history.canUndo} title={`${snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} (${keys('⌘Z')})`} aria-label={snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} onClick={() => projectHistory('undo')}>
           <Undo2 />
         </button>

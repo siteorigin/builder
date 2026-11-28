@@ -141,11 +141,11 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
   let script: string;
   let ssr: string;
   let css: string;
-  let appHtml: string;
+  let layout: string;
   beforeAll(async () => {
     const { state, showcase } = project();
     const files = generateProject(state);
-    appHtml = files.get('src/app.html')!;
+    layout = files.get('src/routes/+layout.svelte')!;
     ssr = await serverHtml(files);
     // The site's stylesheets, then each component's own styles, which a code component keeps in its file.
     const scoped = [...files].filter(([path]) => path.startsWith('src/') && path.endsWith('.svelte')).map(([path, source]) => compile(source, { filename: path, generate: 'client', runes: true }).css?.code ?? '');
@@ -353,8 +353,8 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
     const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 1280, height: 900 } });
     try {
       const page = await context.newPage();
-      // As the site ships it: the head's script that marks the page as running scripts never runs.
-      const head = /<script>document\.documentElement[^<]*<\/script>/.exec(appHtml)![0];
+      // As the site ships it: the head's script that marks the page as running scripts (the layout's) never runs.
+      const head = /<script>document\.documentElement[^<]*<\/script>/.exec(layout)![0];
       await page.setContent(`<!doctype html><html lang="en"><head>${head}<style>${css}</style></head><body><div id="app">${ssr}</div></body></html>`);
       const seen = (await page.evaluate(`({
         marked: document.documentElement.classList.contains('so-js'),

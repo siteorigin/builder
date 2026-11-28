@@ -39,6 +39,7 @@ import type { MissingAssetFiles } from '@shared/api';
 import type { WriteFailure } from './save-error';
 import { EXTERNAL_SOURCE_REFUSED, HISTORY_LIMIT } from '@shared/api';
 import { CUSTOM_DIR, defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
+import { STATIC_PAGE_JS } from '@generator/static-pages';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -47,6 +48,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
+import { isPageModule, isSourceCode, ownRouteFiles } from './page-module';
 import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, codePartTexts, componentSources, declaredPackages, importedPackages, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { isAppCodePath } from '@shared/code-workspace';
@@ -110,10 +112,12 @@ const OBSOLETE_FEED_REASON = 'This RSS feed was edited outside SiteOrigin Builde
 /** A generated file of redirect rules a host follows ahead of the website's pages (generator/host-redirects.ts). */
 const routesVisitors = (path: string) => path === HOST_REDIRECTS_FILE || path === VERCEL_CONFIG_FILE;
 const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside SiteOrigin Builder, and the website no longer has any, so its host would still follow them, even past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
+/** Why a page's route module the page no longer has, edited outside the app, is in conflict (generator/static-pages.ts). */
+const OBSOLETE_PAGE_MODULE_REASON = 'This page’s route module was edited outside SiteOrigin Builder, and the page no longer has one, so a build would still serve the page as it says, perhaps without the scripts the page needs now. Restore it to remove it (your version is kept as a copy), or move it.';
 /** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
 /** vercel.json, once the site's host is no longer Vercel: it holds Vercel's caching rule as well as any redirects. */
 const OBSOLETE_VERCEL_REASON = 'This vercel.json was edited outside SiteOrigin Builder, and the website is no longer published on Vercel, so Vercel would still follow its rules if the site went back there, even its redirects past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
-const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
+const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path) || isPageModule(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
 /**
@@ -885,6 +889,12 @@ export class ProjectSession extends EventEmitter {
   /** The parts of validation one state can share with the next: each document checked again only when it changes. */
   private validation = new ValidationCache();
   conflicts: Conflict[] = [];
+  /**
+   * The route modules of pages served as plain HTML (generator/static-pages.ts) that the last publication left out, as
+   * the project's own route files or generated code edited outside the app decide how those pages run: they load their
+   * scripts, whatever the documents say.
+   */
+  keptPageModules: string[] = [];
   /** While the open's publication runs after the project is shown: the conflicts as they were before it (shownConflicts). */
   private conflictsBeforeOpen: Conflict[] | null = null;
   /**
@@ -3014,6 +3024,16 @@ export class ProjectSession extends EventEmitter {
     // does not leaves the not-found page with the addresses it was built with, and pages without their languages, which
     // the export of the website says.
     if (ownServerHook(this.dir, known(SERVER_HOOK_FILE))) for (const files of [clean, dev]) files.delete(SERVER_HOOK_FILE);
+    // A page served as plain HTML says so in a route module of its own (generator/static-pages.ts). A page with route
+    // files of the project's own runs as they say instead (see ownRouteFiles), its preview's copy of the module gone too.
+    const pageModules = [...clean].filter(([, content]) => content === STATIC_PAGE_JS).map(([path]) => path);
+    const kept: string[] = [];
+    for (const path of pageModules) {
+      if (!ownRouteFiles(this.dir, path, known)) continue;
+      for (const files of [clean, dev]) files.delete(path);
+      await fs.rm(safeJoin(devRoot, path), { force: true });
+      kept.push(path);
+    }
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
@@ -3171,6 +3191,21 @@ export class ProjectSession extends EventEmitter {
     }
     next('session.publish.variants');
     const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
+    // Generated code kept as edited outside the app, or someone else's file where it goes, may need scripts the
+    // documents know nothing of: while there is any, no page is served as plain HTML (generator/static-pages.ts).
+    if ([...keptExternal].some((path) => isSourceCode(path) && !pageModules.includes(path))) {
+      for (const path of pageModules) {
+        if (!clean.has(path) || keptExternal.has(path)) continue;
+        for (const files of [clean, dev]) files.delete(path);
+        delete desired[path];
+        delete nextFiles[path];
+        hashes.delete(safeJoin(this.dir, path));
+        const planned = plan.findIndex((f) => f.path === path);
+        if (planned >= 0) plan.splice(planned, 1);
+        kept.push(path);
+      }
+    }
+    this.keptPageModules = kept.sort();
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
     // app has no variant: the preview shows the external version, as the exported site would.
@@ -3317,7 +3352,7 @@ export class ProjectSession extends EventEmitter {
         // or moved away.
         nextFiles[path] = prev[path] ?? inflight[path];
         // So would redirect rules a host follows, even past a page given one of their addresses since.
-        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : path === VERCEL_CONFIG_FILE ? OBSOLETE_VERCEL_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
+        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : path === VERCEL_CONFIG_FILE ? OBSOLETE_VERCEL_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : isPageModule(path) ? OBSOLETE_PAGE_MODULE_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);

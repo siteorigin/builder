@@ -57,6 +57,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   draft: ['draft'],
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
+  preferStaticHtml: ['preferStaticHtml'],
   socialImage: ['seo', 'socialImage'],
   canonical: ['seo', 'canonical'],
   updatedAt: ['updatedAt'],

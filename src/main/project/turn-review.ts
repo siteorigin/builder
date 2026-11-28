@@ -133,6 +133,8 @@ const PAGE_FIELDS: Array<[string, (p: Obj) => unknown]> = [
   ['Description', (p) => (isObj(p.seo) ? p.seo.description : undefined)],
   ['Shows the header', (p) => p.showHeader],
   ['Shows the footer', (p) => p.showFooter],
+  // Unset loads the site's scripts.
+  ['Prefers static HTML', (p) => p.preferStaticHtml === true],
   // Unset is published.
   ['Draft', (p) => p.draft === true],
   ['Language', (p) => p.language]

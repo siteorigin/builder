@@ -88,7 +88,7 @@ export type ToolbarSession = 'local' | 'hosting' | 'guest';
 export const TOOLBAR_FULL_MIN: Readonly<Record<ToolbarSession, number>> = { local: 1392, hosting: 1512, guest: 1528 };
 export const TOOLBAR_COMPACT_MIN: Readonly<Record<ToolbarSession, number>> = { local: 1080, hosting: 1120, guest: 1080 };
 export const MAC_TRAFFIC_LIGHTS = 70;
-/** How much narrower the full toolbar's start column is on macOS, net of the traffic lights it holds: 460px against 430px. */
+/** The part of the traffic lights' room the full toolbar pays for on macOS (the thresholds above are macOS's; elsewhere the window's chrome is counted instead, ToolbarChrome). */
 export const MAC_FULL_START_EXTRA = 30;
 
 /**

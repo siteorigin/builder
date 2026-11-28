@@ -8,15 +8,17 @@
  */
 import { useId, type ReactNode } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import type { InstanceNode, ListConnection, ListProp, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
+import type { Collection, InstanceNode, ListConnection, ListProp, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, QUERY_OPERATORS, normalizeCollectionQuery, queryEntries, type CollectionQuery, type QueryClause, type QueryOperator } from '@shared/collection-query';
 import { fieldFitProblem, rowFieldSchemas } from '@shared/collection-rows';
 import { requiredGap } from '@shared/required';
 import { isEntryDateField, isLinkedForm } from '@shared/entry-fields';
-import { connectionProblem, loopProblem } from '@engine/collection-sources';
+import { connectionProblem, loopCollection, loopProblem } from '@engine/collection-sources';
+import { collectionBrowse } from '@shared/collection-browse';
 import { getTree } from '@engine/tree';
 import { applyOps, toast, useStore } from '../store';
-import { ChoiceField, DraftInput, Field } from '../components/ui';
+import { ChoiceField, DraftInput, Field, SwitchRow } from '../components/ui';
+import { CollectionBrowsing } from './CollectionBrowsing';
 import './CollectionListControls.css';
 
 const OP_WORDS: Record<QueryOperator, string> = { eq: 'is', ne: 'is not', in: 'is one of', contains: 'contains', gt: 'is more than', gte: 'is at least', lt: 'is less than', lte: 'is at most', exists: 'is set' };
@@ -253,6 +255,30 @@ function FoundEntries({ state, owner, query, max }: { state: ProjectState; owner
 }
 
 /**
+ * Whether visitors can search, filter and sort what a list shows (`what`: its items, its entries), only that and in
+ * their own browser, and while they can, what the collection lets them use, which its index and every list of it that
+ * browses share.
+ */
+function ListBrowsing({ collection, on, what, onChange }: { collection: Collection; on: boolean; what: string; onChange: (on: boolean) => void }) {
+  const { id, name } = collection.settings;
+  const offers = !!collectionBrowse(collection.settings);
+  return (
+    <div className="cq-browse">
+      <SwitchRow checked={on} label="Visitors can search, filter and sort" hint={`Only the ${what} shown here, as the query chooses them.`} onChange={onChange} />
+      {on && (
+        <CollectionBrowsing
+          collectionId={id}
+          name={name}
+          settings={collection.settings}
+          legend={`What visitors can use`}
+          note={offers ? `Set for ${name}: its index, and every list of it that browses, offers the same.` : `Choose at least one: until then the ${what} show no controls. Set for ${name}, its index and every list of it that browses.`}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * A first connection for a list: the first collection (by name) whose entry fields can fill every field an item needs,
  * each item field filled by the entry field of the same kind it best fits. Null when no collection can.
  */
@@ -295,7 +321,7 @@ export function ListSourceSwitch({ state, owner, node, prop, schema, manual }: {
   const hasCollections = Object.keys(state.collections ?? {}).length > 0;
   if (!hasCollections && !connection) return <>{manual}</>;
   const label = schema.label.toLowerCase();
-  const send = (source: ListConnection | null, words: string) => void applyOps([{ type: 'instance.setListSource', owner, nodeId: node.id, prop, source: source as { query: Record<string, unknown>; fields: Record<string, string> } | null }], words);
+  const send = (source: ListConnection | null, words: string) => void applyOps([{ type: 'instance.setListSource', owner, nodeId: node.id, prop, source: source as { query: Record<string, unknown>; fields: Record<string, string>; browse?: true } | null }], words);
   const mode = connection ? 'collection' : 'own';
   const toggle = (
     <ChoiceField
@@ -359,6 +385,14 @@ export function ListSourceSwitch({ state, owner, node, prop, schema, manual }: {
           </div>
         ))}
       </div>
+      {collection && (
+        <ListBrowsing
+          collection={collection}
+          on={connection.browse === true}
+          what={label}
+          onChange={(on) => send({ query: connection.query, fields: connection.fields, ...(on ? { browse: true as const } : {}) }, on ? `Let visitors search, filter and sort the ${label}` : `Stop letting visitors search, filter and sort the ${label}`)}
+        />
+      )}
       {problem && <p className="insp-note error">{problem}</p>}
       <p className="insp-note faint">Its own {label} are kept: they show again when it shows its own items.</p>
     </div>
@@ -377,9 +411,14 @@ export function LoopSourceControls({ state, owner, node }: { state: ProjectState
   const query = normalizeCollectionQuery(list.$query) ?? { collectionId: '' };
   const tree = getTree(state, owner);
   const problem = loopProblem(state, owner, tree, node);
+  const browse = (list as { browse?: unknown }).browse === true;
+  // Browsing goes with the query, which keeps it as it changes.
+  const send = (q: CollectionQuery, on: boolean, words: string) => void applyOps([{ type: 'node.setRepeatSource', owner, nodeId: node.id, source: { $query: q as unknown as Record<string, unknown>, ...(on ? { browse: true as const } : {}) } }], words);
+  const collection = loopCollection(state, owner, node);
   return (
     <>
-      <QueryControls state={state} owner={owner} query={query} onChange={(q) => void applyOps([{ type: 'node.setRepeatSource', owner, nodeId: node.id, source: { $query: q as unknown as Record<string, unknown> } }], 'Choose which entries the list shows')} note={<FoundEntries state={state} owner={owner} query={query} />} />
+      <QueryControls state={state} owner={owner} query={query} onChange={(q) => send(q, browse, 'Choose which entries the list shows')} note={<FoundEntries state={state} owner={owner} query={query} />} />
+      {collection && <ListBrowsing collection={collection} on={browse} what="entries" onChange={(on) => send(query, on, on ? 'Let visitors search, filter and sort the list' : 'Stop letting visitors search, filter and sort the list')} />}
       {problem && <p className="insp-note error">{problem}</p>}
       <p className="insp-note faint">Each element inside shows a field of each entry: bind it in its Entry content.</p>
     </>

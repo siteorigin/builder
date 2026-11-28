@@ -52,6 +52,7 @@ import { createReviewShooter } from './review-capture';
 import { createPageChecker } from './page-check-window';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { setEditorHandOff } from './external-editor';
+import { chromePlatformArgs } from '@shared/chrome-platform';
 import { PastedImages } from './pasted-images';
 import { installSourceTestHosts } from './sources/test-hosts';
 import { sweepSpools } from './sources/spool';
@@ -1307,7 +1308,8 @@ async function createWindow() {
       // second launch after an update reuses it (code-cache.ts).
       v8CacheOptions,
       // Its preload offers the editor a way to send timing marks only while they are on (src/shared/perf.ts).
-      ...(perf.on ? { additionalArguments: [PERF_ARG] } : {})
+      // A test may ask for another platform's chrome (shared/chrome-platform.ts).
+      additionalArguments: [...(perf.on ? [PERF_ARG] : []), ...chromePlatformArgs(process.env, automated)]
     }
   });
   perf.mark('launch.windowCreated', { window: win.id });
