@@ -6,7 +6,7 @@
  */
 import type { AssetRecord, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasTermArchives, hasDetailPages, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasTermArchives, hasDetailPages, isDeviceName, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
 import { archiveRoute } from '@shared/archives';
 import { hasTerm, publishedEntries } from '@shared/entry-feed';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
@@ -121,8 +121,15 @@ export interface PostImportPlan {
 
 const lower = (s: string) => s.toLowerCase();
 
-/** The path a WordPress site is installed at, from its key ("" at the host's root, "/news" for one at /news/). */
-const homeOf = (siteKey: string) => new URL(siteKey).pathname.replace(/\/+$/, '');
+/** The path a WordPress site is installed at, from its key, as a route spells it ("" at the host's root, "/news" for one at /news/). */
+function homeOf(siteKey: string): string {
+  const path = new URL(siteKey).pathname.replace(/\/+$/, '');
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
 
 /** Text cut to `max` characters at a word, ending in an ellipsis when it was cut. */
 function clip(text: string, max: number): { text: string; cut: boolean } {
@@ -330,7 +337,9 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       over[tax].add(lower(label));
       return null;
     }
-    const stem = [term.slug && isTermId(lower(term.slug)) ? lower(term.slug) : '', slugify(label).slice(0, 50)].find((s) => s && isTermId(s)) || 'term';
+    // One no ID can be (a device's name, "aux") is numbered, as a name the collection has already is.
+    const candidates = [term.slug ? lower(term.slug) : '', slugify(label).slice(0, 50)].filter((x) => x && isTermId(`${x.slice(0, 50)}-2`));
+    const stem = candidates.find((x) => isTermId(x)) ?? candidates[0] ?? 'term';
     let id = stem;
     for (let n = 2; Object.hasOwn(t.terms, id) || !isTermId(id); n++) id = `${stem.slice(0, 50)}-${n}`;
     t.terms[id] = { label };
@@ -588,8 +597,13 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
         archiveSources[k] = { keys: term.keys };
         return null;
       };
+      // An imported post's own old address goes on to that post.
+      if (redirects.has(k)) return null;
       const problem = redirectSourceProblem(from);
       if (problem) return lose(problem.replace(/\.$/, ''));
+      // Every part of it is a folder of the website, which some systems can't make with a device's name.
+      const device = from.slice(1, -1).split('/').find(isDeviceName);
+      if (device) return lose(`“${device}” can’t be the name of a folder on every computer`);
       if (!termsOn) return lose(`the ${name} collection has no category and tag pages`);
       // One kept already that leads there (by an earlier import, or by hand) needs nothing; one leading elsewhere stays so.
       const was = kept.get(k);
@@ -598,8 +612,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
         const holder = taken.get(k);
         return lose(holder ? heldBy(holder) : 'it already sends visitors somewhere else');
       }
-      // An imported post's own old address goes on to that post.
-      if (planned.has(k) || redirects.has(k) || lower(to) === k) return null;
+      if (planned.has(k)) return lose('it is the address of an imported post');
+      if (lower(to) === k) return null;
       const holder = taken.get(k) ?? (underArchiveFolder(route, from) ? { kind: 'collection' as const, route: from, collectionId: POSTS_COLLECTION_ID, label: `the ${name} collection's archive pages` } : archiveRouteOwner(state, from));
       if (holder) return lose(heldBy(holder));
       sent.set(k, to);

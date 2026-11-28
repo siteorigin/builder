@@ -1164,7 +1164,7 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const s = applyOperations(site(), [{ type: 'redirect.add', from: '/tag/rye/', to: '/' }]).state;
     const source = await readWordPress(
       wxr([
-        post(1, 'Rye', term('post_tag', 'rye', 'Rye') + term('post_tag', 'field_notes', 'Field notes')),
+        post(1, 'Rye', term('post_tag', 'rye', 'Rye') + term('post_tag', 'field_notes', 'Field notes') + term('post_tag', 'aux', 'Aux')),
         post(2, 'Later', term('post_tag', 'legumes', 'Legumes'), 'draft'),
         // A post whose own old address is a tag's: the post keeps it.
         post(3, 'Clover', term('post_tag', 'clover', 'Clover'), 'publish', 'https://old.example/tag/clover/')
@@ -1176,8 +1176,11 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     // One kept already for something else stays so, and one no address can spell is said; the post's own is neither.
     expect(plan.archiveRedirectsLost.map((l) => [l.from, l.reason])).toEqual([
       ['/tag/rye/', 'it is already a redirect to /'],
-      ['/tag/field_notes/', expect.stringMatching(/^"field_notes" can’t be part of an address/)]
+      ['/tag/field_notes/', expect.stringMatching(/^"field_notes" can’t be part of an address/)],
+      // Its archive takes an ID every system can make a folder of, but the old address can't be one.
+      ['/tag/aux/', '“aux” can’t be the name of a folder on every computer']
     ]);
+    expect(after.collections.posts.settings.taxonomies.tags.terms['aux-2']).toEqual({ label: 'Aux' });
     expect(after.site.redirects).toContainEqual({ from: '/tag/legumes/', custom: true, to: '/blog/tag/legumes/', archiveOf: 'posts' });
     // Moved before its draft is published, the old address goes with the collection, and works once it is.
     const moved = applyOperations(after, [{ type: 'collection.update', collectionId: 'posts', route: '/journal/' }]).state;
@@ -1220,6 +1223,12 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const onlyOld = planPostImport(first, await readWordPress(wxr([post(1, 'Soil', term('category', 'loam', 'Loam'))], installed), pages(first)), '2026-11-24');
     expect(selectPlan(onlyOld, 'skip').archiveRedirects).toEqual([]);
     expect(selectPlan(onlyOld, 'update').archiveRedirects).toEqual([{ from: '/news/category/loam/', to: '/blog/category/loam/' }]);
+    // An installation at a path spelled in another script is read as routes spell it.
+    const native = await readWordPress(
+      wxr([post(1, 'Soil', term('category', 'soil', 'Soil'), 'publish', '<p><a href="https://old.example/%E6%97%A5%E8%A8%98/category/farming/soil/">Soil</a>.</p>')], '<wp:base_blog_url>https://old.example/%E6%97%A5%E8%A8%98</wp:base_blog_url>'),
+      pages(s)
+    );
+    expect(planPostImport(s, native, '2026-11-24').archiveRedirects.map((r) => r.from)).toEqual(['/日記/category/soil/', '/日記/category/farming/soil/']);
   });
 
   it('says when a featured picture is not in the export', async () => {

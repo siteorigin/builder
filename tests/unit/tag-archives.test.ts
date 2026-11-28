@@ -117,6 +117,7 @@ describe('a post’s tags', () => {
     const kiln = out.get(route('/blog/new-kiln/'))!;
     expect(kiln).toContain('<SoRichText value={[{"type":"p","spans":[{"text":"Cover crops","link":{"href":"/blog/tag/cover-crops/"}},{"text":", "},{"text":"Glaze","link":{"href":"/blog/tag/glaze/"}}]}]}');
     // Under the post's text.
+    expect(kiln.indexOf('{"text":"New kiln."}')).toBeGreaterThan(-1);
     expect(kiln.indexOf('/blog/tag/cover-crops/')).toBeGreaterThan(kiln.indexOf('{"text":"New kiln."}'));
     // A post without tags shows no tags.
     const untagged = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_open', terms: { tags: [] } } as EditOperation);

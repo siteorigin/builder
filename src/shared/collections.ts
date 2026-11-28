@@ -86,6 +86,9 @@ export function isSyncedCollection(settings: { sourceId?: unknown } | undefined)
 /** Names a folder may not have on every system that may open the project. */
 const DEVICE_NAMES = /^(con|prn|aux|nul|com\d|lpt\d)$/;
 
+/** Whether a folder can't have this name on every system: a device's name, in any case. */
+export const isDeviceName = (name: string): boolean => DEVICE_NAMES.test(name.toLowerCase());
+
 /** Object-prototype names, which no operation may name as an ID (see `validateOperation`). */
 const PROTO_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
