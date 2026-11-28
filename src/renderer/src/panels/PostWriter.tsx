@@ -1437,7 +1437,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       {dialog?.kind === 'image' && (() => {
         const images = Object.values(state.assets.assets).some((a) => a.kind === 'image');
         const lost = !!dialog.value.assetId && snap.missingAssets.some((m) => m.assetId === dialog.value.assetId && m.original);
-        const ready = !!dialog.value.assetId && Object.hasOwn(state.assets.assets, dialog.value.assetId) && !lost;
+        // Only a library picture can be placed: a figure pointing at a font or a document (assets.json edited by hand) is none.
+        const ready = !!dialog.value.assetId && Object.hasOwn(state.assets.assets, dialog.value.assetId) && state.assets.assets[dialog.value.assetId]?.kind === 'image' && !lost;
         return (
           <Modal
             title={dialog.fig ? 'Edit picture' : 'Add picture'}
@@ -1599,7 +1600,7 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
       </div>
     );
   const damage = (id: string) => missing.find((m) => m.assetId === id);
-  const chosen = value.assetId && Object.hasOwn(state.assets.assets, value.assetId) ? state.assets.assets[value.assetId] : undefined;
+  const chosen = value.assetId && Object.hasOwn(state.assets.assets, value.assetId) && state.assets.assets[value.assetId]?.kind === 'image' ? state.assets.assets[value.assetId] : undefined;
   const nameOf = (id: string) => labels.get(id)?.label ?? state.assets.assets[id]?.name ?? 'Picture';
   const pick = (id: string) => {
     // A picture whose file is gone can't go into the text; repaired in Assets, it can.

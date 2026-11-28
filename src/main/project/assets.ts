@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ImportReviewRow, WebCopyPlan } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
+import { FONT_FILE_RE } from '@shared/fonts';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { COPY_EXTENSIONS, copyMime, isCopyMime, type CopyMime } from '@shared/picture-formats';
@@ -575,14 +576,38 @@ export async function importAsset(
   existing: AssetRecord[],
   fence: WriteFence = unfenced,
   opts: ImportOptions = {}
-): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font']; note?: string; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
+): Promise<{ record: AssetRecord; existing: boolean; restored?: true; font?: AssetRecord['font']; note?: string; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const refuse = refusal(sourcePath, 'was not imported');
   const { note, ...p } = await prepareImport(sourcePath, refuse, opts);
   const noted = note ? { note } : {};
   const dup = sameFile(existing, p);
-  // A font imported before metadata was recorded gets it now.
-  if (dup) return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+  if (dup) return { ...(await keptDuplicate(projectDir, dup, p, fence)), ...noted };
   return { ...(await storePrepared(projectDir, sourcePath, p, existing, fence, opts, refuse)), ...noted };
+}
+
+/**
+ * The library record already holding an imported file's bytes, as the import returns it. A font whose file has left
+ * the project folder gets it back from these very bytes (#1425, `restored`): its record, its details and the styles
+ * using its family stay as they are. A font imported before metadata was recorded gets it now (`font`).
+ */
+async function keptDuplicate(projectDir: string, dup: AssetRecord, p: PreparedFile, fence: WriteFence, restoring?: Promise<boolean>): Promise<{ record: AssetRecord; existing: true; restored?: true; font?: AssetRecord['font'] }> {
+  const restored = dup.kind === 'font' && (await (restoring ?? restoreFontFile(projectDir, dup, p.buf, fence)));
+  return { record: dup, existing: true, ...(restored ? { restored: true as const } : {}), ...(p.font && !dup.font ? { font: p.font } : {}) };
+}
+
+/**
+ * Put a library font's file back where its record names it, from `buf`, which must be that very file (its recorded
+ * content). Only a missing file is written, while `fence` allows; a file already there is left alone. True when the
+ * file was written.
+ */
+export async function restoreFontFile(projectDir: string, record: AssetRecord, buf: Buffer, fence: WriteFence = unfenced): Promise<boolean> {
+  const name = record.name.trim() || 'This font';
+  if (typeof record.file !== 'string' || !FONT_FILE_RE.test(record.file)) throw new Error(`${name} has a file name SiteOrigin Builder did not give it, so its file cannot be put back. Add the font again as a font of its own.`);
+  if (sha(buf) !== record.hash) throw new Error(`That file is not the one ${name} was made from.`);
+  if (await isFile(safeJoin(projectDir, record.file))) return false;
+  let written: string[] = [];
+  if (!(await fence(async () => void (written = await writeFiles(projectDir, [{ rel: record.file, data: buf }], true))))) throw new Error(`${name} was not restored because ${NOT_WRITTEN}.`);
+  return written.length > 0;
 }
 
 /** The library record already holding a prepared file's bytes. The same bytes under another format's name (a .txt and a .csv) are a file of their own. */
@@ -628,11 +653,13 @@ export async function importAssetBatch(
   files: ReadonlyArray<{ path: string; opts: ImportOptions }>,
   known: AssetRecord[],
   fence: WriteFence,
-  batch: { parallel: number; go: () => boolean }
+  batch: { parallel: number; go: () => boolean; repair?: (record: AssetRecord) => WriteFence }
 ): Promise<Array<BatchOutcome | undefined>> {
   const out: Array<BatchOutcome | undefined> = new Array(files.length);
   // The families each legacy-named font may join, settled once every file is in (joinFontFamilies).
   const joins: Array<string[] | undefined> = new Array(files.length);
+  // The fonts whose missing file a file of this batch is putting back, by record: the same font given twice writes once.
+  const repairs = new Map<string, Promise<boolean>>();
   // Each picture's store so far, by content: the record a later file with the same bytes takes (null when it failed).
   const stores = new Map<string, Promise<AssetRecord | null>>();
   // Settled once the file started last has claimed its picture (or failed before it could), so claims go in order.
@@ -657,7 +684,15 @@ export async function importAssetBatch(
     const dup = sameFile(known, p);
     if (dup) {
       claimed();
-      return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+      let restoring: Promise<boolean> | undefined;
+      if (dup.kind === 'font') {
+        restoring = repairs.get(dup.id) ?? restoreFontFile(projectDir, dup, p.buf, batch.repair?.(dup) ?? fence);
+        repairs.set(dup.id, restoring);
+      }
+      return keptDuplicate(projectDir, dup, p, fence, restoring).then(
+        (r) => ({ ...r, ...noted }),
+        (e: unknown) => ({ error: e as Error })
+      );
     }
     // A file before this one with the same bytes is storing them: its record is this one's too, unless it failed.
     const key = `${p.hash}\0${p.mime}`;
@@ -844,10 +879,18 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
 /**
  * The file an author located for a library image whose original is missing. The same picture goes back where the
  * library expects it, with its copies, and nothing else changes. A different picture is stored as an import would
- * store it, and what the image record should now say is returned for asset.relink.
+ * store it, and what the image record should now say is returned for asset.relink. A document takes any document; a
+ * font only its very file.
  */
 export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string, fence: WriteFence = unfenced, library: AssetRecord[] = []): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
   const refuse = refusal(sourcePath, "can't be used");
+  // A font is put back only from its very file: another file is another face, which Add fonts adds as one of its own.
+  if (record.kind === 'font') {
+    if (!isAssetOfKind(sourcePath, 'font')) throw refuse('it is not a font. Choose the WOFF2 or WOFF file the font was added from.');
+    const p = await prepareFile(sourcePath, refuse);
+    if (p.hash !== record.hash || p.mime !== record.mime) throw refuse(`it is not the file of ${record.name.trim() || 'this font'}. Choose the file the font was added from, or add this one with Add fonts.`);
+    return { same: true, written: (await restoreFontFile(projectDir, record, p.buf, fence)) ? [record.file] : [], failed: [] };
+  }
   const document = record.kind === 'document';
   if (document && !isAssetOfKind(sourcePath, 'document')) throw refuse('it is not a document. Choose a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file.');
   if (!document && isPhotoToConvert(sourcePath)) throw refuse('it is a HEIC photo, which browsers can’t show. Add it to Assets with Add images, which makes a JPEG copy, then use Replace everywhere.');
