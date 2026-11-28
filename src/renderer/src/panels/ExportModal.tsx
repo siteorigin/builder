@@ -3,7 +3,7 @@ import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FolderCode, Globe,
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
-import type { Diagnostic, ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
+import { BUILD_FAILED_UNPLACED, type Diagnostic, type ExportFormat, type ExportNote, type ExportResult, type RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout, showArchiveLayout } from '../lib/actions';
@@ -30,6 +30,8 @@ const LONG_LINK_LIST = 3;
 /** More notes than this fold into the export's own row, so a success keeps its next step in view. */
 const MANY_NOTES = 2;
 const UNEXPECTED_FAILURE = 'The export could not be completed.';
+/** Why the website card waits while the website tools are set up (#1395), said in the dialog and announced. */
+const TOOLS_NOTE = 'SiteOrigin Builder is still setting up the website tools. The website can be exported once they are ready; the editable project can be exported now.';
 const NOT_STARTED = 'The export didn’t start, because a change isn’t saved yet. Save or discard it, then export again.';
 let reports = 0;
 /** A new export report's id: unique for this editor's lifetime, across every opening of the dialog. */
@@ -440,6 +442,10 @@ export function ExportModal() {
   // Export builds from the project folder and needs its lock, so a read-only project exports nothing (controller.ts).
   const readOnlyReason = useStore((s) => s.snapshot?.readOnly?.reason ?? null);
   const readOnly = readOnlyReason !== null;
+  // The website is built with the project's website tools, so its export waits while they are set up or reinstalled
+  // (#1395); the editable project needs none. Only that: a preview still starting has its tools ready. (A read-only
+  // project is preparing a copy to preview, and exports nothing anyway.)
+  const toolsSettingUp = useStore((s) => s.runtime.state === 'preparing') && !readOnly;
   const samples = useMemo(() => (state ? sampleContactMatches(state) : []), [state]);
   const samplesToReview = samples.filter((g) => !keptValues.includes(g.value));
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
@@ -526,7 +532,7 @@ export function ExportModal() {
     : awaiting
       ? aiAwaiting('export')
       : aiChanging('export');
-  const availability = readOnlyReason ?? (aiBusy ? aiNote : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : 'Both exports are available.');
+  const availability = readOnlyReason ?? (aiBusy ? aiNote : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : toolsSettingUp ? TOOLS_NOTE : 'Both exports are available.');
   const [announced, setAnnounced] = useState('');
   const lastAvailability = useRef(availability);
   useEffect(() => {
@@ -552,7 +558,7 @@ export function ExportModal() {
     target?.focus();
   }, [busy, result]);
   const run = async (kind: ExportKind) => {
-    if (busy || reviewBusy || blocked || (kind === 'static' && draftLinks.length)) return;
+    if (busy || reviewBusy || blocked || (kind === 'static' && (draftLinks.length || toolsSettingUp))) return;
     setBusy(kind);
     const opening = getState().snapshot?.workspaceKey;
     try {
@@ -590,7 +596,8 @@ export function ExportModal() {
     setResult(null);
   };
   const blockedBy = [readOnly && 'export-blocked-read-only', aiBusy && !readOnly && 'export-blocked-ai', conflicts > 0 && 'export-blocked-conflict'].filter(Boolean) as string[];
-  const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : [])];
+  const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : []), ...(toolsSettingUp && !blocked ? ['export-blocked-tools'] : [])];
+  const websiteUnavailable = blocked || draftLinks.length > 0 || toolsSettingUp;
   const cardState = (kind: ExportKind) => (busy === kind ? ' is-running' : '');
   const formatWords = format === 'zip' ? 'in one ZIP file' : 'as a folder';
   /** What the end of a card says it will do: start, work, or nothing until its blocker is cleared. Its name says the rest. */
@@ -691,12 +698,12 @@ export function ExportModal() {
           </fieldset>
         </div>
       </div>
-      <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || !!reviewBusy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
+      <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || !!reviewBusy || websiteUnavailable || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
         <span className="ico"><Globe size={18} /></span>
         <span className="grow">
           <span className="export-card-title">
             <strong>Website files, ready to upload</strong>
-            {cardEnd('static', blocked || draftLinks.length > 0)}
+            {cardEnd('static', websiteUnavailable)}
           </span>
           {pagesText ? (
             <>
@@ -805,7 +812,7 @@ export function ExportModal() {
                     </span>
                   ))
                 )}
-                {!shown.ok && shown.details && <span className="export-note-next">{shown.message === UNEXPECTED_FAILURE ? 'Try exporting again. If it keeps failing, use Copy details and send the report to your developer or support.' : 'Check the page or component named above in the editor, then export again. If you can’t fix it, use Copy details and send the report to your developer or support.'}</span>}
+                {!shown.ok && shown.details && <span className="export-note-next">{shown.message === UNEXPECTED_FAILURE || shown.message === BUILD_FAILED_UNPLACED ? 'Try exporting again. If it keeps failing, use Copy details and send the report to your developer or support.' : 'Check the page or component named above in the editor, then export again. If you can’t fix it, use Copy details and send the report to your developer or support.'}</span>}
               </div>
             </div>
             {/* Guidance for the host, not a note about the website: it is never counted among the notes to review. */}
@@ -850,6 +857,14 @@ export function ExportModal() {
                     Open project health
                   </button>
                 )}
+              </div>
+            )}
+            {toolsSettingUp && !blocked && (
+              <div className="scope-note info export-blocker" data-testid="export-blocked-tools">
+                <Info aria-hidden />
+                <span className="export-note-body export-blocker-text" id="export-blocked-tools">
+                  {TOOLS_NOTE}
+                </span>
               </div>
             )}
             {state && draftLinks.length > 0 && (
