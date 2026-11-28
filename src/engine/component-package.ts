@@ -27,6 +27,8 @@ import { childLists, fail } from './tree';
 import { FORM_DESTINATIONS, sendsFormMessages } from '@shared/form-contract';
 import { clone, installComponent } from './install';
 import { definitionRequiredProblems } from './required';
+import { familiesUsedBy, projectFontFamilies } from '@shared/fonts';
+import { installedFontFamilies } from '@catalogue/fonts';
 
 type OpResult = Record<string, unknown>;
 
@@ -233,6 +235,31 @@ function resolvedValue(tokens: readonly TokenDef[], t: TokenDef): string | TextS
   return typeof v === 'string' ? v : String(v);
 }
 
+/** "The font “Inter”", "The fonts “Inter” and “Lora”". */
+function fontNames(families: readonly string[]): string {
+  const names = families.map(quoted);
+  return `The ${names.length === 1 ? 'font' : 'fonts'} ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`}`;
+}
+
+/**
+ * The fonts a package's components use that `state` doesn't have (#1418): the families of the source project's own
+ * fonts, which stay with it, that are neither among this project's fonts nor its theme's. Case is ignored, as in CSS.
+ */
+export function missingPackageFonts(state: ProjectState, pkg: Pick<ComponentPackage, 'fonts'>): string[] {
+  const key = (f: string) => f.replace(/\s+/g, ' ').trim().toLowerCase();
+  const have = new Set([...projectFontFamilies(state).map((f) => f.family), ...installedFontFamilies(state)].map(key));
+  return (pkg.fonts ?? []).filter((f) => !have.has(key(f)));
+}
+
+/** What an import tells the author about the fonts the package's components use that the project doesn't have. */
+export function missingFontNote(state: ProjectState, pkg: ComponentPackage, name: string): string | undefined {
+  const missing = missingPackageFonts(state, pkg);
+  if (!missing.length) return undefined;
+  const one = missing.length === 1;
+  // Said of where it was made: a theme style it follows may take this project's own font here instead.
+  return `${quoted(name)} was made with ${fontNames(missing).replace(/^The/, 'the')}, which this project doesn’t have. Add the font ${one ? 'file' : 'files'} in Assets → Fonts to use ${one ? 'it' : 'them'} here.`;
+}
+
 export interface PackagePlan {
   /** The package, without its images' bytes: `images` lists the library records to read them from. */
   pkg: ComponentPackage;
@@ -336,6 +363,14 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     // A value can name another style by its variable too (a shadow in the site's own colour).
     for (const css of cssStrings(t.value)) mapVars(css, byVar, (ref) => void wanted.push({ id: ref, by: t.label }));
   }
+  // The project's own fonts the components use stay behind (#1418): the package names them, so the project importing it
+  // can say which it lacks, and the author is told to send the font files too.
+  const fonts = familiesUsedBy(
+    projectFontFamilies(state).map((f) => f.family),
+    defs,
+    [...carried.values()].flatMap((t) => (t.group === 'font' && typeof t.resolved === 'string' ? [t.resolved] : t.group === 'text' && isRecord(t.resolved) && typeof t.resolved.family === 'string' ? [t.resolved.family] : []))
+  );
+  if (fonts.length) notes.push(`${fontNames(fonts)} ${fonts.length === 1 ? 'stays' : 'stay'} with this project. Send the font ${fonts.length === 1 ? 'file' : 'files'} too, to add in Assets → Fonts wherever it is imported.`);
   const pkg: ComponentPackage = {
     format: COMPONENT_PACKAGE_FORMAT,
     version: COMPONENT_PACKAGE_VERSION,
@@ -344,7 +379,8 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     rootId,
     definitions: defs,
     tokens: [...carried.values()],
-    images: []
+    images: [],
+    ...(fonts.length ? { fonts } : {})
   };
   return { pkg, images: [...images.values()], notes };
 }

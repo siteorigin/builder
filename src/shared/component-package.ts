@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import type { ComponentDefinition, TextStyleValue, TokenGroup, TokenValue } from './types';
+import { FONT_FAMILY_RE } from './fonts';
 
 export const COMPONENT_PACKAGE_FORMAT = 'siteorigin.component';
 /** The package format. A newer one is refused by name, so an older app never misreads it. */
@@ -24,6 +25,7 @@ export const MAX_PACKAGE_IMAGES_BYTES = 40 * 1024 * 1024;
 export const MAX_PACKAGE_DEFINITIONS = 60;
 const MAX_PACKAGE_TOKENS = 400;
 const MAX_PACKAGE_IMAGES = 100;
+const MAX_PACKAGE_FONTS = 100;
 /** How deep a package's JSON may nest. Real definitions stay far shallower; this only stops a runaway file. */
 const MAX_DEPTH = 64;
 
@@ -86,6 +88,11 @@ export interface ComponentPackage {
   definitions: ComponentDefinition[];
   tokens: PackageToken[];
   images: PackageImage[];
+  /**
+   * The families of the project's own fonts its components use (#1418). Their files stay with the project, so a project
+   * importing it is told which of them it doesn't have. Absent when it uses none.
+   */
+  fonts?: string[];
 }
 
 /** The names a package may never use as keys, anywhere: they would reach object prototypes. */
@@ -173,7 +180,8 @@ const packageSchema = z.object({
         altSuggestion: z.string().max(2000).optional()
       })
     )
-    .max(MAX_PACKAGE_IMAGES)
+    .max(MAX_PACKAGE_IMAGES),
+  fonts: z.array(z.string().regex(FONT_FAMILY_RE)).max(MAX_PACKAGE_FONTS).optional()
 });
 
 /** A package file that cannot be imported, with the reason in words the author can act on. */
@@ -219,6 +227,7 @@ export function decodeComponentPackage(text: string): ComponentPackage {
   unique(pkg.definitions.map((d) => d.id), 'component');
   unique(pkg.tokens.map((t) => t.id), 'site style');
   unique(pkg.images.map((i) => i.id), 'image');
+  unique((pkg.fonts ?? []).map((f) => f.toLowerCase()), 'font');
   if (!pkg.definitions.some((d) => d.id === pkg.rootId)) refuse('the component it is for is missing from it.');
   let bytes = 0;
   for (const img of pkg.images) bytes += Math.floor((img.data.length * 3) / 4) - (img.data.endsWith('==') ? 2 : img.data.endsWith('=') ? 1 : 0);

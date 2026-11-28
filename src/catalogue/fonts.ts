@@ -73,13 +73,14 @@ export function fontFamilies(stack: string): string[] {
  * real family is added in front of it, keeping the rest of the stack; a bare name gets the font's full stack.
  * A project's own font written bare gets its stack (quoted, with fallbacks), and one inside a longer stack that CSS would
  * not read as a name ("1984 Display") is quoted in place. A stack that needs no change is returned byte for byte.
- * Returns the stack to store, or an error a person can act on.
+ * Returns the stack to store, or an error a person can act on. `carried` are families taken as the project's own though
+ * it has no file for them yet: a component package's fonts, which stay with the project it came from (#1418).
  */
-export function resolveFontStack(state: ProjectState, value: string): { stack: string } | { error: string } {
+export function resolveFontStack(state: ProjectState, value: string, carried: readonly string[] = []): { stack: string } | { error: string } {
   const entries = stackEntries(value);
   if (!entries.length) return { error: 'Choose a font.' };
   const keys = entries.map(familyKey);
-  const own = new Map(projectFontFamilies(state).map((f) => [familyKey(f.family), f.family]));
+  const own = new Map([...carried, ...projectFontFamilies(state).map((f) => f.family)].map((f) => [familyKey(f), f]));
   const installed = installedFonts(state);
   if (!own.has(keys[0]) && !SYSTEM_FONTS.has(keys[0])) {
     const names = installed.map((f) => f.name).join(', ');

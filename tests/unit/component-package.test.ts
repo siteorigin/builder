@@ -42,6 +42,7 @@ const { LATEST_SCHEMA_VERSION } = await import('@shared/migrations');
 const { importAsset, stopMediaWorker } = await import('../../src/main/project/assets');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { buildComponentPackage, preparePackageImport, readComponentPackage } = await import('../../src/main/project/component-package');
+const { missingPackageFonts } = await import('@engine/component-package');
 
 type Session = InstanceType<typeof ProjectSession>;
 
@@ -1008,6 +1009,45 @@ describe('component packages: export and import (#371)', () => {
     expect(Object.values(landed.tree!.nodes).flatMap((n) => (n.kind === 'link' ? [n.link] : []))).toEqual([{ type: 'none', target: '' }]);
     expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
     await Promise.all([src.s.close(), dest.close()]);
+  });
+
+  it('names the project fonts a design uses, by style or site style, and lands them where the project lacks the font (#1418)', async () => {
+    const src = await pricingCard();
+    const shoreline = { id: 'a_shore', name: 'Shoreline Display', file: 'static/assets/shoreline-1a2b3c4d.woff2', mime: 'font/woff2', bytes: 1000, hash: 'hash-shore', kind: 'font' as const, createdAt: '2026-01-01T00:00:00.000Z', font: { family: 'Shoreline Display', weight: '400', style: 'normal' as const } };
+    const harbour = { ...shoreline, id: 'a_harbour', name: 'Harbour Sans', file: 'static/assets/harbour-1a2b3c4d.woff2', font: { ...shoreline.font, family: 'Harbour Sans' } };
+    // A font the project has but the component doesn't use stays out of it.
+    const unused = { ...shoreline, id: 'a_unused', name: 'Unused Serif', file: 'static/assets/unused-1a2b3c4d.woff2', font: { ...shoreline.font, family: 'Unused Serif' } };
+    ok(await src.s.apply({ operations: [shoreline, harbour, unused].map((asset) => ({ type: 'asset.add' as const, asset })) }, { label: 'Fonts' }));
+    const fontToken = ok(await src.s.apply({ operations: [{ type: 'token.create', group: 'font', label: 'Harbour', value: 'Harbour Sans' }] }, { label: 'Add style' })).results![0].tokenId as string;
+    const child = src.s.state.components[src.childId];
+    const owner = { kind: 'component' as const, id: src.childId };
+    const heading = child.tree!.rootIds[0];
+    ok(await src.s.apply({ operations: [{ type: 'node.setStyle', owner, nodeId: heading, scope: 'base', property: 'fontFamily', value: "'Shoreline Display', Menlo, monospace" }] }, { label: 'Font' }));
+    const root = src.s.state.components[src.rootId];
+    const rootOwner = { kind: 'component' as const, id: src.rootId };
+    const section = root.tree!.rootIds[0];
+    ok(await src.s.apply({ operations: [{ type: 'node.setStyle', owner: rootOwner, nodeId: section, scope: 'base', property: 'fontFamily', value: { token: fontToken } }] }, { label: 'Font' }));
+    const { path, notes } = await exportTo(src.s, src.rootId);
+    expect(notes).toEqual(['The fonts “Harbour Sans” and “Shoreline Display” stay with this project. Send the font files too, to add in Assets → Fonts wherever it is imported.']);
+    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).fonts).toEqual(['Harbour Sans', 'Shoreline Display']);
+
+    // A project without them still takes it, the site style keeping its font, and is told what to add.
+    const dest = await blank('Dest');
+    const r = ok(await importInto(dest, path));
+    const pkg = await readComponentPackage(path);
+    expect(missingPackageFonts(dest.state, pkg)).toEqual(['Harbour Sans', 'Shoreline Display']);
+    expect(dest.state.tokens.custom.find((t) => t.label === 'Harbour')?.value).toBe(src.s.state.tokens.custom.find((t) => t.id === fontToken)!.value);
+    expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
+    expect(r.results!.at(-1)!.definitionId).toBeTruthy();
+    // Once the fonts are added, nothing is missing.
+    ok(await dest.apply({ operations: [shoreline, harbour].map((asset) => ({ type: 'asset.add' as const, asset })) }, { label: 'Fonts' }));
+    expect(missingPackageFonts(dest.state, pkg)).toEqual([]);
+    await Promise.all([src.s.close(), dest.close()]);
+  });
+
+  it('refuses a package naming a font family no font could have', async () => {
+    await expect(readComponentPackage(writePackage(codePackage('<h3>Hi</h3>\n', { fonts: ["Bad'; }"] })))).rejects.toThrow(/damaged \(fonts\.0/);
+    await expect(readComponentPackage(writePackage(codePackage('<h3>Hi</h3>\n', { fonts: ['Inter', 'inter'] })))).rejects.toThrow(/lists the font "inter" twice/);
   });
 
   it('migrates an older package with the rest of the project’s migrations (engine)', async () => {

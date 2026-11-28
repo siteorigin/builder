@@ -408,7 +408,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'component.import': {
       const input = ctx.componentImport;
       if (!input || input.id !== op.importId) fail('That component package is no longer open. Import it again.');
-      const r = importComponentPackage(state, input, { setToken: (st, tokenId, value) => void tokenSet(st, { type: 'token.set', tokenId, value }) });
+      // A site style may name a font the package's own project has, whose file stays there (#1418): it lands as it is.
+      const r = importComponentPackage(state, input, { setToken: (st, tokenId, value) => void tokenSet(st, { type: 'token.set', tokenId, value }, input.pkg.fonts) });
       const place = input.place;
       if (!place) return r;
       // Placed in the same change (a saved component inserted from the personal library): where Insert would put it,
@@ -3024,7 +3025,8 @@ function assertNoTokenCycles(state: ProjectState) {
 /** What each kind of site style is called in messages. */
 const TOKEN_KIND: Record<TokenGroup, string> = { color: 'color', font: 'font', text: 'text', space: 'spacing', container: 'page width', radius: 'corner', shadow: 'shadow', border: 'border' };
 
-function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
+/** `carried` are font families a value may lead with though the project has no file for them (see resolveFontStack). */
+function tokenSet(state: ProjectState, op: Op<'token.set'>, carried?: readonly string[]): OpResult {
   const tdef = declaredTokens(state).find((t) => t.id === op.tokenId) ?? fail(`Token "${op.tokenId}" does not exist.`);
   const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
   if (op.value === null) {
@@ -3037,7 +3039,7 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
   }
   const v = op.value as Record<string, unknown>;
   if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) state.tokens.overrides[op.tokenId] = { token: tokenLinkTarget(effectiveTokens(state), tdef, v) };
-  else tokenSetLiteral(state, tdef, op.value);
+  else tokenSetLiteral(state, tdef, op.value, carried);
   // A custom style has no theme default to return to: its value is its own, not an override.
   if (custom && Object.hasOwn(state.tokens.overrides, op.tokenId)) {
     custom.value = state.tokens.overrides[op.tokenId];
@@ -3116,7 +3118,7 @@ function tokenSetColorScheme(state: ProjectState, op: Op<'token.setColorScheme'>
 const TEXT_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking', 'transform'] as const;
 
 /** Check a literal value for a style's kind and store it as the style's override. */
-function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
+function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown, carried?: readonly string[]) {
   const id = tdef.id;
   if (tdef.group === 'color') {
     if (typeof v !== 'string') fail(`"${String(v)}" is not a color.`);
@@ -3148,7 +3150,7 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
     } else if (Object.hasOwn(v, 'family')) {
       // Only a family being set now is checked, so an older value never blocks an unrelated change.
       if (!/^[\p{L}\p{N}_\s'",.-]{1,200}$/u.test(String(fam)) || !isSafeCssValue(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
-      const font = resolveFontStack(state, String(fam));
+      const font = resolveFontStack(state, String(fam), carried);
       if ('error' in font) fail(font.error);
       merged.family = font.stack;
     }
@@ -3157,7 +3159,7 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
   } else if (tdef.group === 'font') {
     const s = String(v);
     if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(s) || s.length > 200 || !isSafeCssValue(s)) fail('Font stacks may contain names, quotes, commas and hyphens only.');
-    const font = resolveFontStack(state, s);
+    const font = resolveFontStack(state, s, carried);
     if ('error' in font) fail(font.error);
     state.tokens.overrides[id] = font.stack;
   } else if (tdef.group === 'space' || tdef.group === 'container' || tdef.group === 'radius') {
