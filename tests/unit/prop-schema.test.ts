@@ -342,3 +342,45 @@ describe('properties from the props the code takes (#1527)', () => {
     expect(labelFromCodeName('heroCTALabel')).toBe('Hero cta label');
   });
 });
+
+describe('theme token properties', () => {
+  const tokens = [
+    { id: 'color.brand', group: 'color' as const },
+    { id: 'color.accent', group: 'color' as const },
+    { id: 'space.md', group: 'space' as const }
+  ];
+  const groups = new Set(tokens.map((t) => t.group));
+
+  it('offers a type for each token group the site has, in a list’s items too, and keeps a row’s own', () => {
+    for (const inList of [false, true]) {
+      const options = typeOptions('string', inList, groups);
+      expect(options).toContainEqual(['token:color', 'Theme color']);
+      expect(options).toContainEqual(['token:space', 'Spacing']);
+      expect(options.map(([t]) => t)).not.toContain('token:shadow');
+    }
+    // A group with no tokens left is still named on the row that takes it.
+    expect(typeOptions('token:shadow', false, groups)).toContainEqual(['token:shadow', 'Shadow']);
+  });
+
+  it('retypes to a token of the group, starting on its first, which the engine accepts as it is', () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    const row = retype(rowsFromProperties({ p: stored.heading })[0], 'token:color', [{ id: 'color.brand', group: 'color' }]);
+    expect(row.schema).toEqual({ type: 'token', label: 'Heading', tokenGroup: 'color', default: { token: 'color.brand' } });
+    expect(normalizeProperties(propertiesFromRows([row]), s).p).toEqual(row.schema);
+    expect(retype(row, 'string').schema).toEqual({ type: 'string', label: 'Heading' });
+  });
+
+  it('drops the default items’ values of an item field that takes another token group', () => {
+    const list = {
+      type: 'list',
+      label: 'Cards',
+      itemLabel: 'Card',
+      fields: { tone: { type: 'token', label: 'Tone', tokenGroup: 'color', default: { token: 'color.brand' } } },
+      default: [{ id: 'i_one', tone: { token: 'color.accent' } }]
+    };
+    const row = rowsFromProperties({ cards: list })[0];
+    const saved = (r: SchemaRow) => propertiesFromRows([r]).cards as { default: unknown };
+    expect(saved(row).default).toEqual(list.default);
+    expect(saved(setItemField(row, 0, retype(row.fields![0], 'token:space', tokens))).default).toEqual([{ id: 'i_one' }]);
+  });
+});

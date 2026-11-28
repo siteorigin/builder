@@ -1435,6 +1435,36 @@ describe('token properties (issue #96)', () => {
     expect(errors(s)).toEqual([]);
   });
 
+  it('moves placements left on the default when a token property changes group, and refuses a chosen token', () => {
+    const { s: base, def, space } = tokenDef(fresh());
+    let s = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: null, definitionId: def.id }]).state;
+    const inst = () => home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
+    const toColor = { type: 'component.setPropSchema' as const, definitionId: def.id, prop: 'spacing', schema: { type: 'token', label: 'Tint', tokenGroup: 'color', default: 'color.accent' } };
+    expect(applyOperations(s, [toColor]).state.pages[s.site.homePageId].nodes[inst().id]).toMatchObject({ props: { spacing: { token: 'color.accent' } } });
+    // A token the placement chose is content a color property cannot keep.
+    expect(space).not.toBe('space.lg');
+    s = applyOperations(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: inst().id, prop: 'spacing', value: 'space.lg' }]).state;
+    expect(() => applyOperations(s, [toColor])).toThrow(/has content that a color token property cannot keep/);
+  });
+
+  it('does the same for the token fields of a list’s items and an object', () => {
+    const { s: base, def, color } = tokenDef(fresh());
+    const at = { cards: [{ title: 'One' }, { title: 'Two', accent: 'color.brand' }], frame: { note: 'Kept' } };
+    const s = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: null, definitionId: def.id, props: at }]).state;
+    const inst = home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
+    const { cards, frame } = s.components[def.id].properties as Record<string, any>;
+    const regroup = [
+      { type: 'component.setPropSchema' as const, definitionId: def.id, prop: 'cards', schema: { ...cards, fields: { ...cards.fields, accent: { type: 'token', label: 'Accent', tokenGroup: 'space', default: 'space.md' } } } },
+      { type: 'component.setPropSchema' as const, definitionId: def.id, prop: 'frame', schema: { ...frame, fields: { ...frame.fields, edge: { type: 'token', label: 'Edge', tokenGroup: 'radius' } }, default: { note: '' } } }
+    ];
+    const after = applyOperations(s, regroup).state;
+    const props = (after.pages[after.site.homePageId].nodes[inst.id] as InstanceNode).props;
+    expect(props.cards).toEqual((inst.props.cards as Array<{ id: string; title: string }>).map((c) => ({ id: c.id, title: c.title, accent: { token: 'space.md' } })));
+    expect(props.frame).toEqual({ note: 'Kept', edge: (after.components[def.id].properties.frame as any).fields.edge.default });
+    const chosen = applyOperations(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: inst.id, prop: 'cards', value: [{ title: 'One', accent: color }] }]).state;
+    expect(() => applyOperations(chosen, [regroup[0]])).toThrow(/is a color token; choose a space token/);
+  });
+
   it('declares a token property through the schema operation, starting on a token of its group', () => {
     const s = fresh();
     const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: home(s).rootIds[0], name: 'Mine' }]);
