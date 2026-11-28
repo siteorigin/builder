@@ -61,6 +61,7 @@ const { sha } = await import('../../src/main/project/fsutil');
 const { copyProjectSource } = await import('../../src/main/export');
 const { HERO, SECTION, heroDesign, sectionDesign } = await import('./fixtures/live-copy-editor-designs');
 const { installComponent } = await import('@engine/install');
+const { catalogueComponent } = await import('@catalogue/index');
 
 let relay: Relay;
 let vite: Server;
@@ -425,6 +426,7 @@ describe('a live session hosted by the open project', () => {
     // The release's own Split hero, placed by the host.
     const read = c.session!.state.components['foundation.hero.split'];
     expect(read).toMatchObject({ kind: 'code', owner: 'theme' });
+    expect(read).not.toBe(catalogueComponent('foundation', 'hero.split'));
     const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
     expect(c.session!.state.pages[owner.id].nodes[hero]).toMatchObject({ definitionId: 'foundation.hero.split' });
     expect(c.session!.state.components['foundation.hero.split']).toBe(read);
@@ -433,7 +435,7 @@ describe('a live session hosted by the open project', () => {
 
     const before = c.session!.revision;
     expect(await rpc(guest, 'project.apply', [{ operations: [setProp('eyebrow', 'Bakery'), setProp('heading', 'Fresh bread daily')], expectedRevision: before, label: 'Reword' }])).toMatchObject({ ok: true, result: { revision: before + 1 } });
-    expect(readFileSync(file, 'utf8')).toContain('Fresh bread daily');
+    expect(JSON.parse(readFileSync(file, 'utf8')).nodes[hero].props).toMatchObject({ eyebrow: 'Bakery', heading: 'Fresh bread daily' });
     expect(c.snapshot()!.history.entries.at(-1)).toMatchObject({ label: 'Reword (Ann)', guestName: 'Ann', applied: true });
 
     const saved = readFileSync(file, 'utf8');

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, ComponentDefinition, ImageValue, InstanceNode, OwnerRef, ProjectState, RepeatNode, RichText, TextNode } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, ImageValue, InstanceNode, OwnerRef, ProjectState, PropSchema, RepeatNode, RichText, TextNode } from '@shared/types';
 import { copyEditorOperationProblem } from '@shared/live/copy-editor';
 import { catalogueComponent, listThemes, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
@@ -513,6 +513,22 @@ describe('the copy of Foundation’s own sections', () => {
     expect(copyEdit(state, [setProp(owner, media, 'actionLabel', 'Write to us')]).problem).toMatchObject({ operationIndex: 0, message: expect.stringMatching(/Only the host/) });
   });
 
+  it('leaves a heading that names a form or a search for screen readers to the host', () => {
+    const { state: start, owner } = shipped();
+    let state = start;
+    const placed = (componentId: string) => {
+      const r = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId }]);
+      state = r.state;
+      return r.results[0].nodeId as string;
+    };
+    const search = placed('site.search');
+    const form = placed('contact.form');
+    for (const nodeId of [search, form]) {
+      expect(copyEdit(state, [setProp(owner, nodeId, 'lead', 'Ask us anything.')]).problem).toBeNull();
+      expect(copyEdit(state, [setProp(owner, nodeId, 'heading', 'Find an article')]).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Heading”.' });
+    }
+  });
+
   it('replaces a section’s picture with another from the library, but never fills or clears one', () => {
     const { state, owner, hero, bare } = shipped();
     const { problem, after } = copyEdit(state, [setProp(owner, hero, 'image', { assetId: 'pic2', alt: 'The workshop' })]);
@@ -544,6 +560,7 @@ describe('the copy of Foundation’s own sections', () => {
     expect(copy).not.toBe(SPLIT);
     expect(forked.components[copy].properties.heading).toEqual(state.components[SPLIT].properties.heading);
     expect(copyEditableLookup(forked)(copy, 'heading')).toBe(false);
+    expect(copyEdit(forked, heading).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Heading”.' });
     // Code of the project's own, marked as copy: a mark on code grants nothing.
     const own: ComponentDefinition = { ...structuredClone(state.components[SPLIT]), id: 'project.split', owner: 'project', provenance: { createdBy: 'user' } };
     (own.properties.heading as { copyEditable?: true }).copyEditable = true;
@@ -553,7 +570,7 @@ describe('the copy of Foundation’s own sections', () => {
     expect(copyEditableLookup(withDef({ ...state.components[SPLIT], provenance: { ...state.components[SPLIT].provenance, pack: 'acme' } }))(SPLIT, 'heading')).toBe(false);
   });
 
-  it('grants nothing for Foundation when the Foundation loaded is not the one the app bundles', async () => {
+  it('grants nothing for Foundation when the Foundation registered is not a bundled pack', async () => {
     const { state } = shipped();
     expect(copyEditableLookup(state)(SPLIT, 'heading')).toBe(true);
     try {
@@ -563,6 +580,26 @@ describe('the copy of Foundation’s own sections', () => {
       await restorePacks();
     }
     expect(copyEditableLookup(state)(SPLIT, 'heading')).toBe(true);
+  });
+
+  it('never grants rich text a section is given as paragraphs, which it cannot show as they are edited', async () => {
+    const TEXT = 'foundation.content.text';
+    const paragraphs = (def: ComponentDefinition): ComponentDefinition => {
+      const { codeForm: _codeForm, ...body } = def.properties.body as Extract<PropSchema, { type: 'richtext' }>;
+      void _codeForm;
+      return { ...def, properties: { ...def.properties, body } };
+    };
+    try {
+      // The release itself as the app bundles it, with its Text section's body given as paragraphs.
+      registerPacks(listThemes().map((t) => (t.id === 'foundation' ? { ...t, components: t.components.map((c) => (c.id === TEXT ? paragraphs(c) : c)) } : t)));
+      const def = catalogueComponent('foundation', 'content.text')!;
+      expect(def.properties.body).not.toHaveProperty('codeForm');
+      const editable = copyEditableLookup({ ...createStarterState('blank', 'x', false), components: { [def.id]: def } });
+      expect(editable(TEXT, 'heading')).toBe(true);
+      expect(editable(TEXT, 'body')).toBe(false);
+    } finally {
+      await restorePacks();
+    }
   });
 
   it('follows a design that passes its marked copy on to the shipped hero’s heading, but never to its button', () => {
@@ -588,6 +625,12 @@ describe('the copy of Foundation’s own sections', () => {
     const editable = copyEditableLookup(state);
     expect(editable(band, 'title')).toBe(true);
     expect(editable(band, 'tagline')).toBe(false);
+    // Placed on the page, its title is reworded there; its tagline stays the host's.
+    const placed = step([{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { title: 'Spring offer', tagline: 'Book now' } }])[0].nodeId as string;
+    const { problem, after } = copyEdit(state, [setProp(owner, placed, 'title', 'Summer offer')]);
+    expect(problem).toBeNull();
+    expect(node<InstanceNode>(after, owner, placed).props.title).toBe('Summer offer');
+    expect(copyEdit(state, [setProp(owner, placed, 'tagline', 'Book today')]).problem).toEqual({ operationIndex: 0, message: 'Only the host can change “Tagline”.' });
   });
 });
 

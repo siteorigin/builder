@@ -51,8 +51,9 @@ export const SHIPPED_COPY: Readonly<Record<string, readonly string[]>> = {
   'media.video': INTRO,
   'cta.banner': INTRO,
   'contact.details': INTRO,
-  'contact.form': INTRO,
-  'site.search': INTRO,
+  // Their headings name the form and the search for screen readers (`aria-labelledby`).
+  'contact.form': ['eyebrow', 'lead'],
+  'site.search': ['eyebrow', 'lead'],
   'block.feature': ['title', 'badge', 'description', 'image'],
   'block.stat': ['value', 'unit', 'label', 'footnote'],
   'block.testimonial': ['quote', 'name', 'role', 'initials', 'disclosure', 'portrait'],
