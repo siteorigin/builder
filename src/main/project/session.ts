@@ -28,7 +28,7 @@ import { foreignSyncedEntry, syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
-import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
+import { codeNeeds, declareCodeNames, dependentsOf, filledSlots, removalWithPlacements } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -54,7 +54,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
 import { checkHeld, readFields, sameValue } from '../../renderer/src/lib/held';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
@@ -687,6 +687,11 @@ type PersistOptions = CommitOptions & {
    * journaled step, so stopping the run, or a crash, keeps the edit, and the run's own step never holds it.
    */
   rebaseRun?: ProjectState;
+  /**
+   * Files the change removes that are already gone from disk, as the project knows (a code component's file deleted
+   * outside the app, #1540): their absence is what the change expects there. A file back at one of them is still kept.
+   */
+  absent?: ReadonlySet<string>;
 };
 
 /** A change its guard refused at the last moment (CommitOptions.guard): nothing of it was written. */
@@ -735,6 +740,20 @@ export interface Conflict {
    * the design's place (#737): the design it is the file of.
    */
   convert?: { definitionId: string };
+  /**
+   * A project code component's file deleted outside the app while the project was open (#1540): SiteOrigin Builder's
+   * version is the code it last loaded, which the component keeps meanwhile; the file can be put back from it, or the
+   * component removed with its placements.
+   */
+  deletedCode?: { definitionId: string };
+}
+
+/** Why a code component's file is held after it was deleted outside the app (#1540). */
+const DELETED_CODE_REASON = 'Deleted outside SiteOrigin Builder.';
+
+/** A project code component with no file (#1540), as Project health and the export say it. */
+export function missingCodeMessage(name: string, path: string): string {
+  return `The code component “${name}” has no file at ${path}: it was moved or deleted outside SiteOrigin Builder. Put the file back, or remove the component and its placements.`;
 }
 
 /** How a design's edited file is converted: `expect` is the hash of the bytes the author compared, when they did. */
@@ -880,6 +899,11 @@ export class ProjectSession extends EventEmitter {
    * again by every read that gets as far as the code (#1533), and held only in memory.
    */
   private refusedSources = new Map<string, RefusedSource>();
+  /**
+   * Project code components' files that were not there when the project was last read, and that the app has not
+   * written since (#1540): their components read as empty code, and are named as missing their file.
+   */
+  private absentSources = new Set<string>();
   /**
    * For each canonical document in conflict that an AI request's rollback left, the version that request tried to save:
    * the stored blob that holds it (null = it removed the file), and its text once read. The reference is kept even
@@ -1044,7 +1068,9 @@ export class ProjectSession extends EventEmitter {
   static async openReadOnly(dir: string, info: ReadOnlyInfo): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
     s.readOnly = info;
-    s.state = await readState(dir, { allowNewer: true });
+    const read = await readProject(dir, { allowNewer: true });
+    s.state = read.state;
+    s.noteAbsentSources(read.state, read.raw);
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null));
     await s.versions.load().catch(() => undefined);
@@ -1114,6 +1140,7 @@ export class ProjectSession extends EventEmitter {
     const reading = perf.span('session.open.read');
     const read = await readProject(dir, { overlay: s.pending, known: await s.stillScanned() });
     s.state = read.state;
+    s.noteAbsentSources(read.state, read.raw);
     s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
     reading({ docs: s.docs.size });
@@ -1152,6 +1179,9 @@ export class ProjectSession extends EventEmitter {
     const fatal = s.diagnostics().filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     validating();
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
+    // A hold for a code component's file that a removal finished (a crash before the hold was let go) is let go now,
+    // and one whose file went while the project was closed says so: only once the project read is sound.
+    if (await s.reconcileHolds(s.state)) await s.saveConflicts();
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
     const pin = themePinProblem(s.state);
     if (pin) throw new ThemeUnavailableError(pin);
@@ -1544,12 +1574,12 @@ export class ProjectSession extends EventEmitter {
    * Hold Builder's version of a document whose file was changed outside the app, replacing any earlier hold. `run`:
    * the hold an AI request's rollback leaves, with the version it tried to save (undefined: no usable reference).
    */
-  private holdConflict(path: string, builder: string | null, reason: string, run?: { attempted: Attempt | undefined }) {
+  private holdConflict(path: string, builder: string | null, reason: string, run?: { attempted: Attempt | undefined }, deletedCode?: { definitionId: string }) {
     this.pending.set(path, builder);
     this.attempts.delete(path);
     if (run?.attempted) this.attempts.set(path, run.attempted);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
-    this.conflicts.push({ path, reason, kind: 'canonical', ...(builder === null ? { builderMissing: true } : {}), ...(run ? { aiRun: true } : {}) });
+    this.conflicts.push({ path, reason, kind: 'canonical', ...(builder === null ? { builderMissing: true } : {}), ...(run ? { aiRun: true } : {}), ...(deletedCode ? { deletedCode } : {}) });
   }
 
   private releaseConflict(path: string) {
@@ -1570,7 +1600,7 @@ export class ProjectSession extends EventEmitter {
       const a = this.attempts.get(path);
       const attempted = a && a.ref !== null && a.content !== undefined ? await this.putBlob(a.content) : a?.ref;
       const run = held?.aiRun ? { aiRun: true, ...(attempted === undefined ? {} : { attempted }) } : {};
-      list.push({ path, reason, builder: builder === null ? null : await this.putBlob(builder), ...run });
+      list.push({ path, reason, builder: builder === null ? null : await this.putBlob(builder), ...run, ...(held?.deletedCode ? { deletedCode: held.deletedCode.definitionId } : {}) });
     }
     await atomicWrite(file, toJson({ conflicts: list }));
   }
@@ -1578,7 +1608,7 @@ export class ProjectSession extends EventEmitter {
   private async loadConflicts() {
     const text = await readIfExists(this.local('conflicts.json'));
     if (!text) return;
-    let list: Array<{ path: string; reason: string; builder: string | null; aiRun?: unknown; attempted?: unknown }> = [];
+    let list: Array<{ path: string; reason: string; builder: string | null; aiRun?: unknown; attempted?: unknown; deletedCode?: unknown }> = [];
     try {
       list = JSON.parse(text).conflicts ?? [];
     } catch {
@@ -1590,7 +1620,9 @@ export class ProjectSession extends EventEmitter {
       const builder = c.builder === null ? null : await this.getBlob(String(c.builder)).catch(() => undefined);
       if (builder === undefined) continue;
       const run = c.aiRun === true ? { attempted: attemptAt(c.attempted) } : undefined;
-      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'), run);
+      // A deleted code component's file put back with other code while the project was closed is a changed file (#1540).
+      const deleted = typeof c.deletedCode === 'string' && builder !== null && (await this.diskContent(c.path)) === null;
+      this.holdConflict(c.path, builder, deleted || typeof c.deletedCode !== 'string' ? String(c.reason ?? 'Changed outside SiteOrigin Builder.') : 'Changed outside SiteOrigin Builder.', run, deleted ? { definitionId: c.deletedCode as string } : undefined);
       await this.attemptContent(c.path);
       // Already settled outside the app (the file was put back): nothing to choose. What an AI request attempted is
       // kept first, as when it is settled in Project health; held until it is.
@@ -1619,8 +1651,11 @@ export class ProjectSession extends EventEmitter {
       if (this.unsettled) return { ok: false, message: UNSETTLED };
       const conflict = this.conflicts.find((c) => c.path === path);
       // Nothing to convert is not a conversion made: only Keep and Restore find a settled file already settled.
-      if (!conflict) return choice === 'convert' ? { ok: false, message: 'That file is no longer in conflict.' } : { ok: true };
+      if (!conflict) return choice === 'convert' || choice === 'remove' ? { ok: false, message: 'That file is no longer in conflict.' } : { ok: true };
       if (choice === 'convert') return this.convertEditedLocked(conflict, opts);
+      if (choice === 'remove') return this.removeDeletedCodeLocked(conflict);
+      // A code component's file kept deleted would leave the component with no code (#1540): it is removed instead.
+      if (choice === 'keep' && this.codeOwnerOf(path) && (await absent(safeJoin(this.dir, path)))) return { ok: false, message: `${path} is not there to keep. Put the file back, or remove the component.` };
       if (conflict.kind === 'generated') {
         if (choice !== 'restore') return { ok: false, message: 'A generated file can only be restored. Move your edits into the page or a code component.' };
         await this.restoreGeneratedLocked(path);
@@ -1646,7 +1681,10 @@ export class ProjectSession extends EventEmitter {
         if (builder === null) {
           await unchanged();
           await this.removeCanonical(path);
-        } else await atomicWrite(abs, builder, { beforeReplace: unchanged });
+        } else {
+          await atomicWrite(abs, builder, { beforeReplace: unchanged });
+          this.absentSources.delete(path);
+        }
         this.landing?.add(path);
         this.releaseConflict(path);
       } else {
@@ -1654,12 +1692,21 @@ export class ProjectSession extends EventEmitter {
         overlay.delete(path);
         let next: ProjectState;
         let migrated: boolean;
+        let raw: Map<string, string>;
         try {
           const read = await readProject(this.dir, { overlay });
           next = read.state;
           migrated = !!read.migration;
+          raw = read.raw;
         } catch (e) {
           return { ok: false, message: `The external version of ${path} could not be read, so it was not kept: ${(e as Error).message}` };
+        }
+        // Deleted while it was being kept: there is nothing to keep (#1540).
+        if (this.codeOwnerOf(path) && !raw.has(path)) return { ok: false, message: `${path} is not there to keep. Put the file back, or remove the component.` };
+        // Another code component's file deleted meanwhile is held, not taken as empty code (#1540).
+        if (await this.holdDeletedCode(next, raw)) {
+          await this.saveConflicts();
+          this.emit('history');
         }
         const errors = this.introducedProblems(next);
         if (errors.length) return { ok: false, message: `Keeping the external version of ${path} would leave the site inconsistent: ${errors.slice(0, 3).map((d) => d.message).join(' ')} Restore SiteOrigin Builder's version instead, or fix the file.` };
@@ -1679,6 +1726,7 @@ export class ProjectSession extends EventEmitter {
         this.docs = nextDocs;
         this.migrationDue ||= migrated;
         this.releaseConflict(path);
+        this.noteAbsentSources(next, raw);
       }
       await this.saveConflicts();
       if (this.migrationDue && !this.pending.size) await this.publishMigration();
@@ -1797,6 +1845,62 @@ export class ProjectSession extends EventEmitter {
     // Saved again outside the app while it was being converted: that newer version stays, listed again.
     if (this.conflicts.some((c) => c.path === path)) return { ok: true, definitionId: made.definitionId, message: `${path} was saved again while it was being converted. The version read is now the code component; the newer one is listed again.` };
     return { ok: true, definitionId: made.definitionId };
+  }
+
+  /**
+   * Remove a code component whose file was deleted outside the app, with every placement of it, as one step of History
+   * that Undo takes back, file and all (#1540). Checked as any edit is before anything changes; refused while the file
+   * is back, while other components need it, or while another file is in conflict. The hold stays until the removal is
+   * saved, so one that fails leaves the file to be put back.
+   */
+  private async removeDeletedCodeLocked(conflict: Conflict): Promise<{ ok: boolean; message?: string }> {
+    const path = conflict.path;
+    const refuse = (message: string) => ({ ok: false, message });
+    if (!conflict.deletedCode) return refuse('Only a code component whose file was deleted can be removed here.');
+    const id = conflict.deletedCode.definitionId;
+    const def = Object.hasOwn(this.state.components, id) ? this.state.components[id] : undefined;
+    // The component has gone already (removed with its file before a crash, say): there is nothing left to hold.
+    if (!def || def.sourcePath !== path) {
+      this.releaseConflict(path);
+      await this.saveConflicts();
+      this.emit('history');
+      return { ok: true };
+    }
+    // Other deleted code components' files may stay held: this writes none of them. Any other conflict is settled first.
+    const others = [...this.pending.keys()].filter((p) => p !== path);
+    if (others.some((p) => !this.conflicts.find((c) => c.path === p)?.deletedCode)) return refuse('Settle the other file conflicts first.');
+    // Another deleted file put back, and not loaded yet, may now need this component: it is loaded first.
+    for (const p of others) if (!(await absent(safeJoin(this.dir, p)))) return refuse(`${p} is back and still being loaded, so “${def.name}” was not removed. Try again in a moment.`);
+    if (!(await absent(safeJoin(this.dir, path)))) return refuse(`${path} is back, so “${def.name}” was not removed. Compare the versions, then choose again.`);
+    const dependents = dependentsOf(this.state, def.id);
+    if (dependents.length) return refuse(`“${def.name}” is used in the code of ${dependents.map((d) => `“${d.name}”`).join(', ')}, so it was not removed. Change that code first, or put the file back.`);
+    const { operations, placements } = removalWithPlacements(this.state, def.id);
+    let next: ProjectState;
+    try {
+      next = applyOperations(this.state, operations).state;
+    } catch (e) {
+      return refuse(`“${def.name}” could not be removed: ${(e as Error).message}`);
+    }
+    const introduced = introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+    if (introduced.length) return refuse(`“${def.name}” could not be removed: ${introduced.map((d) => d.message).join(' ')}`);
+    const builder = this.pending.get(path) ?? null;
+    const before = this.state;
+    // Released for the save, which the hold would refuse: History's step keeps the code last loaded as the file's before.
+    // Its placements were found in the project as loaded: one added outside the app since (a page saved in another
+    // editor the watch has not delivered) would be left placing a component that is gone, so the save, worked out from
+    // the whole project, waits for it.
+    this.releaseConflict(path);
+    try {
+      await this.persist(next, { label: placements ? `Remove “${def.name}” and its ${placements === 1 ? 'placement' : `${placements} placements`}` : `Remove “${def.name}”`, source: 'user', absent: new Set([path]), wholeProject: true });
+    } catch (e) {
+      const why = (e as Error).message;
+      if (this.state !== before || this.unsettled) return refuse(`The removal could not be finished: ${why} Close and reopen the project to finish it.`);
+      this.holdConflict(path, builder, conflict.reason, undefined, conflict.deletedCode);
+      this.emit('history');
+      return refuse(e instanceof DiskConflictError ? `${why} Nothing was removed.` : `The removal could not be saved, so nothing was removed: ${why}`);
+    }
+    await this.saveConflicts();
+    return { ok: true };
   }
 
   // -------------------------------------------------------------------------
@@ -2467,7 +2571,9 @@ export class ProjectSession extends EventEmitter {
     }
     for (const [path, prev] of removed) {
       changed[path] = { before: blobOf(prev), after: null };
-      deletes.push({ path, before: changed[path].before! });
+      // A file already gone (#1540) is History's to put back, never the journal's to remove: a file put back there
+      // before an interrupted save is finished is kept.
+      if (!opts.absent?.has(path)) deletes.push({ path, before: changed[path].before! });
     }
     // An edit saved into a waiting run's checkpoint (#1281) is the author's step from that checkpoint: what the run
     // changed before it is the run's own, recorded when the run finishes, from the checkpoint the edit leaves.
@@ -2494,7 +2600,8 @@ export class ProjectSession extends EventEmitter {
     // manifest says nothing they read, and the watcher does not see it change. The files it writes are checked after
     // this, last, so an edit to one of them while this reads is still caught.
     if (opts.wholeProject) {
-      const unloaded = await this.unloadedEdit(new Set([...Object.keys(changed), MANIFEST]));
+      // Files held in conflict are SiteOrigin Builder's version until settled, whatever is on disk.
+      const unloaded = await this.unloadedEdit(new Set([...Object.keys(changed), MANIFEST, ...this.pending.keys(), ...(opts.absent ?? [])]));
       if (unloaded) throw new DiskConflictError(unloaded);
     }
     // A change to an entry is allowed by its collection's settings, which it may not write (a synced collection's
@@ -2506,6 +2613,11 @@ export class ProjectSession extends EventEmitter {
     // outside the app, say) is not overwritten by it.
     const unchangedOnDisk = async (path: string) => {
       const disk = await this.diskContent(path);
+      // Still gone, and nothing else: a file back there (even as it was) is never removed with the component.
+      if (opts.absent?.has(path)) {
+        if (disk === null && !nextDocs.has(path)) return true;
+        throw new DiskConflictError(path);
+      }
       const target = nextDocs.get(path);
       const already = !this.activeRun && target !== undefined && disk !== null && sameContent(path, disk, target);
       if (!sameContent(path, disk, this.docs.get(path) ?? null) && !already) throw new DiskConflictError(path);
@@ -2584,6 +2696,8 @@ export class ProjectSession extends EventEmitter {
             this.landing?.add(w.path);
             installed++;
           }
+          // Still gone, checked again just before the documents that named it are removed.
+          for (const path of opts.absent ?? []) if (Object.hasOwn(changed, path)) await unchangedOnDisk(path);
           for (const d of deletes) {
             await unchangedOnDisk(d.path);
             await this.removeCanonical(d.path);
@@ -2596,6 +2710,7 @@ export class ProjectSession extends EventEmitter {
           this.carryChecks(this.state, next, Object.keys(changed));
           this.state = next;
           this.docs = nextDocs;
+          for (const w of writes) this.absentSources.delete(w.path);
           // The run's checkpoint holds the edit from now on, as its marker will once the journal is done.
           if (run && rebased && rebasedMarker) {
             run.before = rebased;
@@ -3830,12 +3945,27 @@ export class ProjectSession extends EventEmitter {
   /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
   diagnostics(): Diagnostic[] {
     try {
-      return this.problemsOf(this.state);
+      const missing = this.missingCode();
+      const problems = this.problemsOf(this.state);
+      return missing.length ? [...missing, ...problems] : problems;
     } catch (e) {
       // A project from a newer version may not follow this version's shapes; it is open read-only anyway.
       if (this.readOnly) return [];
       throw e;
     }
+  }
+
+  /**
+   * Project code components whose file was not there when the project was read (#1540), named with their file: their
+   * pages can't be built until it is put back or the component is removed. A file held as a conflict is said there.
+   */
+  missingCode(): Diagnostic[] {
+    const out: Diagnostic[] = [];
+    for (const def of Object.values(this.state.components)) {
+      if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath || !this.absentSources.has(def.sourcePath) || this.pending.has(def.sourcePath)) continue;
+      out.push({ severity: 'error', code: 'CODE_SOURCE_MISSING', owner: { kind: 'component', id: def.id }, site: def.sourcePath, message: missingCodeMessage(def.name, def.sourcePath) });
+    }
+    return out;
   }
 
   /** How many places use each library asset. */
@@ -6107,6 +6237,8 @@ export class ProjectSession extends EventEmitter {
   private async ownSave(paths: string[]): Promise<boolean> {
     // A refused outside edit is looked at again by the full read, whatever the watch named: only it can tell it settled.
     if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size || this.refusedSources.size) return false;
+    // A code component's file put back after it was missing (even empty) is read, so the project stops saying so.
+    if (paths.some((p) => this.absentSources.has(p))) return false;
     // A lock taken over is noticed now, as any reload notices it.
     if (!(await this.stillOwner())) return false;
     try {
@@ -6138,26 +6270,51 @@ export class ProjectSession extends EventEmitter {
     if (this.unsettled) return { ok: false, message: UNSETTLED };
     // A held conflict is settled outside the app when its file is put back to SiteOrigin Builder's version.
     let settled = false;
+    let reheld = false;
     for (const [p, builder] of [...this.pending]) {
-      if (!settledOnDisk(p, await this.diskContent(p), builder)) continue;
+      const disk = await this.diskContent(p);
+      if (!settledOnDisk(p, disk, builder)) {
+        // A deleted code component's file put back with other code is that file changed outside the app, and one in
+        // conflict deleted outside is a deleted file again (#1540).
+        const held = this.conflicts.find((c) => c.path === p);
+        const owner = builder === null ? undefined : this.codeOwnerOf(p);
+        if (held?.deletedCode && disk !== null) {
+          this.holdConflict(p, builder, 'Changed outside SiteOrigin Builder.');
+          reheld = true;
+        } else if (held && !held.deletedCode && !held.aiRun && owner && disk === null && (await absent(safeJoin(this.dir, p)))) {
+          this.holdConflict(p, builder, DELETED_CODE_REASON, undefined, { definitionId: owner });
+          reheld = true;
+        }
+        continue;
+      }
       // What an AI request attempted is kept first, as when it is settled in Project health; held until it is.
       if (!(await this.saveAttempt(p).then(() => true, () => false))) continue;
       this.releaseConflict(p);
       settled = true;
     }
-    if (settled) await this.saveConflicts();
+    if (settled || reheld) await this.saveConflicts();
+    if (reheld) this.emit('history');
     let next: ProjectState;
     let migrated: boolean;
     let stored: ProjectState;
+    let raw: Map<string, string>;
     try {
       // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
       const read = await readProject(this.dir, { overlay: this.pending });
       next = read.state;
       stored = read.stored;
+      raw = read.raw;
       migrated = !!read.migration;
     } catch (e) {
       if (settled) this.emit('history');
       return { ok: false, message: (e as Error).message };
+    }
+    // A code component's file deleted outside the app (#1540) is held with the code last loaded, which the component
+    // keeps meanwhile: the author puts the file back from it, or removes the component, in Project health. Told at once,
+    // whatever becomes of the rest of what was read.
+    if (await this.holdDeletedCode(next, raw)) {
+      await this.saveConflicts();
+      this.emit('history');
     }
     // Every component's edited code is checked, so each refused file is told of, and one put right is no longer. Edited
     // code that is fine but held back with the rest of the read is told of too, until it loads (#1533).
@@ -6183,6 +6340,13 @@ export class ProjectSession extends EventEmitter {
     let same = nextDocs.size === this.docs.size;
     if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
     const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
+    // Read and found sound: holds whose component has gone are let go, and which code components' files are missing
+    // follows what was read (#1540), said at once when only that changed.
+    const dropped = await this.reconcileHolds(next);
+    if (dropped) await this.saveConflicts();
+    const absentBefore = [...this.absentSources].sort().join('\n');
+    this.noteAbsentSources(next, raw);
+    if (dropped || [...this.absentSources].sort().join('\n') !== absentBefore) this.emit('history');
     if (same && srcSame) {
       // Every document read to find nothing changed: what a reload set off by the app's own save costs.
       if (!this.migrationDue && !settled) {
@@ -6266,16 +6430,76 @@ export class ProjectSession extends EventEmitter {
     return [...this.refusedSources].map(([id, r]) => ({ severity: r.held ? 'warning' : 'error', code: EXTERNAL_SOURCE_REFUSED, message: r.message, owner: { kind: 'component', id }, site: r.path }));
   }
 
+  /**
+   * Hold each project code component's file that `next` (just read, its documents' texts in `raw`) finds gone, where
+   * the project had loaded code from it: the hold keeps that code, which `next` takes too. A file that cannot be read
+   * just now is not taken as gone.
+   */
+  private async holdDeletedCode(next: ProjectState, raw: Map<string, string>): Promise<boolean> {
+    let held = false;
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath || raw.has(def.sourcePath) || this.pending.has(def.sourcePath) || this.absentSources.has(def.sourcePath)) continue;
+      const loaded = Object.hasOwn(this.state.components, def.id) ? this.state.components[def.id] : undefined;
+      if (loaded?.sourcePath !== def.sourcePath || loaded.source === undefined) continue;
+      if (!(await absent(safeJoin(this.dir, def.sourcePath)))) continue;
+      this.holdConflict(def.sourcePath, loaded.source, DELETED_CODE_REASON, undefined, { definitionId: def.id });
+      def.source = loaded.source;
+      held = true;
+    }
+    return held;
+  }
+
+  /**
+   * Holds on project code components' files, squared with `state` (#1540): a deleted file's hold whose component no
+   * longer has that file is let go (History keeps the code, as a removal's step does), and a changed file's hold whose
+   * file is gone again is a deleted file's. Holds an AI request left are its own.
+   */
+  private async reconcileHolds(state: ProjectState): Promise<boolean> {
+    let changed = false;
+    for (const c of [...this.conflicts]) {
+      const builder = this.pending.get(c.path);
+      if (c.kind !== 'canonical' || c.aiRun || builder === undefined || builder === null) continue;
+      if (c.deletedCode) {
+        const def = Object.hasOwn(state.components, c.deletedCode.definitionId) ? state.components[c.deletedCode.definitionId] : undefined;
+        if (def?.sourcePath === c.path) continue;
+        this.releaseConflict(c.path);
+        changed = true;
+        continue;
+      }
+      const owner = Object.values(state.components).find((d) => d.kind === 'code' && d.owner === 'project' && d.sourcePath === c.path);
+      if (owner && (await absent(safeJoin(this.dir, c.path)))) {
+        this.holdConflict(c.path, builder, DELETED_CODE_REASON, undefined, { definitionId: owner.id });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** The project code component whose file `path` is, in the project as loaded. */
+  private codeOwnerOf(path: string): string | undefined {
+    return Object.values(this.state.components).find((d) => d.kind === 'code' && d.owner === 'project' && d.sourcePath === path)?.id;
+  }
+
+  /** Which code components' files `state`, read with its documents' texts in `raw`, found missing (#1540). */
+  private noteAbsentSources(state: ProjectState, raw: Map<string, string>) {
+    this.absentSources = new Set(Object.values(state.components).flatMap((d) => (d.kind === 'code' && d.owner === 'project' && d.sourcePath && !raw.has(d.sourcePath) && !this.pending.has(d.sourcePath) ? [d.sourcePath] : [])));
+  }
+
   /** Read-only inspection follows the owner's edits without writing anything. */
   private async reloadReadOnly(): Promise<{ ok: boolean; message?: string }> {
     // A project only inspected loads whatever its owner keeps: nothing it shows is a refused edit of this window's.
     this.setRefusedSources(new Map());
     let next: ProjectState;
+    let raw: Map<string, string>;
     try {
-      next = await readState(this.dir, { allowNewer: true });
+      ({ state: next, raw } = await readProject(this.dir, { allowNewer: true }));
     } catch (e) {
       return { ok: false, message: (e as Error).message };
     }
+    // Which code components' files are missing is followed too, and said as soon as it changes.
+    const absentBefore = [...this.absentSources].sort().join('\n');
+    this.noteAbsentSources(next, raw);
+    if ([...this.absentSources].sort().join('\n') !== absentBefore) this.emit('history');
     const nextDocs = stateToDocs(frozen(next));
     if (nextDocs.size === this.docs.size && [...nextDocs].every(([p, c]) => this.docs.get(p) === c)) {
       perf.count('session.reloadUnchanged');

@@ -21,6 +21,7 @@ import { HeldStyle } from './StylePaste';
 import { Disclosure as Fold, DisclosureMark, Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { GENERATED_DIR, defFile } from '@generator/index';
+import { instancesOf } from '@engine/tree';
 import { auditForHealth, matchesSeoFilter, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -298,6 +299,9 @@ function conflictSubject(state: ProjectState, path: string): string {
   // A design's own generated file is named for its component.
   const design = path.startsWith(`${GENERATED_DIR}/`) ? Object.values(state.components).find((d) => d.kind === 'managed' && !!d.tree && defFile(d) === path) : undefined;
   if (design) return `${design.name} component file`;
+  // A project code component's own file is named for its component too.
+  const code = path.startsWith('src/lib/siteorigin/custom/') ? Object.values(state.components).find((d) => d.kind === 'code' && d.sourcePath === path) : undefined;
+  if (code) return `${code.name} code component file`;
   const page = /^siteorigin\/pages\/([^/]+)\.json$/.exec(path)?.[1];
   if (page) return Object.hasOwn(state.pages, page) ? `${state.pages[page].title} page` : 'Page file';
   const component = /^siteorigin\/components\/([^/]+)\//.exec(path)?.[1];
@@ -825,14 +829,18 @@ export function HealthModal() {
       if (!checked) return;
       settling.current = { path, before: snap.conflicts.map((c) => c.path) };
       const subject = conflictSubject(st, path);
-      // A conversion names the opening it was chosen in, and the bytes it was compared as.
-      const r = await api.project.resolveConflict(path, choice, choice === 'convert' ? { opening: snap.workspaceKey, ...(checked.expect ? { expect: checked.expect } : {}) } : undefined);
+      const held = snap.conflicts.find((c) => c.path === path);
+      const deleted = held ? deletedCodeOf(st, held) : null;
+      // A conversion or a removal names the opening it was chosen in; a conversion, the bytes it was compared as.
+      const r = await api.project.resolveConflict(path, choice, choice === 'convert' ? { opening: snap.workspaceKey, ...(checked.expect ? { expect: checked.expect } : {}) } : choice === 'remove' ? { opening: snap.workspaceKey } : undefined);
       if (!r.ok) {
         settling.current = null;
         const message = r.message ?? (choice === 'convert' ? 'The file could not be converted.' : undefined);
         if (message && choice === 'convert' && onRefused) onRefused(message);
         else if (message) toast(message, 'error');
       } else if (choice === 'convert') setStatus(r.message ?? `${subject} is now a code component, which the component’s placements use. The edited file is also under Saved copies.`);
+      else if (choice === 'remove') setStatus(`${deleted?.name ?? 'The component'}${deleted?.placements ? ' and its placements were' : ' was'} removed. Undo puts ${deleted?.placements ? 'them' : 'it'} back.`);
+      else if (deleted && choice === 'restore') setStatus(`${subject} is back, with the code SiteOrigin Builder last loaded.`);
       else setStatus(`${subject} ${choice === 'keep' ? 'now uses the file on disk.' : 'uses SiteOrigin Builder’s version again.'}${keptAs(r.saved ?? [])}`);
     } catch (e) {
       settling.current = null;
@@ -1231,7 +1239,8 @@ export function HealthModal() {
                 <ul>
                   {snap.conflicts.map((c) => (
                     <ConflictRow
-                      key={c.path}
+                      // A deleted code component's file that turns into a changed one (or back) is a new decision: what was compared goes.
+                      key={`${c.path}:${c.deletedCode ? 'deleted' : 'changed'}`}
                       conflict={c}
                       state={st}
                       dir={snap.dir}
@@ -1405,7 +1414,14 @@ function VersionText({ label, version, against, versus }: { label: string; versi
 }
 
 /** What a choice is doing while it runs, said on its button. */
-const RUNNING: Record<ConflictChoice, string> = { keep: 'Keeping the file on disk…', restore: 'Putting back SiteOrigin Builder’s version…', convert: 'Converting…' };
+const RUNNING: Record<ConflictChoice, string> = { keep: 'Keeping the file on disk…', restore: 'Putting back SiteOrigin Builder’s version…', convert: 'Converting…', remove: 'Removing…' };
+
+/** A code component whose file was deleted outside the app, still in the project (#1540), with how many placements it has. */
+function deletedCodeOf(state: ProjectState, c: ProjectSnapshot['conflicts'][number]): { name: string; placements: number } | null {
+  const id = c.deletedCode?.definitionId;
+  const def = id && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+  return def && def.sourcePath === c.path ? { name: def.name, placements: instancesOf(state, def.id).length } : null;
+}
 
 /**
  * A file in conflict: what it is and what happened, then each choice beside what it does and where the other version
@@ -1533,6 +1549,9 @@ function ConflictRow({
       : c.builderMissing
         ? `Removes the file, which SiteOrigin Builder’s version doesn’t have.${diskGoes}`
         : `${c.aiRun ? 'Uses the version from before the AI request.' : 'Puts back the version you had in SiteOrigin Builder.'}${diskGoes}`;
+  // A code component's file deleted outside the app (#1540): put back, or the component removed with its placements.
+  const deleted = deletedCodeOf(state, c);
+  const removeLabel = deleted ? (deleted.placements ? `Remove ${deleted.name} and its ${deleted.placements === 1 ? 'placement' : `${deleted.placements} placements`}` : `Remove ${deleted.name}`) : '';
   const button = (choice: ConflictChoice, label: string, unavailable = false) => (
     // Held, not disabled, while a choice is being made: focus stays where it was.
     <button className="btn btn-sm" aria-disabled={held || unavailable || undefined} aria-describedby={`${ids}-${choice}`} onClick={() => !unavailable && choose(choice)}>
@@ -1556,7 +1575,8 @@ function ConflictRow({
             {versions === 'loading' ? <Spinner decorative /> : <DisclosureMark />}
             {versions === 'loading' ? 'Reading versions…' : shown ? 'Hide versions' : 'Compare versions'}
           </button>
-          <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.path}`)}>
+          {/* A file that is gone is shown by its folder. */}
+          <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${deleted ? c.path.slice(0, c.path.lastIndexOf('/')) : c.path}`)}>
             <FolderOpen aria-hidden="true" />
             Show in folder
           </button>
@@ -1594,19 +1614,35 @@ function ConflictRow({
             </>
           ) : (
             <>
-              <div className={`health-choices${shown ? ' compared' : ''}`} role="group" aria-label={kind === 'generated' ? (c.convert ? `Restore or convert the ${subject}` : `Restore the ${subject}`) : `Choose a version of the ${subject}`} aria-describedby={recoveryNote}>
-                {kind === 'canonical' && (
-                  <div className="health-choice">
-                    {pane('disk')}
-                    {button('keep', diskDeleted && !c.builderMissing ? 'Keep the file deleted' : 'Keep the file on disk')}
-                    <span id={`${ids}-keep`}>{keepDoes}</span>
-                  </div>
+              <div className={`health-choices${shown ? ' compared' : ''}`} role="group" aria-label={deleted ? `Put back the ${subject}, or remove ${deleted.name}` : kind === 'generated' ? (c.convert ? `Restore or convert the ${subject}` : `Restore the ${subject}`) : `Choose a version of the ${subject}`} aria-describedby={deleted ? undefined : recoveryNote}>
+                {deleted ? (
+                  <>
+                    <div className="health-choice">
+                      {pane('builder')}
+                      {button('restore', 'Put the file back')}
+                      <span id={`${ids}-restore`}>Puts back the code SiteOrigin Builder last loaded for {deleted.name}.</span>
+                    </div>
+                    <div className="health-choice">
+                      {button('remove', removeLabel)}
+                      <span id={`${ids}-remove`}>{deleted.placements ? `Removes ${deleted.name} from the project, with everything in its placements. Undo puts them back.` : `Removes ${deleted.name} from the project. Undo puts it back.`}</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {kind === 'canonical' && (
+                      <div className="health-choice">
+                        {pane('disk')}
+                        {button('keep', diskDeleted && !c.builderMissing ? 'Keep the file deleted' : 'Keep the file on disk')}
+                        <span id={`${ids}-keep`}>{keepDoes}</span>
+                      </div>
+                    )}
+                    <div className="health-choice">
+                      {pane('builder')}
+                      {button('restore', c.builderMissing ? 'Use SiteOrigin Builder’s version (remove the file)' : 'Use SiteOrigin Builder’s version')}
+                      <span id={`${ids}-restore`}>{restoreDoes}</span>
+                    </div>
+                  </>
                 )}
-                <div className="health-choice">
-                  {pane('builder')}
-                  {button('restore', c.builderMissing ? 'Use SiteOrigin Builder’s version (remove the file)' : 'Use SiteOrigin Builder’s version')}
-                  <span id={`${ids}-restore`}>{restoreDoes}</span>
-                </div>
                 {kind === 'generated' && c.convert ? (
                   <div className="health-choice">
                     {pane('disk')}

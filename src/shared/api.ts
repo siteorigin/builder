@@ -366,7 +366,7 @@ export interface SavedCopy {
 export type FileText = { state: 'text'; text: string } | { state: 'missing' } | { state: 'binary' } | { state: 'too-large' } | { state: 'unreadable' };
 
 /** How a file conflict is settled: the file on disk kept, Builder's version restored, or a design's file made code. */
-export type ConflictChoice = 'keep' | 'restore' | 'convert';
+export type ConflictChoice = 'keep' | 'restore' | 'convert' | 'remove';
 
 export interface ProjectSnapshot {
   dir: string;
@@ -386,7 +386,7 @@ export interface ProjectSnapshot {
    * Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore,
    * or, for a design's own file, `convert` into a code component in the design's place).
    */
-  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean; convert?: { definitionId: string } }>;
+  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean; convert?: { definitionId: string }; deletedCode?: { definitionId: string } }>;
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */

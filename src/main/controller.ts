@@ -1540,8 +1540,9 @@ export class Controller {
   }
 
   /**
-   * Settle a file conflict: keep the version changed outside the app, restore SiteOrigin Builder's version, or (a
-   * design's own file) convert the edited file into a code component, which needs Developer mode as all code does.
+   * Settle a file conflict: keep the version changed outside the app, restore SiteOrigin Builder's version, (a design's
+   * own file) convert the edited file into a code component, which needs Developer mode as all code does, or (a code
+   * component's file deleted outside the app) remove the component with its placements.
    */
   async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string; saved?: SavedCopy['side'][] }> {
     const s = this.session;
@@ -1555,7 +1556,9 @@ export class Controller {
   private async resolveConflictIn(s: ProjectSession, path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish first.' };
     // Only an exact choice is acted on: a missing or mistyped one must never overwrite a file.
-    if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore' && choice !== 'convert')) return { ok: false, message: 'Choose which version to keep.' };
+    if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore' && choice !== 'convert' && choice !== 'remove')) return { ok: false, message: 'Choose which version to keep.' };
+    // A removal is made in the opening of the project it was asked in, never another one opened at the same folder since.
+    if (choice === 'remove' && opts?.opening !== undefined && opts.opening !== this.workspaceKey) return { ok: false, message: 'The project was closed before this could be settled.' };
     if (choice !== 'convert') return s.resolveConflict(path, choice);
     const expect = opts?.expect;
     if (expect !== undefined && (typeof expect !== 'string' || !/^[0-9a-f]{64}$/.test(expect))) return { ok: false, message: 'Choose which version to keep.' };
@@ -4343,7 +4346,14 @@ export class Controller {
     // Export builds from the project folder and needs the writer lock (spec 20).
     if (s.readOnly) return { ok: false, message: s.readOnly.reason, warnings: [] };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish before exporting.', warnings: [] };
+    // A code component whose file is gone is named (#1540): the build would only name the page that imports it.
+    const owned = (c: (typeof s.conflicts)[number]) => (c.deletedCode && Object.hasOwn(s.state.components, c.deletedCode.definitionId) && s.state.components[c.deletedCode.definitionId].sourcePath === c.path ? s.state.components[c.deletedCode.definitionId] : undefined);
+    const deleted = s.conflicts.find((c) => owned(c));
+    const gone = deleted && owned(deleted);
+    if (deleted && gone) return { ok: false, message: `The file of the code component “${gone.name}” (${deleted.path}) was deleted outside SiteOrigin Builder. Put it back or remove the component in Project health, then export.`, warnings: [] };
     if (s.conflicts.length) return { ok: false, message: 'Resolve file conflicts before exporting.', warnings: [] };
+    const missing = s.missingCode()[0];
+    if (missing) return { ok: false, message: `${missing.message} Then export.`, warnings: [] };
     // The generated files may still say what the project said before (a page since made a draft, in llms-full.txt).
     if (s.saveUnfinished) return { ok: false, message: 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then export again.', warnings: [] };
     // A change that failed to save (#753), perhaps just as the Export button was pressed, would be left out without a word.
