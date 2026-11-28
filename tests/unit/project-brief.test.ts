@@ -240,7 +240,7 @@ describe('copies of the project', () => {
   it('leave the brief out of an export, and keep it in a copy that is the project itself (Duplicate project)', async () => {
     const src = project();
     const exported = join(temp('export'), 'site');
-    await copyProjectSource(src, exported, { keepAsset: () => true });
+    await copyProjectSource(src, exported);
     expect(existsSync(join(exported, 'siteorigin/site.json'))).toBe(true);
     expect(existsSync(join(exported, BRIEF_FILE))).toBe(false);
     const plain = join(temp('plain'), 'site');
@@ -271,7 +271,7 @@ describe('copies of the project', () => {
     mkdirSync(join(src, '.SiteOrigin', 'history'), { recursive: true });
     writeFileSync(join(src, '.SiteOrigin', 'history', 'blob'), 'Notes since taken out');
     const exported = join(temp('export'), 'site');
-    await copyProjectSource(src, exported, { keepAsset: () => true });
+    await copyProjectSource(src, exported);
     expect(existsSync(join(exported, 'siteorigin', 'brief.json~'))).toBe(false);
     expect(existsSync(join(exported, '.SiteOrigin'))).toBe(false);
     expect(existsSync(join(exported, 'siteorigin', 'site.json'))).toBe(true);

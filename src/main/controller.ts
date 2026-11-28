@@ -32,7 +32,7 @@ import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionC
 import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
-import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
+import { answeredAddressFile, isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftOnlyAssetFiles, draftSourceNotes, heldDraftAssetsNote, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, finishExportedSource, leaveOutDrafts, leaveOutRetiredAssets, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, blankPageWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem, listNames } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { written } from './project/save-error';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -5092,7 +5092,7 @@ export class Controller {
           unsaved = `This export couldn’t be saved in Saved versions as “${opts.milestone}”: ${(e as Error).message}`;
         }
       }
-      await timed('export.copySource', () => copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) }))();
+      await timed('export.copySource', () => copyProjectSource(s.dir, dest))();
       // The files the fingerprints don't cover (the project's own setup files) are copied as the milestone holds them.
       if (milestone?.version.git && !(await copiedAsCaptured(s.dir, dest, milestone.files, new Set(Object.keys(milestone.version.docs))))) return stop('The project changed on disk while it was being exported. Export again.');
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
@@ -5108,6 +5108,10 @@ export class Controller {
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       const drafts = opts.forBuild ? undefined : new Map<string, string>();
       await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state, undefined, drafts))();
+      // Not the files kept only for the project's undo and saved versions (#1391), as Duplicate project leaves them out
+      // (#1378): an imported file no record lists goes out while what the published site is built from names it, the
+      // author's own pages and routes included. The authoring documents carry the drafts, so they keep none.
+      await timed('export.retiredAssets', () => leaveOutRetiredAssets(dest, s.state, { authoring: false }))();
       // What the editor finds in code components by their markers: neither export carries a marker, whoever owns the code.
       await timed('export.markers', () => stripCodeMarkers(dest, s.state))();
       if (opts.forBuild) {
