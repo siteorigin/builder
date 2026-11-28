@@ -685,6 +685,13 @@ export interface ShownRun {
 export const shownRun = (s: Pick<State, 'conversation' | 'runStatus' | 'activeRunId' | 'runMode' | 'runConversationId'>): ShownRun | null =>
   s.runStatus && s.activeRunId && s.conversation && s.runConversationId === s.conversation.id ? { runId: s.activeRunId, status: s.runStatus, mode: s.runMode ?? 'edit' } : null;
 
+/**
+ * The question the AI waits on is on screen: the dock shows the Chat tab, on the thread that asked. The canvas's notice
+ * ("The AI has a question for you", Answer in chat) then has nothing to point at, and leaves.
+ */
+export const questionShownInChat = (s: Pick<State, 'conversation' | 'runStatus' | 'activeRunId' | 'runMode' | 'runConversationId' | 'dockOpen' | 'rightTab'>): boolean =>
+  s.runStatus === 'awaiting-input' && s.dockOpen && s.rightTab === 'chat' && shownRun(s) !== null;
+
 /** What the Inspector shows its fields for, as it keys them: the selection in the component edited, or with nothing
  *  selected the page, the component or the layout. */
 const inspectorShows = (v: Pick<State, 'selection' | 'pageId' | 'definitionMode' | 'templateMode'>) => {

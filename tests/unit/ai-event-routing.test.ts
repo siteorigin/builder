@@ -21,6 +21,8 @@ vi.stubGlobal('window', { builder: { platform: 'test' } });
 // The store is renderer code, outside this test project's types: loaded by a path the type checker does not follow,
 // with just the shapes this test uses.
 interface ChatState {
+  dockOpen?: boolean;
+  rightTab?: string;
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
@@ -33,6 +35,7 @@ const store = (await load('../../src/renderer/src/store')) as {
   getState: () => ChatState;
   setState: (p: Partial<ChatState>) => void;
   shownRun: (s: ChatState) => { runId: string; status: RunStatus; mode: 'edit' | 'ask' } | null;
+  questionShownInChat: (s: ChatState) => boolean;
   detachedRun: () => Partial<ChatState>;
   showConversation: (fallback: Conversation, opening: string, current: () => boolean) => Promise<void>;
   openThread: (pick: Promise<Conversation>, opening: string) => Promise<boolean>;
@@ -566,6 +569,13 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     expect(store.getState()).toMatchObject({ conversation: asking, runStatus: 'awaiting-input', activeRunId: 'r_ask', runMode: 'ask', runConversationId: 'c_live' });
     // Restored in its own thread, so the run shows there with its answer box (#1124).
     expect(store.shownRun(store.getState())).toEqual({ runId: 'r_ask', status: 'awaiting-input', mode: 'ask' });
+    // The canvas's notice leaves only while the dock shows the Chat tab on that thread (#1328).
+    const view = (p: Partial<ChatState>) => store.questionShownInChat({ ...store.getState(), ...p });
+    expect(view({ dockOpen: true, rightTab: 'chat' })).toBe(true);
+    expect(view({ dockOpen: false, rightTab: 'chat' })).toBe(false);
+    expect(view({ dockOpen: true, rightTab: 'inspect' })).toBe(false);
+    expect(view({ dockOpen: true, rightTab: 'chat', runConversationId: 'c_other' })).toBe(false);
+    expect(view({ dockOpen: true, rightTab: 'chat', runStatus: 'running' })).toBe(false);
     // The composer answers it again.
     const s = store.getState();
     expect(waitingQuestion(s.conversation, s.activeRunId, s.runStatus)).toMatchObject({ runId: 'r_ask', messageId: 'm_reply', question: { id: 'q_1' } });
