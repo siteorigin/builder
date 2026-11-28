@@ -605,15 +605,16 @@ describe('serving an isolated preview', () => {
       resolve: async (id: string, from?: string) => {
         asked.push([id, from]);
         const [bare, query = ''] = id.split('?');
-        const base = bare.startsWith('.') ? posix.join(posix.dirname(from!), bare) : bare;
+        // The site's package.json maps #lib to src/lib.
+        const base = bare.startsWith('.') ? posix.join(posix.dirname(from!), bare) : bare.startsWith('#lib/') ? `${dir}/src/lib/${bare.slice(5)}` : bare;
         if (!absolute(base)) return { id: `/node_modules/${id}/index.js` };
         for (const ext of ['', '.js', '.svelte']) if (existsSync(base + ext) && statSync(base + ext).isFile()) return { id: base + ext + (query && `?${query}`) };
         return null;
       }
     };
     const resolve = (id: string, from: string) => plugin.resolveId.call(vite, id, from);
-    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy (of a
-    // helper the component imports, as only those are in it).
+    // Relative imports and #lib (a project path once Vite has resolved it) reach the preview's own copy (of a helper
+    // the component imports, as only those are in it).
     expect(await resolve('../runtime/Image.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Image.svelte'));
     expect(await resolve(`${dir}/src/lib/siteorigin/runtime/icons.js`, note)).toBe(at('src/lib/siteorigin/runtime/icons.js'));
     expect(await resolve('../runtime/Image.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Image.svelte')}?svelte&type=style&lang.css`);
@@ -628,6 +629,8 @@ describe('serving an isolated preview', () => {
     writeFileSync(join(dir, 'src/lib/siteorigin/custom/helper.js'), 'export const x = 1;');
     expect(await resolve('./helper', note)).toEqual({ id: `${dir}/src/lib/siteorigin/custom/helper.js` });
     expect(asked.at(-1)).toEqual(['./helper', `${dir}/src/lib/siteorigin/custom/Note.svelte`]);
+    expect(await resolve('#lib/siteorigin/custom/helper.js', note)).toEqual({ id: `${dir}/src/lib/siteorigin/custom/helper.js` });
+    expect(await resolve('#lib/siteorigin/runtime/icons.js', note)).toBe(at('src/lib/siteorigin/runtime/icons.js'));
     // Read as text or as an address, it comes from the project: the server may never read the editor's cache that way.
     expect(await resolve('../runtime/icons.js?raw', note)).toEqual({ id: `${dir}/src/lib/siteorigin/runtime/icons.js?raw` });
     // A package is the same from anywhere.

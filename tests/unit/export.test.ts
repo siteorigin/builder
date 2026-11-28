@@ -408,7 +408,7 @@ describe('website export assets', () => {
     );
     // Code of the published site's that imports the component only the draft places makes it the website's, and its picture too.
     const box = Object.values(state.components).find((d) => d.name === 'Gallery box')!;
-    write(dir, 'src/lib/Showcase.svelte', `<script>\n\timport Box from '$lib/${defFile(box).replace(/^src\/lib\//, '')}';\n</script>\n\n<Box />\n`);
+    write(dir, 'src/lib/Showcase.svelte', `<script>\n\timport Box from '#lib/${defFile(box).replace(/^src\/lib\//, '')}';\n</script>\n\n<Box />\n`);
     expect(await draftOnlyAssetFiles(dir, state, drafts)).toEqual(held.filter((f) => f !== 'static/assets/gallery-cccccccc.svg'));
     rmSync(join(dir, 'src/lib/Showcase.svelte'));
     // On a disk that ignores case, the copy may spell a record's file otherwise: it is still that record's.

@@ -121,6 +121,15 @@ describe('explaining a failed production build', () => {
     expect(explainBuildFailure(s, { error: 'x', failure: { message: 'x', cause: { message: 'boom', id: '<project>/src/lib/siteorigin/custom/OpeningHours.svelte' } }, logs: [] }, ctx).message).toBe('The production build failed in the “Opening hours” component (src/lib/siteorigin/custom/OpeningHours.svelte).');
   });
 
+  it('gives a SvelteKit error’s explanation with its code, not the code alone (#1479)', () => {
+    const removed = 'module_removed_lib\n`$lib` has been removed. Use `#lib` instead: https://svelte.dev/docs/kit/$lib.\nhttps://svelte.dev/e/kit/module_removed_lib';
+    const r = explainBuildFailure(state(), { error: 'x', failure: { name: 'SvelteKit error', message: removed, stack: '' }, logs: [] }, ctx);
+    expect(r.warnings[0]).toBe('SvelteKit error: module_removed_lib: `$lib` has been removed. Use `#lib` instead: https://svelte.dev/docs/kit/$lib.');
+    // Any other error keeps its first line.
+    const other = explainBuildFailure(state(), { error: 'x', failure: { name: 'TypeError', message: 'not_a_code at all\nmore' }, logs: [] }, ctx);
+    expect(other.warnings[0]).toBe('TypeError: not_a_code at all');
+  });
+
   it('matches a route under the site’s public address path, and names it as the build did', () => {
     const s = state();
     s.site.baseUrl = 'https://example.com/studio';

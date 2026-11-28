@@ -850,7 +850,10 @@ function registerIpc() {
         // Saving refuses the draft and says why; the code is still held to what the draft names.
       }
     const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
-    const problems = await checkSvelteSource(String(source), { contract, ...held, ...(state ? { tokens: projectTokenVars(state) } : {}) });
+    // Every project file it imports must be there: compiling it alone never notices one missing.
+    const session = controller.session;
+    const modules = session ? { modules: session.draftModules(String(source), typeof given.definitionId === 'string' ? given.definitionId : undefined) } : {};
+    const problems = await checkSvelteSource(String(source), { contract, ...held, ...modules, ...(state ? { tokens: projectTokenVars(state) } : {}) });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });
@@ -986,7 +989,8 @@ function registerIpc() {
       if ('error' in ad) return { ok: false, message: ad.error };
       // The repaired code is written by the assistant, so it must pass the assistant's stricter policy, and so
       // must the project components it imports.
-      const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: controller.session ? componentSources(controller.session.state.components) : undefined, ...(controller.session ? { tokens: projectTokenVars(controller.session.state) } : {}) });
+      const session = controller.session;
+      const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: session ? componentSources(session.state.components) : undefined, ...(session ? { tokens: projectTokenVars(session.state), modules: session.draftModules(src) } : {}) });
       return await fixComponentSource(ad.adapter, ad.model, String(source), check, abort.signal);
     } finally {
       if (fixAbort === abort) fixAbort = null;

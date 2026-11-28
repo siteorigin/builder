@@ -124,7 +124,7 @@ describe('site search files', () => {
     expect(usesSiteSearch(after)).toBe(true);
     const files = generateProject(after);
     expect(files.has(HELPER)).toBe(true);
-    for (const spelling of ["'../runtime/site-search'", "'$lib/siteorigin/runtime/./site-search.js'"]) {
+    for (const spelling of ["'../runtime/site-search'", "'#lib/siteorigin/runtime/./site-search.js'"]) {
       copy.source = copy.source!.replace(/'[^']*site-search[^']*'/, spelling);
       expect(usesSiteSearch(after), spelling).toBe(true);
     }
