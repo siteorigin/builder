@@ -134,4 +134,18 @@ describe.skipIf(!browserInstalled)('typing in a rich text field', { timeout: 30_
     expect(await field().inputValue()).toBe('- First item');
     await expect.poll(off).toBe(null);
   });
+
+  it('follows the caret when the selection is replaced by the very same text', async () => {
+    const bold = page.getByRole('button', { name: 'Bold' });
+    const off = () => bold.getAttribute('aria-disabled');
+    await field().click();
+    await page.keyboard.press('ControlOrMeta+A');
+    // Words selected: they can be made bold.
+    await expect.poll(off).toBe(null);
+    // As pasting the same words from a menu does: the text does not change, so the field reports no change, but the
+    // selection is now a caret after them, with nothing to make bold.
+    await page.evaluate((t) => document.execCommand('insertText', false, t), TEXT);
+    expect(await field().inputValue()).toBe(TEXT);
+    await expect.poll(off).toBe('true');
+  });
 });

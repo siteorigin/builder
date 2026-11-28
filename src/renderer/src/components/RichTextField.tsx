@@ -271,12 +271,13 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
   readRef.current = read;
   // Typing is followed from the field's own change, never from its input event: the browser runs a listener there
   // before React has read the keystroke, and a state change made then draws the field again with the text from before
-  // it, so the keystroke is lost (#1369).
+  // it, so the keystroke is lost (#1369). The caret moving without the text changing (the same words pasted over
+  // themselves) is heard from selectionchange, which the browser sends once the input event is over.
   useEffect(() => {
     const el = field.current;
     if (!el) return;
     const read = () => readRef.current();
-    const events = ['select', 'keyup', 'mouseup', 'focus'];
+    const events = ['select', 'selectionchange', 'keyup', 'mouseup', 'focus'];
     for (const t of events) el.addEventListener(t, read);
     const now = current();
     if (now) setAt(now);
