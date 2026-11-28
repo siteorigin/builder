@@ -9,12 +9,12 @@ import { compile } from 'svelte/compiler';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, ElementRef, InstanceNode, ProjectState, TextNode } from '@shared/types';
-import { canonicalStyleValue, flattenStates, partStyleControls, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
+import { canonicalStyleValue, flattenStates, partStyleControls, placementStyleControls, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_AUTHOR, projectDesign } from './fixtures/packs';
 import { prop } from '@catalogue/dsl';
 import { applyOperations, assetUsages } from '@engine/apply';
-import { EngineError } from '@engine/tree';
+import { EngineError, codeTakesOverrides } from '@engine/tree';
 import { imageUses } from '@engine/image-uses';
 import { validateState } from '@engine/validate';
 import { defFile, generateComponentsCss, generateProject, generateSiteCss, nodeClass, pageNodeClass, variantClass } from '@generator/index';
@@ -189,6 +189,26 @@ describe('the backgroundImage value', () => {
     expect(partStyleControls(def, 'lead')).toEqual(['color', 'background']);
     def.parts.root.styleControls = ['paddingBlock', 'color'];
     expect(partStyleControls(def, 'root')).toEqual(['paddingBlock', 'color']);
+  });
+
+  it('is offered on the whole of a release section, which is code, so a photo band is made on the section itself (#1473)', () => {
+    let s = studio();
+    for (const componentId of ['layout.section', 'hero.centered']) {
+      const r = apply(s, [{ type: 'node.insert', owner: owner(s), parentId: null, index: 0, componentId }]);
+      s = r.state;
+      const def = s.components[(home(s).nodes[r.results[0].nodeId as string] as InstanceNode).definitionId];
+      expect(def.kind).toBe('code');
+      const offered = placementStyleControls(def, 'root', codeTakesOverrides(def))!;
+      expect(offered.slice(offered.indexOf('background'), offered.indexOf('background') + 2)).toEqual(['background', 'backgroundImage']);
+      // A part inside the code may be anything, even one that lets its background change.
+      const inner = { nodeId: 'inner', label: 'Inner', styleControls: ['background'] };
+      expect(partStyleControls({ ...def, parts: { ...def.parts, inner } }, 'inner')).toEqual(['background']);
+      // A copy in the project may have had its code rewritten, and a design's root says by its tree whether it is a box.
+      expect(partStyleControls({ ...def, owner: 'project' }, 'root')).not.toContain('backgroundImage');
+      expect(partStyleControls({ ...def, kind: 'managed' }, 'root')).not.toContain('backgroundImage');
+      // Another section written in code is not one of the two.
+      expect(partStyleControls({ ...def, componentId: 'cta.banner' }, 'root')).not.toContain('backgroundImage');
+    }
   });
 });
 
