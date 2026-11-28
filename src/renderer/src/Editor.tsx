@@ -11,6 +11,7 @@ import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
 import { activeWorkspace, canvasCovered, stylesShortcutCloses } from './lib/workspace';
 import { waitingPreview } from './lib/posts';
+import { entryNounLower } from './lib/content';
 import { withoutSlot } from './lib/model';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
@@ -651,7 +652,7 @@ export function Editor() {
             if (now.post?.collectionId !== asked.collectionId || now.post?.entryId !== asked.entryId) return setMode('edit');
             if (!saved) {
               setMode('edit');
-              return toast('Part of the post is not saved yet, so the preview would not show it. See the note above its text.', 'error');
+              return toast(`Part of the ${entryNounLower(now.snapshot?.state.collections[asked.collectionId])} is not saved yet, so the preview would not show it. See the note above its text.`, 'error');
             }
             const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
             const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;

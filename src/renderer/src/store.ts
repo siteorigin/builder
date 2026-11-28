@@ -181,6 +181,13 @@ export interface State {
   pageId: string | null;
   /** The post open in the Posts workspace (shown while the Posts panel is), kept while other panels are. */
   post: PostRef | null;
+  /**
+   * The collection the Content list was last turned to, kept while other panels are; null until it is. An open entry's
+   * collection is shown before it, and with neither, the blog or else the first. Everything that names the collection
+   * shown reads it through lib/posts listedCollection, so the toolbar, Inspector, composer and writer agree with the
+   * list's head.
+   */
+  contentCollection: string | null;
   /** Whether the Posts workspace shows its writer, or the post on the canvas as visitors see it. */
   postView: 'write' | 'preview';
   /**
@@ -430,6 +437,7 @@ const live = create<State>((set) => ({
   providers: [],
   pageId: null,
   post: null,
+  contentCollection: null,
   postView: 'write',
   postPreviewAt: null,
   postReveal: null,

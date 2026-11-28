@@ -18,7 +18,8 @@ import { AI_IMAGE_PRIVACY } from '../lib/ai-privacy';
 import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
-import { postShown, postWorkspace } from '../lib/posts';
+import { listedCollection, postShown, postWorkspace } from '../lib/posts';
+import { entryNounLower, isReadOnlyCollection, nothingOpenStep } from '../lib/content';
 import { activeWorkspace, changeWithoutDocument } from '../lib/workspace';
 import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
@@ -395,6 +396,8 @@ export function Chat() {
   const templateMode = useStore((s) => s.templateMode);
   // The post the Posts workspace shows, written or previewed: the next message is about it, not the page under it.
   const openPostRef = useStore((s) => s.post);
+  /** The collection the Content list shows, whose entry a change from the writer with nothing open waits for. */
+  const listed = useStore((s) => s.contentCollection);
   const leftTab = useStore((s) => s.leftTab);
   const postView = useStore((s) => s.postView);
   const editorMode = useStore((s) => s.mode);
@@ -781,7 +784,7 @@ export function Chat() {
   // the page its preview went on to, is. While the SEO view is, the page or post it has chosen is (#700); with none
   // chosen, or the writer with no post open, nothing: a change waits for one (#700, #895), and a question reads the site.
   const workspace = activeWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
-  const shownPost = workspace === 'write' || workspace === 'preview' ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
+  const shownPost = workspace === 'write' || workspace === 'preview' ? postShown(st, workspace, openPostRef, postPreviewAt, listed) : null;
   const seoChosen = workspace === 'seo' ? seoDocument(st, seoSubject)?.subject : undefined;
   const seoPage = seoChosen?.kind === 'page' ? seoChosen.pageId : null;
   const scope = composerScope(st, {
@@ -897,12 +900,25 @@ export function Chat() {
   type ScopeChoice = { value: ChatEditScope; label: string; description: string; icon: ReactNode; title: string; chip: string; where?: string };
   // An edit is limited by the containing placement; a question is about the element itself.
   const selName = askMode ? selLabel : (boundary ?? selLabel);
+  // An entry is called by its collection's own noun (an essay, an advisor): the open one's, or with none open, that of
+  // the collection the Content list shows.
+  const listedNow = listedCollection(st, listed, openPostRef);
+  const openNoun = scope.post ? entryNounLower(st.collections[scope.post.collectionId]) : entryNounLower(listedNow);
+  // With none open, what to do first, said on the chip beside the message field and by the send guard: open one from the
+  // collection shown (a synced one's entries are never started here), or, before the first collection, add one.
+  const emptyChip = listedNow ? `No ${openNoun} open` : 'Nothing open';
+  const emptyStep = nothingOpenStep(listedNow);
+  const emptyGuard = !listedNow
+    ? 'Nothing open: add a collection in the Content list and its first entry, then send again with that entry open.'
+    : isReadOnlyCollection(listedNow)
+      ? `${listedNow.settings.name} is synced: its entries are changed at their source, not here.`
+      : `${emptyChip}: ${emptyStep}, then send again. The change is made to the one open in the writer.`;
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
-      [{ value: 'page' as const, label: 'This post', description: askMode ? 'The post you have open' : 'Its words and details', icon: <Pencil />, title: askMode ? `The post “${scope.post.title}”` : `Only the post “${scope.post.title}”`, chip: scope.post.title, where: 'this post' }]
+      [{ value: 'page' as const, label: `This ${openNoun}`, description: askMode ? `The ${openNoun} you have open` : 'Its words and details', icon: <Pencil />, title: askMode ? `The ${openNoun} “${scope.post.title}”` : `Only the ${openNoun} “${scope.post.title}”`, chip: scope.post.title, where: `this ${openNoun}` }]
     : scope.empty
     ? // The writer with no post open shows no page: a change waits for a post, and a question reads the site.
-      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: 'No post open', description: 'Open a post to ask for a change to it', icon: <Pencil />, title: 'No post open: open a post to ask for a change to it', chip: 'No post open' }]
+      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: emptyChip, description: listedNow && isReadOnlyCollection(listedNow) ? `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)}` : `${emptyStep[0].toUpperCase()}${emptyStep.slice(1)} to ask for a change`, icon: <Pencil />, title: listedNow && isReadOnlyCollection(listedNow) ? `${emptyChip}: ${emptyStep}` : `${emptyChip}: ${emptyStep} to ask for a change`, chip: emptyChip, where: emptyStep }]
     : scope.template
     ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
       [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
@@ -1151,7 +1167,7 @@ export function Chat() {
     // would reach the page under the view, so it waits for one (#700), as one from the writer with no post open does
     // (#895). The draft stays.
     if (!context && changeWithoutDocument(workspace, workspace === 'seo' ? !!seoChosen : !!scope.post, askMode))
-      return (toast(workspace === 'seo' ? 'Choose a page or post in the SEO list first: the change is made to the one chosen there.' : 'Open a post or start a new one first: the change is made to the one open in the writer.', 'info'), false);
+      return (toast(workspace === 'seo' ? 'Choose a page or post in the SEO list first: the change is made to the one chosen there.' : emptyGuard, 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
@@ -1169,7 +1185,7 @@ export function Chat() {
       const saved = await saveOpenPost().catch(() => false);
       if (!saved) {
         setSending(false);
-        return (toast('Part of the post is not saved yet, so the AI would not see it. See the note above its text.', 'error'), false);
+        return (toast(`Part of the ${entryNounLower(st.collections[ctx.post.collectionId])} is not saved yet, so the AI would not see it. See the note above its text.`, 'error'), false);
       }
       // The provider or model may have been changed while the post was saved: this message names the one before.
       const now = getState();
@@ -1825,7 +1841,7 @@ export function Chat() {
                       : 'What would you like to change?'
             }
             aria-label={asking ? 'Your answer' : 'Message'}
-            aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : headroom ? headroomId : undefined}
+            aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : [headroom ? headroomId : '', scope.empty && !askMode && scopeChoices.length <= 1 ? `${headroomId}-scope` : ''].filter(Boolean).join(' ') || undefined}
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}
@@ -1872,7 +1888,7 @@ export function Chat() {
                     <ChevronDown className="caret" aria-hidden="true" />
                   </button>
                 ) : (
-                  <span className={`chip scope-chip${scopeTone}`} title={scopeNow.title}>
+                  <span id={scope.empty && !askMode ? `${headroomId}-scope` : undefined} className={`chip scope-chip${scopeTone}`} title={scopeNow.title}>
                     <span className="sr-only">{askMode ? 'Your question is about: ' : 'What the AI may change: '}</span>
                     {scopeNow.icon}
                     <span className="ellipsis">{scopeNow.chip}</span>

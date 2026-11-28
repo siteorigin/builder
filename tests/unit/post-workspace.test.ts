@@ -7,7 +7,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { postShown, postWorkspace, type PostRef } from '../../src/renderer/src/lib/posts';
+import { listedCollection, postShown, postWorkspace, type PostRef } from '../../src/renderer/src/lib/posts';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -87,6 +87,30 @@ describe('what the editor names while the Posts workspace is in front', () => {
     const blank = structuredClone(s);
     blank.collections.posts.entries.en_spring.title = '';
     expect(postShown(blank, 'write', spring, null)).toMatchObject({ kind: 'post', ref: spring, title: 'Untitled' });
+  });
+
+  it('names a renamed blog by its own name, and the collection the Content list shows with nothing open (#1333)', () => {
+    const journal = run(s, { type: 'collection.update', collectionId: 'posts', name: 'Journal', singularName: 'Essay' });
+    expect(postShown(journal, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Journal', draft: false });
+    expect(postShown(journal, 'write', { collectionId: 'posts', entryId: 'en_gone' }, null)).toMatchObject({ ref: null, title: 'Journal' });
+    // The list turned to another collection: the toolbar and Inspector name it, as the list's head does.
+    const advisors = run(journal, { type: 'collection.create', collectionId: 'advisors', name: 'Advisors', singularName: 'Advisor', kind: 'structured' });
+    expect(postShown(advisors, 'write', null, null, 'advisors')).toMatchObject({ ref: null, title: 'Advisors' });
+    expect(postShown(advisors, 'write', null, null, null)).toMatchObject({ ref: null, title: 'Journal' });
+    // A collection since removed is no answer: the default is.
+    expect(postShown(advisors, 'write', null, null, 'gone')).toMatchObject({ ref: null, title: 'Journal' });
+    // An open entry is named itself, wherever the list was last turned.
+    expect(postShown(advisors, 'write', spring, null, 'advisors')).toMatchObject({ ref: spring, title: 'Spring open studio' });
+  });
+
+  it('shows the open entry’s collection in the list, else the one the list was turned to, else the blog', () => {
+    const both = run(s, { type: 'collection.create', collectionId: 'advisors', name: 'Advisors', kind: 'structured' });
+    expect(listedCollection(both, null, null)?.settings.id).toBe('posts');
+    expect(listedCollection(both, 'advisors', null)?.settings.id).toBe('advisors');
+    // Opened from elsewhere (the SEO view, Assets): its collection, in the same render as the entry.
+    expect(listedCollection(both, 'advisors', spring)?.settings.id).toBe('posts');
+    expect(listedCollection(both, 'gone', null)?.settings.id).toBe('posts');
+    expect(listedCollection(createStarterState('business', 'Riverside Studio', false), null, null)).toBeUndefined();
   });
 
   it('names the previewed post until the canvas reports where it is, then wherever a visitor went on to', () => {

@@ -367,8 +367,9 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     // The Share popover belongs to the opening it was opened in.
     shareOpen: false,
     mode: 'edit',
-    // The Posts workspace opens on its list: a post of the last project is never this one's.
+    // The Posts workspace opens on its list: a post or collection of the last project is never this one's.
     post: null,
+    contentCollection: null,
     postView: 'write',
     postPreviewAt: null,
     postReveal: null,

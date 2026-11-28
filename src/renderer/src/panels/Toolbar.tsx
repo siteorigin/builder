@@ -1,6 +1,6 @@
 import './Toolbar.css';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, SearchCheck, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle, LayoutTemplate } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FileText, FolderOpen, FolderSearch, History, House, Library, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, SearchCheck, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle, LayoutTemplate } from 'lucide-react';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
@@ -15,7 +15,8 @@ import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from 
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, saveFailureNotice, settledState } from '../lib/savestate';
-import { postShown } from '../lib/posts';
+import { listedCollection, postShown } from '../lib/posts';
+import { entryNoun, isArticleCollection } from '../lib/content';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { ShareControl } from './SharePopover';
@@ -40,6 +41,7 @@ export function Toolbar() {
   const seo = workspace === 'seo';
   const covered = canvasCovered(workspace);
   const post = useStore((s) => s.post);
+  const listed = useStore((s) => s.contentCollection);
   const postPreviewAt = useStore((s) => s.postPreviewAt);
   const pending = useStore((s) => s.pendingSave);
   const drafting = useStore((s) => s.drafting > 0);
@@ -198,8 +200,12 @@ export function Toolbar() {
   // What the author calls this project: a working copy's own name (#176), otherwise the site's.
   const projectName = projectDisplayName(state);
   const named = projectName === siteName ? projectName : `${projectName} (site name: ${siteName})`;
-  const shown = workspace === 'write' || workspace === 'preview' ? postShown(state, workspace, post, postPreviewAt) : null;
+  const shown = workspace === 'write' || workspace === 'preview' ? postShown(state, workspace, post, postPreviewAt, listed) : null;
   const shownPage = shown?.kind === 'page' && Object.hasOwn(state.pages, shown.pageId) ? state.pages[shown.pageId] : null;
+  // The entry or collection in front is drawn as the Content list draws it: a newspaper for articles, else a page, and
+  // the library before the first collection.
+  const shownCollection = shown?.kind === 'post' ? (shown.ref ? state.collections[shown.ref.collectionId] : listedCollection(state, listed, post)) : undefined;
+  const EntryGlyph = !shownCollection ? Library : isArticleCollection(shownCollection) ? Newspaper : FileText;
   const defName = !shown && !seo && definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   // A collection's layout open on the canvas covers the page that was open, which is named again once it is left.
   const layoutName = !shown && !seo && !definitionMode && templateMode && Object.hasOwn(state.collections, templateMode.collectionId) ? ownerLabel(state, templateOwner(templateMode)) : null;
@@ -322,9 +328,9 @@ export function Toolbar() {
                 <LayoutTemplate aria-hidden="true" />
               ) : shown?.kind === 'post' ? (
                 shown.ref ? (
-                  <Newspaper role="img" aria-label="Post" />
+                  <EntryGlyph role="img" aria-label={entryNoun(state.collections[shown.ref.collectionId])} />
                 ) : (
-                  <Newspaper aria-hidden="true" />
+                  <EntryGlyph aria-hidden="true" />
                 )
               ) : isHome ? (
                 /\bhome\b/i.test(placeName) ? (
