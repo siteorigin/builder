@@ -8,21 +8,19 @@
      never depend on what the start column holds, so a status changing length never moves the centre group. */
   .toolbar.mac { grid-template-columns: minmax(min(460px, 36vw), 1fr) auto minmax(max-content, 1fr); }
   /* Below the full toolbar's width (lib/layout.ts toolbarTier, which also drops the Edit and Preview labels and
-     then moves Zoom and Settings into More) the centre group stops centring on the window: the identity takes
-     what the controls leave, and the project and page names shorten. */
-  .toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
-  /* The overflow toolbar is one row while it fits, as those tracks would draw it: the identity takes what the
-     controls leave. Narrower (the editor zoomed in from the View menu: an 1100px window from about 110%), the
-     identity keeps the floor its names, chevron and save status need, and the preview controls, then the actions,
-     wrap onto rows under it, the actions to the right. Nothing is drawn over anything else or runs out of the window;
-     the bar grows instead (the editor's first row is the bar's height). The floor is measured: the mark, Sidebar, the
-     title at its floors and the quiet states' slot, plus the traffic lights on macOS. */
-  .toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; row-gap: 0; }
-  .toolbar[data-tier='overflow'] .toolbar-start { flex: 1 1 0; min-width: min(100%, 352px); min-height: calc(var(--toolbar-h) - 2px); }
-  .toolbar.mac[data-tier='overflow'] .toolbar-start { min-width: min(100%, 422px); }
+     then moves Zoom and Settings into More) the centre group stops centring on the window: the bar is one row while
+     it fits, the identity taking what the controls leave and the project and page names shortening. Narrower (the
+     editor zoomed in from the View menu, or a live session's wider controls at the minimum window), the identity
+     keeps the floor its names, chevron and save status need, and the preview controls, then the actions, wrap onto
+     rows under it, the actions to the right. Nothing is drawn over anything else or runs out of the window; the bar
+     grows instead (the editor's first row is the bar's height). The floor is measured: the mark, Sidebar, the title
+     at its floors and the quiet states' slot, plus the traffic lights on macOS. */
+  .toolbar:not([data-tier='full']) { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; row-gap: 0; }
+  .toolbar:not([data-tier='full']) .toolbar-start { flex: 1 1 0; min-width: min(100%, 370px); min-height: calc(var(--toolbar-h) - 2px); }
+  .toolbar.mac:not([data-tier='full']) .toolbar-start { min-width: min(100%, 440px); }
   /* A wrapped row is shorter than the bar's own: 6px above and below its controls. */
-  .toolbar[data-tier='overflow'] :is(.toolbar-center, .toolbar-end) { flex: none; min-height: 40px; }
-  .toolbar[data-tier='overflow'] .toolbar-end { margin-left: auto; }
+  .toolbar:not([data-tier='full']) :is(.toolbar-center, .toolbar-end) { flex: none; min-height: 40px; }
+  .toolbar:not([data-tier='full']) .toolbar-end { margin-left: auto; }
   /* One 28px rail: every control in the bar (switcher, status, segments, field, zoom, toggles, Export) shares a height
      and a centre line. */
   .toolbar .icon-btn { flex: none; width: 28px; height: 28px; }

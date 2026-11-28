@@ -14,8 +14,8 @@
   /* The overflow toolbar wraps under its identity's floor as the real one does (Toolbar.css); its end group is held at
      the real one's width, so the outline wraps where the toolbar will. */
   .sk-toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; column-gap: 14px; row-gap: 0; }
-  .sk-toolbar[data-tier='overflow'] .sk-toolbar-start { flex: 1 1 0; min-width: min(100%, 352px); min-height: calc(var(--toolbar-h) - 2px); }
-  .sk-toolbar.mac[data-tier='overflow'] .sk-toolbar-start { min-width: min(100%, 422px); }
+  .sk-toolbar[data-tier='overflow'] .sk-toolbar-start { flex: 1 1 0; min-width: min(100%, 370px); min-height: calc(var(--toolbar-h) - 2px); }
+  .sk-toolbar.mac[data-tier='overflow'] .sk-toolbar-start { min-width: min(100%, 440px); }
   .sk-toolbar[data-tier='overflow'] :is(.sk-toolbar-mid, .sk-toolbar-end) { flex: none; min-height: 40px; }
   .sk-toolbar[data-tier='overflow'] .sk-toolbar-end { min-width: 276px; margin-left: auto; }
   .sk-toolbar.mac .sk-toolbar-start { padding-left: 70px; }

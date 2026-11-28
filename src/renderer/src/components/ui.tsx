@@ -512,6 +512,9 @@ const onWindowResize = (fn: () => void) => {
   return () => window.removeEventListener('resize', fn);
 };
 /** The window's width in CSS pixels (the editor fills the window), kept current as it is resized. */
+/** Sent on the window when the toolbar's bottom edge moves (its rows wrap), so what sits below it can measure again. */
+export const TOOLBAR_MOVED = 'builder:toolbar-moved';
+
 export const useWindowWidth = () => useSyncExternalStore(onWindowResize, () => window.innerWidth);
 
 /** A menu's rows, or a function that returns them: a function is read again each time the menu's owner renders, so
@@ -2261,12 +2264,14 @@ export function Toasts() {
     const foot = new MutationObserver(measure);
     foot.observe(document.body, { attributes: true, attributeFilter: ['style'] });
     addEventListener('resize', measure);
+    addEventListener(TOOLBAR_MOVED, measure);
     el.addEventListener('scroll', measure, { passive: true });
     return () => {
       watch.disconnect();
       inside.disconnect();
       foot.disconnect();
       removeEventListener('resize', measure);
+      removeEventListener(TOOLBAR_MOVED, measure);
       el.removeEventListener('scroll', measure);
       root.style.removeProperty('--toast-band');
     };

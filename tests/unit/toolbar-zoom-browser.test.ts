@@ -132,14 +132,27 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
   }
 
   // 1100, 1280 and 1440px windows from 100% to 207%, and both sides of where the overflow toolbar starts to wrap.
-  const widths = [1440, 1280, 1100, 1080, 1040, 1000, 990, 980, 960, 930, 900, 880, 853, 800, 733, 696, 640, 629, 550, 531];
-  const snapshot = (conflicts: unknown[]) => ({ state, revision: 1, workspaceKey: 'w1', conflicts, history: { canUndo: false, canRedo: false } });
+  // Every 4px from the 1100px window down to 207% of it, so each place a group wraps is crossed.
+  const widths = [1440, 1280, ...Array.from({ length: Math.floor((1100 - 531) / 4) + 1 }, (_, i) => 1100 - 4 * i), 531];
+  const snapshot = (conflicts: unknown[], shown = state) => ({ state: shown, revision: 1, workspaceKey: 'w1', conflicts, history: { canUndo: false, canRedo: false } });
   // The quiet state, the longest one ("AI is waiting for you", which lets the project name give way) and a conflict.
+  const now = Date.now();
+  const person = (guestId: string, displayName: string, status: string) =>
+    status === 'admitted' ? { guestId, displayName, status, role: 'collaborator', guestExpiresAt: null, colorSlot: 0, connected: true } : { guestId, displayName, status };
+  const hosting = {
+    ...{ phase: 'active', workspaceKey: 'w1', runId: 'run-1', roomId: 'abcdefghijkmnpqrstuvwxyz', inviteUrl: 'http://relay.test/s/abcdefghijkmnpqrstuvwxyz', projectName: 'Harbour Lane Studio' },
+    ...{ duration: '2h', startedAt: now, expiresAt: now + 2 * 3600_000, relayClockOffsetMs: 0, locked: true, previewReady: true, lastError: null },
+    participants: [person('g1', 'Ann', 'admitted'), person('g2', 'Bo', 'admitted'), person('g3', 'Cy', 'pending'), person('g4', 'Di', 'pending')]
+  };
   const conflict: ProjectSnapshot['conflicts'][number] = { path: 'siteorigin/site.json', reason: 'Changed outside SiteOrigin Builder', kind: 'canonical' };
   const statuses: [string, string, Record<string, unknown>][] = [
     ['saved', 'Saved', { runStatus: null, snapshot: snapshot([]) }],
     ['asking', 'AI is waiting for you', { runStatus: 'awaiting-input', snapshot: snapshot([]) }],
-    ['conflict', 'File conflict', { runStatus: null, snapshot: snapshot([conflict]) }]
+    ['conflict', 'File conflict', { runStatus: null, snapshot: snapshot([conflict]) }],
+    // Hosting a live session at its widest (#1342's fixture): timed, locked, people in it and more waiting.
+    ['hosting', 'Saved', { snapshot: snapshot([]), liveClock: null, live: hosting }],
+    // A working copy names its site too, beside the AI's longest state.
+    ['copy', 'AI is waiting for you', { runStatus: 'awaiting-input', live: { phase: 'idle', lastError: null }, snapshot: snapshot([], { ...state, manifest: { ...state.manifest, workingCopyName: 'Spring refresh' } }) }]
   ];
 
   it.each(['darwin', 'win32'])('keeps every control apart and inside the window at every width (%s)', async (platform) => {
@@ -154,6 +167,7 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
         const at = `${width} ${status}`;
         expect(m.viewport).toBe(width);
         expect(m.status).toContain(text);
+        if (!m.controls.some((c) => c.name.includes('export-btn'))) problems.push(`${at}: Export is not drawn`);
         const lowest = Math.max(m.toolbar.bottom, ...m.controls.map((c) => c.bottom));
         if (m.workspace.top < lowest - 0.5) problems.push(`${at}: the editor's next row starts under the toolbar's controls`);
         for (let i = 0; i < m.controls.length; i++) {

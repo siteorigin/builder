@@ -5,7 +5,7 @@ import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, openRunThread, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
-import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
+import { Segmented, TOOLBAR_MOVED, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { useRoutingReviewShown } from '../components/FormRoutingHost';
 import { selectPage, setMode } from '../lib/actions';
@@ -126,12 +126,18 @@ export function Toolbar() {
     };
   }, []);
   // The bar's height changes when it stacks (and as its rows wrap): what hangs below it (the Share popover, the
-  // notices' room) reads where it ends from --toolbar-bottom.
+  // notices' room) reads where it ends from --toolbar-bottom, and the notices hear of it (TOOLBAR_MOVED) to measure
+  // their room again, since a row can wrap with no window resize (a live session's pill widening).
   useLayoutEffect(() => {
     const el = header.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const root = document.documentElement;
-    const observer = new ResizeObserver(() => root.style.setProperty('--toolbar-bottom', `${Math.ceil(el.getBoundingClientRect().bottom)}px`));
+    const observer = new ResizeObserver(() => {
+      const bottom = `${Math.ceil(el.getBoundingClientRect().bottom)}px`;
+      if (root.style.getPropertyValue('--toolbar-bottom') === bottom) return;
+      root.style.setProperty('--toolbar-bottom', bottom);
+      window.dispatchEvent(new Event(TOOLBAR_MOVED));
+    });
     observer.observe(el);
     return () => {
       observer.disconnect();
