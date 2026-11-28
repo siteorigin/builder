@@ -405,10 +405,17 @@ describe('a guest whose socket drops', () => {
     // The same seat, back: the host is never asked to let anyone in again.
     expect((await room.host.next('room:roster')).participants).toEqual([expect.objectContaining({ guestId: ann.guestId, status: 'admitted', connected: true })]);
 
-    // A code the relay cannot send back is answered with none, which says nothing about the session either.
-    const bea = await admittedGuest(relay, room, 'Bea');
-    bea.guest.close(1011);
-    expect((await bea.guest.closed()).code).toBe(1005);
+    // A normal close and an application's own code are sent back as they came; any other code is answered with none,
+    // which says nothing about the session either.
+    for (const [sent, answered] of [
+      [1000, 1000],
+      [4000, 4000],
+      [1011, 1005]
+    ]) {
+      const other = await admittedGuest(relay, room, `Guest ${sent}`);
+      other.guest.close(sent);
+      expect((await other.guest.closed()).code, `the answer to ${sent}`).toBe(answered);
+    }
     room.host.close();
   });
 
