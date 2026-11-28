@@ -1025,3 +1025,109 @@ describe('last review: what a draft setting, an address or a name can hide', () 
     expect(htmlToRichTextFromMarkdown('[go](https://example.org/?q=&#65)')[0]).toMatchObject({ spans: [{ link: { target: 'https://example.org/?q=&#65' } }] });
   });
 });
+
+describe('reading a static site folder (#1517)', () => {
+  const pictures = (source: ParsedSource) => source.media.map((m) => [m.ref, m.path ? m.path.slice(source.root.length + 1) : undefined, m.problem]);
+
+  it('reads a Jekyll site’s _posts and finds its pictures at the site’s root', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\ntitle: Jekyll post\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/cover.jpg) ![Beside](beside.jpg) [Next](2020-02-01-later.md)',
+      '_posts/2020-02-01-later.md': '---\ntitle: Later\n---\nText',
+      '_posts/beside.jpg': 'jpg',
+      'assets/img/cover.jpg': 'jpg',
+      '_config.yml': 'title: A blog',
+      'index.md': '---\nlayout: home\n---\nHome page',
+      'about.md': '---\ntitle: About\n---\nAbout page'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => [p.from, p.title, p.date])).toEqual([
+      ['_posts/2020-01-01-jekyll-post.md', 'Jekyll post', '2020-01-01'],
+      ['_posts/2020-02-01-later.md', 'Later', '2020-02-01']
+    ]);
+    const [post] = source.posts;
+    expect(post.featured).toBe('m1');
+    expect(pictures(source)).toEqual([
+      ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined],
+      ['beside.jpg', join('_posts', 'beside.jpg'), undefined]
+    ]);
+    expect(JSON.stringify(post.body)).toContain('"target":"post:md:_posts/2020-02-01-later.md"');
+  });
+
+  it('reads a Hugo site’s content/posts, page bundles included, and finds root pictures in static/', async () => {
+    const dir = mdFolder({
+      'content/posts/hugo-post.md': '---\ntitle: Hugo post\ndate: 2021-03-01\nimage: /images/cover.jpg\n---\nText',
+      'content/posts/bundle/index.md': '---\ntitle: Bundle\ndate: 2021-04-01\n---\n![Here](here.jpg)',
+      'content/posts/bundle/here.jpg': 'jpg',
+      'hugo.toml': 'title = "A blog"',
+      'index.md': 'Home page',
+      'about.md': 'About page',
+      'static/images/cover.jpg': 'jpg'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => [p.from, p.slug])).toEqual([
+      ['content/posts/bundle/index.md', 'bundle'],
+      ['content/posts/hugo-post.md', 'hugo-post']
+    ]);
+    expect(pictures(source).sort()).toEqual([
+      ['/images/cover.jpg', join('static', 'images', 'cover.jpg'), undefined],
+      ['here.jpg', join('content', 'posts', 'bundle', 'here.jpg'), undefined]
+    ]);
+  });
+
+  it('reads a site folder without settings from its posts folder when it has no posts of its own', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/inline.jpg)',
+      'assets/img/cover.jpg': 'jpg',
+      'assets/img/inline.jpg': 'jpg',
+      'index.md': 'Home page'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['_posts/2020-01-01-jekyll-post.md']);
+    expect(pictures(source)).toEqual([
+      ['/assets/img/inline.jpg', join('assets', 'img', 'inline.jpg'), undefined],
+      ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined]
+    ]);
+  });
+
+  it('reads a folder of posts as its posts even when it also holds a posts folder', async () => {
+    const dir = mdFolder({
+      'spring.md': '---\ntitle: Spring\ndate: 2020-01-01\n---\nText',
+      'summer/index.md': '---\ntitle: Summer\ndate: 2020-06-01\n---\nText',
+      '_posts/2010-01-01-old.md': 'Old',
+      'src/content/blog/example.md': 'Example',
+      'config.toml/readme.txt': 'A folder, not a settings file'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['spring.md', 'summer/index.md']);
+    // A bundle alone is posts of the folder's own too.
+    rmSync(join(dir, 'spring.md'));
+    expect((await readMarkdownFolder(dir, {})).posts.map((p) => p.from)).toEqual(['summer/index.md']);
+  });
+
+  it('never reads a posts folder a link leads to outside the chosen folder', async () => {
+    const outside = mdFolder({ 'posts/secret.md': '---\ntitle: Secret\ndate: 2020-01-01\n---\nText' });
+    const dir = mdFolder({ '_config.yml': 'title: A blog', 'mine.md': '---\ntitle: Mine\ndate: 2020-01-01\n---\nText' });
+    symlinkSync(outside, join(dir, 'content'));
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['mine.md']);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('says so when a site’s posts folder cannot be listed', async () => {
+    const dir = mdFolder({ '_config.yml': 'title: A blog', 'index.md': 'Home page', '_posts/2020-01-01-a.md': 'A' });
+    const { chmodSync } = await import('node:fs');
+    chmodSync(join(dir, '_posts'), 0o000);
+    try {
+      const source = await readMarkdownFolder(dir, {});
+      expect(source.posts.map((p) => p.from)).toEqual(['index.md']);
+      expect(source.skipped).toEqual([expect.stringMatching(/^_posts: it could not be read/)]);
+    } finally {
+      chmodSync(join(dir, '_posts'), 0o755);
+    }
+  });
+
+  it('still reads a folder of posts chosen on its own', async () => {
+    const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['one.md']);
+  });
+});
