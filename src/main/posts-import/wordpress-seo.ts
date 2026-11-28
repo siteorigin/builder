@@ -53,22 +53,17 @@ function fill(raw: string, token: RegExp, title: string, site: string, isTitle: 
     const n = name.toLowerCase();
     return TITLE_TOKENS.has(n) ? title : SITE_TOKENS.has(n) ? site : n === 'sep' ? SEPARATOR : '';
   });
-  return { text: filled.replace(/\s+/g, ' ').trim() };
+  // A placeholder used many times never makes more text than a value read.
+  return { text: filled.replace(/\s+/g, ' ').trim().slice(0, META_CHARS) };
 }
 
-/** A URL part with its percent escapes read, so `%C3%A9` and `%c3%a9` are one letter. */
-function decoded(s: string): string {
-  try {
-    return decodeURIComponent(s);
-  } catch {
-    return s;
-  }
-}
+/** A URL part with its percent escapes in capitals, so `%C3%A9` and `%c3%a9` are one letter; `%26` stays apart from `&`. */
+const escapes = (s: string) => s.replace(/%[0-9a-f]{2}/gi, (e) => e.toUpperCase());
 
 /** Whether `a` and `b` are one address, whatever slash ends its path and however its letters are escaped. */
 function sameAddress(a: URL, b: URL): boolean {
-  const path = (u: URL) => decoded(u.pathname.replace(/\/+$/, ''));
-  return a.origin === b.origin && path(a) === path(b) && decoded(a.search) === decoded(b.search);
+  const path = (u: URL) => escapes(u.pathname.replace(/\/+$/, ''));
+  return a.origin === b.origin && path(a) === path(b) && escapes(a.search) === escapes(b.search);
 }
 
 /** What the post's robots settings say: `true` asks search engines not to list it, `false` to list it, undefined leaves it to the site. */
@@ -78,7 +73,7 @@ function robots(item: XmlElement): { noindex?: boolean; conflict?: true } {
   if (yoast === '1') said.push(true);
   else if (yoast === '2') said.push(false);
   // Rank Math keeps its directives as a PHP-serialized list of words: `a:1:{i:0;s:7:"noindex";}`.
-  const rank = [...metaText(item, 'rank_math_robots').matchAll(/s:\d+:"([^"]*)"/g)].map((m) => m[1].toLowerCase());
+  const rank = [...metaText(item, 'rank_math_robots').slice(0, META_CHARS).matchAll(/s:\d+:"([^"]*)"/g)].map((m) => m[1].toLowerCase());
   if (rank.includes('noindex')) said.push(true);
   else if (rank.includes('index')) said.push(false);
   if (metaText(item, '_seopress_robots_index').toLowerCase() === 'yes') said.push(true);

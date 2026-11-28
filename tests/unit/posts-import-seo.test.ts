@@ -17,11 +17,11 @@ import type { ParsedSource } from '../../src/main/posts-import/source';
 const scratch = mkdtempSync(join(tmpdir(), 'posts-import-seo-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-function wxr(items: string[]): string {
+function wxr(items: string[], siteTitle = 'Old &amp; Grazing'): string {
   const dir = mkdtempSync(join(scratch, 'wxr-'));
   writeFileSync(
     join(dir, 'export.xml'),
-    `<?xml version="1.0"?><rss xmlns:wp="w" xmlns:content="c" xmlns:dc="d" xmlns:excerpt="e"><channel><title>Old &amp; Grazing</title><link>https://old.example</link><wp:wxr_version>1.2</wp:wxr_version>${items.map((i) => `<item>${i}</item>`).join('')}</channel></rss>`
+    `<?xml version="1.0"?><rss xmlns:wp="w" xmlns:content="c" xmlns:dc="d" xmlns:excerpt="e"><channel><title>${siteTitle}</title><link>https://old.example</link><wp:wxr_version>1.2</wp:wxr_version>${items.map((i) => `<item>${i}</item>`).join('')}</channel></rss>`
   );
   return join(dir, 'export.xml');
 }
@@ -30,6 +30,7 @@ const post = (id: number, title: string, ...metas: string[]) =>
   `<title>${title}</title><link>https://old.example/2019/03/post-${id}/</link><wp:post_id>${id}</wp:post_id><wp:post_name>post-${id}</wp:post_name><wp:post_type>post</wp:post_type><wp:status>publish</wp:status><wp:post_date>2019-03-01 10:00:00</wp:post_date><excerpt:encoded><![CDATA[A short excerpt for ${title}.]]></excerpt:encoded><content:encoded><![CDATA[<p>Text of ${title}.</p>]]></content:encoded>${metas.join('')}`;
 
 const read = (...items: string[]) => readWordPress(wxr(items), {});
+const readAs = (siteTitle: string, ...items: string[]) => readWordPress(wxr(items, siteTitle), {});
 const site = (): ProjectState => createStarterState('business', 'Riverside Bakery', false);
 
 function commit(state: ProjectState, source: ParsedSource, existing: 'skip' | 'update' = 'skip') {
@@ -80,6 +81,16 @@ describe('search settings from a WordPress SEO plugin (#1514)', () => {
   it('reads each value as the plain text the plugins save, never as HTML', async () => {
     const source = await read(post(1, 'Code', meta('_yoast_wpseo_title', 'JavaScript <constructor> guide'), meta('_yoast_wpseo_metadesc', 'Use ?a=1&copy=2 when a<b &amp; more')));
     expect(source.posts[0].seo).toEqual({ title: 'JavaScript <constructor> guide', description: 'Use ?a=1&copy=2 when a<b & more' });
+    // The site's name too, which fills a title's placeholder.
+    const named = await readAs('JS &lt;constructor&gt; Guide', post(1, 'Oats', meta('_seopress_titles_title', '%%post_title%% at %%sitetitle%%')));
+    expect(named.posts[0].seo).toEqual({ title: 'Oats at JS <constructor> Guide' });
+  });
+
+  it('never makes more text of a placeholder used many times than a value holds', async () => {
+    const source = await read(post(1, 'x'.repeat(1000), meta('_yoast_wpseo_metadesc', '%%title%%'.repeat(400))));
+    expect(source.posts[0].seo!.description!.length).toBe(4000);
+    const { entry } = commit(site(), source);
+    expect(entry(0).seo!.description!.length).toBeLessThanOrEqual(320);
   });
 
   it('fills in the plugins’ placeholders, and leaves out their stock title and any placeholder it can’t fill', async () => {
@@ -117,9 +128,10 @@ describe('search settings from a WordPress SEO plugin (#1514)', () => {
       post(2, 'Elsewhere on the old site', meta('_yoast_wpseo_canonical', 'https://old.example/2018/original/')),
       post(3, 'Broken', meta('_yoast_wpseo_canonical', '/relative/'), meta('rank_math_canonical_url', 'not a url')),
       post(4, 'Fallback', meta('_yoast_wpseo_canonical', '/relative/'), meta('rank_math_canonical_url', 'https://journal.example/fallback/')),
-      post(5, 'Padded', meta('_yoast_wpseo_canonical', `${' '.repeat(3990)}https://journal.example/padded/`))
+      post(5, 'Padded', meta('_yoast_wpseo_canonical', `${' '.repeat(3990)}https://journal.example/padded/`)),
+      post(6, 'SEOPress', meta('_seopress_robots_canonical', 'https://journal.example/seopress/'))
     );
-    expect(source.posts.map((p) => p.seo)).toEqual([undefined, { canonical: 'https://old.example/2018/original/' }, undefined, { canonical: 'https://journal.example/fallback/' }, { canonical: 'https://journal.example/padded/' }]);
+    expect(source.posts.map((p) => p.seo)).toEqual([undefined, { canonical: 'https://old.example/2018/original/' }, undefined, { canonical: 'https://journal.example/fallback/' }, { canonical: 'https://journal.example/padded/' }, { canonical: 'https://journal.example/seopress/' }]);
     expect(source.posts[3].notes).toEqual([]);
     expect(source.posts[1].notes).toEqual(['Its canonical address (https://old.example/2018/original/) is on the old site: change it in Search & sharing if the new site replaces that address.']);
     expect(source.posts[2].notes).toEqual(['Its canonical address (/relative/) was left out: the canonical URL must be a full address starting with https:// (or http://).']);
@@ -128,6 +140,9 @@ describe('search settings from a WordPress SEO plugin (#1514)', () => {
   it('takes a canonical address escaping its letters differently for the post’s own', async () => {
     const own = `<title>Café</title><link>https://old.example/caf%c3%a9/</link><wp:post_id>1</wp:post_id><wp:post_name>cafe</wp:post_name><wp:post_type>post</wp:post_type><wp:status>publish</wp:status><wp:post_date>2019-03-01 10:00:00</wp:post_date>${meta('_yoast_wpseo_canonical', 'https://old.example/caf%C3%A9')}`;
     expect((await read(own)).posts[0].seo).toBeUndefined();
+    // An escaped delimiter is another address: one query value, not two.
+    const other = own.replace('caf%c3%a9/', 'tags/?tag=a&amp;b=c').replace('https://old.example/caf%C3%A9', 'https://old.example/tags/?tag=a%26b=c');
+    expect((await read(other)).posts[0].seo).toEqual({ canonical: 'https://old.example/tags/?tag=a%26b=c' });
   });
 
   it('lists a post as the site’s others are when its plugins disagree, or when one says to list it', async () => {
@@ -148,7 +163,7 @@ describe('search settings from a WordPress SEO plugin (#1514)', () => {
     const { plan, entry } = commit(site(), source);
     expect(entry(0).seo!.title!.length).toBeLessThanOrEqual(120);
     expect(entry(0).seo!.description!.length).toBeLessThanOrEqual(320);
-    expect(entry(0).seo!.title!.endsWith('…')).toBe(true);
+    expect([entry(0).seo!.title!.endsWith('…'), entry(0).seo!.description!.endsWith('…')]).toEqual([true, true]);
     expect(plan.posts[0].notes).toEqual(['Its search title was shortened to 120 characters.', 'Its search description was shortened to 320 characters.']);
   });
 

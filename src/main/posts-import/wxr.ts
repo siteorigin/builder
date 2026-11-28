@@ -9,7 +9,7 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
+import { decodeEntities, emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
 import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type KnownPosts, type ParsedSource, type SourcePost, type SourceTerm } from './source';
@@ -139,7 +139,8 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   }
   const media = new MediaTable(root, realRoot, siteOrigin);
   /** The site's name, as its SEO plugin fills it into a post's search title. */
-  const siteName = htmlToPlain(childText(channel, 'title').slice(0, FIELD_CHARS));
+  // Plain text, as WordPress keeps it: never read as HTML.
+  const siteName = decodeEntities(childText(channel, 'title').slice(0, FIELD_CHARS), true).replace(/\s+/g, ' ').trim();
   const authors = new Map(childElements(channel, 'wp:author').map((a) => [childText(a, 'wp:author_login').trim(), childText(a, 'wp:author_display_name').trim()]));
   /** Each attachment the export lists, by its ID, and the IDs attached to each post, in WordPress's gallery order. */
   const attachments = new Map<string, HtmlImage>();
