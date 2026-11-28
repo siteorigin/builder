@@ -4,10 +4,11 @@
  * plan is shown to the author before anything changes, and turns into one batch of operations: one change in the
  * project's history, undone in one step.
  */
-import type { AssetRecord, CollectionTaxonomy, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
+import type { AssetRecord, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasCategoryArchives, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
 import { archiveRoute } from '@shared/archives';
+import { hasTerm, publishedEntries } from '@shared/entry-feed';
 import { todayArticleDate } from '@shared/articles';
 import { addressSlug, normalizeRoute, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
 import { cleanBlocks, isImageBlock, isListBlock, spanRuns } from '@shared/richtext';
@@ -72,9 +73,10 @@ export interface PostImportPlan {
   /**
    * The old site's addresses the posts still link to, as they wrote them, each with how many posts link to it, most
    * linked first: links the new site may replace once it is published there. `to` is where an old category archive's
-   * address sends visitors once the import keeps it working (archiveRedirects).
+   * address sends visitors once the import keeps it working (archiveRedirects); `pending` while no published post is
+   * filed under that category, so its archive is not there yet.
    */
-  oldSiteLinks: Array<{ url: string; posts: number; to?: string }>;
+  oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
   /** The old site's category archive addresses the posts link to, kept working by sending visitors to the new archive. */
   archiveRedirects: Array<{ from: string; to: string }>;
   /** What stops the import. Nothing is imported while there is one. */
@@ -304,13 +306,18 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   const oldSiteLinks = source.site ? linksToOldSite(posts, source.site) : [];
   const archiveRedirects: PostImportPlan['archiveRedirects'] = [];
   if (archived && (!existing || hasCategoryArchives(existing.settings))) {
+    // A category by its WordPress ID spelled as an address spells it, as the link's path is read.
     const bySlug = new Map<string, SourceTerm>();
-    for (const p of source.posts) for (const t of p.categories) if (t.slug) bySlug.set(lower(t.slug), t);
+    for (const p of source.posts) for (const t of p.categories) if (t.slug) bySlug.set(normalizeRoute(`/${t.slug}/`), t);
+    // The categories whose archive the website has once the import is in: one with a published post.
+    const listed = new Set(posts.flatMap((p) => (p.draft ? [] : (p.terms.categories ?? []))));
+    let filed: EntryDoc[] | undefined;
+    const live = (id: string) => listed.has(id) || (!!existing && (filed ??= publishedEntries(state, existing)).some((e) => hasTerm(e, 'categories', id)));
     const kept = new Set((Array.isArray(state.site.redirects) ? state.site.redirects : []).flatMap((r) => (typeof r?.from === 'string' ? [lower(r.from)] : [])));
     const sent = new Map<string, string>();
     for (const row of oldSiteLinks) {
       const old = oldCategoryAddress(row.url);
-      const term = old && bySlug.get(lower(old.slug));
+      const term = old && bySlug.get(`/${old.slug}/`);
       const id = term ? termId('categories', term) : null;
       if (!old || !id) continue;
       const k = lower(old.from);
@@ -322,6 +329,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
         archiveRedirects.push({ from: old.from, to });
       }
       row.to = sent.get(k);
+      if (!live(id)) row.pending = true;
     }
   }
   const plan: PostImportPlan = {
@@ -376,7 +384,9 @@ function oldCategoryAddress(url: string): { from: string; slug: string } | null 
   if (u.search) return null;
   const from = normalizeRoute(u.pathname);
   const parts = from.slice(1, -1).split('/');
-  return parts.length >= 2 && parts[0] === 'category' ? { from, slug: parts[parts.length - 1] } : null;
+  // A later page of an archive (`/category/news/page/2/`) is no category of its own.
+  if (parts.length < 2 || parts[0] !== 'category' || parts.includes('page')) return null;
+  return { from, slug: parts[parts.length - 1] };
 }
 
 /**

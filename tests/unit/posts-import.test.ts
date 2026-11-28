@@ -625,46 +625,67 @@ describe('reading a WordPress export: statuses, dates and links', () => {
   it('issue 1518: names the old site’s addresses the posts still link to, keeps an old category archive working, and Project health names the rest once the site is at that address', async () => {
     const s = site();
     const soil = '<category domain="category" nicename="soil-science"><![CDATA[Soil science]]></category>';
-    const post = (id: number, title: string, body: string, extra = soil) => item(id, { title, link: `https://old.example/2020/${id}/`, 'wp:status': 'publish', 'wp:post_date': `2020-01-0${id} 00:00:00` }, body) + extra;
+    const clay = '<category domain="category" nicename="clay"><![CDATA[Clay]]></category>';
+    const post = (id: number, title: string, body: string, extra = soil, status = 'publish') => item(id, { title, link: `https://old.example/2020/${id}/`, 'wp:status': status, 'wp:post_date': `2020-01-0${id} 00:00:00` }, body) + extra;
     const source = await readWordPress(
       wxr([
         // The category twice and a relative link to the team page: each address is counted once for the post.
         post(1, 'First', '<p><a href="https://old.example/category/soil-science/">Soil</a>, <a href="/about/team/">the team</a> and <a href="https://old.example/category/soil-science/">soil again</a>.</p>'),
-        post(2, 'Second', '<p>Meet <a href="https://old.example/about/team/">the team</a>.</p>'),
-        // A category no imported post is filed under has no archive to send visitors to.
-        post(3, 'Third', '<p><a href="https://old.example/category/rain/">Rain</a> and <a href="https://other.example/about/team/">another site</a>.</p>', '')
+        post(2, 'Second', '<p>Meet <a href="https://old.example/about/team/">the team</a>, or <a href="/category/soil-science/page/2/">older soil posts</a>.</p>'),
+        // A category no imported post is filed under has no archive to send visitors to; one only a draft is filed
+        // under has one once the draft is published. WordPress read a category by its query, whatever the path.
+        post(3, 'Third', '<p><a href="https://old.example/category/rain/">Rain</a>, <a href="/category/clay/">clay</a>, <a href="/?cat=8">a category</a> and <a href="https://other.example/about/team/">another site</a>.</p>', ''),
+        post(4, 'Fourth', '<p>Clay.</p>', clay, 'draft')
       ]),
       pages(s)
     );
     expect(source.posts.flatMap((p) => p.notes)).toEqual([]);
     const { plan, after } = commit(s, source);
-    const preview = postImportPreview('r', plan);
-    expect(preview.oldSiteLinks).toEqual([
+    const rows = [
       { url: 'https://old.example/about/team/', posts: 2 },
+      { url: 'https://old.example/?cat=8', posts: 1 },
+      { url: 'https://old.example/category/clay/', posts: 1, to: '/blog/category/clay/', pending: true },
       { url: 'https://old.example/category/rain/', posts: 1 },
-      { url: 'https://old.example/category/soil-science/', posts: 1, to: '/blog/category/soil-science/' }
-    ]);
+      { url: 'https://old.example/category/soil-science/', posts: 1, to: '/blog/category/soil-science/' },
+      { url: 'https://old.example/category/soil-science/page/2/', posts: 1 }
+    ];
+    expect(postImportPreview('r', plan).oldSiteLinks).toEqual(rows);
+    // Counted from the posts' text as planned, which a plan that spends the source's text still has.
+    expect(planPostImport(s, structuredClone(source), '2026-11-24', { consume: true }).oldSiteLinks).toEqual(rows);
     // No post has anything left to check for its links.
-    expect(preview.posts.map((p) => p.notes)).toEqual([[], [], []]);
-    expect(after.site.redirects).toContainEqual({ from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/' });
-    expect(resolveRedirects(after, 'website').live.find((r) => r.from === '/category/soil-science/')?.to).toBe('/blog/category/soil-science/');
+    expect(postImportPreview('r', plan).posts.map((p) => p.notes)).toEqual([[], [], [], []]);
+    expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
+      { from: '/category/clay/', custom: true, to: '/blog/category/clay/' },
+      { from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/' }
+    ]);
+    expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([['/category/soil-science/', '/blog/category/soil-science/']]);
     expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
     const own = (state: ProjectState) => runSeoAudit(state).filter((f) => f.code === 'SEO_LINK_OWN_MISSING');
     // While the site's address is elsewhere, the old site may still be up there.
     expect(own(after)).toEqual([]);
     expect(own(applyOperations(after, [{ type: 'site.update', baseUrl: 'https://new.example' }]).state)).toEqual([]);
-    // At the old site's address, the links to what the website has no page at are Project health's, one per address.
+    // At the old site's address, the links to what the website has no page at are Project health's, one per address:
+    // the draft-only category's too, until a post filed under it is published.
     const moved = applyOperations(after, [{ type: 'site.update', baseUrl: 'https://old.example' }]).state;
     expect(own(moved).map((f) => [f.severity, f.message])).toEqual([
-      ['warning', expect.stringMatching(/^“(First|Second)” and 1 other place link to https:\/\/old\.example\/about\/team\/, an address of this site the website has no page at\.$/)],
-      ['warning', '“Third” links to https://old.example/category/rain/, an address of this site the website has no page at.']
+      ['warning', expect.stringMatching(/^“(First|Second)” and 1 other place link to https:\/\/old\.example\/about\/team\/, where the website has no page\.$/)],
+      ['warning', '“Third” links to https://old.example/?cat=8, where the website has no page.'],
+      ['warning', '“Third” links to https://old.example/category/clay/, where the website has no page.'],
+      ['warning', '“Third” links to https://old.example/category/rain/, where the website has no page.'],
+      ['warning', '“Second” links to https://old.example/category/soil-science/page/2/, where the website has no page.']
     ]);
+    const fourth = Object.values(moved.collections.posts.entries).find((e) => e.title === 'Fourth')!;
+    const published = applyOperations(moved, [{ type: 'entry.update', collectionId: 'posts', entryId: fourth.id, draft: false }]).state;
+    expect(own(published).map((f) => f.site)).not.toContain('own-link|https://old.example/category/clay/');
     // The same import into a collection without category archives keeps no old category address.
     const flat = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }]).state;
     flat.collections.posts.settings.categoryArchives = false;
     const unarchived = planPostImport(flat, source, '2026-11-24');
     expect(unarchived.archiveRedirects).toEqual([]);
-    expect(unarchived.oldSiteLinks.find((l) => l.url.includes('soil-science'))).toEqual({ url: 'https://old.example/category/soil-science/', posts: 1 });
+    expect(unarchived.oldSiteLinks.find((l) => l.url.endsWith('/category/soil-science/'))).toEqual({ url: 'https://old.example/category/soil-science/', posts: 1 });
+    // Into a collection that already has the category under another ID, the old address goes to that one's archive.
+    const named = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms: { soils: { label: 'Soil science' } } } } }]).state;
+    expect(planPostImport(named, source, '2026-11-24').archiveRedirects).toContainEqual({ from: '/category/soil-science/', to: '/blog/category/soils/' });
   });
 
   it('says when a featured picture is not in the export', async () => {

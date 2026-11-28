@@ -143,17 +143,17 @@ const OLD_LINKS_SHOWN = 5;
  * old site, which the new site may replace at the same address. One kept working says where it now sends visitors.
  */
 function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks']; site?: string }) {
-  const label = `${plural(links.length, 'link goes', 'links go')} to ${links.length === 1 ? 'an address' : 'addresses'} of the old site`;
+  const label = `The posts link to ${plural(links.length, 'address', 'addresses')} of the old site`;
   const list = (
     <>
       <p className="import-review-what">
-        The posts keep {links.length === 1 ? 'this link' : 'these links'} as {links.length === 1 ? 'it is' : 'they are'}. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found, and Project health lists {links.length === 1 ? 'it' : 'each one'}.
+        The posts keep these links as they are. Once this site is published at {site ?? 'the old site’s address'}, a link to an address it has no page at leads to Page not found: Project health lists those links then.
       </p>
       <ul className="import-names single" data-testid="post-import-old-links">
         {links.map((l) => (
           <li key={l.url}>
             <b>{l.url}</b> · {plural(l.posts, 'post', 'posts')}
-            {l.to ? ` · kept working: it sends visitors to ${l.to}` : ''}
+            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under that category is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
           </li>
         ))}
       </ul>

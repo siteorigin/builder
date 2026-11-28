@@ -52,6 +52,9 @@ function statusDraft(status: string, password: string): { draft: boolean; reason
 
 const metaValue = (item: XmlElement, key: string) => childElements(item, 'wp:postmeta').find((m) => childText(m, 'wp:meta_key') === key);
 
+/** Query keys WordPress reads a post, page, category, tag, author, month or search by, whatever the path. */
+const WORDPRESS_SELECTORS = ['p', 'page_id', 'cat', 'tag', 'author', 'm', 's'];
+
 /** A path as a static site writes its addresses: decoded, with a slash at each end. */
 function sitePath(pathname: string): string {
   let p = pathname;
@@ -210,11 +213,12 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
       const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
-      const post = p !== null ? byId.get(p) : byPath.get(sitePath(url.pathname).toLowerCase());
+      // An address WordPress read by its query (`/?p=88`, `/?cat=8`) named something other than what is at its path.
+      const selected = WORDPRESS_SELECTORS.some((k) => url.searchParams.has(k));
+      const post = p !== null ? byId.get(p) : selected ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
-      // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
-      // which named something other than the page at its path.
-      const page = p !== null ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
+      // A page of the project at the same address, its section kept; never for an address WordPress read by its query.
+      const page = selected ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
       if (page) return page;
       // Somewhere else on the old site: kept at its full address, which the review lists with the others the posts keep
       // (see planPostImport), since the new site may replace the old one there.

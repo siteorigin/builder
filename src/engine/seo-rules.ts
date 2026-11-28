@@ -25,7 +25,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
 import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
-import { publishedState } from '@generator/index';
+import { liveRedirects, publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
 
@@ -323,8 +323,10 @@ const genericLinkText: SeoAuditRule = {
   }
 };
 
-/** Query keys a WordPress site read a post, page or category by (`/?p=88`): a static site answers none of them. */
-const WORDPRESS_QUERIES = ['p', 'page_id', 'cat'];
+/** Query keys a WordPress site read a post, page, category, tag, author, month or search by (`/?p=88`): a static site answers none of them. */
+const WORDPRESS_QUERIES = ['p', 'page_id', 'cat', 'tag', 'author', 'm', 's'];
+/** Endings of an old site's page addresses (`/contact.html`, `/index.php`): a page of this website is never at one. */
+const PAGE_FILE = /\.(html?|php|aspx?|jsp)$/i;
 
 /** Where a link is, as the author knows the place: a page or an entry by its title, the header or footer, or a layout. */
 function linkPlace(state: ProjectState, l: SiteLink): string {
@@ -337,18 +339,19 @@ function linkPlace(state: ProjectState, l: SiteLink): string {
 
 /**
  * Links typed as a full web address on the site's own public URL (one kept from an imported site that this website
- * replaces, say) that lead to an address the website has nothing at: no page, collection entry, collection index or
- * archive page, and no old address kept working. Once the website is published there, each leads to Page not found.
- * A draft's address is left to the export, which already stops at links to a draft; a file's address (one whose last
- * part has a dot: a PDF, the sitemap) is not judged, since the site's own files are not all in the project. One finding
- * per address, naming where it is linked from, the address linked from the most places first.
+ * replaces, say), or the same address over plain http, that lead to an address the website has nothing at: no page,
+ * collection entry, collection index or archive page, and no old address kept working that leads somewhere. Once the
+ * website is published there, each leads to Page not found. So does an address WordPress read by its query (`/?p=88`)
+ * or an old page file (`/contact.html`). A draft's address is left to the export, which already stops at links to a
+ * draft. Any other file's address (a PDF, the sitemap) is not judged, since the site's own files are not all in the
+ * project. One finding per address, naming where it is linked from, the address linked from the most places first.
  */
 const brokenOwnLinks: SeoAuditRule = {
   id: 'broken-own-links',
   check({ state, links }) {
     const own = links().flatMap((l) => {
       if (l.link.type !== 'url') return [];
-      const at = ownSiteAddress(state, l.link.target);
+      const at = ownSiteAddress(state, l.link.target) ?? (/^http:/i.test(l.link.target) ? ownSiteAddress(state, l.link.target.replace(/^http:/i, 'https:')) : null);
       return at ? [{ l, at }] : [];
     });
     if (!own.length) return [];
@@ -356,28 +359,33 @@ const brokenOwnLinks: SeoAuditRule = {
     for (const p of Object.values(state.pages)) if (typeof p.route === 'string') answered.add(p.route.toLowerCase());
     for (const e of siteEntries(state)) answered.add(e.route.toLowerCase());
     for (const p of archivePages(publishedState(state))) answered.add(p.route.toLowerCase());
-    for (const r of Array.isArray(state.site.redirects) ? state.site.redirects : []) if (typeof r?.from === 'string') answered.add(r.from.toLowerCase());
+    // An old address answers only while it leads somewhere (a draft included, which the export already stops at).
+    for (const r of liveRedirects(state)) answered.add(r.from.toLowerCase());
     const broken = new Map<string, SiteLink[]>();
     for (const { l, at } of own) {
       const last = at.route.slice(0, -1).split('/').pop() ?? '';
-      if (last.includes('.')) continue;
       const byQuery = WORDPRESS_QUERIES.some((k) => at.url.searchParams.has(k));
+      if (!byQuery && last.includes('.') && !PAGE_FILE.test(last)) continue;
       if (!byQuery && answered.has(at.route.toLowerCase())) continue;
       const list = broken.get(l.link.target) ?? [];
       list.push(l);
       broken.set(l.link.target, list);
     }
-    // The address linked from the most places first, as the import's review lists them.
-    const grouped = [...broken].map(([url, list]) => ({ url, list, places: [...new Set(list.map((l) => linkPlace(state, l)))] }));
-    grouped.sort((a, b) => b.places.length - a.places.length || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
-    return grouped.map(({ url, list, places }) => {
-      const from = places.length === 1 ? places[0] : `${places[0]} and ${places.length - 1} other ${places.length === 2 ? 'place' : 'places'}`;
+    // The address linked from the most places first, as the import's review lists them. A place is a page, an entry,
+    // the header or footer, or a layout: two posts of the same title are two.
+    const grouped = [...broken].map(([url, list]) => {
+      const owners = [...new Map(list.map((l) => [`${l.owner.kind}:${l.owner.id}`, l])).values()];
+      return { url, list, count: owners.length, first: linkPlace(state, owners[0]) };
+    });
+    grouped.sort((a, b) => b.count - a.count || (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+    return grouped.map(({ url, list, count, first }) => {
+      const from = count === 1 ? first : `${first} and ${count - 1} other ${count === 2 ? 'place' : 'places'}`;
       return finding('content', {
         severity: 'warning',
         code: 'SEO_LINK_OWN_MISSING',
-        message: `${from.charAt(0).toUpperCase()}${from.slice(1)} ${places.length === 1 ? 'links' : 'link'} to ${url}, an address of this site the website has no page at.`,
+        message: `${from.charAt(0).toUpperCase()}${from.slice(1)} ${count === 1 ? 'links' : 'link'} to ${url}, where the website has no page.`,
         explanation:
-          'The link is on the site’s own web address, so once the website is published there, visitors who follow it find Page not found. Point it at a page or post of the site, or keep the address working with a redirect in Site settings.',
+          'The link is on the site’s own web address, so once the website is published there, visitors who follow it don’t reach what it named: they find Page not found, or for an address an old site read by its query (/?p=88), the page at its path. Point it at a page or post of the site, or keep the address working with a redirect in Site settings.',
         aiFixable: false,
         ...linkFix(state, list[0]),
         site: `own-link|${url}`
