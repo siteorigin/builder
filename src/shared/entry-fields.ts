@@ -17,8 +17,9 @@
  *   their titles said to be the previous or next, as the site words it, "Previous: …"). Empty for the first and the
  *   last. `entryNavLabel` is the site's name for the two links together; empty with neither.
  * - `field.<name>`: the value of one of the collection's custom fields, or its default. A date field is a date as
- *   `publishedAt` is; a reference field shows the titles of the entries it names, separated by commas, and a condition
- *   reads their IDs.
+ *   `publishedAt` is; a number is written as the site's language writes it and a choice shows its option's label,
+ *   while a condition, a placed section's number or choice, and a sort read the value stored; a reference field shows
+ *   the titles of the entries it names, separated by commas, and a condition reads their IDs.
  *
  * A collection whose entries have no text of their own (`hasBody: false`) has no `body` or `readingTime`.
  */
@@ -220,13 +221,15 @@ function neighbourLabel(wording: string, neighbour: EntryDoc | undefined): strin
 
 /**
  * What a reference field holds: the IDs it names (`raw`, one or a list as the field takes them), or the titles of the
- * entries of its collection it names, in its order, separated by commas. An ID the collection has no entry for shows
- * nothing.
+ * entries of its collection it names, in its order, separated by commas. An ID the collection has no entry for is
+ * neither.
  */
 function referenceValue(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, value: unknown, form: EntryValueForm): unknown {
-  const ids = (Array.isArray(value) ? value : [value]).filter((id): id is string => typeof id === 'string' && id !== '');
-  if (form === 'raw') return schema.multiple ? ids : (ids[0] ?? '');
   const target = own(state.collections, schema.collection);
+  // An ID its collection has no entry for here (one removed, or a draft the published site leaves out) names nothing,
+  // so a condition on the field does not show a row whose names are all gone.
+  const ids = (Array.isArray(value) ? value : [value]).filter((id): id is string => typeof id === 'string' && id !== '' && !!own(target?.entries, id));
+  if (form === 'raw') return schema.multiple ? ids : (ids[0] ?? '');
   return ids
     .map((id) => str(own(target?.entries, id)?.title))
     .filter(Boolean)
@@ -296,11 +299,30 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     if (schema.type === 'date') return date(value);
     // A reference names no entry unless the entry chooses one, whatever a damaged default says.
     if (schema.type === 'reference') return referenceValue(state, schema, v, form);
+    // A number reads as the site's language writes it, every decimal kept, grouped from five digits up so a year stays
+    // a year ("1785", "4,200,000"); its value only raw.
+    if (schema.type === 'number' && form === 'shown') return typeof value === 'number' && Number.isFinite(value) ? shownNumber(value, siteLanguage(state.site)) : value;
+    // A choice reads as its option's label, as the author named it; its stored value (a condition's, a placed
+    // section's choice) only raw.
+    if (schema.type === 'enum' && form === 'shown') {
+      const option = Array.isArray(schema.options) ? schema.options.find((o) => o?.value === value) : undefined;
+      return typeof option?.label === 'string' && option.label.trim() ? option.label : value;
+    }
     // A rich text field's text is no article: a section heading or a picture a hand edit put there is left out.
     if (schema.type === 'richtext') return Array.isArray(value) ? value.filter((b) => b && typeof b === 'object' && b.type !== 'h2' && b.type !== 'image') : [];
     return value;
   }
   return undefined;
+}
+
+/** A number as readers of `language` write it, every digit the author gave kept. */
+function shownNumber(n: number, language: string): string {
+  try {
+    // 'min2' groups only from five digits up, as most languages write a year.
+    return new Intl.NumberFormat(language, { maximumFractionDigits: 20, useGrouping: 'min2' } as Intl.NumberFormatOptions).format(n);
+  } catch {
+    return String(n);
+  }
 }
 
 /** The labels of an entry's terms in one grouping, in the order they were assigned, separated by commas. */

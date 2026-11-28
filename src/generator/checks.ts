@@ -3,7 +3,7 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { repeatProp, CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
+import { repeatProp, CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isEntryBinding, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -1000,6 +1000,9 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
       for (const f of fields) uses.set(f, (uses.get(f) ?? 0) + (scope.multiple ? 2 : 1));
     },
     link: (n, scope, reportId, inDef, ownId, def) => {
+      // A collection layout's button goes where each entry's link field says: the layout alone has no destination of
+      // its own to miss.
+      if (isEntryBinding(n.link)) return;
       const appearance = String(evaluate(n.appearance, scope) ?? '');
       const label = String(evaluate(n.label, scope) ?? '').trim();
       const link = evaluate(n.link, scope) as LinkValue | undefined;

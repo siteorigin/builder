@@ -111,8 +111,9 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
   if (withoutBody && entryField === 'body') return field === 'prop' ? (nested ? asType(nested.type, []) : undefined) : asType('richtext', []);
   if (!schema) return emptyFor(node, field, nested);
   if (field === 'datetime') return isEntryDateField(read.collection, entryField) ? entryFieldValue(read, entryField, 'raw') : undefined;
-  // A number or yes/no property takes the value itself (the minutes of a reading time); a text, as readers see it.
-  const raw = field === 'prop' && (nested?.type === 'number' || nested?.type === 'boolean');
+  // A number, yes/no or choice property takes the value itself (the minutes of a reading time, an option's value); a
+  // text, as readers see it.
+  const raw = field === 'prop' && (nested?.type === 'number' || nested?.type === 'boolean' || nested?.type === 'enum');
   const value = entryFieldValue(read, entryField, raw ? 'raw' : 'shown');
   switch (field) {
     case 'text':

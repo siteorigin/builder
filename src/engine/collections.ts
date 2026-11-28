@@ -3,7 +3,7 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
+import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionPages, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ReferenceFieldSchema, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, COLLECTION_KINDS, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import {
@@ -12,6 +12,7 @@ import {
   POSTS_COLLECTION_ID,
   archiveRouteOwner,
   collectionHasBody,
+  collectionKind,
   entryRoute,
   findEntry,
   hasArchivePages,
@@ -36,8 +37,7 @@ import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { collectionLinkUses, entryLinkUses, type LinkHolder, type PageLinkUse } from './page-links';
-import { declaredTokens } from './tokens';
-import { articleTemplateFor } from '@catalogue/index';
+import { defaultLayout, isDefaultLayout } from './collection-layouts';
 
 type OpResult = Record<string, unknown>;
 
@@ -428,7 +428,6 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
     if (pages?.archive !== false) refuseTaken(state, route, {}, 'address for the collection');
     refuseArchiveClash(state, route, op.collectionId, pages?.archive !== false);
   }
-  const hasBody = op.hasBody !== false;
   const settings: CollectionDoc = {
     schemaVersion: SCHEMA_VERSION,
     id: op.collectionId,
@@ -436,11 +435,12 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
     ...(route !== undefined ? { route } : {}),
     taxonomies: normalizeTaxonomies(op.taxonomies ?? preset?.taxonomies ?? {}),
     fields: normalizeFields(op.fields ?? {}, state, op.collectionId),
-    // The theme's article layout shows the entry's text: records without any start with an empty layout instead.
-    template: hasBody ? themeArticleTemplate(state) : { rootIds: [], nodes: {} }
+    template: { rootIds: [], nodes: {} }
   };
   applyIdentity(settings, op);
   if (op.hasBody !== undefined) settings.hasBody = op.hasBody;
+  // Articles start with the theme's article layout, records with a page of their own fields (see collection-layouts).
+  settings.template = defaultLayout(state, settings);
   if (pages) settings.pages = pages;
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
@@ -450,40 +450,12 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
-/**
- * The layout a new collection's entries start with: a copy of the theme's, every node with a new ID (so two
- * collections' layouts never share a style rule), keeping only the site styles the site has.
- */
-export function themeArticleTemplate(state: ProjectState): NodeTree {
-  const source = articleTemplateFor(state.site.themeId);
-  if (!source) return { rootIds: [], nodes: {} };
-  const tokens = new Set(declaredTokens(state).map((t) => t.id));
-  const ids = new Map(Object.keys(source.nodes).map((id) => [id, newId('n')]));
-  const remap = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string' && ids.has(id)).map((id) => ids.get(id)!) : []);
-  const nodes: Record<string, GraphNode> = {};
-  for (const [id, n] of Object.entries(source.nodes)) {
-    const copy = structuredClone(n) as GraphNode & { children?: string[] };
-    copy.id = ids.get(id)!;
-    if ('children' in copy) copy.children = remap(copy.children);
-    if (copy.styles) copy.styles = keptStyles(copy.styles, tokens);
-    nodes[copy.id] = copy;
-  }
-  return { rootIds: remap(source.rootIds), nodes };
-}
-
-/** Styles without the values that name a site style the site lacks (a theme pack's template written for others). */
-function keptStyles(styles: ResponsiveStyles, tokens: ReadonlySet<string>): ResponsiveStyles {
-  const out: ResponsiveStyles = {};
-  for (const [scope, props] of Object.entries(styles) as Array<[keyof ResponsiveStyles, Record<string, unknown>]>) {
-    const kept = Object.fromEntries(Object.entries(props ?? {}).filter(([, v]) => !(v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && !tokens.has((v as { token: string }).token))));
-    if (Object.keys(kept).length) out[scope] = kept as ResponsiveStyles[keyof ResponsiveStyles];
-  }
-  return out;
-}
-
 export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
+  // A records layout nobody has edited keeps up with the collection: its fields, its text and its kind (see the end).
+  // An article's stays the theme's as it is, and an edited layout is the author's.
+  const follows = (collectionKind(c.settings) === 'structured' || op.kind === 'structured') && isDefaultLayout(state, c.settings);
   applyIdentity(c.settings, op);
   // Detached, its entries are local: edited here, and left alone by syncs. Nothing says they came from the source any
   // more, so no later sync of it can claim them.
@@ -569,7 +541,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
       // Nothing is dropped on its own: each entry's text, and the layout's showing it, are cleared first.
       const written = Object.values(c.entries).find((e) => Array.isArray(e.body) && e.body.length);
       if (written) fail(`“${written.title}” has text of its own. Clear the text of every entry of ${name} before turning entry text off.`);
-      const shown = [...layoutReads(c)].find((f) => f === 'body' || f === 'readingTime');
+      const shown = [...(follows ? [] : layoutReads(c))].find((f) => f === 'body' || f === 'readingTime');
       if (shown) fail(`The ${name} layout shows the entries' ${shown === 'body' ? 'text' : 'reading time'}. Unbind it in the layout before turning entry text off.`);
     }
     c.settings.hasBody = op.hasBody;
@@ -578,8 +550,9 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies, c.settings.taxonomies) : c.settings.taxonomies;
     const fields = op.fields !== undefined ? normalizeFields(op.fields, state, c.settings.id) : c.settings.fields;
     // A custom field the layout shows can't go, or become another kind, while it does: every entry's value would be
-    // dropped below, even if a later change in the same batch brought the field back.
-    for (const f of layoutReads(c)) {
+    // dropped below, even if a later change in the same batch brought the field back. A layout that follows the
+    // collection drops it along with the field.
+    for (const f of follows ? [] : layoutReads(c)) {
       if (!f.startsWith('field.')) continue;
       const before = own(c.settings.fields ?? {}, f.slice(6));
       const after = own(fields, f.slice(6));
@@ -590,6 +563,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
   }
+  if (follows && !isDefaultLayout(state, c.settings)) c.settings.template = defaultLayout(state, c.settings);
   if (op.categoryDescription !== undefined) {
     const { termId } = op.categoryDescription;
     const terms = c.settings.taxonomies?.categories?.terms;
