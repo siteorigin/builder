@@ -126,7 +126,7 @@ import { generateWebManifest, siteColors, HEAD_ASSET, HEAD_ASSET_SCRIPT, siteIco
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
+import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
@@ -4213,22 +4213,11 @@ const HERO_ASSET_IMPORT = `\timport { asset as so_asset } from '$app/paths';`;
  * the body loads eagerly (see firstSectionImages): a placeholder loads nothing, so the next image is looked at. An
  * image that opens full size shows its thumbnail (see `thumbnail` in the runtime's util), as the emitter decides it for
  * this placement; where the body decides which picture that is only as it renders (two images one card opens), the
- * walk ends with none rather than asking for a picture the page may not show.
+ * walk ends with none rather than asking for a picture the page may not show. A code placement's picture counts in its
+ * turn when its markup loads it eagerly in a way the head can read, with the `sizes` it writes (see eagerCodeImage).
  */
 function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: string } | null {
   const { state, tree } = ctx;
-  // The committed Foundation split hero is code, so the managed-tree walk below cannot see its SoImage. Its source
-  // renders the placement's `image` with the runtime default sizes and takes the first-section eager flag.
-  const first = tree.rootIds.length ? tree.nodes[tree.rootIds[0]] : undefined;
-  const firstDef = first?.kind === 'instance' ? state.components[first.definitionId] : undefined;
-  if (first?.kind === 'instance' && firstDef?.owner === 'theme' && firstDef.kind === 'code' && firstDef.componentId === 'hero.split' && ['foundation', 'foundation-alt'].includes(firstDef.provenance?.pack ?? '')) {
-    const value = first.props.image ?? firstDef.properties.image?.default;
-    const id = value && typeof value === 'object' && 'assetId' in value ? value.assetId : null;
-    if (typeof id === 'string' && state.assets.assets[id]?.kind === 'image') {
-      const image = resolveImage(value as ImageValue, ctx.rctx);
-      if (image?.src) return { image, sizes: '100vw' };
-    }
-  }
   let hero: { image: Record<string, unknown>; sizes: string } | null = null;
   const sizingParents: EmitCtx['sizingParents'] = new Map();
   firstSectionImages(state, tree, ctx.rctx.entry, (n, scope, def) => {
@@ -4248,6 +4237,21 @@ function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: strin
       image = thumbnailOf(image);
     }
     hero = { image, sizes: imageSizes(owner, n) ?? '100vw' };
+    return true;
+  }, (def, props) => {
+    // A code placement's picture is its one image property, when its markup shows it as the head can read it (see
+    // eagerCodeImage). Outside lists in the first section, it is handed `so_eager` whenever it takes the flag.
+    const source = def.source ?? '';
+    const prop = codeImageProp(def);
+    const value = (prop ? (props[prop] ?? def.properties[prop]?.default) : null) as ImageValue | null | undefined;
+    const id = value && typeof value === 'object' ? value.assetId : null;
+    const chosen = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id]?.kind === 'image';
+    const shown = prop && chosen ? eagerCodeImage(source, prop, takesEager(state, def)) : null;
+    const image = shown ? resolveImage(value!, ctx.rctx) : null;
+    // Code that may load a picture eagerly in a way the head cannot read (or a picture of its own, which browsers load
+    // eagerly) ends the walk with none, rather than asking for a later picture than the one the page loads first.
+    if (!shown || !image?.src) return ((chosen || !prop) && /\beager\b/.test(source)) || /<(?:img|picture)\b/i.test(source.replace(/<!--[\s\S]*?-->/g, ''));
+    hero = { image: shown.thumbnail ? thumbnailOf(image) : image, sizes: shown.sizes };
     return true;
   });
   return hero;
