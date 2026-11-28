@@ -120,6 +120,8 @@
   .toolbar .segmented[aria-label='Preview width'] svg { width: 16px; height: 16px; }
   /* Device options are icon-only, so they take less side padding than the labelled Edit and Preview (30px targets). */
   .toolbar .segmented[aria-label='Preview width'] button { padding: 0 7px; }
+  /* Below the full tier Edit, Preview and SEO are icons too, and take the device options' padding. */
+  .toolbar:not([data-tier='full']) .segmented[aria-label='Mode'] button { padding: 0 7px; }
   .toolbar .segmented[aria-label='Preview width'] [aria-label='Phone'] svg { width: 14px; height: 14px; }
   .toolbar .export-btn { height: 28px; margin-left: 2px; padding: 0 12px 0 10px; }
   /* Below the full tier the history group follows the mode group across the 14px region gap; its divider sits

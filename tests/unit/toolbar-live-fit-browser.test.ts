@@ -163,7 +163,9 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
     await page.locator(session.remote ? '.remote-leave' : '.export-btn').waitFor();
     // Each fixture shows what it says it does: Notes' count, the session's own pill, and Preview colors with a dark palette.
     expect(await page.locator('.notes-btn').innerText()).toContain('2');
-    expect(await page.locator('.scheme-btn').count()).toBe(palettes === 'dual' ? 1 : 0);
+    // The overflow toolbar keeps Preview colors in its More menu.
+    const inMore = (await page.locator('.toolbar').getAttribute('data-tier')) === 'overflow';
+    expect(await page.locator('.scheme-btn').count()).toBe(palettes === 'dual' && !inMore ? 1 : 0);
     if (session.remote) {
       const r = session.remote;
       expect(await page.locator(`.remote-pill.${r.reconnecting ? 'reconnecting' : r.hostConnected ? 'live' : 'away'}`).count()).toBe(1);
@@ -232,6 +234,11 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
     }
     expect((await fit(1440, host())).tier).toBe('compact');
     expect((await fit(1640, host())).tier).toBe('full');
+    // Beside the Mode group's third option (#1583), a host's toolbar at the 1100px minimum keeps Zoom, Settings and
+    // Preview colors in its More menu.
+    expect((await fit(1100, host(), 'dual')).tier).toBe('overflow');
+    await page!.getByRole('button', { name: 'More', exact: true }).click();
+    expect(await page!.getByRole('menuitemradio', { name: 'Dark colors' }).count()).toBe(1);
   });
 
   it('gives a project with no session the full toolbar from its first width, Notes counting open notes', async () => {
@@ -239,5 +246,13 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
       for (const width of widths(TOOLBAR_FULL_MIN.local)) await fitsAt(width, TOOLBAR_FULL_MIN.local, {}, palettes);
     }
     expect((await fit(1440)).tier).toBe('full');
+    // The Mode group reads Edit, Preview and SEO in full (#1583), and below it shows their icons alone, each as narrow
+    // as a device option.
+    const seo = () => page!.getByRole('radiogroup', { name: 'Mode', exact: true }).getByRole('radio', { name: 'SEO', exact: true });
+    expect(await seo().innerText()).toBe('SEO');
+    const compact = await fit(1100, {}, 'dual');
+    expect(compact.tier).toBe('compact');
+    expect(await seo().innerText()).toBe('');
+    expect(Math.round((await seo().boundingBox())!.width)).toBe(28);
   });
 });

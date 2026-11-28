@@ -677,6 +677,16 @@ export function PagesPanel() {
     const home = sectionFor(st, order, id);
     const underMove = home && home !== within ? underOrder(id, home) : null;
     setMenuFor(id);
+    const duplicate = async (asDraft: boolean) => {
+      const r = await applyOps([{ type: 'page.duplicate', pageId: id, ...(asDraft ? { draft: true } : {}) }], `Duplicate page ${st.pages[id].title}${asDraft ? ' as a draft' : ''}`);
+      const copy = r?.[0]?.pageId as string | undefined;
+      if (!copy) return;
+      // The copy is the page now open, shown in its place, with focus on it so F2 renames the copy.
+      setQuery('');
+      selectPage(copy);
+      setJustAdded(copy);
+      requestAnimationFrame(() => (rowEl(copy)?.scrollIntoView({ block: 'nearest' }), rowEl(copy)?.focus({ preventScroll: true })));
+    };
     const openAt = (items: Parameters<typeof menu.openAt>[1], label: string) => (el instanceof HTMLElement ? menu.openAt(el, items, label) : menu.open(el.x, el.y, items, label, el.row));
     openAt([
       { heading: st.pages[id].title },
@@ -684,16 +694,9 @@ export function PagesPanel() {
       { label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: () => setRenaming(id) },
       // Home is the top level itself, and an address four levels down has no room for another.
       ...(isHome || levels(st.pages[id].route) >= MAX_DEPTH ? [] : [{ label: 'Add page inside', icon: <FilePlus />, onSelect: () => ((addFrom.current = id), setQuery(''), openForm(id)) }]),
-      { label: 'Duplicate', icon: <Copy />, onSelect: async () => {
-        const r = await applyOps([{ type: 'page.duplicate', pageId: id }], `Duplicate page ${st.pages[id].title}`);
-        const copy = r?.[0]?.pageId as string | undefined;
-        if (!copy) return;
-        // The copy is the page now open, shown in its place, with focus on it so F2 renames the copy.
-        setQuery('');
-        selectPage(copy);
-        setJustAdded(copy);
-        requestAnimationFrame(() => (rowEl(copy)?.scrollIntoView({ block: 'nearest' }), rowEl(copy)?.focus({ preventScroll: true })));
-      } },
+      { label: 'Duplicate', icon: <Copy />, onSelect: () => void duplicate(false) },
+      // A working copy of a published page stays out of the website until it is published.
+      ...(draft ? [] : [{ label: 'Duplicate as draft', icon: <FilePen />, hint: 'Leave out of website', onSelect: () => void duplicate(true) }]),
       // The Home page is always published, so a draft is published before it can be Home.
       ...(isHome
         ? []

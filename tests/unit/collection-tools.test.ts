@@ -680,7 +680,8 @@ describe('posts in an AI turn', () => {
     const before = structuredClone(env.session.state);
     await env.send('Proofread this post and file it under Events too.', { post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio' } }, ['No, only change the post “Spring open studio”']);
     const first = env.adapter.requests[0];
-    expect(first.tools.map((t) => t.name)).toEqual(['read_collection_entry', 'upsert_collection_entry', 'request_clarification']);
+    // History is the author's whole project's, so its Undo and Redo are offered beside the post's own tools (#1405).
+    expect(first.tools.map((t) => t.name)).toEqual(['read_collection_entry', 'upsert_collection_entry', 'request_clarification', 'step_history']);
     expect(first.system).toMatch(/one post/);
     const context = JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((first.items.at(-1) as { text: string }).text)![1]);
     expect(context.currentPost).toEqual({ collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio' });
