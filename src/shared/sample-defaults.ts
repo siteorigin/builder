@@ -19,17 +19,26 @@ export const SAMPLE_DEFAULT_TYPES: readonly string[] = ['string', 'richtext', 'l
 /** Field types (of a list or an object) whose default can be sample content. */
 export const SAMPLE_DEFAULT_FIELD_TYPES: readonly string[] = ['string', 'richtext'];
 
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
 /**
  * Why a property's (or, with `field`, a list's or object's field's) `sampleDefault` cannot stand, or null when it can
- * or there is none. Only `true` is a mark: leaving it out is how a default says it is ready to publish.
+ * or there is none. Only `true` is a mark: leaving it out is how a default says it is ready to publish. A computed
+ * list's items and fields come from the site's pages, so neither it nor any of its fields can be marked.
  */
-export function sampleDefaultProblem(schema: { type?: unknown; sampleDefault?: unknown; feed?: unknown }, field = false): string | null {
-  if (schema.sampleDefault === undefined) return null;
-  if (schema.sampleDefault !== true) return 'sampleDefault must be true, or left out';
+export function sampleDefaultProblem(schema: { type?: unknown; sampleDefault?: unknown; feed?: unknown; fields?: unknown }, field = false): string | null {
   const type = String(schema.type);
-  if (field && !SAMPLE_DEFAULT_FIELD_TYPES.includes(type)) return 'only a text or rich text field can have a sample default';
-  if (!field && !SAMPLE_DEFAULT_TYPES.includes(type))
-    return type === 'object' ? 'an object cannot have a sample default; mark its text fields instead' : 'only a text, rich text, list or table property can have a sample default';
-  if (schema.feed !== undefined) return "a computed list has no items of its own, so they cannot be sample content";
+  const computed = !field && type === 'list' && schema.feed !== undefined;
+  if (schema.sampleDefault !== undefined) {
+    if (schema.sampleDefault !== true) return 'sampleDefault must be true, or left out';
+    if (field && !SAMPLE_DEFAULT_FIELD_TYPES.includes(type)) return 'only a text or rich text field can have a sample default';
+    if (!field && !SAMPLE_DEFAULT_TYPES.includes(type))
+      return type === 'object' ? 'an object cannot have a sample default; mark its text fields instead' : 'only a text, rich text, list or table property can have a sample default';
+    if (computed) return 'a computed list has no items of its own, so they cannot be sample content';
+  }
+  if (computed && isRecord(schema.fields)) {
+    const marked = Object.entries(schema.fields).find(([, f]) => isRecord(f) && f.sampleDefault !== undefined)?.[0];
+    if (marked) return `the field "${marked}" of a computed list is filled from the site's pages, so it cannot have a sample default`;
+  }
   return null;
 }

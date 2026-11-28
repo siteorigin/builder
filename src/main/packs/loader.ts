@@ -287,8 +287,8 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       // A mark of sample content (shared/sample-defaults.ts) is kept as written, so it must be one the app reads.
       const sample = sampleDefaultProblem(prop);
       if (sample) refuse(`${where}: the property "${name}" is marked wrongly: ${sample}.`);
-      if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
       const isRecord = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
+      if (prop.type === 'list' && (!isRecord(prop.fields) || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
       // A token names its group and starts on a token; every field of a list or object is a typed value with a default.
       const tokenOk = (t: { tokenGroup?: unknown; default?: unknown }) => typeof t.tokenGroup === 'string' && isRecord(t.default) && typeof (t.default as { token?: unknown }).token === 'string';
       if (prop.type === 'object' && (!isRecord(prop.fields) || !Object.keys(prop.fields as object).length || !isRecord(prop.default))) refuse(`${where}: the object property "${name}" has no fields or no default.`);

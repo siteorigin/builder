@@ -240,6 +240,8 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       if (r.pageTeaser !== undefined) out.pageTeaser = pageTeaserSchema(r.pageTeaser, fields, min, label, !!out.required);
       if (r.feed !== undefined) {
         out.feed = feedSchema(r.feed, fields, min, label, !!out.required);
+        const sample = sampleDefaultProblem({ type, feed: out.feed, fields });
+        if (sample) fail(`${label}: ${sample}.`);
         if (out.pageTeaser) fail(`${label}: a list is either computed from the site's pages (feed) or a page list (pageTeaser), not both.`);
         // A computed list stores nothing: whatever default was sent would never show.
         out.default = [];
