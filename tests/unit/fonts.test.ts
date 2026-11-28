@@ -392,6 +392,11 @@ describe("an imported font's fallback follows its kind (#1490)", () => {
     const st = createStarterState('business', 'Fonts', false);
     const r = applyOperations(st, [add(kind(face('f1', '400', 'normal', 'Acme'), 'serif')), { type: 'asset.update', assetId: 'f1', font: { family: 'Acme Serif', weight: '700', style: 'normal' } }]);
     expect(r.state.assets.assets.f1.font).toEqual({ family: 'Acme Serif', weight: '700', style: 'normal', category: 'serif' });
+    // Saying no kind at all keeps it too, and a kind that is said replaces it.
+    const blank = applyOperations(r.state, [{ type: 'asset.update', assetId: 'f1', font: { family: 'Acme Serif', weight: '700', style: 'normal', category: undefined } }]);
+    expect(blank.state.assets.assets.f1.font?.category).toBe('serif');
+    const mono = applyOperations(r.state, [{ type: 'asset.update', assetId: 'f1', font: { family: 'Acme Serif', weight: '700', style: 'normal', category: 'monospace' } }]);
+    expect(mono.state.assets.assets.f1.font?.category).toBe('monospace');
   });
 
   it('ends a stack in a fallback of its kind, and in sans-serif when the kind is unknown', () => {

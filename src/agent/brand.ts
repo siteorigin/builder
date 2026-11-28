@@ -10,7 +10,7 @@ import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance }
 import { hasDarkPalette } from '@shared/color-scheme';
 import { parseColor } from '@shared/color';
 import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
-import { fontFamilies, installedFonts, resolveFontStack } from '@catalogue/fonts';
+import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
@@ -252,10 +252,11 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     const name = args[field];
     if (name === undefined) continue;
     const font = fontStackFor(state, name);
-    const current = tokens.get(tokenId)?.value;
+    const current = state.tokens.overrides[tokenId];
+    const unknownKind = projectFontFamilies(state).find((f) => !f.category && f.family.toLowerCase() === name.trim().replace(/^['"]|['"]$/g, '').toLowerCase());
     if ('error' in font) issues.push({ field, message: font.error });
-    // The font it already uses keeps its stack, and so the fallback the author chose for it (#1490).
-    else if (!(typeof current === 'string' && stackLeadsWith(current, fontFamilies(font.stack)[0] ?? ''))) setToken(tokenId, font.stack);
+    // An imported font of no known kind that the style already uses keeps the fallback the author chose for it (#1490).
+    else if (!(unknownKind && typeof current === 'string' && stackLeadsWith(current, unknownKind.family))) setToken(tokenId, font.stack);
   }
   if (args.typeScale !== undefined) {
     const themeTokens = getTheme(state.site.themeId).tokens;

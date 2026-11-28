@@ -844,6 +844,15 @@ describe('update_site_brand', () => {
     expect(session.state.tokens.overrides['font.body']).toBe("'Lora', Georgia, 'Times New Roman', serif");
   });
 
+  it("still gives a built-in font named again its own stack, whatever the style's fallback was", async () => {
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { bodyFont: 'Lora' })], () => finish()], {}, 'business', (s) => {
+      s.tokens.overrides['font.body'] = "'Lora Variable', sans-serif";
+    });
+    await run('Use Lora for body text');
+    expect(session.state.tokens.overrides['font.body']).not.toBe("'Lora Variable', sans-serif");
+    expect(String(session.state.tokens.overrides['font.body'])).toMatch(/^'Lora Variable', .*serif$/);
+  });
+
   it('refuses a type scale it does not have, naming the field, and changes nothing', async () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'huge' })], () => finish()]);
     await run('Make the type huge');
