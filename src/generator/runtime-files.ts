@@ -1168,6 +1168,66 @@ export function keepDrafts(text) {
 `;
 
 /**
+ * Brings each Site search back on Back and Forward as the visitor left it in that history entry (#1436). The root
+ * layout hands keptSearches to SvelteKit's snapshot() once; each search on the page hands rememberSearch its box when
+ * it mounts.
+ */
+export const SEARCH_HISTORY_JS = `/**
+ * Back and Forward bring every search on the page back as the visitor left it there: the words in its box and the
+ * results of its last search, ready to open another one. SvelteKit's snapshot() holds them for each history entry,
+ * in memory and in the tab's session storage, never in the address: the root layout hands it keptSearches.
+ *
+ * One snapshot serves the whole site. Each search is known by where it is (the header, the footer, the page) and by
+ * its name, and among searches alike by their order on the page, so a search in the header and one in the page each
+ * get their own back, and one that is not showing when the entry comes back never hands its words to another: it
+ * starts afresh when it shows. The layout mounts after the searches inside it, so on a fresh load every one showing
+ * is here to restore. Nothing here imports SvelteKit, so a search shows wherever its component does.
+ */
+
+// The searches on screen, by the box each one searches from.
+const searches = new Map();
+
+/** Which search a box is, the same each time its entry is shown: where it is on the page, and its name. */
+function keyOf(box) {
+	const form = box.form;
+	const named = form?.getAttribute('aria-labelledby');
+	const name = (named && box.ownerDocument.getElementById(named)?.textContent) || form?.getAttribute('aria-label') || '';
+	const where = box.closest('header, footer, nav, aside, main')?.localName ?? '';
+	return [where, name.trim(), box.labels?.[0]?.textContent.trim() ?? ''].join('\\n');
+}
+
+/** The searches on screen, in their order on the page, each with its key. */
+function inOrder() {
+	return [...searches]
+		.filter(([box]) => box.isConnected)
+		.sort(([a], [b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+		.map(([box, search]) => ({ key: keyOf(box), search }));
+}
+
+/** The snapshot the root layout keeps for every search on the page. */
+export const keptSearches = {
+	id: 'siteorigin-searches',
+	capture: () => inOrder().map(({ key, search }) => ({ key, state: search.capture() })),
+	// Each search showing takes what was kept for the first search alike in the entry not yet given back.
+	restore: (kept) => {
+		const left = Array.isArray(kept) ? kept.filter((one) => one && typeof one.key === 'string' && one.state) : [];
+		for (const { key, search } of inOrder()) {
+			const at = left.findIndex((one) => one.key === key);
+			if (at >= 0) search.restore(left.splice(at, 1)[0].state);
+		}
+	}
+};
+
+/** A search on screen, from its box: what it keeps for the entry, and how it takes that back. Returns its removal. */
+export function rememberSearch(box, search) {
+	searches.set(box, search);
+	return () => {
+		if (searches.get(box) === search) searches.delete(box);
+	};
+}
+`;
+
+/**
  * Puts the page back where the visitor left it at once on Back and Forward (#1542). The root layout calls it once.
  */
 export const HISTORY_SCROLL_JS = `/**

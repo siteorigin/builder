@@ -10,7 +10,7 @@ import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, g
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { externalLink } from '@shared/links';
 import { GenerationCache } from '@generator/cache';
-import { DRAFT_NOTE_CSS, DRAFTS_JS, usedIcons } from '@generator/runtime-files';
+import { DRAFT_NOTE_CSS, DRAFTS_JS, SEARCH_HISTORY_JS, usedIcons } from '@generator/runtime-files';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 import { withPublished } from '@shared/published';
@@ -232,6 +232,25 @@ describe('unsent form drafts (issue #274)', () => {
     // Plain SvelteKit: no editor instrumentation, and nothing imported but Svelte and SvelteKit.
     expect(DRAFTS_JS).not.toMatch(/data-so-|__so|siteorigin-bridge/);
     expect([...DRAFTS_JS.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['svelte', '$app/navigation', '$app/state']);
+  });
+
+  it('ships the search keeper with every site and hands it to SvelteKit snapshot() once from the root layout (#1436)', () => {
+    for (const files of [generateProject(fresh()), generateProject(fresh(), { instrument: true }), generateProject(createStarterState('blank', 'Blank', false))]) {
+      expect(files.get(`${RUNTIME_DIR}/search-history.js`)).toBe(SEARCH_HISTORY_JS);
+      const body = (parse(files.get('src/routes/+layout.svelte')!, { modern: true }).instance?.content.body ?? []) as unknown as Array<{
+        type: string;
+        source?: { value: string };
+        specifiers?: Array<{ imported?: { name: string }; local: { name: string } }>;
+        expression?: { type: string; callee?: { type: string; name?: string }; arguments?: Array<{ type: string; name?: string }> };
+      }>;
+      const imported = (from: string) => body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === from).flatMap((n) => n.specifiers?.map((sp) => sp.imported?.name) ?? []);
+      expect(imported('../lib/siteorigin/runtime/search-history.js')).toEqual(['keptSearches']);
+      expect(imported('$app/navigation')).toContain('snapshot');
+      const calls = body.filter((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression' && n.expression.callee?.name === 'snapshot');
+      expect(calls.map((n) => n.expression?.arguments?.map((a) => a.name))).toEqual([['keptSearches']]);
+    }
+    // Plain JavaScript with no imports, so a search shows wherever its component does, SvelteKit or not.
+    expect(SEARCH_HISTORY_JS).not.toMatch(/data-so-|__so|siteorigin-bridge|^import /m);
   });
 
   it('marks the theme contact form and each answer for it, and keeps the form a component a customised copy can save', async () => {

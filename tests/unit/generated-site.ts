@@ -47,8 +47,8 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
   return styles ? out.head + out.body : out.body;
 }
 
-/** SvelteKit's navigation hooks in a page that never navigates: they are never called. */
-const NO_NAVIGATION = 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {};';
+/** SvelteKit's navigation hooks and snapshots in a page that never navigates: they are never called. */
+const NO_NAVIGATION = 'export const beforeNavigate = () => {}; export const afterNavigate = () => {}; export const onNavigate = () => {}; export const snapshot = () => {};';
 
 /**
  * The site's page and the editor's variant of it, compiled for the browser into one script. `navigation` is the
