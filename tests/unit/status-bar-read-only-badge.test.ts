@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const css = readFileSync('src/renderer/src/panels/StatusBar.css', 'utf8');
-const rules = [...css.matchAll(/^\s*([^{}\/\n][^{}]*)\{([^}]*)\}/gm)].map((m) => ({ selector: m[1].trim(), body: m[2] }));
+const css = readFileSync('src/renderer/src/panels/StatusBar.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1].trim(), body: m[2] }));
 const rule = (selector: string) => rules.find((r) => r.selector === selector)?.body ?? '';
 
 describe('read-only badge in a live session (#1345)', () => {
