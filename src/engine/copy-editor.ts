@@ -1,8 +1,9 @@
 /**
  * What a live session's Copy Editor may change, checked against the project (#1148): the words of a page's own text
- * elements, and the copy and pictures a design marks `copyEditable` (or Foundation's sections show: #1344) on the
- * components placed on a page, with pictures only from the asset library. Nothing structural (what is on a page and how it is arranged, styles, options, links),
- * nothing in the shared header and footer or in a design, and never where a contact form sends its messages.
+ * elements, and the copy and pictures of the components placed on a page that a design marks `copyEditable`, or that a
+ * section Foundation ships shows (#1344), with pictures only from the asset library. Nothing structural (what is on a
+ * page and how it is arranged, styles, options, links), nothing in the shared header and footer or in a design, and
+ * never where a contact form sends its messages.
  *
  * It is checked twice over, so neither half has to be right alone. Every operation is held to the project as it was
  * (copyEditorOperationProblem first, which reads the operation alone), naming the first refused, and then the project
