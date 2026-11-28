@@ -12,7 +12,7 @@ import { XmlError, childElement, childElements, childText, parseXml, textOf, typ
 import { emptyReport, htmlToPlain, htmlToRichText, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
@@ -126,7 +126,8 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
       const altMeta = metaValue(item, '_wp_attachment_image_alt');
       attachments.set(id, { src: childText(item, 'wp:attachment_url').trim(), alt: altMeta ? childText(altMeta, 'wp:meta_value').trim().slice(0, FIELD_CHARS) : '' });
       const parent = childText(item, 'wp:post_parent').trim();
-      if (parent && parent !== '0') {
+      // A gallery that names no pictures shows the post's attached images, never its documents or sound.
+      if (parent && parent !== '0' && isImageAttachment(item)) {
         const list = attachedTo.get(parent) ?? [];
         list.push({ id, order: Number(childText(item, 'wp:menu_order').trim()) || 0 });
         attachedTo.set(parent, list);
@@ -142,7 +143,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   }
 
   // WordPress shows a post's attached pictures by menu order, then by ID.
-  for (const list of attachedTo.values()) list.sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id));
+  const attachedIds = new Map([...attachedTo].map(([parent, list]) => [parent, list.sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)).map((a) => a.id)]));
 
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
@@ -229,7 +230,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     let body;
     try {
       const postId = childText(item, 'wp:post_id').trim();
-      const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => (attachedTo.get(post ?? postId) ?? []).map((a) => a.id) };
+      const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
       body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery }, report);
     } catch (e) {
       add(failedPost(item, key, (e as Error).message));
@@ -285,6 +286,14 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
   if (unpublished.length) out.push(`${unpublished.length} ${unpublished.length === 1 ? 'post' : 'posts'}${namesOf(unpublished)} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
   return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
+}
+
+/** An attachment WordPress counts as an image: by its type when the export says, else by its file's extension. */
+function isImageAttachment(item: XmlElement): boolean {
+  const mime = childText(item, 'wp:post_mime_type').trim().toLowerCase();
+  if (mime) return mime.startsWith('image/');
+  const ext = /\.([a-z0-9]{1,5})(?:[?#]|$)/i.exec(childText(item, 'wp:attachment_url').trim())?.[1].toLowerCase();
+  return !ext || [...PICTURE_EXTENSIONS, 'svg', 'bmp', 'tif', 'tiff', 'heic', 'ico'].includes(ext);
 }
 
 /** A post whose text could not be read: imported with its details and no text, the reason in its notes. */

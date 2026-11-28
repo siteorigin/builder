@@ -60,7 +60,7 @@ export interface GalleryPictures {
   /** The picture an attachment ID names, or null when the export does not list it. */
   picture: (id: string) => HtmlImage | null;
   /** The IDs of the pictures attached to a post, in WordPress's order: `post` null for the post being read. */
-  attached: (post: string | null) => string[];
+  attached: (post: string | null) => readonly string[];
 }
 
 /** The most elements and runs of text one post may hold. */
@@ -200,7 +200,7 @@ export function readShortcodes(html: string, report: HtmlReport, gallery?: Galle
   // Attributes never hold a bracket, and each part is either quoted or not, so a shortcode left open is given up on at
   // the next bracket: one pass, whatever the post holds. A gallery's pictures are written in that same pass, so nothing
   // they say (a description with "[audio]" in it) is read as a shortcode.
-  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,2000}"|'[^'\][]{0,2000}'){0,2000})\]/gi, (whole, slash: string, name: string, attrs: string) => {
+  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,12000}"|'[^'\][]{0,12000}'){0,12000})\]/gi, (whole, slash: string, name: string, attrs: string) => {
     const n = name.toLowerCase();
     if (n === 'gallery' && gallery && !slash) return galleryFigures(attrs, gallery, report, budget);
     if (!isShortcode(n)) return whole;
@@ -212,10 +212,18 @@ export function readShortcodes(html: string, report: HtmlReport, gallery?: Galle
 /** The most pictures one post's galleries bring, together. */
 export const MAX_POST_GALLERY_PICTURES = 500;
 
-/** A shortcode attribute's value, quoted or not, or null when it is not given. */
-function shortcodeAttr(attrs: string, name: string): string | null {
-  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"']*))`, 'i').exec(attrs);
-  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
+/**
+ * A shortcode's attributes by name, read as WordPress reads them: `name="value"`, `name='value'` or `name=value`, a
+ * later one replacing an earlier one, and a self-closing slash not part of the last value. Quoted words without a name
+ * are not attributes, so `title="ids=9"` names no pictures.
+ */
+function shortcodeAttrs(attrs: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const text = attrs.replace(/\s*\/\s*$/, '');
+  for (const m of text.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))|"[^"]*"|'[^']*'|\S+/g)) {
+    if (m[1]) out.set(m[1].toLowerCase(), decodeEntities(m[2] ?? m[3] ?? m[4] ?? ''));
+  }
+  return out;
 }
 
 const attachmentIds = (list: string | null) => (list ?? '').split(',').map((id) => id.trim()).filter((id) => /^\d{1,20}$/.test(id));
@@ -228,12 +236,20 @@ const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;
  * the export does not list is counted in the report, as is one past what the post's galleries may bring.
  */
 function galleryFigures(attrs: string, gallery: GalleryPictures, report: HtmlReport, budget: { left: number }): string {
-  const named = attachmentIds(shortcodeAttr(attrs, 'ids') ?? shortcodeAttr(attrs, 'include'));
-  let ids: string[];
+  const a = shortcodeAttrs(attrs);
+  // An empty `ids` leaves `include` to say, as in WordPress.
+  const named = attachmentIds(a.get('ids') || a.get('include') || null);
+  const attached = named.length ? [] : gallery.attached(attachmentIds(a.get('id') ?? null)[0] ?? null);
+  // Past what a post may bring, the gallery is only counted: no picture of it is looked at.
+  if (budget.left <= 0) {
+    report.galleryOverflow += named.length ? new Set(named).size : attached.length;
+    return '';
+  }
+  let ids: readonly string[];
   if (named.length) ids = [...new Set(named)];
   else {
-    const exclude = new Set(attachmentIds(shortcodeAttr(attrs, 'exclude')));
-    ids = gallery.attached(attachmentIds(shortcodeAttr(attrs, 'id'))[0] ?? null).filter((id) => !exclude.has(id));
+    const exclude = new Set(attachmentIds(a.get('exclude') ?? null));
+    ids = exclude.size ? attached.filter((id) => !exclude.has(id)) : attached;
   }
   let missing = 0;
   let out = '';

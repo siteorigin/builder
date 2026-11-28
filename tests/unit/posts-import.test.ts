@@ -650,16 +650,20 @@ describe('reading a WordPress export: galleries (#1513)', () => {
       wxr([
         attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('First "pic" <b>')),
         attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
-        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5000,5001" columns="3"]\n\nAfter.')
+        attachment(5002, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg'),
+        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5002,5000,5001" columns="3"]\n\nAfter.')
       ]),
-      ['g1-100.jpg', 'g2-100.jpg']
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
     );
     const source = await readWordPress(path, {});
     const [post] = source.posts;
-    expect(text(post.body)).toEqual(['Before.', '[m1]', '[m2]', '[m1]', 'After.']);
-    expect(post.body[2]).toEqual({ type: 'image', assetId: 'm2', alt: 'First "pic" <b>' });
-    expect(post.body[3]).toEqual({ type: 'image', assetId: 'm1', alt: '' });
-    expect(source.media.map((m) => m.path)).toEqual([join(path, '..', 'wp-content/uploads/2018/01/g2-100.jpg'), join(path, '..', 'wp-content/uploads/2018/01/g1-100.jpg')]);
+    // In the order the gallery names them, not by ID.
+    expect(text(post.body)).toEqual(['Before.', '[m1]', '[m2]', '[m3]', '[m1]', 'After.']);
+    expect(post.body[1]).toEqual({ type: 'image', assetId: 'm1', alt: 'Solo', caption: 'Solo' });
+    expect(post.body[3]).toEqual({ type: 'image', assetId: 'm3', alt: 'First "pic" <b>' });
+    expect(post.body[4]).toEqual({ type: 'image', assetId: 'm1', alt: '' });
+    const uploaded = (f: string) => join(path, '..', 'wp-content/uploads/2018/01', f);
+    expect(source.media.map((m) => m.path)).toEqual([uploaded('g2-100.jpg'), uploaded('g3-100.jpg'), uploaded('g1-100.jpg')]);
     expect(post.notes).toEqual([]);
   });
 
@@ -679,18 +683,23 @@ describe('reading a WordPress export: galleries (#1513)', () => {
   it('shows a gallery that names no pictures with the pictures attached to its post, in their order', async () => {
     const path = withUploads(
       wxr([
-        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
-        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>1</wp:menu_order>'),
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>1</wp:menu_order>'),
+        attachment(5005, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5004, 'https://site.example/wp-content/uploads/2018/01/menu.pdf', '<wp:post_parent>1</wp:post_parent><wp:post_mime_type>application/pdf</wp:post_mime_type>'),
+        attachment(5006, 'https://site.example/wp-content/uploads/2018/01/song.mp3', '<wp:post_parent>1</wp:post_parent>'),
         attachment(5003, 'https://site.example/wp-content/uploads/2018/01/other.jpg', '<wp:post_parent>2</wp:post_parent>'),
         item(1, published, '[gallery]'),
         item(2, { ...published, title: 'Empty' }, 'Text\n\n[gallery exclude="5003"]')
       ]),
-      ['g1-100.jpg', 'g2-100.jpg']
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
     );
     const source = await readWordPress(path, {});
     const [one, two] = source.posts;
-    expect(text(one.body)).toEqual(['[m1]', '[m2]']);
-    expect(source.media.map((m) => m.ref)).toEqual(['https://site.example/wp-content/uploads/2018/01/g1-100.jpg', 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg']);
+    // By menu order, then by ID; the document and the sound are no pictures of the gallery.
+    expect(text(one.body)).toEqual(['[m1]', '[m2]', '[m3]']);
+    expect(source.media.map((m) => m.ref.split('/').pop())).toEqual(['g2-100.jpg', 'g1-100.jpg', 'g3-100.jpg']);
+    expect(one.notes).toEqual([]);
     expect(text(two.body)).toEqual(['Text']);
     expect(two.notes).toEqual(['Left out a gallery: the export lists no pictures for it.']);
   });
@@ -709,6 +718,35 @@ describe('reading a WordPress export: galleries (#1513)', () => {
     expect(post.body[0]).toEqual({ type: 'image', assetId: 'm1', alt: 'Band [audio] live' });
     expect(post.body).toHaveLength(500);
     expect(post.notes).toEqual(['Left out 101 gallery pictures past the first 500: a post brings at most 500 from its galleries.']);
+  });
+
+  it('reads a gallery’s attributes as WordPress does', async () => {
+    const ids = Array.from({ length: 400 }, (_, i) => 10000 + i).join(',');
+    const path = withUploads(
+      wxr([
+        attachment(7, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg'),
+        attachment(8, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
+        attachment(9, 'https://site.example/wp-content/uploads/2018/01/g3-100.jpg'),
+        ...Array.from({ length: 400 }, (_, i) => attachment(10000 + i, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg')),
+        item(1, published, '[gallery title="examples ids=9" ids=\'7\']'),
+        item(2, published, '[gallery ids=7,8/]'),
+        item(3, published, '[gallery ids="" include=8]'),
+        item(4, published, `[gallery ids="${ids}"]`),
+        item(5, published, '[gallery ids="9,404"]'),
+        item(6, published, '[gallery ids="404"]')
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg', 'g3-100.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const refs = (p: SourcePost) => p.body.map((b) => source.media.find((m) => 'assetId' in b && m.key === b.assetId)?.ref.split('/').pop());
+    const [named, closed, included, long, half, gone] = source.posts;
+    expect(refs(named)).toEqual(['g1-100.jpg']);
+    expect(refs(closed)).toEqual(['g1-100.jpg', 'g2-100.jpg']);
+    expect(refs(included)).toEqual(['g2-100.jpg']);
+    // A gallery naming hundreds of pictures is still one gallery.
+    expect([long.body.length, long.notes]).toEqual([400, []]);
+    expect(half.notes).toEqual(['Left out 1 of a gallery’s 2 pictures: the export does not include it. Export All content to bring pictures’ details along.']);
+    expect(gone.notes).toEqual(['Left out a gallery’s picture: the export does not include it. Export All content to bring pictures’ details along.']);
   });
 });
 
