@@ -12,7 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -562,5 +562,24 @@ describe('image files dropped on the composer (#679)', () => {
     expect(isFileDrag(['Files'])).toBe(true);
     expect(isFileDrag(['text/plain', 'Files'])).toBe(true);
     expect(isFileDrag(['text/plain', 'text/uri-list'])).toBe(false);
+  });
+});
+
+describe('ArrowUp in an empty composer (#1410)', () => {
+  const time = '2026-11-28T00:00:00.000Z';
+  it('brings back the last message the author sent, never a reply', () => {
+    const messages = [
+      { id: 'm1', role: 'user' as const, text: 'Make the hero blue', time },
+      { id: 'm2', role: 'assistant' as const, text: 'Done.', time },
+      { id: 'm3', role: 'user' as const, text: 'Now add a button', time },
+      { id: 'm4', role: 'assistant' as const, text: 'Added a button.', time }
+    ];
+    expect(lastSentText(messages)).toBe('Now add a button');
+  });
+
+  it('has nothing to bring back before anything is sent', () => {
+    expect(lastSentText([])).toBeNull();
+    expect(lastSentText(undefined)).toBeNull();
+    expect(lastSentText([{ role: 'assistant', text: 'Hello' }])).toBeNull();
   });
 });

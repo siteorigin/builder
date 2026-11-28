@@ -433,17 +433,18 @@ export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MAC
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
 
-export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask' | 'entry' | 'layout';
+export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'source' | 'general' | 'ask' | 'entry' | 'layout';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. layout: one collection layout, open on the canvas. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. source: a code component's own source, on any model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. layout: one collection layout, open on the canvas. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
   /** The run builds a new component, asked for from the Create component dialog. */
   task?: 'component';
-  /** A page run only: Developer mode is on, so a new component it asks to widen for may be written in code. */
+  /** A page run: Developer mode is on, so a new component it asks to widen for may be written in code. A source run:
+   *  Developer mode is on, so the code component's source may change. */
   code?: boolean;
 }
 
@@ -623,6 +624,10 @@ function runTools(opts: {
     // The whole component in one call comes first: the operations stay for finer changes to what it built.
     return { tools: [managedComponentTool(), ...tools], mode: 'general', focused, task: 'component' };
   }
+  // A code component's design is its source (#1410): every model reads and patches that one component, and asks the
+  // author before anything else. Without Developer mode its source cannot change, so the run only asks.
+  const designed = opts.definitionTarget && !opts.definitionTarget.nodeId && Object.hasOwn(state.components, opts.definitionTarget.definitionId) ? state.components[opts.definitionTarget.definitionId] : undefined;
+  if (designed?.kind === 'code') return { tools: codeEnabled ? [...sourceTools(designed.id), plainTool('search_assets'), plainTool('request_clarification')] : [plainTool('request_clarification')], mode: 'source', focused, code: codeEnabled };
   // A component's own design on a small model: tools built from that design as it is now, beside its contract and
   // design to read and the author to ask, so the general operations never crowd out the request (#360).
   // A design or selected node that is gone (removed by the run itself, say) keeps the small set's reads and question: the
@@ -768,6 +773,15 @@ function definitionRead(definitionId: string): ToolDefinition {
     ...describe('read_component'),
     parameters: { type: 'object', properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] } }, required: ['definitionId'], additionalProperties: false }
   };
+}
+
+/** read_source and apply_source_patch for the one code component a run edits: no other definition can be named. */
+function sourceTools(definitionId: string): ToolDefinition[] {
+  return (['read_source', 'apply_source_patch'] as const).map((name) => {
+    const t = plainTool(name);
+    const schema = t.parameters as { properties: Record<string, unknown> };
+    return { ...t, parameters: { ...schema, properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] } } } };
+  });
 }
 
 /** An image in the project's library, or null for an unknown ID or a font. */

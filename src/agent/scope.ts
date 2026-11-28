@@ -560,8 +560,12 @@ const CONTRACT_EDITS = new Set<OperationType>([
 /** Returns null when every operation stays within one component's own design, otherwise a reason. */
 function checkComponentAuthority(state: ProjectState, ops: EditOperation[], authority: Extract<Authority, { kind: 'component' }>): string | null {
   const def = state.components[authority.definitionId];
-  // A code component's design is its source: a patch to it is a change to that component alone.
-  if (def?.kind === 'code' && ops.every((op) => op.type === 'component.updateSource' && op.definitionId === def.id)) return null;
+  // A code component's design is its source: a patch to it is a change to that component alone, and nothing else is
+  // (#1410: Chat edits one open in Component Studio).
+  if (def?.kind === 'code') {
+    const other = ops.find((op) => !(op.type === 'component.updateSource' && op.definitionId === def.id));
+    return other ? `${other.type} changes something outside ${authority.label}: only its source can change.` : null;
+  }
   if (!def?.tree) return `${authority.label} is no longer in the site.`;
   const nodes = def.tree.nodes;
   // The first top-level node is the component's own root: placements' classes and variants style it, so it stays

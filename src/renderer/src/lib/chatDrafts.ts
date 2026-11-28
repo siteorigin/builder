@@ -155,6 +155,19 @@ export function attachImages(images: ChatImages, conversationId: string, assetId
   return { images: next, added, already, full };
 }
 
+/**
+ * What ArrowUp in an empty composer brings back (#1410): the text of the last message the author sent in this
+ * conversation, to edit and send again. A live-session guest's request is theirs, never brought back as the author's.
+ * Null when nothing has been sent in it yet.
+ */
+export function lastSentText(messages: readonly { role: string; text: string; guest?: unknown }[] | undefined): string | null {
+  for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+    const m = messages![i];
+    if (m.role === 'user' && !m.guest && typeof m.text === 'string' && m.text.trim()) return m.text;
+  }
+  return null;
+}
+
 /** Whether a drag carries files from the desktop (not text, or an image dragged out of Assets). */
 export const isFileDrag = (types: readonly string[]): boolean => types.includes('Files');
 
