@@ -51,7 +51,7 @@ import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
-import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE, yieldsToOwnFile } from '@generator/host-redirects';
 import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
@@ -3120,8 +3120,10 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       if (!initial && diskHash !== null && !known(path)) {
-        // A file we never wrote already lives here: never overwrite someone's own work.
+        // A file we never wrote already lives here: never overwrite someone's own work. One that only tunes caching
+        // (the host's _headers, a vercel.json with no redirect) gives way to it unnamed.
         delete nextFiles[path];
+        if (yieldsToOwnFile(path, content)) continue;
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }

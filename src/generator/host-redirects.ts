@@ -90,6 +90,21 @@ export function generateHostHeaders(state: ProjectState): string {
 }
 
 /**
+ * Whether a generated file only tunes caching (#1487), so that a file of the author's own at its path takes its place
+ * without a word: `_headers`, and a `vercel.json` with no redirect in it. Redirect rules are not given up that way,
+ * since an old address would then answer as a page that is there.
+ */
+export function yieldsToOwnFile(path: string, content: string | Buffer): boolean {
+  if (path === HOST_HEADERS_FILE) return true;
+  if (path !== VERCEL_CONFIG_FILE || typeof content !== 'string') return false;
+  try {
+    return !Object.hasOwn(JSON.parse(content) as object, 'redirects');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The site's `vercel.json` while its host is Vercel, null otherwise: the caching rule of `_headers` (see
  * generateHostHeaders), and the HTTP 301 rules while the site keeps an old address.
  */

@@ -633,7 +633,6 @@ function packFontFaceCss(state: ProjectState): string {
   return `/* Fonts from the ${inComment(getTheme(state.site.themeId).name)} theme. Licences: ../fonts/NOTICE.txt */\n${rules.join('\n')}\n\n`;
 }
 
-/** The text styles whose fonts a page shows first, in the order their faces are preloaded: body text, the main heading. */
 /** The range of a face that covers basic Latin, the space among it: a page showing the family loads that file whatever its language. */
 const BASIC_LATIN_RANGE = /(^|,)\s*U\+0000-00FF\s*(,|$)/i;
 /** The heading styles whose fonts a page's first view shows: the hero's display heading, and the main heading. */

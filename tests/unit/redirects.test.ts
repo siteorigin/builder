@@ -667,4 +667,49 @@ describe('vercel.json in an exported website', () => {
     expect(await deliverVercelConfig(project, out, live)).toBe('static/vercel.json takes the place of the redirect and caching rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.');
     expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"own":true}');
   });
+
+  it('gives way to the author’s own static/vercel.json while it only tunes caching (#1487)', async () => {
+    const project = temp();
+    const live = run(site(), { type: 'site.update', redirectHost: 'vercel' });
+    mkdirSync(join(project, 'siteorigin'));
+    writeFileSync(join(project, 'siteorigin/generated-manifest.json'), JSON.stringify({ files: { [VERCEL_CONFIG_FILE]: 'hash' } }));
+    writeFileSync(join(project, VERCEL_CONFIG_FILE), generateVercelConfig(live)!);
+    const out = temp();
+    writeFileSync(join(out, VERCEL_CONFIG_FILE), '{"own":true}');
+    expect(await deliverVercelConfig(project, out, live)).toBeNull();
+    expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"own":true}');
+  });
+});
+
+describe('the author’s own host files (#1487)', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  it('keep their place without a conflict where the generated one only tunes caching, and redirects still name theirs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-host-files-'));
+    dirs.push(dir);
+    await (await ProjectSession.create(dir, createStarterState('business', 'Persist', false))).close();
+    // Files of the author's own, at the paths the generator writes to, which it has never claimed.
+    const headers = join(dir, HOST_HEADERS_FILE);
+    const vercel = join(dir, VERCEL_CONFIG_FILE);
+    const manifestPath = join(dir, 'siteorigin/generated-manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    delete manifest.files[HOST_HEADERS_FILE];
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    writeFileSync(headers, '/*\n  X-Frame-Options: DENY\n');
+    writeFileSync(vercel, '{"cleanUrls":true}\n');
+    const s = await ProjectSession.open(dir, 'test');
+    s.settleMs = 0;
+    const ok = async (operations: EditOperation[]) => expect((await s.apply({ operations }, { label: 'Host' })).ok).toBe(true);
+    await ok([{ type: 'site.update', redirectHost: 'vercel' }]);
+    expect(readFileSync(headers, 'utf8')).toBe('/*\n  X-Frame-Options: DENY\n');
+    expect(readFileSync(vercel, 'utf8')).toBe('{"cleanUrls":true}\n');
+    expect(s.conflicts.filter((c) => c.path === HOST_HEADERS_FILE || c.path === VERCEL_CONFIG_FILE)).toEqual([]);
+    // With a redirect, vercel.json carries rules the website needs: the author's file is named, never replaced.
+    await ok([{ type: 'redirect.add', from: '/team/', to: '/about/' }]);
+    expect(readFileSync(vercel, 'utf8')).toBe('{"cleanUrls":true}\n');
+    expect(s.conflicts).toContainEqual(expect.objectContaining({ path: VERCEL_CONFIG_FILE, kind: 'generated' }));
+    expect(s.conflicts.some((c) => c.path === HOST_HEADERS_FILE)).toBe(false);
+    await s.close();
+  });
 });

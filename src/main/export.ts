@@ -24,7 +24,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
-import { IMMUTABLE_CACHE_CONTROL, redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { IMMUTABLE_CACHE_CONTROL, redirectHost, VERCEL_CONFIG_FILE, yieldsToOwnFile } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { isPrivateFileName } from './project/private-files';
 import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
@@ -1449,6 +1449,8 @@ export async function deliverVercelConfig(project: string, out: string, live: Pr
   if (!Object.hasOwn(manifest.files ?? {}, VERCEL_CONFIG_FILE) || !isPlainFile(join(project, VERCEL_CONFIG_FILE))) return null;
   const config = await readExportFile(join(project, VERCEL_CONFIG_FILE));
   const there = join(out, VERCEL_CONFIG_FILE);
+  // One of the author's own (from static/) takes the place of a vercel.json that only tunes caching.
+  if (existsSync(there) && yieldsToOwnFile(VERCEL_CONFIG_FILE, config.toString('utf8'))) return null;
   if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect and caching rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
   await fs.writeFile(there, config);
   return null;
