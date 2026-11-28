@@ -11,6 +11,7 @@ import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { COPY_EXTENSIONS, copyMime, isCopyMime, overPixelLimit, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
+import { damagedCopy } from './asset-files';
 import { countMediaRead, perf } from '../perf';
 import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
@@ -450,6 +451,8 @@ export type StoredFile = Pick<AssetRecord, 'file' | 'mime' | 'bytes' | 'hash' | 
 interface PendingFile {
   rel: string;
   data: Buffer;
+  /** Written over the file there even when only missing files are written: a damaged copy being made again. */
+  replace?: boolean;
 }
 
 /**
@@ -467,13 +470,13 @@ const isFile = (path: string) => fs.lstat(path).then((s) => s.isFile(), () => fa
 
 /**
  * Write prepared files into the project, never through a link that leads out of it. `onlyMissing` leaves a file
- * that is already there alone (one put back meanwhile). Returns the files written.
+ * that is already there alone (one put back meanwhile), unless it is one to `replace`. Returns the files written.
  */
 async function writeFiles(projectDir: string, files: PendingFile[], onlyMissing = false): Promise<string[]> {
   const written: string[] = [];
   for (const f of files) {
     const at = safeJoin(projectDir, f.rel);
-    if (onlyMissing && (await isFile(at))) continue;
+    if (onlyMissing && !f.replace && (await isFile(at))) continue;
     await atomicWrite(at, f.data);
     written.push(f.rel);
   }
@@ -846,8 +849,9 @@ const LIBRARY_FILE = new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|we
 /**
  * Put back what a library image is missing in the project folder: its original, from `original` when that is
  * the same picture, and the copies it lists, made again from the original at their recorded widths, formats (their
- * names' extensions) and names. Only the missing copies are made. Files already there are left alone, even ones put
- * back while the copies were being made. Returns the files written and the copies that could not be made.
+ * names' extensions) and names. Only the copies that are missing or damaged are made. Files already there are left
+ * alone, even ones put back while the copies were being made, but for a damaged copy, which the new one replaces.
+ * Returns the files written and the copies that could not be made.
  */
 export async function restoreAssetFiles(projectDir: string, record: AssetRecord, original?: Buffer, fence: WriteFence = unfenced): Promise<{ written: string[]; failed: string[] }> {
   const document = record.kind === 'document';
@@ -869,14 +873,21 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
   if (!buf) throw new Error(`The original file of ${name} is missing. Locate it first.`);
   if (sha(buf) !== record.hash) throw mismatch();
   if (!onDisk) files.push({ rel: record.file, data: buf });
-  const missing: Array<{ width: number; file: string; mime: CopyMime }> = [];
+  const missing: Array<{ width: number; file: string; mime: CopyMime; replace?: boolean }> = [];
   for (const v of record.variants ?? []) {
     const mime = copyMime(v.file);
-    if (!LIBRARY_FILE.test(v.file)) failed.push(v.file);
-    else if (await isFile(safeJoin(projectDir, v.file))) continue;
+    if (!LIBRARY_FILE.test(v.file)) {
+      failed.push(v.file);
+      continue;
+    }
+    const there = safeJoin(projectDir, v.file);
+    // A copy that is there but damaged (#1459) is made again in its place; a whole one is left as it is.
+    const present = await isFile(there);
+    const damaged = present && (await damagedCopy(there));
+    if (present && !damaged) continue;
     // A copy in a format no copy is made in cannot be made again.
-    else if (!mime) failed.push(v.file);
-    else missing.push({ ...v, mime });
+    if (!mime) failed.push(v.file);
+    else missing.push({ ...v, mime, ...(damaged ? { replace: true } : {}) });
   }
   if (missing.length) {
     const info = imageInfo(buf, record.mime);
@@ -884,7 +895,7 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
     for (const v of missing) {
       // By width and format: copies of one width in two formats are two different files.
       const copy = made.find((c) => c.width === v.width && c.mime === v.mime);
-      if (copy) files.push({ rel: v.file, data: copy.data });
+      if (copy) files.push({ rel: v.file, data: copy.data, ...(v.replace ? { replace: true } : {}) });
       else failed.push(v.file);
     }
   }

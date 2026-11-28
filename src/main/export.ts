@@ -89,7 +89,7 @@ import { withoutCodeMarkers } from './codecheck';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
-import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName, missingFiles } from './project/asset-files';
+import { fileTrouble, findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
 import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
@@ -702,7 +702,7 @@ export function namesWholeFile(text: string, file: string): boolean {
 
 /** The export notes for library files with missing files that nothing on the site names, so the export went ahead. */
 export function missingUnusedWarnings(missing: MissingInExport[]): string[] {
-  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${libraryName(asset)} is missing ${missingFiles(asset, m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
+  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${libraryName(asset)} ${fileTrouble(asset, m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
 }
 
 /** "it" for one missing file, "them" for more. */
@@ -714,25 +714,36 @@ function kindsOf(assets: AssetRecord[]): string {
   return kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}` : kinds[0];
 }
 
-/** Why a website export stopped for library files that are missing, and the files themselves for the details. */
+/** Why a website export stopped for library files that are missing or damaged, and the files themselves for the details. */
 export function missingAssetsStop(used: MissingInExport[]): { message: string; warnings: string[] } {
   const nameOf = libraryName;
-  const warnings = used.map(({ asset, missing }) => `${nameOf(asset)}: ${[...(missing.original ? [asset.file] : []), ...missing.variants].join(', ')} not found.`);
+  const warnings = used.map(({ asset, missing }) => {
+    const absent = [...(missing.original ? [asset.file] : []), ...missing.variants.filter((v) => !missing.damaged.includes(v))];
+    const said = [...(absent.length ? [`${absent.join(', ')} not found`] : []), ...(missing.damaged.length ? [`${missing.damaged.join(', ')} damaged`] : [])];
+    return `${nameOf(asset)}: ${said.join('; ')}.`;
+  });
   if (used.length === 1) {
     const { asset, missing } = used[0];
     const fix = missing.original ? 'Locate the file in Assets' : 'Make the copies again in Assets';
-    return { message: `${nameOf(asset)} is missing ${missingFiles(asset, missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
+    return { message: `${nameOf(asset)} ${fileTrouble(asset, missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
   }
   const names = used.map((u) => nameOf(u.asset));
   const what = kindsOf(used.map((u) => u.asset));
-  return { message: `${used.length} ${what} the website uses are missing files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
+  const damaged = used.some((u) => u.missing.damaged.length);
+  return { message: `${used.length} ${what} the website uses are missing ${damaged ? 'or have damaged ' : ''}files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
 }
 
-/** The export notes for an editable project that leaves out library files missing from the project folder. */
+/**
+ * The export notes for an editable project that leaves out library files missing from the project folder, or carries
+ * a damaged copy as it is (a build of the project would publish it).
+ */
 export function missingSourceWarnings(state: ProjectState, missing: MissingAssetFiles[]): string[] {
   return missing.map((m) => {
     const a = state.assets.assets[m.assetId];
-    return `${libraryName(a)} is missing ${missingFiles(a, m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
+    if (!m.damaged.length) return `${libraryName(a)} ${fileTrouble(a, m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
+    const one = m.damaged.length === 1;
+    const absent = m.original || m.variants.length > m.damaged.length;
+    return `${libraryName(a)} ${fileTrouble(a, m)} in the project folder, so the exported project ${absent ? 'is missing the same files and ' : ''}has the damaged ${one ? 'copy as it is' : 'copies as they are'}. ${m.original ? 'Fix it' : 'Make the copies again'} in Assets and export again.`;
   });
 }
 

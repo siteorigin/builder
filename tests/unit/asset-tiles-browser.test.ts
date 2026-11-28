@@ -261,7 +261,7 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     const face = (id: string, family: string, style: 'normal' | 'italic'): AssetRecord => ({ id, name: `${family} ${style === 'italic' ? 'Italic' : 'Regular'}`, file: `static/assets/${id}-0000000${id.length % 10}.woff2`, mime: 'font/woff2', bytes: 30_000, hash: id, kind: 'font', createdAt: '2026-01-01T00:00:00.000Z', font: { family, weight: '400', style } });
     const fonts = structuredClone(state);
     for (const a of [face('lora-upright', 'Lora', 'normal'), face('lora-italic', 'Lora', 'italic'), face('inter', 'Inter', 'normal')]) fonts.assets.assets[a.id] = a;
-    const lost = [{ assetId: 'lora-italic', original: true, variants: [] }];
+    const lost = [{ assetId: 'lora-italic', original: true, variants: [] , damaged: []}];
     await page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [fonts, lost] as unknown[]);
     await page.evaluate("so.show('lora-italic')");
     const locate = page.locator('[data-font="lora-italic"] .font-locate');

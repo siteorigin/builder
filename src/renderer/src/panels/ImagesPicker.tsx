@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { ArrowDown, ArrowUp, ImageOff, TriangleAlert, X } from 'lucide-react';
 import type { ListItem, ListProp, ProjectState } from '@shared/types';
+import { copiesWrong } from '@shared/api';
 import { setState, useStore } from '../store';
 import { SwitchRow } from '../components/ui';
 import { AssetImage } from '../components/AssetImage';
@@ -11,10 +12,13 @@ import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { isImeComposing } from '../lib/ime';
 import { mergeChoice, movePick, overNote, pickRoom, sampleRows, startingSamples, togglePick } from '../lib/gallery-picks';
 
-/** Changes when a picture's files go missing or come back, so a preview that gave up on a file tries it again. */
-export const missingKey = (snapshot: { missingAssets: Array<{ assetId: string; original: boolean; variants: unknown[] }> } | null | undefined, id: string) => {
+/**
+ * Changes when a picture's files go missing, are damaged or come back, so a preview that gave up on a file tries it
+ * again: by the files themselves, since one copy repaired as another is damaged leaves the count the same.
+ */
+export const missingKey = (snapshot: { missingAssets: Array<{ assetId: string; original: boolean; variants: string[] }> } | null | undefined, id: string) => {
   const gone = snapshot?.missingAssets.find((m) => m.assetId === id);
-  return gone ? `missing-${gone.original}-${gone.variants.length}` : 'present';
+  return gone ? `missing-${gone.original}-${gone.variants.join('|')}` : 'present';
 };
 
 /**
@@ -116,6 +120,11 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   const damageOf = (id: string): 'original' | 'copies' | null => {
     const m = snapshot?.missingAssets.find((x) => x.assetId === id);
     return m ? (m.original ? 'original' : 'copies') : null;
+  };
+  // Whether the copies at fault are missing or there but damaged.
+  const copiesOf = (id: string) => {
+    const m = snapshot?.missingAssets.find((x) => x.assetId === id);
+    return m ? copiesWrong(m) : 'missing';
   };
   const lost = (id: string) => !!damageOf(id);
   // A chosen image with missing files stops Add: said beside Add as soon as it is known, not only when Add is pressed.
@@ -264,7 +273,7 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
                 const blocked = (at < 0 && full) || (at < 0 && missing);
                 const label = labels.get(a.id)?.label ?? a.name;
                 const hurt = damageOf(a.id);
-                const what = hurt === 'copies' ? 'some of its smaller copies are missing' : 'its file is missing';
+                const what = hurt === 'copies' ? `some of its smaller copies are ${copiesOf(a.id)}` : 'its file is missing';
                 const why = missing ? (at >= 0 ? `${what}, so leave it out or repair it in Assets` : `${what}, so repair it in Assets first`) : blocked ? 'the gallery has no room for more images' : '';
                 // Logos and extreme shapes are shown whole, as Assets shows them.
                 const whole = fitFor(a).contain;
@@ -374,7 +383,7 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
                       <span>{nameOf(id)}</span>
                       {lost(id) && (
                         <span className="insp-pick-order-miss">
-                          <TriangleAlert aria-hidden="true" /> {damageOf(id) === 'copies' ? 'Copy missing' : 'Missing'}
+                          <TriangleAlert aria-hidden="true" /> {damageOf(id) === 'copies' ? `Copy ${copiesOf(id)}` : 'Missing'}
                         </span>
                       )}
                     </span>

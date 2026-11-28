@@ -261,14 +261,14 @@ describe('finding image files that left the project folder', () => {
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     const original = readFileSync(join(dir, record.file));
     unlinkSync(join(dir, record.file));
-    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [] }]);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [] , damaged: []}]);
     writeFileSync(join(dir, record.file), original);
     unlinkSync(join(dir, record.variants![1].file));
-    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [record.variants![1].file] }]);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [record.variants![1].file] , damaged: []}]);
     unlinkSync(join(dir, record.file));
-    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [record.variants![1].file] }]);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [record.variants![1].file] , damaged: []}]);
     rmSync(join(dir, 'static/assets'), { recursive: true });
-    expect((await findMissingAssetFiles(dir, assets))[0]).toEqual({ assetId: record.id, original: true, variants: record.variants!.map((v) => v.file) });
+    expect((await findMissingAssetFiles(dir, assets))[0]).toEqual({ assetId: record.id, original: true, variants: record.variants!.map((v) => v.file) , damaged: []});
   });
 
   it('does not count a folder or a link in place of a file, and reports a font or a picture without copies by its file alone', async () => {
@@ -282,8 +282,8 @@ describe('finding image files that left the project folder', () => {
     unlinkSync(join(dir, record.variants![0].file));
     symlinkSync(outside, join(dir, record.variants![0].file));
     expect(await findMissingAssetFiles(dir, assets)).toEqual([
-      { assetId: record.id, original: true, variants: [record.variants![0].file] },
-      { assetId: font.id, original: true, variants: [] }
+      { assetId: record.id, original: true, variants: [record.variants![0].file] , damaged: []},
+      { assetId: font.id, original: true, variants: [] , damaged: []}
     ]);
     unlinkSync(join(dir, gif.file));
     expect((await findMissingAssetFiles(dir, assets)).map((m) => m.assetId)).toEqual([record.id, gif.id, font.id]);
@@ -293,8 +293,8 @@ describe('finding image files that left the project folder', () => {
     const state = createStarterState('business', 'Health', true);
     for (const a of STARTER_ASSETS) state.assets.assets[a.id] = { id: a.id, name: a.name, file: `static/assets/${a.id.slice(2)}-00000000.jpg`, mime: 'image/jpeg', bytes: 1, hash: a.id, kind: 'image', createdAt: 'now' };
     const missing = [
-      { assetId: 'a_reading', original: true, variants: ['static/assets/reading-00000000-480w.jpg', 'static/assets/reading-00000000-960w.jpg'] },
-      { assetId: 'a_person3', original: false, variants: ['static/assets/person3-00000000-480w.jpg'] }
+      { assetId: 'a_reading', original: true, variants: ['static/assets/reading-00000000-480w.jpg', 'static/assets/reading-00000000-960w.jpg'] , damaged: []},
+      { assetId: 'a_person3', original: false, variants: ['static/assets/person3-00000000-480w.jpg'] , damaged: []}
     ];
     // Used with only a copy gone is a problem; unused with the original gone is a warning.
     const unused = structuredClone(state);
@@ -454,6 +454,84 @@ describe('bringing missing files back', () => {
   });
 });
 
+describe('a smaller copy that is there but damaged (#1459)', () => {
+  /** Cut a photo's first copy in `ext` to its first 24 bytes in place, as the issue found it. */
+  const cut = (dir: string, record: AssetRecord, ext: string) => {
+    const file = record.variants!.find((v) => v.file.endsWith(`.${ext}`))!.file;
+    const whole = readFileSync(join(dir, file));
+    writeFileSync(join(dir, file), whole.subarray(0, 24));
+    return { file, whole };
+  };
+  /** The record's copies among `files`, in the order the record lists them. */
+  const listed = (record: AssetRecord, files: string[]) => record.variants!.map((v) => v.file).filter((f) => files.includes(f));
+
+  it('is found among the copies to make again, named as damaged, and found whole once it is', async () => {
+    const { dir, record } = await photoProject();
+    const assets = { [record.id]: record };
+    const { file: avif, whole } = cut(dir, record, 'avif');
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [avif], damaged: [avif] }]);
+    // Looked at again, it is still damaged; put back whole, it is not.
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [avif], damaged: [avif] }]);
+    writeFileSync(join(dir, avif), whole);
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
+    // A whole copy found whole, then overwritten with as many bytes that are no picture, is looked at again.
+    const webp = record.variants!.find((v) => v.file.endsWith('.webp'))!.file;
+    writeFileSync(join(dir, webp), Buffer.alloc(readFileSync(join(dir, webp)).length));
+    // Beside a copy that is gone: both are to be made again, and only the one there is damaged.
+    const gone = record.variants![0].file;
+    unlinkSync(join(dir, gone));
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: listed(record, [gone, webp]), damaged: [webp] }]);
+  });
+
+  it('is said in Project health by its file name, beside what is missing', () => {
+    const state = createStarterState('business', 'Health', true);
+    for (const a of STARTER_ASSETS) state.assets.assets[a.id] = { id: a.id, name: a.name, file: `static/assets/${a.id.slice(2)}-00000000.jpg`, mime: 'image/jpeg', bytes: 1, hash: a.id, kind: 'image', createdAt: 'now' };
+    const avif = 'static/assets/person3-00000000-480w.avif';
+    const webp = 'static/assets/person3-00000000-960w.webp';
+    expect(missingFileDiagnostics(state, [{ assetId: 'a_person3', original: false, variants: [avif], damaged: [avif] }])[0].message).toBe('Portrait 3 has a damaged smaller copy (person3-00000000-480w.avif) in the project folder. Make the copies again in Assets.');
+    expect(missingFileDiagnostics(state, [{ assetId: 'a_person3', original: true, variants: ['static/assets/person3-00000000-160w.jpg', avif, webp], damaged: [avif, webp] }])[0].message).toBe(
+      'Portrait 3 is missing its original file and a smaller copy and has 2 damaged smaller copies (person3-00000000-480w.avif, person3-00000000-960w.webp) in the project folder. Locate the file or choose another image in Assets.'
+    );
+  });
+
+  it('is made again from the original in its place, leaving the original and every other copy as they were', async () => {
+    const { dir, record } = await photoProject();
+    const { file: avif } = cut(dir, record, 'avif');
+    const others = [record.file, ...record.variants!.map((v) => v.file).filter((f) => f !== avif)];
+    const kept = Object.fromEntries(others.map((f) => [f, readFileSync(join(dir, f))]));
+    expect(await restoreAssetFiles(dir, record)).toEqual({ written: [avif], failed: [] });
+    expect(await sharp(join(dir, avif)).metadata()).toMatchObject({ format: 'heif', width: record.variants!.find((v) => v.file === avif)!.width });
+    for (const [file, bytes] of Object.entries(kept)) expect(readFileSync(join(dir, file)).equals(bytes), file).toBe(true);
+    expect(await findMissingAssetFiles(dir, { [record.id]: record })).toEqual([]);
+    expect(await restoreAssetFiles(dir, record)).toEqual({ written: [], failed: [] });
+  });
+
+  it('in an open project, shows in Project health, is made again from Assets, and stops a website export that uses it', async () => {
+    const { c, dir } = await openProject();
+    const s = c.session!;
+    const hero = s.state.assets.assets.a_hero;
+    expect(c.snapshot()!.assetUsage.a_hero).toBeGreaterThan(0);
+    const { file: webp } = cut(dir, hero, 'webp');
+    const name = webp.split('/').pop()!;
+    await s.refreshAssetFiles();
+    const snap = c.snapshot()!;
+    expect(snap.missingAssets).toEqual([{ assetId: 'a_hero', original: false, variants: [webp], damaged: [webp] }]);
+    expect(snap.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING')).toEqual({ severity: 'error', code: 'ASSET_FILE_MISSING', message: `Hero interior has a damaged smaller copy (${name}) in the project folder. Make the copies again in Assets.`, owner: { kind: 'asset', id: 'a_hero' } });
+    // A website export stops before it gets to the photos' details, saying how to repair the copy; an editable one
+    // goes ahead and says it carries the damaged copy.
+    const site = await c.buildStaticTo(join(temp('dest'), 'site'));
+    expect(site).toMatchObject({ ok: false, assetId: 'a_hero', message: `Hero interior has a damaged smaller copy (${name}) in the project folder, and the website uses it. Make the copies again in Assets, then export again.`, warnings: [`Hero interior: ${webp} damaged.`] });
+    const source = await c.exportSourceTo(join(temp('dest'), 'source'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings).toContain(`Hero interior has a damaged smaller copy (${name}) in the project folder, so the exported project has the damaged copy as it is. Make the copies again in Assets and export again.`);
+    // Make the copy again: the copy is whole, and nothing is wrong any more.
+    expect(await c.regenerateAssetCopies('a_hero')).toEqual({ ok: true, message: 'Made a smaller copy of Hero interior again.' });
+    expect(await sharp(join(dir, webp)).metadata()).toMatchObject({ format: 'webp', width: hero.variants!.find((v) => v.file === webp)!.width });
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+    expect(c.snapshot()!.diagnostics.some((d) => d.code === 'ASSET_FILE_MISSING')).toBe(false);
+  }, 60_000);
+});
+
 describe('giving a library image a new file', () => {
   const record = (): AssetRecord => ({ id: 'a_pic', name: 'Pic', file: 'static/assets/pic-11111111.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'old', kind: 'image', originalName: 'pic_final.JPG', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio', variants: [{ width: 480, file: 'static/assets/pic-11111111-480w.jpg' }] });
   const relink = { type: 'asset.relink' as const, assetId: 'a_pic', file: 'static/assets/new-22222222.webp', mime: 'image/webp', bytes: 20, hash: 'new', width: 300, height: 200 };
@@ -568,7 +646,7 @@ describe('a project whose picture was moved out of its folder', () => {
     const gone = 1 + (nook.variants ?? []).length;
     await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === 'a_reading' && (m.original ? 1 : 0) + m.variants.length === gone), 'the missing files to be noticed', 10_000);
     const snap = c.snapshot()!;
-    expect(snap.missingAssets).toEqual([{ assetId: 'a_reading', original: true, variants: (nook.variants ?? []).map((v) => v.file) }]);
+    expect(snap.missingAssets).toEqual([{ assetId: 'a_reading', original: true, variants: (nook.variants ?? []).map((v) => v.file) , damaged: []}]);
     expect(snap.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING')).toMatchObject({ severity: 'error', owner: { kind: 'asset', id: 'a_reading' }, message: expect.stringMatching(/^Reading nook is missing its original file/) });
     expect(snap.assetUsage.a_reading).toBe(uses);
     // The AI's own checks never see it: it cannot bring the file back.
@@ -660,7 +738,7 @@ describe('exporting with missing image files', () => {
     const { dir, state, used, spare } = await staged();
     expect(await missingWebsiteAssets(dir, state)).toEqual([]);
     unlinkSync(join(dir, spare.file));
-    expect(await missingWebsiteAssets(dir, state)).toEqual([{ asset: spare, missing: { assetId: spare.id, original: true, variants: [] }, used: false }]);
+    expect(await missingWebsiteAssets(dir, state)).toEqual([{ asset: spare, missing: { assetId: spare.id, original: true, variants: [] , damaged: []}, used: false }]);
     expect(missingUnusedWarnings(await missingWebsiteAssets(dir, state))).toEqual(['Spare is missing its original file in the project folder. No page or code names it, so the website was exported without it.']);
     // A copy the site does not name (only the original is, as a favicon would be) blocks nothing.
     const page = readFileSync(join(dir, 'src/routes/+page.svelte'), 'utf8');
@@ -687,7 +765,7 @@ describe('exporting with missing image files', () => {
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<link rel="icon" href="/assets/${used.file.split('/').pop()}">`);
     unlinkSync(join(dir, used.variants![0].file));
     const found = await missingWebsiteAssets(dir, state);
-    expect(found).toEqual([{ asset: damaged, missing: { assetId: used.id, original: false, variants: [used.variants![0].file] }, used: false }]);
+    expect(found).toEqual([{ asset: damaged, missing: { assetId: used.id, original: false, variants: [used.variants![0].file] , damaged: []}, used: false }]);
     // The missing copy named by the site is used, the damaged copy beside it still no name.
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${used.variants![0].file.split('/').pop()}" alt="">`);
     expect((await missingWebsiteAssets(dir, state))[0].used).toBe(true);
@@ -719,6 +797,27 @@ describe('exporting with missing image files', () => {
     expect((await missingWebsiteAssets(dir, state)).map((m) => m.used)).toEqual([true]);
   });
 
+  it('stops a website export for a damaged copy the site uses, names one it does not use, and notes it in an editable export', async () => {
+    const { dir, state, used } = await staged();
+    const copy = used.variants!.find((v) => v.file.endsWith('.webp'))!.file;
+    const name = copy.split('/').pop()!;
+    writeFileSync(join(dir, copy), readFileSync(join(dir, copy)).subarray(0, 24));
+    const found = await missingWebsiteAssets(dir, state);
+    expect(found).toEqual([{ asset: used, missing: { assetId: used.id, original: false, variants: [copy], damaged: [copy] }, used: true }]);
+    expect(missingAssetsStop(found)).toEqual({ message: `Reading nook has a damaged smaller copy (${name}) in the project folder, and the website uses it. Make the copies again in Assets, then export again.`, warnings: [`Reading nook: ${copy} damaged.`] });
+    expect(missingSourceWarnings(state, found.map((m) => m.missing))).toEqual([`Reading nook has a damaged smaller copy (${name}) in the project folder, so the exported project has the damaged copy as it is. Make the copies again in Assets and export again.`]);
+    // Beside a missing copy, each is said for what it is.
+    const gone = used.variants![0].file;
+    unlinkSync(join(dir, gone));
+    const both = await missingWebsiteAssets(dir, state);
+    expect(missingAssetsStop(both).warnings).toEqual([`Reading nook: ${gone} not found; ${copy} damaged.`]);
+    expect(missingSourceWarnings(state, both.map((m) => m.missing))).toEqual([`Reading nook is missing a smaller copy and has a damaged smaller copy (${name}) in the project folder, so the exported project is missing the same files and has the damaged copy as it is. Make the copies again in Assets and export again.`]);
+    // Named by no page, the website goes without it, and says so.
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<link rel="icon" href="/assets/${used.file.split('/').pop()}">`);
+    writeFileSync(join(dir, gone), await picture('jpeg', 160, 107));
+    expect(missingUnusedWarnings(await missingWebsiteAssets(dir, state))).toEqual([`Reading nook has a damaged smaller copy (${name}) in the project folder. No page or code names it, so the website was exported without it.`]);
+  });
+
   it('notes in an editable export which pictures it does not have', async () => {
     const { dir, state, used } = await staged();
     unlinkSync(join(dir, used.file));
@@ -739,7 +838,7 @@ describe('a font whose file left the project folder (#1425)', () => {
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     unlinkSync(join(dir, record.file));
     const missing = await findMissingAssetFiles(dir, assets);
-    expect(missing).toEqual([{ assetId: record.id, original: true, variants: [] }]);
+    expect(missing).toEqual([{ assetId: record.id, original: true, variants: [] , damaged: []}]);
     const state = createStarterState('blank', 'Fonts', false);
     state.assets.assets[record.id] = record;
     const said = `${record.name} is missing its font file (${fileName(record)}) in the project folder.`;
@@ -759,7 +858,7 @@ describe('a font whose file left the project folder (#1425)', () => {
     expect(await missingWebsiteAssets(dir, state)).toEqual([]);
     unlinkSync(join(dir, record.file));
     const found = await missingWebsiteAssets(dir, state);
-    expect(found).toEqual([{ asset: record, missing: { assetId: record.id, original: true, variants: [] }, used: true }]);
+    expect(found).toEqual([{ asset: record, missing: { assetId: record.id, original: true, variants: [] , damaged: []}, used: true }]);
     expect(missingAssetsStop(found).message).toBe(`${record.name} is missing its font file (${fileName(record)}) in the project folder, and the website uses it. Locate the file in Assets, then export again.`);
     // Named nowhere, it lets the export pass with a note.
     writeFileSync(join(dir, 'src/lib/tokens.css'), '');
@@ -809,7 +908,7 @@ describe('a font whose file left the project folder (#1425)', () => {
     expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
     unlinkSync(join(dir, record.file));
     // A font lists no smaller copies: one that names some (assets.json edited by hand) is missing only its own file.
-    expect(await findMissingAssetFiles(dir, { [record.id]: { ...record, variants: [{ width: 480, file: 'static/assets/lora-00000000-480w.woff2' }] } })).toEqual([{ assetId: record.id, original: true, variants: [] }]);
+    expect(await findMissingAssetFiles(dir, { [record.id]: { ...record, variants: [{ width: 480, file: 'static/assets/lora-00000000-480w.woff2' }] } })).toEqual([{ assetId: record.id, original: true, variants: [] , damaged: []}]);
   });
 
   it('in an open project, shows in Project health, comes back through Add fonts with its styles kept, and stops a website export', async () => {

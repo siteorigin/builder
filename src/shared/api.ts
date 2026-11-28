@@ -144,12 +144,19 @@ export const EXTERNAL_SOURCE_REFUSED = 'EXTERNAL_SOURCE_REFUSED';
  */
 export type WebCopyPlan = { format: 'JPEG' | 'PNG'; width: number; height: number } | { lighter: false } | null;
 
-/** A library image whose files are not in the project folder: its original, and which listed copies. */
+/**
+ * A library image whose files are not in the project folder: its original, and which listed copies need making again,
+ * whether gone or there but damaged (#1459); `damaged` names those of `variants` that are there but cannot be shown.
+ */
 export interface MissingAssetFiles {
   assetId: string;
   original: boolean;
   variants: string[];
+  damaged: string[];
 }
+
+/** How the copies a MissingAssetFiles lists are wrong, for a short label: every one there but damaged, or some gone. */
+export const copiesWrong = (m: Pick<MissingAssetFiles, 'variants' | 'damaged'>): 'damaged' | 'missing' => (m.variants.length > 0 && m.damaged.length === m.variants.length ? 'damaged' : 'missing');
 
 /** How many steps History keeps: past this, each new step lets the oldest go. */
 export const HISTORY_LIMIT = 100;

@@ -25,7 +25,7 @@ import { documentFacts, documentFileName, documentLabels, documentName, libraryD
 import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type PlaceLabel, type UseField } from '../lib/asset-uses';
 import { defaultEditorNode } from '../lib/design-content';
-import type { MissingAssetFiles, WebCopyPlan } from '@shared/api';
+import { copiesWrong, type MissingAssetFiles, type WebCopyPlan } from '@shared/api';
 import './AssetsPanel.css';
 
 /** Whether a library file is still in the project, for text kept for its fields (see DraftInput's keepWhile). */
@@ -73,8 +73,10 @@ interface TileProps {
   /** Why it can't be picked here, or null. */
   reason: string | null;
   hurt: ReturnType<typeof damage>;
-  /** Smaller copies missing, and the picture's key, which starts it again when its files come back or go. */
+  /** Smaller copies missing or damaged, whether every one of them is damaged, and the picture's key, which starts it
+   *  again when its files come back, go or are damaged. */
   copies: number;
+  broken: boolean;
   thumbKey: string;
   gone: boolean;
   /** What tells it apart from images of the same name. */
@@ -93,15 +95,16 @@ interface TileProps {
  * what a tile shows of it is unchanged (every snapshot brings new objects), so a snapshot that leaves the image as it
  * was leaves its tile alone. Clicks, focus and drags are handled by the grid around it, from the render that is current.
  */
-const AssetTile = memo(function AssetTile({ a, reason, hurt, copies, thumbKey, gone, apart, picked, tabbable, compact, devUrl, drag }: TileProps) {
+const AssetTile = memo(function AssetTile({ a, reason, hurt, copies, broken, thumbKey, gone, apart, picked, tabbable, compact, devUrl, drag }: TileProps) {
   const big = a.bytes > LARGE && !gone;
   // Two imports can share a name ("hero"): their size, the day they were added or their uses tell them apart.
   const name = apart ? `${nameOf(a)} (${apart})` : nameOf(a);
   // The chip's words, and the shorter ones a narrow tile (compact, or the sidebar at its narrowest) shows instead: the
   // alert glyph already says something is wrong, so the short form only names what. Never cut to an ellipsis.
-  const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
+  const wrong = broken ? 'damaged' : 'missing';
+  const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? `Copy ${wrong}` : `Copies ${wrong}`;
   const chipShort = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'Original' : copies === 1 ? 'Copy' : 'Copies';
-  const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
+  const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? `a smaller copy ${wrong}` : `smaller copies ${wrong}`;
   // In the library, a damaged tile says where its repair is: opening it shows the details, which hold it.
   const repair = gone && !reason && drag ? (hurt === 'copies' ? 'Open it to make the copies again.' : 'Open it to locate the file.') : '';
   return (
@@ -1205,7 +1208,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           reason={blocked?.(a) ?? null}
           hurt={damage(a, gone)}
           copies={gone?.variants.length ?? 0}
-          thumbKey={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
+          broken={!!gone && copiesWrong(gone) === 'damaged'}
+          thumbKey={gone ? `missing-${gone.original}-${gone.variants.join('|')}` : 'present'}
           gone={!!gone}
           apart={sameNames.get(a.id)}
           picked={picked === undefined ? undefined : picked === a.id}
@@ -1403,7 +1407,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     // are repaired first, in its details.
     const unusable = (a: AssetRecord) => {
       const hurt = damage(a, missingOf.get(a.id));
-      return hurt === 'copies' ? 'Some of its smaller copies are missing. Make them again in its details first.' : hurt ? 'Its file is missing, so it can’t be used here. Locate it first.' : null;
+      return hurt === 'copies' ? `Some of its smaller copies are ${copiesWrong(missingOf.get(a.id)!)}. Make them again in its details first.` : hurt ? 'Its file is missing, so it can’t be used here. Locate it first.' : null;
     };
     // A picked image whose files went missing since is no longer the pick: the places stay ticked, and the foot asks for another.
     const pick = picked && !unusable(picked) ? picked : null;
@@ -1594,6 +1598,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const gone = missingOf.get(sel.id);
     const hurt = damage(sel, gone);
     const copies = gone?.variants.length ?? 0;
+    // Copies that are there but can't be shown (#1459), named so the author knows which file it is.
+    const broken = gone?.damaged ?? [];
     const placement = imagePlacement();
     const offer = webPlan && 'format' in webPlan ? webPlan : null;
     const sameSize = !!offer && offer.width === sel.width && offer.height === sel.height;
@@ -1690,7 +1696,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 </span>
               ) : (
                 <span>
-                  <b>{copies === 1 ? 'A smaller copy is missing.' : `${copies} smaller copies are missing.`}</b> Some screen sizes may show nothing until {copies === 1 ? 'it is' : 'they are'} made again from the original.
+                  <b>{!broken.length ? (copies === 1 ? 'A smaller copy is missing.' : `${copies} smaller copies are missing.`) : broken.length === copies ? (copies === 1 ? 'A smaller copy is damaged.' : `${copies} smaller copies are damaged.`) : `${copies} smaller copies are missing or damaged.`}</b>{' '}
+                  {broken.length > 0 && <>{broken.length === 1 ? 'Damaged: ' : 'Damaged files: '}<span className="asset-damaged-files">{broken.map((f) => f.split('/').pop()).join(', ')}</span>. </>}
+                  Some screen sizes may show {broken.length ? 'a broken picture' : 'nothing'} until {copies === 1 ? 'it is' : 'they are'} made again from the original.
                 </span>
               )}
               <div className="asset-missing-actions">
