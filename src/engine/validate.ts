@@ -36,7 +36,7 @@ import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
-import { formConnectionProblem, formNoun, isFormDefinition, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
+import { formConnectionProblem, formNoun, isFormDefinition, readsFormServices, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -784,7 +784,7 @@ export function formNameDiagnostics(state: ProjectState, parts?: CheckParts): Di
 export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
   if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
   const def = state.components[node.definitionId];
-  if (!def || !isFormDefinition(def) || def.kind !== 'code') return undefined;
+  if (!def || !readsFormServices(def)) return undefined;
   const what = formNoun(def);
   const found = (problem: string | undefined): Diagnostic | undefined =>
     problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the ${what} is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: node.id } : undefined;

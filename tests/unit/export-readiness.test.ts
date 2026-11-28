@@ -364,5 +364,7 @@ describe('a contact form made unique', () => {
     const copy = made.pages.pg_lookbook.nodes[node.id] as InstanceNode;
     expect(made.components[copy.definitionId].componentId).not.toBe('contact.form');
     expect(healthForms(made).filter((d) => d.nodeId === node.id).map((d) => d.message)).toEqual(before.map((d) => d.message));
+    expect(websiteFormNotes(made).map((n) => n.message)).toEqual(websiteFormNotes(s).map((n) => n.message));
+    expect(websiteFormNotes(made)[0].destination).toEqual({ kind: 'form', owner: { kind: 'page', id: 'pg_lookbook' }, nodeId: node.id, setting: 'connection' });
   });
 });

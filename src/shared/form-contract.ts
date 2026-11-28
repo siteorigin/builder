@@ -291,7 +291,7 @@ export function formFieldsAsSent(def: ComponentDefinition, value: unknown): Form
  * code may name them differently, so the editor shows and keeps keys only for a definition this says yes to.
  */
 export function namesFormFields(def: ComponentDefinition | undefined): boolean {
-  return !!def && def.kind === 'code' && isFormContract(def.componentId) && def.properties.fields?.type === 'list' && !!def.source?.includes(RESERVED_SOURCE) && def.source.includes(FIELD_NAME_SOURCE);
+  return !!def && def.kind === 'code' && isFormDefinition(def) && def.properties.fields?.type === 'list' && !!def.source?.includes(RESERVED_SOURCE) && def.source.includes(FIELD_NAME_SOURCE);
 }
 
 /** Whether the form refuses to send while two fields share a key. Older versions send both answers. */
