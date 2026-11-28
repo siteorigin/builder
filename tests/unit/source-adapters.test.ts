@@ -567,6 +567,89 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(words.ok && words.records[0].values).toEqual({ bio: [{ type: 'p', spans: [{ text: 'Hi' }] }] });
   });
 
+  // A literal backslash is two on the wire (a quoted pair), so the quote after them closes the title (#1530).
+  it.each([
+    ['an ordinary quoted title', String.raw`title="Winter and spring, programme"`],
+    ['a title ending in a backslash', String.raw`title="Archive folder \\"`],
+    ['a title with several backslashes, the last at its end', String.raw`title="Port route folder R:\\winter\\"`]
+  ])('reads every page a Link header leads to, past %s', async (_name, title) => {
+    const api = await server((req, res) => {
+      const at = Number({ second: 1, third: 2 }[req.url.searchParams.get('page') ?? ''] ?? 0);
+      const next = ['second', 'third'][at];
+      send(res, { reply: { entries: people(2, at * 2 + 1) } }, next ? { link: `</api/timetable>; rel="first"; ${title}, <?page=${next}>; rel="next"; title="More, winter programmes"` } : {});
+    });
+    const linked = await run({ adapter: 'rest', config: { url: `${api.origin}/api/timetable`, itemsPath: 'reply.entries', pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    expect(linked.ok && linked.records.map((r) => r.externalId)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(api.seen.map((r) => r.url.pathname + r.url.search)).toEqual(['/api/timetable', '/api/timetable?page=second', '/api/timetable?page=third']);
+  });
+
+  /** Two pages: the first sends `link` as its Link header (one field each, if several), and `?page=second` ends the list. */
+  const readLinked = async (link: string | string[]) => {
+    const api = await server((req, res) => {
+      if (req.url.searchParams.get('page') === 'second') return send(res, people(1, 2));
+      res.setHeader('link', link);
+      send(res, people(1));
+    });
+    const reply = await run({ adapter: 'rest', config: { url: `${api.origin}/list`, pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    return { reply, asked: api.seen.map((r) => r.url.pathname + r.url.search) };
+  };
+
+  it.each([
+    ['a parameter whose name begins with rel', '<?page=second>; rel_1=ignored; rel=next'],
+    ['a quoted value that mentions a next link, under any parameter name', '</wrong>; x_meta="see; rel=next"; rel=prev, <?page=second>; rel=next'],
+    ['a quoted pair in the relation itself', String.raw`<?page=second>; rel="ne\xt"`],
+    ['an escaped quote inside a title', String.raw`</wrong>; rel=prev; title="a \", </wrong>; rel=next", <?page=second>; rel=next`],
+    ['a title ending in a backslash in an earlier field', [String.raw`</wrong>; rel=first; title="Archive \\"`, '<?page=second>; rel=next']],
+    ['an unquoted value outside the token grammar', '</wrong>; rel=alternate; type=text/html, <?page=second>; rel=next'],
+    ['empty list elements, empty parameters and one with no value', ' , </wrong>; crossorigin; rel=preload;, , <?page=second> ; ; REL = "last NEXT" ;']
+  ])('follows a Link header past %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1', '2']);
+    expect(asked).toEqual(['/list', '/list?page=second']);
+  });
+
+  it.each([
+    ['an unterminated quoted value', '</wrong>; rel=prev; title="cut, <?page=second>; rel=next'],
+    ['an address that never closes', '<?page=second; rel=next'],
+    ['text between two links', '</wrong>; rel=prev "see <?page=second>; rel=next'],
+    ['a link with no address', 'rel=next'],
+    ['two links with no comma between them', '</wrong>; rel=prev <?page=second>; rel=next'],
+    ['an unquoted relation that is no token', '<?page=second>; rel=next/']
+  ])('fails the read, never taking its first page for all of it, on a Link header with %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: 'the server sent a Link header that cannot be read, so its next page cannot be told' });
+    expect(asked).toEqual(['/list']);
+  });
+
+  it.each([
+    ['skips a next link anchored to another address', '</wrong>; rel=next; anchor="/news?page=1", <?page=second>; rel=next'],
+    ['follows a next link anchored to its own page', '<?page=second>; rel=next; anchor="/list"']
+  ])('%s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1', '2']);
+    expect(asked).toEqual(['/list', '/list?page=second']);
+  });
+
+  it('fails the read when the only next link is anchored to another address', async () => {
+    const { reply, asked } = await readLinked('</wrong>; rel=next; anchor="/news?page=1"');
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: expect.stringContaining('anchored to another address') });
+    expect(asked).toEqual(['/list']);
+  });
+
+  it.each([
+    ['no Link header', []],
+    ['links to other pages only', '<?page=first>; rel="first", <?page=last>; rel=last']
+  ])('ends the list at %s', async (_name, link) => {
+    const { reply, asked } = await readLinked(link);
+    expect(reply.ok && reply.records.map((r) => r.externalId)).toEqual(['1']);
+    expect(asked).toEqual(['/list']);
+  });
+
+  it('takes a next link that leads back to its own page for a circle, not the end', async () => {
+    const { reply } = await readLinked('<>; rel=next');
+    expect(reply).toMatchObject({ ok: false, code: 'invalid', detail: 'its pages go round in a circle' });
+  });
+
   it('remembers the count a read began with, follows only the link a Link header calls next, and never sends a post on', async () => {
     const one = (id: string) => ({ sys: { id }, fields: { title: id } });
     const api = await server((req, res, origin) => {

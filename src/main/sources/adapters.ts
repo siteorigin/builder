@@ -66,32 +66,55 @@ function listAt(body: unknown, path: string | undefined, what = path ?? 'the rep
   return v;
 }
 
+const UNREADABLE_LINK = 'the server sent a Link header that cannot be read, so its next page cannot be told';
+
 /**
- * The next page's address from a `Link` header (`<…>; rel="next"`), or null: read link by link, an address or a
- * quoted parameter holding commas included.
+ * The next page's address from the `Link` header of the page at `page` (`<…>; rel="next"`), or null when the header
+ * shows there is none. It is read once from the start, link by link (RFC 8288), so nothing inside an address or a
+ * quoted value is taken for a link or a parameter. A header that cannot be read fails: its next link may be in the
+ * part that cannot, and a read that stops there would take the pages so far for all of them.
  */
-function linkNext(header: string | null): string | null {
+function linkNext(header: string | null, page: string): string | null {
   const h = header ?? '';
-  for (let i = h.indexOf('<'); i >= 0 && i < h.length; ) {
-    const close = h.indexOf('>', i);
-    if (close < 0) return null;
-    const target = h.slice(i + 1, close);
-    // Its parameters, up to the comma that ends the link (none inside quotes).
-    let j = close + 1;
-    let quoted = false;
-    for (; j < h.length; j++) {
-      if (h[j] === '"' && h[j - 1] !== '\\') quoted = !quoted;
-      else if (h[j] === ',' && !quoted) break;
+  let at = 0;
+  const take = (pattern: RegExp) => {
+    pattern.lastIndex = at;
+    const m = pattern.exec(h);
+    if (m) at = pattern.lastIndex;
+    return m;
+  };
+  const unreadable = () => new AdapterError('invalid', UNREADABLE_LINK);
+  const isThisPage = (anchor: string) => URL.canParse(anchor, page) && new URL(anchor, page).href === new URL(page).href;
+  let elsewhere = false;
+  for (;;) {
+    take(/[\s,]*/y);
+    if (at === h.length) break;
+    const link = take(/<([^<>]*)>\s*/y);
+    if (!link) throw unreadable();
+    // The first of a repeated parameter is the one that counts.
+    const params = new Map<string, string>();
+    while (take(/;\s*/y)) {
+      const named = take(/([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*/y);
+      if (!named) continue;
+      const name = named[1].toLowerCase();
+      let value = '';
+      if (take(/=\s*/y)) {
+        // A quoted value ends at its first quote no backslash pairs with. Unquoted, servers send more than a token
+        // (`type=text/html`), which still ends where the link or parameter does; a relation must be exact.
+        const quoted = take(/"((?:[^"\\]|\\.)*)"\s*/y);
+        value = quoted ? quoted[1].replace(/\\(.)/g, '$1') : take(/([^;,"<>\s]*)\s*/y)![1];
+        if (!quoted && name === 'rel' && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]*$/.test(value)) throw unreadable();
+      }
+      if (!params.has(name)) params.set(name, value);
     }
-    // Each parameter by itself, quotes and all, so a quoted one that mentions rel is never read as the link's.
-    const params = h.slice(close + 1, j);
-    let rel: string | null = null;
-    for (const m of params.matchAll(/;\s*([A-Za-z*-]+)\s*(?:=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\s]*)))?/g)) if (m[1].toLowerCase() === 'rel') rel ??= m[2] ?? m[3] ?? '';
-    if (rel !== null && rel.toLowerCase().split(/\s+/).includes('next')) return target;
-    const next = h.indexOf('<', j);
-    if (next < 0) return null;
-    i = next;
+    if (at < h.length && h[at] !== ',') throw unreadable();
+    if (!params.get('rel')?.toLowerCase().split(/\s+/).includes('next')) continue;
+    const anchor = params.get('anchor');
+    if (anchor === undefined || isThisPage(anchor)) return link[1];
+    elsewhere = true;
   }
+  // An anchor may name this page by another address (behind a proxy), so its next link is not proof there is none.
+  if (elsewhere) throw new AdapterError('invalid', 'the only next link in the server’s Link header is anchored to another address, so its next page cannot be told');
   return null;
 }
 
@@ -182,8 +205,9 @@ const rest: SourceAdapter = {
           seen.add(url);
           const r = await ask(url);
           gather(out, listAt(r.body, config.itemsPath));
-          const next = pagination.path ? readPath(r.body, pagination.path) : linkNext(r.headers.get('link'));
-          if (next === undefined || next === null || next === '') return out;
+          const next = pagination.path ? readPath(r.body, pagination.path) : linkNext(r.headers.get('link'), r.url);
+          // An empty address in the body ends the list. In a Link header it is this page again.
+          if (next === undefined || next === null || (pagination.path && next === '')) return out;
           if (typeof next !== 'string') throw new AdapterError('invalid', `the next page’s address at ${pagination.path} is not text`);
           try {
             url = new URL(next, r.url).href;
