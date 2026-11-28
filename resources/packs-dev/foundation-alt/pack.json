@@ -1375,37 +1375,13 @@
 				},
 				"name": "Text"
 			},
-			"tags": {
-				"id": "tags",
-				"kind": "text",
-				"tag": "div",
-				"text": {
-					"$entry": "tags.links"
-				},
-				"rich": true,
-				"styles": {
-					"base": {
-						"textStyle": {
-							"token": "text.small"
-						},
-						"color": {
-							"token": "color.muted"
-						}
-					}
-				},
-				"when": {
-					"$entry": "tags.links"
-				},
-				"name": "Tags"
-			},
 			"column": {
 				"id": "column",
 				"kind": "element",
 				"tag": "div",
 				"children": [
 					"image",
-					"body",
-					"tags"
+					"body"
 				],
 				"styles": {
 					"base": {

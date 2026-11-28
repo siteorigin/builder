@@ -18,11 +18,22 @@ const route = (f: string) => `src/routes/${f.replace(/^\/|\/$/g, '')}/+page.svel
 const post = (entryId: string, title: string, publishedAt: string, terms: Record<string, string[]>, extra: Record<string, unknown> = {}): EditOperation =>
   ({ type: 'entry.create', collectionId: 'posts', entryId, title, publishedAt, draft: false, body: [`${title}.`], terms, ...extra }) as EditOperation;
 
-/** A blog whose posts are tagged: a category and a tag share the ID "glaze", and one tag is only on a draft. */
+/** `s` with its collection's layout showing each entry's tags, as rich text after the entry's text. */
+function withTags(s: ProjectState, collectionId: string): ProjectState {
+  const out = structuredClone(s);
+  const template = out.collections[collectionId].settings.template!;
+  const body = Object.values(template.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text) === '{"$entry":"body"}')!;
+  const parent = Object.values(template.nodes).find((n) => n.kind === 'element' && n.children.includes(body.id))! as { children: string[] };
+  template.nodes.tags = { id: 'tags', kind: 'text', tag: 'div', name: 'Tags', rich: true, text: { $entry: 'tags.links' }, when: { $entry: 'tags.links' } } as never;
+  parent.children.splice(parent.children.indexOf(body.id) + 1, 0, 'tags');
+  return out;
+}
+
+/** A blog whose posts are tagged, its layout showing their tags: a category and a tag share the ID "glaze", and one tag is only on a draft. */
 function blog(): ProjectState {
   const start = createStarterState('business', 'Riverside Studio', false);
   start.site.language = 'en-GB';
-  return run(
+  const s = run(
     start,
     { type: 'site.update', baseUrl: 'https://example.com' } as EditOperation,
     {
@@ -39,6 +50,7 @@ function blog(): ProjectState {
     post('en_open', 'Open studio', '2026-02-20', { categories: ['news'], tags: ['cover-crops'] }),
     post('en_plans', 'Plans', '2026-05-01', { tags: ['secret'] }, { draft: true })
   );
+  return withTags(s, 'posts');
 }
 const files = (s: ProjectState) => generateProject(publishedState(s));
 
@@ -142,11 +154,12 @@ describe('a post’s tags', () => {
     expect(siteLinks(blog()).filter((l) => l.link.term).map((l) => l.label)).toEqual(expect.arrayContaining(['Cover crops', 'Glaze']));
   });
 
-  it('leave a collection without tags with a layout that is valid', () => {
+  it('can be shown in the layout of a collection without tags, which shows none', () => {
     const start = createStarterState('business', 'Riverside Studio', false);
-    const s = run(start, { type: 'collection.create', collectionId: 'notes', route: '/notes/' } as EditOperation, { type: 'entry.create', collectionId: 'notes', entryId: 'en_note', title: 'A note', draft: false, body: ['Hello.'] } as EditOperation);
-    expect(Object.values(s.collections.notes.settings.template!.nodes).some((n) => JSON.stringify(n).includes('tags.links'))).toBe(true);
+    const s = withTags(run(start, { type: 'collection.create', collectionId: 'notes', route: '/notes/' } as EditOperation, { type: 'entry.create', collectionId: 'notes', entryId: 'en_note', title: 'A note', draft: false, body: ['Hello.'] } as EditOperation), 'notes');
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
-    expect(files(s).get(route('/notes/a-note/'))).toContain('A note');
+    const note = files(s).get(route('/notes/a-note/'))!;
+    expect(note).toContain('A note');
+    expect(note.match(/<SoRichText value=/g)).toHaveLength(1);
   });
 });
