@@ -208,6 +208,12 @@ const CASES = {
     code: 'INVALID_ARGUMENT'
   },
   read_layout: { where: 'layout', ok: () => ({}), fail: () => ({ nodeId: 'n_missing' }), code: 'INVALID_ARGUMENT' },
+  edit_collection_layout: {
+    where: 'site',
+    ok: (_s, revision) => ({ owner: { kind: 'template', id: 'posts' }, expectedRevision: revision, action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Written by the studio' }] }),
+    fail: (_s, revision) => ({ owner: { kind: 'template', id: 'posts' }, expectedRevision: revision + 5, action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Too late' }] }),
+    code: 'STALE_REVISION'
+  },
   update_theme_component: { where: 'site', ok: () => ({ definitionId: HEADER }), fail: () => ({ definitionId: 'proj.nothing-abcde' }), code: 'INVALID_ARGUMENT', sameStep: { fail: () => ({ definitionId: HEADER }) } },
   update_selected_props: { where: 'hero', ok: () => ({ props: { heading: 'Thoughtful spaces' } }), fail: () => ({ props: { nothing: 'here' } }), code: 'VALIDATION_FAILED' },
   edit_selected_list: { where: 'grid', ok: (s) => ({ prop: 'items', action: 'update', itemId: firstItem(s), fields: { title: 'Renamed' } }), fail: () => ({ prop: 'items', action: 'update', itemId: 'item_gone', fields: { title: 'Nowhere' } }), code: 'VALIDATION_FAILED' },
@@ -278,7 +284,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     selectionLimited: () => !!sel,
     pageLimit: () => null,
     entryLimit: () => null,
-    layoutLimit: () => (where === 'layout' ? { owner: { kind: 'template', id: 'posts' }, label: 'the Posts layout' } : null)
+    layoutLimit: () => (where === 'layout' ? { owner: { kind: 'template', id: 'posts' }, label: 'the Posts layout' } : null),
+    siteWide: () => where === 'site'
   };
 }
 

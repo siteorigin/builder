@@ -31,7 +31,8 @@ import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION, VALIDATE_FOCUSED_BRIEF } from './validation';
-import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
+import { layoutLabel, OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
+import { collectionRouteOwner, hasArchivePages, hasDetailPages } from '@shared/collections';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import type { PreviewControlResult, PreviewControlSettings } from '@shared/preview-control';
@@ -56,6 +57,12 @@ const MAX_HISTORY_STEPS = 10;
 
 /** The most operations one apply_operations call takes. */
 export const MAX_BATCH_OPERATIONS = 30;
+
+/** A collection's own layout, as a whole-site run names it (#1408): its entry pages' layout or its index layout. */
+const LAYOUT_OWNER = z.object({
+  kind: z.enum(['template', 'archive']).describe('"template": the page every entry has. "archive": the collection\'s index at its address, with its later pages and category pages.'),
+  id: z.string().describe('The collection\'s ID.')
+});
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(PROJECT_SECTIONS)).optional() }),
@@ -145,7 +152,18 @@ export const TOOL_ARGS = {
   connect_collection_list: CONNECT_LIST_ARGS,
   inspect_source_sample: INSPECT_SOURCE_ARGS,
   write_source_converter: WRITE_SOURCE_ARGS,
-  read_layout: z.object({ nodeId: z.string().optional().describe('Optional subtree to read.') }),
+  read_layout: z.object({ owner: LAYOUT_OWNER.optional().describe('The collection layout to read, in a request that may change the whole site.'), nodeId: z.string().optional().describe('Optional subtree to read.') }),
+  edit_collection_layout: z.object({
+    owner: LAYOUT_OWNER,
+    expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
+    action: z.enum(['start', 'edit']).describe('"start" begins the index\'s own layout in place of the ready-made cards and returns it; "edit" applies operations to the layout.'),
+    operations: z
+      .array(z.record(z.string(), z.unknown()))
+      .min(1)
+      .max(MAX_BATCH_OPERATIONS)
+      .optional()
+      .describe('edit only: the changes, applied atomically. Each names no owner: the call\'s owner is theirs.')
+  }),
   update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
   set_preview: z.object({
     viewport: z.enum(['desktop', 'tablet', 'phone']).optional().describe('A width preset: desktop 1280px, tablet 834px, phone 390px.'),
@@ -201,6 +219,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   inspect_source_sample: INSPECT_SOURCE_DESCRIPTION,
   write_source_converter: WRITE_SOURCE_DESCRIPTION,
   read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
+  edit_collection_layout:
+    'Change a collection\'s own layout, which every one of its pages shows: its entry pages (owner kind "template") or its index at the collection\'s address, with the index\'s later pages and category pages (kind "archive"). Read it first with read_layout. action "start" begins the index\'s own layout in place of the ready-made cards (a collection loop of linked titles and excerpts) and returns its sections with their IDs; "edit" applies operations to the layout atomically, each naming no owner, and node.insert without parentId adds a section. In the entry layout an element shows the entry its page is for with node.setBinding { "$entry": field }; inside a collection loop, { "$item": field } shows each row\'s entry. connect_collection_list connects a list or a loop in it. Call it at most once per step.',
   update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
   set_preview:
     "Change the editor's own preview controls, as the toolbar does: the canvas width (viewport preset or width), the preview colors (scheme; dark needs a site with a dark palette) and Edit or Preview mode (mode). Name only the settings the user asks for. It changes nothing on the site and records nothing in History. Returns what the controls now show (now) and any setting the editor could not change, with why (refused). It is not a measurement: inspect_layout checks a page at a width.",
@@ -243,6 +263,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   inspect_source_sample: INSPECT_SOURCE_BRIEF,
   write_source_converter: WRITE_SOURCE_BRIEF,
   read_layout: 'The layout this request may change, as it is now, or one node of it.',
+  edit_collection_layout: 'Change a collection\'s entry layout (template) or index layout (archive), read first with read_layout. "start" begins the index\'s own layout in place of the ready-made cards; "edit" applies operations, each with no owner. { "$entry": field } binds the entry layout to its entry; { "$item": field } a loop\'s row. Once per step.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
   set_preview: "The editor's preview controls: canvas width (viewport or width), preview colors (scheme) and Edit or Preview (mode). Changes nothing on the site.",
   step_history: "The toolbar's Undo or Redo, when the user asks to undo or redo: the request's only change.",
@@ -386,7 +407,7 @@ const MODEL_PAGE_STARTER = z
  * `layout`: a run limited to a collection's layout binds its elements there: to the entry its page is for (`entry`, the
  * entry layout) or to a loop's row alone (`row`, the index layout).
  */
-function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>, layout?: 'entry' | 'row') {
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>, layout?: 'entry' | 'row', ownerless = false) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t) || (layout && t === 'node.setBinding')) && (!only || only.has(t)))
     .map((t) =>
@@ -412,7 +433,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
               : t === 'node.setBinding'
                 ? OPERATION_SCHEMAS[t].extend({ binding: layout === 'entry' ? LAYOUT_BINDING : MODEL_BINDING })
                 : OPERATION_SCHEMAS[t]
-    );
+    )
+    // The layout tool names its layout once, for every operation it sends.
+    .map((o) => (ownerless && 'owner' in (o as z.ZodObject).shape ? (o as z.ZodObject).omit({ owner: true }) : o));
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
 
@@ -434,7 +457,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 }
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
-export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
+export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch', 'edit_collection_layout']);
 const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component', 'upsert_collection_entry', 'define_collection', 'connect_collection_list'];
 /** Reads of a collection's entries, offered with the tools of a run that has collections to read. */
 const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_entry'];
@@ -445,7 +468,7 @@ const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_convert
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 /** The editor's own controls (#1405): offered by toolsForRun when the app can run them, never as part of the general set. */
 const EDITOR_TOOLS: ToolName[] = ['set_preview', 'step_history'];
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, ...EDITOR_TOOLS, 'locate_field', 'update_theme_component', 'read_layout', 'edit_collection_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, its Project
  * health diagnostics and a build of its components in memory (validate_project), measurements of its pages in the
@@ -497,7 +520,7 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
   const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
   // A question asked with a collection's layout open reads that layout as it is. One about the site may read what an
   // external source the author connected has, and change nothing.
-  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
+  return [...tools.map(contractRead), ...posts, ...(layout ? [pinnedReadLayout()] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -523,8 +546,8 @@ export function asksForSource(text: string, state?: ProjectState): boolean {
 /**
  * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
  * offered the tools for: in so many words, by asking for a blog or to write its posts (the ready-made "posts" collection,
- * #1423; a post office or fence posts are no blog), or by naming one of the project's collections (its ID, its name or
- * what one entry is called, "Add a Role field to Team").
+ * #1423; a post office or fence posts are no blog), by naming one of the project's collections (its ID, its name or
+ * what one entry is called, "Add a Role field to Team"), or by an address one of them holds ("/properties/", #1408).
  */
 export function asksForCollection(text: string, state?: ProjectState): boolean {
   if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging)\b/i.test(text)) return true;
@@ -538,7 +561,12 @@ export function asksForCollection(text: string, state?: ProjectState): boolean {
     if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(w)) return words.includes(w);
     return w.length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(s)?($|[^\\p{L}\\p{N}])`, 'u').test(words);
   };
-  return Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName));
+  if (Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName))) return true;
+  // An address one of them holds: its index, an entry's page or an archive page ("/properties/", #1408).
+  return !!state && [...text.matchAll(/(?:^|[\s"'(“‘])(\/[^\s"'()”’,;!?]+)/gu)].some((m) => {
+    const route = normalizeRoute(m[1].replace(/[.:]+$/, ''));
+    return route !== '/' && !!collectionRouteOwner(state, route);
+  });
 }
 
 /**
@@ -558,7 +586,45 @@ function layoutTools(state: ProjectState, owner: LayoutOwner, focused: boolean):
   const general = toolDefinitions({ codeEnabled: false, definitionOps: false, operations: focused ? FOCUSED_LAYOUT_OPERATIONS : LAYOUT_OPERATIONS, layout: owner.kind === 'archive' ? 'row' : 'entry' }).filter((t) => LAYOUT_READS.has(t.name as ToolName) && (!focused || t.name !== 'validate_project'));
   const ask = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
   delete ask.$schema;
-  return [plainTool('read_layout'), ...general, ...connectListTools(state, owner), { name: 'request_clarification', ...describe('request_clarification'), parameters: ask }];
+  return [pinnedReadLayout(), ...general, ...connectListTools(state, owner), { name: 'request_clarification', ...describe('request_clarification'), parameters: ask }];
+}
+
+/** read_layout in a run limited to one layout: it reads that layout, which it never names. */
+function pinnedReadLayout(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.read_layout.omit({ owner: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'read_layout', ...describe('read_layout'), parameters: schema };
+}
+
+/** The operations the layout tool sends to a collection's layout (#1408): a layout run's own, as the model is offered them. */
+const SITE_LAYOUT_TYPES = new Set<OperationType>([...LAYOUT_OPERATIONS].filter((t) => !NEVER_OFFERED.has(t)));
+
+/**
+ * A whole-site run's tools for its collections' own layouts (#1408): each layout read as it is now, the index's own
+ * layout started in place of the ready-made cards, and either changed with a layout run's operations. Offered while a
+ * collection has pages of its own to lay out; a small model gets the few operations a layout run's small set has.
+ */
+function siteLayoutTools(state: ProjectState, focused: boolean): ToolDefinition[] {
+  const ids = Object.keys(state.collections ?? {})
+    .filter((id) => hasDetailPages(state.collections[id]?.settings))
+    .sort();
+  if (!ids.length) return [];
+  const owner = LAYOUT_OWNER.extend({ id: z.enum(ids as [string, ...string[]]).describe("The collection's ID.") });
+  const operations = z.array(offeredOperations(false, false, focused ? FOCUSED_LAYOUT_OPERATIONS : LAYOUT_OPERATIONS, 'entry', true)).min(1).max(MAX_BATCH_OPERATIONS).optional().describe(TOOL_ARGS.edit_collection_layout.shape.operations.description ?? '');
+  const json = (args: z.ZodType) => {
+    const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+    delete schema.$schema;
+    return schema;
+  };
+  return [
+    {
+      name: 'read_layout',
+      description: "Read a collection's own layout as it is now, which every one of its pages shows: its entry pages' (owner kind \"template\") or its index's (\"archive\"), with its sections' props, styles, bindings and nested content, or one node's subtree. An index still showing the ready-made cards says so.",
+      brief: "A collection's entry layout (template) or index layout (archive) as it is now, or one node of it.",
+      parameters: json(TOOL_ARGS.read_layout.extend({ owner }))
+    },
+    { name: 'edit_collection_layout', ...describe('edit_collection_layout'), parameters: json(TOOL_ARGS.edit_collection_layout.extend({ owner, operations })) }
+  ];
 }
 
 /** The tool that writes a post, while the project has a collection to write one in. */
@@ -741,6 +807,8 @@ function runTools(opts: {
     // A new kind of content (a Team, Projects) is a collection, made and shown with these: a small model gets them when
     // the request asks for one or names one the project has, so its window stays for pages otherwise.
     ...(!focused || opts.collectionRequest ? [defineCollectionTool(), ...connectListTools(state)] : []),
+    // A collection's index and entry pages are its layouts', changed with their own tools (#1408).
+    ...(!focused || opts.collectionRequest ? siteLayoutTools(state, focused) : []),
     ...entryWrite(state),
     ...entryReads(state),
     // How a connected source's records become entries: a small model gets these when the request asks about a source.
@@ -906,6 +974,8 @@ export interface ToolHost {
   /** The collection layout the run is limited to (sent while it was open), and how it is named: it reads and writes
    *  only that layout. */
   layoutLimit?(): { owner: LayoutOwner; label: string } | null;
+  /** Whether the run may change the whole site (#1408): its collections' layouts are then its to read and change. */
+  siteWide?(): boolean;
   /** The pages that show this run's changes, as the preview check before it finishes would measure them (validate_project's preview). */
   changedPageIds?(): string[];
   /** Problems with the project's files on disk, such as image files missing from the project folder, looked for again. */
@@ -1471,10 +1541,14 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const a = args as z.infer<typeof CONNECT_LIST_ARGS>;
       const layout = host.layoutLimit?.() ?? null;
       if (layout && (a.owner.kind !== layout.owner.kind || a.owner.id !== layout.owner.id)) return toolError('SCOPE_MISMATCH', `This request may change only ${layout.label}. Nothing was applied.`);
-      return runConnectList(a, host, callId);
+      // A whole-site run connects a list in a collection's layout as its layout tool changes it: that one layout (#1408).
+      const inLayout = !layout && (a.owner.kind === 'template' || a.owner.kind === 'archive') && !!host.siteWide?.();
+      return runConnectList(a, host, callId, inLayout ? { collectionWrite: { kind: 'layout', owner: { kind: a.owner.kind as LayoutOwner['kind'], id: a.owner.id } } } : undefined);
     }
     case 'read_layout':
       return readLayout(args as z.infer<(typeof TOOL_ARGS)['read_layout']>, host);
+    case 'edit_collection_layout':
+      return runEditLayout(args as z.infer<(typeof TOOL_ARGS)['edit_collection_layout']>, host, callId);
     case 'inspect_source_sample':
       return runInspectSource(args as z.infer<typeof INSPECT_SOURCE_ARGS>, host);
     case 'write_source_converter':
@@ -1499,13 +1573,80 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
   }
 }
 
-/** read_layout: the collection layout a run limited to one reads, as it is now (#679). */
-function readLayout(args: { nodeId?: string }, host: ToolHost): ToolOutcome {
-  const layout = host.layoutLimit?.() ?? null;
-  if (!layout) return toolError('INVALID_ARGUMENT', 'read_layout reads the collection layout a request was sent from while it was open; this request was not.');
+/** Capitalised, as a sentence starts with it: "The Team index layout". */
+const sentence = (label: string) => `${label[0].toUpperCase()}${label.slice(1)}`;
+
+/**
+ * A collection layout a whole-site run names (#1408), and how it is named, or why it has none: the collection must be
+ * there, with the pages that layout makes (an index needs entry pages too).
+ */
+function siteLayout(state: ProjectState, owner: LayoutOwner): { owner: LayoutOwner; label: string } | { error: string } {
+  const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  if (!c) return { error: `There is no collection "${owner.id}": read_project lists the collections by ID.` };
+  const at: LayoutOwner = { kind: owner.kind, id: owner.id };
+  if (owner.kind === 'archive' ? !hasArchivePages(c.settings) : !hasDetailPages(c.settings))
+    return { error: `The ${c.settings.name} collection has no ${owner.kind === 'archive' ? 'index page' : 'entry pages'} of its own (read_project collections pages), so there is no such layout to change.` };
+  return { owner: at, label: layoutLabel(state, at) };
+}
+
+/** read_layout: the collection layout a run limited to one reads, as it is now (#679), or one a whole-site run names (#1408). */
+function readLayout(args: { owner?: LayoutOwner; nodeId?: string }, host: ToolHost): ToolOutcome {
+  const pinned = host.layoutLimit?.() ?? null;
+  if (pinned && args.owner && (args.owner.kind !== pinned.owner.kind || args.owner.id !== pinned.owner.id)) return toolError('SCOPE_MISMATCH', `This request may read and change only ${pinned.label}.`);
+  let layout = pinned;
+  if (!layout) {
+    if (!args.owner || !host.siteWide?.()) return toolError('INVALID_ARGUMENT', 'read_layout reads the collection layout a request was sent from while it was open, or one named by its owner in a request that may change the whole site; this request is neither.');
+    const found = siteLayout(host.state(), args.owner);
+    if ('error' in found) return toolError('INVALID_ARGUMENT', found.error);
+    layout = found;
+    // An index still shows the ready-made cards until it has a layout of its own, which the run may start.
+    if (!layoutTree(host.state(), found.owner))
+      return { ok: true, content: { revision: host.revision(), owner: found.owner, collectionId: found.owner.id, custom: false, note: `${sentence(found.label)} shows the ready-made cards, which have no sections to change. edit_collection_layout with action "start" begins its own layout in their place, which you can then change.` } };
+  }
   const detail = layoutDetail(host.state(), layout.owner, args.nodeId);
-  if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${layout.label[0].toUpperCase()}${layout.label.slice(1)} is no longer in the site.`);
+  if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${sentence(layout.label)} is no longer in the site.`);
   return { ok: true, content: { revision: host.revision(), ...detail } };
+}
+
+/**
+ * edit_collection_layout (#1408): a whole-site run starts a collection's index layout, or changes one of its layouts
+ * with a layout run's operations. The grant each batch carries is this call's, for the one layout it names, never the
+ * model's: the project holds the batch to it (see shared/collection-grant).
+ */
+async function runEditLayout(a: z.infer<(typeof TOOL_ARGS)['edit_collection_layout']>, host: ToolHost, callId: string): Promise<ToolOutcome> {
+  if (host.layoutLimit?.() || !host.siteWide?.()) return toolError('SCOPE_MISMATCH', 'edit_collection_layout changes a collection layout in a request that may change the whole site; this request may not.');
+  const state = host.state();
+  const found = siteLayout(state, a.owner);
+  if ('error' in found) return toolError('INVALID_ARGUMENT', found.error);
+  const { owner, label } = found;
+  if (a.action === 'start') {
+    if (a.operations !== undefined) return toolError('INVALID_ARGUMENT', 'start takes no operations: change the layout it begins in your next step, with the IDs it returns.');
+    if (owner.kind === 'template') return toolError('INVALID_ARGUMENT', `${sentence(label)} is always there: change it with action "edit".`);
+    // Started already (by the author, or by a call before this one): never replaced with a new one.
+    if (layoutTree(state, owner)) return { ok: true, content: { revision: host.revision(), started: false, note: `${sentence(label)} is already its own: change it with action "edit".`, ...layoutDetail(state, owner) } };
+    const op = { type: 'collection.update', collectionId: owner.id, archiveTemplate: 'start' } as EditOperation;
+    const res = await host.apply([op], a.expectedRevision, `Start ${label}`.slice(0, 120), callId, { collectionWrite: { kind: 'indexLayout', collectionId: owner.id } });
+    if (!res.ok) return applyFailure(res);
+    return { ok: true, mutated: true, ops: [op], results: res.results, content: { ok: true, revision: res.revision, started: true, ...layoutDetail(host.state(), owner) } };
+  }
+  if (!a.operations?.length) return toolError('INVALID_ARGUMENT', 'edit needs operations: the changes to make to the layout.');
+  if (!layoutTree(state, owner)) return toolError('INVALID_ARGUMENT', `${sentence(label)} shows the ready-made cards: begin its own layout with action "start" first, then change it.`);
+  for (const [i, o] of a.operations.entries()) {
+    const named = o.owner as { kind?: unknown; id?: unknown } | undefined;
+    if (named !== undefined && (named?.kind !== owner.kind || named?.id !== owner.id)) return toolError('INVALID_ARGUMENT', `operations[${i}] names another owner: every operation changes ${label}, which the call names once.`);
+  }
+  const parsed = z.array(EditOperationSchema).safeParse(a.operations.map((o) => ({ ...o, owner })));
+  if (!parsed.success) return toolError('INVALID_ARGUMENT', parsed.error.issues.slice(0, 8).map((i) => `operations.${i.path.join('.')}: ${i.message}`).join('; '));
+  const ops = parsed.data as EditOperation[];
+  const outside = ops.find((o) => !SITE_LAYOUT_TYPES.has(o.type));
+  if (outside) return toolError('INVALID_ARGUMENT', `${outside.type} is not a change to a layout's sections and elements.${outside.type === 'instance.setListSource' || outside.type === 'node.setRepeatSource' ? ' Connect a list, or change a collection loop\'s entries, with connect_collection_list.' : ''}`);
+  // As apply_operations holds them: the app allocates node IDs, a copy goes right after its original, and a swap keeps every piece of content.
+  if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return toolError('INVALID_ARGUMENT', 'node.insert does not take a newNodeId.');
+  if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return toolError('INVALID_ARGUMENT', 'node.duplicate does not take an index.');
+  if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined)) return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops.');
+  const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, { collectionWrite: { kind: 'layout', owner } });
+  if (!res.ok) return applyFailure(res);
+  return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, owner, results: res.results } };
 }
 
 /** Whether a rejected batch failed on a page it was creating itself, named by its route or title. */

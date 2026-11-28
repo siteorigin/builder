@@ -53,6 +53,29 @@ function team(): ProjectState {
   ] as EditOperation[]).state;
 }
 
+/** Listings at /properties/, with an index, entry pages, a price field and one listing (#1408). */
+function listings(): ProjectState {
+  return applyOperations(studio(), [
+    { type: 'collection.create', collectionId: 'listings', name: 'Listings', singularName: 'Listing', kind: 'structured', pages: { detail: true, archive: true }, route: '/properties/', fields: { price: { type: 'string', label: 'Price' } } },
+    { type: 'entry.create', collectionId: 'listings', entryId: 'en_loft', title: 'Harbour loft', draft: false, values: { price: 'R2.4m' } }
+  ] as EditOperation[]).state;
+}
+
+/** A host like the orchestrator's over a real session, which holds each batch to the call's grant. */
+function sessionHost(session: ProjectSession, siteWide = true): ToolHost {
+  return {
+    state: () => session.state,
+    revision: () => session.revision,
+    diagnostics: () => session.diagnostics(),
+    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) }),
+    compileAll: async () => [],
+    inspectLayout: async () => ({}),
+    ask: async () => '',
+    layoutLimit: () => null,
+    siteWide: () => siteWide
+  };
+}
+
 /** A host over a project in memory that holds each batch to the run's authority and its grant, as the session does. */
 function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
   let state = start;
@@ -387,7 +410,7 @@ describe('the schemas a grammar-constrained model is offered', () => {
       toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: false, layout: { owner: { kind: 'template', id: 'team' } } })
     ];
     const names = new Set(runs.flatMap((r) => r.tools.map((t) => t.name)));
-    for (const n of ['define_collection', 'connect_collection_list', 'upsert_collection_entry', 'read_layout']) expect(names, n).toContain(n);
+    for (const n of ['define_collection', 'connect_collection_list', 'upsert_collection_entry', 'read_layout', 'edit_collection_layout']) expect(names, n).toContain(n);
     expect(runs.map((r) => [r.mode, r.focused])).toEqual([['site', false], ['site', true], ['page', true], ['layout', true], ['layout', false]]);
     for (const run of runs) {
       for (const t of run.tools.filter((x) => ['define_collection', 'connect_collection_list', 'upsert_collection_entry', 'read_collection_entry', 'read_layout'].includes(x.name))) {
@@ -545,6 +568,149 @@ describe('a request sent while a collection layout is open', () => {
   });
 });
 
+describe("a whole-site request and a collection's own layouts (#1408)", () => {
+  const dirs: string[] = [];
+  const sessions: ProjectSession[] = [];
+  afterEach(async () => {
+    for (const s of sessions.splice(0)) await s.close().catch(() => undefined);
+    dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+  });
+  let calls = 0;
+  /** Each call its own ID, as a model's calls have. */
+  const tool = (h: ToolHost, name: string, args: unknown) => executeTool(name, JSON.stringify(args), h, `call_${++calls}`);
+  async function open(start: ProjectState) {
+    const dir = mkdtempSync(join(tmpdir(), 'so-site-layout-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, start);
+    sessions.push(session);
+    return session;
+  }
+
+  it('offers the layout tools to a whole-site run alone, and finds a collection by its address', () => {
+    const s = listings();
+    const site = toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: true });
+    expect(site.mode).toBe('site');
+    const edit = site.tools.find((t) => t.name === 'edit_collection_layout')!;
+    expect(site.tools.map((t) => t.name)).toEqual(expect.arrayContaining(['read_layout', 'edit_collection_layout']));
+    const params = edit.parameters as { properties: { owner: { properties: { id: { enum: string[] } } }; operations: unknown } };
+    expect(params.properties.owner.properties.id.enum).toEqual(['listings']);
+    // Each operation names no owner (the call's is theirs), and the entry layout's elements may read the entry.
+    expect(JSON.stringify(params.properties.operations)).not.toContain('"owner"');
+    expect(JSON.stringify(params.properties.operations)).toContain('"$entry"');
+    expect(findForbiddenShapes(toStrictSchema(edit.parameters))).toEqual([]);
+    // The general operations still never offer an entry's field.
+    expect(JSON.stringify(site.tools.find((t) => t.name === 'apply_operations')!.parameters)).not.toContain('"$entry"');
+    // Narrower runs, a question and an open layout's run are offered no layout tool of the site's.
+    const home = s.site.homePageId;
+    const narrower = [
+      toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: false, page: { route: '/' } }),
+      toolsForRun({ state: s, selection: { owner: { kind: 'page', id: home }, nodeId: s.pages[home].rootIds[0] }, capabilities: native, codeEnabled: false, definitionOps: false }),
+      toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: false, ask: true }),
+      toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: false, entry: { collectionId: 'listings', entryId: 'en_loft' } }),
+      toolsForRun({ state: s, selection: null, capabilities: native, codeEnabled: false, definitionOps: false, layout: { owner: { kind: 'archive', id: 'listings' } } })
+    ];
+    for (const run of narrower) expect(run.tools.map((t) => t.name), run.mode).not.toContain('edit_collection_layout');
+    // A layout's own run reads its layout without naming it.
+    expect(JSON.stringify(narrower[4].tools.find((t) => t.name === 'read_layout')!.parameters)).not.toContain('"owner"');
+    // A small model gets them when the request asks for a collection, by its address too, with the small set's operations.
+    expect(toolsForRun({ state: s, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false }).tools.map((t) => t.name)).not.toContain('edit_collection_layout');
+    const small = toolsForRun({ state: s, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, collectionRequest: true });
+    expect(small.tools.map((t) => t.name)).toContain('edit_collection_layout');
+    expect(JSON.stringify(small.tools.find((t) => t.name === 'edit_collection_layout')!.parameters)).not.toContain('"node.wrap"');
+    for (const compact of [false, true]) expect(findForbiddenShapes(envelopeSchema(small.tools, { compact }))).toEqual([]);
+    for (const t of small.tools.filter((x) => x.name === 'read_layout' || x.name === 'edit_collection_layout')) {
+      expect(findForbiddenShapes(toStrictSchema(t.parameters)), t.name).toEqual([]);
+      expect(t.brief, t.name).toBeTruthy();
+    }
+    for (const text of ['Add a search intro to /properties/', 'Customise the /properties page', 'Show the price on /properties/harbour-loft/', 'Change /properties/page/2/']) expect(asksForCollection(text, s), text).toBe(true);
+    for (const text of ['Move /properties-old/ to the footer', 'Change the /about/ page', 'Make the hero teal']) expect(asksForCollection(text, s), text).toBe(false);
+    // A collection with no pages of its own has no layout to change.
+    const data = studio();
+    data.collections = team().collections;
+    data.collections.team.settings.pages = { detail: false, archive: false };
+    expect(toolsForRun({ state: data, selection: null, capabilities: native, codeEnabled: false, definitionOps: true }).tools.map((t) => t.name)).not.toContain('edit_collection_layout');
+  });
+
+  it('starts the index layout of a collection, changes it, and never starts it twice', async () => {
+    const session = await open(listings());
+    const h = sessionHost(session);
+    const owner = { kind: 'archive', id: 'listings' };
+    const before = structuredClone(session.state);
+    // Still the ready-made cards: nothing to change until it has a layout of its own.
+    expect((await tool(h, 'read_layout', { owner })).content).toMatchObject({ ok: true, owner, custom: false, note: expect.stringMatching(/ready-made cards.*"start"/) });
+    expect((await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Hi' }] })).content).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/"start" first/) } });
+    const started = await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'start' });
+    expect(started.content, JSON.stringify(started.content).slice(0, 300)).toMatchObject({ ok: true, started: true, owner, sections: [expect.objectContaining({ kind: 'element' })] });
+    const tree = () => session.state.collections.listings.settings.archiveTemplate!;
+    const sections = tree().rootIds.slice();
+    const added = await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', index: 0, text: 'Explore our properties.' }] });
+    expect(added.content, JSON.stringify(added.content).slice(0, 300)).toMatchObject({ ok: true, owner });
+    const intro = (added.content as { results: Array<{ nodeId: string }> }).results[0].nodeId;
+    expect(tree().rootIds).toEqual([intro, ...sections]);
+    expect(tree().nodes[intro]).toMatchObject({ text: 'Explore our properties.' });
+    // Started again, by a retry or a model that forgot: the layout and its intro stay, and nothing lands.
+    const revision = session.revision;
+    expect((await tool(h, 'edit_collection_layout', { owner, expectedRevision: revision, action: 'start' })).content).toMatchObject({ ok: true, started: false });
+    expect(session.revision).toBe(revision);
+    expect(tree().nodes[intro]).toBeTruthy();
+    // Its loop is connected as the layout tool changes it: in that one layout.
+    const loop = Object.values(tree().nodes).find((n) => n.kind === 'repeat')!;
+    const connected = await tool(h, 'connect_collection_list', { owner, nodeId: loop.id, query: { collectionId: 'listings', limit: 3 } });
+    expect(connected.content, JSON.stringify(connected.content).slice(0, 300)).toMatchObject({ ok: true });
+    // Nothing reaches beyond the layout: another owner, a collection change, a list source, or a run that is not the whole site's.
+    const home = session.state.pages[session.state.site.homePageId];
+    const refused = async (args: unknown, h2 = h) => (await tool(h2, 'edit_collection_layout', args)).content;
+    expect(await refused({ owner, expectedRevision: session.revision, action: 'edit', operations: [{ type: 'node.setContent', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[0], field: 'anchor', value: 'x' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/another owner/) } });
+    expect(await refused({ owner, expectedRevision: session.revision, action: 'edit', operations: [{ type: 'collection.update', collectionId: 'listings', name: 'Other' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await refused({ owner, expectedRevision: session.revision, action: 'edit', operations: [{ type: 'node.setRepeatSource', nodeId: loop.id, source: { $archive: true } }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/connect_collection_list/) } });
+    expect(await refused({ owner, expectedRevision: session.revision, action: 'start' }, sessionHost(session, false))).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    expect((await tool(sessionHost(session, false), 'read_layout', { owner })).content).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await refused({ owner: { kind: 'archive', id: 'nope' }, expectedRevision: session.revision, action: 'start' })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/no collection "nope"/) } });
+    expect(session.state.pages).toEqual(before.pages);
+    expect(session.state.collections.listings.entries).toEqual(before.collections.listings.entries);
+    expect(session.state.collections.listings.settings.template).toEqual(before.collections.listings.settings.template);
+  });
+
+  it("changes a collection's entry layout, binding an element to the entry's field", async () => {
+    const session = await open(listings());
+    const h = sessionHost(session);
+    const owner = { kind: 'template', id: 'listings' };
+    expect((await tool(h, 'read_layout', { owner })).content).toMatchObject({ ok: true, owner, sections: expect.any(Array) });
+    expect((await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'start' })).content).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/always there/) } });
+    const added = await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', text: 'Price' }] });
+    expect(added.content, JSON.stringify(added.content).slice(0, 300)).toMatchObject({ ok: true });
+    const nodeId = (added.content as { results: Array<{ nodeId: string }> }).results[0].nodeId;
+    const bound = await tool(h, 'edit_collection_layout', { owner, expectedRevision: h.revision(), action: 'edit', operations: [{ type: 'node.setBinding', nodeId, field: 'text', binding: { $entry: 'field.price' } }] });
+    expect(bound.content, JSON.stringify(bound.content).slice(0, 300)).toMatchObject({ ok: true });
+    expect(session.state.collections.listings.settings.template.nodes[nodeId]).toMatchObject({ text: { $entry: 'field.price' } });
+    expect(session.state.collections.listings.settings.archiveTemplate).toBeUndefined();
+  });
+
+  it('is held by the project: a start changes nothing else, and only while the index has no layout of its own', async () => {
+    const s = listings();
+    const grant = { kind: 'indexLayout' as const, collectionId: 'listings' };
+    const start = { type: 'collection.update', collectionId: 'listings', archiveTemplate: 'start' } as EditOperation;
+    expect(collectionGrantRefusal([start], grant, s.collections)).toBeNull();
+    expect(collectionGrantRefusal([{ ...start, name: 'Homes' } as EditOperation], grant, s.collections)).toMatch(/nothing else/);
+    expect(collectionGrantRefusal([{ ...start, archiveTemplate: null } as EditOperation], grant, s.collections)).toMatch(/nothing else/);
+    expect(collectionGrantRefusal([start, start], grant, s.collections)).toMatch(/only that collection/);
+    expect(collectionGrantRefusal([{ ...start, collectionId: 'team' } as EditOperation], grant, s.collections)).toMatch(/only that collection/);
+    const noIndex = structuredClone(s);
+    noIndex.collections.listings.settings.pages = { detail: true, archive: false };
+    expect(collectionGrantRefusal([start], grant, noIndex.collections)).toMatch(/no index page/);
+    const session = await open(s);
+    const ai = (collectionWrite?: { kind: 'indexLayout'; collectionId: string }) => ({ label: 'AI', source: 'ai' as const, ...(collectionWrite ? { collectionWrite } : {}) });
+    expect(await session.apply({ operations: [start] }, ai())).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    expect(await session.apply({ operations: [{ ...start, pages: { detail: true, archive: false } } as EditOperation] }, ai(grant))).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    expect(await session.apply({ operations: [start] }, ai(grant))).toMatchObject({ ok: true });
+    const tree = structuredClone(session.state.collections.listings.settings.archiveTemplate);
+    expect(tree?.rootIds.length).toBeGreaterThan(0);
+    // A second start would put a new layout in place of the one there.
+    expect(await session.apply({ operations: [start] }, ai(grant))).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH', message: expect.stringMatching(/already has its own index layout/) } });
+    expect(session.state.collections.listings.settings.archiveTemplate).toEqual(tree);
+  });
+});
+
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
   constructor(private turns: Array<(req: CanonicalModelRequest) => ModelEvent[]>) {}
@@ -682,5 +848,42 @@ describe('in an AI turn', () => {
     expect((await s.send('Change it', { ...base, template: { collectionId: 'team', archive: true, name: 'Team' } })).message).toMatch(/The Team index layout is no longer in the site/);
     expect((await s.send('Change it', { ...base, scope: 'page', template: { collectionId: 'team', name: 'Team' } })).message).toMatch(/could not be read/);
     expect((await s.send('Change it', { ...base, template: { collectionId: 'team', name: 'Team', entryId: 7 } as never })).message).toMatch(/could not be read/);
+  });
+
+  it('changes /properties/ from Home in a whole-site request: starts its index layout and adds an intro, undone in one step', async () => {
+    const owner = { kind: 'archive', id: 'listings' };
+    let intro = '';
+    const env = await setup(listings(), [
+      () => [call('c1', 'read_layout', { owner })],
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ ok: true, custom: false });
+        return [call('c2', 'edit_collection_layout', { owner, expectedRevision: lastResult(req).revision, action: 'start' })];
+      },
+      (req) => {
+        expect(lastResult(req), JSON.stringify(lastResult(req)).slice(0, 300)).toMatchObject({ ok: true, started: true, sections: expect.any(Array) });
+        return [call('c3', 'edit_collection_layout', { owner, expectedRevision: lastResult(req).revision, action: 'edit', operations: [{ type: 'node.insert', primitive: 'paragraph', index: 0, text: 'Explore our properties.' }] })];
+      },
+      (req) => {
+        const r = lastResult(req);
+        expect(r, JSON.stringify(r).slice(0, 300)).toMatchObject({ ok: true });
+        intro = r.results[0].nodeId;
+        return finish('Gave /properties/ its own layout with an intro above the listings, on every page of the index.');
+      }
+    ]);
+    const before = structuredClone(env.session.state);
+    const groups = env.session.historyInfo().entries.length;
+    const runId = await env.send('Add an intro above the listings on /properties/', { scope: 'site' });
+    const first = env.adapter.requests[0];
+    expect(first.tools.map((t) => t.name)).toEqual(expect.arrayContaining(['read_layout', 'edit_collection_layout']));
+    expect(first.system).toMatch(/edit_collection_layout/);
+    const tree = env.session.state.collections.listings.settings.archiveTemplate!;
+    expect(tree.rootIds[0]).toBe(intro);
+    expect(tree.nodes[intro]).toMatchObject({ text: 'Explore our properties.' });
+    expect(env.session.state.pages).toEqual(before.pages);
+    expect(env.session.state.collections.listings.entries).toEqual(before.collections.listings.entries);
+    // One step undoes the whole turn: the index shows the ready-made cards again.
+    expect(env.session.historyInfo().entries.slice(groups).map((e) => e.runId)).toEqual([runId]);
+    expect((await env.session.undoGroup(runId)).ok).toBe(true);
+    expect(env.session.state.collections).toEqual(before.collections);
   });
 });
