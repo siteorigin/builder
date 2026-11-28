@@ -188,10 +188,12 @@ describe('deleting a page with a replacement', () => {
     expect(labels(headerOf(next))).not.toContain('About');
     expect(labels(footerOf(next))).not.toContain('About');
     expect((headerOf(next).props.links as Array<{ link: LinkValue }>).filter((i) => i.link.target === home)).toHaveLength(1);
-    // A kept old address still needs the replacement to follow to, though only menu items linked the page.
-    const kept = structuredClone(s);
-    kept.site.redirects = [{ route: '/old-about/', pageId: about.id }] as never;
-    expect(planPageRemoval(kept, about.id, home, new Map()).operations).toEqual([{ type: 'page.remove', pageId: about.id, replacementPageId: home }]);
+    // A kept old address still needs the replacement to follow to, though only menu items link the page.
+    const added = applyOperations(s, [{ type: 'page.create', pageId: 'pg_extra', title: 'Extra', addToNavigation: true }]).state;
+    added.site.redirects = [{ from: '/old-extra/', pageId: 'pg_extra' }];
+    expect(reviewPageRemoval(added, 'pg_extra', home).uses).toEqual([]);
+    expect(reviewPageRemoval(added, 'pg_extra', home).menu).toEqual(['Extra']);
+    expect(planPageRemoval(added, 'pg_extra', home, new Map()).operations).toEqual([{ type: 'page.remove', pageId: 'pg_extra', replacementPageId: home }]);
     expect(pageLinkReferences(s, about.id)).toBe(reviewPageRemoval(s, about.id, home).uses.length);
   });
 
