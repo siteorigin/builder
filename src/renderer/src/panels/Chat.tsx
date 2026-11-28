@@ -1295,6 +1295,15 @@ export function Chat() {
   useEffect(() => {
     if (managing && managing.opening !== snap.workspaceKey) setManaging(null);
   }, [managing, snap.workspaceKey]);
+  // The history menu labels the running conversation as it was when opened, so it closes when that changes.
+  const historyRun = useRef<string | null>(null);
+  const runKey = `${anyRunStatus ?? ''}:${runThreadId ?? ''}`;
+  useEffect(() => {
+    if (historyRun.current !== null && historyRun.current !== runKey) {
+      historyRun.current = null;
+      menu.close();
+    }
+  }, [runKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const openHistory = async (el: HTMLElement) => {
     const listed = await api.ai.conversations().catch((e: Error) => {
       if (stillOpen()) toast(e.message || 'Could not list the earlier conversations.', 'error');
@@ -1306,6 +1315,7 @@ export function Chat() {
     const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id, getState().chatImages);
     if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
     const now = new Date();
+    historyRun.current = `${getState().runStatus ?? ''}:${getState().runConversationId ?? ''}`;
     menu.openAt(
       el,
       [
