@@ -131,6 +131,8 @@ interface Case {
   sameStep?: { fail?: (s: ProjectState, revision: number, ids: { note: string; design: string }) => unknown };
   /** What the project needs first, done as the author would: a change in History for an Undo to take. */
   seed?: (session: ProjectSession) => Promise<unknown>;
+  /** What the author asks, for a tool offered only to a request that asks for it (open_page). */
+  request?: string;
 }
 
 /** The author's own change, for step_history to undo. */
@@ -169,6 +171,7 @@ const CASES = {
   validate_project: { where: 'site', ok: () => ({}), fail: () => ({ profile: 'everything' }), code: 'INVALID_ARGUMENT' },
   audit_seo: { where: 'site', ok: () => ({}), fail: () => ({ pageId: 'pg_missing' }), code: 'INVALID_ARGUMENT' },
   request_clarification: { where: 'site', ok: () => ({ question: 'Which one?', choices: ['This', 'That'] }), fail: () => ({ question: 'Which picture, and may I change more?', widenScope: true, assetIds: [PHOTO.id] }), code: 'INVALID_ARGUMENT' },
+  open_page: { where: 'ask', request: 'Take me to the Home page', ok: (s) => ({ page: s.site.homePageId }), fail: () => ({ page: 'Nowhere' }), code: 'INVALID_ARGUMENT' },
   locate_field: { where: 'ask', ok: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'heading' }), fail: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 0), prop: 'nothing' }), code: 'INVALID_ARGUMENT' },
   upsert_page_with_sections: {
     where: 'site',
@@ -365,7 +368,7 @@ describe('one result envelope for every tool (#744)', () => {
     const caps: Partial<ModelCapabilities> = c.where === 'design' ? { contextWindowTokens: 48_000, maxOutputTokens: 4000 } : {};
     const { run } = runner(session, turns, caps);
     const sel = selectionAt(session.state, c.where);
-    await run('Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}), ...(c.where === 'layout' ? { template: { collectionId: 'posts', name: 'Posts' } } : {}) });
+    await run(c.request ?? 'Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}), ...(c.where === 'layout' ? { template: { collectionId: 'posts', name: 'Posts' } } : {}) });
     // Offered at each call, so each result is the tool's own, never a refusal of a tool the step did not offer.
     for (const tools of offered) expect(tools, `${name} is offered ${c.where === 'site' ? 'to a site run' : `with ${c.where}`}`).toContain(name);
     const ok = results.get('call_ok')!;
