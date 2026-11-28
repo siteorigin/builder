@@ -1,5 +1,5 @@
 import type { ComponentDefinition, NodeTree } from '@shared/types';
-import type { ThemePack } from './pack';
+import { comparePackVersions, PACK_VERSION_RE, type ThemePack } from './pack';
 
 export type { ThemePack } from './pack';
 
@@ -65,8 +65,8 @@ export function themeLockEntry(theme: ThemePack): { id: string; version: string;
 
 /**
  * Why a project cannot be edited with the packs loaded here: its theme is not installed, or (for an installed
- * pack, which the lock pins) another copy has the same version with different contents. Generating it would
- * restyle the site from the wrong pack before anyone edited anything.
+ * pack, which the lock pins) the installed copy is an older release, or another copy with the same version.
+ * Generating it would restyle the site from the wrong pack before anyone edited anything.
  */
 export function themePinProblem(state: { site: { themeId: string }; themeLock?: { theme?: { id: string; version: string; digest?: string } } }): string | null {
   const id = state.site.themeId;
@@ -80,8 +80,15 @@ export function themePinProblem(state: { site: { themeId: string }; themeLock?: 
   // another design under the same name, so it never stands in for the installed one.
   if (lock?.digest && pack.source !== 'user')
     return `This project uses an installed theme "${id}" ${lock.version}, but SiteOrigin Builder now has a built-in theme with that ID, which is a different design. Open the project in the version of SiteOrigin Builder it was made with and switch it to another theme to edit it here.`;
-  if (lock?.digest && pack.version === lock.version && pack.digest !== lock.digest)
+  if (!lock?.digest) return null;
+  if (typeof lock.version !== 'string' || !PACK_VERSION_RE.test(lock.version))
+    return `This project uses the theme "${id}", but its theme lock records "${lock.version}", which is not a release version. Restore siteorigin/theme-lock.json from the copy the site was made with to edit it here.`;
+  const order = comparePackVersions(pack.version, lock.version);
+  if (order === 0 && pack.digest !== lock.digest)
     return `This project uses the theme "${id}" ${lock.version}, but the installed pack with that version is a different copy. Reinstall the copy the site was made with, or a newer version, and restart SiteOrigin Builder to edit it.`;
+  // An earlier release would restyle the site with an older design than the one it was made with (#1493).
+  if (order < 0)
+    return `This project needs "${id}" ${lock.version} or newer, but the installed copy is ${pack.version}, an older release. Install ${lock.version} or a newer release and restart SiteOrigin Builder to edit it.`;
   return null;
 }
 

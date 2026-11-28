@@ -136,7 +136,40 @@ export interface PackManifest extends Omit<ThemePack, 'digest' | 'source'> {
 
 /** Pack IDs and component IDs are short, lower-case and safe in file and CSS names. */
 export const PACK_ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
-export const PACK_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/** A canonical semver release (no leading zeros or empty parts), so two spellings never name one release. */
+export const PACK_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
+
+/**
+ * Semver precedence of two pack versions (PACK_VERSION_RE): negative when `a` is older than `b`, 0 when they rank
+ * the same, positive when it is newer. A prerelease ranks below its release.
+ */
+export function comparePackVersions(a: string, b: string): number {
+  // Canonical numbers (no leading zeros) rank by length, then digit by digit: exact past 2^53, never NaN.
+  const num = (p: string, q: string) => (p.length !== q.length ? p.length - q.length : p < q ? -1 : p > q ? 1 : 0);
+  const split = (v: string) => {
+    const dash = v.indexOf('-');
+    return { core: (dash < 0 ? v : v.slice(0, dash)).split('.'), pre: dash < 0 ? [] : v.slice(dash + 1).split('.') };
+  };
+  const x = split(a);
+  const y = split(b);
+  for (let i = 0; i < 3; i++) {
+    const order = num(x.core[i] ?? '0', y.core[i] ?? '0');
+    if (order) return order;
+  }
+  if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length;
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i];
+    const q = y.pre[i];
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+    if (p === q) continue;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn) return num(p, q);
+    if (pn !== qn) return pn ? -1 : 1;
+    return p < q ? -1 : 1;
+  }
+  return 0;
+}
 /** A file in a release: one folder deep, lower-case, no dots or slashes that could leave the pack. */
 export const PACK_FILE_RE = /^(fonts|previews)\/[a-z0-9][a-z0-9._-]{0,119}\.(woff2|webp)$/;
 
