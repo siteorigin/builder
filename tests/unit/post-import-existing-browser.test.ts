@@ -73,6 +73,7 @@ const preview = (posts: PostImportPreviewPost[], over: Partial<PostImportPreview
   newTerms: { categories: [], tags: [] },
   redirects: 0,
   redirectsPending: 0,
+  searchSettings: 0,
   redirectsLost: 0,
   skipped: [],
   oldSiteLinks: [],
