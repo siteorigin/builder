@@ -7,6 +7,7 @@
  * undo group as any other edit. Every schema is closed and plain, so a grammar-constrained local model can call them.
  */
 import { z } from 'zod';
+import { MAX_BROWSE_KEYS } from '@shared/collection-browse';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -685,7 +686,19 @@ export const DEFINE_COLLECTION_ARGS = z
       .array(z.object({ id: z.string().min(1).max(60).describe('Stable lowercase ID ("departments").'), label: z.string().min(1).max(60) }).strict())
       .max(10)
       .optional()
-      .describe('Groupings its entries are filed under (categories, tags, or its own). update: one named here is added or relabelled; every grouping and term it has stays.')
+      .describe('Groupings its entries are filed under (categories, tags, or its own). update: one named here is added or relabelled; every grouping and term it has stays.'),
+    browse: z
+      .object({
+        search: z.boolean().optional(),
+        filters: z.array(z.string().max(80)).max(MAX_BROWSE_KEYS).optional(),
+        sort: z.array(z.string().max(80)).max(MAX_BROWSE_KEYS).optional()
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .describe(
+        'Search, filters and sorting visitors get on the first page of its index (a real estate or directory index), over every published entry; needs its index with the ready-made cards. search: its titles and excerpts. filters: terms.<grouping ID>, or field.<name> of an enum (pick options), boolean (yes or no) or number field (a range). sort: title, publishedAt, or field.<name> of a string, number or date field. Replaces the whole setting; null removes it.'
+      )
   })
   .strict();
 export type DefineCollectionArgs = z.infer<typeof DEFINE_COLLECTION_ARGS>;
@@ -738,7 +751,7 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
   if (collection && isSyncedCollection(collection.settings)) return toolError('SCOPE_MISMATCH', `${syncedRefusal(collection.settings.name)} Nothing was applied.`, { details: { collectionId: id, sourceId: collection.settings.sourceId } });
 
   const issues: FieldIssue[] = [];
-  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim(), rss: args.rss });
+  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim(), rss: args.rss, browse: args.browse });
   if (args.singularName !== undefined) settings.singularName = args.singularName.trim() || (collection ? null : undefined);
   if (settings.singularName === undefined) delete settings.singularName;
   if (args.fields) {
@@ -787,7 +800,17 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
       ok: true,
       revision: res.revision,
       collectionId: id,
-      ...(now ? { name: now.name, kind: collectionKind(now), inRss: hasDetailPages(now) && inSiteFeed(now), fields: Object.keys(now.fields ?? {}), taxonomies: Object.keys(now.taxonomies ?? {}), ...(hasDetailPages(now) && now.route ? { route: now.route } : {}) } : {})
+      ...(now
+        ? {
+            name: now.name,
+            kind: collectionKind(now),
+            inRss: hasDetailPages(now) && inSiteFeed(now),
+            fields: Object.keys(now.fields ?? {}),
+            taxonomies: Object.keys(now.taxonomies ?? {}),
+            ...(hasDetailPages(now) && now.route ? { route: now.route } : {}),
+            ...(now.browse ? { browse: now.browse } : {})
+          }
+        : {})
     }
   };
 }

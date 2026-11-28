@@ -100,3 +100,37 @@ export function browseProblem(settings: Shape & { browse?: unknown }, label: (ke
   }
   return null;
 }
+
+/** One field a collection's browsing can use, as the editor offers it: its key, what the author calls it, and its control. */
+export interface BrowseChoice<K> {
+  key: string;
+  label: string;
+  kind: K;
+}
+
+/**
+ * The fields a collection's browsing can use, in the order the editor offers them: its groupings, then its custom
+ * fields, for filters; its title and publication date, then its custom fields, for sorts.
+ */
+export function browseChoices(settings: Shape): { filters: Array<BrowseChoice<BrowseFilterKind>>; sorts: Array<BrowseChoice<BrowseSortKind>> } {
+  const labelOf = (rec: Record<string, { label?: unknown }> | undefined, id: string) => {
+    const l = own(rec, id)?.label;
+    return typeof l === 'string' && l.trim() ? l.trim() : id;
+  };
+  const taxonomies = Object.keys(settings.taxonomies ?? {}).map((id) => `terms.${id}`);
+  const fields = Object.keys(settings.fields ?? {}).map((name) => `field.${name}`);
+  const label = (key: string) => (key.startsWith('terms.') ? labelOf(settings.taxonomies, key.slice(6)) : labelOf(settings.fields as Record<string, { label?: unknown }>, key.slice(6)));
+  const filters = [...taxonomies, ...fields].flatMap((key) => {
+    const kind = browseFilterKind(settings, key);
+    return kind ? [{ key, label: label(key), kind }] : [];
+  });
+  const sorts = [
+    { key: 'title', label: 'Title', kind: 'text' as const },
+    { key: 'publishedAt', label: 'Publication date', kind: 'date' as const },
+    ...fields.flatMap((key) => {
+      const kind = browseSortKind(settings, key);
+      return kind ? [{ key, label: label(key), kind }] : [];
+    })
+  ];
+  return { filters, sorts };
+}
