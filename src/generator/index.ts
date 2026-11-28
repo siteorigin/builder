@@ -4896,8 +4896,12 @@ export function redirectFile(from: string): string {
 /**
  * The page at an old address: it sends visitors on to the page's current address. It is written where a page
  * at that address would be, so a page given the address back simply replaces it. Read with scripts on, it goes
- * at once and keeps the query and the section the old link asked for; without them, a meta refresh goes to the
- * page. Either way it works from the prerendered HTML alone, on any static host.
+ * as soon as its link has been read, and keeps the query and the section the old link asked for; without them, a
+ * meta refresh goes to the page. Either way it works from the prerendered HTML alone, on any static host.
+ *
+ * The script that goes sits in the body, after the link, never in the head (#1502): WebKit can stop reading the old
+ * document once the navigation starts, so a script in the head could leave a page with no body at all while the new
+ * page was slow to come. The link it leaves behind already carries the query and the section.
  */
 export function generateRedirect(state: ProjectState, from: string, page: Pick<PageDoc, 'route'>): string {
   const base = publicUrl(state.site);
@@ -4910,19 +4914,24 @@ export function generateRedirect(state: ProjectState, from: string, page: Pick<P
 	import { resolve } from '$app/paths';
 
 	const to = resolve(${js(page.route)});
-	// Runs while the HTML is read, before anything renders.
-	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
+	/** @type {HTMLAnchorElement} */
+	let link;
+	// Runs while the HTML is read, just after the link: the link takes the query and section, then the page goes.
+	const go = '<' + 'script>var u = ' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash; document.currentScript.previousElementSibling.href = u; location.replace(u);</' + 'script>';
 	// Reached by a link inside the running site instead, the script above never runs: go from here.
-	onMount(() => location.replace(to + location.search + location.hash));
+	onMount(() => {
+		const u = to + location.search + location.hash;
+		link.href = u;
+		location.replace(u);
+	});
 </script>
 
 <svelte:head>
-	{@html go}
 	<meta http-equiv="refresh" content={'0; url=' + to} />
 	<meta name="robots" content="noindex" />${canonical}
 </svelte:head>
 
-<p><a href={to}>{${js(siteVisitorText(state.site).redirect)}}</a></p>
+<p><a bind:this={link} href={to}>{${js(siteVisitorText(state.site).redirect)}}</a>{@html go}</p>
 `
   );
 }
