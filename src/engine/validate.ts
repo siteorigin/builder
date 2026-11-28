@@ -1181,7 +1181,9 @@ function styleChecker({ state, tokenIds, groupOf }: StyleContext, out: Diagnosti
         if (!style) continue;
         const groups: readonly string[] = style.tokenGroup === undefined ? [] : Array.isArray(style.tokenGroup) ? style.tokenGroup : [style.tokenGroup];
         const group = groupOf.get(token);
-        if (group !== undefined && !groups.includes(group))
+        if (group === 'container' && style.containerTokens && !style.containerTokens.includes(token))
+          out.push({ severity: 'error', code: 'TOKEN_GROUP', message: `${label}: ${style.label} uses the page width "${token}", which would push the page sideways; use the page gutter, or Max width for a page width.`, owner, nodeId });
+        else if (group !== undefined && !groups.includes(group))
           out.push({
             severity: 'error',
             code: 'TOKEN_GROUP',

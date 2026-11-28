@@ -3268,6 +3268,8 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
   let replaced = 0;
   forEachTokenRef(state, (id, site) => {
     if (id !== from.id) return;
+    const only = site.kind === 'style' && site.property && Object.hasOwn(STYLE_PROP_MAP, site.property) ? STYLE_PROP_MAP[site.property].containerTokens : undefined;
+    if (only && to.group === 'container' && !only.includes(to.id)) fail(`"${to.label}" is a page width, and ${STYLE_PROP_MAP[site.property!].label} uses "${from.label}" in ${site.label}: padding of that size would push the page sideways. Replace it with another spacing size or the page gutter.`);
     site.replace({ token: to.id });
     replaced++;
   });
