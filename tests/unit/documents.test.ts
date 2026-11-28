@@ -182,7 +182,7 @@ describe('importing a document', () => {
     expect(next).toMatchObject({ same: false, stored: { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', originalName: 'Guide 2027.docx' } });
     await expect(locateAssetFile(project, record, sourceFile('photo.png', Buffer.from('x')))).rejects.toThrow(/^photo\.png can't be used because it is not a document/);
     rmSync(join(project, record.file));
-    expect(await findMissingAssetFiles(project, { [record.id]: record })).toEqual([{ assetId: record.id, original: true, variants: [] }]);
+    expect(await findMissingAssetFiles(project, { [record.id]: record })).toEqual([{ assetId: record.id, original: true, variants: [], damaged: [] }]);
     const back = await locateAssetFile(project, record, sourceFile('copy.pdf', pdf()));
     expect(back).toEqual({ same: true, written: [record.file], failed: [] });
     expect(await findMissingAssetFiles(project, { [record.id]: record })).toEqual([]);
@@ -403,7 +403,7 @@ describe('a website export with documents', () => {
     rmSync(join(dir, guide.file));
     // (The library's picture has no file in this staged copy; only the document matters here.)
     const missing = (await missingWebsiteAssets(dir, state)).filter((m) => m.asset.kind === 'document');
-    expect(missing).toEqual([{ asset: guide, missing: { assetId: 'a_guide', original: true, variants: [] }, used: true }]);
+    expect(missing).toEqual([{ asset: guide, missing: { assetId: 'a_guide', original: true, variants: [], damaged: [] }, used: true }]);
     expect(missingAssetsStop(missing).message).toBe('Exhibitor guide is missing its original file in the project folder, and the website uses it. Locate the file in Assets, then export again.');
     expect(missingFileDiagnostics(state, missing.map((m) => m.missing))[0]).toMatchObject({ severity: 'error', code: 'ASSET_FILE_MISSING', message: 'Exhibitor guide is missing its original file in the project folder. Locate its file in Assets, or link to something else.' });
   });

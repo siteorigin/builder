@@ -636,12 +636,12 @@ describe('placing a library image from Assets (issue #13)', () => {
     expect(actions.imagePlacement()).toEqual({ at: null, reason: 'The AI is making changes. You can place the image once it finishes.' });
     store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
     expect(actions.imagePlacement()).toEqual({ at: null, reason: 'Made by a newer version.' });
-    store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+    store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [], damaged: [] }] } as unknown as ProjectSnapshot });
     expect(await actions.placeAsset(photo.id, actions.imagePlacement().key!)).toBe(false);
     expect(lastToast()).toMatchObject({ kind: 'error', text: 'Locate the file to place this image.' });
     expect(applyCalls).toBe(0);
     // Smaller copies missing, with the original there: it is placed, and the copies are made again from it.
-    store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640] }] } as unknown as ProjectSnapshot });
+    store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640], damaged: [] }] } as unknown as ProjectSnapshot });
     expect(await actions.placeAsset(photo.id, actions.imagePlacement().key!)).toBe(true);
   });
 
@@ -1176,17 +1176,17 @@ describe('placing a library image from Assets (issue #13)', () => {
       await refused('The AI is making changes. You can place the image once it finishes.');
       store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
       await refused('Made by a newer version.');
-      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [], damaged: [] }] } as unknown as ProjectSnapshot });
       await refused('Locate the file to place this image.');
       // Smaller copies missing: the page shows those, so they are made again first, as the Place on page button says.
-      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640] }] } as unknown as ProjectSnapshot });
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640], damaged: [] }] } as unknown as ProjectSnapshot });
       await refused('Make the missing copy again to place this image.');
-      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640, 1280] }] } as unknown as ProjectSnapshot });
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: false, variants: [640, 1280], damaged: [] }] } as unknown as ProjectSnapshot });
       await refused('Make the missing copies again to place this image.');
       expect(applyCalls).toBe(0);
       expect((page().nodes[hero] as InstanceNode).props.image).toEqual({ assetId: null, alt: '' });
       // Another picture's missing file is no reason.
-      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: nook.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: nook.id, original: true, variants: [], damaged: [] }] } as unknown as ProjectSnapshot });
       expect(actions.assetDropRefusal(photo.id)).toBeNull();
       expect(await actions.dropAsset(photo.id, target, revision)).toBe(true);
     });
@@ -1330,7 +1330,7 @@ describe('placing a library image from Assets (issue #13)', () => {
       await refused('The AI is making changes. You can place the image once it finishes.');
       store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
       await refused('Made by a newer version.');
-      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
+      store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [], damaged: [] }] } as unknown as ProjectSnapshot });
       await refused('Locate the file to place this image.');
       expect(applyCalls).toBe(calls);
       expect(page()).toEqual(before);

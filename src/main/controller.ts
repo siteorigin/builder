@@ -4284,7 +4284,7 @@ export class Controller {
     try {
       const r = await restoreAssetFiles(s.dir, record, undefined, this.assetFence(s, record));
       await this.checkAssetFiles(s);
-      if (r.failed.length) return { ok: false, message: `${name} is still missing ${missingParts({ original: false, variants: r.failed })}, which could not be made again. Import the picture again, or choose another image.` };
+      if (r.failed.length) return { ok: false, message: `${name} still needs ${missingParts({ original: false, variants: r.failed })}, which could not be made again. Import the picture again, or choose another image.` };
       return { ok: true, message: r.written.length ? `Made ${missingParts({ original: false, variants: r.written })} of ${name} again.` : `${name} has all its copies.` };
     } catch (e) {
       if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while its copies were being made. Look at it again in Assets.` };

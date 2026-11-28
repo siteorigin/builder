@@ -261,7 +261,7 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     const face = (id: string, family: string, style: 'normal' | 'italic'): AssetRecord => ({ id, name: `${family} ${style === 'italic' ? 'Italic' : 'Regular'}`, file: `static/assets/${id}-0000000${id.length % 10}.woff2`, mime: 'font/woff2', bytes: 30_000, hash: id, kind: 'font', createdAt: '2026-01-01T00:00:00.000Z', font: { family, weight: '400', style } });
     const fonts = structuredClone(state);
     for (const a of [face('lora-upright', 'Lora', 'normal'), face('lora-italic', 'Lora', 'italic'), face('inter', 'Inter', 'normal')]) fonts.assets.assets[a.id] = a;
-    const lost = [{ assetId: 'lora-italic', original: true, variants: [] }];
+    const lost = [{ assetId: 'lora-italic', original: true, variants: [], damaged: [] }];
     await page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [fonts, lost] as unknown[]);
     await page.evaluate("so.show('lora-italic')");
     const locate = page.locator('[data-font="lora-italic"] .font-locate');
@@ -277,6 +277,27 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     await page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [fonts, []] as unknown[]);
     expect(await page.locator('.font-locate').count()).toBe(0);
     expect(await page.getByRole('img', { name: '1 font is missing its file:' }).count()).toBe(0);
+  });
+
+  it('names a damaged smaller copy in the image’s details and offers to make it again (#1459)', async () => {
+    const id = order()[0];
+    const hurt = structuredClone(state);
+    const avif = `static/assets/${id}-480w.avif`;
+    hurt.assets.assets[id] = { ...hurt.assets.assets[id], width: 1200, height: 900, variants: [{ width: 480, file: `static/assets/${id}-480w.png` }, { width: 480, file: avif }] };
+    const send = (m: unknown[]) => page.evaluate(([x, y]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, y), [hurt, m] as unknown[]);
+    await send([{ assetId: id, original: false, variants: [avif], damaged: [avif] }]);
+    expect(await page.locator(`[data-asset="${id}"]`).textContent()).toContain('Copy damaged');
+    await page.evaluate((x) => (globalThis as unknown as { so: { show(id: string): void } }).so.show(x), id);
+    const note = page.locator('.asset-detail .asset-missing');
+    await note.waitFor();
+    expect(await note.textContent()).toContain(`A smaller copy is damaged. Damaged: ${id}-480w.avif. Some screen sizes may show a broken picture until it is made again from the original.`);
+    expect(await note.getByRole('button', { name: 'Make the copy again' }).count()).toBe(1);
+    // One gone beside it: both are counted, and the damaged one still named.
+    const png = `static/assets/${id}-480w.png`;
+    await send([{ assetId: id, original: false, variants: [png, avif], damaged: [avif] }]);
+    expect(await note.textContent()).toContain(`2 smaller copies are missing or damaged. Damaged: ${id}-480w.avif.`);
+    await send([]);
+    expect(await page.locator('.asset-detail .asset-missing').count()).toBe(0);
   });
 
   it('opens on the image “Show image” asked for when that showing is what builds the panel', async () => {

@@ -7,7 +7,7 @@ import { DEFAULT_TEXT_MAX, MAX_RICH_CHARS } from '@engine/values';
 import { tooLongMessage } from '@shared/text-limits';
 import { isBinding, refKey } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
-import type { ProjectSnapshot } from '@shared/api';
+import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { hasArchivePages } from '@shared/collections';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
@@ -773,7 +773,7 @@ export function assetDropRefusal(assetId: string, snap: ProjectSnapshot | null =
   if (asset?.kind !== 'image') return 'That image is no longer in Assets.';
   const gone = snap.missingAssets?.find((m) => m.assetId === assetId);
   if (gone?.original) return 'Locate the file to place this image.';
-  if (gone) return `Make the missing ${gone.variants.length === 1 ? 'copy' : 'copies'} again to place this image.`;
+  if (gone) return `Make the ${copiesWrong(gone)} ${gone.variants.length === 1 ? 'copy' : 'copies'} again to place this image.`;
   return null;
 }
 

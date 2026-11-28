@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import type { AssetRecord, ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
+import { copiesWrong } from '@shared/api';
 import { ICONS } from '@shared/icons';
 import { api, copyTextAction, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
@@ -949,8 +950,9 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   // some of its smaller copies (the picture still shows, and the site would lose sizes).
   const damage = shownAsset ? snapshot?.missingAssets.find((m) => m.assetId === shownAsset.id) : undefined;
   const fileGone = !!damage?.original;
-  const status = gone ? (named ? 'Not an image' : 'Missing') : damage ? (fileGone ? 'Missing' : 'Copy missing') : null;
-  const statusNote = gone ? (named ? 'Choose an image instead.' : 'Choose another image, or remove it.') : damage ? (fileGone ? 'Its file is not in the project folder.' : 'Some of its smaller copies are not in the project folder.') : null;
+  const copiesDamaged = !!damage && copiesWrong(damage) === 'damaged';
+  const status = gone ? (named ? 'Not an image' : 'Missing') : damage ? (fileGone ? 'Missing' : copiesDamaged ? 'Copy damaged' : 'Copy missing') : null;
+  const statusNote = gone ? (named ? 'Choose an image instead.' : 'Choose another image, or remove it.') : damage ? (fileGone ? 'Its file is not in the project folder.' : copiesDamaged ? 'Some of its smaller copies are damaged in the project folder.' : 'Some of its smaller copies are not in the project folder.') : null;
   // Remove takes its own button away: focus that was on it goes to the chooser once the image is gone.
   const removedAt = useRef(0);
   useEffect(() => {
@@ -1383,7 +1385,7 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
             const blocked = !!hurt?.original && !current;
             const twin = twins.get(a.id);
             const shownName = twin ? `${names.get(a.id)?.name ?? a.name} (${twin})` : (names.get(a.id)?.name ?? a.name);
-            const why = hurt ? (hurt.original ? 'its file is missing, so fix it in Assets first' : 'some of its smaller copies are missing') : '';
+            const why = hurt ? (hurt.original ? 'its file is missing, so fix it in Assets first' : `some of its smaller copies are ${copiesWrong(hurt)}`) : '';
             return (
               <button
                 key={a.id}
@@ -1419,7 +1421,7 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
                 )}
                 {hurt && (
                   <span className="insp-pick-gone" aria-hidden="true">
-                    <TriangleAlert /> {hurt.original ? 'Missing' : 'Copy missing'}
+                    <TriangleAlert /> {hurt.original ? 'Missing' : `Copy ${copiesWrong(hurt)}`}
                   </span>
                 )}
               </button>

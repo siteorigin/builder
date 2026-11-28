@@ -45,7 +45,7 @@ function useLabelled<T extends ChatImageRef>(images: T[], among: ChatImageRef[] 
 function useFileState(assetId: string): string {
   return useStore((s) => {
     const m = s.snapshot?.missingAssets?.find((x) => x.assetId === assetId);
-    return m ? `missing-${m.original}-${m.variants.length}` : 'present';
+    return m ? `missing-${m.original}-${m.variants.join('|')}` : 'present';
   });
 }
 

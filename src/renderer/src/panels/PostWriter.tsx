@@ -2,7 +2,7 @@ import './PostsPanel.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
-import type { ProjectSnapshot } from '@shared/api';
+import { copiesWrong, type ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
@@ -1666,7 +1666,7 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
               const current = a.id === value.assetId;
               const blocked = !!hurt?.original && !current;
               const label = nameOf(a.id);
-              const why = hurt ? (hurt.original ? 'its file is missing, so repair it in Assets first' : 'some of its smaller copies are missing') : '';
+              const why = hurt ? (hurt.original ? 'its file is missing, so repair it in Assets first' : `some of its smaller copies are ${copiesWrong(hurt)}`) : '';
               const whole = fitFor(a).contain;
               return (
                 <button
@@ -1702,7 +1702,7 @@ function PicturePicker({ state, devUrl, missing, value, altError, tried, onChang
                   )}
                   {hurt && (
                     <span className="insp-pick-gone" aria-hidden="true">
-                      <TriangleAlert /> {hurt.original ? 'Missing' : 'Copy missing'}
+                      <TriangleAlert /> {hurt.original ? 'Missing' : `Copy ${copiesWrong(hurt)}`}
                     </span>
                   )}
                 </button>

@@ -123,7 +123,7 @@ describe.skipIf(!browserInstalled)('Locate file with a different picture, in the
   const mount = (s: ProjectState, more: Snap) => page.evaluate(([x, m]) => (globalThis as unknown as { so: { mount(s: unknown, m: unknown): void } }).so.mount(x, m), [s, more] as unknown[]);
   const receive = (s: ProjectState, more: Snap) => page.evaluate(([x, m]) => (globalThis as unknown as { so: { receive(s: unknown, m: unknown): void } }).so.receive(x, m), [s, more] as unknown[]);
   const toasts = () => page.evaluate<Array<{ text: string; action: string | null }>>('so.toasts()');
-  const missing = { assetUsage: { a_tide: 3 }, missingAssets: [{ assetId: 'a_tide', original: true, variants: [] }] };
+  const missing = { assetUsage: { a_tide: 3 }, missingAssets: [{ assetId: 'a_tide', original: true, variants: [], damaged: [] }] };
   const history = (applied: boolean) => ({ canUndo: applied, canRedo: !applied, entries: [{ id: 'e_relink', label: 'Relink Tide pools', applied }] });
 
   async function openMissing(state: ProjectState) {

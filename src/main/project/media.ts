@@ -320,6 +320,19 @@ function* boxes(buf: Buffer, start: number, end: number): Generator<{ type: stri
   }
 }
 
+/**
+ * Whether a HEIF-family file (AVIF, HEIC) holds image data: a media data box ('mdat') with something in it, or data
+ * inside its metadata ('idat'). A file cut short just before its media data is otherwise whole as far as its boxes go.
+ */
+export function heifHasImageData(buf: Buffer): boolean {
+  for (const b of boxes(buf, 0, buf.length)) {
+    if (b.type === 'mdat' && b.end > b.body) return true;
+    // The metadata box is a full box: its children follow its version and flags.
+    if (b.type === 'meta') for (const c of boxes(buf, b.body + 4, b.end)) if (c.type === 'idat' && c.end > c.body) return true;
+  }
+  return false;
+}
+
 /** AVIF: the primary item's image spatial extent ('ispe'), turned by its rotation ('irot') if it has one. */
 function avifInfo(buf: Buffer): ImageInfo | null {
   const meta = [...boxes(buf, 0, buf.length)].find((b) => b.type === 'meta');

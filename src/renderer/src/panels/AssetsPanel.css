@@ -356,6 +356,8 @@
   .asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
   .asset-tile-id { margin-top: -4px; font-size: 12px; line-height: 16px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  /* An importer file name runs unbroken: it wraps anywhere rather than run past the note. */
+  .asset-damaged-files { overflow-wrap: anywhere; }
   .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
   .asset-uses h5, .asset-fields h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
   .asset-fields h5 { margin-bottom: -4px; }
