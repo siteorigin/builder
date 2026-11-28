@@ -932,19 +932,32 @@ function checkable(control) {
 	return control instanceof HTMLInputElement && (control.type === 'radio' || control.type === 'checkbox');
 }
 
-// What a ticked control stands for: its choice, which another choice given the same value later is not.
+// A dropdown holds its answer in which of its options is picked; each option's value is fixed by the page.
+function dropdown(control) {
+	return control instanceof HTMLSelectElement;
+}
+
+// What a ticked control or a picked option stands for: its choice, which another choice given the same value later
+// is not. A dropdown's empty first option stands for no answer.
 function choiceOf(control) {
 	return control.dataset.draftChoice || control.value;
 }
 
+// The choice a dropdown has picked, or '' when it has none.
+function picked(control) {
+	const option = control.selectedOptions[0];
+	return option ? choiceOf(option) : '';
+}
+
 // Each answer once, in page order: its name, the kind of control that takes it ('' for text), and the answer, which
-// is the text typed in or the choice ticked ('' when none is).
+// is the text typed in or the choice ticked or picked ('' when none is).
 function answered(form) {
 	const out = new Map();
 	for (const control of answers(form)) {
 		const field = control.dataset.draftField;
-		if (!out.has(field)) out.set(field, { field, kind: checkable(control) ? control.type : '', value: '' });
-		if (!checkable(control)) out.get(field).value = control.value;
+		if (!out.has(field)) out.set(field, { field, kind: checkable(control) ? control.type : dropdown(control) ? 'select' : '', value: '' });
+		if (dropdown(control)) out.get(field).value = picked(control);
+		else if (!checkable(control)) out.get(field).value = control.value;
 		else if (control.checked) out.get(field).value = choiceOf(control);
 	}
 	return [...out.values()];
@@ -970,7 +983,8 @@ function moveOn(form) {
 function forms() {
 	const seen = new Map();
 	return [...call(document, 'querySelectorAll', FORMS)].map((form) => {
-		// A question that became a checkbox or radio buttons is another form: a typed answer never ticks anything.
+		// A question that became a checkbox, radio buttons or a dropdown is another form: a typed answer never ticks or
+		// picks anything.
 		const key = (call(form, 'closest', 'main') ? 'page ' : 'shell ') + answered(form).map((a) => (a.kind ? a.field + ':' + a.kind : a.field)).join(' ');
 		const n = seen.get(key) ?? 0;
 		seen.set(key, n + 1);
@@ -1097,8 +1111,12 @@ function restore(kept) {
 		for (const [field, value] of Array.isArray(draft.values) ? draft.values : []) {
 			if (typeof value !== 'string') continue;
 			const group = controls.filter((a) => a.dataset.draftField === field);
-			// An answer already there, filled in or ticked by the browser or before the page was ready, stays.
-			if (!group.length || !checkable(group[0])) {
+			// An answer already there, filled in, ticked or picked by the browser or before the page was ready, stays. A
+			// choice that is gone from a dropdown picks nothing, even if another choice was given its value since.
+			if (group[0] && dropdown(group[0])) {
+				const choice = value && !picked(group[0]) ? [...group[0].options].find((o) => o.value && choiceOf(o) === value) : undefined;
+				if (choice) choice.selected = true;
+			} else if (!group.length || !checkable(group[0])) {
 				if (group[0] && !group[0].value) group[0].value = value;
 			} else if (value && !group.some((a) => a.checked)) {
 				const choice = group.find((a) => choiceOf(a) === value);

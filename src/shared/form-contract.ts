@@ -51,8 +51,8 @@ export const FIELD_NAME_SOURCE = `	function fieldName(field, i) {
 	}`;
 /** The form refuses to send while two of its fields share a key; forms from before this check send both. */
 export const AMBIGUOUS_SOURCE = `	const ambiguous = $derived(new Set(names).size < names.length);`;
-/** The form refuses to send while a single-choice question offers nothing to choose; older forms ask none. */
-export const UNCHOOSABLE_SOURCE = `	const unchoosable = $derived((fields ?? []).some((field) => field?.type === 'choice' && !choicesOf(field).length));`;
+/** The form refuses to send while a single-choice question or a dropdown offers nothing to choose; older forms ask none. */
+export const UNCHOOSABLE_SOURCE = `	const unchoosable = $derived((fields ?? []).some((field) => (field?.type === 'choice' || field?.type === 'select') && !choicesOf(field).length));`;
 
 /**
  * How the form reads its service settings, and when they connect it. Every version of the theme's form so far has
@@ -310,16 +310,30 @@ export function offersFormChoices(def: ComponentDefinition | undefined): boolean
   return fields.fields.options?.type === 'choices' && type?.type === 'enum' && type.options.some((o) => o.value === 'choice');
 }
 
-/** A field's settings that do nothing for its type. The editor hides them and keeps what they hold for a switch back. */
+/** The field types that ask the visitor to pick one of the field's `options`: radio buttons, and a dropdown. */
+const CHOOSING_TYPES = ['choice', 'select'];
+
+/**
+ * A field's settings that do nothing for its type. The editor hides them and keeps what they hold for a switch back.
+ * A dropdown's placeholder is what it shows until an answer is picked; a date or time picker shows none. Only a hidden
+ * field sends a value of its own, and it has nothing to require.
+ */
 export function formFieldSettingsHidden(field: FormField): string[] {
   const type = text(field.type ?? 'text');
-  return type === 'choice' ? ['placeholder'] : type === 'checkbox' ? ['placeholder', 'options'] : ['options'];
+  if (type === 'choice') return ['placeholder', 'value'];
+  if (type === 'select') return ['value'];
+  if (type === 'checkbox' || type === 'date' || type === 'time') return ['placeholder', 'options', 'value'];
+  if (type === 'hidden') return ['placeholder', 'options', 'required'];
+  return ['options', 'value'];
 }
 
-/** The positions of a form's single-choice questions that offer nothing to choose: the component's `unchoosable`. */
+/**
+ * The positions of a form's single-choice questions and dropdowns that offer nothing to choose: the component's
+ * `unchoosable`.
+ */
 export function formUnchoosable(fields: readonly FormField[]): number[] {
   const offered = (options: unknown) => Array.isArray(options) && options.some((o) => !!o && !!text((o as { label?: unknown }).label ?? '').trim());
-  return fields.flatMap((f, i) => (f?.type === 'choice' && !offered(f.options) ? [i] : []));
+  return fields.flatMap((f, i) => (CHOOSING_TYPES.includes(f?.type as string) && !offered(f.options) ? [i] : []));
 }
 
 /** Whether the form refuses to send while a single-choice question has no choices. */

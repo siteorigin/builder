@@ -55,6 +55,11 @@ const REGIONS = [
 ];
 /** The name each field the visitor fills in is sent under, on a line of its own. */
 const FIELD_NAME = /\n(\t+)(name=\{names\[i\]\})/g;
+/**
+ * A hidden field, sent with the answers but never filled in by the visitor, written on one line: it takes no
+ * description, so agents are never asked to fill it in.
+ */
+const HIDDEN_FIELD = `<input type="hidden" name={names[i]} value={String(field.value ?? '').trim() || page.url.pathname} />`;
 /** A single-choice question's group, whose description agents read for all of its answers. */
 const CHOICES_OPEN = '<fieldset class="so-form__field so-form__choices"';
 /**
@@ -133,7 +138,7 @@ export function adaptFormSource(source: string): string | null {
   const fields = regions.map(([a, b]) => markup.slice(a, b));
   const all = fields.join('\n');
   const named = count(all, FIELD_NAME);
-  if (!named || named !== count(all, NAME_ATTR)) return null;
+  if (!named || count(all, HIDDEN_FIELD) > 1 || named + count(all, HIDDEN_FIELD) !== count(all, NAME_ATTR)) return null;
   if (count(all, WHILE_SENDING) !== count(all, LOCK_ATTR)) return null;
   if (count(all, CHOICES_OPEN) !== 1) return null;
   // Outside them, nothing an agent fills in: only the form's own name, the service's hidden fields and the trap, and
