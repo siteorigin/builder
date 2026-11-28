@@ -5354,7 +5354,8 @@ const SECTIONS = ${js(notFoundSections(state))};
 `;
   // The website's pages ask for the theme fonts they show first from <head> (#1487). The editor's preview has the
   // same hook: SvelteKit's dev server lists no fonts to preload, so it is never asked about one there.
-  const fonts = preloadFontFiles(state);
+  // Worked out on its own, so a font used for the first time elsewhere remakes the hook only when the list changes.
+  const fonts = derived(state, 'preloadFontFiles', preloadFontFiles);
   const preload = fonts.length
     ? `
 /** The theme font faces every page shows first (body text, headings), as project files. */

@@ -13,6 +13,7 @@ import { applyOperations } from '@engine/apply';
 import { getTheme } from '@catalogue/index';
 import { FONTS_DIR, SERVER_HOOK_FILE, generateProject, generateServerHook, packFileCopies, preloadFontFiles } from '@generator/index';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
+import { GenerationCache } from '@generator/cache';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -87,6 +88,16 @@ describe('font preloads', () => {
     const preload = (hook: string) => hook.match(/\nconst FONTS = [^\n]*\n/)?.[0];
     expect(preload(generateProject(fresh(), { instrument: true }).get(SERVER_HOOK_FILE)!)).toBe(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!));
     expect(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!)).toContain(INTER);
+  });
+
+  it('follow a changed font from the cache as from scratch', () => {
+    const cache = new GenerationCache();
+    const s = fresh();
+    expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).toContain(FRAUNCES);
+    const next = run(s, { type: 'token.set', tokenId: 'font.display', value: stack('Playfair Display') } as EditOperation);
+    const hook = generateProject(next, {}, cache).get(SERVER_HOOK_FILE)!;
+    expect(hook).toContain(PLAYFAIR);
+    expect(hook).toBe(generateProject(next).get(SERVER_HOOK_FILE));
   });
 
   it('name one file when body text and headings share a family', () => {
