@@ -13,7 +13,7 @@ import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
-import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { draftCount, HELD_DRAFT, refusedDraftCount, sendTyped, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { sendHeldPicks } from './lib/pick-gate';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
@@ -106,6 +106,27 @@ export interface HeldEdit {
 }
 
 /**
+ * Text a guest typed in a live session that ended without them choosing it (the host ended it or removed them, their
+ * access ran out) before the host had it (#1462). Only the guest's own words, and what they were for, outlive the
+ * host's project: nothing of it is sent anywhere, and it stays on offer to copy until the guest discards it, whatever
+ * is opened or joined meanwhile. Gone when the app quits.
+ */
+export interface UnsentCard {
+  id: number;
+  /** What the text was for, as History names the edit: "Edit Heading in Split hero on Home". */
+  label: string;
+  /** The host's project it was typed in. */
+  project: string;
+  /** Why it was not sent: how the session ended, as the main process said it ("The host ended the live session."). */
+  why: string;
+  text: string;
+  /** It was on its way to the host as the session ended: the host may have it. */
+  uncertain?: boolean;
+  /** The ending it came from: every card of one ending shares it. */
+  batch: number;
+}
+
+/**
  * How the last AI request ended, for the toolbar: `run` is its final status (null when a held edit was
  * applied after the request had already ended), `edit` what happened to a held edit applied after it.
  */
@@ -146,7 +167,20 @@ export interface Toast {
   kind: 'info' | 'success' | 'error';
   /** A notice can outlive what its action is for, so the action is withdrawn once that has gone: `stops` names the
    *  AI request a Stop AI is for, and `opening` the opening of the project whose content the action goes to. */
-  action?: { label: string; run: () => void; undoes?: UndoTarget; stops?: string; opening?: string };
+  action?: { label: string; run: () => void; undoes?: UndoTarget; stops?: string; opening?: string; copies?: { label: string; text: string } };
+}
+
+/** A refusal's details when it has already been explained some other way (a live session's ending kept the text, with
+ *  why, #1462): nothing more is said about it. */
+export const SAID_ELSEWHERE = { said: 'elsewhere' } as const;
+const saidElsewhere = (e: ApplyResult['error']) => (e?.details as { said?: string } | undefined)?.said === SAID_ELSEWHERE.said;
+
+/**
+ * A notice's Copy text for words that were not saved, carrying them as well as copying them: a live session that ends
+ * meanwhile clears the notice, and keeps the words to copy instead (#1462). `label` names the edit as History would.
+ */
+export function copyTextAction(text: string, label: string): NonNullable<Toast['action']> {
+  return { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined), copies: { label, text } };
 }
 
 /** One committed change, in the opening of the project it was made in (see `undoAction`). */
@@ -365,6 +399,8 @@ export interface State {
   inspectorFocus: InspectorFocus | null;
   /** Typed edits made while the AI was working (see HeldEdit). */
   heldEdits: HeldEdit[];
+  /** Text a guest typed that a live session ended before the host had it (see UnsentCard): kept to copy until discarded. */
+  unsentTexts: UnsentCard[];
   aiOutcome: AiOutcome | null;
   /** How library images are listed, in Assets and in every image picker (see setAssetSort). */
   assetSort: AssetSort;
@@ -512,6 +548,7 @@ const live = create<State>((set) => ({
   firstSteps: null,
   inspectorFocus: null,
   heldEdits: [],
+  unsentTexts: [],
   aiOutcome: null,
   assetSort: savedAssetSort(),
   serpView: savedSerpView(),
@@ -676,11 +713,12 @@ export function whenThemesReady(): Promise<void> {
 }
 
 /** Send an edit to the main process; while timing marks are on, the moment it leaves is marked (src/shared/perf.ts). */
-function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1]): ReturnType<BuilderApi['project']['apply']> {
+/** Send an edit; `typed` is what the author typed for it, when it was typed (see sendTyped). */
+function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1], typed?: string | null): ReturnType<BuilderApi['project']['apply']> {
   // A colour picked before this edit was made reaches the project before it (lib/pick-gate).
   sendPicksAhead();
   if (perfOn) perfMark('edit.requested', { operations: batch.operations.length, revision: getState().snapshot?.revision ?? null });
-  return api.project.apply(batch, opts);
+  return sendTyped(typed, () => api.project.apply(batch, opts));
 }
 export const setState = (p: Partial<State>) => {
   // The last panel shown besides the SEO view is where leaving the view goes back to.
@@ -972,6 +1010,19 @@ export function dismissToast(id: number) {
   setState({ toasts: getState().toasts.filter((t) => t.id !== id) });
 }
 
+let unsentSeq = 0;
+let unsentBatch = 0;
+/** Keep text a live session's ending left unsent, one card each, after any kept from earlier endings. */
+export function keepUnsent(texts: Array<{ label: string; text: string; uncertain?: boolean }>, why: string, project: string): void {
+  if (!texts.length) return;
+  const batch = ++unsentBatch;
+  setState({ unsentTexts: [...getState().unsentTexts, ...texts.map((t) => ({ id: ++unsentSeq, label: t.label, project, why, text: t.text, ...(t.uncertain ? { uncertain: true } : {}), batch }))] });
+}
+/** The guest has finished with a kept text: it goes. */
+export function discardUnsent(id: number): void {
+  setState({ unsentTexts: getState().unsentTexts.filter((u) => u.id !== id) });
+}
+
 /** Options for a typed edit (see commitDraft). */
 interface DraftOptions {
   check?: boolean;
@@ -1118,7 +1169,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       r = kept.result;
     }
     // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
-    else r = await sendEdit(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
+    else r = await sendEdit(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey }, typed?.text);
     if (!r.ok && opts.replanStale && r.error?.code === 'STALE_REVISION') {
       landed({ ok: true });
       return { ...r, workspaceKey };
@@ -1129,7 +1180,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
         r.error?.code === 'BUSY' ? refuseWhileAiBusy(typed, operations, label) : r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
       // The field the edit was made in may say why itself (see claimRefusals).
       const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
-      if (r.error?.code !== 'BUSY' && !claimed) toast(message, 'error');
+      if (r.error?.code !== 'BUSY' && !claimed && !saidElsewhere(r.error)) toast(message, 'error');
       if (r.error?.code !== 'BUSY') typed?.refused?.();
       landed({ ok: false, message });
       return null;
@@ -1189,7 +1240,7 @@ async function writeTyped(
   let snap: ProjectSnapshot | null = getState().snapshot;
   for (let tries = 0; ; tries++) {
     // The project closed (or another opened): sent as it is, for the project to refuse.
-    if (!snap || snap.workspaceKey !== base.workspaceKey) return { held: false, result: await sendEdit({ operations }, { label, coalesceKey, opening: base.workspaceKey }) };
+    if (!snap || snap.workspaceKey !== base.workspaceKey) return { held: false, result: await sendEdit({ operations }, { label, coalesceKey, opening: base.workspaceKey }, typed.text) };
     if (snap.revision !== base.revision || typed.review) {
       const check = checkHeld(snap.state, operations, before);
       if (check.kind === 'gone') return hold({ phase: 'gone', note: check.what });
@@ -1214,7 +1265,7 @@ async function writeTyped(
       const asShown = typed.shown !== undefined && typeof now === 'string' && words(now) === words(typed.shown);
       if (typed.review ? !asShown : check.kind === 'changed' && !ownOnly && !ownRowName) return hold({ phase: 'changed', current });
     }
-    const r = await sendEdit({ operations, expectedRevision: expected ?? snap.revision }, { label, coalesceKey, opening: base.workspaceKey });
+    const r = await sendEdit({ operations, expectedRevision: expected ?? snap.revision }, { label, coalesceKey, opening: base.workspaceKey }, typed.text);
     if (r.ok) {
       const [op] = operations;
       const text = operations.length === 1 && op.type === 'instance.editTable' && op.action === 'setCell' ? typed.text : null;
@@ -1382,7 +1433,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     if (check.kind === 'changed') return settle({ phase: 'changed', current: check.current, currentText: shownField(h.operations[0], check.current[0]) }, outcome('held'));
     patchHeld(id, { stopping: false, writing: true });
     setState({ pendingSave: getState().pendingSave + 1 });
-    const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+    const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }, h.text).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
     // Followed like any change on its way, so saving or leaving the project waits for it.
     trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
     const r = await writing;

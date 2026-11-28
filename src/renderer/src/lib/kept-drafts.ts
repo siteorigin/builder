@@ -76,6 +76,11 @@ export function pruneKeptDrafts(): Array<[string, KeptDraft]> {
   return gone;
 }
 
+/** The text kept for fields of one opening of a project (see keptField), with each field's name. */
+export function keptDraftsIn(workspaceKey: string): Array<{ field: string; name: string; text: string }> {
+  return [...kept].filter(([field]) => field.startsWith(`${workspaceKey}|`)).map(([field, draft]) => ({ field, name: draft.name ?? '', text: draft.text }));
+}
+
 /** Forget every kept text (the project closed). Returns the fields that had one, so their drafts can be closed. */
 export function clearKeptDrafts(): string[] {
   const fields = [...kept.keys()];
@@ -103,6 +108,17 @@ export function unsavedReport(name: string): string {
 /** What is said about kept text once what it belonged to has been removed. */
 export function goneReport(name: string): string {
   return `${name ? `What you typed in ${name}` : 'Something you typed'} was not saved, and what it belonged to has been removed.`;
+}
+
+/**
+ * What is said about text a live session ended before the host had it (#1462), `why` being how it ended ("The host
+ * ended the live session."): "Not sent: the host ended the live session. Copy it to keep it." Text that was on its way
+ * as it ended (`uncertain`) may have reached the host, and says so.
+ */
+export function notSentReport(why: string, uncertain = false): string {
+  const reason = why.trim().replace(/^\p{Lu}/u, (c) => c.toLowerCase());
+  const said = `${reason}${/[.!?]$/.test(reason) ? '' : '.'}`;
+  return uncertain ? `Not confirmed: ${said} It was on its way, so the host may have it. Copy it to keep it.` : `Not sent: ${said} Copy it to keep it.`;
 }
 
 /** Why a field's text was refused, as leaving the project or saving reports it. */

@@ -1,5 +1,5 @@
 import { leavingEnded, retainRefused, savesInFlight, settle, type Settled } from './pending';
-import { api, confirmDialog, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
+import { api, confirmDialog, copyTextAction, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
 import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -89,7 +89,7 @@ useStore.subscribe((s, prev) => {
   for (const [field, draft] of pruneKeptDrafts()) {
     markDraft(keptDraftKey(field), false);
     retainRefused(keptDraftKey(field), null);
-    toast(goneReport(draft.name ?? ''), 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(draft.text).catch(() => undefined) });
+    toast(goneReport(draft.name ?? ''), 'error', copyTextAction(draft.text, draft.name ? `Edit ${draft.name}` : 'Something you typed'));
   }
 });
 

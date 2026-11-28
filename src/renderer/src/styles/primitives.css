@@ -502,6 +502,9 @@
   .toast :is(.toast-text, .held-text)::-webkit-scrollbar-thumb, .toasts[data-crowded]::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--notice-line) content-box; }
   .toasts[data-crowded]::-webkit-scrollbar-thumb { background-color: var(--border-control); }
   .toast .toast-text { max-height: calc(5 * 20px); }
+  /* Words a notice offers to copy, shown once copying them failed: quieter than the message, selectable, and three lines
+     at most before they scroll, as a held edit's quote. */
+  .toast .toast-quote { color: var(--notice-ink-2); user-select: text; overflow-wrap: anywhere; white-space: pre-line; max-height: calc(3 * 20px); overflow-y: auto; }
   /* Icons and actions take the notice's own ink (no meaning hue on a status notice), so one rule serves every fill. */
   .toast button { color: inherit; }
   .toast .btn { border: 1px solid var(--notice-line); background: transparent; color: inherit; box-shadow: none; }

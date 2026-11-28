@@ -6,11 +6,14 @@ import type { LiveProjectSnapshot } from '@shared/live/snapshot';
 import type { LiveNoteResult, NoteDraft } from '@shared/live/notes';
 import { LIVE_BATCH_LABEL_MAX } from '@shared/live/limits';
 import { refKey } from '@shared/types';
-import { api, confirmDialog, getState, setState, toast, transport, useStore, type State } from '../store';
+import { api, confirmDialog, getState, keepUnsent, SAID_ELSEWHERE, setState, toast, transport, useStore, type State } from '../store';
 import { IDLE_LIVE, sharedSelection } from './live-session';
 import { presenceOf } from './live-host';
 import { remoteApplyResult, remoteOpening, remoteSnapshot, type AdmittedRemote } from './remote-snapshot';
 import { endEditingHold, prepareToLeave } from './leave';
+import { readUnsent, sameUnsent, typedBeingSent, type UnsentText } from './pending';
+import { fieldKey } from './held';
+import { keptDraftsIn } from './kept-drafts';
 import type { RemoteApi } from './transport';
 
 /**
@@ -30,7 +33,17 @@ interface Shown {
   snapshot: ProjectSnapshot | null;
   /** Edits the host has made, waiting for the editor to hold the project at their revision (remoteApi's apply). */
   waiters: Array<{ revision: number; resolve: () => void }>;
+  /**
+   * Typed text sent to the host, until the edit is done with (#1462): an ending before the host answers leaves it
+   * uncertain; one after the host refused it (an out-of-date edit being read again) leaves it known to be unsent.
+   */
+  sending: Set<Sending>;
+  /** Of those, the ones the ending kept to copy: their answer, when it comes, has already been said. */
+  keptSending: Set<Sending>;
 }
+
+/** Typed text on its way to the host, and whether the host has refused it yet. */
+type Sending = UnsentText & { refused?: boolean };
 let shown: Shown | null = null;
 
 /** Whether the editor shows another computer's project now. */
@@ -128,14 +141,14 @@ export function applyRemoteState(next: RemoteState): void {
     else refresh(shown);
     return;
   }
-  if (shown && (next.phase === 'idle' || next.joinId !== shown.joinId)) end(next.phase === 'idle' ? next.ended : null);
+  if (shown && (next.phase === 'idle' || next.joinId !== shown.joinId)) end(next.phase === 'idle' ? next.ended : null, prev.phase === 'admitted' && prev.joinId === shown.joinId ? prev.projectName : null);
 }
 
 /** Show the host's project for an admitted join: as soon as the host's project has arrived, the editor opens it. */
 async function show(admitted: AdmittedRemote): Promise<void> {
   const joinId = admitted.joinId;
   if (shown) end(null);
-  const entry: Shown = { joinId, remote: remoteApi(joinId), live: null, snapshot: null, waiters: [] };
+  const entry: Shown = { joinId, remote: remoteApi(joinId), live: null, snapshot: null, waiters: [], sending: new Set(), keptSending: new Set() };
   shown = entry;
   transport.use(entry.remote);
   // Nothing of this computer's own live session is shown over the host's project (none runs: no project is open),
@@ -160,6 +173,15 @@ function takeLive(entry: Shown, live: LiveProjectSnapshot): void {
   const done = entry.waiters.filter((w) => w.revision <= live.revision);
   entry.waiters = entry.waiters.filter((w) => w.revision > live.revision);
   for (const w of done) w.resolve();
+}
+
+/**
+ * The answer to an edit the join ended before the host answered. Typed text the ending kept to copy already says the
+ * host may have it (#1462), so its answer says nothing more.
+ */
+function endedFirst(entry: Shown, sending: Sending | null): ApplyResult {
+  const kept = !!sending && entry.keptSending.has(sending);
+  return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false, ...(kept ? { details: SAID_ELSEWHERE } : {}) } };
 }
 
 /** How long an edit the host made waits for its revision to reach the editor before it is answered anyway. */
@@ -209,12 +231,40 @@ function publish(entry: Shown, changed: boolean): void {
 }
 
 /**
- * The join ended: the editor closes the host's project, as it closes one of its own, and goes back to this
- * computer's. Why it ended is said once the editor has left it (closing clears the notices).
+ * What the guest typed in the host's project that the host does not have: held edits with their text, every field and
+ * composer still holding typed text, and text kept for being too long or refused by a field's check. Read while the
+ * project is still the editor's, and read only: nothing is committed or sent, since the session has already ended.
  */
-function end(ended: { reason: string; message: string } | null): void {
+function unsentIn(entry: Shown): UnsentText[] {
+  const opening = remoteOpening(entry.joinId);
+  const s = getState();
+  if (s.snapshot?.workspaceKey !== opening) return [];
+  const found: UnsentText[] = [
+    // On its way to the host as the session ended: unanswered, it may have arrived, so it is said to be uncertain.
+    ...[...entry.sending].map(({ refused, ...t }) => ({ ...t, ...(refused ? {} : { uncertain: true }) })),
+    // A held edit being written is the send above while the host has not answered; once it has, the host has it.
+    ...s.heldEdits.filter((h) => h.workspace === opening && h.text !== null && !(h.writing && ![...entry.sending].some((t) => t.key === h.key))).map((h) => ({ key: h.key, label: h.label, text: h.text! })),
+    ...readUnsent(),
+    ...keptDraftsIn(opening).map((k) => ({ key: k.field, label: k.name ? `Edit ${k.name}` : 'Something you typed', text: k.text })),
+    // Text already offered to copy (its field went away): the notice goes as the project closes, so the words are kept.
+    ...s.toasts.flatMap((t) => (t.action?.copies ? [t.action.copies] : []))
+  ];
+  // The same text read from two places (a field showing text it keeps, a held edit being written) counts once.
+  return found.filter((f, i) => f.text.trim() && found.findIndex((o) => sameUnsent(o, f)) === i);
+}
+
+/**
+ * The join ended: the editor closes the host's project, as it closes one of its own, and goes back to this
+ * computer's. Why it ended is said once the editor has left it (closing clears the notices). Ended without the guest
+ * choosing it (#1462), what they typed that the host never had is kept to copy, each with why: the host's project
+ * and its access stay as the host has them, and only the guest's own words stay here.
+ */
+function end(ended: { reason: string; message: string } | null, projectName: string | null = null): void {
   const entry = shown;
   if (!entry) return;
+  const forced = !!ended && ended.reason !== 'left';
+  const unsent = forced ? unsentIn(entry) : [];
+  for (const t of entry.sending) if (unsent.some((u) => sameUnsent(u, t))) entry.keptSending.add(t);
   shown = null;
   for (const w of entry.waiters.splice(0)) w.resolve();
   if (entry.snapshot) transport.emit(entry.remote, 'project:closed', undefined);
@@ -223,7 +273,10 @@ function end(ended: { reason: string; message: string } | null): void {
   transport.use(null);
   // A dialog about the host's project (Delete page, say) never stays open for whatever opens next.
   setState({ remotePresence: null, remoteAi: null, remoteReload: { seq: 0, revision: null }, modal: null });
-  if (ended && ended.reason !== 'left') toast(ended.message, 'info');
+  if (!ended || !forced) return;
+  // The text says why it was not sent, so it stands in for the notice; with nothing typed, the notice alone.
+  if (unsent.length) keepUnsent(unsent, ended.message, projectName ?? entry.live?.state.site.name ?? 'the host’s project');
+  else toast(ended.message, 'info');
 }
 
 // ---------------------------------------------------------------------------
@@ -316,16 +369,28 @@ export function remoteApi(joinId: string): RemoteApi {
         const paused = entry.snapshot?.readOnly?.reason;
         if (paused) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: paused, recoverable: false } };
         const label = opts?.label?.slice(0, LIVE_BATCH_LABEL_MAX);
-        const result = await api.remote.apply(joinId, { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}), ...(label ? { label } : {}) });
-        // An answer for a join that has ended meanwhile is never acted on as this computer's project's.
-        if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
-        // As a local edit's answer comes with the project that has it, so the caller can select what it made. A
-        // project that does not come in time, or an edit refused as out of date, is read from the host as it is now.
-        // Tried a few times over: a change event lost and a read that failed should not leave the caller without it.
-        if (result.ok) for (let tries = 0; tries < 3 && mine() === entry && !(await arrival(entry, result.revision)); tries++) if (await refreshFrom(entry)) break;
-        if (!result.ok && result.error.code === 'STALE_REVISION') await refreshFrom(entry);
-        if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
-        return remoteApplyResult(result, revision());
+        // Typed text on its way: kept until the edit is done with, so an ending meanwhile keeps it to copy. Unanswered,
+        // it may have been made there; refused (and the project being read again), it was not.
+        const typed = typedBeingSent();
+        const sending: Sending | null = typed?.trim() ? { key: fieldKey(batch.operations), label: opts?.label ?? 'Something you typed', text: typed } : null;
+        if (sending) entry.sending.add(sending);
+        try {
+          const result = await api.remote.apply(joinId, { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}), ...(label ? { label } : {}) });
+          // An answer for a join that has ended meanwhile is never acted on as this computer's project's.
+          if (mine() !== entry) return endedFirst(entry, sending);
+          // The host has it: nothing is left to keep.
+          if (sending && result.ok) entry.sending.delete(sending);
+          else if (sending) sending.refused = true;
+          // As a local edit's answer comes with the project that has it, so the caller can select what it made. A
+          // project that does not come in time, or an edit refused as out of date, is read from the host as it is now.
+          // Tried a few times over: a change event lost and a read that failed should not leave the caller without it.
+          if (result.ok) for (let tries = 0; tries < 3 && mine() === entry && !(await arrival(entry, result.revision)); tries++) if (await refreshFrom(entry)) break;
+          if (!result.ok && result.error.code === 'STALE_REVISION') await refreshFrom(entry);
+          if (mine() !== entry) return endedFirst(entry, sending);
+          return remoteApplyResult(result, revision());
+        } finally {
+          if (sending) entry.sending.delete(sending);
+        }
       },
       undo: historyRefused,
       redo: historyRefused,

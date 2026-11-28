@@ -5,10 +5,12 @@ import { Children, cloneElement, createContext, isValidElement, useCallback, use
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, saveHeldNow, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
-import { afterLanding, isLeaving, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
+import { aiActivity, api, applyHeld, commitDraft, copyTextAction, discardHeld, discardUnsent, dismissToast, editRunStatus, markDraft, saveHeldNow, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit, type UnsentCard } from '../store';
+import { useTransitionAnnouncement } from '../lib/announce';
+import { afterLanding, isLeaving, isSettling, registerUnsent, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
+import { fieldLabel } from '../lib/edit-label';
 import { heldPrompt, type HeldAction } from '../lib/held';
-import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
+import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, notSentReport, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
 import type { PropSchema } from '@shared/types';
@@ -969,6 +971,19 @@ function fieldName(el: HTMLInputElement | HTMLTextAreaElement, ariaLabel?: strin
   return (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
 }
 
+/**
+ * What typed text in `el` was for, as History names an edit to it: a field of the element the Inspector shows ("Edit
+ * Heading in Split hero on Home"), else the field on the page shown ("Edit Title on About").
+ */
+function unsentLabel(el: Element | null, name: string): string {
+  const s = useStore.getState();
+  const state = s.snapshot?.state;
+  const field = name || 'a field';
+  if (state && s.selection && el?.closest('#dock-panel-inspect')) return fieldLabel(state, field, s.selection);
+  const page = state && s.pageId ? state.pages[s.pageId]?.title : undefined;
+  return page ? `Edit ${field} on ${page}` : `Edit ${field}`;
+}
+
 interface DraftInputProps {
   id?: string;
   /** For a single-line field: the input type, such as "date". */
@@ -1124,6 +1139,9 @@ function DraftField({
   // saved outside the app) keeps both versions for the author to choose between. A field nobody typed in
   // commits nothing. Text the project refused stays a draft, start and all.
   const startedAt = useRef<DraftStart | null>(restored?.start ?? null);
+  // What the text is for, as History would name the edit, worked out at the first keystroke: by the time it is offered
+  // back (the field went away, a live session ended), the element or page it named may be what went.
+  const labelAt = useRef<string | null>(null);
   // Refused text taken up on mount, until the project's value has first been read against it.
   const restoringRef = useRef(restoredAs === 'check');
   const forget = () => (startedAt.current = null);
@@ -1223,6 +1241,19 @@ function DraftField({
   // Kept as soon as it is refused and kept current as it is edited, so a control of the same place that comes up
   // before this one has gone (the field moved into a group) finds it too.
   const stash = (text: string, start: DraftStart, refused?: 'check') => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current, ...(refused ? { refused } : {}) });
+  // What this field holds that the project does not have yet, for a project taken away without a settle (a live session
+  // that ends while the guest types) to offer back to copy. Reading it commits nothing.
+  useEffect(
+    () =>
+      registerUnsent(() => {
+        const from = startedAt.current;
+        const text = draftRef.current;
+        if (!from || cancelled.current || text === from.value) return null;
+        const el = input.current;
+        return { key: field ?? generatedKey, label: labelAt.current ?? unsentLabel(el, nameRef.current || (el ? fieldName(el, ariaLabel) : '')), text };
+      }),
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   useEffect(() => {
     mounted.current = true;
     // Text found for this place on mount is this control's to keep from now on, unless the project already holds it
@@ -1269,7 +1300,8 @@ function DraftField({
       // Refused by its check with no place to keep it, and left before it went (the selection changed): offered to copy.
       const dropped = refused && !field && !focused.current;
       if (!open || offered || !(focused.current || over || (gone && refused) || dropped || projectRefused.current)) return;
-      const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
+      // Named with the page it was typed on: the element it belonged to may be what went.
+      const copy = copyTextAction(text, labelAt.current ?? unsentLabel(null, nameRef.current));
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
       else if (gone && refused) toast(goneReport(nameRef.current), 'error', copy);
       else if (dropped) toast(`${refusedReport(nameRef.current)} The field went away, so copy it to keep it.`, 'error', copy);
@@ -1290,7 +1322,7 @@ function DraftField({
     const el = input.current;
     // The field went while its text was being sent: offered to copy, while the project it was typed in is still open.
     if (!mounted.current || !el) {
-      if (text.trim() && useStore.getState().snapshot?.workspaceKey === from.base?.workspaceKey) toast(`${refusedReport(nameRef.current)} The field went away, so copy it to keep it.`, 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) });
+      if (text.trim() && useStore.getState().snapshot?.workspaceKey === from.base?.workspaceKey) toast(`${refusedReport(nameRef.current)} The field went away, so copy it to keep it.`, 'error', copyTextAction(text, labelAt.current ?? unsentLabel(null, nameRef.current)));
       return;
     }
     // The project holds that very text by now: nothing is left to keep.
@@ -1432,6 +1464,7 @@ function DraftField({
     },
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       edit.current++;
+      if (!startedAt.current) labelAt.current = unsentLabel(e.currentTarget, fieldName(e.currentTarget, ariaLabel));
       startedAt.current ??= { base: useStore.getState().snapshot, value: draft, commit: onCommit, ai: aiActivity() };
       // Text that arrived with line breaks (dropped, or put in by an input method) is one line before anything reads
       // it, and the caret stays where the author was rather than going to the end.
@@ -1542,7 +1575,143 @@ export function handOffNoticeFocus(going: HTMLElement) {
     .find((b): b is HTMLElement => !!b && reachable(b));
   if (next) return next.focus();
   const back = noticesCameFrom;
-  if (back?.isConnected && reachable(back) && !going.contains(back)) back.focus();
+  if (back?.isConnected && reachable(back) && !going.contains(back)) return back.focus();
+  // Where it came from has gone (the editor it was typed in closed): the screen's first control, never the page itself.
+  const root = document.getElementById('root');
+  if (root && !root.inert) tabStops(root).find((n) => !going.contains(n))?.focus();
+}
+
+/** The control Enter went down on, for one that acts as Enter is let go (see enterOnKeyUp). */
+let enterDownOn: EventTarget | null = null;
+/**
+ * Enter acts as it is let go, as a notice's Dismiss does: what the press does moves focus, and a held key's repeats
+ * would then press whatever took it (the next notice's answer, or a control on the screen behind).
+ */
+const enterOnKeyUp = {
+  onKeyDown: (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (!e.repeat) enterDownOn = e.currentTarget;
+  },
+  onKeyUp: (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== 'Enter' || enterDownOn !== e.currentTarget) return;
+    enterDownOn = null;
+    e.currentTarget.click();
+  }
+};
+
+/** A decision row going with focus in it (answered, discarded) hands focus to the next kept edit's first answer, then to
+ *  any other notice with an answer, then back where it came from: never onto the page. */
+function useHandOffWhenGone(row: RefObject<HTMLElement | null>) {
+  useLayoutEffect(
+    () => () => {
+      const el = row.current;
+      if (!el?.contains(document.activeElement)) return;
+      const next = [...document.querySelectorAll<HTMLElement>('.toast.held')].find((r) => r !== el);
+      if (next) (next.querySelector<HTMLElement>('button') ?? next).focus();
+      else handOffNoticeFocus(el);
+    },
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+}
+
+/** Copy text that says whether it worked, for three seconds, so nobody discards wording they believe they kept. */
+function useCopyText(): ['yes' | 'no' | null, (text: string) => void] {
+  const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 3000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const copy = (text: string) => {
+    setCopied(null);
+    void (navigator.clipboard?.writeText(text) ?? Promise.reject(new Error('No clipboard'))).then(
+      () => setCopied('yes'),
+      () => setCopied('no')
+    );
+  };
+  return [copied, copy];
+}
+
+/** What Copy text did, said to screen readers too: a button's new label alone is not announced. */
+function CopiedStatus({ copied }: { copied: 'yes' | 'no' | null }) {
+  return (
+    <span className="sr-only" role="status">
+      {copied === 'yes' ? 'Copied.' : copied === 'no' ? 'Could not copy. Select the text and copy it instead.' : ''}
+    </span>
+  );
+}
+
+/**
+ * A notice offering words that were not saved, to copy: its message, then Copy text. The notice stays, since it holds
+ * the only copy of them, and the button says whether copying worked; once it has not, the words show in the notice, to
+ * select and copy by hand. Dismiss is how it goes.
+ */
+function CopyOffer({ t, text }: { t: ToastItem; text: string }) {
+  const [copied, copy] = useCopyText();
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (copied === 'no') setShown(true);
+  }, [copied]);
+  return (
+    <>
+      <span className="grow toast-body">
+        <span className="toast-text" id={`toast-text-${t.id}`} role={t.kind === 'error' ? 'alert' : undefined}>
+          {t.text}
+        </span>
+        {shown && <q className="toast-quote">{text}</q>}
+        <span className="notice-later">Copy text once this dialog is closed.</span>
+      </span>
+      <button className="btn btn-sm btn-ghost" onClick={() => copy(text)}>
+        {copied ? (copied === 'yes' ? 'Copied' : 'Could not copy') : 'Copy text'}
+      </button>
+      <CopiedStatus copied={copied} />
+    </>
+  );
+}
+
+/**
+ * Text a guest typed that a live session ended before the host had it (#1462), kept on offer to copy: a decision
+ * card like a held edit's, saying what it was for and in whose project, why it was not sent, the words themselves,
+ * and Copy text, the answer that keeps them. It stays through whatever is opened next until it is discarded.
+ */
+function UnsentRow({ u }: { u: UnsentCard }) {
+  const row = useRef<HTMLDivElement>(null);
+  useHandOffWhenGone(row);
+  const [copied, copy] = useCopyText();
+  const whyId = useId();
+  return (
+    <div
+      ref={row}
+      className="toast held unsent"
+      role="group"
+      tabIndex={-1}
+      aria-label={`${u.label}, ${u.project}`}
+      aria-describedby={whyId}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.repeat) e.preventDefault();
+      }}
+    >
+      <Pencil />
+      <div className="grow held-body">
+        <span className="held-where">
+          {u.label} · {u.project}
+        </span>
+        <span id={whyId}>{notSentReport(u.why, u.uncertain)}</span>
+        <q className="held-text">{u.text}</q>
+        <span className="notice-later">Copy text once this dialog is closed.</span>
+        <span className="held-actions">
+          <button className="btn btn-sm btn-primary" onClick={() => copy(u.text)}>
+            {copied ? (copied === 'yes' ? 'Copied' : 'Could not copy') : 'Copy text'}
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => discardUnsent(u.id)} {...enterOnKeyUp}>
+            Discard
+          </button>
+        </span>
+        <CopiedStatus copied={copied} />
+      </div>
+    </div>
+  );
 }
 
 /** The answers that keep the author's edit: the first of them on offer is the row's expected answer. */
@@ -1565,33 +1734,13 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
     if (document.activeElement && document.activeElement !== document.body) return;
     (el.querySelector<HTMLElement>('button') ?? el).focus();
   }, [h.phase, h.writing, h.stopping, shown]);
-  useLayoutEffect(
-    () => () => {
-      const el = row.current;
-      if (!el?.contains(document.activeElement)) return;
-      // The next kept edit first, then any other notice with an answer, then where focus came from.
-      const next = [...document.querySelectorAll<HTMLElement>('.toast.held')].find((r) => r !== el);
-      if (next) (next.querySelector<HTMLElement>('button') ?? next).focus();
-      else handOffNoticeFocus(el);
-    },
-    []
-  );
-  // Copy text says whether it worked, so the author never discards wording they believe they kept.
-  const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(null), 3000);
-    return () => clearTimeout(timer);
-  }, [copied]);
+  useHandOffWhenGone(row);
+  const [copied, copy] = useCopyText();
   const run = (a: HeldAction) => {
     if (a === 'discard') discardHeld(h.id);
     // Saved beside the question the AI waits on: nothing is stopped.
     else if (a === 'save-now') void saveHeldNow(h.id);
-    else if (a === 'copy')
-      void (navigator.clipboard?.writeText(h.text ?? '') ?? Promise.reject(new Error('No clipboard'))).then(
-        () => setCopied('yes'),
-        () => setCopied('no')
-      );
+    else if (a === 'copy') copy(h.text ?? '');
     // Only "Stop AI and apply my edit" stops anything, and only the request the row showed.
     else void applyHeld(h.id, { replace: a === 'replace', stopRunId: a === 'stop-apply' ? (aiRunId ?? undefined) : undefined });
   };
@@ -1624,11 +1773,12 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
         <span className="notice-later">Answer once this dialog is closed.</span>
         <span className="held-actions">
           {actions.map((a, i) => (
-            <button key={a} className={`btn btn-sm ${i === 0 && KEEPS_EDIT.has(a) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => run(a)}>
+            <button key={a} className={`btn btn-sm ${i === 0 && KEEPS_EDIT.has(a) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => run(a)} {...(a === 'discard' ? enterOnKeyUp : {})}>
               {a === 'copy' && copied ? (copied === 'yes' ? 'Copied' : 'Could not copy') : HELD_LABELS[a]}
             </button>
           ))}
         </span>
+        <CopiedStatus copied={copied} />
       </div>
     </div>
   );
@@ -1786,6 +1936,17 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: 
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const held = useStore((s) => s.heldEdits);
+  const unsent = useStore((s) => s.unsentTexts);
+  // A live session's ending that left text unsent is said once, from a region already there, with how much is kept:
+  // the cards carry the rest, and focus stays where it is.
+  const lastBatch = unsent.length ? unsent[unsent.length - 1].batch : 0;
+  const unsentSaid = useTransitionAnnouncement(lastBatch, (prev, next) => {
+    // The ending's text discarded: the region stops saying it, quietly.
+    if (next <= prev) return '';
+    const cards = useStore.getState().unsentTexts.filter((u) => u.batch === next);
+    const n = cards.length;
+    return `${cards[0]?.why ?? ''} ${n === 1 ? 'Something you typed is' : `${n} things you typed are`} kept in the notices to copy.`;
+  });
   const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   const dialogOpen = useDialogOpen();
@@ -1821,6 +1982,16 @@ export function Toasts() {
   // The notices' band at the bottom of the window (from their top edge, plus clearance), which dialogs stop short of.
   const stack = useRef<HTMLDivElement>(null);
   const remeasure = useRef<() => void>(() => undefined);
+  // Text a session's ending kept arrives at the foot of the stack: a crowded stack scrolled elsewhere shows it, unless
+  // focus is in a notice the author is answering.
+  useEffect(() => {
+    const el = stack.current;
+    if (!lastBatch || !el) return;
+    const frame = requestAnimationFrame(() => {
+      if (el.hasAttribute('data-crowded') && !el.contains(document.activeElement)) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [lastBatch]);
   useLayoutEffect(() => {
     const el = stack.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -1974,25 +2145,30 @@ export function Toasts() {
           >
             {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
             {/* An error is said at once; its text alone is the alert, never its buttons. */}
-            <span className="grow toast-body">
-              <span className="toast-text" id={`toast-text-${t.id}`} role={t.kind === 'error' ? 'alert' : undefined}>
-                {t.text}
+            {actionable(t) && t.action!.copies ? (
+              <CopyOffer t={t} text={t.action!.copies.text} />
+            ) : (
+              <span className="grow toast-body">
+                <span className="toast-text" id={`toast-text-${t.id}`} role={t.kind === 'error' ? 'alert' : undefined}>
+                  {t.text}
+                </span>
+                {actionable(t) && <span className="notice-later">{t.action!.label} once this dialog is closed.</span>}
               </span>
-              {actionable(t) && <span className="notice-later">{t.action!.label} once this dialog is closed.</span>}
-            </span>
-            {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
-            {actionable(t) && (
-              <button
-                className="btn btn-sm btn-ghost"
-                onClick={() => {
-                  times.forget(t);
-                  t.action!.run();
-                  dismissToast(t.id);
-                }}
-              >
-                {t.action!.label}
-              </button>
             )}
+            {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
+            {actionable(t) &&
+              !t.action!.copies && (
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => {
+                    times.forget(t);
+                    t.action!.run();
+                    dismissToast(t.id);
+                  }}
+                >
+                  {t.action!.label}
+                </button>
+              )}
             <button
               type="button"
               className="toast-dismiss"
@@ -2028,6 +2204,16 @@ export function Toasts() {
           ))}
         </div>
       )}
+      {unsent.length > 0 && (
+        <div className="toast-group" role="region" aria-label="Text kept to copy">
+          {unsent.map((u) => (
+            <UnsentRow key={u.id} u={u} />
+          ))}
+        </div>
+      )}
+      <span className="sr-only" role="status">
+        {unsentSaid}
+      </span>
     </div>,
     document.body
   );

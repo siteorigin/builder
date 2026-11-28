@@ -6,6 +6,7 @@ import { sharedSelection } from '../lib/live-session';
 import { admittedRemote, isRemoteShell } from '../lib/remote-session';
 import { refLabel } from '../lib/model';
 import { isImeComposing } from '../lib/ime';
+import { registerUnsent } from '../lib/pending';
 import { refKey } from '@shared/types';
 import './RemoteChat.css';
 
@@ -25,12 +26,17 @@ export function RemoteChat() {
   const viewport = useStore((s) => s.viewport);
   const snapshot = useStore((s) => s.snapshot);
   const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  // A request being written when the session ends is offered back to copy (see registerUnsent); one being sent may
+  // have reached the host.
+  const unsentText = useRef({ text, sending });
+  unsentText.current = { text, sending };
+  useEffect(() => registerUnsent(() => (unsentText.current.text.trim() ? { label: 'AI request', text: unsentText.current.text, ...(unsentText.current.sending ? { uncertain: true } : {}) } : null)), []);
   /**
    * What the request being written is about, fixed when the guest chooses or starts writing: the kind, and the page
    * and selection it was then. Until then, the selection when there is one, else the page. A fresh draft starts again.
    */
   const [pinned, setPinned] = useState<{ scope: 'page' | 'selection'; pageId: string | null; selection: string | null } | null>(null);
-  const [sending, setSending] = useState(false);
   const logRef = useRef<HTMLOListElement>(null);
   const mine = ai && remote && ai.joinId === remote.joinId ? ai : null;
   const turns = mine?.turns ?? [];
@@ -195,6 +201,10 @@ function TurnLog({ turns, logRef, joinId, activeRunId }: { turns: LiveAiTurn[]; 
 
 function Turn({ turn, joinId, live }: { turn: LiveAiTurn; joinId: string; live: boolean }) {
   const [answer, setAnswer] = useState('');
+  // An answer being written to the host's AI when the session ends is offered back to copy (see registerUnsent).
+  const answering = useRef(answer);
+  answering.current = answer;
+  useEffect(() => registerUnsent(() => (answering.current.trim() ? { label: 'Answer to the AI', text: answering.current } : null)), []);
   const ended = !!turn.result || (turn.status !== null && LIVE_AI_TERMINAL.includes(turn.status));
   const working = turn.activities.filter((a) => a.status === 'running').slice(-1)[0];
   const reply = (body: string) => {

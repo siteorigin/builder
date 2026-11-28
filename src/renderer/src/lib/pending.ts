@@ -179,6 +179,62 @@ export function registerFlush(fn: () => unknown): () => void {
   return () => void flushers.delete(fn);
 }
 
+/** Text typed into a control that the project does not have yet, named as History names an edit to it. */
+export interface UnsentText {
+  /** What the text was for: "Edit Heading in Split hero on Home", "Note on Home", "AI request". */
+  label: string;
+  text: string;
+  /** The field it belongs to, when it has one: the same field read from two places (on screen and kept) counts once. */
+  key?: string;
+  /** It was on its way to the project when it was read: the project may have it already. */
+  uncertain?: boolean;
+}
+
+/** Whether two readings are the same text: the same words, for the same field (or with no field to tell by, the same
+ *  edit). Another version of one field's text (a held edit, and newer words typed since) is kept as well. */
+export const sameUnsent = (a: UnsentText, b: UnsentText) => a.text === b.text && (a.key && b.key ? a.key === b.key : a.label === b.label);
+
+/** The words the author typed for the edit being handed over right now (see sendTyped); null for any other edit. */
+let typedNow: string | null = null;
+
+/**
+ * Hand an edit over with the words the author typed for it: whoever receives it (the remote shell, #1462) reads them
+ * with typedBeingSent while it is being handed over, and only then. An edit with none (a toggle, a drag) is not text.
+ */
+export function sendTyped<T>(text: string | null | undefined, send: () => T): T {
+  const was = typedNow;
+  typedNow = text ?? null;
+  try {
+    return send();
+  } finally {
+    typedNow = was;
+  }
+}
+export const typedBeingSent = () => typedNow;
+
+/** Controls holding typed text, each with how it reads that text (null: none unsent). */
+const unsentReaders = new Set<() => UnsentText | null>();
+
+/**
+ * Register how a control reads the text it holds that the project does not have yet. A project taken away without a
+ * settle (a live session the host ended, or a guest's access running out) reads it as it goes, to offer it back to
+ * copy: reading commits nothing and sends nothing. Returns the unregister.
+ */
+export function registerUnsent(read: () => UnsentText | null): () => void {
+  unsentReaders.add(read);
+  return () => void unsentReaders.delete(read);
+}
+
+/** What every control holds unsent now, once each (see sameUnsent). */
+export function readUnsent(): UnsentText[] {
+  const out: UnsentText[] = [];
+  for (const read of unsentReaders) {
+    const found = read();
+    if (found && found.text.trim() && !out.some((o) => sameUnsent(o, found))) out.push(found);
+  }
+  return out;
+}
+
 /** How the canvas asks its preview to commit an inline text edit (set while the canvas is shown). */
 export function setCanvasCommit(fn: (() => void) | null): void {
   canvasCommit = fn;
