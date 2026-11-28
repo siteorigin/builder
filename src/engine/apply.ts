@@ -74,7 +74,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, dropOwnMenuLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, entranceCapable, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -2779,9 +2779,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     }
     case 'anchor': {
       if (node.kind === 'repeat' || node.kind === 'slot') fail('Anchors can be set on sections, elements, text, images, buttons, icons and dividers.');
-      // A section's anchor becomes the id of its component's root element, which only managed components place.
-      if (node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, not on code components.');
       const a = String(v ?? '').replace(/^#/, '');
+      // A section's anchor becomes the id of its component's root element, or where its code places id={so_id}. One
+      // its code no longer places can still be cleared.
+      if (a && node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, or on code components whose markup places id={so_id}.');
       if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) fail('Anchors start with a letter and use letters, numbers, - and _.');
       if (a && anchorsInUse(state, owner, node.id).has(a)) fail(RESERVED_ANCHORS.has(a) ? `"${a}" is used by the site itself. Choose another anchor.` : `Another element on this page already uses the anchor "${a}".`);
       if (a) node.anchor = a;
@@ -2808,7 +2809,7 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       const a = v === null || v === undefined || v === '' ? null : v;
       // A section's entrance lands on its component's root element, which only managed components place. One left
       // behind when the component changed can still be cleared.
-      if (a !== null && node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Entrances can only be set on sections built in the editor, not on code components.');
+      if (a !== null && node.kind === 'instance' && !entranceCapable(state, state.components[node.definitionId])) fail('Entrances can only be set on sections built in the editor, not on code components.');
       if (a !== null && a !== 'none' && !isAppearPreset(a)) fail(`An entrance is ${APPEAR_PRESETS.join(', ')} or none.`);
       // A placement keeps `none`, which turns its design's own entrance off; clearing it goes back to the design's.
       if (a === null) delete node.appear;

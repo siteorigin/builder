@@ -19,7 +19,7 @@ import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
 import { effectiveProps, evaluate, filterShowsAt, rendersIn, type Scope } from '@generator/checks';
-import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot, subtreeIds } from './tree';
+import { anchorsInUse, entranceCapable, fail, findParent, getNode, getTree, settledRoot, subtreeIds } from './tree';
 import { slotLandingProblem } from './slots';
 import { loopMembers, readsItem, showsCollection } from './collection-sources';
 import { repeatFilterProblem } from './schema';
@@ -119,7 +119,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (appear && top.kind === 'element') {
     if (appear === 'none') delete top.appear;
     else top.appear = appear;
-  } else if (appear && top.kind === 'instance' && anchorCapable(state, own(state.components, top.definitionId))) top.appear = appear;
+  } else if (appear && top.kind === 'instance' && entranceCapable(state, own(state.components, top.definitionId))) top.appear = appear;
   // Named as the placement was in Layers: its own name, or the component's.
   top.name = inst.name ?? def.name;
   for (const n of added) tree.nodes[n.id] = n;

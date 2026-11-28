@@ -370,8 +370,7 @@ describe('draft entries and the website export', () => {
     expect(found[0]).toMatch(/Entries have none of a page’s sections/);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('gives a section of the shipped theme on Home an anchor a header link can go to', () => {
+  it('gives a section of the shipped theme on Home an anchor a header link can go to', () => {
     const s = blog();
     const home = s.pages[s.site.homePageId];
     const anchored = Object.values(home.nodes).find((n) => n.kind === 'instance')!;
