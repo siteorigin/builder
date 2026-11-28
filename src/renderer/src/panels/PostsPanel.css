@@ -135,6 +135,7 @@
   .content-empty > p { margin: 0; }
   .content-custom { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
   .content-empty .content-custom, .content-empty .content-add { margin: 0; }
+  .content-starter-option { margin: 6px 0 0 10px; }
   .content-check { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; font-size: 12px; color: var(--text-2); }
 
   /* An entry's custom fields, in the writer: a form for records, beside the text for articles. */

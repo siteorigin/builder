@@ -37,3 +37,14 @@ describe('the collection settings dialog’s lists (#895)', () => {
   });
 });
 
+
+describe('the Blog header-menu checkbox in the Add a collection starters (#1314)', () => {
+  const src = readFileSync('src/renderer/src/panels/PostsPanel.tsx', 'utf8');
+
+  it('sits inside the Blog posts starter’s own list item, not after the whole list', () => {
+    const open = src.indexOf('<ul className="content-starters">');
+    const end = src.indexOf('</ul>', open);
+    expect(src.slice(open, end)).toMatch(/c\.id === POSTS_COLLECTION_ID && offersBlog && \(\s*<label className="content-check content-starter-option">/);
+    expect(src.match(/Add a Blog link to the header menu/g)).toHaveLength(1);
+  });
+});
