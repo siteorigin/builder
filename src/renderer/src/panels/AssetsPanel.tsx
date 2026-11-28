@@ -1680,11 +1680,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             <div>
               {hurt === 'all' ? (
                 <span>
-                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
+                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back{used ? ' (another picture chosen there shows in every place)' : ''}, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : hurt === 'original' ? (
                 <span>
-                  <b>{copies ? 'Original and some smaller copies missing.' : 'Original missing.'}</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} ${copies ? 'its other smaller copies, though some screen sizes may show nothing,' : 'its smaller copies,'} but you can’t export the site while it uses this image.` : `${copies ? 'Some smaller copies' : 'Its smaller copies'} are still here, but the original is the file the website is built from.`} Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
+                  <b>{copies ? 'Original and some smaller copies missing.' : 'Original missing.'}</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} ${copies ? 'its other smaller copies, though some screen sizes may show nothing,' : 'its smaller copies,'} but you can’t export the site while it uses this image.` : `${copies ? 'Some smaller copies' : 'Its smaller copies'} are still here, but the original is the file the website is built from.`} Locate the file to bring it back{used ? ' (another picture chosen there shows in every place)' : ''}, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : (
                 <span>

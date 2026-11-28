@@ -130,6 +130,8 @@ describe.skipIf(!browserInstalled)('Locate file with a different picture, in the
     await mount(state, { revision: 1, ...missing });
     await page.evaluate('so.show("a_tide")');
     await page.getByRole('button', { name: 'Locate file…' }).waitFor();
+    // Before choosing, the note says a different picture would show in every place.
+    expect(await page.locator('.asset-missing').textContent()).toContain('Locate the file to bring it back (another picture chosen there shows in every place), or replace it everywhere.');
   }
 
   it('lists the uses that carried their alt text over, says so with Undo, and drops the list once undone', async () => {
