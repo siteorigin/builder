@@ -437,7 +437,7 @@ describe('read-only questions (#203)', () => {
     // The tool told the model the exact path and the value it found there.
     const located = adapter.requests[2].items.at(-1) as { content: string };
     expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'validate_project', 'inspect_layout', 'locate_field', 'request_clarification', 'read_source']);
     expect(adapter.requests[0].system).toMatch(/read-only question/);
     expect(lock).toEqual([]);
     expect(compiles).toBe(0);
@@ -650,6 +650,131 @@ describe('read-only questions (#203)', () => {
       expect(activities.map((a) => a.label), mode).toEqual(expect.arrayContaining(['Checking site SEO', `Checking SEO for ${about.title}`]));
       expect(session.revision, mode).toBe(asked);
     }
+  });
+
+  it('validates the project and measures a page in the live preview in a question, changing nothing (#1409)', async () => {
+    const measured: Array<[string, number]> = [];
+    let compiles = 0;
+    let sessionRef: ProjectSession | null = null;
+    const broken = { severity: 'error' as const, code: 'COMPILE_ERROR', message: 'Hero.svelte does not build.' };
+    const { session, run, adapter } = await setup([() => [call('v1', 'validate_project', { profile: 'component' })], () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish('The home page is wider than a phone screen.')], {
+      compileAll: async () => {
+        compiles++;
+        return [broken];
+      },
+      inspectLayout: async (pageId, width) => {
+        measured.push([pageId, width]);
+        return { viewportWidth: 390, documentWidth: 520, issues: [{ kind: 'horizontal-overflow', message: 'The page is wider than the screen.' }], previewRevision: sessionRef!.revision };
+      }
+    });
+    sessionRef = session;
+    const lock = watchLock(session);
+    const asked = session.revision;
+    const { result } = await run('Check my site for problems and mobile overflow', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true, changes: [], canUndo: false });
+    expect(adapter.requests[0].system).toMatch(/validate_project lists problems in the site's pages and settings/);
+    // The build's errors reach the question, as an edit's validation reports them.
+    const validated = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(validated).toMatchObject({ ok: true, revision: asked, profile: 'component' });
+    expect(JSON.stringify(validated)).toContain('Hero.svelte does not build.');
+    expect(compiles).toBe(1);
+    const inspected = JSON.parse((adapter.requests[2].items.at(-1) as { content: string }).content);
+    expect(inspected).toMatchObject({ ok: true, revision: asked, viewport: 'phone', report: { issues: [{ kind: 'horizontal-overflow' }] } });
+    expect(measured).toEqual([[session.state.site.homePageId, 390]]);
+    // The card lists the layout check it ran, as an edit's does.
+    expect(result?.checks).toEqual(expect.arrayContaining([{ status: 'issue', text: 'Content is wider than the screen at phone width on Home.' }]));
+    expect(lock).toEqual([]);
+    expect(session.revision).toBe(asked);
+  });
+
+  it("offers every model's question both checks, a small model's for whole pages and the two document profiles (#1409)", () => {
+    const state = createStarterState('business', 'Test', false);
+    for (const [capabilities, focused] of [
+      [{ toolCalling: 'native' as const, contextWindowTokens: 400_000 }, false],
+      [{ toolCalling: 'native' as const, contextWindowTokens: 32_000 }, true],
+      [{ toolCalling: 'constrained-json' as const, contextWindowTokens: 32_768 }, true],
+      [{ toolCalling: 'constrained-json' as const, contextWindowTokens: 200_000 }, true]
+    ] as const) {
+      const label = `${capabilities.toolCalling} ${capabilities.contextWindowTokens}`;
+      const ask = toolsForRun({ state, selection: null, capabilities, codeEnabled: false, definitionOps: false, ask: true });
+      expect(ask.focused, label).toBe(focused);
+      const tool = (name: string) => ask.tools.find((t) => t.name === name)!;
+      const props = (name: string) => Object.keys((tool(name).parameters as { properties: Record<string, unknown> }).properties).sort();
+      const profiles = (tool('validate_project').parameters as { properties: { profile: { enum: string[] } } }).properties.profile.enum;
+      if (focused) {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'viewport']);
+        // Whichever a model reads, signature brief or native description, it never says to pass refs.
+        for (const text of [tool('inspect_layout').brief, tool('inspect_layout').description]) expect(text, label).not.toMatch(/refs/);
+        expect(props('validate_project'), label).toEqual(['profile']);
+        expect(profiles, label).toEqual(['schema', 'component']);
+      } else {
+        expect(props('inspect_layout'), label).toEqual(['pageId', 'refs', 'viewport']);
+        expect([...profiles].sort(), label).toEqual(['component', 'preview', 'project', 'schema']);
+      }
+    }
+  });
+
+  it('never passes off a check of a site the author changed since the question, or of a preview behind it, as one of the site asked about (#1409)', async () => {
+    let sessionRef: ProjectSession | null = null;
+    let asked = 0;
+    let edited = false;
+    const before = { severity: 'warning' as const, code: 'BEFORE_EDIT', message: 'There before the question.' };
+    const after = { severity: 'warning' as const, code: 'AFTER_EDIT', message: 'Only after the author edited.' };
+    const { session, run, adapter } = await setup(
+      [
+        () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        () => [call('l2', 'inspect_layout', { pageId: '/', viewport: 'tablet' })],
+        () => [calls(['v1', 'validate_project', { profile: 'component' }], ['v2', 'validate_project', {}])],
+        () => finish('Checked what I could.')
+      ],
+      {
+        inspectLayout: async (_pageId, width) => {
+          if (width === 390) return { viewportWidth: 390, documentWidth: 390, issues: [], previewRevision: asked + 7 };
+          // The author renames the site while the page is measured; the preview had served the site asked about.
+          expect((await sessionRef!.apply({ operations: [{ type: 'site.update', name: 'Renamed' }], expectedRevision: sessionRef!.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+          edited = true;
+          return { viewportWidth: width, documentWidth: width, issues: [], previewRevision: asked };
+        }
+      }
+    );
+    sessionRef = session;
+    asked = session.revision;
+    session.diagnostics = () => [edited ? after : before];
+    const { result } = await run('Does the home page fit a phone and a tablet?', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true });
+    const sent = (id: string) => JSON.parse((adapter.requests.at(-1)!.items.find((i) => i.kind === 'tool_result' && i.callId === id) as { content: string }).content);
+    // A preview serving another revision is no measurement of the site asked about.
+    expect(sent('l1')).toMatchObject({ ok: false, revision: asked, error: { code: 'VALIDATION_FAILED' } });
+    // Once the author has changed the site, even mid-measurement, a live check no longer speaks for the site asked about.
+    for (const id of ['l2', 'v1']) expect(sent(id), id).toMatchObject({ ok: false, revision: asked, error: { code: 'STALE_REVISION', recoverable: false } });
+    // Checking the documents alone still reads the site asked about, with the problems it had then.
+    const schema = sent('v2');
+    expect(schema).toMatchObject({ ok: true, revision: asked, profile: 'schema' });
+    expect(JSON.stringify(schema)).toContain('BEFORE_EDIT');
+    expect(JSON.stringify(schema)).not.toContain('AFTER_EDIT');
+    // Neither measurement is a pass on the card.
+    expect(result?.checks?.some((c) => c.status === 'pass')).toBe(false);
+    expect(result?.checks).toEqual([
+      { status: 'unverified', text: "Couldn't check the layout at phone width on Home, before later changes." },
+      { status: 'unverified', text: "Couldn't check the layout at tablet width on Home, before later changes." }
+    ]);
+  });
+
+  it('says a check passed before the author changed the site, never as one of the site now (#1409)', async () => {
+    let sessionRef: ProjectSession | null = null;
+    const { session, run } = await setup(
+      [
+        () => [call('l1', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        async () => {
+          expect((await sessionRef!.apply({ operations: [{ type: 'site.update', name: 'Renamed' }], expectedRevision: sessionRef!.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+          return finish('It fits a phone.');
+        }
+      ],
+      { inspectLayout: async () => ({ viewportWidth: 390, documentWidth: 390, issues: [], previewRevision: sessionRef!.revision }) }
+    );
+    sessionRef = session;
+    const { result } = await run('Does the home page fit a phone?', { mode: 'ask' });
+    expect(result?.checks).toEqual([{ status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' }]);
   });
 });
 
