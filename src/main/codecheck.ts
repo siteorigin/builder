@@ -1112,6 +1112,8 @@ export interface CodePartText {
   paths: string[];
   /** Properties a change may not empty or fill: whether they have text decides an `{#if}` outside the part. */
   keep: string[];
+  /** The lists the part is shown once per item of: their fields are one item's, so only a selection of one item reaches them. */
+  perItem: string[];
 }
 
 /** A well-formed text marker (`so_text?.('heading')`, `so_text?.('features.title', item.id)`): its path and item argument, or null. */
@@ -1260,35 +1262,58 @@ export async function codePartTexts(source: string): Promise<Record<string, Code
     while (at && (at.type === 'MemberExpression' || at.type === 'ChainExpression')) at = (at.type === 'ChainExpression' ? at.expression : at.object) as Node;
     return at?.type === 'Identifier' ? String(at.name) : null;
   };
-  // What the code changes as it runs holds what it is changed to: an assignment, or a method call that may keep what
-  // it is given (`map.set('label', label)`), wherever it is (an $effect, an event handler).
+  // What the code changes as it runs holds whatever the code that changes it reads: an assignment, or a call that may
+  // keep what it is given (`map.set('label', label)`, `Object.assign(copy, …)`), takes everything the function it is in
+  // reads (an $effect, an event handler, a helper), conditions included. A call of the code's own function hands what
+  // it is given to that function's parameters.
+  const functions = new Map<string, Node[]>();
   for (const root of [ast.instance, ast.fragment])
     walkAst(root, (n) => {
-      if (n.type === 'AssignmentExpression') for (const name of n.left && (n.left as Node).type !== 'Identifier' && (n.left as Node).type !== 'MemberExpression' ? boundNames(n.left as Node) : [rootName(n.left as Node)]) if (name) addUses(name, [...readsOf(n.right), ...readsOf((n.left as Node).type === 'MemberExpression' ? n.left : null)]);
+      if (n.type === 'FunctionDeclaration' && (n.id as Node)?.type === 'Identifier') functions.set(String((n.id as Node).name), (n.params as Node[]) ?? []);
+      if (n.type === 'VariableDeclarator' && (n.id as Node)?.type === 'Identifier' && FUNCTION_TYPES.has(String((n.init as Node)?.type))) functions.set(String((n.id as Node).name), ((n.init as Node).params as Node[]) ?? []);
+    });
+  for (const root of [ast.instance, ast.fragment])
+    walkAst(root, (n, around) => {
+      const scope = () => {
+        const fn = [...around].reverse().find((x) => FUNCTION_TYPES.has(x.type));
+        return readsOf(fn ?? n);
+      };
+      if (n.type === 'AssignmentExpression') {
+        const left = n.left as Node;
+        const names = left.type === 'Identifier' || left.type === 'MemberExpression' ? [rootName(left)] : [...boundNames(left)];
+        const used = scope();
+        for (const name of names) if (name) addUses(name, used);
+      }
       if (n.type === 'CallExpression') {
         const callee = (n.callee as Node)?.type === 'ChainExpression' ? ((n.callee as Node).expression as Node) : (n.callee as Node);
-        const target = callee?.type === 'MemberExpression' ? rootName(callee.object as Node) : null;
-        if (target) addUses(target, readsOf(n.arguments));
+        const args = (n.arguments as Node[]) ?? [];
+        const targets = [callee?.type === 'MemberExpression' ? rootName(callee.object as Node) : null, ...args.map((x) => rootName(x.type === 'SpreadElement' ? (x.argument as Node) : x))];
+        if (callee?.type === 'MemberExpression' && targets.some(Boolean)) {
+          const used = scope();
+          for (const name of targets) if (name) addUses(name, used);
+        }
+        const params = callee?.type === 'Identifier' ? functions.get(String(callee.name)) : undefined;
+        if (params) {
+          const given = readsOf(args);
+          for (const param of params) for (const name of boundNames(param)) addUses(name, given);
+        }
       }
       // A two-way binding is changed by the visitor, from nothing the placement gives it.
     });
-  // What each name the script or a {@const} declares is worked out from: by property, its value or only whether it is there.
-  const consts: Node[] = [];
-  walkAst(ast.fragment, (n) => {
-    if (n.type === 'ConstTag' && n.declaration) consts.push(n.declaration as Node);
-  });
-  for (const st of [...script, ...consts]) {
-    const decls: Array<{ names: string[]; body: unknown }> =
-      st.type === 'VariableDeclaration'
-        ? ((st.declarations as Node[]) ?? []).filter((d) => !((d.init as Node)?.type === 'CallExpression' && ((d.init as Node).callee as Node)?.name === '$props')).map((d) => ({ names: [...boundNames(d.id as Node)], body: d }))
-        : st.type === 'FunctionDeclaration' && (st.id as Node)?.type === 'Identifier'
-          ? [{ names: [String((st.id as Node).name)], body: st }]
-          : [];
-    for (const { names, body } of decls) {
-      const used = readsOf(body);
-      for (const name of names) addUses(name, used);
-    }
-  }
+  // What each name the code declares (in the script, a {@const}, or inside a function) is worked out from: by
+  // property, its value or only whether it is there. An alias (`const o = copy`) changed later changes what it names.
+  for (const root of [ast.instance, ast.fragment])
+    walkAst(root, (n) => {
+      if (n.type === 'VariableDeclarator') {
+        if ((n.init as Node)?.type === 'CallExpression' && ((n.init as Node).callee as Node)?.name === '$props') return;
+        const names = [...boundNames(n.id as Node)];
+        const used = readsOf(n);
+        for (const name of names) addUses(name, used);
+        const aliased = rootName(n.init as Node);
+        if (aliased) addUses(aliased, names.map((name) => ({ name, presence: false })));
+      }
+      if (n.type === 'FunctionDeclaration' && (n.id as Node)?.type === 'Identifier') addUses(String((n.id as Node).name), readsOf(n));
+    });
   const derived = new Map<string, Map<string, 'value' | 'presence'>>();
   for (let changed = true, guard = 0; changed && guard <= uses.size + 1; guard++) {
     changed = false;
@@ -1313,7 +1338,7 @@ export async function codePartTexts(source: string): Promise<Record<string, Code
       const consts = a.type === 'Fragment' ? ((a.nodes as Node[]) ?? []).filter((c) => c.type === 'ConstTag') : [];
       if (consts.some((c) => (((c.declaration as Node)?.declarations as Node[]) ?? []).some((d) => boundNames(d.id as Node).has(name)))) return null;
       if (a.type === 'SnippetBlock' && ((a.parameters as Node[]) ?? []).some((p) => boundNames(p).has(name))) return null;
-      if (a.type === 'AwaitBlock' && (boundNames(a.value as Node).has(name) || boundNames(a.error as Node).has(name))) return null;
+      if (a.type === 'AwaitBlock' && ((around[i + 1] === a.then && boundNames(a.value as Node).has(name)) || (around[i + 1] === a.catch && boundNames(a.error as Node).has(name)))) return null;
       if (a.type !== 'EachBlock' || ((around[i + 1] as Node | undefined) !== a.body && around[i + 1] !== a.key)) continue;
       if (!boundNames(a.context as Node).has(name)) continue;
       const list = (a.expression as Node)?.type === 'Identifier' ? propOf.get(String((a.expression as Node).name)) : undefined;
@@ -1434,7 +1459,8 @@ export async function codePartTexts(source: string): Promise<Record<string, Code
       }
     }
     const shown = [...paths].filter((p) => !outside.has(p) && locals.has(p.split('.')[0])).sort();
-    out[part] = { paths: shown, keep: [...keep].filter((p) => shown.includes(p)).sort() };
+    const perItem = new Set((hosts.get(part) ?? []).flatMap((h) => h.around.flatMap((a) => (a.type === 'EachBlock' && (a.expression as Node)?.type === 'Identifier' && propOf.has(String((a.expression as Node).name)) ? [propOf.get(String((a.expression as Node).name))!] : []))));
+    out[part] = { paths: shown, keep: [...keep].filter((p) => shown.includes(p)).sort(), perItem: [...perItem].sort() };
   }
   return out;
 }

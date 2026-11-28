@@ -46,6 +46,8 @@ export interface CodePartTexts {
   paths: string[];
   /** Properties whose presence also decides what shows outside the part: a change may not empty or fill them. */
   keep?: string[];
+  /** Lists the part is shown once per item of: without one item selected, it reaches none of their fields. */
+  perItem?: string[];
 }
 
 /** Whether Builder's `has()` says a value is there (runtime util.js): text with more than spaces, a non-empty list, a set link or picture. */
@@ -183,6 +185,8 @@ export function codePartReach(def: ComponentDefinition, part: { partId?: string;
     if (!path || 'problem' in codeTextField(def.properties, path)) continue;
     // A list the placement fills from a collection shows the entries' text, which changes in the collection.
     if (path.field !== undefined && inst?.kind === 'instance' && Object.hasOwn(inst.listSources ?? {}, path.prop)) continue;
+    // A part shown once per item, picked with no item to say which: no one item's text is the selection's.
+    if (path.field !== undefined && part.itemId === undefined && texts.perItem?.includes(path.prop)) continue;
     if (path.field === undefined) props.add(path.prop);
     else itemFields.set(path.prop, (itemFields.get(path.prop) ?? new Set()).add(path.field));
   }

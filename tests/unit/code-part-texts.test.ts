@@ -250,6 +250,32 @@ ${HAS}	let { label = '', check, so_text, so_o = undefined } = $props();
 <button onclick={() => (open = !open)}>Toggle</button>
 `)
     ).toMatchObject({ label: [], title: [], note: [], heading: [] });
+    // Through a value worked out inside the effect, a condition, a helper of the code's own, or Object.assign.
+    expect(
+      await paths(`<script>
+	let { a = '', b = '', c = '', d = '', so_text, so_o = undefined } = $props();
+	let copy = $state('');
+	let chosen = $state('');
+	let given = $state('');
+	const box = {};
+	function put(v) {
+		given = v;
+	}
+	$effect(() => {
+		const formatted = a.toUpperCase();
+		copy = formatted;
+		if (b === 'x') chosen = 'yes';
+		put(c);
+		Object.assign(box, { d });
+	});
+</script>
+<p class={so_o?.a} data-so-text={so_text?.('a')}>{a}</p>
+<p class={so_o?.b} data-so-text={so_text?.('b')}>{b}</p>
+<p class={so_o?.c} data-so-text={so_text?.('c')}>{c}</p>
+<p class={so_o?.d} data-so-text={so_text?.('d')}>{d}</p>
+<footer>{copy}{chosen}{given}{box.d}</footer>
+`)
+    ).toMatchObject({ a: [], b: [], c: [], d: [] });
     // State of the code's own that nothing the placement gives reaches leaves the rest as it is.
     expect(await paths(`${script(`heading = ''`)}<h2 class={so_o?.heading} data-so-text={so_text?.('heading')}>{heading}</h2>\n<button onclick={() => (open = !open)}>Toggle</button>\n`)).toMatchObject({ heading: ['heading'] });
     // Code that reads its properties as one object, or keeps code in a module script, is not followed.
@@ -272,7 +298,11 @@ ${HAS}	let { label = '', check, so_text, so_o = undefined } = $props();
 
   it('names no item by a name given again on the way to the marker', async () => {
     expect(
-      await paths(`${script(`plans = []`)}{#each plans as row (row.id)}<li class={[so_o?.card, so_oi?.[row.id]?.card]}>{@const row = plans[0]}<h3 data-so-text={so_text?.('plans.name', row.id)}>{row.name}</h3></li>{/each}\n`)
+      await paths(`${script(`plans = []`)}{#each plans as row (row.id)}<li class={[so_o?.card, so_oi?.[row.id]?.card]}>{#if true}{@const row = plans[0]}<h3 data-so-text={so_text?.('plans.name', row.id)}>{row.name}</h3>{/if}</li>{/each}\n`)
+    ).toMatchObject({ card: [] });
+    // An {#await}'s own name is its name only in the branch it names: elsewhere in the block, the loop's item is read.
+    expect(
+      await paths(`${script(`plans = [], details`)}{#each plans as row (row.id)}<li class={[so_o?.card, so_oi?.[row.id]?.card]}><h3 data-so-text={so_text?.('plans.name', row.id)}>{row.name}</h3></li>{#await details}<small>{row.name}</small>{:then row}<i>{row}</i>{/await}{/each}\n`)
     ).toMatchObject({ card: [] });
   });
 
@@ -325,7 +355,7 @@ async function placed() {
   const part = (partId: string, itemId?: string, paths?: string[]): Extract<Authority, { kind: 'selection' }> => {
     const a = authorityFor({ owner, instancePath: [nodeId], nodeId: state.components[defId].parts[partId].nodeId, partId, ...(itemId ? { itemPath: [itemId] } : {}) }, 'Price list', null, state);
     if (a.kind !== 'selection' || !a.part) throw new Error('not a part');
-    return { ...a, part: { ...a.part, texts: { sourceHash: sourceHash(SOURCE), paths: paths ?? texts[partId]?.paths ?? [], keep: texts[partId]?.keep ?? [] } } };
+    return { ...a, part: { ...a.part, texts: { sourceHash: sourceHash(SOURCE), paths: paths ?? texts[partId]?.paths ?? [], keep: texts[partId]?.keep ?? [], perItem: texts[partId]?.perItem ?? [] } } };
   };
   return { state, owner, nodeId, defId, part };
 }
@@ -372,6 +402,12 @@ describe('a selected part of a code component', () => {
     // An item sent whole must hold only fields the part shows.
     expect(checkAuthority(state, [{ type: 'instance.setProp', owner, nodeId, prop: 'plans', itemId: 'p_pro', value: { name: 'Premium', price: '$10' } }], card)).toMatch(/does not show/);
     expect(checkAuthority(state, [{ type: 'instance.listRemove', owner, nodeId, prop: 'plans', itemId: 'p_pro' }], card)).toMatch(/selected part/);
+  });
+
+  it('reaches no item of a part shown once per item, picked with no item to say which', async () => {
+    const { state, owner, nodeId, part } = await placed();
+    expect(part('card').part?.texts?.perItem).toEqual(['plans']);
+    expect(checkAuthority(state, [{ type: 'instance.setProp', owner, nodeId, prop: 'plans', itemId: 'p_basic', field: 'name', value: 'Starter' }], part('card'))).toMatch(/selected part/);
   });
 
   it('never reaches the items of a list the placement fills from a collection', async () => {
