@@ -87,6 +87,17 @@
   .share-popover .share-quiet { color: var(--text-2); font-weight: 400; }
   .share-popover .share-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; margin-bottom: 2px; }
   .share-popover .share-group-head .btn { margin-right: -6px; }
+  /* The roster's heading stays at the top of the list while its rows scroll under it, so its count and Show (a guest
+     just let in, out of sight) are always in reach once the roster is. */
+  .share-popover .live-roster .share-group-head { position: sticky; top: -3px; z-index: 1; margin-top: -3px; padding-top: 3px; background: var(--raised); }
+  .share-popover .share-scroll { scroll-padding-top: 34px; }
+  /* A long name gives way to an ellipsis before it pushes the count; its full name is in the button's name. */
+  .share-popover .live-show-new { min-width: 0; max-width: 62%; }
+  .share-popover .live-show-new > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The same, in the session's status line while a long queue holds the roster out of sight. */
+  .share-popover .share-status .share-show-new { min-width: 0; max-width: 60%; margin-left: auto; font-size: 12px; font-weight: 500; }
+  .share-popover .share-status .share-show-new > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .share-popover .share-status .share-show-new + .share-locked { margin-left: 10px; }
   .share-popover .share-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .share-popover .share-empty { padding: 2px 0; }
   .share-popover .live-row { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
@@ -103,9 +114,19 @@
   .share-popover .live-remove:not(:disabled) { color: var(--text-2); }
   .share-popover .live-remove:is(:hover, :focus-visible):not(:disabled) { color: var(--red-ink); }
   .share-popover .live-settled { display: flex; align-items: center; gap: 5px; min-height: 26px; color: var(--text-2); font-size: 12px; }
-  .share-popover .live-settled.done svg { width: 14px; height: 14px; color: var(--green); }
-  .share-popover .live-settled.left svg { color: var(--text-2); }
-  .share-popover .live-row.settled:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* A closed request (declined, or gone before an answer reached them) takes the quiet cross, never the check. */
+  .share-popover .live-settled.done svg { width: 14px; height: 14px; color: var(--text-2); }
+  /* Inside the clipping list, so drawn inside its edge. */
+  .share-popover .live-row.settled:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  /* A guest let in leaves the queue at once (#1321): from the first frame their slot is empty, kept for the moment the
+     hold lasts so the request below keeps its place, then closed. */
+  .share-popover .live-gap { visibility: hidden; }
+  /* ...and their row in the session says so: a check and words for a few seconds, on the live green's tint (stronger in
+     dark, where --panel-2 sits under the popover's own fill), so the eye finds them in a long roster. */
+  .share-popover .live-roster .live-row.joined { background: color-mix(in srgb, var(--green) 9%, var(--panel-2)); }
+  :where(:root[data-appearance='dark']) .share-popover .live-roster .live-row.joined { background: color-mix(in srgb, var(--green) 16%, var(--panel-2)); }
+  .share-popover .live-where.live-joined { gap: 5px; color: var(--text); }
+  .share-popover .live-joined svg { width: 13px; height: 13px; color: var(--green); }
   .share-popover .live-controls { display: flex; align-items: center; gap: 6px; }
   /* Allow AI editing (#769): a collaborator's switch, then its limit on requests once it is on. */
   .share-popover .live-ai { display: flex; flex-direction: column; gap: 6px; }

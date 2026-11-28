@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { UserPlus, X } from 'lucide-react';
 import type { LiveHostState, LiveRun } from '@shared/api';
 import type { GuestRole } from '@shared/live/limits';
-import { api, setState, useStore } from '../store';
+import { api, getState, setState, toast, useStore } from '../store';
 import { liveCommand, shownLive } from '../lib/live-host';
 import { admittedGuests, liveRun, waitingGuests, type WaitingGuest } from '../lib/live-session';
 
@@ -31,6 +31,12 @@ export const admitGuest = (run: LiveRun, guest: WaitingGuest, role: GuestRole) =
 
 /** How long an answer sent waits for the roster to show it before it is offered again. */
 const ANSWER_GIVE_UP_MS = 10_000;
+/**
+ * How long an answered request keeps its place from the press, and at least how long after the roster lets it go, so
+ * the next one never slides under the pointer that answered it (Share's queue, and the notice's answers).
+ */
+export const SETTLE_MS = 1500;
+export const SETTLE_AFTER_MS = 800;
 
 /**
  * Answers sent and not yet shown by the roster, by guest, shared by the popover and the notice so a guest is never
@@ -42,12 +48,17 @@ export type Answer = { answer: 'admitted' | 'declined'; name: string; at: number
 export type Outcome = 'admitted' | 'declined' | 'left';
 export const OUTCOME_WORDS: Readonly<Record<Outcome, string>> = { admitted: 'Admitted as viewer', declined: 'Declined', left: 'Left before joining' };
 export const outcomeOf = (sent: Answer, admittedNow: boolean): Outcome => (admittedNow ? 'admitted' : sent.answer === 'declined' ? 'declined' : 'left');
+/**
+ * The guests still to be answered: one whose answer is on its way is off the count (the Share badge, the queue's
+ * heading, Admit all) until the roster lets them go, or until the answer is offered again.
+ */
+export const unanswered = (waiting: WaitingGuest[], sent: ReadonlyMap<string, Answer>): WaitingGuest[] => waiting.filter((g) => !sent.get(g.guestId) || !!sent.get(g.guestId)!.unconfirmed);
 
 /**
  * A button that acts on a fresh press: Enter acts as it is let go (as Space does), so a held key's repeats never answer
  * the next request focus moves to.
  */
-function freshPress() {
+export function freshPress() {
   let armed: EventTarget | null = null;
   return {
     onKeyDown: (e: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -76,6 +87,30 @@ export const useAnswers = () =>
     (fn) => (answerListeners.add(fn), () => void answerListeners.delete(fn)),
     () => answers,
     () => answers
+  );
+
+/** How long a guest just let in is marked so on their row in Share. */
+export const JOINED_MS = 8000;
+/**
+ * Guests let in a moment ago (#1321), by when the roster showed them in, whichever surface answered and whether or not
+ * Share was open then: Share marks their rows for the rest of that moment.
+ */
+let joined: ReadonlyMap<string, number> = new Map();
+const joinedListeners = new Set<() => void>();
+function setJoined(next: ReadonlyMap<string, number>) {
+  joined = next;
+  joinedListeners.forEach((fn) => fn());
+}
+function markJoined(ids: string[]) {
+  const at = Date.now();
+  setJoined(new Map([...joined, ...ids.map((id) => [id, at] as const)]));
+  setTimeout(() => setJoined(new Map([...joined].filter(([id, when]) => !(ids.includes(id) && when === at)))), JOINED_MS);
+}
+export const useJoined = () =>
+  useSyncExternalStore(
+    (fn) => (joinedListeners.add(fn), () => void joinedListeners.delete(fn)),
+    () => joined,
+    () => joined
   );
 
 /** Send an answer to a waiting guest; false when it could not be sent (the guest's answers come back at once). */
@@ -136,19 +171,35 @@ export function JoinRequests() {
   const notice = useStore((s) => s.liveNotice);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   // An answer whose guest has left the queue (let in, turned away, or gone) is done with, and what became of them is
-  // said, from here whichever surface answered (this is always mounted).
+  // said, from here whichever surface answered (this is always mounted). While Share is open its rows show it, so it is
+  // only heard; otherwise the request's notice has gone, and a notice in its place says it, seen and heard alike.
   const sentAnswers = useAnswers();
+  // For a moment after an answer is settled, the notice keeps a request still waiting behind Review in Share rather than
+  // putting its answers where the last press landed (as Share holds a slot).
+  const [settling, setSettling] = useState(0);
   useEffect(() => {
     const still = new Set(waitingGuests(live).map((g) => g.guestId));
     const inRoom = new Set(admittedGuests(live).map((g) => g.guestId));
     const said: string[] = [];
+    const letIn: string[] = [];
     for (const [id, a] of sentAnswers) {
       if (still.has(id)) continue;
-      said.push(`${a.name}: ${OUTCOME_WORDS[outcomeOf(a, inRoom.has(id))].toLowerCase()}`);
+      const outcome = outcomeOf(a, inRoom.has(id));
+      if (outcome === 'admitted') letIn.push(id);
+      said.push(`${a.name}: ${OUTCOME_WORDS[outcome].toLowerCase()}`);
       setAnswer(id, null);
     }
-    if (said.length) setState({ liveNotice: { id: Date.now(), text: said.join('. ') } });
+    if (!said.length) return;
+    if (letIn.length) markJoined(letIn);
+    setSettling(Date.now());
+    if (getState().shareOpen) setState({ liveNotice: { id: Date.now(), text: said.join('. ') } });
+    else toast(`${said.join('. ')}.`, letIn.length === said.length ? 'success' : 'info');
   }, [live, sentAnswers]);
+  useEffect(() => {
+    if (!settling) return;
+    const timer = setTimeout(() => setSettling(0), Math.max(0, settling + SETTLE_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [settling]);
   // Focus in the notice when it goes (hidden, or answered from the keyboard) goes back where it came from, else to
   // Share, where the requests still are, else into the dialog that is open.
   const region = useRef<HTMLDivElement>(null);
@@ -185,7 +236,7 @@ export function JoinRequests() {
           if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
         }}
       >
-        {!shareOpen && <JoinRequestList live={live} hidden={hidden} onHide={(ids) => setHidden((h) => new Set([...h, ...ids]))} />}
+        {!shareOpen && <JoinRequestList live={live} hidden={hidden} settling={!!settling} onHide={(ids) => setHidden((h) => new Set([...h, ...ids]))} />}
       </div>
     </>
   );
@@ -197,7 +248,7 @@ export function JoinRequests() {
  * vanishes from under the host's hand: an answer would not reach the relay, so its buttons give way to a line that
  * says when they come back, as they do under a dialog.
  */
-export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState; hidden?: ReadonlySet<string>; onHide?: (guestIds: string[]) => void }) {
+export function JoinRequestList({ live, hidden, settling, onHide }: { live: LiveHostState; hidden?: ReadonlySet<string>; settling?: boolean; onHide?: (guestIds: string[]) => void }) {
   const pressedHide = useRef<EventTarget | null>(null);
   const pressedReview = useRef<EventTarget | null>(null);
   const sentAnswers = useAnswers();
@@ -211,10 +262,20 @@ export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState;
   // whose answer is on its way, or who waits on the session reconnecting, has its own line instead; a group's Review
   // in Share is still held back by the dialog then.
   const later = <span className="notice-later">Answer once this dialog is closed.</span>;
-  const one = waiting.length === 1 ? waiting[0] : null;
+  // One waiting is answered right here, except for the moment just after another's answer settled.
+  const one = waiting.length === 1 && !settling ? waiting[0] : null;
   const sent = one ? sentAnswers.get(one.guestId) : undefined;
   const sending = !!sent && !sent.unconfirmed;
   const titleId = `live-request-${waiting[0].guestId}`;
+  // Several: those still to be answered are who it counts and names; one whose answer is on its way is said in a line
+  // of its own (as it is in Share's badge), and the notice keeps Review in Share, so no answer appears under the
+  // pointer that answered.
+  const open = unanswered(waiting, sentAnswers);
+  const answering = (['admitted', 'declined'] as const)
+    .map((answer) => ({ answer, names: waiting.filter((g) => !open.includes(g) && sentAnswers.get(g.guestId)?.answer === answer).map((g) => g.displayName) }))
+    .filter((a) => a.names.length)
+    .map((a) => `${a.answer === 'admitted' ? 'Admitting' : 'Declining'} ${namesOf(a.names)}…`)
+    .join(' ');
   return (
     <div className="toast-group" role="region" aria-label="Join requests">
       <div className="toast live-request" role="group" aria-labelledby={titleId}>
@@ -225,13 +286,20 @@ export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState;
               <>
                 <strong>{one.displayName}</strong> wants to join
               </>
-            ) : (
+            ) : open.length === 1 ? (
               <>
-                <strong>{waiting.length} people</strong> want to join
+                <strong>{open[0].displayName}</strong> wants to join
               </>
+            ) : open.length ? (
+              <>
+                <strong>{open.length} people</strong> want to join
+              </>
+            ) : (
+              answering
             )}
           </span>
-          {!one && <span className="live-request-names">{namesOf(waiting.map((g) => g.displayName))}</span>}
+          {!one && open.length > 1 && <span className="live-request-names">{namesOf(open.map((g) => g.displayName))}</span>}
+          {!one && open.length > 0 && answering && <span className="live-request-sending">{answering}</span>}
           {one && sending ? (
             // Answered: it says so until the roster lets the guest go (and the outcome is announced then).
             <span className="live-request-sending">{sent!.answer === 'admitted' ? 'Admitting…' : 'Declining…'}</span>
@@ -279,7 +347,7 @@ export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState;
           <button
             type="button"
             className="toast-dismiss"
-            aria-label={one ? `Hide ${one.displayName}’s request` : 'Hide these requests'}
+            aria-label={waiting.length === 1 ? `Hide ${waiting[0].displayName}’s request` : 'Hide these requests'}
             title="Hide. They keep waiting in Share."
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onHide(waiting.map((g) => g.guestId))}

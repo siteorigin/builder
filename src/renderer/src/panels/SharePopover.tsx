@@ -12,7 +12,7 @@ import { cancelStart, copiedAtStart, copyInvite, liveCommand, onStartCopied, sho
 import { selectPage } from '../lib/actions';
 import { livePeers, peerColor } from '../lib/live-marks';
 import { presenceWhere } from '../lib/remote-view';
-import { JoinAnswers, OUTCOME_WORDS, outcomeOf, sendAnswer, useAnswers, useBusy, type Answer, type Outcome } from '../components/JoinRequests';
+import { freshPress, JoinAnswers, namesOf, OUTCOME_WORDS, outcomeOf, sendAnswer, SETTLE_AFTER_MS, SETTLE_MS, unanswered, useAnswers, useBusy, useJoined, type Answer, type Outcome } from '../components/JoinRequests';
 import {
   admittedGuests,
   clockDay,
@@ -59,8 +59,10 @@ export function ShareControl({ compact }: { compact?: boolean }) {
   const live = useStore(shownLive);
   const open = useStore((s) => s.shareOpen);
   const at = useRelayNow(live);
-  const pill = livePill(live, at);
-  const waiting = waitingGuests(live).length;
+  // Those still to be answered: a request answered (here or from the notice) is off the count until it is offered again.
+  const answers = useAnswers();
+  const waiting = unanswered(waitingGuests(live), answers).length;
+  const pill = livePill(live, at, waiting);
   const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
   const people = hasRoom(live) ? admittedGuests(live).length : 0;
@@ -107,6 +109,14 @@ export function ShareControl({ compact }: { compact?: boolean }) {
 
 type Box = { left: number; top: number };
 
+/**
+ * Whether the host's last press was a key rather than the pointer, read while the popover is open. Focus handed on as
+ * a row goes is brought into view for the keyboard only: scrolling the lists under a pointer would put another row
+ * beneath it. (`:focus-visible` cannot tell after a chain of focus moves made by script.)
+ */
+const lastPress = { key: false };
+const intoView = (el: HTMLElement) => lastPress.key && el.scrollIntoView?.({ block: 'nearest' });
+
 function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostState; at: number; trigger: React.RefObject<HTMLButtonElement | null> }) {
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<Box | null>(null);
@@ -127,8 +137,15 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
     openMenus.count++;
     const first = box.current?.querySelector<HTMLElement>('[data-autofocus]') ?? box.current?.querySelector<HTMLElement>('button, input, select');
     first?.focus({ preventScroll: true });
+    lastPress.key = false;
+    const key = () => (lastPress.key = true);
+    const pointer = () => (lastPress.key = false);
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('pointerdown', pointer, true);
     return () => {
       openMenus.count--;
+      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('pointerdown', pointer, true);
     };
   }, []);
   // A press anywhere else puts it away and goes where it was meant to; the Share button toggles it itself.
@@ -174,7 +191,7 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
     // The next guest waiting, else the roster, else the popover's first control: in that order, brought into view.
     const next = ['.live-waiting .live-answers button:not(:disabled)', '.live-roster select:not(:disabled)', '[data-autofocus]'].map((q) => el.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
     next.focus({ preventScroll: true });
-    next.scrollIntoView?.({ block: 'nearest' });
+    intoView(next);
   });
   return createPortal(
     <div
@@ -283,13 +300,9 @@ function BusyView({ live }: { live: Extract<LiveHostState, { phase: 'starting' |
 
 /** How long a copied link's proof stays on the Copy button. */
 const COPIED_MS = 2000;
-/**
- * How long an answered request keeps its place from the press, and at least how long after the roster lets it go, so
- * the next one never slides under the pointer that answered it.
- */
-const SETTLE_MS = 1500;
-const SETTLE_AFTER_MS = 800;
-type Held = { guest: WaitingGuest; outcome: Outcome; index: number; at: number; goneAt: number };
+/** A request that has left the queue (answered, or withdrawn), kept in its place in the queue for a moment. */
+type Held = { guest: WaitingGuest; outcome: Outcome; at: number; goneAt: number };
+type QueueRow = { guest: WaitingGuest; sent?: Answer; held?: Held };
 
 /** Whether a scrolling list has more above or below what shows, for the fades that say so. */
 function useScrollEdges(ref: React.RefObject<HTMLElement | null>) {
@@ -331,45 +344,139 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
   const [copied, setCopied] = useState(() => copiedAtStart(live.inviteUrl, COPIED_MS));
   useEffect(() => onStartCopied((url, when) => url === live.inviteUrl && setCopied(when)), [live.inviteUrl]);
   // Requests answered (here or from the notice) keep their slot from the press: "Admitting…" while the roster still
-  // shows them waiting, then what became of them, read from the roster, for a moment after it lets them go. Held rows go
-  // back into the queue in slot order, so the next request never moves under the pointer that answered.
+  // shows them waiting, then, for a moment after it lets them go, what became of them. One turned away (or gone) says
+  // so in its slot. One let in is in the session now, and its row there says so (#1321): it is never listed twice, so
+  // its slot here is kept empty, and only while a row below it would otherwise move up under the pointer. The queue keeps
+  // the order it was drawn in through every hold (a request arriving meanwhile takes its place after the one before it
+  // in the relay's order), and the slots close together once the last answer among them has settled, so a burst of
+  // answers moves the queue once.
   const answers = useAnswers();
+  // Those still to be answered: what the heading counts, and what Admit all and focus look for.
+  const open = unanswered(waiting, answers);
+  // Admit all acts as Enter is let go, as each Admit does, so a held key's repeats never press what takes its place.
+  const [admitAllPress] = useState(freshPress);
   const [held, setHeld] = useState<Held[]>([]);
-  const rows: Array<{ guest: WaitingGuest; sent?: Answer; held?: Held }> = waiting.map((g) => ({ guest: g, sent: answers.get(g.guestId) }));
-  for (const h of [...held].sort((a, b) => a.index - b.index)) if (!waiting.some((g) => g.guestId === h.guest.guestId)) rows.splice(Math.min(h.index, rows.length), 0, { guest: h.guest, held: h });
   const scroller = useRef<HTMLDivElement>(null);
   // The queue as last drawn, to see who has just left it, and whether focus was in the popover.
-  const drawn = useRef<typeof rows>([]);
+  const drawn = useRef<QueueRow[]>([]);
   const focusWasIn = useRef(false);
   // The guest whose row last had focus: their result line is where focus goes after answering them.
   const focusedGuest = useRef<string | null>(null);
+  // Whether Show (in the status line or the roster's heading) had focus when it moved.
+  const showHadFocus = useRef(false);
+  // Each request's height as last drawn with its answers, so its slot keeps that height through "Admitting…" and its
+  // hold even when its name wrapped beside "wants to join".
+  const heights = useRef(new Map<string, number>());
+  // Requests the roster has let go of since the queue was last drawn, held from this very draw, so a row never blinks
+  // out (and focus never drops) before the hold takes it. One withdrawn before anyone answered holds its place too, and
+  // says so, so a guest giving up never moves the request below it under the pointer.
+  const gone = drawn.current.flatMap((r): Held[] => {
+    if (r.held || waiting.some((g) => g.guestId === r.guest.guestId) || held.some((h) => h.guest.guestId === r.guest.guestId)) return [];
+    const inNow = admitted.some((g) => g.guestId === r.guest.guestId);
+    return [{ guest: r.guest, at: r.sent && !r.sent.unconfirmed ? r.sent.at : 0, goneAt: 0, outcome: r.sent ? outcomeOf(r.sent, inNow) : inNow ? 'admitted' : 'left' }];
+  });
+  const holding = new Map([...held, ...gone].map((h) => [h.guest.guestId, h]));
+  const queue: QueueRow[] = drawn.current.flatMap((r): QueueRow[] => {
+    const still = waiting.find((g) => g.guestId === r.guest.guestId);
+    const h = holding.get(r.guest.guestId);
+    return still ? [{ guest: still, sent: answers.get(still.guestId) }] : h ? [{ guest: h.guest, held: h }] : [];
+  });
+  // A request that arrived since goes before the next one already shown in the relay's order, else at the foot: never
+  // into a held slot, so nothing new appears under the pointer that answered.
+  waiting.forEach((g, i) => {
+    if (queue.some((r) => r.guest.guestId === g.guestId)) return;
+    const after = waiting.slice(i + 1).map((w) => queue.findIndex((r) => r.guest.guestId === w.guestId)).find((at) => at >= 0);
+    queue.splice(after ?? queue.length, 0, { guest: g, sent: answers.get(g.guestId) });
+  });
+  const rows = queue.filter((r, i) => r.held?.outcome !== 'admitted' || queue.slice(i + 1).some((x) => x.held?.outcome !== 'admitted'));
+  // Guests let in a moment ago, from here or the notice: their rows in the session say so (from this very draw for
+  // those leaving the queue now).
+  const joined = useJoined();
+  const justIn = [...new Set([...joined.keys(), ...gone.filter((h) => h.outcome === 'admitted').map((h) => h.guest.guestId)])].filter((id) => admitted.some((g) => g.guestId === id));
   useLayoutEffect(() => {
     const now = Date.now();
-    const left = drawn.current
-      .map((r, index) => ({ ...r, index }))
-      .filter((r) => r.sent && !r.sent.unconfirmed && !r.held && !waiting.some((g) => g.guestId === r.guest.guestId) && !held.some((h) => h.guest.guestId === r.guest.guestId));
-    if (left.length) {
-      // Shown here; JoinRequests says it, whichever surface answered.
-      setHeld((all) => [...all, ...left.map((r): Held => ({ guest: r.guest, index: r.index, at: r.sent!.at, goneAt: now, outcome: outcomeOf(r.sent!, admitted.some((g) => g.guestId === r.guest.guestId)) }))]);
-    }
-    // An answer pressed replaces its buttons with a line saying so: focus goes to that line, never on to the next
-    // request's Admit (where a held key would answer it too); once that line goes, on to the next request.
+    // Shown here; JoinRequests says it (and marks those let in), whichever surface answered.
+    if (gone.length) setHeld((all) => [...all, ...gone.map((h) => ({ ...h, goneAt: now }))]);
+    // An answer pressed replaces its buttons with a line saying so, and focus goes to that line rather than on to the
+    // next request's Admit at once; once that line goes, on to the next request. A guest let in has no line here (it is
+    // on their row in the session), so focus goes on to the next request, or, with nobody left to answer, to the role
+    // of the guest just let in, where editing is given.
     const box = scroller.current?.closest<HTMLElement>('.share-popover');
     if (box && focusWasIn.current && (!document.activeElement || document.activeElement === document.body)) {
-      const mine = focusedGuest.current ? box.querySelector<HTMLElement>(`.live-row.settled[data-guest="${CSS.escape(focusedGuest.current)}"]`) : null;
-      const next = mine ?? ['.live-waiting .live-answers button:not(:disabled)', '.live-roster select:not(:disabled)', '[data-autofocus]'].map((q) => box.querySelector<HTMLElement>(q)).find(Boolean) ?? box;
+      const mine = focusedGuest.current && CSS.escape(focusedGuest.current);
+      // Show, moving between the status line and the roster's heading as the list scrolls, keeps focus with it.
+      const show = showHadFocus.current && '.live-show-new, .share-show-new';
+      showHadFocus.current = false;
+      // The next request to answer is the first below the one just answered, and only failing that the first above it.
+      const drawnAt = (id: string) => drawn.current.findIndex((r) => r.guest.guestId === id);
+      const from = focusedGuest.current ? drawnAt(focusedGuest.current) : -1;
+      const toAnswer = queue.filter((r) => !r.held && !(r.sent && !r.sent.unconfirmed)).map((r) => r.guest.guestId);
+      const nextUp = toAnswer.find((id) => drawnAt(id) > from) ?? toAnswer[0];
+      const next =
+        [show, mine && `.live-waiting .live-row.settled[data-guest="${mine}"]`, nextUp && `.live-waiting .live-row[data-guest="${CSS.escape(nextUp)}"] .live-answers button:not(:disabled)`, mine && `.live-roster .live-row[data-guest="${mine}"] select:not(:disabled)`, '.live-roster select:not(:disabled)', '[data-autofocus]']
+          .map((q) => (q ? box.querySelector<HTMLElement>(q) : null))
+          .find(Boolean) ?? box;
       next.focus({ preventScroll: true });
-      next.scrollIntoView?.({ block: 'nearest' });
+      intoView(next);
     }
     focusWasIn.current = !!box?.contains(document.activeElement);
-    drawn.current = rows;
+    drawn.current = queue;
+    for (const li of scroller.current?.querySelectorAll<HTMLElement>('.live-waiting .live-row.waits[data-guest]') ?? []) heights.current.set(li.dataset.guest!, li.offsetHeight);
   });
   useEffect(() => {
     if (!held.length) return;
     const now = Date.now();
-    const timers = held.map((h) => setTimeout(() => setHeld((all) => all.filter((x) => x !== h)), Math.max(0, Math.max(h.at + SETTLE_MS, h.goneAt + SETTLE_AFTER_MS) - now)));
+    const due = (h: Held) => Math.max(h.at + SETTLE_MS, h.goneAt + SETTLE_AFTER_MS);
+    // From the foot of the queue up: a slot closes no sooner than any held below it, and not while an answer below it
+    // is still on its way.
+    const closes = new Map<Held, number>();
+    let below = 0;
+    for (const r of [...queue].reverse()) {
+      if (r.sent && !r.sent.unconfirmed) below = Infinity;
+      const h = r.held && held.find((x) => x.guest.guestId === r.guest.guestId);
+      if (h) closes.set(h, (below = Math.max(below, due(h))));
+    }
+    const timers = [...closes].filter(([, at]) => at !== Infinity).map(([h, at]) => setTimeout(() => setHeld((all) => all.filter((x) => x !== h)), Math.max(0, at - now)));
     return () => timers.forEach(clearTimeout);
-  }, [held]);
+  }, [held, answers, live]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A guest just let in whose row is out of sight in the list is offered in the roster's heading, so the host can see
+  // them without hunting; the list itself never scrolls under the pointer on its own.
+  const [unseen, setUnseen] = useState<string[]>([]);
+  // Whether the roster's heading (and its Show) is out of sight below a long queue: Show is offered in the session's
+  // status line instead.
+  const [rosterBelow, setRosterBelow] = useState(false);
+  const findUnseen = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const view = el.getBoundingClientRect();
+    const head = el.querySelector('.live-roster .share-group-head')?.getBoundingClientRect();
+    // In sight means clear of the sticky heading too: their name and the line that says they were just let in.
+    const top = Math.max(view.top, head && head.top <= view.top + 4 ? head.bottom : view.top);
+    const ids = justIn.filter((id) => {
+      const row = el.querySelector(`.live-roster .live-row[data-guest="${CSS.escape(id)}"]`);
+      const name = row?.querySelector('.live-name-line')?.getBoundingClientRect();
+      const line = row?.querySelector('.live-where')?.getBoundingClientRect();
+      return !!name && !!line && (name.top < top - 1 || line.bottom > view.bottom + 1);
+    });
+    setUnseen((u) => (u.join() === ids.join() ? u : ids));
+    // Offered in the fixed line until the whole heading, Show and all, is in sight.
+    const below = !!head && head.bottom > view.bottom + 1;
+    setRosterBelow((b) => (b === below ? b : below));
+  };
+  useLayoutEffect(findUnseen);
+  // The roster's place changes as the popover is resized, too.
+  useEffect(() => {
+    window.addEventListener('resize', findUnseen);
+    return () => window.removeEventListener('resize', findUnseen);
+  });
+  const showUnseen = () => {
+    const row = scroller.current?.querySelector<HTMLElement>(`.live-roster .live-row[data-guest="${CSS.escape(unseen[0])}"]`);
+    if (!row) return;
+    // Clear of the sticky heading (the list's scroll padding allows for it).
+    row.scrollIntoView({ block: 'nearest' });
+    // The button goes once they are in sight: focus goes to their role, where editing is given.
+    row.querySelector<HTMLElement>('select:not(:disabled)')?.focus({ preventScroll: true });
+  };
   const { edges, measure } = useScrollEdges(scroller);
   useEffect(() => {
     if (!copied) return;
@@ -402,6 +509,8 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
         <p className={`share-status ${live.phase}`}>
           {reconnecting ? <RefreshCw aria-hidden="true" className="live-glyph" /> : <Radio aria-hidden="true" className="live-glyph" />}
           {reconnecting ? 'Reconnecting…' : 'Live'}
+          {/* A long queue holds the roster out of sight: the guest just let in is offered here, in a line that never moves. */}
+          {unseen.length > 0 && rosterBelow && <ShowNew className="link-btn share-show-new" ids={unseen} guests={admitted} onShow={showUnseen} focused={showHadFocus} />}
           {live.locked && (
             <span className="share-locked">
               <Lock aria-hidden="true" /> Locked
@@ -422,7 +531,7 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
             <button
               type="button"
               className={`btn btn-sm share-copy${copied ? ' copied' : ''}`}
-              data-autofocus={waiting.length === 0 || reconnecting || undefined}
+              data-autofocus={open.length === 0 || reconnecting || undefined}
               onClick={() => void copyInvite(live.inviteUrl).then((ok) => ok && setCopied(Date.now()))}
             >
               {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />} {copied ? 'Copied' : 'Copy'}
@@ -467,32 +576,53 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
           </p>
         )}
       </div>
-      <div ref={scroller} className="share-scroll" onScroll={measure}>
+      <div
+        ref={scroller}
+        className="share-scroll"
+        onScroll={() => {
+          measure();
+          findUnseen();
+        }}
+      >
         {rows.length > 0 && (
           <Group
             title="Waiting to join"
-            count={waiting.length}
+            count={open.length}
+            zero
             className="live-waiting"
             action={
-              waiting.length > 1 && (
-                <button type="button" className="btn btn-sm btn-ghost" disabled={reconnecting || busy.has('admit-all')} onClick={() => void go('admit-all', async () => {
+              open.length > 1 && (
+                <button type="button" className="btn btn-sm btn-ghost" disabled={reconnecting || busy.has('admit-all')} {...admitAllPress} onClick={() => void go('admit-all', async () => {
                   // Not those already being answered.
-                  for (const g of waiting.filter((w) => !answers.get(w.guestId) || answers.get(w.guestId)!.unconfirmed)) await sendAnswer(run, g, 'admitted');
+                  for (const g of unanswered(waiting, answers)) await sendAnswer(run, g, 'admitted');
                 })}>
                   Admit all as viewers
                 </button>
               )
             }
           >
-            {rows.map(({ guest: g, sent, held: h }, i) =>
-              h || (sent && !sent.unconfirmed) ? (
-                <li key={g.guestId} data-guest={g.guestId} className="live-row settled" tabIndex={-1} aria-label={`${g.displayName}: ${h ? OUTCOME_WORDS[h.outcome] : sent!.answer === 'admitted' ? 'admitting' : 'declining'}`}>
+            {rows.map(({ guest: g, sent, held: h }) =>
+              h?.outcome === 'admitted' ? (
+                // Let in: they are in the session now, and never shown here again. Their slot stays a moment, empty (the
+                // answered row's own content, never painted, keeps its height), so the row below keeps its place. A new
+                // element, not the answered row restyled, so focus in that row is handed on rather than left in it.
+                <li key={`gap-${g.guestId}`} className="live-row live-gap" aria-hidden="true" style={{ minHeight: heights.current.get(g.guestId) }}>
+                  <span className="live-name">
+                    <strong>{g.displayName}</strong>
+                  </span>
+                  <span className="live-settled done">
+                    <Check aria-hidden="true" /> {OUTCOME_WORDS.admitted}
+                  </span>
+                </li>
+              ) : h || (sent && !sent.unconfirmed) ? (
+                <li key={g.guestId} data-guest={g.guestId} className="live-row settled" style={{ minHeight: heights.current.get(g.guestId) }} tabIndex={-1} aria-label={`${g.displayName}: ${h ? OUTCOME_WORDS[h.outcome] : sent!.answer === 'admitted' ? 'admitting' : 'declining'}`}>
                   <span className="live-name">
                     <strong>{g.displayName}</strong>
                   </span>
                   {h ? (
+                    // Turned away, or gone before an answer reached them: a closed request, never a check.
                     <span className={`live-settled done ${h.outcome}`}>
-                      {h.outcome === 'left' ? <X aria-hidden="true" /> : <Check aria-hidden="true" />} {OUTCOME_WORDS[h.outcome]}
+                      <X aria-hidden="true" /> {OUTCOME_WORDS[h.outcome]}
                     </span>
                   ) : (
                     <span className="live-settled">
@@ -501,19 +631,30 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
                   )}
                 </li>
               ) : (
-                <li key={g.guestId} data-guest={g.guestId} className="live-row" onFocus={() => (focusedGuest.current = g.guestId)}>
+                <li key={g.guestId} data-guest={g.guestId} className="live-row waits" onFocus={() => (focusedGuest.current = g.guestId)}>
                   <span className="live-name">
                     <strong>{g.displayName}</strong> wants to join
                     {sent?.unconfirmed && <span className="share-quiet"> · Not confirmed yet. Try again.</span>}
                   </span>
-                  <JoinAnswers run={run} guest={g} disabled={reconnecting || busy.has('admit-all')} autoFocus={i === 0 && !reconnecting} />
+                  <JoinAnswers run={run} guest={g} disabled={reconnecting || busy.has('admit-all')} autoFocus={g.guestId === open[0]?.guestId && !reconnecting} />
                 </li>
               )
             )}
           </Group>
         )}
-        <Group title="In the session" count={admitted.length} className="live-roster">
-          {admitted.length === 0 ? <li className="share-quiet share-empty">No one has joined yet. Send the invite link to someone.</li> : admitted.map((g) => <GuestRow key={g.guestId} run={run} live={live} guest={g} at={at} disabled={reconnecting} />)}
+        <Group
+          title="In the session"
+          count={admitted.length}
+          className="live-roster"
+          action={
+            unseen.length > 0 && !rosterBelow && <ShowNew className="btn btn-sm btn-ghost live-show-new" ids={unseen} guests={admitted} onShow={showUnseen} focused={showHadFocus} />
+          }
+        >
+          {admitted.length === 0 ? (
+            <li className="share-quiet share-empty">No one has joined yet. Send the invite link to someone.</li>
+          ) : (
+            admitted.map((g) => <GuestRow key={g.guestId} run={run} live={live} guest={g} at={at} disabled={reconnecting} joined={justIn.includes(g.guestId)} />)
+          )}
         </Group>
       </div>
       <div className="share-fixed share-end">
@@ -542,12 +683,13 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
   );
 }
 
-function Group({ title, count, className, action, children }: { title: string; count: number; className: string; action?: ReactNode; children: ReactNode }) {
+/** A group of people; `zero` counts it even when none are left (a queue still showing what became of its last answers). */
+function Group({ title, count, zero, className, action, children }: { title: string; count: number; zero?: boolean; className: string; action?: ReactNode; children: ReactNode }) {
   const id = useId();
   return (
     <section className={`share-group ${className}`} aria-labelledby={id}>
       <div className="share-group-head">
-        <h3 id={id}>{count > 0 ? `${title} (${count})` : title}</h3>
+        <h3 id={id}>{count > 0 || zero ? `${title} (${count})` : title}</h3>
         {action}
       </div>
       <ul>{children}</ul>
@@ -555,7 +697,28 @@ function Group({ title, count, className, action, children }: { title: string; c
   );
 }
 
-function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: LiveRoomState; guest: AdmittedGuest; at: number; disabled: boolean }) {
+/**
+ * Show the guests just let in whose rows are out of sight (#1321): one by name, several by count, each press the next.
+ * Its accessible name starts with what it says, then names them all.
+ */
+function ShowNew({ className, ids, guests, onShow, focused }: { className: string; ids: string[]; guests: AdmittedGuest[]; onShow: () => void; focused: React.MutableRefObject<boolean> }) {
+  const names = ids.map((id) => guests.find((g) => g.guestId === id)?.displayName ?? '');
+  const text = names.length === 1 ? `Show ${names[0]}` : `Show ${names.length} new guests`;
+  return (
+    <button
+      type="button"
+      className={className}
+      aria-label={names.length === 1 ? `${text}, just admitted` : `${text}: ${namesOf(names, names.length)}`}
+      onClick={onShow}
+      onFocus={() => (focused.current = true)}
+      onBlur={(e) => e.relatedTarget && (focused.current = false)}
+    >
+      <span>{text}</span>
+    </button>
+  );
+}
+
+function GuestRow({ run, live, guest, at, disabled, joined }: { run: LiveRun; live: LiveRoomState; guest: AdmittedGuest; at: number; disabled: boolean; joined: boolean }) {
   const { busy, run: go } = useBusy();
   const off = disabled || busy.size > 0;
   const choices = guestExpiryChoices(live, at);
@@ -598,7 +761,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
     await go('kick', () => liveCommand(run, (r) => api.live.kick(r, guest.guestId)));
   };
   return (
-    <li className="live-row">
+    <li className={`live-row${joined ? ' joined' : ''}`} data-guest={guest.guestId}>
       <span className="live-name-line">
         <span className="live-name">
           <span className="peer-dot" style={{ '--peer': peerColor(guest.colorSlot) } as CSSProperties} aria-hidden="true" />
@@ -609,7 +772,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
           Remove
         </button>
       </span>
-      <GuestWhere guest={guest} />
+      <GuestWhere guest={guest} joined={joined} />
       <span className="live-controls">
         <select
           className="select sm"
@@ -661,7 +824,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
  * on (and that it is editing), with a way to that page when it is another one. What is said follows the guest as it
  * moves; Go to page reads where they are when it is pressed.
  */
-function GuestWhere({ guest }: { guest: AdmittedGuest }) {
+function GuestWhere({ guest, joined }: { guest: AdmittedGuest; joined: boolean }) {
   // Read whole, so the row follows the session without a new object on every look.
   const live = useStore((s) => s.live);
   const livePresence = useStore((s) => s.livePresence);
@@ -670,6 +833,13 @@ function GuestWhere({ guest }: { guest: AdmittedGuest }) {
   const state = snapshot?.state ?? null;
   const peer = livePeers({ live, livePresence, snapshot, remote: getState().remote, remotePresence: null }).find((p) => p.key === guest.guestId) ?? null;
   if (!guest.connected) return <span className="live-where share-quiet">Connection dropped. Waiting for them to reconnect…</span>;
+  // Let in a moment ago (#1321): said here, where they now are, with a check and words, until it is old news.
+  if (joined)
+    return (
+      <span className="live-where live-joined">
+        <Check aria-hidden="true" /> Just admitted
+      </span>
+    );
   if (guest.role !== 'collaborator') return <span className="live-where share-quiet">Watching</span>;
   const presence = peer?.presence ?? null;
   if (!state || !presence) return <span className="live-where share-quiet">Location not known yet</span>;
