@@ -2416,6 +2416,31 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Sorting the list from its options menu is never chosen by a test', owner: 'posts' }]
   },
   {
+    id: 'posts.bulk',
+    area: 'posts',
+    intent: 'Pick several posts and publish, unpublish, file or delete them together',
+    start: 'Business site with five posts, some drafts',
+    routes: [
+      'item:Posts:Select *',
+      'item:Posts:Deselect *',
+      'item:Posts:Select all * shown',
+      'item:Posts:Clear selection',
+      'item:Posts:Publish',
+      'item:Posts:Publish * *',
+      'item:Posts:Move to drafts',
+      'item:Posts:Move * to drafts'
+    ],
+    outcome: 'Shift+click and Shift+Down pick a range, Cmd+click and Cmd+Space one more or one less, and Select all what the filter shows; a filter lets go of the picked posts it hides; the picked posts are published or moved to drafts as one change, leaving those already so alone, and a picked row’s menu offers what is done to them all',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'picks a range with Shift+click and one more or one less with Cmd+click, keeping the open post apart' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'selects all a filter shows, publishes them as one change, and leaves the posts it hides alone' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'a picked row’s menu offers what is done to them all, and its own commands' },
+      { test: 'tests/unit/posts-bulk.test.ts', kind: 'unit', step: 'changes only those not already so, as one change, and names the drafts dated after today' }
+    ],
+    gaps: [{ missing: 'Move to drafts, Clear selection and a row menu’s Select post are never chosen by a test, and neither is Publish when only some of the picked posts are drafts', owner: 'posts' }]
+  },
+  {
     id: 'posts.import',
     area: 'posts',
     intent: 'Bring my blog over from WordPress or a folder of Markdown',
