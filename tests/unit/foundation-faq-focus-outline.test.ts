@@ -12,7 +12,9 @@ const RELEASES = [
 ];
 
 describe.each(RELEASES)("%s", (file) => {
-  const pack = JSON.parse(readFileSync(file, "utf8")) as { components: Array<{ id: string; source: string }> };
+  const pack = JSON.parse(readFileSync(file, "utf8")) as {
+    components: Array<{ id: string; source: string }>;
+  };
   const source = pack.components.find((c) => c.id.endsWith("faq.list"))!.source;
 
   it("starts the answer below the focus ring instead of pulling it up under it", () => {
