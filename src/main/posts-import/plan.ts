@@ -121,14 +121,24 @@ export interface PostImportPlan {
 
 const lower = (s: string) => s.toLowerCase();
 
-/** The path a WordPress site is installed at, from its key, as a route spells it ("" at the host's root, "/news" for one at /news/). */
-function homeOf(siteKey: string): string {
-  const path = new URL(siteKey).pathname.replace(/\/+$/, '');
-  try {
-    return decodeURIComponent(path);
-  } catch {
-    return path;
+/**
+ * The path a WordPress site is installed at, from its key, as a route spells it ("" at the host's root, "/news" for
+ * one at /news/), or null for one no route can spell: a part that reads as two once decoded ("a%2Fb").
+ */
+function homeOf(siteKey: string): string | null {
+  const parts = new URL(siteKey).pathname.replace(/\/+$/, '').split('/');
+  const decoded: string[] = [];
+  for (const part of parts) {
+    let d = part;
+    try {
+      d = decodeURIComponent(part);
+    } catch {
+      // Left as it is: an address with it is refused, and said.
+    }
+    if (d.includes('/')) return null;
+    decoded.push(d);
   }
+  return decoded.join('/');
 }
 
 /** Text cut to `max` characters at a word, ending in an ellipsis when it was cut. */
@@ -337,9 +347,9 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       over[tax].add(lower(label));
       return null;
     }
-    // One no ID can be (a device's name, "aux") is numbered, as a name the collection has already is.
-    const candidates = [term.slug ? lower(term.slug) : '', slugify(label).slice(0, 50)].filter((x) => x && isTermId(`${x.slice(0, 50)}-2`));
-    const stem = candidates.find((x) => isTermId(x)) ?? candidates[0] ?? 'term';
+    // A device's name ("aux"), which no ID can be, is numbered, as a name the collection has already is.
+    const named = [term.slug && isTermId(lower(term.slug)) ? lower(term.slug) : '', slugify(label).slice(0, 50)];
+    const stem = named.find((x) => x && isTermId(x)) || [term.slug ? lower(term.slug) : '', slugify(label).slice(0, 50)].find((x) => x && isDeviceName(x)) || 'term';
     let id = stem;
     for (let n = 2; Object.hasOwn(t.terms, id) || !isTermId(id); n++) id = `${stem.slice(0, 50)}-${n}`;
     t.terms[id] = { label };
@@ -573,6 +583,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
           if (!id || !posts[i].terms[tax]?.includes(id)) continue;
           const slug = normalizeRoute(`/${t.slug}/`);
           const found = bySlug[tax].get(slug) ?? { id, keys: [] };
+          // Two terms whose IDs read as one address: the first has it.
+          if (found.id !== id) continue;
           if (!found.keys.includes(sp.key)) found.keys.push(sp.key);
           bySlug[tax].set(slug, found);
         }
@@ -608,7 +620,10 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       // One kept already that leads there (by an earlier import, or by hand) needs nothing; one leading elsewhere stays so.
       const was = kept.get(k);
       if (was) {
-        if (typeof was.to === 'string' && lower(was.to) === lower(to)) return null;
+        // Followed through any other old addresses it leads on through, as the website follows them.
+        let end = was;
+        for (let hops = 0; typeof end.to === 'string' && kept.has(lower(end.to)) && hops < 20; hops++) end = kept.get(lower(end.to))!;
+        if (typeof end.to === 'string' && lower(end.to) === lower(to)) return null;
         const holder = taken.get(k);
         return lose(holder ? heldBy(holder) : 'it already sends visitors somewhere else');
       }

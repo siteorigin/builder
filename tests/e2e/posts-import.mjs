@@ -96,9 +96,9 @@ assert.ok(winter.featuredImage && s1.state.assets.assets[winter.featuredImage].n
 assert.deepEqual(s1.state.site.redirects, [
   { from: '/2019/03/winter-workshop/', entryId: winter.id },
   { from: '/2019/04/spring-menu/', entryId: spring.id },
-  { from: '/category/news/', custom: true, to: '/blog/category/news/' },
-  { from: '/category/workshops/', custom: true, to: '/blog/category/workshops/' },
-  { from: '/tag/bread/', custom: true, to: '/blog/tag/bread/' }
+  { from: '/category/news/', custom: true, to: '/blog/category/news/', archiveOf: 'posts' },
+  { from: '/category/workshops/', custom: true, to: '/blog/category/workshops/', archiveOf: 'posts' },
+  { from: '/tag/bread/', custom: true, to: '/blog/tag/bread/', archiveOf: 'posts' }
 ]);
 assert.ok(JSON.stringify(spring.body).includes(`"target":"${winter.id}"`), 'a link between imported posts goes to the entry');
 const applied = s1.history.entries.filter((e) => e.applied).map((e) => e.label);

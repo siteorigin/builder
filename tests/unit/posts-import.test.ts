@@ -1231,6 +1231,30 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(planPostImport(s, native, '2026-11-24').archiveRedirects.map((r) => r.from)).toEqual(['/日記/category/soil/', '/日記/category/farming/soil/']);
   });
 
+  it('issue 1512: reads each old archive address once, as the website follows it, and names terms as before', async () => {
+    const term = (domain: string, slug: string, label: string) => `<category domain="${domain}" nicename="${slug}"><![CDATA[${label}]]></category>`;
+    const post = (id: number, title: string, terms: string) => item(id, { title, link: `https://old.example/2020/${id}/`, 'wp:status': 'publish', 'wp:post_date': `2020-01-0${id} 00:00:00` }, '<p>No links.</p>') + terms;
+    // An old address already leading on, through another, to the archive it would go to: it works, and is left so.
+    const s = applyOperations(site(), [
+      { type: 'redirect.add', from: '/old-rye/', to: '/blog/tag/rye/' },
+      { type: 'redirect.add', from: '/tag/rye/', to: '/old-rye/' }
+    ]).state;
+    // Two terms whose WordPress IDs read as one address once folded: the first has it, with the posts that bring it.
+    const source = await readWordPress(wxr([post(1, 'Bread', term('post_tag', 'rye', 'Rye')), post(2, 'Grain', term('post_tag', 'ｒｙｅ', 'Rye grain')), post(3, 'Tokyo', term('post_tag', 'constructor', '東京'))]), pages(s));
+    const plan = planPostImport(s, source, '2026-11-24');
+    expect(plan.archiveRedirectsLost).toEqual([]);
+    expect(plan.archiveRedirects.map((r) => r.from)).not.toContain('/tag/rye/');
+    // Without it, the address goes to the first term's archive, brought by its own post alone.
+    const fresh = planPostImport(site(), source, '2026-11-24');
+    expect(fresh.archiveRedirects.filter((r) => r.from === '/tag/rye/')).toEqual([{ from: '/tag/rye/', to: '/blog/tag/rye/' }]);
+    expect(fresh.archiveSources['/tag/rye/']).toEqual({ keys: ['wp:1'] });
+    // A name no ID can be falls back as it always has: only a device's name is numbered.
+    expect(plan.newTermIds.tags).toEqual(['rye', 'rye-grain', 'term']);
+    // A site installed at a path no route can spell has no archive addresses to keep.
+    const odd = await readWordPress(wxr([post(1, 'Bread', term('post_tag', 'oats', 'Oats'))], '<wp:base_blog_url>https://old.example/a%2Fb</wp:base_blog_url>'), pages(s));
+    expect(planPostImport(s, odd, '2026-11-24')).toMatchObject({ archiveRedirects: [], archiveRedirectsLost: [] });
+  });
+
   it('says when a featured picture is not in the export', async () => {
     const source = await readWordPress(wxr([item(1, { title: 'Pictured', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, 'Text') + '<wp:postmeta><wp:meta_key>_thumbnail_id</wp:meta_key><wp:meta_value>99</wp:meta_value></wp:postmeta>']), {});
     expect(source.posts[0].featured).toBeUndefined();
