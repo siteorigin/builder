@@ -197,16 +197,19 @@ describe('built-in English wording on a page that is not in English', () => {
     s.site.notFoundHeading = 'Perdu';
     const { body } = await renderNotFound(s);
     expect(phrases(body)).toEqual(['Perdu', english(NOT_FOUND_DEFAULTS.message), english(NOT_FOUND_DEFAULTS.linkLabel)]);
+    // The blocks themselves are not marked, so their lines still start where the page's do.
+    expect(body.match(/<(?:h1|p|a)\b[^>]*\s(?:lang|dir)=/g)).toBeNull();
   });
 
   it('marks only built-in wording: the author’s own stays unmarked even when it reads the same', async () => {
     const s = fresh();
     s.site.language = 'ur-PK';
     s.site.notFoundMessage = NOT_FOUND_DEFAULTS.message;
+    s.site.notFoundLinkLabel = 'Accueil';
     // Wording that shows nothing leaves the built-in phrase in its place.
-    s.site.notFoundLinkLabel = '\u200b ';
+    s.site.notFoundHeading = '\u200b ';
     const { body } = await renderNotFound(s);
-    expect(phrases(body)).toEqual([english(NOT_FOUND_DEFAULTS.heading), NOT_FOUND_DEFAULTS.message, english(NOT_FOUND_DEFAULTS.linkLabel)]);
+    expect(phrases(body)).toEqual([english(NOT_FOUND_DEFAULTS.heading), NOT_FOUND_DEFAULTS.message, 'Accueil']);
   });
 
   it.each<[string, 'ltr' | 'rtl' | undefined]>([
@@ -222,6 +225,13 @@ describe('built-in English wording on a page that is not in English', () => {
     const { body } = await renderNotFound(s);
     const copy = notFoundCopy(s.site);
     expect(phrases(body)).toEqual([copy.heading, copy.message, copy.linkLabel]);
+  });
+
+  it('gives English its reading direction on an English site that runs right to left by its script', async () => {
+    const s = fresh();
+    s.site.language = 'en-Arab';
+    const { body } = await renderNotFound(s);
+    expect(phrases(body)).toEqual([english(NOT_FOUND_DEFAULTS.heading), english(NOT_FOUND_DEFAULTS.message), english(NOT_FOUND_DEFAULTS.linkLabel)]);
   });
 
   it('gives English its reading direction on an English site set to run right to left, in a cached run too', () => {
