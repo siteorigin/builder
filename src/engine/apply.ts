@@ -3441,7 +3441,7 @@ function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResu
 }
 
 /**
- * A copy of a definition for some of its placements (§8.4): the placements a change covers move to one project copy
+ * A copy of a definition for some of its placements: the placements a change covers move to one project copy
  * they share, and every other keeps the original, which stays available to insert.
  */
 function forkPlacements(state: ProjectState, op: Op<'component.fork'>): OpResult {

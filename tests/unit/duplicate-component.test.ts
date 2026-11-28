@@ -11,7 +11,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { canDuplicate, duplicateName, duplicateOperation } from '../../src/renderer/src/lib/duplicate-component';
 import { foundationDesign, projectDesign } from './fixtures/packs';
 
-/** Duplicate component (spec §8.4, issue #746): what the dialog sends, the name it suggests, and where it is offered. */
+/** Duplicate component (issue #746): what the dialog sends, the name it suggests, and where it is offered. */
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));

@@ -771,7 +771,7 @@ function sourceWithin(state: ProjectState, definitionId: string, authority: Extr
 
 /**
  * Whether a copy of a component stays inside a selection: as component.makeUnique makes one for the selected
- * placement, a fork may move placements inside the selected element to a copy they share (§8.4), and never one outside
+ * placement, a fork may move placements inside the selected element to a copy they share, and never one outside
  * it. A selected part reaches neither, and a selection inside a component's design adds no component to the site.
  */
 function forkWithin(op: Extract<EditOperation, { type: 'component.fork' }>, authority: Extract<Authority, { kind: 'selection' }>, allowed: Set<string>, sameOwner: (o: OwnerRef) => boolean): string | null {
