@@ -48,7 +48,7 @@ export function CanonicalUrlField({
     const c = checkCanonicalUrl(draft);
     typedTo.current?.(d && c.ok ? c.url : undefined);
   }, []);
-  const hint = `Only when this ${what} was first published at another address: search engines are pointed there instead. Leave empty to use its own address.`;
+  const hint = `Only if the same content is also at another address: enter the one search engines should list. Leave empty to use this ${what}’s own address.`;
   // What is wrong with the saved value describes the field only while it shows that value.
   const stored = !problem && value && !dirty ? canonicalProblem(value) : null;
   const error = problem && (
@@ -59,7 +59,7 @@ export function CanonicalUrlField({
   );
   return (
     <Field label="Canonical URL" hint={stored ? `${stored.message} The ${what}’s own address is used until it is corrected.` : hint} error={error}>
-      <DraftInput id={id} keep={keep} keepWhile={keepWhile} value={value} placeholder={ownUrl ?? 'https://example.com/original/'} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
+      <DraftInput id={id} keep={keep} keepWhile={keepWhile} value={value} placeholder={ownUrl ?? undefined} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
     </Field>
   );
 }
@@ -76,7 +76,8 @@ export function RevisionDateField({ id: explicitId, label, hint, value, onSet, o
   return (
     <Field label={label} hint={hint} controlId={id}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <DraftInput id={id} type="date" aria-describedby={`${id}-note`} value={value ?? ''} onCommit={(v) => (isArticleDate(v) ? (v !== value ? onSet(v) : undefined) : v || value ? refuse() : undefined)} />
+        {/* Empty, the browser draws its yyyy/mm/dd mask in the text's own ink: it takes a placeholder's, so it never reads as a date. */}
+        <DraftInput id={id} type="date" className={value ? 'input' : 'input date-empty'} aria-describedby={`${id}-note`} value={value ?? ''} onCommit={(v) => (isArticleDate(v) ? (v !== value ? onSet(v) : undefined) : v || value ? refuse() : undefined)} />
         {value && !locked && (
           <button type="button" className="link-btn" aria-label={`Clear ${label.toLowerCase()}`} onClick={() => void onClear()}>
             Clear

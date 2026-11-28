@@ -5,7 +5,7 @@ import { routeUrl } from '@shared/routes';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { DraftInput, Field, SwitchRow, useLockedFields } from '../components/ui';
 import { CanonicalUrlField } from '../components/SeoFields';
-import type { PictureStandIn } from '../lib/sharing';
+import { SHARING_IMAGE_SHAPE, type PictureStandIn } from '../lib/sharing';
 import { getState } from '../store';
 import { ImageEditor } from './PropEditors';
 import { openSiteSharing } from './SharingPreview';
@@ -92,7 +92,7 @@ export function PostSearchFields({
             </>
           }
         >
-          <DraftInput id={ids && `${ids}-title`} keep={`${home}:seoTitle`} keepWhile={alive} value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} onDirty={on.title} onCommit={(v) => change({ kind: 'title', text: v })} />
+          <DraftInput id={ids && `${ids}-title`} keep={`${home}:seoTitle`} keepWhile={alive} value={seo.title ?? ''} placeholder={defaultTitle} quietCount limit={TEXT_LIMITS.seoTitle} onDirty={on.title} onCommit={(v) => change({ kind: 'title', text: v })} />
         </Field>
       </div>
       <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
@@ -105,7 +105,7 @@ export function PostSearchFields({
             </>
           }
         >
-          <DraftInput id={ids && `${ids}-description`} keep={`${home}:seoDescription`} keepWhile={alive} multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || `Describe this ${noun}`} onDirty={on.description} onCommit={(v) => change({ kind: 'description', text: v })} />
+          <DraftInput id={ids && `${ids}-description`} keep={`${home}:seoDescription`} keepWhile={alive} multiline rows={3} quietCount value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || `Describe this ${noun}`} onDirty={on.description} onCommit={(v) => change({ kind: 'description', text: v })} />
         </Field>
       </div>
       {/* The post's own choice, or what it follows while it has none: the picker shows both, as a page's does. */}
@@ -117,10 +117,10 @@ export function PostSearchFields({
           picture={picker}
           onChange={(v) => void change({ kind: 'socialImage', assetId: v.assetId })}
         />
-        <div className="field-hint">{locked ? imageNote.replace(/ Choose one to use a different image\.$/, '') : imageNote}</div>
+        <div className="field-hint">{locked ? imageNote.replace(/ Choose one to use a different image\.$/, '') : `${imageNote} ${SHARING_IMAGE_SHAPE}`}</div>
         {/* While it shows the site's image, that image is changed where the site keeps it, as a page's picker offers. */}
         {!seo.socialImage && !featured && !locked && (
-          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
+          <button type="button" className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12 }} onClick={() => openSiteSharing('socialImage')}>
             Change the site’s sharing image
           </button>
         )}

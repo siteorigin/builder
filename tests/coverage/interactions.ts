@@ -2399,15 +2399,16 @@ export const INTERACTIONS: Interaction[] = [
     area: 'posts',
     intent: 'File posts under categories and tags, and manage them',
     start: 'Business site with three posts, two published',
-    routes: ['panel:Posts › Categories and tags', 'item:Posts:*…', 'panel:Posts › writer › Category', 'panel:Posts › Filter', 'panel:Posts › options › Sort', 'item:Posts:<data>'],
-    outcome: 'Categories and tags are added in the manager and as they are typed; the list narrows by category, status and words; a rename moves the address, its posts and a list of posts choosing it in one undo step; a delete says how many posts it is on and is refused while a list chooses it',
+    routes: ['panel:Posts › Categories and tags', 'item:Posts:*…', 'panel:Posts › writer › Category', 'panel:Posts › Filter', 'panel:Posts › options › Sort', 'item:Posts:Show full titles', 'item:Posts:<data>'],
+    outcome: 'Categories and tags are added in the manager and as they are typed; the list narrows by category, status and words, and its options show every title whole; a rename moves the address, its posts and a list of posts choosing it in one undo step; a delete says how many posts it is on and is refused while a list chooses it',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'categories and tags added in the manager' },
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'the list narrowed by category, by Published or Drafts, and by its words' },
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'the category renamed: its address, its posts and the list on Home follow it in one step' },
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'deleting a category says how many posts it is on; one a list of posts chooses is refused' },
-      { test: 'tests/unit/post-taxonomy.test.ts', kind: 'unit' }
+      { test: 'tests/unit/post-taxonomy.test.ts', kind: 'unit' },
+      { test: 'tests/unit/post-create-typing-browser.test.ts', kind: 'unit', step: 'shows every title whole from the list’s options, then two lines again' }
     ],
     gaps: [{ missing: 'Sorting the list from its options menu is never chosen by a test', owner: 'posts' }]
   },

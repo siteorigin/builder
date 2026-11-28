@@ -176,6 +176,8 @@ interface PreparedFile {
   buf: Buffer;
   hash: string;
   font?: AssetRecord['font'];
+  /** The families a legacy-named font may belong to (FontInfo.joins), for importAssetBatch to settle against the library. */
+  fontJoins?: string[];
   /** The bytes are a picture this app just made (a web-sized copy, a converted photo), so they need no check that they decode. */
   made?: true;
 }
@@ -221,14 +223,15 @@ async function prepareBytes(sourcePath: string, bytes: Buffer, mime: string, ext
   }
   // A font is only useful with its family, weight and style, so a file that does not declare them is refused.
   let font: AssetRecord['font'];
+  let joins: string[] | undefined;
   if (mime.startsWith('font/')) {
     try {
-      font = await fontInfo(buf);
+      ({ joins, ...font } = await fontInfo(buf));
     } catch (e) {
       throw refuse(`${(e as Error).message}. Use a WOFF2 or WOFF web font.`);
     }
   }
-  return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext, mime, buf, hash: sha(buf), ...(font ? { font } : {}) };
+  return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext, mime, buf, hash: sha(buf), ...(font ? { font } : {}), ...(joins ? { fontJoins: joins } : {}) };
 }
 
 /** How a file is imported: as it is, or as a web-sized copy, and with what decoder for HEIC photos. */
@@ -628,6 +631,8 @@ export async function importAssetBatch(
   batch: { parallel: number; go: () => boolean }
 ): Promise<Array<BatchOutcome | undefined>> {
   const out: Array<BatchOutcome | undefined> = new Array(files.length);
+  // The families each legacy-named font may join, settled once every file is in (joinFontFamilies).
+  const joins: Array<string[] | undefined> = new Array(files.length);
   // Each picture's store so far, by content: the record a later file with the same bytes takes (null when it failed).
   const stores = new Map<string, Promise<AssetRecord | null>>();
   // Settled once the file started last has claimed its picture (or failed before it could), so claims go in order.
@@ -648,6 +653,7 @@ export async function importAssetBatch(
     await after;
     const { note, ...p } = prepared;
     const noted = note ? { note } : {};
+    joins[i] = p.fontJoins;
     const dup = sameFile(known, p);
     if (dup) {
       claimed();
@@ -677,7 +683,54 @@ export async function importAssetBatch(
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(batch.parallel, files.length)) }, lane));
+  joinFontFamilies(out, joins, known);
   return out;
+}
+
+/**
+ * Move each font a batch adds under a legacy family name ("IBM Plex Mono Medium") into the family it is a weight or
+ * style of ("IBM Plex Mono"), when the library or the batch has that family (#1469). The fonts are not in the
+ * project yet, so their records are settled here, before they land; the files' order never matters. A font with
+ * no such family keeps its own name: "Arial Black" imported alone is a family.
+ */
+function joinFontFamilies(out: Array<BatchOutcome | undefined>, joins: Array<string[] | undefined>, known: AssetRecord[]): void {
+  // The family each font of the library and the batch has, by its lowercase name (CSS ignores case); a library record
+  // given its details by this batch counts with them.
+  const backfilled = new Map<string, NonNullable<AssetRecord['font']>>();
+  for (const o of out) if (o && !('error' in o) && o.existing && o.font) backfilled.set(o.record.id, o.font);
+  const faces = known.map((a) => (a.kind === 'font' ? (a.font ?? backfilled.get(a.id)) : undefined)).filter((f): f is NonNullable<AssetRecord['font']> => typeof f?.family === 'string');
+  const moves: Array<{ face: NonNullable<AssetRecord['font']>; record?: AssetRecord; to: string }> = [];
+  const has = (f: string) => faces.some((face) => face.family.toLowerCase() === f.toLowerCase());
+  out.forEach((o, i) => {
+    if (!o || 'error' in o || !joins[i]) return;
+    const to = joins[i]!.find(has);
+    if (!to) return;
+    // A new record, or the details an old record without them is given.
+    if (!o.existing && o.record.font) moves.push({ face: o.record.font, record: o.record, to });
+    else if (o.font) moves.push({ face: o.font, to });
+  });
+  // A family every face of which moves on is no family to join: follow it to where its faces go ("X Medium Bold"
+  // into "X Medium" into "X"). Settled against the families as they were, so the files' order never matters.
+  const moving = new Set(moves.map((m) => m.face));
+  const stays = new Set(faces.filter((f) => !moving.has(f)).map((f) => f.family.toLowerCase()));
+  // Only a family whose faces all go to one place leads anywhere; one whose faces part ways stays where it is named.
+  const onward = new Map<string, string | null>();
+  for (const m of moves) {
+    const from = m.face.family.toLowerCase();
+    const was = onward.get(from);
+    onward.set(from, was === undefined || was?.toLowerCase() === m.to.toLowerCase() ? m.to : null);
+  }
+  const named = new Map(faces.filter((f) => !moving.has(f)).reverse().map((f) => [f.family.toLowerCase(), f.family]));
+  for (const m of moves) {
+    let to = m.to;
+    for (let hops = 0; !stays.has(to.toLowerCase()) && onward.get(to.toLowerCase()) && hops < moves.length; hops++) to = onward.get(to.toLowerCase())!;
+    m.to = named.get(to.toLowerCase()) ?? to;
+  }
+  for (const m of moves) {
+    // Named as the library already names the family.
+    m.face.family = m.to;
+    if (m.record) m.record.name = fontName(m.face);
+  }
 }
 
 /**
