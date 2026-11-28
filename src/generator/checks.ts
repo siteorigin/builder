@@ -2715,11 +2715,13 @@ export function pageSections(state: ProjectState, pageId: string): PageSection[]
         if (label) list.push({ nodeId: n.id, label, anchor: idOf(n), nested: false, keep: true });
       }
     },
-    text: (n, scope) => {
+    text: (n, scope, _reportId, inDef) => {
       const top = open[open.length - 1];
-      // A heading inside a nested section names that section (the innermost one open), not the one around it; one
-      // after it, back in the outer section's own content, names the outer one.
       if (!top || top.label || !HEADING.test(String(evaluate(n.tag, scope) ?? ''))) return;
+      // A heading inside a nested section names that section, not the one around it. One placed on the page after it,
+      // back in the outer section's own content, names the outer one; one in a design's tree may be a section of its
+      // own that the page does not list, so it does not.
+      if (top.children && inDef) return;
       top.label = headingText(n, scope);
     },
     leave: (n) => {

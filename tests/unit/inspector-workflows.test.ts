@@ -8,7 +8,7 @@ import { defFile, generateProject, overrideClass } from '@generator/index';
 import { pageSections, planSectionPick } from '@generator/checks';
 import { columnLayoutPart } from '@shared/styles';
 import { P, item, prop } from '@catalogue/dsl';
-import { foundationDesign } from './fixtures/packs';
+import { foundationDesign, projectDesign } from './fixtures/packs';
 import { contentSection, installThemeDesigns, placeOnHome, servicesGrid, splitHero, statsRow } from './fixtures/inspector-workflows-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -126,10 +126,12 @@ describe('which components take an anchor', () => {
     expect(anchorCapable(s, as('<section id={ so_id ?? "top" }></section>'))).toBe(true);
     // Another attribute holding it, or code that never places it, gives links nothing to jump to.
     expect(anchorCapable(s, as('<section id = {so_id}></section>'))).toBe(true);
-    // Handed on to the component it places, as a design converted to code does when its root is a component.
-    expect(anchorCapable(s, as('<Inner so_id={so_id} />'))).toBe(true);
-    // Another attribute holding it, another value made from it, or code that never places it: nothing to jump to.
+    expect(anchorCapable(s, as("<section id={so_id || 'top'}></section>"))).toBe(true);
+    // Another attribute holding it, another value made from it, or code that never places it: nothing to jump to. Code
+    // that hands it on to a component it places cannot say whether that one renders it.
     expect(anchorCapable(s, as('<section data-id={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<section myid={so_id}></section>'))).toBe(false);
+    expect(anchorCapable(s, as('<Inner so_id={so_id} />'))).toBe(false);
     expect(anchorCapable(s, as('<section id={so_id_suffix}></section>'))).toBe(false);
     expect(anchorCapable(s, as("<section id={so_id + '-x'}></section>"))).toBe(false);
     expect(anchorCapable(s, as('<section id={sectionId}></section>'))).toBe(false);
@@ -166,6 +168,23 @@ describe('which components take an anchor', () => {
     expect(listed.find((x) => x.nodeId === section)).toMatchObject({ label: 'Opening hours', nested: false });
     expect(listed.find((x) => x.nodeId === callout)).toMatchObject({ nested: true });
     expect(planSectionPick(s, page.id, section)?.anchor).toBe('opening-hours');
+  });
+
+  it('never names a wrapper by a heading its own design shows after a theme block placed in it', () => {
+    let s = fresh();
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const wrap = projectDesign(s, {
+      componentId: 'project.wrap',
+      name: 'Wrap',
+      properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'div', {}, [b.slot('content-slot', 'content'), b.el('inner', 'section', {}, [b.text('heading', 'h2', 'Inner heading')])])
+    });
+    const r = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: null, index: 0, definitionId: wrap.id }]);
+    const wrapper = r.results[0].nodeId as string;
+    s = applyOperations(r.state, [{ type: 'node.insert', owner: page, parentId: wrapper, slot: 'content', index: 0, componentId: 'block.callout' }]).state;
+    expect(pageSections(s, page.id).find((x) => x.nodeId === wrapper)).toBeUndefined();
   });
 });
 
