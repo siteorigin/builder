@@ -3220,6 +3220,8 @@ export function Canvas() {
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
   const revertOffered = cause?.revert && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly && stillNewest(snapshot.history, cause.revert.key) ? cause.revert : null;
   const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
+  /** What went wrong, under the bar's own words, naming the component it was put down to (#1526). */
+  const issueDetail = cause && frameReady && !slowPage ? (sourceOffered ? `${snapshot!.state.components[sourceOffered].name}: ${cause.message}` : cause.message) : null;
   /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
   const restartPreview = () => {
     if (reverting) return;
@@ -3492,7 +3494,7 @@ export function Canvas() {
         {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
             restart that fails is announced again. */}
         <p className="sr-only" role="alert">
-          {issueShown && !retrying ? `${issueText} Your work is safe.` : stoppedAnnouncement(runtime)}
+          {issueShown && !retrying ? `${issueText}${issueDetail ? ` ${issueDetail}.` : ''} Your work is safe.` : stoppedAnnouncement(runtime)}
         </p>
         <p className="sr-only" role="status">
           {issueShown && retrying ? 'Reloading the page…' : ''}
@@ -3504,6 +3506,11 @@ export function Canvas() {
             <span className="canvas-notice-icon">{retrying ? <Spinner decorative /> : <TriangleAlert aria-hidden="true" />}</span>
             <span className="canvas-notice-text issue-text">
               <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
+              {issueDetail && !retrying && (
+                <span className="issue-detail" title={issueDetail}>
+                  {issueDetail}
+                </span>
+              )}
             </span>
             {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
                 the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the

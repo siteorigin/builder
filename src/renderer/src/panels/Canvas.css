@@ -429,6 +429,8 @@
   /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
   .canvas-notice.issue .issue-text strong { display: inline-block; }
   .canvas-notice.issue .issue-safe { white-space: nowrap; }
+  /* What went wrong, on a line of its own under the words: two lines at most, the whole of it on hover. */
+  .canvas-notice.issue .issue-detail { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; margin-top: 2px; color: var(--text-2); font-size: 12px; text-wrap: pretty; }
   .canvas-notice.issue .canvas-notice-icon { color: var(--red); }
   /* Reloading is progress, not a fresh failure. */
   .canvas-notice.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
