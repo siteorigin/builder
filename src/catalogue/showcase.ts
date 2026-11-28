@@ -15,6 +15,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { collectionCreate, entryCreate } from '@engine/collections';
 import { shownOnceSlots, slotDecl, takesComponent } from '@engine/slots';
 import { labelKeyFor } from '@generator/checks';
+import { stateActionWorks } from '@generator/index';
 import { isEmptyPropValue } from '@shared/required';
 import { getTheme } from './index';
 import type { StarterAsset } from './starters';
@@ -101,6 +102,20 @@ export function showcaseHome(themeId: string): string[] {
 }
 
 /**
+ * The link fields a design gives to buttons that work the component itself (opening a panel, say), by the field's own
+ * name. Such a button needs no destination, and one would turn it into a link away from the page.
+ */
+function controlLinks(def: ComponentDefinition): Set<string> {
+  const out = new Set<string>();
+  for (const n of Object.values(def.tree?.nodes ?? {})) {
+    if (n.kind !== 'link' || !stateActionWorks(def, n.stateAction, n.id)) continue;
+    if ('$item' in n.link) out.add(n.link.$item);
+    else if ('$prop' in n.link) out.add(n.link.field ?? n.link.$prop);
+  }
+  return out;
+}
+
+/**
  * Puts sample photos in a placement's empty images, gives an empty gallery, carousel or page list a few rows, and
  * gives each button with words but no destination one of the showcase's pages: the site leaves such a button out.
  */
@@ -157,6 +172,7 @@ class Filler {
 
   /** A link whose paired label has words is a button visitors are meant to see: with nowhere to go, it gets a page. */
   private link(schema: Record<string, PropSchema>, out: Record<string, unknown>, key: string, s: PropSchema) {
+    if (this.def && controlLinks(this.def).has(key)) return;
     const labelKey = labelKeyFor(key);
     const label = Object.hasOwn(schema, labelKey) ? schema[labelKey] : undefined;
     if (label?.type !== 'string') return;

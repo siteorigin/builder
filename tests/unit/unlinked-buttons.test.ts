@@ -188,14 +188,17 @@ describe('a fresh starter', () => {
     // The comparison table's three plans come with no destination, so each goes to Contact.
     for (const label of ['Book a session', 'Start a project', 'Talk to us']) expect(pricing).toMatch(new RegExp(`<a\\b[^>]*href="/studio/contact/"[^>]*>\\s*${label}\\s*</a>`));
     // The plans that come with a destination keep it.
-    expect(pricing).toContain('href="mailto:hello@example.com"');
+    const placedProps = (id: string) => Object.values(s.pages).flatMap((p) => Object.values(p.nodes)).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId].componentId === id)!.props;
+    for (const id of ['pricing.plans', 'pricing.toggle']) {
+      const plans = placedProps(id).plans as Array<{ actionLink: { type: string } }>;
+      expect(plans.map((p) => p.actionLink.type), id).toEqual(plans.map(() => 'email'));
+    }
     // On Contact itself, a button goes on to Pricing.
     const contact = await render('src/routes/contact/+page.svelte');
     expect(elementWith(contact, 'See our packages')).toMatch(/^<a\b[^>]*href="\/studio\/pricing\/"/);
     // Rows without a button's words stay as they are: facts, contact details and the footer's address lead nowhere.
-    const props = (id: string) => Object.values(s.pages).flatMap((p) => Object.values(p.nodes)).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId].componentId === id)!.props;
     for (const id of ['block.facts', 'contact.details']) {
-      const rows = props(id).items as Array<{ label: string; link: { type: string } }>;
+      const rows = placedProps(id).items as Array<{ label: string; link: { type: string } }>;
       expect(rows.filter((r) => r.link.type === 'page'), id).toEqual([]);
     }
   });
