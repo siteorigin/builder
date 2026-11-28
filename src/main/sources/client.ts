@@ -159,7 +159,7 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
               (inspected && (m.records.length || m.images.length || !Array.isArray(m.raw) || !Number.isSafeInteger(m.total) || (m.total as number) < m.raw.length)) ||
               (!inspected && m.total !== undefined) ||
               // Only records read into entries have links that were dropped.
-              (m.droppedLinks !== undefined && (inspected || !isDroppedLinks(m.droppedLinks, m.records.length)))
+              (m.droppedLinks !== undefined && (inspected || !isDroppedLinks(m.droppedLinks, m.records.length, typeof request.converter === 'string')))
             )
               fail('invalid');
             else

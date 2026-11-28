@@ -259,7 +259,7 @@ describe('links in the records’ text that keep only their words (#1426)', () =
     expect(r.message).toBeUndefined();
     while (orch.busy) await new Promise((res) => setTimeout(res, 10));
     expect(adapter.requests).toHaveLength(3);
-    expect(written, JSON.stringify(written).slice(0, 300)).toMatchObject({ ok: true, tested: { records: 2, wouldCreate: 2, linksKeptAsWords: '2 links keep only their words: their addresses are not ones an entry can keep. Give them a web address at the source.' } });
+    expect(written, JSON.stringify(written).slice(0, 300)).toMatchObject({ ok: true, tested: { records: 2, wouldCreate: 2, linksKeptAsWords: 'The converter read 2 links with no address an entry can keep, so any entry given them keeps only their words. Change them at the source or in the converter if they should go somewhere.' } });
   });
 });
 

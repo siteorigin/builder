@@ -162,16 +162,22 @@ describe('syncing a project without the app', () => {
   });
 
   it('says which records have links that kept only their words, on every sync until the source puts them right (#1426)', async () => {
-    const server = await api(() => [{ ...person('1', 'Ana Ruiz', 'Architect'), bio: '<p>See <a href="/work/">her work</a>.</p>' }, person('2', 'Ben Okafor', 'Engineer')]);
+    let href = '/work/';
+    const server = await api(() => [{ ...person('1', 'Ana Ruiz', 'Architect'), bio: `<p>See <a href="${href}">her work</a>.</p>` }, person('2', 'Ben Okafor', 'Engineer')]);
     const dir = await project(server.origin, undefined, { body: 'bio', bodyFormat: 'html' });
     const { runner } = await inline();
-    const dropped = 'Crew API: A link keeps only its words: its address is not one an entry can keep (in “Ana Ruiz”). Give it a web address at the source.';
+    const dropped = 'Crew API: A link keeps only its words, with no address an entry can keep (in “Ana Ruiz”). Change it at the source if it should go somewhere.';
     const lines: string[] = [];
     await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) });
     expect(lines).toEqual([dropped, 'Crew API: 2 added, 0 updated, 0 made drafts, 0 removed, 0 unchanged, 0 new pictures.']);
     lines.length = 0;
     await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) });
     expect(lines).toEqual([dropped, 'Crew API: up to date (2 unchanged).']);
+    // Put right at the source: said no more.
+    href = 'https://example.org/work/';
+    lines.length = 0;
+    await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) });
+    expect(lines).toEqual(['Crew API: 0 added, 1 updated, 0 made drafts, 0 removed, 1 unchanged, 0 new pictures.']);
   });
 
   it('writes nothing when a source cannot be read, or its secret is not set', async () => {

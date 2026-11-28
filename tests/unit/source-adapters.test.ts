@@ -338,7 +338,7 @@ describe('a Contentful source', () => {
     expect(based.dropped).toBe(1);
     // Markdown's links are read as HTML's are.
     const md: LinkRead = { dropped: 0 };
-    markdownRichText('[home](/) and [mail](mailto:a@example.org)', md);
+    expect(markdownRichText('[home](/) and [mail](mailto:a@example.org)', md)).toEqual([{ type: 'p', spans: [{ text: 'home and ' }, { text: 'mail', link: { type: 'email', target: 'a@example.org' } }] }]);
     expect(md.dropped).toBe(1);
   });
 });
@@ -471,7 +471,12 @@ describe('Sanity, Strapi and WordPress sources', () => {
       },
       { id: 2, title: { rendered: 'No page' }, link: 'file:///etc/passwd', content: { rendered: '<p><a href="/visit/">k</a> <a href="https://example.org/ok">l</a></p>' } },
       { id: 3, title: { rendered: 'Missing' }, content: { rendered: '<p><a href="../x/">m</a></p>' } },
-      { id: 4, title: { rendered: 'Clean' }, link: 'https://old.example/clean/', content: { rendered: '<p><a href="/ok/">n</a></p>' } }
+      // Another site's post, deeper: never read from the first post's page. Its name and password are never passed on.
+      { id: 4, title: { rendered: 'Clean' }, link: 'https://editor:pw@other.example/deep/clean/', content: { rendered: '<p><a href="../ok/">n</a> <a href="tel:+44 20 7946 0000">o</a></p>' } },
+      // Addresses a link cannot hold as they are, which would stop the whole sync: a quote in a host, mail and a number that are neither.
+      { id: 5, title: { rendered: 'Odd' }, link: 'https://old.example/odd/', content: { rendered: '<p><a href="//a%22b.example/p">p</a> <a href="mailto:nobody">q</a> <a href="tel:abc">r</a></p>' } },
+      // A page address too long to read links from.
+      { id: 6, title: { rendered: 'Long' }, link: `https://old.example/${'a'.repeat(3000)}/`, content: { rendered: '<p><a href="#x">s</a></p>' } }
     ];
     const many = await server((_req, res) => send(res, posts, { 'x-wp-totalpages': '1' }));
     const two = await run({ adapter: 'wordpress', config: { url: many.origin } });
@@ -488,9 +493,18 @@ describe('Sanity, Strapi and WordPress sources', () => {
     // A post whose address is not a page on the web reads none of its relative links, and keeps its whole ones.
     expect(linksOf(two.records[1].body)).toEqual([['l', 'url', 'https://example.org/ok']]);
     expect(linksOf(two.records[2].body)).toEqual([]);
-    expect(linksOf(two.records[3].body)).toEqual([['n', 'url', 'https://old.example/ok/']]);
+    expect(linksOf(two.records[3].body)).toEqual([
+      ['n', 'url', 'https://other.example/deep/ok/'],
+      ['o', 'tel', '+44 20 7946 0000']
+    ]);
+    expect(linksOf(two.records[4].body)).toEqual([]);
+    expect(linksOf(two.records[5].body)).toEqual([]);
+    // Every link it could not keep keeps its words.
+    const words = (body: unknown) => (body as Array<{ spans: Array<{ text: string }> }>).map((b) => b.spans.map((x) => x.text).join('')).join('|');
+    expect(words(two.records[0].body)).toBe('a b c d e f g h i j');
+    expect(words(two.records[4].body)).toBe('p q r');
     // Script, data, a broken address and a link to nowhere keep their words, and are said, by the records they are in.
-    expect(two.droppedLinks).toEqual({ count: 6, records: 3, first: [0, 1, 2] });
+    expect(two.droppedLinks).toEqual({ count: 10, records: 5, first: [0, 1, 2] });
   });
 
   it('A source with no page to read its text from says the relative links it could not keep (#1426)', async () => {
@@ -499,7 +513,7 @@ describe('Sanity, Strapi and WordPress sources', () => {
     expect(reply.ok).toBe(true);
     if (!reply.ok) return;
     // Its API's address is not where its text was shown, so it is never read from.
-    expect(JSON.stringify(reply.records[0].body)).not.toContain('/about/');
+    expect(reply.records[0].body).toEqual([{ type: 'p', spans: [{ text: 'About and ' }, { text: 'us', link: { type: 'url', target: 'https://example.org/' } }] }]);
     expect(reply.droppedLinks).toEqual({ count: 1, records: 1, first: [0] });
   });
 });

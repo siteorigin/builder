@@ -108,19 +108,31 @@ describe('a sync, and detaching', () => {
     expect(syncSummary('Team CMS', { ...base, removed: 2, kept: 1, images: 2 })).toBe('Synced “Team CMS”: 2 deleted, 1 kept that the source no longer has, 2 pictures added to the library.');
     // Then the links that kept only their words, whether or not the sync changed anything (#1426).
     expect(syncSummary('Old blog', { ...base, unchanged: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } })).toBe(
-      '“Old blog” is up to date: 4 entries unchanged. A link keeps only its words: its address is not one an entry can keep (in “Tickets”). Give it a web address at the source.'
+      '“Old blog” is up to date: 4 entries unchanged. A link keeps only its words, with no address an entry can keep (in “Tickets”). Change it at the source if it should go somewhere.'
     );
     expect(syncSummary('Old blog', { ...base, created: 2, droppedLinks: { count: 3, records: 2, titles: ['Tickets', 'Hours'] } })).toBe(
-      'Synced “Old blog”: 2 added. 3 links keep only their words: their addresses are not ones an entry can keep (in “Tickets” and “Hours”). Give them a web address at the source.'
+      'Synced “Old blog”: 2 added. 3 links keep only their words, with no address an entry can keep (in “Tickets” and “Hours”). Change them at the source if they should go somewhere.'
     );
   });
 
   it('says which records have links that kept only their words, the rest by how many (#1426)', () => {
-    expect(droppedLinksText({ count: 9, records: 5, titles: ['A', 'B', 'C'] })).toBe('9 links keep only their words: their addresses are not ones an entry can keep (in “A”, “B”, “C” and 2 more). Give them a web address at the source.');
-    // A converter's are counted only.
-    expect(droppedLinksText({ count: 2, records: 0, titles: [] })).toBe('2 links keep only their words: their addresses are not ones an entry can keep. Give them a web address at the source.');
-    // A long title is cut, never the sentence.
-    expect(droppedLinksText({ count: 1, records: 1, titles: ['x'.repeat(200)] })).toBe(`A link keeps only its words: its address is not one an entry can keep (in “${'x'.repeat(59)}…”). Give it a web address at the source.`);
+    const tail = 'Change them at the source if they should go somewhere.';
+    expect(droppedLinksText({ count: 9, records: 5, titles: ['A', 'B', 'C'] })).toBe(`9 links keep only their words, with no address an entry can keep (in “A”, “B”, “C” and 2 more). ${tail}`);
+    expect(droppedLinksText({ count: 9, records: 4, titles: ['A', 'B', 'C'] })).toBe(`9 links keep only their words, with no address an entry can keep (in “A”, “B”, “C” and 1 more). ${tail}`);
+    // Titles left out (they would spell a secret together): only how many records.
+    expect(droppedLinksText({ count: 2, records: 2, titles: [] })).toBe(`2 links keep only their words, with no address an entry can keep (in 2 records). ${tail}`);
+    expect(droppedLinksText({ count: 1, records: 1, titles: [] })).toBe('A link keeps only its words, with no address an entry can keep (in a record). Change it at the source if it should go somewhere.');
+    // A converter's are counted only, and need not be in any entry it gives.
+    expect(droppedLinksText({ count: 2, records: 0, titles: [] })).toBe(
+      'The converter read 2 links with no address an entry can keep, so any entry given them keeps only their words. Change them at the source or in the converter if they should go somewhere.'
+    );
+    expect(droppedLinksText({ count: 1, records: 0, titles: [] })).toBe(
+      'The converter read a link with no address an entry can keep, so any entry given it keeps only its words. Change it at the source or in the converter if it should go somewhere.'
+    );
+    // A long title is cut at a character, never inside one, nor the sentence; nothing a terminal acts on is quoted.
+    expect(droppedLinksText({ count: 1, records: 1, titles: ['x'.repeat(200)] })).toContain(`(in “${'x'.repeat(59)}…”)`);
+    expect(droppedLinksText({ count: 1, records: 1, titles: [`${'x'.repeat(58)}😀😀😀`] })).toContain(`(in “${'x'.repeat(58)}😀…”)`);
+    expect(droppedLinksText({ count: 1, records: 1, titles: ['Red\u001b[31m alert\u0007'] })).toContain('(in “Red [31m alert”)');
   });
 
   it('drops the collection’s source and the source’s settings in one step, or only the settings before a first sync', () => {

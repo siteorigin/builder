@@ -13,7 +13,7 @@ import { EngineError } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { validateOperation, type ApplyResult, type EditOperation } from '@shared/ops';
 import { randomBytes } from 'node:crypto';
-import { holdsSecretValue, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
+import { droppedLinksText, holdsSecretValue, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
 import type { SourceSyncGrant } from '@engine/sources';
 import { SyncError, syncFailureMessage, type SyncResult, type SyncRunner } from './client';
 import type { SecretStore } from './secrets';
@@ -51,10 +51,15 @@ export interface SyncDeps {
 
 export type { SourceSampleResult, SourceSyncResult } from '@shared/api';
 
-/** The links a read's records kept only the words of, by the titles of the first few records that have one. */
-export function droppedLinksOf(result: Pick<SyncResult, 'records' | 'droppedLinks'>): { droppedLinks?: SourceDroppedLinks } {
+/**
+ * The links a read's records kept only the words of, by the titles of the first few records that have one: none of
+ * them when, put in words together, they would spell one of the user's secrets.
+ */
+export function droppedLinksOf(result: Pick<SyncResult, 'records' | 'droppedLinks'>, values: readonly string[]): { droppedLinks?: SourceDroppedLinks } {
   const d = result.droppedLinks;
-  return d ? { droppedLinks: { count: d.count, records: d.records, titles: d.first.map((i) => result.records[i].title) } } : {};
+  if (!d) return {};
+  const named: SourceDroppedLinks = { count: d.count, records: d.records, titles: d.first.map((i) => result.records[i]?.title ?? '').filter(Boolean) };
+  return { droppedLinks: holdsSecret(droppedLinksText(named), values) ? { ...named, titles: [] } : named };
 }
 
 const counts = (p: SyncPlan, revision: number, images: number, links: { droppedLinks?: SourceDroppedLinks } = {}): SourceSyncResult => ({
@@ -225,7 +230,7 @@ export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | '
   if (problem) return { ok: false, code: 'invalid', message: `“${source.name}” could not be synced as it is: ${redactSecrets(problem, values)}` };
   const plan = planSourceSync(state, source, result.records, now);
   const c = counts(plan, 0, 0) as Extract<SourceSyncResult, { ok: true }>;
-  return { ok: true, raw: result.raw ?? [], records: result.records.slice(0, SAMPLE_SIZE), total: result.records.length, created: c.created, updated: c.updated, unchanged: c.unchanged, unpublished: c.unpublished, removed: c.removed, kept: c.kept, ...droppedLinksOf(result) };
+  return { ok: true, raw: result.raw ?? [], records: result.records.slice(0, SAMPLE_SIZE), total: result.records.length, created: c.created, updated: c.updated, unchanged: c.unchanged, unpublished: c.unpublished, removed: c.removed, kept: c.kept, ...droppedLinksOf(result, values) };
 }
 
 /**
@@ -376,6 +381,8 @@ async function syncWithSpool(
   // into the project.
   const leaked: SourceSyncResult = { ok: false, code: 'secret', message: `“${source.name}” was not synced: what it sent holds one of your secrets, which is never written into the project.` };
   if (holdsSecret(textOf(result.records), values)) return leaked;
+  // Put in words before anything is written, so a sync that lands always says it.
+  const links = droppedLinksOf(result, values);
   const now = (deps.now ?? (() => new Date()))();
   let plan: SyncPlan;
   try {
@@ -385,7 +392,7 @@ async function syncWithSpool(
     throw e;
   }
   // Said on every sync until the source's text is put right, whether or not it changed anything.
-  if (planIsEmpty(plan)) return counts(plan, revision, 0, droppedLinksOf(result));
+  if (planIsEmpty(plan)) return counts(plan, revision, 0, links);
   // Checked as written before any picture is brought into the library: a record its collection cannot hold stops the
   // sync with nothing imported.
   const refused = syncPreflight(state, source, result.records, now.toISOString(), values);
@@ -450,6 +457,6 @@ async function syncWithSpool(
       if (r.error?.code === 'STALE_REVISION') return stale;
       return { ok: false, code: r.error?.code, message: `“${source.name}” was not synced: ${redactSecrets((r.error?.message ?? 'its records could not be written.').replace(/^Operation \d+ \([\w.]+\): /, ''), values)}` };
     }
-    return counts(plan, r.revision, added.length, droppedLinksOf(result));
+    return counts(plan, r.revision, added.length, links);
   });
 }

@@ -40,7 +40,7 @@ const { runSync } = await import('../../src/main/sources/run');
 const { ADAPTERS } = await import('../../src/main/sources/adapters');
 const { createSecretStore } = await import('../../src/main/sources/secrets');
 const { createApprovalStore } = await import('../../src/main/sources/approvals');
-const { sampleSource, syncSource } = await import('../../src/main/sources/sync');
+const { droppedLinksOf, sampleSource, syncSource } = await import('../../src/main/sources/sync');
 const { applyOperations } = await import('@engine/apply');
 const { generateEntry } = await import('@generator/index');
 const { generateArchive } = await import('../../src/generator/archive');
@@ -377,18 +377,41 @@ describe('connecting a collection to an external source', () => {
     expect((await save(draft)).error?.message).toBeUndefined();
     expect(await syncSource(deps, 'blog')).toMatchObject({ ok: true, created: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } });
     const entries = Object.values(s.state.collections.news.entries);
-    const page = generateEntry(s.state, 'news', entries.find((e) => e.title === 'Visiting')!.id);
+    const linksOf = (body: unknown) =>
+      (body as Array<{ spans?: Array<{ text: string; link?: { type: string; target: string } }> }>).flatMap((b) => (b.spans ?? []).map((x) => [x.text, x.link ? `${x.link.type} ${x.link.target}` : null]));
+    const visited = entries.find((e) => e.title === 'Visiting')!;
+    expect(linksOf(visited.body).filter(([, l]) => l)).toEqual([
+      ['Access', 'url https://old.example/visit/access/?from=notice'],
+      ['the calendar', 'url https://old.example/news/calendar/'],
+      ['quiet hours', 'url https://old.example/news/post-1/#quiet-hours'],
+      ['the map', 'url https://example.org/map']
+    ]);
+    const page = generateEntry(s.state, 'news', visited.id);
     for (const href of ['https://old.example/visit/access/?from=notice', 'https://old.example/news/calendar/', 'https://old.example/news/post-1/#quiet-hours', 'https://example.org/map']) expect(page).toContain(href);
     // Said again on a sync that changes nothing, until it is put right at the source.
     const revision = s.revision;
     expect(await syncSource(deps, 'blog')).toMatchObject({ ok: true, created: 0, updated: 0, unchanged: 4, droppedLinks: { count: 1, records: 1, titles: ['Tickets'] } });
     expect(s.revision).toBe(revision);
     const tickets = entries.find((e) => e.title === 'Tickets')!.id;
+    expect(linksOf(s.state.collections.news.entries[tickets].body)).toEqual([['Book here.', null]]);
     broken = '<p>Book <a href="/tickets/">here</a>.</p>';
     const fixed = await syncSource(deps, 'blog');
     expect(fixed).toMatchObject({ ok: true, created: 0, updated: 1, unchanged: 3 });
     expect(fixed).not.toHaveProperty('droppedLinks');
-    expect(JSON.stringify(s.state.collections.news.entries[tickets].body)).toContain('https://old.example/tickets/');
+    // The same entry, its link now kept.
+    expect(Object.keys(s.state.collections.news.entries)).toHaveLength(4);
+    expect(linksOf(s.state.collections.news.entries[tickets].body)).toEqual([
+      ['Book ', null],
+      ['here', 'url https://old.example/tickets/'],
+      ['.', null]
+    ]);
+  });
+
+  it('never names the records whose dropped links, put in words together, spell a secret (#1426)', () => {
+    const result = { records: [{ externalId: '1', title: 'cedar-tree' }, { externalId: '2', title: 'orchid-bloom' }], droppedLinks: { count: 2, records: 2, first: [0, 1] } };
+    expect(droppedLinksOf(result, [])).toEqual({ droppedLinks: { count: 2, records: 2, titles: ['cedar-tree', 'orchid-bloom'] } });
+    expect(droppedLinksOf(result, ['cedar-tree” and “orchid-bloom'])).toEqual({ droppedLinks: { count: 2, records: 2, titles: [] } });
+    expect(droppedLinksOf({ records: result.records }, [])).toEqual({});
   });
 
   it('refuses a converter that may not run, or records the collection cannot hold, at the Test, with every file left as it was', async () => {

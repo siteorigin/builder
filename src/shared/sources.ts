@@ -20,17 +20,26 @@ export function sourceRemoval(doc: { removal?: unknown } | undefined): SourceRem
   return SOURCE_REMOVALS.includes(doc?.removal as SourceRemoval) ? (doc!.removal as SourceRemoval) : 'unpublish';
 }
 
+/** A record's title as a notice quotes it: one line with nothing a terminal acts on, cut at a character. */
+function quotedTitle(t: string): string {
+  const chars = Array.from(t.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim());
+  return `“${chars.length > 60 ? `${chars.slice(0, 59).join('').trimEnd()}…` : chars.join('')}”`;
+}
+
 /**
- * What a source's dropped links are, in words for the author: how many links keep only their words, which records
- * they are in, and what puts them right (an entry's text is written over by every sync, so only the source can).
+ * What a source's dropped links are, in words for the author: how many links keep only their words and which records
+ * they are in, or for a converter (whose records name none) how many it read; and what puts them right (an entry's
+ * text is written over by every sync, so only the source, or the converter, can).
  */
 export function droppedLinksText(d: SourceDroppedLinks): string {
   const one = d.count === 1;
-  const titles = d.titles.map((t) => `“${t.length > 60 ? `${t.slice(0, 59).trimEnd()}…` : t}”`);
+  const links = one ? 'a link' : `${d.count} links`;
+  if (!d.records) return `The converter read ${links} with no address an entry can keep, so any entry given ${one ? 'it keeps only its' : 'them keeps only their'} words. Change ${one ? 'it' : 'them'} at the source or in the converter if ${one ? 'it' : 'they'} should go somewhere.`;
+  const titles = d.titles.map(quotedTitle);
   const more = d.records - titles.length;
-  const names = more > 0 ? [...titles, `${more} more`] : titles;
-  const where = names.length ? ` (in ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]})` : '';
-  return `${one ? 'A link keeps only its' : `${d.count} links keep only their`} words: ${one ? 'its address is not one' : 'their addresses are not ones'} an entry can keep${where}. Give ${one ? 'it' : 'them'} a web address at the source.`;
+  const names = !titles.length ? [d.records === 1 ? 'a record' : `${d.records} records`] : more > 0 ? [...titles, `${more} more`] : titles;
+  const where = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+  return `${one ? 'A link keeps only its' : `${d.count} links keep only their`} words, with no address an entry can keep (in ${where}). Change ${one ? 'it' : 'them'} at the source if ${one ? 'it' : 'they'} should go somewhere.`;
 }
 
 /** A kind of source, as a source names it: a lowercase word ("rest", "contentful"). */

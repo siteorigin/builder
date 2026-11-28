@@ -313,7 +313,7 @@ async function syncSources(dir: string, start: ProjectState, sources: readonly S
     if (refused) throw say(refused === SECRET_IN_RECORDS ? `${SECRET_IN_RECORDS}.` : refused);
     const plan = planSourceSync(state, source, result.records, now);
     // Said on every sync until the source's text is put right, whether or not it changed anything.
-    const { droppedLinks } = droppedLinksOf(result);
+    const { droppedLinks } = droppedLinksOf(result, values);
     if (droppedLinks) log(`${source.name}: ${droppedLinksText(droppedLinks)}`);
     if (planIsEmpty(plan)) {
       log(`${source.name}: up to date (${plan.unchanged} unchanged).`);

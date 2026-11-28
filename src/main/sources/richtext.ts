@@ -5,7 +5,7 @@
  * whose address cannot be kept keeps its words, and is counted so the author is told (LinkRead).
  */
 import type { LinkValue, RichBlock, RichSpan, RichText } from '@shared/types';
-import { cleanBlocks, cleanSpans } from '@shared/richtext';
+import { cleanBlocks, cleanSpans, isTelephone } from '@shared/richtext';
 import { emptyReport, htmlToRichText } from '../posts-import/html';
 import { markdownToHtml } from '../posts-import/markdown';
 import { TEXT_IMAGE } from './protocol';
@@ -21,12 +21,26 @@ export interface LinkRead {
   dropped: number;
 }
 
-/** A page's own address that relative links can be read from: a whole http(s) address, or undefined. */
+/** The longest page address relative links are read from, as the longest a source's own may be. */
+const MAX_BASE = 2048;
+/** The longest address a relative link becomes, as the longest a picture's may be. */
+const MAX_RESOLVED = 4096;
+/** A web address as a link holds it (engine/values.ts normalizeLink): anything else would stop the whole sync. */
+const URL_RE = /^https?:\/\/[^\s<>"]+$/i;
+const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
+
+/**
+ * A page's own address that relative links can be read from: a whole http(s) address, without the name and password
+ * the server may have been asked with (never one its links gave a reader), or undefined.
+ */
 export function linkBase(v: unknown): string | undefined {
-  if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim())) return undefined;
+  if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim()) || v.trim().length > MAX_BASE) return undefined;
   try {
     const u = new URL(v.trim());
-    return /^https?:$/.test(u.protocol) ? u.href : undefined;
+    if (!/^https?:$/.test(u.protocol)) return undefined;
+    u.username = '';
+    u.password = '';
+    return u.href;
   } catch {
     return undefined;
   }
@@ -34,7 +48,7 @@ export function linkBase(v: unknown): string | undefined {
 
 /**
  * An http(s) address a browser can go to, read from `base` when it is relative: a whole one as it is written, unless it
- * has spaces or quotes in it, which a link holds as a browser reads them. Else null.
+ * has spaces or quotes in it, which a link holds as a browser reads them. Else null: one a link cannot hold as it is.
  */
 function webAddress(t: string, base?: string): string | null {
   let u: URL;
@@ -44,7 +58,8 @@ function webAddress(t: string, base?: string): string | null {
     return null;
   }
   if (!/^https?:$/.test(u.protocol)) return null;
-  return !base && /^https?:\/\/[^\s<>"]+$/i.test(t) ? t : u.href;
+  if (!base && URL_RE.test(t)) return t;
+  return URL_RE.test(u.href) && (!base || u.href.length <= MAX_RESOLVED) ? u.href : null;
 }
 
 /**
@@ -60,8 +75,9 @@ function externalLink(href: unknown, newTab = false, base?: string): LinkValue |
     const url = webAddress(t);
     return url ? { type: 'url', target: url, ...tab } : null;
   }
-  if (/^mailto:/i.test(t)) return { type: 'email', target: t.slice(7) };
-  if (/^tel:/i.test(t)) return { type: 'tel', target: t.slice(4) };
+  // As a link holds them, or not at all: one that is no address would stop the whole sync.
+  if (/^mailto:/i.test(t)) return EMAIL_RE.test(t.slice(7).trim()) ? { type: 'email', target: t.slice(7) } : null;
+  if (/^tel:/i.test(t)) return isTelephone(t.slice(4).trim()) ? { type: 'tel', target: t.slice(4) } : null;
   // Any other way of going somewhere (script, data, a file) is never kept, nor a link to nowhere.
   if (!t || !base || /^[a-z][a-z0-9+.-]*:/i.test(t)) return null;
   const url = webAddress(t, base);
@@ -83,8 +99,8 @@ function cfSpans(node: CfNode, read: LinkRead, depth = 0, link?: LinkValue): Ric
     const own = externalLink((node.data as { uri?: unknown } | undefined)?.uri, false, read.base);
     if (own) here = own;
     else read.dropped++;
-  } else if (node.nodeType === 'entry-hyperlink' || node.nodeType === 'asset-hyperlink' || node.nodeType === 'resource-hyperlink') read.dropped++; // Another entry or file of the space's: nowhere on the site.
-
+    // Another entry or file of the space's: nowhere on the site.
+  } else if (node.nodeType === 'entry-hyperlink' || node.nodeType === 'asset-hyperlink' || node.nodeType === 'resource-hyperlink') read.dropped++;
   const kids = Array.isArray(node.content) ? (node.content as CfNode[]) : [];
   const out: RichSpan[] = [];
   for (const k of kids) {
