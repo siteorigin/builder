@@ -228,6 +228,7 @@ export function createTransport(local: () => BuilderApi): Transport {
     inspectResult: (...args: Parameters<BuilderApi['inspectResult']>) => local().inspectResult(...args),
     componentPreviewResult: (...args: Parameters<BuilderApi['componentPreviewResult']>) => local().componentPreviewResult(...args),
     previewControlResult: (...args: Parameters<BuilderApi['previewControlResult']>) => local().previewControlResult(...args),
+    trace: (area: string, message: string) => local().trace?.(area, message),
     menuReady: () => local().menuReady(),
     menuReceived: (id: number) => local().menuReceived(id),
     popupMenu: (at: { x: number; y: number }) => local().popupMenu(at),

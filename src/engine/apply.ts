@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { BackgroundImageValue, Binding, EntryDoc, SiteIntegrations, SiteRedirect } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc, SiteIntegrations, SiteRedirect, SiteSearchSettings } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
@@ -48,6 +48,7 @@ import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
+import { checkSearchEndpoint, checkSearchPathPrefix } from '@shared/site-search';
 import { codeProblemText, globalCssProblem, hasCode, headCodeProblem } from '@shared/site-code';
 import { fathomIdText, fathomSiteIdProblem } from '@shared/integrations';
 import { feedRowFields } from '@shared/entry-feed';
@@ -1232,6 +1233,10 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   if (op.searchHidden !== undefined) page.seo.searchHidden = op.searchHidden || undefined;
   if (op.showHeader !== undefined) page.showHeader = op.showHeader;
   if (op.showFooter !== undefined) page.showFooter = op.showFooter;
+  if (op.preferStaticHtml !== undefined) {
+    if (op.preferStaticHtml) page.preferStaticHtml = true;
+    else delete page.preferStaticHtml;
+  }
   if (op.language !== undefined) {
     const language = op.language.trim();
     if (language && !isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);
@@ -3356,6 +3361,40 @@ function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
   return {};
 }
 
+/**
+ * Change the site's search settings (shared/site-search.ts): only the fields given, each checked as the website will
+ * use it. The site's own index is no setting, so it is stored as none; the SearchSocket fields stay for a switch back.
+ */
+function setSiteSearch(s: ProjectState['site'], patch: NonNullable<Op<'site.update'>['search']> | null): void {
+  if (patch === null) {
+    delete s.search;
+    return;
+  }
+  const next: SiteSearchSettings = s.search && typeof s.search === 'object' && !Array.isArray(s.search) ? { ...s.search } : {};
+  if (patch.provider !== undefined) {
+    if (patch.provider === 'searchsocket') next.provider = 'searchsocket';
+    else delete next.provider;
+  }
+  if (patch.endpoint !== undefined) {
+    const check = checkSearchEndpoint(patch.endpoint);
+    if (!check.ok) fail(check.message);
+    if (check.value) next.endpoint = check.value;
+    else delete next.endpoint;
+  }
+  if (patch.pathPrefix !== undefined) {
+    const check = checkSearchPathPrefix(patch.pathPrefix);
+    if (!check.ok) fail(check.message);
+    if (check.value) next.pathPrefix = check.value;
+    else delete next.pathPrefix;
+  }
+  if (patch.scrollToText !== undefined) {
+    if (patch.scrollToText) delete next.scrollToText;
+    else next.scrollToText = false;
+  }
+  if (Object.keys(next).length) s.search = next;
+  else delete s.search;
+}
+
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
   // The site's business details as its sections show them before the change (the hours are written in its language).
@@ -3421,6 +3460,7 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
   }
+  if (op.search !== undefined) setSiteSearch(s, op.search);
   // The site's own code (shared/site-code.ts), kept exactly as typed once it passes its check; nothing but space is none.
   if (op.headCode !== undefined) {
     if (!hasCode(op.headCode)) delete s.headCode;

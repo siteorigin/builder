@@ -27,7 +27,7 @@ const AT = `${BASE}/portfolio/find/`;
  * in a text section designed in the editor: the index reads none of Foundation's sections but its forms, tables and
  * videos (see the Release gap test in site-search.test.ts).
  */
-function exportedSite() {
+function exportedSite(settings: EditOperation[] = []) {
   let s: ProjectState = createStarterState('business', 'Test Studio', false);
   const apply = (ops: EditOperation[]) => (s = applyOperations(s, ops).state);
   const text = projectDesign(s, {
@@ -48,6 +48,7 @@ function exportedSite() {
       { type: 'node.insert', owner: { kind: 'page', id }, definitionId: text.id, props: { heading: `Commission ${n}`, body: `A piece in oak and linen, number ${n} of the series.` } }
     ]);
   }
+  apply(settings);
   const files = generateProject(s);
   const def = Object.values(s.components).find((d) => d.componentId === 'site.search')!;
   return { files, searchFile: defFile(def) };
@@ -120,8 +121,8 @@ const PATHS_STUB = `export const base = ${JSON.stringify(BASE)};
 export const resolve = (path) => base + path;
 export const asset = (path) => base + path;`;
 
-async function bundle(): Promise<string> {
-  const { files, searchFile } = exportedSite();
+async function bundle(settings: EditOperation[] = []): Promise<string> {
+  const { files, searchFile } = exportedSite(settings);
   const modules: Record<string, string> = {
     '\0entry': `import { flushSync, mount } from 'svelte'; import Layout from '\0layout';
 window.mountSearch = (searches, later) => {
@@ -156,7 +157,7 @@ window.mountSearch = (searches, later) => {
   return chunk.code;
 }
 
-/** A page of the site, marked as running scripts as its app.html marks it (see generateAppHtml). */
+/** A page of the site, marked as running scripts as its layout marks it (see generateLayout). */
 const PAGE = `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="margin:0"><main id="app"></main><script src="${BASE}/search.js"></script></body></html>`;
 
@@ -443,5 +444,122 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       }
       await expect(box(page).getAttribute('enterkeyhint')).resolves.toBe('search');
     });
+  });
+});
+
+/** The SearchSocket service the site in the next tests asks, as its Site settings name it. */
+const SERVICE = 'https://search.example.com/api/search';
+
+/** One page the service finds, as SearchSocket answers. */
+const hit = (url: string, title: string, extra: Record<string, unknown> = {}) => ({ url, title, snippet: 'Shelves of oak and linen, lit from the north, for a quiet workspace away from the street.', score: 0.9, ...extra });
+const answer = (results: unknown[]) => JSON.stringify({ q: 'x', scope: 'main', results, meta: { timingsMs: { search: 3, total: 4 } } });
+
+describe.skipIf(!browserInstalled)('site search through SearchSocket for a visitor (#1403)', () => {
+  let browser: Browser;
+  let script: string;
+
+  beforeAll(async () => {
+    const [bundled, launched] = await Promise.allSettled([
+      bundle([{ type: 'site.update', search: { provider: 'searchsocket', endpoint: SERVICE, pathPrefix: '/library/' } }]),
+      chromium.launch({ headless: true, executablePath: chromium.executablePath() })
+    ]);
+    if (launched.status === 'fulfilled') browser = launched.value;
+    if (bundled.status === 'rejected') throw bundled.reason;
+    if (launched.status === 'rejected') throw launched.reason;
+    script = bundled.value;
+  }, 60_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  });
+
+  /**
+   * The search on a page of the site, with the service answering each search by `respond` (the query and the request
+   * body), and every request it was sent recorded. The site's own index is never served: a search of it fails.
+   */
+  async function withService(respond: (q: string) => { status?: number; body: string; delay?: number }, body: (page: Page, asked: Array<Record<string, unknown>>, stopped: string[]) => Promise<void>, at = AT) {
+    const context = await browser.newContext({ viewport: { width: 360, height: 740 } });
+    const asked: Array<Record<string, unknown>> = [];
+    // The searches the page stopped on their way, by what they searched for.
+    const stopped: string[] = [];
+    const cors = { 'access-control-allow-origin': ORIGIN, 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type, accept' };
+    try {
+      const page = await context.newPage();
+      page.on('requestfailed', (request) => {
+        if (request.url() === SERVICE && request.method() === 'POST') stopped.push(String((request.postDataJSON() as { q?: unknown })?.q));
+      });
+      await page.route(`${ORIGIN}/**`, (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname === `${BASE}/search.js`) return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
+      });
+      await page.route(SERVICE, async (route) => {
+        if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+        const request = route.request().postDataJSON() as Record<string, unknown>;
+        asked.push(request);
+        const reply = respond(String(request.q));
+        if (reply.delay) await new Promise((r) => setTimeout(r, reply.delay));
+        return route.fulfill({ status: reply.status ?? 200, headers: { ...cors, 'content-type': 'application/json' }, body: reply.body }).catch(() => {});
+      });
+      await page.goto(`${ORIGIN}${at}`);
+      await page.evaluate(`window.mountSearch(${JSON.stringify([{ heading: 'Find a project' }])})`);
+      await body(page, asked, stopped);
+    } finally {
+      await context.close();
+    }
+  }
+
+  const box = (page: Page) => page.getByRole('searchbox', { name: 'Search for' });
+  const status = (page: Page) => page.getByRole('status');
+  const results = (page: Page) => page.locator('.so-search__result');
+
+  it('finds a page by what it means, from a search in the address, and opens it at the words found', async () => {
+    await withService(
+      () => ({ body: answer([hit('/library/reading-room/', 'Reading room', { sectionTitle: 'A quiet corner' }), hit('https://elsewhere.example/x/', 'Elsewhere')]) }),
+      async (page, asked) => {
+        await expect.poll(() => status(page).innerText()).toBe('1 page matches “quiet workspace”.');
+        expect(asked).toEqual([{ q: 'quiet workspace', topK: 20, groupBy: 'page', pathPrefix: '/library/' }]);
+        const link = results(page).first().getByRole('link');
+        await expect(link.innerText()).resolves.toBe('Reading room');
+        await expect(link.getAttribute('href')).resolves.toBe(`${BASE}/library/reading-room/#:~:text=A%20quiet%20corner`);
+        // A fresh load, so the browser scrolls to the words: SvelteKit's router would keep them from it.
+        await expect(link.getAttribute('data-sveltekit-reload')).resolves.toBe('');
+        await expect(results(page).first().locator('.so-search__excerpt').innerText()).resolves.toContain('quiet workspace');
+        // The search form and what it found are not the page's content for services that index it.
+        await expect(page.locator('.so-search__body[data-search-ignore]').count()).resolves.toBe(1);
+      },
+      `${AT}?q=quiet+workspace`
+    );
+  });
+
+  it('says the search failed when the service cannot answer, and nothing of a search overtaken by a newer one', async () => {
+    await withService(
+      (q) => (q === 'slow' ? { body: answer([hit('/library/old/', 'Old result')]), delay: 1500 } : q === 'broken' ? { status: 500, body: '{}' } : { body: answer([hit('/library/new/', 'New result')]) }),
+      async (page, asked, stopped) => {
+        await box(page).fill('broken');
+        await box(page).press('Enter');
+        await expect.poll(() => status(page).innerText()).toBe('The search could not load. Reload the page and try again.');
+        await box(page).fill('slow');
+        await box(page).press('Enter');
+        await expect.poll(() => asked.length).toBe(2);
+        await box(page).fill('fresh');
+        await box(page).press('Enter');
+        await expect.poll(() => status(page).innerText()).toBe('1 page matches “fresh”.');
+        // The slow search is stopped on its way, and never comes back over the newer one, nor fails it.
+        await expect.poll(() => stopped).toEqual(['slow']);
+        await page.waitForTimeout(1800);
+        await expect(status(page).innerText()).resolves.toBe('1 page matches “fresh”.');
+        await expect(results(page).first().getByRole('link').innerText()).resolves.toBe('New result');
+        // Leaving the page drops a search still on its way.
+        await box(page).fill('slow');
+        await box(page).press('Enter');
+        await expect.poll(() => asked.length).toBe(4);
+        await page.evaluate(`window.navigateTo(${JSON.stringify(`${BASE}/about/`)})`);
+        await expect.poll(() => stopped).toEqual(['slow', 'slow']);
+        await page.waitForTimeout(1800);
+        await expect(results(page).count()).resolves.toBe(0);
+        await expect(status(page).innerText()).resolves.toBe('');
+      }
+    );
   });
 });

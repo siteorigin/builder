@@ -11,13 +11,18 @@
  * component holding the controls (`CollectionBrowse.svelte`) and each browsing collection's index. Nothing in them
  * comes from the Builder: the site needs nothing else to run them.
  */
-import type { ProjectState } from '@shared/types';
+import type { Collection, EntryDoc, NodeTree, ProjectState } from '@shared/types';
+import { isCollectionLoop } from '@shared/types';
 import { archiveTerms } from '@shared/archives';
 import { browseFilterKind, browseSortKind, collectionBrowse, type BrowseFilterKind, type BrowseSortKind } from '@shared/collection-browse';
 import { hasArchivePages } from '@shared/collections';
+import { normalizeConnection } from '@shared/collection-rows';
+import { CURRENT_COLLECTION, normalizeCollectionQuery } from '@shared/collection-query';
 import { entryFieldLabel, entryFieldValue, type EntryReadContext } from '@shared/entry-fields';
 import { entryRow, publishedEntries } from '@shared/entry-feed';
+import { allTrees, childLists } from '@engine/tree';
 import { hasArchiveLayout, siteArchives } from './archive';
+import { prepareLoops } from './collection-loops';
 import { entrySearchHidden, FOLD_JS } from './search';
 import { resolveImage } from './index';
 
@@ -44,9 +49,16 @@ export interface BrowseControls {
   sorts: BrowseSort[];
 }
 
-/** One published entry as the browse index has it: its card, the words a search finds it by, and the values the controls read. */
-export interface BrowseEntry {
+/** What the matching code reads of one entry: the words a search finds it by, and the values the controls read. */
+export interface BrowseMatch {
   id: string;
+  /** Absent for an entry the author hides from search, which a search never finds. */
+  text?: string;
+  values: Record<string, string | number | boolean | string[] | null>;
+}
+
+/** One published entry as the browse index has it: its card, the words a search finds it by, and the values the controls read. */
+export interface BrowseEntry extends BrowseMatch {
   route: string;
   title: string;
   excerpt: string;
@@ -55,21 +67,50 @@ export interface BrowseEntry {
   byline: string;
   image: Record<string, unknown> | null;
   categories: Array<{ label: string; route: string | null }>;
-  /** Absent for an entry the author hides from search, which a search never finds. */
-  text?: string;
-  values: Record<string, string | number | boolean | string[] | null>;
+}
+
+/**
+ * One published entry as the browse index of an index with a design of its own has it: what the matching code reads,
+ * and its row in each of the layout's loops over the page's entries (see archiveLoopIds), as the page writes its rows.
+ */
+export interface BrowseLayoutEntry extends BrowseMatch {
+  loops: Array<Record<string, unknown>>;
+}
+
+/** One row of a listing visitors browse (see listingBrowse): what the matching code reads, and the row's place in the listing. */
+export interface BrowseListingRow extends BrowseMatch {
+  i: number;
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && typeof rec === 'object' && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /**
- * Whether a collection's index gives visitors controls: it has an index, shown with the ready-made cards (a design of
- * its own lists its entries its own way), and its browsing offers something its fields allow.
+ * The loops of an index's own design that repeat the entries of the page they are on (`{ $archive: true }`), by node
+ * ID, in the order the browse index holds each entry's rows for them.
+ */
+export function archiveLoopIds(layout: NodeTree | undefined): string[] {
+  const nodes = layout && typeof layout === 'object' && layout.nodes && typeof layout.nodes === 'object' ? layout.nodes : {};
+  // Only those the page shows: reached from its sections, never one a hand edit left in the tree on its own.
+  const reached = new Set<string>();
+  const visit = (id: string) => {
+    const n = Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    if (!n || reached.has(id)) return;
+    reached.add(id);
+    for (const cl of childLists(n)) cl.ids.forEach(visit);
+  };
+  (Array.isArray(layout?.rootIds) ? layout.rootIds : []).forEach(visit);
+  return Object.values(nodes).flatMap((n) => (n?.kind === 'repeat' && reached.has(n.id) && isCollectionLoop(n) && (n.list as { $archive?: unknown }).$archive === true && Object.keys(n.list).length === 1 ? [n.id] : []));
+}
+
+/**
+ * Whether a collection's index gives visitors controls: it has an index, its browsing offers something its fields
+ * allow, and the index lists its entries where the controls can reach them: in the ready-made cards, or in a loop of
+ * its own design over the page's entries.
  */
 export function browsesIndex(state: ProjectState, collectionId: string): boolean {
   const c = own(state.collections, collectionId);
   const s = c?.settings;
-  return !!s && hasArchivePages(s) && !hasArchiveLayout(s) && !!collectionBrowse(s);
+  return !!s && hasArchivePages(s) && !!collectionBrowse(s) && (!hasArchiveLayout(s) || archiveLoopIds(s.archiveTemplate).length > 0);
 }
 
 /** The collections whose index gives visitors controls, by ID. */
@@ -79,9 +120,38 @@ export function browsingCollections(state: ProjectState): string[] {
     .filter((id) => browsesIndex(state, id));
 }
 
-/** Whether the site has browsing anywhere, so its runtime holds the browse code. */
+/**
+ * Whether a tree has a listing visitors may browse: a connected list or a collection query's loop with browsing on,
+ * showing a collection whose browsing offers something (`owner` reads `$current` as a layout's own collection).
+ */
+function treeBrowses(state: ProjectState, owner: { kind: string; id: string }, tree: NodeTree): boolean {
+  const offers = (query: unknown) => {
+    const q = normalizeCollectionQuery(query);
+    const id = q?.collectionId === CURRENT_COLLECTION ? (owner.kind === 'template' || owner.kind === 'archive' ? owner.id : '') : q?.collectionId;
+    const c = id ? own(state.collections, id) : undefined;
+    return !!c && !!collectionBrowse(c.settings);
+  };
+  for (const n of Object.values(tree.nodes && typeof tree.nodes === 'object' ? tree.nodes : {})) {
+    if (n?.kind === 'instance') {
+      for (const raw of Object.values(n.listSources ?? {})) {
+        const c = normalizeConnection(raw);
+        if (c?.browse && offers(c.query)) return true;
+      }
+    } else if (n?.kind === 'repeat' && isCollectionLoop(n)) {
+      const list = n.list as { $query?: unknown; browse?: unknown };
+      if (list.browse === true && offers(list.$query)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the site has browsing anywhere, so its runtime holds the browse code: an index, or a listing, that browses,
+ * or code of the author's that places the browse component (a design's file converted to code keeps its listing).
+ */
 export function usesBrowse(state: ProjectState): boolean {
-  return browsingCollections(state).length > 0;
+  const named = Object.values(state.components ?? {}).some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.includes(BROWSE_COMPONENT_FILE));
+  return named || browsingCollections(state).length > 0 || allTrees(state).some((t) => treeBrowses(state, t.owner, t.tree));
 }
 
 /** The value one control reads for an entry, in the form the matching code compares. */
@@ -111,16 +181,16 @@ function choiceOptions(state: ProjectState, collectionId: string, key: string): 
 }
 
 /**
- * The controls a collection's index shows, from its browse setting and its published entries: a choice offers only
- * the options an entry has, and a filter no entry has anything for (a choice with no option left, a range with no
- * number) is left out, so no control does nothing.
+ * The controls a collection's index shows, from its browse setting and its published entries (or, for a listing, the
+ * entries it shows): a choice offers only the options an entry has, and a filter no entry has anything for (a choice
+ * with no option left, a range with no number) is left out, so no control does nothing.
  */
-export function browseControls(state: ProjectState, collectionId: string): BrowseControls {
+export function browseControls(state: ProjectState, collectionId: string, shown?: readonly EntryDoc[]): BrowseControls {
   const collection = state.collections[collectionId];
   const settings = collection.settings;
   const b = collectionBrowse(settings);
   if (!b) return { search: false, filters: [], sorts: [] };
-  const entries = publishedEntries(state, collection);
+  const entries = shown ?? publishedEntries(state, collection);
   const ctx = (entry: (typeof entries)[number]): EntryReadContext => ({ state, collection, entry, neighbours: {} });
   const filters: BrowseFilter[] = [];
   for (const key of b.filters) {
@@ -142,33 +212,59 @@ export function browseControls(state: ProjectState, collectionId: string): Brows
   return { search: b.search, filters, sorts };
 }
 
+/** Whether a set of controls does anything: a filter whose grouping has lost its last term offers none. */
+export const controlsAct = (c: BrowseControls | undefined): c is BrowseControls => !!c && (c.search || c.filters.length > 0 || c.sorts.length > 0);
+
+/**
+ * How the matching code reads each entry of a collection for a set of controls: the value each control reads and, while
+ * visitors can search, the words a search finds it by (its title and excerpt, and the labels of its categories and of
+ * the options its choice filters show: nothing the site does not show of it).
+ */
+function matchReader(state: ProjectState, collection: Collection, controls: BrowseControls): (entry: EntryDoc) => BrowseMatch & { row: ReturnType<typeof entryRow>; categories: string[] } {
+  const terms = new Map(archiveTerms(collection, 'categories').map((t) => [t.id, t.label]));
+  const keys = [...new Set([...controls.filters.map((f) => f.key), ...controls.sorts.map((s) => s.key)])];
+  const kinds = new Map<string, BrowseFilterKind | BrowseSortKind>([...controls.sorts.map((s) => [s.key, s.kind] as const), ...controls.filters.map((f) => [f.key, f.kind] as const)]);
+  const choices = controls.filters.filter((f): f is Extract<BrowseFilter, { kind: 'choice' }> => f.kind === 'choice');
+  return (entry) => {
+    const row = entryRow(state, collection, entry);
+    const ctx: EntryReadContext = { state, collection, entry, neighbours: {} };
+    const categories = Array.isArray(entry.terms?.categories) ? entry.terms.categories.filter((t) => terms.has(t)) : [];
+    const values: BrowseMatch['values'] = {};
+    for (const key of keys) values[key] = controlValue(ctx, key, kinds.get(key)!);
+    const out: BrowseMatch & { row: typeof row; categories: string[] } = { id: entry.id, values, row, categories };
+    if (controls.search && !entrySearchHidden(entry)) {
+      const labels = choices.flatMap((f) => {
+        const v = values[f.key];
+        return Array.isArray(v) ? f.options.filter((o) => v.includes(o.value)).map((o) => o.label) : [];
+      });
+      out.text = [...new Set([row.title, row.excerpt, ...categories.map((t) => terms.get(t)!), ...labels].map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean))].join('\n');
+    }
+    return out;
+  };
+}
+
+/** What the matching code reads of an entry, without what its reader worked it out from. */
+const matchOnly = ({ id, text, values }: BrowseMatch): BrowseMatch => (text === undefined ? { id, values } : { id, text, values });
+
 /**
  * Every published entry of a browsing collection, in the order its index lists them, with its card (as the
  * ready-made cards show it, its categories linking to their archives while they have them), the words a search finds
- * it by (its title and excerpt, and the labels of its categories and of the options its choice filters show: nothing
- * the site does not show of it), and the value each control reads.
+ * it by, and the value each control reads.
  */
 export function buildBrowseIndex(state: ProjectState, collectionId: string): BrowseEntry[] {
   const collection = state.collections[collectionId];
   const settings = collection.settings;
-  const controls = browseControls(state, collectionId);
+  const read = matchReader(state, collection, browseControls(state, collectionId));
   const archives = new Map(
     siteArchives(state)
       .filter((p) => p.collectionId === collectionId && p.term?.taxonomy === 'categories' && p.page === 1)
       .map((p) => [p.term!.id, p.route])
   );
   const terms = new Map(archiveTerms(collection, 'categories').map((t) => [t.id, t.label]));
-  const keys = [...new Set([...controls.filters.map((f) => f.key), ...controls.sorts.map((s) => s.key)])];
-  const kinds = new Map<string, BrowseFilterKind | BrowseSortKind>([...controls.sorts.map((s) => [s.key, s.kind] as const), ...controls.filters.map((f) => [f.key, f.kind] as const)]);
-  const choices = controls.filters.filter((f): f is Extract<BrowseFilter, { kind: 'choice' }> => f.kind === 'choice');
   return publishedEntries(state, collection).map((entry) => {
-    const row = entryRow(state, collection, entry);
-    const ctx: EntryReadContext = { state, collection, entry, neighbours: {} };
-    const ids = Array.isArray(entry.terms?.categories) ? entry.terms.categories.filter((t) => terms.has(t)) : [];
-    const categories = ids.map((t) => ({ label: terms.get(t)!, route: archives.get(t) ?? null }));
-    const values: BrowseEntry['values'] = {};
-    for (const key of keys) values[key] = controlValue(ctx, key, kinds.get(key)!);
-    const out: BrowseEntry = {
+    const m = read(entry);
+    const { row } = m;
+    return {
       id: entry.id,
       route: `${settings.route}${entry.slug}/`,
       title: row.title,
@@ -177,23 +273,45 @@ export function buildBrowseIndex(state: ProjectState, collectionId: string): Bro
       dateLabel: row.dateLabel,
       byline: row.byline,
       image: row.image?.assetId ? resolveImage(row.image, { state }) : null,
-      categories,
-      values
+      categories: m.categories.map((t) => ({ label: terms.get(t)!, route: archives.get(t) ?? null })),
+      values: m.values,
+      ...(m.text === undefined ? {} : { text: m.text })
     };
-    if (controls.search && !entrySearchHidden(entry)) {
-      const labels = choices.flatMap((f) => {
-        const v = values[f.key];
-        return Array.isArray(v) ? f.options.filter((o) => v.includes(o.value)).map((o) => o.label) : [];
-      });
-      out.text = [...new Set([row.title, row.excerpt, ...categories.map((c) => c.label), ...labels].map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean))].join('\n');
-    }
-    return out;
   });
+}
+
+/**
+ * Every published entry of a collection whose index has a design of its own, in the order its index lists them: what
+ * the matching code reads, and its row in each of the layout's loops over the page's entries, worked out as the page
+ * works out its own rows (see generator/collection-loops.ts), so the page lists any entry exactly as it would have.
+ */
+export function buildLayoutBrowseIndex(state: ProjectState, collectionId: string): BrowseLayoutEntry[] {
+  const collection = state.collections[collectionId];
+  const layout = collection.settings.archiveTemplate!;
+  const entries = publishedEntries(state, collection);
+  const read = matchReader(state, collection, browseControls(state, collectionId));
+  const { loops } = prepareLoops(state, layout, { state, archive: { collectionId, entryIds: entries.map((e) => e.id) } });
+  const rows = archiveLoopIds(layout).map((id) => new Map((loops.get(id)?.rows ?? []).map((r) => [r.id as string, r])));
+  return entries.map((entry) => ({ ...matchOnly(read(entry)), loops: rows.map((byId) => byId.get(entry.id) ?? { id: entry.id }) }));
+}
+
+/**
+ * What visitors browse in one listing (a connected list, or a collection query's loop, with browsing on): the
+ * controls its collection's browse setting offers over exactly the entries the listing shows (its query, sort,
+ * offset, limit and most already applied), and what the matching code reads of each, with its place in the listing.
+ * Undefined when the listing shows nothing, or no control would do anything for what it shows.
+ */
+export function listingBrowse(state: ProjectState, collection: Collection | undefined, entries: readonly EntryDoc[]): { controls: BrowseControls; rows: BrowseListingRow[] } | undefined {
+  if (!collection || !entries.length || !collectionBrowse(collection.settings)) return undefined;
+  const controls = browseControls(state, collection.settings.id, entries);
+  if (!controlsAct(controls)) return undefined;
+  const read = matchReader(state, collection, controls);
+  return { controls, rows: entries.map((e, i) => ({ ...matchOnly(read(e)), i })) };
 }
 
 /** A browsing collection's index as the file the website loads. */
 export function generateBrowseIndex(state: ProjectState, collectionId: string): string {
-  const rows = buildBrowseIndex(state, collectionId);
+  const rows = hasArchiveLayout(state.collections[collectionId].settings) ? buildLayoutBrowseIndex(state, collectionId) : buildBrowseIndex(state, collectionId);
   return `// Generated by SiteOrigin Builder. Every published entry of this collection, for its index's search, filters and sorting.\nexport default [\n${rows.map((r) => `\t${JSON.stringify(r)}`).join(',\n')}\n];\n`;
 }
 
@@ -308,11 +426,18 @@ export function browse(entries, controls, criteria, locale) {
 }
 
 /**
- * The component holding a collection index's controls. The page gives it the controls, how to load the index, how
- * many entries it lists at a time, the collection's name, a snippet listing the entries that match (\`results\`) and
- * its own content, which shows until a control is used, while the index loads, and if it cannot load. The controls
- * work once the page's script runs (until then they are disabled, and on a page whose scripts never run they are left
- * out, as site search is); printed, they are left out.
+ * The component holding a collection index's controls, or a listing's. The page gives it the controls, how to load
+ * the entries they browse, how many it lists at a time, the collection's name, and what it lists in one of two ways:
+ *
+ * - the ready-made cards give a snippet listing the entries that match (\`results\`) and their own content, which
+ *   shows until a control is used, while the entries load, and if they cannot load;
+ * - a design of the author's (an index's own design, a listing) gives one snippet (\`content\`), which always shows,
+ *   given the entries that match (none until a control is used and they have loaded) and, while more match than it
+ *   shows, the button that shows more, to place where the design's page links would be.
+ *
+ * \`frame\`, when given, places the controls: it is given them to show. The controls work once the page's script runs
+ * (until then they are disabled, and on a page whose scripts never run they are left out, as site search is);
+ * printed, they are left out.
  */
 export const BROWSE_SVELTE = String.raw`<script>
 	/**
@@ -323,7 +448,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 	import { browse, isActive, sortChoices } from './collection-browse.js';
 	import { fill, visitorText } from './visitor-text.js';
 
-	let { controls, load, size = 10, name = '', results, children } = $props();
+	let { controls, load, size = 10, name = '', results, children, content, frame } = $props();
 	const text = visitorText();
 	let query = $state('');
 	let choices = $state({});
@@ -339,6 +464,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 	let ready = $state(false);
 	let form = $state();
 	let list = $state();
+	let said = $state();
 	// Whether the component is still on the page, so an index that loads after the visitor has left changes nothing.
 	let alive = true;
 
@@ -409,23 +535,43 @@ export const BROWSE_SVELTE = String.raw`<script>
 		form?.querySelector('input, select')?.focus();
 	}
 
+	/** What a keyboard can reach on the page. */
+	const reachable = () => [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')];
+	// No form of the page owns the controls (an empty form name matches no form): Enter in the search box, or a number
+	// a visitor is still typing, never submits or holds up a form the listing sits in, or any other.
+	const detached = '';
+
 	/** The next matches, and focus on the first of them, so a keyboard goes on from there. */
 	async function more() {
 		const before = shown;
+		// In a design of the author's, the first thing a keyboard reaches that the next matches added, or else what
+		// the controls say, since a design's rows may hold nothing to reach.
+		const had = content ? new Set(reachable()) : null;
 		more_pages += 1;
 		await tick();
+		if (had) {
+			// The first of them a keyboard can be on: one hidden at this size takes no focus.
+			for (const el of reachable()) {
+				if (had.has(el) || form?.contains(el) || el.classList.contains('so-browse__more') || el.disabled || el.tabIndex < 0) continue;
+				el.focus();
+				if (document.activeElement === el) return;
+			}
+			said?.focus();
+			return;
+		}
 		const card = list?.querySelectorAll('li')[before];
 		// Its title's link, which opens it, rather than a category's before it.
 		(card?.querySelector(':is(h2, h3, h4) a') ?? card?.querySelector('a'))?.focus();
 	}
 </script>
 
-<form class="so-browse" role="search" aria-label={fill(text().browseLabel, { collection: name })} bind:this={form} onsubmit={(e) => e.preventDefault()}>
+{#snippet bar()}
+<div class="so-browse" role="search" aria-label={fill(text().browseLabel, { collection: name })} bind:this={form}>
 	<fieldset class="so-browse__controls" disabled={!ready}>
 		{#if controls.search}
 			<label class="so-browse__field so-browse__field--search">
 				<span class="so-browse__label">{text().browseSearch}</span>
-				<input class="so-browse__input" type="search" bind:value={query} oninput={changed} />
+				<input class="so-browse__input" type="search" form={detached} bind:value={query} oninput={changed} />
 			</label>
 		{/if}
 		{#each controls.filters as f (f.key)}
@@ -434,7 +580,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<legend class="so-browse__label">{f.label}</legend>
 					{#each f.options as o (o.value)}
 						<label class="so-browse__option">
-							<input type="checkbox" checked={(choices[f.key] ?? []).includes(o.value)} onchange={(e) => pick(f.key, o.value, e.currentTarget.checked)} />
+							<input type="checkbox" form={detached} checked={(choices[f.key] ?? []).includes(o.value)} onchange={(e) => pick(f.key, o.value, e.currentTarget.checked)} />
 							<span>{o.label}</span>
 						</label>
 					{/each}
@@ -443,6 +589,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 				<label class="so-browse__field">
 					<span class="so-browse__label">{f.label}</span>
 					<select
+						form={detached}
 						class="so-browse__input"
 						value={yesno[f.key] ?? ''}
 						onchange={(e) => {
@@ -461,6 +608,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<label class="so-browse__bound">
 						<span>{text().browseMin}</span>
 						<input
+							form={detached}
 							class="so-browse__input"
 							type="number"
 							step="any"
@@ -475,6 +623,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 					<label class="so-browse__bound">
 						<span>{text().browseMax}</span>
 						<input
+							form={detached}
 							class="so-browse__input"
 							type="number"
 							step="any"
@@ -492,7 +641,7 @@ export const BROWSE_SVELTE = String.raw`<script>
 		{#if sorts.length}
 			<label class="so-browse__field">
 				<span class="so-browse__label">{text().browseSort}</span>
-				<select class="so-browse__input" bind:value={sort} onchange={changed}>
+				<select class="so-browse__input" form={detached} bind:value={sort} onchange={changed}>
 					<option value="">{text().browseSortDefault}</option>
 					{#each sorts as s (s.value)}
 						<option value={s.value}>{s.label}</option>
@@ -500,22 +649,35 @@ export const BROWSE_SVELTE = String.raw`<script>
 				</select>
 			</label>
 		{/if}
-		<button type="button" class="so-browse__button" disabled={!active} onclick={clear}>{text().browseClear}</button>
+		<button type="button" form={detached} class="so-browse__button" disabled={!active} onclick={clear}>{text().browseClear}</button>
 	</fieldset>
 	<div class="so-browse__status">
-		<p role="status">{status}</p>
+		<p role="status" tabindex="-1" bind:this={said}>{status}</p>
 		{#if active && failed}
-			<button type="button" class="so-browse__button" onclick={fetchEntries}>{text().browseRetry}</button>
+			<button type="button" form={detached} class="so-browse__button" onclick={fetchEntries}>{text().browseRetry}</button>
 		{/if}
 	</div>
-</form>
-{#if found}
+</div>
+{/snippet}
+
+{#snippet more_button()}
+	<button type="button" form={detached} class="so-browse__button so-browse__more" onclick={more}>{text().browseMore}</button>
+{/snippet}
+
+{#if frame}
+	{@render frame(bar)}
+{:else}
+	{@render bar()}
+{/if}
+{#if content}
+	{@render content(found ? found.slice(0, shown) : null, found && found.length > shown ? more_button : undefined)}
+{:else if found}
 	<div class="so-browse__results" bind:this={list}>
 		{#if found.length}
 			{@render results?.(found.slice(0, shown))}
 		{/if}
 		{#if found.length > shown}
-			<button type="button" class="so-browse__button so-browse__more" onclick={more}>{text().browseMore}</button>
+			{@render more_button()}
 		{/if}
 	</div>
 {:else}
@@ -527,6 +689,8 @@ export const BROWSE_SVELTE = String.raw`<script>
 		display: flex;
 		flex-direction: column;
 		gap: var(--so-space-sm, 0.75rem);
+		/* Placed among a grid's items, the whole row. */
+		grid-column: 1 / -1;
 	}
 	.so-browse__controls {
 		display: flex;
@@ -618,6 +782,10 @@ export const BROWSE_SVELTE = String.raw`<script>
 	.so-browse__status p {
 		margin: 0;
 	}
+	.so-browse__status p:focus-visible {
+		outline: 2px solid var(--so-surface-ink, var(--so-color-focus, currentColor));
+		outline-offset: 2px;
+	}
 	.so-browse__results {
 		display: flex;
 		flex-direction: column;
@@ -626,13 +794,19 @@ export const BROWSE_SVELTE = String.raw`<script>
 	.so-browse__more {
 		align-self: center;
 	}
+	/* Placed by a design of the author's, among its own sections. */
+	:global(.so-browse__more-row) {
+		display: flex;
+		justify-content: center;
+	}
 	/* Without the page's script nothing would work them, and printed they do nothing. */
 	:global(html:not(.so-js)) .so-browse {
 		display: none;
 	}
 	@media print {
 		.so-browse,
-		.so-browse__more {
+		.so-browse__more,
+		:global(.so-browse__more-band) {
 			display: none;
 		}
 	}

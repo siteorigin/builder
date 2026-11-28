@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 import { editorScheme } from '@shared/appearance';
 import { PERF_ARG } from '@shared/perf';
+import { chromePlatform } from '@shared/chrome-platform';
 
 // The editor's first paint is in its Appearance: its root element is marked as soon as it exists, before any style
 // is computed, with the Appearance saved now (asked for on every page load, so a reload is not left with an older
@@ -29,7 +30,7 @@ const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(c
 const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'review:progress', 'runtime:status', 'preview:load-failed', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'preview-control:request', 'menu:command', 'menu:history', 'menu:open', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
-  platform: process.platform,
+  platform: chromePlatform(process.argv, process.platform),
   app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), gitRuntime: invoke('app:gitRuntime'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
   edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
@@ -194,6 +195,7 @@ const api: BuilderApi = {
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
   componentPreviewResult: (requestId, results) => ipcRenderer.send('component-preview:result', requestId, results),
   previewControlResult: (requestId, result) => ipcRenderer.send('preview-control:result', requestId, result),
+  trace: (area, message) => ipcRenderer.send('app:trace', area, message),
   menuReady: () => ipcRenderer.send('menu:ready'),
   menuReceived: (id) => ipcRenderer.send('menu:received', id),
   popupMenu: (at) => ipcRenderer.invoke('menu:popup', at),

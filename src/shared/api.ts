@@ -424,6 +424,11 @@ export interface ProjectSnapshot {
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
   /**
+   * Route modules of pages served as plain HTML that the project's files on disk keep out (its own route files, or
+   * generated code edited outside the app), so those pages load their scripts (see generator/static-pages.ts).
+   */
+  keptPageModules?: string[];
+  /**
    * Set when the project is open for inspection only (a newer format, or another app is editing it), or open to a live
    * session's copy editor, who changes only its words and pictures (`copyOnly`).
    */
@@ -1954,6 +1959,8 @@ export interface BuilderApi {
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   previewControlResult(requestId: string, result: PreviewControlResult): void;
+  /** One step of the editor's, for the app's trace on this computer (src/main/trace.ts): short text, never sent anywhere. */
+  trace(area: string, message: string): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */

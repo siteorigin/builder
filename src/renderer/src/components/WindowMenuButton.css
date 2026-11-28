@@ -3,6 +3,7 @@
      traffic lights are, over the top bar and over a dialog's backdrop, as a menu bar would be, but under the menus
      and popovers. Each screen keeps its room free (--chrome-start). */
   .window-menu-button { position: fixed; z-index: calc(var(--z-dialog) + 1); color: var(--text-2); }
-  .window-menu-button[aria-expanded='true'] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-  :where(:root[data-appearance='dark']) .window-menu-button[aria-expanded='true'] { background: var(--hover); }
+  /* Open, it is drawn pressed in, as the toolbar's other menu triggers are (Toolbar.css): a sunken fill and a 3:1 ring. */
+  .window-menu-button[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+  :where(:root[data-appearance='dark']) .window-menu-button[aria-expanded='true'] { background: var(--bg); }
 }

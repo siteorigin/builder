@@ -634,7 +634,7 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
 
 /** Settings of a page that are its own. A new route moves the pages inside it and keeps the old address working
  *  site-wide, and a translation joins or leaves another page's group, so neither is the page's alone. */
-const PAGE_SETTINGS = new Set(['title', 'navLabel', 'seoTitle', 'description', 'noindex', 'searchHidden', 'draft', 'language', 'showHeader', 'showFooter', 'socialImage', 'canonical', 'updatedAt', 'articleDate', 'byline', 'excerpt', 'article', 'newsHidden', 'structuredData']);
+const PAGE_SETTINGS = new Set(['title', 'navLabel', 'seoTitle', 'description', 'noindex', 'searchHidden', 'draft', 'language', 'showHeader', 'showFooter', 'preferStaticHtml', 'socialImage', 'canonical', 'updatedAt', 'articleDate', 'byline', 'excerpt', 'article', 'newsHidden', 'structuredData']);
 
 /** What a page's run may also do, granted by the tool call that sends the batch: never by the model. */
 export interface AuthorityGrants {

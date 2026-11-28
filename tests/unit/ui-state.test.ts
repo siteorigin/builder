@@ -1030,10 +1030,10 @@ describe('generated buttons, tabs and disclosures', () => {
     expect(css).not.toMatch(new RegExp(`^\\s*\\.${STATE_OFF_CLASS}`, 'm'));
     // An option a group's buttons choose hides while scripts run, printed too: a page prints the option chosen.
     expect(css).toMatch(new RegExp(`\\}\\n\\.${SCRIPTS_CLASS} \\.${CHOICE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
-    // The page marks itself as running scripts before anything shows, from a script of its own in <head>.
-    const app = files.get('src/app.html')!;
-    expect(app).toContain(`<script>document.documentElement.classList.add("${SCRIPTS_CLASS}");</script>`);
-    expect(app.indexOf(SCRIPTS_CLASS)).toBeLessThan(app.indexOf('%sveltekit.head%'));
+    // The page marks itself as running scripts before anything shows, from a script of its own first in its <head>: the
+    // layout's, on every page that runs them (#1754), not app.html's.
+    expect(files.get('src/app.html')).not.toContain(SCRIPTS_CLASS);
+    expect(files.get('src/routes/+layout.svelte')).toContain(`<svelte:head>\n\t{#if !page.data?.soStaticHtml}<script>document.documentElement.classList.add("${SCRIPTS_CLASS}");</script>{/if}`);
     // Without scripts the tab row is left out and every panel shows under its tab's label, as printed.
     const screen = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media not print'), FOUNDATION_BASE_CSS.indexOf('@media print'));
     expect(screen).toContain(`:root:not(.${SCRIPTS_CLASS}) .so-tablist:not(#so-print) { display: none !important; }`);

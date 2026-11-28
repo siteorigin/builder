@@ -17,10 +17,12 @@ import { queriedEntries } from './collection-query';
 import { emptyFor } from './entry-template';
 import { resolveValue, type ResolveContext } from './index';
 
-/** The rows of one loop, and the list they are items of, whose fields name each place's key. */
+/** The rows of one loop, and the list they are items of, whose fields name each place's key, with the entries they show. */
 export interface LoopRows {
   rows: Array<Record<string, unknown>>;
   schema: ListProp;
+  collection?: Collection;
+  entries: EntryDoc[];
 }
 
 /** Where a tree with loops is written: an entry's page, an archive page (the entries it lists), or anywhere else. */
@@ -50,6 +52,14 @@ function queryPlace(place: LoopPlace): QueryPlace {
  * (or its connection cannot be read, as validation reports): the placement's own items show.
  */
 export function connectedListItems(state: ProjectState, def: ComponentDefinition, node: Pick<InstanceNode, 'listSources'>, prop: string, place: LoopPlace = {}): Array<Record<string, unknown>> | undefined {
+  return connectedList(state, def, node, prop, place)?.items;
+}
+
+/**
+ * A connected list as connectedListItems reads it, with the collection and the entries its items show, one for each
+ * item in order, and whether visitors browse them.
+ */
+export function connectedList(state: ProjectState, def: ComponentDefinition, node: Pick<InstanceNode, 'listSources'>, prop: string, place: LoopPlace = {}): { items: Array<Record<string, unknown>>; collection?: Collection; entries: EntryDoc[]; browse: boolean } | undefined {
   const raw = own(node.listSources, prop);
   if (raw === undefined) return undefined;
   const schema = own(def.properties, prop);
@@ -57,9 +67,10 @@ export function connectedListItems(state: ProjectState, def: ComponentDefinition
   if (schema?.type !== 'list' || !connection) return undefined;
   const here = queryPlace(place);
   const collection = queryCollection(state, connection.query, here);
-  const entries = collection ? queriedEntries(state, connection.query, here) : [];
+  const found = collection ? queriedEntries(state, connection.query, here) : [];
   const max = typeof schema.max === 'number' && Number.isInteger(schema.max) && schema.max >= 0 ? schema.max : undefined;
-  return connectedItems(state, schema.fields, connection, collection, max === undefined ? entries : entries.slice(0, max));
+  const entries = max === undefined ? found : found.slice(0, max);
+  return { items: connectedItems(state, schema.fields, connection, collection, entries), collection, entries, browse: connection.browse === true };
 }
 
 /** The collection and entries a loop shows where it is written. */
@@ -182,9 +193,15 @@ export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveC
     };
     if (Array.isArray(loop.children)) loop.children.forEach(visit);
     const rows = entries.map((e) => Object.fromEntries([['id', e.id], ...readers.map(([key, read]) => [key, read(e)])]));
-    loops.set(loop.id, { rows, schema: { type: 'list', label: 'Entries', itemLabel: 'Entry', fields: fields as ListProp['fields'], default: [] } });
+    loops.set(loop.id, { rows, schema: { type: 'list', label: 'Entries', itemLabel: 'Entry', fields: fields as ListProp['fields'], default: [] }, collection, entries });
   }
   return { tree: { ...tree, nodes: copy }, loops };
+}
+
+/** Whether visitors browse what a collection query's loop shows (see RepeatSource). */
+export function loopBrowses(node: Pick<RepeatNode, 'list'>): boolean {
+  const list = node.list as { $query?: unknown; browse?: unknown };
+  return Object.hasOwn(list, '$query') && list.browse === true;
 }
 
 /** Whether a loop's query reads the entry whose page it is on. */

@@ -105,6 +105,14 @@
     /* Labels and icons of unavailable controls: quieter than --text-3, 3:1 or better on their surface and fill. */
     --disabled-ink: #76819a;
     --disabled-fill: rgb(28 39 66 / 0.06);
+    /* The app mark's tile when it is a control's own face (the toolbar's home button): the app icon's white easing to
+       its cool floor and its faint edge (src/shared/app-icon.ts ICON_COLORS, TILE_FILL), and the shade it takes
+       under the pointer and when pressed. */
+    --mark-face: linear-gradient(#ffffff 0%, #ffffff 60%, #eceff2 100%);
+    --mark-edge: rgb(28 39 66 / 0.26);
+    --mark-edge-hover: var(--border-control);
+    --mark-shade-hover: rgb(28 39 66 / 0.06);
+    --mark-shade-press: rgb(28 39 66 / 0.12);
     /* The tray behind a segmented control's options. */
     --track: rgb(28 39 66 / 0.08);
     --plum: #6a45c8;
@@ -183,6 +191,13 @@
     --disabled-ink: #6b768c;
     /* Sunken, like the track: an unavailable control sits back rather than lifting off the panel. */
     --disabled-fill: rgb(0 0 0 / 0.22);
+    /* A step off pure white, so the mark does not outshine the rest of a dark bar; its edge and shades stay dark, as
+       a ring lighter than the tile would draw a moat around it. */
+    --mark-face: linear-gradient(#eef1f5 0%, #eef1f5 60%, #d9dee6 100%);
+    --mark-edge: rgb(0 0 0 / 0.14);
+    --mark-edge-hover: rgb(0 0 0 / 0.24);
+    --mark-shade-hover: rgb(28 39 66 / 0.1);
+    --mark-shade-press: rgb(28 39 66 / 0.18);
     /* Darker than the panel, so the raised selected option stands up out of it rather than sinking in. */
     --track: rgb(0 0 0 / 0.28);
     --plum: #b59bff;

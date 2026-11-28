@@ -23,7 +23,8 @@ import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
 import { NODE_START_COMMAND, runsOnNode } from '@shared/deploy-target';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
+import { searchProvider } from '@shared/site-search';
+import { BROWSE_DATA_PREFIX, GENERATED_DIR, RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
 import { hasFeedEntries } from '@generator/rss';
@@ -95,6 +96,8 @@ import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type
 import { fileTrouble, findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
+import { isPageModule, ownRouteFiles } from './project/page-module';
+import { STATIC_PAGE_JS } from '@generator/static-pages';
 import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
@@ -480,10 +483,10 @@ export function namesFile(text: string, file: string): boolean {
  * the files of components only drafts place: the published pages never import those, so a picture only they name
  * stays out of the website with the drafts.
  */
-async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }> {
+async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string>; code: ReadonlySet<string> }> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
-  return { files, browse: browseIndexes(state), draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
+  return { files, browse: browseIndexes(state), code: codeFiles(state), draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
 }
 
 /** The generated index of the pages Site search finds: the words pages show, which never load a file. */
@@ -493,20 +496,55 @@ const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
 const browseIndexes = (state: ProjectState): ReadonlySet<string> => new Set(browsingCollections(state).map((id) => `${RUNTIME_DIR}/${browseIndexFile(id)}`));
 
 /**
- * What of a generated file names the files it loads, for finding the library files the website uses: all of it,
- * nothing of the search index, and of a collection's browse index only the pictures its cards show, never the words
- * and values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
+ * A generated file without the declarations of what its browsed listings' controls read (generator/index.ts
+ * browsedRows): the words and values of entries, which name no file and import nothing. The rows the listings show
+ * stay, as the rest of the file does, and so does a declaration of that name whose value is anything else (code of
+ * the author's).
+ */
+const BROWSE_DATA_LINE = new RegExp(`^\\t${BROWSE_DATA_PREFIX}\\d+ = (.*);$`, 'gm');
+/** Whether a declaration's value reads as the generator writes what a listing's controls read: rows of words and values. */
+const isBrowseData = (json: string): boolean => {
+  try {
+    const rows: unknown = JSON.parse(json);
+    const fits = (r: unknown) => {
+      const row = r as { id?: unknown; i?: unknown; text?: unknown; values?: unknown } | null;
+      return !!row && typeof row === 'object' && typeof row.id === 'string' && typeof row.i === 'number' && (row.text === undefined || typeof row.text === 'string') && !!row.values && typeof row.values === 'object' && !Array.isArray(row.values) && Object.keys(row).every((k) => k === 'id' || k === 'i' || k === 'text' || k === 'values');
+    };
+    return Array.isArray(rows) && rows.every(fits);
+  } catch {
+    return false;
+  }
+};
+/**
+ * Only in a file the generator writes (a page, the layout, an entry's or archive page with its note; a design's file
+ * in the generated folder), never in a code component's: code of the author's keeps every line.
+ */
+const GENERATED_NOTE = '<!-- Generated by SiteOrigin Builder';
+const withoutBrowseData = (rel: string, text: string, code: ReadonlySet<string>): string =>
+  !code.has(rel) && (text.startsWith(GENERATED_NOTE) || rel.startsWith(`${GENERATED_DIR}/`)) && text.includes(BROWSE_DATA_PREFIX) ? text.replace(BROWSE_DATA_LINE, (line, json: string) => (isBrowseData(json) ? '' : line)) : text;
+
+/** The files of the project's code components, read whole whatever they hold (a design's file converted to code keeps its note). */
+const codeFiles = (state: ProjectState): ReadonlySet<string> => new Set(Object.values(state.components).flatMap((d) => (d.kind === 'code' ? [defFile(d)] : [])));
+
+/**
+ * What of a generated file names the files it loads, for finding the library files the website uses: all of it
+ * (but what its browsed listings' controls read), nothing of the search index, and of a collection's browse index
+ * only what its entries show (the pictures of its cards, or every row of an index's own design), never the words and
+ * values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
  * generator writes it (edited by hand) counts whole, so nothing it may name is left out.
  */
-function namingText(rel: string, text: string, browse: ReadonlySet<string>): string {
+function namingText(rel: string, text: string, browse: ReadonlySet<string>, code: ReadonlySet<string>): string {
   if (rel === SEARCH_INDEX) return '';
-  if (!browse.has(rel)) return text;
+  if (!browse.has(rel)) return withoutBrowseData(rel, text, code);
   try {
     const rows: unknown = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
     if (!Array.isArray(rows)) return text;
     const out: string[] = [];
     const take = (v: unknown) => typeof v === 'string' && out.push(v);
     for (const row of rows) {
+      // An index's own design lists each entry as its loops' rows, which name what the page would.
+      const loops = (row as { loops?: unknown } | null)?.loops;
+      if (loops !== undefined) out.push(JSON.stringify(loops));
       const image = (row as { image?: { src?: unknown; srcset?: unknown; sources?: unknown } } | null)?.image;
       if (!image || typeof image !== 'object') continue;
       take(image.src);
@@ -529,12 +567,12 @@ function namingText(rel: string, text: string, browse: ReadonlySet<string>): str
  * start of the next, as a search of them all joined by line breaks would; any other is found exactly as that would.
  * With `unreached`, the texts of the draft-only components' files nothing the website reads names are put there.
  */
-async function websiteNames(project: string, { files, candidate, draftOnly, browse }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
+async function websiteNames(project: string, { files, candidate, draftOnly, browse, code }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string>; code: ReadonlySet<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
   const matcher = new NameMatcher([...names, ...[...draftOnly].map((rel) => basename(rel))]);
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = namingText(rel, await readExportFile(join(project, rel), 'utf8'), browse);
+    const text = namingText(rel, await readExportFile(join(project, rel), 'utf8'), browse, code);
     if (draftOnly.has(rel)) held.set(rel, text);
     else matcher.scan(text);
   }
@@ -598,9 +636,10 @@ export async function unusedComponents(project: string, state: ProjectState): Pr
   const seeds: string[] = [];
   // The search and browse indexes import nothing: their entries' words may read like an import, and are none.
   const browse = browseIndexes(state);
+  const code = codeFiles(state);
   for (const rel of (await listFiles(join(project, 'src'))).map((f) => `src/${f.split(sep).join('/')}`)) {
     if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX || browse.has(rel)) continue;
-    const text = await readExportFile(join(project, rel), 'utf8');
+    const text = withoutBrowseData(rel, await readExportFile(join(project, rel), 'utf8'), code);
     if (owner.has(rel)) texts.set(rel, text);
     else seeds.push(text);
   }
@@ -662,7 +701,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
-  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text, site.browse));
+  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text, site.browse, site.code));
   for (const text of unreached) used.scan(text);
   const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
   // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document
@@ -1632,7 +1671,44 @@ export async function finishExportedSource(dest: string, state: ProjectState, no
   if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs, installedThemeRequirement(state), runsOnNode(state.site)));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
+  // A site that searches through SearchSocket gets a starting point for indexing it, never in place of the owner's own.
+  if (searchProvider(state.site) === 'searchsocket' && !existsSync(join(dest, SEARCHSOCKET_CONFIG_FILE))) await fs.writeFile(join(dest, SEARCHSOCKET_CONFIG_FILE), SEARCHSOCKET_CONFIG);
 }
+
+/** SearchSocket's configuration file, at the root of the project beside package.json. */
+export const SEARCHSOCKET_CONFIG_FILE = 'searchsocket.config.ts';
+
+/**
+ * The SearchSocket configuration a Source export starts with while Site search asks SearchSocket: index the built
+ * website's pages, as `npm run build` writes them. It holds no secret: the keys indexing needs come from the
+ * environment it runs in, and the website only ever asks the service's public search address.
+ */
+export const SEARCHSOCKET_CONFIG = `// Written by SiteOrigin Builder because Site settings choose SearchSocket for Site search. It is yours to change:
+// an export never writes it again while it is here.
+//
+// SearchSocket (https://github.com/gregpriday/searchsocket) indexes this website once it is built:
+//
+//   npm run build
+//   npx searchsocket index
+//
+// The index is kept in Upstash Vector, so indexing reads UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN from
+// the environment it runs in. Keep them out of this file and out of the website: visitors' browsers only ever ask the
+// public search address set in Site settings, served by the SearchSocket deployment that holds the keys. That
+// deployment must let this website's address ask it (api.cors.allowOrigins in its own configuration), and index into
+// the same project and scope it searches: give project.id (and scope) here as that deployment has them.
+//
+// Pages left out of site search in SiteOrigin Builder say so themselves (searchsocket:noindex). Whether search engines
+// may list a page is a separate setting, so robots noindex is not read as one.
+export default {
+\tsource: {
+\t\tmode: 'static-output',
+\t\tstaticOutputDir: 'build'
+\t},
+\textract: {
+\t\trespectRobotsNoindex: false
+\t}
+};
+`;
 
 export async function listFiles(dir: string, base = ''): Promise<string[]> {
   const out: string[] = [];
@@ -2337,6 +2413,39 @@ export function nodeUncleanedMessage(files: string[]): string {
 /** How a website built as a Node.js server is started where it is published, for the export's success screen. */
 export function nodeServerHostNote(): string {
   return `This is a Node.js server: start it with ${NODE_START_COMMAND} in its folder, on a host with Node.js 22.17 or newer. Set ORIGIN to the address it is published at, and set the environment variables its API endpoints read on the host: your .env stays on this computer.`;
+}
+
+/**
+ * A page served as plain HTML says so in a route module SiteOrigin Builder writes beside its file
+ * (generator/static-pages.ts). The project's own route files can be a step ahead of it, added since SiteOrigin Builder
+ * last wrote the module: a staged copy settles it as the next regeneration would, leaving the module out where the page
+ * has route files of its own (see ownRouteFiles), so the copy never holds two modules for one page or serves a page
+ * without the scripts its own files may need. generated-manifest.json then lists what the copy has.
+ */
+export async function settlePageModules(dir: string): Promise<void> {
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const files = manifest.files ?? {};
+  const generated = sha(STATIC_PAGE_JS);
+  const claimed = (path: string) => Object.hasOwn(files, path);
+  // Only a module under the copy's own routes, still the bytes SiteOrigin Builder wrote, is ever taken out.
+  const inside = (path: string) => {
+    try {
+      return safeJoin(dir, path);
+    } catch {
+      return null;
+    }
+  };
+  const theirs = Object.keys(files).filter((path) => files[path] === generated && isPageModule(path) && inside(path) && ownRouteFiles(dir, path, claimed));
+  let changed = false;
+  for (const path of theirs) {
+    const abs = inside(path)!;
+    if ((await readExportText(abs)) !== STATIC_PAGE_JS) continue;
+    await fs.rm(abs, { force: true });
+    delete files[path];
+    changed = true;
+  }
+  if (!changed) return;
+  await fs.writeFile(join(dir, MANIFEST_PATH), toJson(manifest));
 }
 
 /**

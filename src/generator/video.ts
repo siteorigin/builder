@@ -1,4 +1,4 @@
-import type { ProjectState } from '@shared/types';
+import type { ComponentDefinition, ProjectState } from '@shared/types';
 
 /**
  * The video player written into a site that shows a video: a small Svelte helper and the address reader it uses.
@@ -316,7 +316,12 @@ export function videoPlayerSvelte(instrument = false): string {
 /** A module path that names the player helper, however the path leads to it. */
 const NAMES_PLAYER = /['"\`][^'"\`\n]*VideoPlayer(?:\.svelte)?['"\`]/;
 
-/** Whether a component of the site shows a video: its code names the player helper. */
+/** Whether a code component shows a video: its code names the player helper. */
+export function playsVideo(def: ComponentDefinition): boolean {
+  return def.kind === 'code' && typeof def.source === 'string' && NAMES_PLAYER.test(def.source);
+}
+
+/** Whether a component of the site shows a video (see playsVideo). */
 export function usesVideo(state: ProjectState): boolean {
-  return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_PLAYER.test(def.source));
+  return Object.values(state.components).some(playsVideo);
 }

@@ -8,6 +8,7 @@ import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
+import { SEARCH_ENDPOINT_MAX, SEARCH_PATH_PREFIX_MAX } from './site-search';
 import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
 import { MAX_BROWSE_KEYS } from './collection-browse';
@@ -259,6 +260,12 @@ const ARTICLE_FIELDS = {
 const COLLECTION_QUERY_TEXT =
   '{ collectionId, where?, sort?, limit?, offset?, excludeCurrent? }: collectionId names the collection ("$current" in a collection\'s layout or archive layout is its own); where is a list of { field, op, value } clauses all entries must pass (op eq, ne, in, contains, gt, gte, lt, lte or exists; fields as bindings name them: title, publishedAt, terms.<grouping>, field.<name>...); sort a list of { field, direction? } ("entryOrder" is the editorial order); drafts are always left out.';
 
+/** A collection list's visitor browsing (see ListConnection.browse), beside its query and never part of it. */
+const BROWSE_LIST = z
+  .literal(true)
+  .optional()
+  .describe("true lets visitors search, filter and sort the entries the list shows, with the controls the collection's browse setting offers (collection.update browse); left out, they cannot. It never changes which entries show.");
+
 const COLLECTION_SETTINGS = {
   name: z.string().min(1).max(80).optional(),
   kind: z.enum(['editorial', 'structured']).optional().describe('What it holds: "editorial", dated articles such as blog posts (the default), or "structured", records such as team members, projects or events.'),
@@ -407,6 +414,10 @@ export const OPERATION_SCHEMAS = {
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
+    preferStaticHtml: z
+      .boolean()
+      .optional()
+      .describe('true prefers this page as plain HTML on the website, without SvelteKit\'s scripts, while nothing it shows needs them (forms, search, tabs, carousels, entrances, the shared header\'s menu). While something does, the page keeps the preference and loads its scripts. false loads them always, the default. The site\'s own head code loads either way.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
     canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
     updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When its content was last revised, YYYY-MM-DD, for the sitemap. null removes it.'),
@@ -581,7 +592,7 @@ export const OPERATION_SCHEMAS = {
       owner,
       nodeId: z.string().describe('A collection loop: a repeat over a query or over an archive page\'s entries.'),
       source: z
-        .union([z.object({ $query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT) }).strict(), z.object({ $archive: z.literal(true) }).strict()])
+        .union([z.object({ $query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT), browse: BROWSE_LIST }).strict(), z.object({ $archive: z.literal(true) }).strict()])
         .describe("What it repeats: a query's entries, or (in a collection's archive layout) the entries of the archive page shown.")
     })
     .describe('Change which entries a collection loop repeats, keeping what each row shows.'),
@@ -611,7 +622,8 @@ export const OPERATION_SCHEMAS = {
       source: z
         .object({
           query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT),
-          fields: z.record(z.string(), z.string()).describe('Which entry field fills each item field, by item field name: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "field.<name>", "id", "slug" or "entryLink" (a link to the entry\'s page). Every field an item needs must be filled; others left out show their default.')
+          fields: z.record(z.string(), z.string()).describe('Which entry field fills each item field, by item field name: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "field.<name>", "id", "slug" or "entryLink" (a link to the entry\'s page). Every field an item needs must be filled; others left out show their default.'),
+          browse: BROWSE_LIST
         })
         .strict()
         .nullable()
@@ -720,6 +732,17 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('The header menu\'s order. "own" (default): its links keep the order the author gave them, whatever the page order. "follow": its links to pages stay in the page order through every edit (a page.reorder, a page added to the menu), a deleted page\'s menu links are removed rather than pointed at its replacement, and its links cannot be moved by hand. Other links and submenus keep their places.'),
     webmcp: z.boolean().optional().describe('WebMCP: declare each contact and signup form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
+    search: z
+      .object({
+        provider: z.enum(['builtin', 'searchsocket']).optional().describe('"builtin" (default): Site search finds pages in an index written with the site. "searchsocket": it asks the SearchSocket service at endpoint, which the author hosts and which indexes the built site.'),
+        endpoint: z.string().max(SEARCH_ENDPOINT_MAX).optional().describe('The SearchSocket service\'s public search address (https://…/api/search). "" removes it.'),
+        pathPrefix: z.string().max(SEARCH_PATH_PREFIX_MAX).optional().describe('Only results whose address starts with this ("/docs/"). "" is the whole site.'),
+        scrollToText: z.boolean().optional().describe('A result opens its page scrolled to the passage found. Default true.')
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .describe('Which search Site search runs. Only the fields given change; null restores the site\'s own index and forgets the rest.'),
     headCode: z
       .string()
       .max(HEAD_CODE_MAX)

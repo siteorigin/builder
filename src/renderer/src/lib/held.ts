@@ -57,6 +57,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   draft: ['draft'],
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
+  preferStaticHtml: ['preferStaticHtml'],
   socialImage: ['seo', 'socialImage'],
   canonical: ['seo', 'canonical'],
   updatedAt: ['updatedAt'],
@@ -81,13 +82,17 @@ function visitorTextRead(state: ProjectState, language: string, keys: string[]):
 /** The identity fields a `site.update` writes. */
 const identityKeys = (patch: Record<string, unknown>) => Object.keys(patch).filter((k) => patch[k] !== undefined).sort();
 
-/** The identity fields an edit writes, as stored: the one field's value, each field's, or the whole identity when it clears it. */
-function identityRead(state: ProjectState, patch: Record<string, unknown> | null): unknown {
-  const stored: unknown = state.site.identity;
+/** The parts of a stored settings object an edit writes, as stored: the one part's value, each part's, or the whole object when it clears it. */
+function partsRead(stored: unknown, patch: Record<string, unknown> | null): unknown {
   if (!patch) return stored;
   const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
   const keys = identityKeys(patch);
   return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
+}
+
+/** The identity fields an edit writes, as stored: the one field's value, each field's, or the whole identity when it clears it. */
+function identityRead(state: ProjectState, patch: Record<string, unknown> | null): unknown {
+  return partsRead(state.site.identity, patch);
 }
 
 /**
@@ -249,6 +254,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         fields.identity = identityRead(state, op.identity);
         if (op.identity) fields.publisher = publisherRead(state);
       }
+      // Which search the site runs, setting by setting: an address held for an AI turn never waits on, or replaces, the
+      // section typed meanwhile. Going back to the site's own index (null) forgets them all, so it reads them all.
+      if (op.search !== undefined) fields.search = partsRead(state.site.search, op.search);
       // The crawler policy part by part: paths typed during an AI turn never wait on, or replace, crawlers named meanwhile.
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
       // Each integration on its own: a site ID typed for one never waits on, or replaces, a change to another.
@@ -491,6 +499,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'visitorText' && op.visitorText) return [k, op.visitorText.language.toLowerCase(), Object.keys(op.visitorText.text).sort()];
           // Who publishes the site is set field by field: each is its own; clearing it all writes every one.
           if (op.type === 'site.update' && k === 'identity') return [k, op.identity ? identityKeys(op.identity) : null];
+          // And which search the site runs, setting by setting.
+          if (op.type === 'site.update' && k === 'search') return [k, op.search ? identityKeys(op.search) : null];
           // So is the crawler policy, part by part: its paths and the crawlers it names are separate fields.
           if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
           // And what a page is, fact by fact; choosing its type is a field of its own.
