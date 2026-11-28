@@ -1,5 +1,8 @@
 import type { PropSchema } from '@shared/types';
+import type { CodePropsTaken } from '@shared/api';
+import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { checkPropName } from '@engine/schema';
+import { DEFAULT_TEXT_MAX } from '@engine/values';
 
 /** Text as a valid code name, or null when it makes none: "Hero Title" becomes heroTitle. */
 export function toCodeName(text: string): string | null {
@@ -270,3 +273,109 @@ export const parseOptions = (s: string) =>
       const [value, ...rest] = l.split('|');
       return { value: value.trim(), label: rest.join('|').trim() || value.trim() };
     });
+
+// ---------------------------------------------------------------------------
+// Properties from the code
+// ---------------------------------------------------------------------------
+
+/** Where a component's properties and the props its code takes disagree, as declaring them from the code settles it. */
+export interface CodePropsSync {
+  /** Props the code takes that no property declares, as the properties declaring them would be. */
+  add: Array<{ name: string; schema: Record<string, unknown> }>;
+  /** Properties whose default is not the one the code writes for them, with the default they have and the code's. */
+  defaults: Array<{ name: string; was: unknown; value: string | number | boolean }>;
+  /**
+   * Props the code takes that no property declares, whose default no property declared from it would hand the code
+   * as it is (a list, an object, null, a value it works out, text too long for a default): declared by hand.
+   */
+  manual: string[];
+  /** Props the code takes under a name no property can have, which the code has to take under another. */
+  invalid: string[];
+  /** Properties the code never takes, by code name. */
+  unread: string[];
+  /** Two rows share a code name: nothing is worked out until that is fixed, as which one the code reads is unclear. */
+  ambiguous: boolean;
+}
+
+/** The most properties a component can have (engine/schema.ts normalizeProperties). */
+export const MAX_PROPERTIES = 60;
+
+/** A label for a code name: `monthlyPrice` reads "Monthly price". */
+export function labelFromCodeName(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase();
+  return words[0].toUpperCase() + words.slice(1);
+}
+
+const isPrimitive = (v: unknown): v is string | number | boolean => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)) || typeof v === 'boolean';
+
+/**
+ * Whether a property takes `value` as its default as it is: the same kind, a number in its range, and text within
+ * its length that a required property is not left empty by, on one line unless it is multiline.
+ */
+function takesDefault(schema: Record<string, unknown>, value: string | number | boolean): boolean {
+  if (schema.type !== typeof value) return false;
+  if (typeof value === 'number') return !(typeof schema.min === 'number' && value < schema.min) && !(typeof schema.max === 'number' && value > schema.max);
+  if (typeof value !== 'string') return true;
+  const max = typeof schema.maxLength === 'number' ? schema.maxLength : DEFAULT_TEXT_MAX;
+  return value.length <= max && !(schema.required && !value.trim()) && (!!schema.multiline || !/\n/.test(value));
+}
+
+/**
+ * What declaring a component's properties from its code would change: a property for each prop the code takes that
+ * none declares, typed from the default the code writes (text, number, on/off; text when it writes none), and the
+ * default of each property whose code writes another it takes as it is. Props whose default is some other value are
+ * left to declare by hand. The properties the code never takes are listed, though none while the code hands its props
+ * on, as a property may be read where the check cannot follow.
+ */
+export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePropsSync {
+  const out: CodePropsSync = { add: [], defaults: [], manual: [], invalid: [], unread: [], ambiguous: false };
+  const names = rows.map((r) => r.name.trim());
+  if (new Set(names).size !== names.length) return { ...out, ambiguous: true };
+  const byName = new Map(rows.map((r) => [r.name.trim(), r]));
+  for (const { name, default: written, computed } of taken.props) {
+    const value = written?.value;
+    const row = byName.get(name);
+    if (row) {
+      if (isPrimitive(value) && row.schema.default !== value && takesDefault(row.schema, value)) out.defaults.push({ name, was: row.schema.default, value });
+      continue;
+    }
+    try {
+      checkPropName(name);
+    } catch {
+      out.invalid.push(name);
+      continue;
+    }
+    const schema: Record<string, unknown> = { type: isPrimitive(value) ? typeof value : 'string', label: labelFromCodeName(name), default: isPrimitive(value) ? value : '' };
+    if (typeof value === 'string' && /\n/.test(value)) schema.multiline = true;
+    if ((written || computed) && !(isPrimitive(value) && takesDefault(schema, value))) out.manual.push(name);
+    else out.add.push({ name, schema });
+  }
+  const reads = new Set([...taken.props.map((p) => p.name), ...taken.axes]);
+  if (!taken.handed) out.unread = names.filter((n) => n && !reads.has(n));
+  return out;
+}
+
+/**
+ * Declare from the code what `sync` found: the defaults it writes, then the properties it adds after those there
+ * are. `drop` holds the keys of rows to take out at the same time (a new component's starter properties, never edited).
+ */
+export function declareFromCode(rows: SchemaRow[], sync: CodePropsSync, drop: string[] = []): SchemaRow[] {
+  const defaults = new Map(sync.defaults.map((d) => [d.name, d.value]));
+  const next = rows.filter((r) => !drop.includes(r.key)).map((r) => (defaults.has(r.name.trim()) ? { ...r, schema: { ...r.schema, default: defaults.get(r.name.trim()) } } : r));
+  return [...next, ...sync.add.map((a): SchemaRow => ({ key: rowKey(), name: a.name, schema: structuredClone(a.schema) }))];
+}
+
+/** The rows without the properties named. */
+export function removeProperties(rows: SchemaRow[], names: string[]): SchemaRow[] {
+  const gone = new Set(names);
+  return rows.filter((r) => !gone.has(r.name.trim()));
+}
+
+/** Whether a row is one of a new component's starter properties as the dialog began with it, never edited. */
+export function starterUntouched(row: SchemaRow): boolean {
+  const name = row.name.trim();
+  return !row.drafts && row.orig === undefined && Object.hasOwn(CODE_STARTER_PROPERTIES, name) && JSON.stringify(schemaOf(row)) === JSON.stringify(CODE_STARTER_PROPERTIES[name as keyof typeof CODE_STARTER_PROPERTIES]);
+}

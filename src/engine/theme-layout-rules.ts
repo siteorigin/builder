@@ -200,8 +200,8 @@ export interface ThemeLayoutRules {
  * Every rule of a stylesheet: its selector list and its own declarations (those of rules nested inside it are their
  * own rules), without comments. One pass, passing over comments and quoted strings.
  */
-function rulesOf(css: string): Array<{ selector: string; body: string }> {
-  const out: Array<{ selector: string; body: string }> = [];
+export function rulesOf(css: string): Array<{ selector: string; body: string; depth: number }> {
+  const out: Array<{ selector: string; body: string; depth: number }> = [];
   // Each open block: its selector, and the statements written directly inside it.
   const open: Array<{ selector: string; text: string }> = [];
   // The statement being read: a declaration once a semicolon or the block's end closes it, a selector once a brace opens.
@@ -231,7 +231,7 @@ function rulesOf(css: string): Array<{ selector: string; body: string }> {
     } else if (ch === '}') {
       flush();
       const block = open.pop();
-      if (block) out.push({ selector: block.selector, body: block.text });
+      if (block) out.push({ selector: block.selector, body: block.text, depth: open.length });
     } else {
       pending += ch;
       if (ch === ';') flush();
@@ -241,10 +241,38 @@ function rulesOf(css: string): Array<{ selector: string; body: string }> {
 }
 
 const cache = new Map<string, ThemeLayoutRules>();
+const paintCache = new Map<string, ThemeLayoutRules>();
+
+/**
+ * Properties a theme rule can set that decide how text is painted (engine/element-contrast): its colour, what is
+ * behind it, and anything that fades or blends either. `color: inherit` (or `currentcolor`, `unset`) only keeps the
+ * colour the text already has, so it decides nothing, unless it is important and so beats the element's own colour.
+ */
+const PAINTING = /^(color|-webkit-text-fill-color|background(-color|-image|-clip|-blend-mode)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode)$/;
+const paints = (d: { prop: string; value: string }) => PAINTING.test(d.prop) && !(d.prop === 'color' && /^(inherit|currentcolor|unset)$/.test(d.value));
+
+/**
+ * Which boxes a theme's rules may paint (see `themeLayoutRules`, read the same way): rules that set a box's text colour
+ * or background, or fade it, by the classes they name or by tag. Its `page` is not read.
+ */
+export function themePaintRules(css: string): ThemeLayoutRules {
+  const cached = paintCache.get(css);
+  if (cached) return cached;
+  const rules = readRules(css, paints);
+  paintCache.set(css, rules);
+  return rules;
+}
 
 export function themeLayoutRules(css: string): ThemeLayoutRules {
   const cached = cache.get(css);
   if (cached) return cached;
+  const rules = readRules(css, (d) => DECIDING.test(d.prop));
+  cache.set(css, rules);
+  return rules;
+}
+
+/** The rules of a stylesheet whose declarations `decides` picks out, as `ThemeLayoutRules` reads them. */
+function readRules(css: string, decides: (d: { prop: string; value: string }) => boolean): ThemeLayoutRules {
   let page = false;
   /** Tags a rule naming no class may lay out ('*' for any element). */
   const tags = new Set<string>();
@@ -256,7 +284,7 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
       const colon = d.indexOf(':');
       return colon > 0 ? [{ prop: d.slice(0, colon).trim().toLowerCase(), value: d.slice(colon + 1).trim().toLowerCase() }] : [];
     });
-    if (!decls.some((d) => DECIDING.test(d.prop))) continue;
+    if (!decls.some(decides)) continue;
     const containing = decls.some((d) => containingDecl(d.prop, d.value));
     for (const one of splitTop(selector, ',')) {
       // Too many alternatives to read apart: it may reach any box, and the page.
@@ -295,6 +323,5 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
       (as === undefined ? anyElement : as.some((t) => tags.has(t.toLowerCase()))) ||
       (classes.length > 0 && hooks.some((r) => (r.any.length === 0 || r.any.some((t) => matches(classes, t))) && r.all.every((t) => matches(classes, t))))
   };
-  cache.set(css, rules);
   return rules;
 }
