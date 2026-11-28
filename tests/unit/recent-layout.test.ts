@@ -62,7 +62,7 @@ describe('Recent projects saved layout', () => {
     expect(await layoutOf(await listed('nothing-of-it', (p) => writeFileSync(p, JSON.stringify({ pageId: 'home' }))))).toBeUndefined();
     expect(await layoutOf(await listed('a-folder', (p) => mkdirSync(p)))).toBeUndefined();
     // Far past what a workspace file holds: not read at all.
-    expect(await layoutOf(await listed('oversized', (p) => writeFileSync(p, JSON.stringify({ leftWidth: 300, pad: 'x'.repeat(1024 * 1024) }))))).toBeUndefined();
+    expect(await layoutOf(await listed('oversized', (p) => writeFileSync(p, JSON.stringify({ leftWidth: 300, pad: 'x'.repeat(4 * 1024 * 1024) }))))).toBeUndefined();
   });
 
   it('does not follow a link in place of the file', async () => {

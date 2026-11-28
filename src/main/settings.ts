@@ -417,8 +417,11 @@ async function siteIcon(dir: string): Promise<string> {
   }
 }
 
-/** The most of a workspace file a card reads: its layout is a few numbers, though unsent AI messages share the file. */
-const MAX_WORKSPACE_BYTES = 1024 * 1024;
+/**
+ * The most of a workspace file a card reads. Its layout is a few numbers, though unsent AI messages share the file, so
+ * only a file far past any project's is left out: the project then opens on a layout the outline did not draw.
+ */
+const MAX_WORKSPACE_BYTES = 4 * 1024 * 1024;
 /** What each of the layout's fields can be (shared/api LocalWorkspaceState): anything else is left out. */
 const LAYOUT_FIELDS: Record<keyof SavedLayout, (v: unknown) => boolean> = {
   leftTab: (v) => typeof v === 'string',
