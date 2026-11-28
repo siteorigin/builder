@@ -57,7 +57,7 @@ import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
-import { focusInspector } from '../lib/inspector-focus';
+import { focusInspector, forgetInspectorFocus } from '../lib/inspector-focus';
 import { keyboardLeavesPage } from '../lib/clip-keys';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
@@ -962,6 +962,9 @@ export function Canvas() {
       if (gated && pageBehind()) {
         if (gated === 'hold' && st && s.frameReady && !leavingForPage() && !canvasCovered(activeWorkspace(s))) {
           const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s) };
+          // The pointer made this selection, though it is taken later: focus an Inspector control takes meanwhile
+          // (Tab) is that control's to recover again, so only what came before is forgotten, now.
+          if (m.type === 'select' && p.pointer === true) forgetInspectorFocus();
           // Taken after whatever opened the gate (a page's `ready`) has finished with the frame.
           gate.current!.hold(() => setTimeout(() => pageMessage.current?.(m, false, at)));
         }
@@ -1245,6 +1248,8 @@ export function Canvas() {
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
+          // A selection the pointer made on the page leaves no focus ring in the Inspector (#1476).
+          if (p.pointer === true && !held) forgetInspectorFocus();
           selectOnPage(next);
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           // A press of the pointer on the page makes the selection the keyboard's target (lib/clip-keys, #1361). Blurred

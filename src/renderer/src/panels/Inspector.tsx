@@ -58,6 +58,7 @@ import { entryQuery, listsEntries } from '@shared/entry-feed';
 import { listedCollection, postAt, postShown } from '../lib/posts';
 import { entryNounLower, isArticleCollection, isReadOnlyCollection, nothingOpenNote } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
+import { recoverInspectorFocus } from '../lib/inspector-focus';
 import { usePanelHidden } from '../lib/hideable';
 import { seoDocument } from '../lib/seo-view';
 import { STATE_WORDS, cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
@@ -553,33 +554,11 @@ export function Inspector() {
   );
 }
 
-/**
- * When the control that had focus is taken out of the Inspector (a selection change, an undo, a row removed) and
- * nothing else took focus, it goes to the selection's name rather than back to the start of the window. Focus that
- * moved to the canvas, Layers or a dialog is left where it is.
- */
+/** Focus taken out of the Inspector with its control goes to the selection's name (lib/inspector-focus). */
 function useFocusRecovery() {
   useEffect(() => {
     const panel = document.getElementById('dock-panel-inspect');
-    if (!panel) return;
-    // The Inspector control focus was last on, and only while focus stays in the Inspector: focus that has moved to
-    // Layers, the canvas or a menu clears it, so their own handoffs are never overruled.
-    let last: Element | null = null;
-    const onIn = (e: FocusEvent) => (last = e.target instanceof Element && panel.contains(e.target) ? e.target : null);
-    const mo = new MutationObserver(() => {
-      if (!last || last.isConnected || (document.activeElement && document.activeElement !== document.body)) return;
-      last = null;
-      requestAnimationFrame(() => {
-        if (document.activeElement && document.activeElement !== document.body) return;
-        panel.querySelector<HTMLElement>('.insp-name h3')?.focus();
-      });
-    });
-    document.addEventListener('focusin', onIn);
-    mo.observe(panel, { childList: true, subtree: true });
-    return () => {
-      document.removeEventListener('focusin', onIn);
-      mo.disconnect();
-    };
+    return panel ? recoverInspectorFocus(panel) : undefined;
   }, []);
 }
 
