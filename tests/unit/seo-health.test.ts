@@ -9,14 +9,14 @@ import type { SeoFinding } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { runSeoAudit } from '@engine/seo-audit';
 import { auditForHealth, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES } from '../../src/renderer/src/lib/seo-health';
-import { copy, run, seoSite } from './fixtures/seo-site';
+import { copy, run, auditSite } from './fixtures/seo-site';
 
 /** A finding with only what these helpers read. */
 const f = (pillar: SeoFinding['pillar'], severity: SeoFinding['severity'], code = `X_${pillar}_${severity}`): SeoFinding => ({ pillar, severity, code, message: code, explanation: '', aiFixable: false });
 
 /** The fixture site with a few things left undone: no public URL, Services without a description, no sharing image, a post picture undescribed. */
 function untidy(): ProjectState {
-  const { state, services, entry } = seoSite();
+  const { state, services, entry } = auditSite();
   const s = run(state, { type: 'site.update', baseUrl: '', socialImage: null, description: '' }, { type: 'page.update', pageId: services, description: '' });
   const body = s.collections.posts.entries[entry].body.map((b) => (b.type === 'image' && !b.decorative ? { ...b, alt: '' } : b));
   return run(s, { type: 'entry.update', collectionId: 'posts', entryId: entry, body });
@@ -27,18 +27,18 @@ describe('the audit as Project health reads it', () => {
     const s = untidy();
     expect(auditForHealth(s)).toEqual({ ok: true, findings: runSeoAudit(s) });
     // Nothing found is an audit that ran, not one that failed.
-    expect(auditForHealth(seoSite().state)).toEqual({ ok: true, findings: [] });
+    expect(auditForHealth(auditSite().state)).toEqual({ ok: true, findings: [] });
   });
 
   it('says why when the project cannot be audited, instead of throwing', () => {
-    const s = copy(seoSite().state);
+    const s = copy(auditSite().state);
     // A site document damaged past what the audit reads.
     (s as { site: unknown }).site = null;
     const r = auditForHealth(s);
     expect(r.ok).toBe(false);
     expect(r.ok ? '' : r.message).toBeTruthy();
     // The audit's own words are kept, for whoever fixes the project.
-    const unreadable = copy(seoSite().state);
+    const unreadable = copy(auditSite().state);
     Object.defineProperty(unreadable, 'site', {
       get() {
         throw new Error('The site document is damaged.');
@@ -117,7 +117,7 @@ describe('filter counts', () => {
 
 describe('the readiness summary', () => {
   it('says a site with no findings is ready', () => {
-    expect(runSeoAudit(seoSite().state)).toEqual([]);
+    expect(runSeoAudit(auditSite().state)).toEqual([]);
     expect(seoReadiness([])).toEqual({ tone: 'ok', headline: 'Ready for search and AI', detail: 'Nothing keeps search engines, link previews or AI agents from finding and reading the website.' });
   });
 

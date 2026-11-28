@@ -94,6 +94,8 @@ await apply(
         { type: 'image', assetId: photoId, alt: '', caption: '' }
       ]
     },
+    // The posts are linked from the header, so their index is reached from the rest of the site (#1635).
+    { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', value: [...s0.site.shell.header.nodes[header].props.links, { id: 'i_journal', label: 'Journal', link: { type: 'collection', target: 'posts' } }] },
     { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', itemId: aboutItem, field: 'label', value: 'Click here!' }
   ],
   'Set up the site'
@@ -305,9 +307,10 @@ await preflight.getByRole('button', { name: 'Review in Project health' }).click(
 await row('No public site URL is set.').getByRole('button', { name: 'Go to Public URL' }).click();
 await modal.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await isFocused(urlField), true, 'the Public URL field has focus'));
-await urlField.fill('https://riverside.example');
+// A host of its own: a reserved example one is itself a warning (#1635).
+await urlField.fill('https://riverside-pottery.co.za');
 await urlField.press('Tab');
-await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside.example'));
+await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside-pottery.co.za'));
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 await eventually(async () => assert.match(await preflight.innerText(), /^5 search and sharing suggestions( and \d+ more notes?)?\./));
 await closeDialog();
