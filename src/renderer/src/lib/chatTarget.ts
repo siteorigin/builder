@@ -110,6 +110,27 @@ export function editScope(scope: Pick<ComposerScope, 'selection' | 'empty'>, cho
   return chosen === 'selection' && !scope.selection ? 'page' : chosen;
 }
 
+/**
+ * The composer's choice in a conversation where the author has allowed the AI to change the whole site (#1412): an
+ * edit on a page with nothing selected starts from the whole site there, instead of asking again on every request
+ * that reaches past the page. An element selected, or the page chosen by hand, still narrows it; a post, a layout or a
+ * component edited everywhere keeps its own target.
+ */
+export function grantedScope(scope: Pick<ComposerScope, 'page' | 'selection' | 'component' | 'post' | 'template' | 'empty'>, chosen: ChatEditScope, wholeSite: boolean): ChatEditScope {
+  if (!wholeSite || !scope.page || scope.component || scope.post || scope.template || scope.empty) return chosen;
+  return chosen === 'selection' && !scope.selection ? 'site' : chosen;
+}
+
+/**
+ * A request carried on (Continue) in a conversation that has allowed the whole site since it was sent: an edit of its
+ * page, with nothing selected, goes on from the whole site, as the composer's next one would (#1412). Anything
+ * narrower, or a question, goes on as it was.
+ */
+export function withGrant(ctx: ChatContext, wholeSite: boolean): ChatContext {
+  if (!wholeSite || ctx.scope !== 'page' || ctx.mode === 'ask' || ctx.selection || ctx.component || ctx.post || ctx.template) return ctx;
+  return { ...ctx, scope: 'site' };
+}
+
 /** The context a message is sent with, frozen at send time. `enabled` holds the composer's page switch and its scope choice. */
 export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: { enabled: { page: boolean; scope: ChatEditScope }; viewport: number; assetIds?: string[]; ask?: boolean }): ChatContext {
   const home = state.site.homePageId;

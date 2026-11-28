@@ -295,6 +295,28 @@ describe('shell.footer', () => {
       links: [...inner.matchAll(/<a\b[^>]*>([^<]*)<\/a>/g)].map((m) => m[1])
     }));
 
+  it('gives its Links part to every page, contact and legal link, and Current page link to the page being shown (#1492)', () => {
+    const social = [{ id: 's1', icon: 'instagram', label: 'Instagram', link: { href: 'https://instagram.com/studio' } }];
+    const so_o = { link: 'p-link', linkCurrent: 'p-current', brand: 'p-brand' };
+    const route = globalThis as { soTestRouteId?: string };
+    const links = { links: [link('about'), link('team')], contact: [link('email'), link('call')], legal: [link('privacy'), link('terms')], social, so_o };
+    const labels = ['about', 'team', 'email', 'call', 'privacy', 'terms'];
+    try {
+      // The page being shown, in each group in turn: its link alone is current.
+      for (const shown of ['about', 'call', 'privacy']) {
+        route.soTestRouteId = `/${shown}`;
+        const anchors = [...html('shell.footer', links).matchAll(/<a\b([^>]*)>([^<]*)</g)].map(([, attrs, text]) => [
+          text.trim() || 'icon',
+          (attrs.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/).filter((c) => c.startsWith('p-')).join(' '),
+          attrs.match(/aria-current="([^"]*)"/)?.[1] ?? null
+        ]);
+        expect(anchors, shown).toEqual([['icon', '', null], ...labels.map((l) => (l === shown ? [l, 'p-link p-current', 'page'] : [l, 'p-link', null]))]);
+      }
+    } finally {
+      delete route.soTestRouteId;
+    }
+  });
+
   it('renders a link group only while its list has links', () => {
     expect(groups(html('shell.footer', { links: [], contact: [link('email')] }))).toEqual([{ tag: 'div', label: undefined, heading: 'Contact', links: ['email'] }]);
     expect(groups(html('shell.footer', { links: [link('about')], contact: [] }))).toEqual([{ tag: 'nav', label: 'Explore', heading: 'Explore', links: ['about'] }]);
@@ -645,6 +667,85 @@ describe('shell.header', () => {
       expect(notice(out)?.links).toEqual([{ href: 'https://shop.example/', target: '_blank', rel: 'noopener noreferrer sponsored', label: 'Sale' }]);
       expect(out).toMatch(/<a\b[^>]*href="https:\/\/shop\.example\/" rel="nofollow ugc"[^>]*>(?:\s*<span\b[^>]*>)*Shop</);
       expect(out).toMatch(/<a class="so-btn so-btn--primary so-header__cta[^"]*" href="https:\/\/shop\.example\/" rel="sponsored"[^>]*>Buy<\/a>/);
+    });
+  });
+
+  describe('parts (#1492)', () => {
+    const pageAt = (route: string) => Object.values(bundle.state.pages).find((p) => p.route === route)!.id;
+    const link = (route: string) => ({ type: 'page', target: pageAt(route) });
+    const so_o = { brand: 'p-brand', link: 'p-link', linkCurrent: 'p-current', action: 'p-action' };
+    /** The header with these authored properties, given the part classes a placement passes. */
+    const parted = (props: Record<string, unknown>) => {
+      const def = bundle.defs['shell.header'];
+      const node: InstanceNode = { id: 'n_test', kind: 'instance', definitionId: def.id, props };
+      return html('shell.header', { ...resolveInstanceProps(def, node, { state: bundle.state }), so_o });
+    };
+    const partsOf = (cls: string) => cls.split(/\s+/).filter((c) => c.startsWith('p-')).join(' ');
+
+    /** The part classes of every element of the header, in order, by the element's class it is recognised by. */
+    const partClasses = (out: string) =>
+      [...out.matchAll(/<([a-z]+)\b[^>]*\bclass="([^"]*)"[^>]*>/g)].flatMap(([, tag, cls]) => {
+        const tokens = cls.split(/\s+/);
+        const parts = tokens.filter((c) => c.startsWith('p-'));
+        return parts.length ? [[`${tag}.${tokens.find((c) => c.startsWith('so-header__')) ?? tokens[0]}`, parts.join(' ')]] : [];
+      });
+    const at = (route: string, props: Record<string, unknown>) => {
+      const g = globalThis as { soTestRouteId?: string };
+      g.soTestRouteId = route;
+      try {
+        return parted(props);
+      } finally {
+        delete g.soTestRouteId;
+      }
+    };
+    const menu = () => [
+      { id: 'l1', label: 'About', link: link('/about/') },
+      { id: 'l2', label: 'Team', link: link('/'), sub: true },
+      { id: 'l3', label: 'Contact', link: link('/contact/') },
+      { id: 'l4', label: 'Soon', link: { type: 'none', target: '' } }
+    ];
+    const labels = (out: string) => [...out.matchAll(/<a\b[^>]*class="([^"]*so-header__link[^"]*)"[^>]*>[\s\S]*?so-header__label-text[^>]*>([^<]*)</g)].map(([, cls, label]) => [label, partsOf(cls)]);
+
+    it('gives each part to the elements it styles: the name, every menu link, the page being shown, and the action', () => {
+      const notice = { notice: 'Closed Monday', noticeLabel: 'Hours', noticeLink: link('/contact/') };
+      // A submenu's link to the page being shown is the current one; the section holding it keeps the theme's mark.
+      const home = at('/', { siteName: 'Test Studio', links: menu(), ctaLabel: 'Book', ctaLink: link('/contact/'), ...notice });
+      expect(labels(home)).toEqual([
+        ['About', 'p-link'],
+        ['Team', 'p-link p-current'],
+        ['Contact', 'p-link'],
+        ['Soon', 'p-link']
+      ]);
+      expect(home).toContain('so-header__group--current');
+      expect(partClasses(home)).toEqual([
+        ['span.so-header__name', 'p-brand'],
+        ['a.so-header__link', 'p-link'],
+        ['a.so-header__link', 'p-link p-current'],
+        ['a.so-header__link', 'p-link'],
+        ['a.so-header__link', 'p-link'],
+        ['a.so-header__cta', 'p-action']
+      ]);
+      // The brand link passes its keyboard focus and press on to the name inside it.
+      expect(home.match(/<a class="(so-header__brand[^"]*)"/)![1].split(/\s+/)).toContain('so-action');
+      // A section's own link to the page being shown, with nothing current under it, and a top-level link.
+      expect(labels(at('/about', { links: menu() }))).toEqual([
+        ['About', 'p-link p-current'],
+        ['Team', 'p-link'],
+        ['Contact', 'p-link'],
+        ['Soon', 'p-link']
+      ]);
+      expect(labels(at('/contact', { links: menu() }))).toEqual([
+        ['About', 'p-link'],
+        ['Team', 'p-link'],
+        ['Contact', 'p-link p-current'],
+        ['Soon', 'p-link']
+      ]);
+    });
+
+    it('leaves the Site name part nowhere when only the logo shows', () => {
+      const out = html('shell.header', { siteName: 'Test Studio', logo: { src: '/media/logo.svg', alt: 'Studio' }, showSiteName: false, so_o });
+      expect(out).toContain('<img');
+      expect(out).not.toContain('p-brand');
     });
   });
 

@@ -504,11 +504,13 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Duplicate a page, keep one as a draft, or delete one',
     start: 'Business site, a page’s options open in Pages',
-    routes: ['item:Pages:Duplicate', 'item:Pages:Make draft', 'item:Pages:Publish page', 'item:Pages:Delete page…'],
+    routes: ['item:Pages:Duplicate', 'item:Pages:Duplicate as draft', 'item:Pages:Make draft', 'item:Pages:Publish page', 'item:Pages:Delete page…'],
     outcome: 'A duplicated draft stays a draft; a draft is previewed but left out of the export and sitemap, and Home can never be one; the export lists drafts left out and published links to them; links to a deleted page go to the replacement chosen, and removing Home hands Home to the first published page',
     scenario: 'unit fixtures · none',
     proof: [
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'keeps a duplicated draft a draft' },
+      { test: 'tests/unit/articles.test.ts', kind: 'unit', step: 'makes a duplicate a draft on request, and otherwise keeps the original publication' },
+      { test: 'tests/unit/live-capabilities.test.ts', kind: 'unit', step: 'keeps a draft duplicate to the host' },
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'never makes the Home page a draft' },
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'lists the pages to publish, the drafts left out, and published links that go to a draft' },
       { test: 'tests/unit/page-remove-links.test.ts', kind: 'unit' },
@@ -606,6 +608,20 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the chosen post deleted while the view is open: the view falls back to nothing chosen' }
     ],
     gaps: [{ missing: 'The view lists and chooses documents; their previews, search settings and a site-wide overview there are still to come', owner: 'pages', issue: 699 }]
+  },
+  {
+    id: 'pages.seo-mode',
+    area: 'pages',
+    intent: 'Move between editing, previewing and the SEO view from the toolbar',
+    start: 'Business site with a blog post, a section of Home selected, Layers showing',
+    routes: ['toolbar:SEO', 'toolbar:Edit', 'toolbar:Preview', 'command:edit', 'command:preview'],
+    outcome: 'The Mode toggle offers Edit, Preview and SEO as one radio group; SEO opens the SEO view and is chosen while it is open, however it was opened; Edit or Preview, from the toggle or the command menu, leaves the view for the canvas in that mode with the sidebar back on the panel the view replaced and the selection back; a live session’s guest has no SEO option',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the toolbar’s Mode toggle opens the view, and Edit or Preview leaves it for the canvas in that mode (#1583)' },
+      { test: 'tests/unit/toolbar-mode.test.ts', kind: 'unit' },
+      { test: 'tests/unit/toolbar-place-browser.test.ts', kind: 'unit' }
+    ]
   },
   {
     id: 'pages.seo-health',
@@ -2414,6 +2430,42 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/post-create-typing-browser.test.ts', kind: 'unit', step: 'shows every title whole from the list’s options, then two lines again' }
     ],
     gaps: [{ missing: 'Sorting the list from its options menu is never chosen by a test', owner: 'posts' }]
+  },
+  {
+    id: 'posts.bulk',
+    area: 'posts',
+    intent: 'Pick several posts and publish, unpublish, file or delete them together',
+    start: 'Business site with five posts, some drafts',
+    routes: [
+      'item:Posts:Select *',
+      'item:Posts:Deselect *',
+      'item:Posts:Select all * shown',
+      'item:Posts:Clear selection',
+      'item:Posts:Publish',
+      'item:Posts:Publish * *',
+      'item:Posts:Move to drafts',
+      'item:Posts:Move * to drafts',
+      'item:Posts:*…',
+      'item:Posts:Delete *…'
+    ],
+    outcome: 'Shift+click and Shift+Down pick a range, Cmd+click one more or one less, Cmd+Space one more, and Select all what the filter shows; a filter lets go of the picked posts it hides; the picked posts are published, filed under a category or deleted as one change, and a picked row’s menu offers what is done to them all; publishing or unpublishing several changes only those not already so',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'picks a range with Shift+click and one more or one less with Cmd+click, keeping the open post apart' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'picks from the keyboard: Shift+Down for a range, Cmd+Space for one more, Cmd+A for all shown' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'a filter that hides picked posts lets go of them, so nothing hidden is changed' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'selects all a filter shows, publishes them as one change, and leaves the posts it hides alone' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'files the picked posts under a category from the dialog, in one change' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'deletes the picked posts with one question and one change, and keeps the one that is linked to picked' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'a picked row’s menu offers what is done to them all, and its own commands' },
+      { test: 'tests/unit/posts-bulk.test.ts', kind: 'unit', step: 'changes only those not already so, as one change, and names the drafts dated after today' }
+    ],
+    gaps: [
+      {
+        missing: 'From the picked posts’ Actions menu, Move to drafts (counted or not), Publish when only some are drafts, Select all and Clear selection are never chosen by a test, nor a row menu’s Select post; Select all is chosen only from the list’s options',
+        owner: 'posts'
+      }
+    ]
   },
   {
     id: 'posts.import',
