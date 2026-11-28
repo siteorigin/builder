@@ -75,10 +75,56 @@ export const themeTokenVars = (tokens: ReadonlyArray<{ id: string; group: string
 /** The CSS variables a project's theme and own tokens define, for CheckOptions.tokens. */
 export const projectTokenVars = (state: ProjectState): Set<string> => themeTokenVars(effectiveTokens(state), getTheme(state.site.themeId).baseCss);
 
-/** Is this import specifier available to a project component? */
-export function importAllowed(spec: string, strict = false): boolean {
+/** An npm package name: `zod`, `chart.js`, `@scope/name`, `@scope/_name`, and the capitals of an old one (`JSONStream`). */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/(?!\.)[a-z0-9._~-]+|[a-z0-9][a-z0-9._~-]*)$/i;
+
+/**
+ * The package a bare import names (`zod` for `zod`, `searchsocket` for `searchsocket/svelte`, `@scope/name` for
+ * `@scope/name/sub`, whatever query Vite is given: `zod?raw`), or null when the import is no plain import of a package:
+ * a path, an alias (`#lib`, `$app`), a URL or a Node.js builtin (`node:fs`), or a package path that climbs out of the
+ * package (`zod/../x`).
+ */
+export function packageOf(spec: string): string | null {
+  const cut = spec.search(/[?#]/);
+  const parts = (cut < 0 ? spec : spec.slice(0, cut)).split('/');
+  const n = spec.startsWith('@') ? 2 : 1;
+  const name = parts.slice(0, n).join('/');
+  if (parts.length < n || !PACKAGE_NAME.test(name)) return null;
+  return parts.slice(n).some((s) => s === '' || s === '.' || s === '..' || s.includes('\\') || s.includes('\0')) ? null : name;
+}
+
+/** The sections of a package.json whose packages npm installs into the project (the website tools include them all). */
+export const PACKAGE_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
+
+/**
+ * The packages a project's package.json declares, which its code components may import (see CheckOptions.packages):
+ * only those it names itself, never one that is there only because another needs it.
+ */
+export function declaredPackages(packageJson: string | null | undefined): Set<string> {
+  let pkg: unknown;
+  try {
+    pkg = packageJson ? JSON.parse(packageJson) : null;
+  } catch {
+    return new Set();
+  }
+  const names = new Set<string>();
+  if (!pkg || typeof pkg !== 'object') return names;
+  for (const field of PACKAGE_SECTIONS) {
+    const deps = (pkg as Record<string, unknown>)[field];
+    if (deps && typeof deps === 'object' && !Array.isArray(deps)) for (const name of Object.keys(deps)) if (PACKAGE_NAME.test(name)) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * Is this import specifier available to a project component? `packages` are the npm packages the project declares
+ * (declaredPackages): a developer's code may import them, and their subpaths, but code held to the strict policy never.
+ */
+export function importAllowed(spec: string, strict = false, packages?: ReadonlySet<string>): boolean {
   if (spec === 'svelte' || spec.startsWith('svelte/')) return !strict || !spec.startsWith('svelte/compiler');
   if (spec.startsWith('$app/')) return strict ? ['$app/environment', '$app/state', '$app/navigation', '$app/paths'].includes(spec) : spec !== '$app/server';
+  const pkg = packageOf(spec);
+  if (pkg !== null) return !strict && !!packages?.has(pkg);
   const p = resolveSpec(spec);
   if (p === null || !inLib(p)) return false;
   // The assistant may use the generated runtime helpers and other project components, nothing else in the project.
@@ -172,6 +218,11 @@ export interface CheckOptions {
    * suggestion: an error in strict mode, a warning otherwise.
    */
   tokens?: ReadonlySet<string>;
+  /**
+   * The npm packages the project's package.json declares (declaredPackages). A developer's code may import them and
+   * their subpaths (`searchsocket/svelte`); code held to the strict policy may import none.
+   */
+  packages?: ReadonlySet<string>;
 }
 
 /**
@@ -214,6 +265,79 @@ interface Reach {
   done: Map<string, Checked>;
 }
 
+/**
+ * The npm packages a component's code imports (`zod` for `import { z } from 'zod'`), however it imports them: an import
+ * for its effects alone, a re-export, or `import()` of a fixed name. Svelte is no package here. Code the compiler cannot
+ * read is looked through as text, so a broken draft still says which packages it uses.
+ */
+export async function importedPackages(source: string): Promise<string[]> {
+  return packagesIn(await importSpecs(source));
+}
+
+/**
+ * The npm packages a component's code uses (importedPackages), with those of every project component it imports, and
+ * theirs in turn, as `resolve` (componentSources) has their code.
+ */
+export async function packagesUsed(source: string, resolve?: (path: string) => string | null | undefined): Promise<string[]> {
+  const found = new Set<string>();
+  const seen = new Set<string>();
+  const visit = async (code: string) => {
+    const specs = await importSpecs(code);
+    for (const name of packagesIn(specs)) found.add(name);
+    for (const spec of specs) {
+      const p = resolveSpec(withoutQuery(spec));
+      const file = p && inLib(p) ? moduleFiles(p).find((f) => typeof resolve?.(f) === 'string') : undefined;
+      if (!file || seen.has(file)) continue;
+      seen.add(file);
+      await visit(resolve!(file)!);
+    }
+  };
+  await visit(source);
+  return [...found];
+}
+
+/** The packages that import specifiers name (packageOf), each once; Svelte is no package here. */
+const packagesIn = (specs: string[]): string[] => [...new Set(specs.filter((s) => s !== 'svelte' && !s.startsWith('svelte/')).flatMap((s) => packageOf(s) ?? []))];
+
+/**
+ * An import of the code's (`from '…'`, `import '…'`, `import('…')`), as text, for code the compiler can't read, with
+ * spaces, comments and the call's bracket between its words. Each thing between them starts with a character of its
+ * own, so the text is read once through, however it is written.
+ */
+const IMPORT_TEXT = /\b(?:from|import)(?:\s|\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/|\/\/[^\n]*\n|\()*(['"])([^'"\n]+)\1/g;
+/**
+ * A stylesheet's `@import '…'`, `@import url('…')` or `@import url(…)` where a rule may start, which Vite resolves as it
+ * resolves the code's (text in a declaration, `content: "@import …"`, is none).
+ */
+const CSS_IMPORT = /(?:^|[;{}>])\s*@import\s*(?:url\(\s*(['"]?)([^'"()\s]+)\1\s*\)|(['"])([^'"\n]+)\3)/g;
+/** The imports of a stylesheet, each comment read as the space it is. */
+const cssImports = (css: string): string[] => [...css.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(CSS_IMPORT)].map((m) => m[2] ?? m[4]);
+
+/** Every module a component's code and styles import, by the specifier written. */
+async function importSpecs(source: string): Promise<string[]> {
+  const specs: string[] = [];
+  const { parse } = await import('svelte/compiler');
+  try {
+    const ast = parse(source, { modern: true }) as unknown as Node;
+    const walk = (n: unknown) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) return n.forEach(walk);
+      const node = n as Node;
+      if (typeof node.type === 'string' && ['ImportDeclaration', 'ExportAllDeclaration', 'ExportNamedDeclaration', 'ImportExpression'].includes(node.type)) {
+        const src = node.source as Node | null | undefined;
+        if (src?.type === 'Literal' && typeof src.value === 'string') specs.push(src.value);
+      }
+      for (const [k, v] of Object.entries(node)) if (k !== 'parent' && v && typeof v === 'object') walk(v);
+    };
+    walk([ast.instance, ast.module, ast.fragment]);
+    specs.push(...cssImports((ast.css as { content?: { styles?: string } } | null)?.content?.styles ?? ''));
+  } catch {
+    for (const m of source.matchAll(IMPORT_TEXT)) specs.push(m[2]);
+    specs.push(...cssImports(source));
+  }
+  return specs;
+}
+
 export async function checkSvelteSource(source: string, opts: CheckOptions = {}): Promise<CodeProblem[]> {
   return (await check(source, opts, { visiting: new Set(opts.filename ? [opts.filename] : []), done: new Map() })).problems;
 }
@@ -228,7 +352,7 @@ async function checkSibling(path: string, opts: CheckOptions, reach: Reach): Pro
   if (source === null || source === undefined) return null;
   reach.visiting.add(path);
   try {
-    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated, modules: opts.modules, tokens: opts.tokens }, reach);
+    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated, modules: opts.modules, tokens: opts.tokens, packages: opts.packages }, reach);
     const checked = { errors: r.problems.filter((p) => p.severity === 'error'), sinks: r.sinks };
     reach.done.set(path, checked);
     return checked;
@@ -285,9 +409,15 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   };
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
+    // The npm package it names; Svelte is one too, allowed as it always was (importAllowed).
+    const pkg = spec === 'svelte' || spec.startsWith('svelte/') ? null : packageOf(spec);
     // SvelteKit 3's build stops at it, so it is refused here, with the spelling that works.
     if (REMOVED_LIB.test(spec)) add('error', `"$lib" was removed in SvelteKit 3. Use "#lib${spec.slice(4)}" instead.`, node);
-    else if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, #lib, svelte or $app modules only.`, node);
+    // The assistant's code never brings in a package, installed or not: what a package does is beyond these checks.
+    else if (pkg !== null && strict) forbid(`npm packages ("${spec}")`, node);
+    else if (pkg !== null && !opts.packages?.has(pkg))
+      add('error', `${spec === pkg ? `"${spec}" is` : `"${spec}" is part of "${pkg}", which is`} not a package this project has. Add it under Packages in Project health, then import it.`, node);
+    else if (!importAllowed(spec, false, opts.packages)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, #lib, svelte or $app modules, or a package the project has.`, node);
     else if (strict && !importAllowed(spec, true) && !generated(spec)) forbid(`"${spec}"`, node);
     else if (missing(spec)) add('error', `It imports "${spec}", which is not a file in this project.`, node);
   };

@@ -7,7 +7,7 @@ import { closeProject } from '../lib/leave';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { showGetStarted } from './FirstSteps';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, pageOutOfSight, selectPage, askAiAbout, chooseMode, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
+import { insert, revealSection, selectPage, askAiAbout, chooseMode, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { platformKeys } from './CopyPaste';
@@ -294,9 +294,8 @@ export function CommandMenu() {
             const now = st.snapshot?.state ?? snap.state;
             const pageId = x.pageId ?? (x.ref.owner.kind === 'shell' ? pageShowing(now, x.ref.owner.id, st.pageId) : undefined) ?? null;
             if (!pageId) return toast(`No page shows ${partName(x.ref.owner.id)}.`, 'info');
-            if (pageOutOfSight(st, pageId)) selectPage(pageId);
             // Shown on the page, also when it is selected already and has been scrolled away from (issue #902).
-            setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true, showSelection: useStore.getState().showSelection + 1 });
+            revealSection(pageId, x.ref);
           }
         };
       });

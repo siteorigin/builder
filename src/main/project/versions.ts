@@ -33,7 +33,7 @@ export function isVersionMedia(path: string): boolean {
  * copies of pages are at addresses of their own; the session leaves them out as it does every file its generated
  * manifest claims.
  */
-const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml', 'static/llms.txt', 'static/llms-full.txt', 'static/rss.xml', 'static/_redirects', ...SITE_ICON_FILES.map((f) => `static/${f}`)]);
+const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml', 'static/llms.txt', 'static/llms-full.txt', 'static/rss.xml', 'static/_redirects', 'static/_headers', ...SITE_ICON_FILES.map((f) => `static/${f}`)]);
 export function heldAsMedia(path: string): boolean {
   return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !isPrivateFileName(path.slice(path.lastIndexOf('/') + 1));
 }

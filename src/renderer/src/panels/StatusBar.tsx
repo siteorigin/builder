@@ -1,7 +1,7 @@
 import './StatusBar.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from 'react';
-import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, Info, Link2, Lock, Network, Pencil, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
-import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
+import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, Info, Link2, Lock, Network, Package, Pencil, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
+import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, PackageChange, ProjectPackages, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { BUDGETED_KINDS, KIND_NAMES, bytesText, type PagePerformance, type PerformanceFinding, type PerformanceStatus } from '@shared/performance';
@@ -1548,8 +1548,148 @@ export function HealthModal() {
             </HealthRow>
           </HealthGroup>
         )}
+        {/* Outside the tools' group: a package whose setup failed keeps the controls that can take it out again. */}
+        {codeEnabled && !isRemoteOpening(snap.workspaceKey) && <PackagesGroup opening={snap.workspaceKey} readOnly={readOnly} />}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * The project's npm packages (#1480), in Developer mode: the ones its code components may import, each with the
+ * version set up in the website tools, and those tools themselves, which stay as they are. A package is added by name
+ * (with a version if wanted), updated to its latest version, or removed; each change sets the website tools up again
+ * for it, which the group says while it runs.
+ */
+function PackagesGroup({ opening, readOnly }: { opening: string; readOnly: boolean }) {
+  const [list, setList] = useState<ProjectPackages | null>(null);
+  // Why the list couldn't be read: never shown as a project with no packages.
+  const [unread, setUnread] = useState<string | null>(null);
+  const [spec, setSpec] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  // What is being changed now, as the group says it: one change at a time.
+  const [working, setWorking] = useState<string | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const runtimeState = useStore((s) => s.runtime.state);
+  const inputId = useId();
+  const asked = useRef(0);
+  const load = () => {
+    const ask = ++asked.current;
+    return api.project.packages().then(
+      (r) => {
+        if (ask !== asked.current) return;
+        setList(r);
+        setUnread(null);
+      },
+      (e: Error) => {
+        if (ask !== asked.current) return;
+        setList(null);
+        setUnread(`The project’s packages couldn’t be read: ${e.message || String(e)}`);
+      }
+    );
+  };
+  // Read again as the tools finish being set up, so the versions shown are the ones the preview runs.
+  useEffect(() => void load(), [opening, runtimeState]);
+  /** Make a change; `typed` when it is what was typed to add, which goes once it is made. */
+  const change = async (c: PackageChange, doing: string, typed = false) => {
+    if (working) return;
+    setWorking(doing);
+    setResult(null);
+    try {
+      const r = await api.project.changePackage(c, opening);
+      setResult({ ok: r.ok, message: r.message ?? (r.ok ? 'Done.' : 'Nothing was changed.') });
+      if (r.ok && typed) setSpec('');
+    } catch (e) {
+      setResult({ ok: false, message: (e as Error).message || String(e) });
+    } finally {
+      setWorking(null);
+      await load();
+      // A removed package's row goes with the button that removed it: focus moves to adding one, never to nowhere.
+      requestAnimationFrame(() => {
+        const at = document.activeElement;
+        if (!at || at === document.body || !at.isConnected) inputRef.current?.focus();
+      });
+    }
+  };
+  const own = list?.packages.filter((p) => !p.tool) ?? [];
+  const tools = list?.packages.filter((p) => p.tool) ?? [];
+  const changeable = !readOnly && !!list && !list.locked;
+  const held = !!working || undefined;
+  return (
+    <HealthGroup title="Packages" tone="quiet" anchor="packages" note="Code components can import these npm packages and their parts, such as searchsocket/svelte. Code the assistant writes can’t.">
+      {own.map((p) => (
+        <HealthRow
+          key={p.name}
+          tone="quiet"
+          icon={<Package />}
+          actions={
+            changeable ? (
+              // Held, not disabled, while a change runs: focus stays on it.
+              <>
+                <button className="btn btn-sm btn-ghost" aria-disabled={held} onClick={() => void change({ add: `${p.name}@latest` }, `Updating “${p.name}”…`)}>
+                  Update
+                </button>
+                <button className="btn btn-sm btn-ghost" aria-disabled={held} onClick={() => void change({ remove: p.name }, `Removing “${p.name}”…`)}>
+                  Remove
+                </button>
+              </>
+            ) : undefined
+          }
+        >
+          <strong>{p.name}</strong> {p.installed ?? <span className="health-hint">{p.wanted ? `${p.wanted}, not set up yet` : 'Not set up yet'}</span>}
+        </HealthRow>
+      ))}
+      {unread && (
+        <HealthRow tone="danger" icon={<CircleAlert />}>
+          {unread}
+        </HealthRow>
+      )}
+      {list && !own.length && (
+        <HealthRow tone="quiet" icon={<Package />}>
+          No packages yet. Add one to import it in a code component.
+        </HealthRow>
+      )}
+      {changeable && (
+        <li className="health-row quiet">
+          <span className="health-icon">{working ? <Spinner decorative /> : <Package />}</span>
+          <form
+            className="health-text packages-add"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (spec.trim()) void change({ add: spec.trim() }, `Adding “${spec.trim()}”…`, true);
+            }}
+          >
+            <label className="field-label" htmlFor={inputId}>
+              Add a package
+            </label>
+            <span className="packages-add-row">
+              <input ref={inputRef} id={inputId} className="input sm mono" value={spec} placeholder="zod or zod@4.1.0" spellCheck={false} autoCapitalize="off" autoComplete="off" onChange={(e) => setSpec(e.target.value)} />
+              <button type="submit" className="btn btn-sm" aria-disabled={held || !spec.trim() || undefined}>
+                Add
+              </button>
+            </span>
+          </form>
+        </li>
+      )}
+      <li className="sr-only" role="status">
+        {working ? `${working} This can take a minute.` : (result?.message ?? unread)}
+      </li>
+      {(working || result) && (
+        <HealthRow tone={!working && result && !result.ok ? 'danger' : 'quiet'} icon={working ? <Spinner decorative /> : result?.ok ? <Check /> : <CircleAlert />}>
+          {working ? `${working} The website tools are set up again for it, which can take a minute.` : result?.message}
+        </HealthRow>
+      )}
+      {list?.locked && !readOnly && (
+        <HealthRow tone="quiet" icon={<Lock />}>
+          {list.locked}
+        </HealthRow>
+      )}
+      {tools.length > 0 && (
+        <HealthRow tone="quiet" icon={<Wrench />}>
+          <strong>Website tools.</strong> {tools.map((t) => `${t.name} ${t.installed ?? t.wanted}`).join(', ')}. These stay at the versions the site was made with.
+        </HealthRow>
+      )}
+    </HealthGroup>
   );
 }
 
