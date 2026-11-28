@@ -922,7 +922,7 @@ export interface ConversationSummary {
 export interface AiEvent {
   runId: string;
   conversationId: string;
-  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message';
+  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message' | 'open-page';
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
@@ -939,6 +939,8 @@ export interface AiEvent {
   at?: number;
   activity?: ChatActivity;
   message?: ChatMessage;
+  /** With `open-page`: the page the author asked the request to go to, for the editor to show (#1357). */
+  pageId?: string;
 }
 
 /** One file in an import review: what it is, and what importing it would add to Assets. */
