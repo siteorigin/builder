@@ -1291,7 +1291,9 @@ export function askAiAbout(ref: ElementRef | null) {
  */
 export function inspectElement(ref: ElementRef) {
   const st = getState().snapshot?.state;
-  if (!st || !refExists(st, ref)) return;
+  // The element is what has to be there, not the item it was picked in: a list that leaves out the entry a layout is
+  // shown on holds items that can't be told from here.
+  if (!st || !refExists(st, { ...ref, itemPath: undefined })) return;
   // A post's preview keeps the Inspector on the post: Edit comes back, as only then does it show an element.
   if (activeWorkspace(getState()) === 'preview') setMode('edit');
   // The menu names one element: layers selected with it are let go.

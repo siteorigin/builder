@@ -11,6 +11,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { refExists } from '../../src/renderer/src/lib/model';
+import { withManaged } from './fixtures/component-contract-designs';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://layers-panel.test';
@@ -22,13 +24,15 @@ const ENTRY = [
   "import { flushSync } from 'react-dom';",
   `import { LayersPanel } from ${renderer('panels/LayersPanel')};`,
   `import { useStore } from ${renderer('store')};`,
+  `import { inspectElement } from ${renderer('lib/actions')};`,
   // The project, made here with the theme packs loaded (tests/unit/setup.ts), as a snapshot brings it.
   'const state = window.__project;',
   'window.log = { commits: 0 };',
   "flushSync(() => useStore.setState({ screen: 'editor', mode: 'edit', leftTab: 'layers', layersView: 'layers', pageId: state.site.homePageId, snapshot: { state, revision: 1, workspaceKey: 'w1' }, selection: null }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Profiler, { id: 'layers', onRender: () => window.log.commits++ }, h('div', { className: 'side-panel-view' }, h(LayersPanel)))));",
   'window.home = state.site.homePageId;',
-  'window.store = useStore;'
+  'window.store = useStore;',
+  'window.inspectElement = inspectElement;'
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */
@@ -183,6 +187,7 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
   for (const from of [
     { name: 'the panel closed', patch: `{ dockOpen: false, rightTab: 'inspect' }` },
     { name: 'the AI tab showing', patch: `{ dockOpen: true, rightTab: 'chat' }` },
+    { name: 'Site styles showing', patch: `{ dockOpen: true, rightTab: 'styles' }` },
     { name: 'the Project tab showing', patch: `{ dockOpen: true, rightTab: 'project' }` },
     { name: 'the Inspector already open', patch: `{ dockOpen: true, rightTab: 'inspect' }` }
   ])
@@ -192,6 +197,9 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
       const row = sections().nth(1);
       const node = await row.getAttribute('data-node');
       await row.click({ button: 'right' });
+      // With the other ways into the element, ahead of the AI's.
+      const labels = await page.locator('[role="menu"] [role="menuitem"]').allInnerTexts();
+      expect(labels.findIndex((l) => l.startsWith('Ask AI'))).toBe(labels.findIndex((l) => l.trim() === 'Inspect') + 1);
       await inspectItem().click();
       await expect.poll(focusedLabel).toBe('First field');
       expect(await storeRead('[s.dockOpen, s.rightTab, s.selection?.nodeId, s.layerSet]')).toEqual([true, 'inspect', node, null]);
@@ -204,11 +212,16 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
     await standInInspector();
     await store(`{ dockOpen: true, rightTab: 'chat' }`);
     const named = await sections().nth(1).getAttribute('data-node');
+    const other = await sections().nth(2).getAttribute('data-node');
     await sections().nth(1).click({ button: 'right' });
-    await store(`{ selection: null }`);
+    // Meanwhile another element is selected, with a third picked beside it.
+    await page.evaluate(`(() => {
+      const ref = (nodeId) => ({ owner: { kind: 'page', id: window.home }, instancePath: [], nodeId });
+      window.store.setState({ selection: ref(${JSON.stringify(other)}), layerSet: { owner: ref('').owner, ids: [${JSON.stringify(other)}, ${JSON.stringify(named)}], anchor: ${JSON.stringify(other)} } });
+    })()`);
     await inspectItem().click();
     await expect.poll(focusedLabel).toBe('First field');
-    expect(await storeRead('s.selection?.nodeId')).toBe(named);
+    expect(await storeRead('[s.selection?.nodeId, s.layerSet]')).toEqual([named, null]);
 
 
     await store(`{ rightTab: 'chat', selection: null }`);
@@ -240,12 +253,33 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
       draw(window.store.getState());
       window.store.subscribe(draw);
     })()`);
+    // Left alone, the name takes focus once nothing more has been drawn.
+    await sections().nth(1).click({ button: 'right' });
+    await inspectItem().click();
+    await expect.poll(() => page.evaluate<string | undefined>(`document.activeElement?.closest('.insp-name')?.textContent`), { timeout: 3000 }).toBe('Main');
     await sections().nth(1).click({ button: 'right' });
     await inspectItem().click();
     await page.waitForTimeout(150);
     await sections().nth(2).locator('.layer-name').click();
     await page.waitForTimeout(1200);
     expect(await focusedLabel()).not.toBe('First field');
+  });
+
+  it('inspects an element picked in a repeated item that can’t be told from here, and stays in the site’s preview (#1586)', async () => {
+    await standInInspector();
+    await store(`{ mode: 'preview', rightTab: 'chat' }`);
+    // A part of a placed component whose list the design holds, named by an item that list doesn't hold, as an entry
+    // layout's list that leaves out its own entry names one.
+    // The Services grid as a design drawn from data, with a card's title named by an item its list doesn't hold, as an
+    // entry layout's list that leaves out its own entry names one.
+    const drawn = withManaged(state, 'features.grid');
+    const [pageId, grid] = Object.entries(drawn.pages).flatMap(([id, p]) => Object.values(p.nodes).flatMap((n) => (n.kind === 'instance' && drawn.components[n.definitionId]?.componentId === 'features.grid' ? [[id, n.id] as const] : [])))[0];
+    const ref = { owner: { kind: 'page' as const, id: pageId }, instancePath: [grid], nodeId: 'card-title', itemPath: ['not-listed'] };
+    expect(refExists(drawn, ref)).toBe(false);
+    await page.evaluate(`window.store.setState({ snapshot: { ...window.store.getState().snapshot, state: ${JSON.stringify(drawn).replace(/</g, '\\u003c')}, revision: 2 } })`);
+    await page.evaluate(`window.inspectElement(${JSON.stringify(ref)})`);
+    await expect.poll(focusedLabel).toBe('First field');
+    expect(await storeRead('[s.mode, s.rightTab, s.selection]')).toEqual(['preview', 'inspect', ref]);
   });
 
   it('leaves a post’s preview for Inspect, since the Inspector shows only the post there (#1586)', async () => {
