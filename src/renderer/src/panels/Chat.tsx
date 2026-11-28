@@ -25,7 +25,6 @@ import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
-import { SAYS_DEVELOPER_MODE } from '@engine/developer-mode';
 import { chatBusy, clearRefusal, composerAction, imageLabels, isClearCommand, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { requestRoutingReview } from '../lib/formRoutingReview';
@@ -1786,7 +1785,6 @@ export function Chat() {
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
-          {SAYS_DEVELOPER_MODE.test(asking.question.text) && <DeveloperModeOffer asking />}
           {/* The app's question about where forms send is answered in its own dialog, which shows each address before
               and after (#1130); the card opens it again. Only the options scroll, so a long list never scrolls the
               question and its instructions out of sight. */}
@@ -2158,21 +2156,20 @@ function HandledBy({ recipient }: { recipient: TurnModel }) {
 const openDeveloperMode = () => setState({ modal: { kind: 'settings', tab: 'general', focus: 'developer-mode' } });
 
 /**
- * Where Developer mode is turned on, under a turn (or a waiting question) that said the request needs it while it is
- * off (#1329). Turning it on stays the user's to do in Settings. Once it is on, a finished turn says to ask again; a
- * question still waiting is in a request that started without it, so it says nothing more.
+ * Where Developer mode is turned on, under a turn that said the request needs it while it is off (#1329). Turning it on
+ * stays the user's to do in Settings; once it is on, the turn says to send the request again, as an edit when it was a
+ * question.
  */
-function DeveloperModeOffer({ asking = false }: { asking?: boolean }) {
+function DeveloperModeOffer({ question }: { question: boolean }) {
   const devMode = useStore((s) => !!s.settings?.developerMode);
-  if (devMode && asking) return null;
   return (
     <div className="scope-note developer-mode-offer" role="note">
       <Info aria-hidden="true" />
       {devMode ? (
-        <span>Developer mode is on now. Ask again for the AI to write it in code.</span>
+        <span>Developer mode is on now. Send the request again{question ? ' as an edit' : ''} for the AI to write it in code.</span>
       ) : (
         <span>
-          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then ask again{asking ? ' once this request finishes' : ''}.{' '}
+          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then send the request again.{' '}
           <button className="link" onClick={openDeveloperMode}>
             Open Settings
           </button>
@@ -2210,7 +2207,7 @@ function Reply({ m, recipient, latest = false, children }: { m: ChatMessage; rec
         <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
       </div>
       {locations.length > 0 && <Locations list={locations} />}
-      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer />}
+      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer question={!!r.ask} />}
       <div className="reply-foot">
         {hasDetails ? (
           <button className="reply-toggle" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)}>
@@ -2741,7 +2738,7 @@ function ResultCard({
         )}
         {children && <div className="result-answers">{children}</div>}
       </div>
-      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer />}
+      {latest && r.needs === 'developer-mode' && <DeveloperModeOffer question={!!r.ask} />}
       {/* Retrying puts the request back in the composer, so it is offered only while there is one to write in. */}
       {((r.canUndo && undoable) || reviewEntry || retryable || repair || onContinue || onRetry) && (
         <div className="result-foot">

@@ -52,8 +52,8 @@ const ENTRY = [
   "  stream: (text, at) => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'text', text, ...(at === undefined ? {} : { at }) })),",
   "  done: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' })),",
   // The run asks the author a question and waits for the answer.
-  "  ask: (text = 'Which page should it go on?') => flushSync(() => {",
-  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text, choices: [] }] } });",
+  "  ask: () => flushSync(() => {",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
   // Another thread on screen while the running request, filed in this one, asks its question here.
@@ -333,24 +333,13 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await offer.getByRole('button', { name: 'Open Settings' }).click();
     // Settings opens over the chat at the switch; turning it on stays the user's to do there.
     expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
-    expect(await page.evaluate("so.calls('settings.save')")).toEqual([]);
+    expect(await page.evaluate("so.calls('app.setSettings')")).toEqual([]);
     expect(await page.locator('.chat-log [data-message-id]').count()).toBe(2 * TURNS + 2);
     expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Unsent words');
     // Once it is on, the turn says to ask again instead.
     await page.evaluate('so.developerMode()');
-    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now');
+    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Send the request again for the AI');
     expect(await offer.getByRole('button').count()).toBe(0);
-  });
-
-  it('offers Settings under a waiting question that says the request needs Developer mode (#1329)', async () => {
-    await page.evaluate("so.ask('Custom code requires Developer mode, which is off. Should I build a static version instead?')");
-    const offer = page.locator('.question-card .developer-mode-offer');
-    await expect.poll(() => offer.innerText()).toContain('then ask again once this request finishes');
-    await offer.getByRole('button', { name: 'Open Settings' }).click();
-    expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
-    // A question that does not say so offers nothing, nor does one once Developer mode is on.
-    await page.evaluate('so.developerMode()');
-    await expect.poll(() => offer.count()).toBe(0);
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

@@ -438,14 +438,14 @@ function blogWhere(state: ProjectState): string {
  * source, but is offered nothing that writes it, answers that the component cannot be created instead of asking.
  */
 const newComponentAsk = (code: boolean): string =>
-  `To make a new component for the site (${code ? 'managed, or custom Svelte code' : 'managed only: custom Svelte code needs Developer mode, which is off, so when code is what they require say that it needs Developer mode, and that they can turn it on in Settings > General (you cannot)'}), which this run's tools cannot do yet, ask with request_clarification (widenScope: true): the tools for it come once the user allows it. Never just answer that you cannot create it. Placing an existing component on this page needs no asking.`;
+  `To make a new component for the site (${code ? 'managed, or custom Svelte code' : 'managed only: custom Svelte code needs Developer mode, which is off, so when code is what they require say that it needs Developer mode'}), which this run's tools cannot do yet, ask with request_clarification (widenScope: true): the tools for it come once the user allows it. Never just answer that you cannot create it. Placing an existing component on this page needs no asking.`;
 
 /**
  * The same in the fewest words, within what a small model's page prompt already says to ask for. A constrained edit's
  * context says nothing of custom code with Developer mode off, so its prompt does; a native one's context already has.
  */
 const NEW_COMPONENT_CLAUSE = ', or to make a new component (never just refuse)';
-const noCodeNote = (code: boolean): string => (code ? '' : ' Svelte code needs Developer mode (off), which the user turns on in Settings > General.');
+const noCodeNote = (code: boolean): string => (code ? '' : ' Svelte code needs Developer mode (off): say so when code is what they require.');
 
 /** `component`: the run has upsert_managed_component, which a small site run is given for a component request. */
 /**
@@ -1719,8 +1719,12 @@ export class Orchestrator {
     const delegation = run.delegation;
     // Never code for a collaborator, whatever the host's Developer mode says: code runs on the host's computer.
     const codeEnabled = delegation ? false : ((await this.deps.codeEnabled?.()) ?? true);
-    /** An answer that says the request needs Developer mode, in a run the user could turn it on for, offers Settings. */
-    const needs = (text: string): { needs?: 'developer-mode' } => (!codeEnabled && !delegation && SAYS_DEVELOPER_MODE.test(text) ? { needs: 'developer-mode' } : {});
+    /**
+     * A run the user could turn Developer mode on for, whose answer (or a question it asked on the way) says the request
+     * needs it, offers Settings at that switch.
+     */
+    const needs = (text: string): { needs?: 'developer-mode' } =>
+      !codeEnabled && !delegation && [text, ...(msg.questions ?? []).map((q) => q.text)].some((t) => SAYS_DEVELOPER_MODE.test(t)) ? { needs: 'developer-mode' } : {};
     /**
      * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
      * the run is decided: one taken away while it finished leaves nothing of it.
@@ -1895,7 +1899,7 @@ export class Orchestrator {
           // search_assets reads what the library says about them.
           ...(userMsg.images?.length ? { attachedImages: userMsg.images.map((i) => { const live = libraryImage(session.state, i.assetId); return live ? imageRef(live) : { ...i, removed: true }; }) } : {}),
           // A constrained edit run without code has no code tool to steer away from; a question may still be about code.
-          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : 'not available for components: use theme components, primitives and styles only (a source\'s converter is not component code). Developer mode is off: when what the user asks needs code, say that it needs Developer mode, and that they can turn it on in Settings > General (you cannot)' }),
+          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : `not available for components: use theme components, primitives and styles only (a source's converter is not component code)${delegation ? '' : '. Developer mode is off: when what the user asks needs code, say that it needs Developer mode, which they can turn on in Settings > General (you cannot)'}` }),
           allowedScope: ask
             ? 'nothing: this is a read-only question'
             : authority.kind === 'site'
@@ -2122,7 +2126,7 @@ export class Orchestrator {
           if (refusal)
             return refused(
               'SCOPE_MISMATCH',
-              `${operations.some((o) => CODE_OPERATIONS.has(o.type)) ? 'Custom code is turned off for this user (Developer mode is off; only they can turn it on, in Settings > General).' : `${refusal} Developer mode is off for this user.`} Build this with theme components, layout primitives and styles instead.`,
+              `${operations.some((o) => CODE_OPERATIONS.has(o.type)) ? `Custom code is turned off for this user (Developer mode is off${delegation ? '' : '; only they can turn it on, in Settings > General'}).` : `${refusal} Developer mode is off for this user.`} Build this with theme components, layout primitives and styles instead.`,
               false
             );
         }
@@ -2391,7 +2395,8 @@ export class Orchestrator {
         error,
         incomplete: true,
         unfinished: unfinishedPages(),
-        pendingLinks: macros.pendingLinks
+        pendingLinks: macros.pendingLinks,
+        ...needs('')
       });
     };
 
@@ -2861,7 +2866,8 @@ export class Orchestrator {
                 checks: [...inspections.checks(session.state), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))],
                 incomplete: true,
                 unfinished: unfinishedPages(),
-                pendingLinks: macros.pendingLinks
+                pendingLinks: macros.pendingLinks,
+                ...needs(finalText)
               });
             else await finish('no-changes', finalText || 'No changes were needed.', { usage, checks: inspections.checks(session.state), ...needs(finalText) });
           }
