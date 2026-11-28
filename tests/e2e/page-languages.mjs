@@ -195,6 +195,7 @@ try {
       const enHtml = await served('/about/');
       assert.equal(htmlLang(enHtml), 'en', 'About stays English');
       assert.deepEqual(alternates(enHtml, '/about/'), BOTH);
+      assert.deepEqual(alternateHrefs(enHtml), FULL);
     },
     60000,
     500

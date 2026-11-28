@@ -588,6 +588,9 @@ describe('page languages in the website', () => {
           ['fr', 'https://example.com/fr/a-propos/']
         ]);
     }
+    // Cleared again, the cached pages drop them.
+    const cleared = apply(published, { type: 'site.update', baseUrl: '' });
+    for (const opts of [{}, { instrument: true }]) for (const id of [en, fr]) expect(generateProject(cleared, opts, cache).get(pageFile(cleared.pages[id]))).not.toContain('hreflang');
   });
 
   it('follows a version to its new address and to the Home page', () => {

@@ -77,7 +77,7 @@ The **SEO view** takes over the canvas. It opens on an overview of every page an
 - **Search results and link previews.** Computer or phone, light or dark, plus each platform's share card, so you can see where a title gets cut short or an image is missing.
 - **Structured data in plain words.** What search engines are told about the page, with the raw JSON-LD tucked away.
 - **Optimize with AI.** Ask the assistant to improve the chosen page's title and description.
-- **Built into the export.** Every site gets `sitemap.xml`, `robots.txt` with a crawler policy and canonical links. Translated pages get `hreflang` alternates, and moved pages get redirect rules for Cloudflare, Netlify or Vercel.
+- **Built into the export.** Every site gets `sitemap.xml`, `robots.txt` with a crawler policy and canonical links. Translated pages get `hreflang` alternates once the site has its Public URL, and moved pages get redirect rules for Cloudflare, Netlify or Vercel.
 - **Ready for AI agents.** Every site gets `llms.txt`, and you can turn on Markdown copies of each page and WebMCP declarations for your forms and search.
 
 <p align="center">
