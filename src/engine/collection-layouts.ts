@@ -53,7 +53,7 @@ const BYLINE: ReadonlySet<string> = new Set(['publishedAt', 'updatedAt', 'author
 
 /**
  * How a record's page shows one field: a fact in its list of details (text, a number, a choice, a date, entries it
- * names), a feature shown by its name when it holds (yes/no), a link to follow, a passage of its own under its name
+ * names, each linked to its page), a feature shown by its name when it holds (yes/no), a link to follow, a passage of its own under its name
  * (rich or multi-line text), or a picture.
  */
 type FieldBlock = 'fact' | 'feature' | 'link' | 'passage' | 'picture';
@@ -143,7 +143,11 @@ function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: 
   const facts = of('fact').map(([name, f]) => {
     const bound = { $entry: `field.${name}` };
     const term = add({ kind: 'text', tag: 'dt', name: 'Label', text: label(f), styles: { base: { textStyle: { token: 'text.body' }, color: { token: 'color.muted' } } } });
-    const value = add({ kind: 'text', tag: 'dd', name: 'Value', text: bound, ...(f.type === 'date' ? { datetime: bound } : {}), styles: { base: { textStyle: { token: 'text.body' } } } });
+    // The entries a reference names are each a link to the page of its own one has (#1511), a description holding them.
+    const value =
+      f.type === 'reference'
+        ? add({ kind: 'element', tag: 'dd', name: 'Value', children: [add({ kind: 'text', tag: 'div', name: 'Entries', text: { $entry: `field.${name}.links` }, rich: true })], styles: { base: { textStyle: { token: 'text.body' } } } })
+        : add({ kind: 'text', tag: 'dd', name: 'Value', text: bound, ...(f.type === 'date' ? { datetime: bound } : {}), styles: { base: { textStyle: { token: 'text.body' } } } });
     return add({ kind: 'element', tag: 'div', name: label(f), children: [term, value], when: bound, styles: { base: { layout: 'stack', gap: { token: 'space.2xs' }, paddingBlock: { token: 'space.sm' }, borderBlockStart: HAIRLINE } } });
   });
   if (facts.length)

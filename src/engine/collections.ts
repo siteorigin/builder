@@ -29,6 +29,7 @@ import {
 } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { archivePages, archiveRoute, type ArchivePage } from '@shared/archives';
+import { customFieldName } from '@shared/entry-fields';
 import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
@@ -667,9 +668,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // dropped below, even if a later change in the same batch brought the field back. A layout that follows the
     // collection drops it along with the field.
     for (const f of follows ? [] : layoutReads(c)) {
-      if (!f.startsWith('field.')) continue;
-      const before = own(c.settings.fields ?? {}, f.slice(6));
-      const after = own(fields, f.slice(6));
+      const field = customFieldName(f);
+      if (field === undefined) continue;
+      const before = own(c.settings.fields ?? {}, field);
+      const after = own(fields, field);
       if (before && (!after || after.type !== before.type))
         fail(`The ${name} layout shows ${before.label}. Unbind it in the layout before ${after ? 'changing its kind' : 'removing it'}.`);
     }
