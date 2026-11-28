@@ -402,7 +402,7 @@ export const OPERATION_SCHEMAS = {
     newsHidden: z.boolean().optional().describe('Articles only. true leaves this article out of every News list while the page stays published; false lists it again.'),
     structuredData: STRUCTURED_DATA_PATCH.optional().describe('What the page is for search engines: one of the publisher\'s own services, products, events or guides, with its facts. Only the fields given change; "" (or [] for steps) clears one.')
   }),
-  'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
+  'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional(), draft: z.boolean().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),
   'page.remove': z.object({
     type: z.literal('page.remove'),

@@ -237,6 +237,14 @@ describe('dated articles', () => {
     expect(hidden.state.pages[hidden.results[1].pageId as string].article!.hidden).toBe(true);
   });
 
+  it('makes a duplicate a draft on request, and otherwise keeps the original publication', () => {
+    const { s } = market();
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: 'pg_winter', draft: true }, { type: 'page.duplicate', pageId: 'pg_winter' }]);
+    expect(r.state.pages[r.results[0].pageId as string].draft).toBe(true);
+    expect(r.state.pages[r.results[1].pageId as string].draft).toBeFalsy();
+    expect(r.state.pages.pg_winter.draft).toBeFalsy();
+  });
+
   it('refuses edits to the computed items, which come from the article pages', () => {
     const { s, home, nodeId } = market();
     const owner = page(home);
