@@ -163,3 +163,39 @@ describe('serpAddress', () => {
     expect(serpAddress(null, '/bad%E0%A4%A/')).toEqual({ host: null, trail: ['bad%E0%A4%A'] });
   });
 });
+
+describe('Chinese and Japanese titles (#1446)', () => {
+  const ja = '2026 冬の港で家族と楽しむ体験講座と展覧会の案内受付時間と参加方法';
+  const zh = '2026 海滨博物馆冬季展览与亲子体验课程开放报名和参观时间交通指引';
+
+  it('breaks between Chinese and Japanese letters, so a spaced year does not discard the phrase', () => {
+    for (const title of [ja, zh]) {
+      const r = fitToWidth(title, SERP_LAYOUT.titleFont, SERP_LAYOUT.desktop.titleLine);
+      expect(r.cut).toBe(true);
+      expect(r.text.length).toBeGreaterThan(20);
+      expect(textWidth(r.text, SERP_LAYOUT.titleFont)).toBeLessThanOrEqual(SERP_LAYOUT.desktop.titleLine);
+    }
+  });
+
+  it('wraps the phone title across both lines instead of leaving the year alone on the first', () => {
+    for (const title of [ja, zh]) {
+      const r = fitLines(title, SERP_LAYOUT.titleFont, SERP_LAYOUT.mobile.titleLine, SERP_LAYOUT.mobile.titleLines);
+      expect(r.lines).toHaveLength(2);
+      expect(r.lines[0].length).toBeGreaterThan(10);
+      expect(textWidth(r.lines[0], SERP_LAYOUT.titleFont)).toBeLessThanOrEqual(SERP_LAYOUT.mobile.titleLine);
+    }
+  });
+
+  it('matches the unspaced title’s line width, and keeps latin words whole', () => {
+    const spaced = fitToWidth(ja, 20, 600).text;
+    const joined = fitToWidth(ja.replace(' ', ''), 20, 600).text;
+    expect(Math.abs(spaced.length - joined.length)).toBeLessThanOrEqual(2);
+    const mixed = fitToWidth('冬の港 Weekly classes と展覧会の案内受付時間と参加方法を掲載しています', 20, 330).text;
+    expect(mixed).not.toMatch(/Wee…|Weekl…/);
+  });
+
+  it('never starts a line with closing punctuation', () => {
+    const r = fitLines('あ'.repeat(15) + '。' + 'い'.repeat(30), 20, 300, 2);
+    expect(r.lines[1]?.[0]).not.toBe('。');
+  });
+});

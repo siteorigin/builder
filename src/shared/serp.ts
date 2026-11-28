@@ -120,10 +120,33 @@ export interface SerpText {
 
 const ELLIPSIS = '…';
 
+/** A letter that opens a line of its own kind and so is never left at the end of a line: "(", "「", "【". */
+const OPENING = /[(\[{‘“‹«（［｛〈《「『【〔〖〘〚｟]/u;
+/** A mark that never starts a line: closing brackets, stops, the long-vowel mark and small kana. */
+const CLOSING = /[)\]}.,;:!?%’”›»、。，．：；！？）］｝〉》」』】〕〗〙〛｠゠ー々〻ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ～…‥・]/u;
+
+/** Whether a letter is one Chinese, Japanese or Korean text is broken after at will, with no space between words. */
+function ideographic(g: string): boolean {
+  const ch = g.codePointAt(0)!;
+  return ch > 0x2e7f && WIDE.test(String.fromCodePoint(ch)) && !/\p{Script=Hangul}/u.test(g);
+}
+
 /**
- * Text cut to fit `maxWidth` at `fontPx`, as a results page cuts it: at the last word that fits whole, with "…"
- * after it, and mid-word only when not even the first word fits. It is never cut inside a character (an accent or a
- * joined emoji stays whole). Whitespace is collapsed first, as a page's `<head>` reads.
+ * Whether a line may break between two neighbouring characters with no space between them. Chinese and Japanese
+ * break between any two letters (and at the edge of a Latin word or number next to them), except a mark that
+ * must not start a line, or one that must not end it, as the Unicode line breaking rules have it.
+ */
+function breaksBetween(before: string, after: string): boolean {
+  if (/\s/.test(before) || /\s/.test(after)) return false;
+  if (!ideographic(before) && !ideographic(after)) return false;
+  return !CLOSING.test(after) && !OPENING.test(before);
+}
+
+/**
+ * Text cut to fit `maxWidth` at `fontPx`, as a results page cuts it: at the last place a line may break that fits
+ * (a space, or between Chinese or Japanese letters), with "…" after it, and mid-word only when not even the first
+ * word fits. It is never cut inside a character (an accent or a joined emoji stays whole). Whitespace is collapsed
+ * first, as a page's `<head>` reads.
  */
 export function fitToWidth(value: string, fontPx: number, maxWidth: number): SerpText {
   const text = seoText(value);
@@ -139,52 +162,47 @@ export function fitToWidth(value: string, fontPx: number, maxWidth: number): Ser
     used = next;
     end++;
   }
-  let kept = chars.slice(0, end).join('');
-  // Back to the end of the last whole word, unless the cut already falls between words.
-  if (end < chars.length && !/\s/.test(chars[end])) {
-    const space = kept.lastIndexOf(' ');
-    if (space > 0) kept = kept.slice(0, space);
+  // Back to the last place a line may break, unless the cut already falls on one.
+  if (end < chars.length && !/\s/.test(chars[end]) && !(end > 0 && breaksBetween(chars[end - 1], chars[end]))) {
+    let back = end - 1;
+    while (back > 0 && !/\s/.test(chars[back]) && !breaksBetween(chars[back - 1], chars[back])) back--;
+    if (back > 0) end = back;
   }
-  kept = kept.replace(/[\s,;:–—-]+$/u, '');
+  const kept = chars.slice(0, end).join('').replace(/[\s,;:–—-]+$/u, '');
   const shown = kept ? kept + ELLIPSIS : ELLIPSIS;
   return { text: shown, lines: [shown], cut: true, width, max: maxWidth };
 }
 
 /**
- * Text wrapped over `lines` lines of `lineWidth`, a whole word at a time, as a browser wraps it, with the last line
- * cut to fit as `fitToWidth` cuts. A word wider than a whole line is broken where the line ends.
+ * Text wrapped over `lines` lines of `lineWidth`, as a browser wraps it: at a space or between Chinese or Japanese
+ * letters, with the last line cut to fit as `fitToWidth` cuts. A word wider than a whole line is broken where the
+ * line ends.
  */
 export function fitLines(value: string, fontPx: number, lineWidth: number, lines: number): SerpText {
   const text = seoText(value);
   const width = textWidth(text, fontPx);
   const max = lineWidth * lines;
+  const chars = graphemes(text);
+  const wide = chars.map((g) => (graphemeAdvance(g) * fontPx) / 1000);
   const shown: string[] = [];
-  let rest = text;
-  while (rest && shown.length < lines - 1) {
-    const words = rest.split(' ');
-    let used = '';
-    let taken = 0;
-    while (taken < words.length) {
-      const next = used ? `${used} ${words[taken]}` : words[taken];
-      if (textWidth(next, fontPx) > lineWidth) break;
-      used = next;
-      taken++;
+  let at = 0;
+  while (at < chars.length && shown.length < lines - 1) {
+    // The furthest place this line may end: the last break that fits, or where the line runs out.
+    let used = 0;
+    let fit = at;
+    let best = -1;
+    while (fit < chars.length && used + wide[fit] <= lineWidth) {
+      used += wide[fit];
+      fit++;
+      if (fit === chars.length || /\s/.test(chars[fit]) || breaksBetween(chars[fit - 1], chars[fit])) best = fit;
     }
-    if (taken) {
-      shown.push(used);
-      rest = words.slice(taken).join(' ');
-      continue;
-    }
-    // Not even the first word fits on the line: it is broken where the line ends, and goes on on the next.
-    const chars = graphemes(words[0]);
-    let n = 0;
-    for (let w = 0; n < chars.length - 1 && w + (graphemeAdvance(chars[n]) * fontPx) / 1000 <= lineWidth; n++) w += (graphemeAdvance(chars[n]) * fontPx) / 1000;
-    n = Math.max(1, n);
-    shown.push(chars.slice(0, n).join(''));
-    rest = [chars.slice(n).join(''), ...words.slice(1)].join(' ');
+    const stop = fit === chars.length ? fit : best > at ? best : Math.max(fit, at + 1);
+    shown.push(chars.slice(at, stop).join('').trimEnd());
+    at = stop;
+    while (at < chars.length && /\s/.test(chars[at])) at++;
   }
-  if (rest) {
-    const last = fitToWidth(rest, fontPx, lineWidth);
+  if (at < chars.length) {
+    const last = fitToWidth(chars.slice(at).join(''), fontPx, lineWidth);
     shown.push(last.text);
     return { text: joinLines(shown, text), lines: shown, cut: last.cut, width, max };
   }
