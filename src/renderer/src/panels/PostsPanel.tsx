@@ -2,7 +2,6 @@ import './PostsPanel.css';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { ArrowLeft, ChevronDown, Copy, FileDown, FilePen, FileText, LayoutTemplate, Library, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
-import { entryLinkUses } from '@engine/page-links';
 import { api, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
@@ -10,16 +9,16 @@ import { ListPeek, Marked, fold, found, shortDate } from '../components/ListText
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, listedCollection, MAX_POST_TITLE, deleteAsksWhere, deleteFingerprint, deleteHolds, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
 import { detachOps, sourceOfCollection, syncSummary } from '../lib/sources';
 import { sourceFingerprint } from '@shared/sources';
-import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection, deleteDestinations, isDeleteDestination } from '../lib/content';
+import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, hasDetailPages } from '@shared/collections';
 import type { CollectionKind, ProjectState } from '@shared/types';
 import { saveOpenPost, startOpenPost } from '../lib/post-draft';
 import { typedAhead, typedAheadSettled } from '../lib/typed-ahead';
@@ -66,72 +65,83 @@ const titleCut = (row: HTMLElement) => {
 /** Said when another entry is asked to open while one is still opening (#1394). */
 const OPENING_NOW = 'An entry is still opening. Try again once it has.';
 
-/** How many old addresses of a post are kept working, sending visitors on to it. */
-function keptAddresses(state: ProjectState, entryId: string): number {
-  const kept: unknown = state.site.redirects;
-  return Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === entryId).length : 0;
-}
-
-const DESTINATION_GONE = 'That destination is no longer on the website. Choose another.';
-
-/** Remove a post, letting go of it in the writer only once it is gone. */
-async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number): Promise<boolean> {
-  const chosen = replacement.replacementEntryId !== undefined ? `entry:${replacement.replacementEntryId}` : replacement.replacementPageId !== undefined ? `page:${replacement.replacementPageId}` : null;
-  // Against the project as it was checked: a link or address added meanwhile, or a destination become a draft, means
-  // looking again. The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
+/**
+ * Remove a post, letting go of it in the writer only once it is gone. `checked` is what the author confirmed it against
+ * (deleteFingerprint): a save landing meanwhile sends it again only while that still holds and the replacement can
+ * still take its place, so nothing they were not shown is changed.
+ */
+async function deletePost(ref: PostRef, title: string, replacement: { replacementPageId?: string; replacementEntryId?: string }, revision: number, checked: string): Promise<boolean> {
+  // The writer lets go of the post itself once it is gone, keeping anything typed meanwhile.
   const ops = [{ type: 'entry.remove' as const, collectionId: ref.collectionId, entryId: ref.entryId, ...replacement }];
-  // Read before sending: the newer project may arrive ahead of the answer that says it moved on.
-  const was = getState().snapshot;
   let r = await commitOps(ops, 'Delete post', undefined, revision, { replanStale: true });
-  // Only moved on (a save landing): sent again if what was checked still holds — the same links and old addresses.
   if (r && !r.ok) {
     const now = await api.project.snapshot().catch(() => null);
-    const same = (s: typeof now) => (s ? `${entryLinkUses(s.state, ref.entryId).length}/${keptAddresses(s.state, ref.entryId)}` : '');
-    const gone = !!now && chosen !== null && !isDeleteDestination(now.state, ref, chosen);
-    r = now && was && !gone && same(now) === same(was) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
-    if (!r && now) toast(gone ? DESTINATION_GONE : 'Something now links to this post. Delete it again to choose where those links go.', 'error');
+    const to = replacement.replacementEntryId ?? replacement.replacementPageId;
+    const still = (s: NonNullable<typeof now>) => to === undefined || deleteHolds(s.state, ref).choices.some((x) => x.id === to);
+    r = now && deleteFingerprint(now.state, ref) === checked && still(now) ? await commitOps(ops, 'Delete post', undefined, now.revision) : null;
+    if (!r && now) toast('Something now links to or names this post, or what was to take its place has changed. Delete it again to choose.', 'error');
   }
   if (!r?.ok) return false;
   toast(`Deleted “${title}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   return true;
 }
 
+/** A list of names as said: the first three, and "and more" past them. */
+const someOf = (names: string[]) => `${names.slice(0, 3).join(', ')}${names.length > 3 ? ' and more' : ''}`;
+
 /**
- * Deleting a post that other places link to: the author chooses where those links (and its old addresses kept
- * working) go instead, a page or another post, so readers of a replaced article reach its successor.
+ * Deleting a post that other places link to or name: the author chooses where those links (and its old addresses kept
+ * working) go instead, a page or another post, so readers of a replaced article reach its successor. References to it
+ * from other entries take another entry of its own collection in its place (#1461); with none to offer, or with one
+ * held by a synced collection, it says what has to change first and deletes nothing.
  */
 function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () => void }) {
   const snap = useStore((s) => s.snapshot);
   const uid = useId();
-  const [to, setTo] = useState(() => `page:${snap?.state.site.homePageId ?? ''}`);
-  const [busy, setBusy] = useState(false);
   const state = snap?.state;
+  // The choice and what it was made against: once the links, addresses or references change, it is made again, so a
+  // choice made for links never quietly takes the place of a reference that arrived since.
+  const [choice, setChoice] = useState(() => ({
+    to: state && !deleteHolds(state, target).references ? `page:${state.site.homePageId}` : '',
+    against: state ? deleteFingerprint(state, target) : ''
+  }));
+  const [busy, setBusy] = useState(false);
   const e = state && postAt(state, target);
   if (!state || !e) return null;
-  const noun = entryNounLower(state.collections[target.collectionId]);
-  const uses = entryLinkUses(state, target.entryId);
-  const kept = keptAddresses(state, target.entryId);
-  const where = [...new Set(uses.map((u) => u.where))];
-  // Only somewhere visitors can go.
-  const { pages, groups } = deleteDestinations(state, target);
+  const holds = deleteHolds(state, target);
+  const checked = deleteFingerprint(state, target);
+  const c = state.collections[target.collectionId];
+  const noun = entryNounLower(c);
+  const { links, linkedFrom, kept, references, referencedFrom, synced, choices } = holds;
+  const value = choice.against === checked && choices.some((x) => `${x.kind}:${x.id}` === choice.to) ? choice.to : '';
+  const groups = [...new Set(choices.map((x) => x.group))].map((g) => ({ name: g, choices: choices.filter((x) => x.group === g) }));
+  // Nothing can take its place: a synced holder cannot be changed here, and a reference wants another entry of its own.
+  const stuck = synced
+    ? `${synced} is synced from an external source, so its entries are read-only here. Change it in the source, or detach that collection, then delete this ${noun}.`
+    : references > 0 && choices.length === 0
+      ? `Only another ${noun} of ${c.settings.name} can take its place, and there is none${links || kept ? ' published' : ''}. ${links || kept ? 'Publish or add' : 'Add'} one, or remove ${references === 1 ? 'the reference' : 'the references'} from ${referencedFrom.length === 1 ? 'that entry' : 'those entries'}, then delete it.`
+      : null;
   const confirm = async () => {
-    const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
-    // Checked again now: a destination that has become a draft, lost its page or gone since it was chosen is chosen again.
+    if (!value) return;
+    const [kind, id] = [value.slice(0, value.indexOf(':')), value.slice(value.indexOf(':') + 1)];
+    // Checked again now: a destination that has become a draft (or gone) since it was chosen is chosen again.
     const now = getState().snapshot;
     if (!now) return;
-    if (!isDeleteDestination(now.state, target, to)) {
-      // The list no longer shows it: what is chosen is what the list shows.
-      setTo(`page:${now.state.site.homePageId}`);
-      return toast(DESTINATION_GONE, 'error');
-    }
+    if (deleteFingerprint(now.state, target) !== checked || !deleteHolds(now.state, target).choices.some((x) => x.kind === kind && x.id === id))
+      return toast('That choice can no longer take its place. Choose again.', 'error');
     setBusy(true);
-    const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision);
+    const done = await deletePost(target, e.title, kind === 'entry' ? { replacementEntryId: id } : { replacementPageId: id }, now.revision, checked);
     setBusy(false);
-    if (done) return onClose();
-    // Lost while it was being sent: what is chosen is what the list shows.
-    const latest = getState().snapshot;
-    if (latest && !isDeleteDestination(latest.state, target, to)) setTo(`page:${latest.state.site.homePageId}`);
+    if (done) onClose();
   };
+  // What points to it, then what takes its place.
+  const said: string[] = [];
+  if (references) said.push(`is named by ${someOf(referencedFrom)} (${references === 1 ? 'one reference' : `${references} references`})`);
+  if (links) said.push(`is linked from ${someOf(linkedFrom)} (${links === 1 ? 'one link' : `${links} links`})`);
+  if (kept) said.push(`has ${kept === 1 ? 'an old address' : `${kept} old addresses`} kept working for visitors`);
+  const what = [references ? (references === 1 ? 'that reference' : 'those references') : '', links ? (links === 1 ? 'that link' : 'those links') : '', kept ? (kept === 1 ? 'its old address' : 'its old addresses') : ''].filter(Boolean);
+  const named = what.length > 1 ? `${what.slice(0, -1).join(', ')} and ${what[what.length - 1]}` : (what[0] ?? '');
+  const one = what.length === 1 && (references === 1 || links === 1 || kept === 1);
   return (
     <Modal
       title={`Delete this ${noun}?`}
@@ -143,46 +153,37 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
           <button className="btn" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="btn btn-danger-fill" onClick={() => void confirm()} disabled={busy}>
+          <button className="btn btn-danger-fill" onClick={() => void confirm()} disabled={busy || !value || !!stuck}>
             Delete {noun}
           </button>
         </>
       }
     >
       <p>
-        {uses.length ? (
-          <>
-            <strong>{e.title}</strong> is linked from {where.slice(0, 3).join(', ')}
-            {where.length > 3 ? ' and more' : ''} ({uses.length === 1 ? 'one link' : `${uses.length} links`}).{' '}
-          </>
-        ) : (
-          <>
-            <strong>{e.title}</strong> has {kept === 1 ? 'an old address' : `${kept} old addresses`} kept working for visitors.{' '}
-          </>
-        )}
-        {uses.length && kept ? 'Those links, and its old addresses kept working, go here instead:' : uses.length ? 'Those links go here instead:' : 'They go here instead:'}
+        <strong>{e.title}</strong> {said.length > 1 ? `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]}` : (said[0] ?? 'is no longer linked to or named')}.{' '}
+        {stuck ?? (named ? `${named.charAt(0).toUpperCase()}${named.slice(1)} ${one ? 'goes' : 'go'} here instead:` : 'Choose what takes its place:')}
       </p>
-      <Field label="Send its links to" controlId={`${uid}-to`}>
-        <select id={`${uid}-to`} className="select" value={to} onChange={(ev) => setTo(ev.target.value)}>
-          <optgroup label="Pages">
-            {pages.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
+      {!stuck && (
+        <Field label={references ? 'Replace it with' : links ? 'Send its links to' : 'Send visitors to'} controlId={`${uid}-to`}>
+          <select id={`${uid}-to`} className="select" value={value} onChange={(ev) => setChoice({ to: ev.target.value, against: checked })}>
+            {!value && (
+              <option value="" disabled>
+                {references ? `Choose ${withArticle(noun)}` : 'Choose a page or entry'}
               </option>
+            )}
+            {groups.map((g) => (
+              <optgroup key={g.name} label={g.name}>
+                {g.choices.map((x) => (
+                  <option key={`${x.kind}:${x.id}`} value={`${x.kind}:${x.id}`}>
+                    {x.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
-          </optgroup>
-          {groups.map((g) => (
-            <optgroup key={g.id} label={g.name}>
-              {g.entries.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </Field>
-      <p className="posts-note">You can undo it.</p>
+          </select>
+        </Field>
+      )}
+      {!stuck && <p className="posts-note">You can undo it.</p>}
     </Modal>
   );
 }
@@ -698,7 +699,7 @@ export function PostsPanel() {
     openLayout(id, post?.collectionId === id ? post.entryId : undefined);
   };
 
-  /** Delete a post. One that is linked to asks where those links go instead (see DeletePostDialog). */
+  /** Delete a post. One that is linked to or named asks what takes its place (see DeletePostDialog). */
   const remove = async (entryId: string) => {
     if (!collection) return;
     const s = getState().snapshot;
@@ -706,7 +707,7 @@ export function PostsPanel() {
     if (!s || !e) return;
     // Text the open post could not save is part of it: dealt with first, so an Undo of the delete brings back all of it.
     if (post?.entryId === entryId && !(await openSaved())) return;
-    if (entryLinkUses(s.state, entryId).length || keptAddresses(s.state, entryId)) return setDeleting({ collectionId: collection.settings.id, entryId });
+    if (deleteAsksWhere(s.state, { collectionId: collection.settings.id, entryId })) return setDeleting({ collectionId: collection.settings.id, entryId });
     const ok = await confirmDialog({
       title: `Delete this ${noun}?`,
       body: `The ${noun} and everything it holds are removed from the project.`,
@@ -717,11 +718,11 @@ export function PostsPanel() {
       details: [{ kind: 'undo', text: 'You can undo it.' }]
     });
     if (!ok) return;
-    // Linked to or given an old address while the question was open: where those go is asked first.
+    // Linked to, named or given an old address while the question was open: where those go is asked first.
     const now = getState().snapshot;
     if (!now) return;
-    if (entryLinkUses(now.state, entryId).length || keptAddresses(now.state, entryId)) return setDeleting({ collectionId: collection.settings.id, entryId });
-    void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision);
+    if (deleteAsksWhere(now.state, { collectionId: collection.settings.id, entryId })) return setDeleting({ collectionId: collection.settings.id, entryId });
+    void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision, deleteFingerprint(now.state, { collectionId: collection.settings.id, entryId }));
   };
 
   // The collection by its own name: a renamed blog is called what it was renamed to, everywhere.
