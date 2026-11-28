@@ -66,7 +66,7 @@ export function queryProblem(state: ProjectState, owner: OwnerRef, raw: unknown)
   for (const c of query.where ?? []) {
     if (!queryable(collection, c.field)) return `filters by "${c.field.slice(0, 60)}", which entries of ${name} do not have.`;
     // A grouping's terms are named by ID or label: one it no longer has would leave the list empty.
-    const taxonomy = c.field === 'categories' ? 'categories' : c.field.startsWith('terms.') ? c.field.slice(6) : undefined;
+    const taxonomy = filterTaxonomy(c.field);
     if (taxonomy === undefined || c.op === 'exists') continue;
     const values = Array.isArray(c.value) ? c.value : [c.value];
     const named = values.filter((v) => typeof v === 'string' && termNamed(collection, taxonomy, v.trim()) !== undefined);
@@ -74,6 +74,48 @@ export function queryProblem(state: ProjectState, owner: OwnerRef, raw: unknown)
   }
   for (const s of query.sort ?? []) if (s.field !== ENTRY_ORDER_FIELD && !queryable(collection, s.field)) return `sorts by "${s.field.slice(0, 60)}", which entries of ${name} do not have.`;
   return null;
+}
+
+/** The grouping a query's filter field reads terms of ("categories", "terms.tags"), or undefined. */
+const filterTaxonomy = (field: string) => (field === 'categories' ? 'categories' : field.startsWith('terms.') ? field.slice(6) : undefined);
+
+/** One term named in a query's filter: its words, where the list is, which query, and how to write other words. */
+export interface QueryTermSlot {
+  value: string;
+  where: string;
+  query: object;
+  store: (value: string) => void;
+}
+
+/**
+ * Every term a filter names (by ID or label) of one grouping, in every query reading its collection: collection loops
+ * and connected lists, in every tree but a theme's designs (fixed theme data). Read before a term changes, each slot's
+ * `store` can then name by ID what it named before, so the list keeps listing what it did.
+ */
+export function queryTermSlots(state: ProjectState, collectionId: string, taxonomyId: string): QueryTermSlot[] {
+  const out: QueryTermSlot[] = [];
+  const visit = (owner: OwnerRef, where: string, query: unknown) => {
+    if (!query || typeof query !== 'object' || queryCollectionOf(state, owner, query as CollectionQuery)?.settings.id !== collectionId) return;
+    const clauses = (query as CollectionQuery).where;
+    if (!Array.isArray(clauses)) return;
+    for (const c of clauses) {
+      if (!c || typeof c.field !== 'string' || filterTaxonomy(c.field) !== taxonomyId || c.op === 'exists') continue;
+      if (Array.isArray(c.value)) {
+        const values = c.value;
+        values.forEach((v, i) => typeof v === 'string' && out.push({ value: v, where, query, store: (w) => (values[i] = w) }));
+      } else if (typeof c.value === 'string') out.push({ value: c.value, where, query, store: (w) => (c.value = w) });
+    }
+  };
+  for (const { owner, tree, label } of allTrees(state)) {
+    if (owner.kind === 'component' && own(state.components, owner.id)?.owner === 'theme') continue;
+    for (const n of Object.values(tree?.nodes ?? {})) {
+      if (!n || typeof n !== 'object') continue;
+      const where = `“${displayName(state, n)}” in ${label}`;
+      if (n.kind === 'instance' && n.listSources && typeof n.listSources === 'object') for (const raw of Object.values(n.listSources)) visit(owner, where, (raw as { query?: unknown } | undefined)?.query);
+      if (n.kind === 'repeat' && isCollectionLoop(n)) visit(owner, where, (n.list as { $query?: unknown }).$query);
+    }
+  }
+  return out;
 }
 
 /** What is wrong with one list property's connection to a collection, or null. */

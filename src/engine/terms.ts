@@ -12,10 +12,11 @@ import type { Collection, CollectionTaxonomy, CollectionTerm, ComponentDefinitio
 import { isBindingRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { assignedTermIds, entriesWithTerm, isTermId, termIdFor } from '@shared/collections';
-import { codeEntryQueries, entryQuery, entryQueryKey, feedCollection, listsEntries, termsNamed, type EntryQuery } from '@shared/entry-feed';
+import { codeEntryQueries, entryQuery, entryQueryKey, feedCollection, listsEntries, termNamed, termsNamed, type EntryQuery } from '@shared/entry-feed';
 import { allTrees, displayName, fail } from './tree';
 import { normalizeScalar } from './values';
 import { defFile } from '@generator/index';
+import { queryTermSlots } from './collection-sources';
 import { MAX_TAXONOMIES, MAX_TERMS, getCollection } from './collections';
 
 type OpResult = Record<string, unknown>;
@@ -397,6 +398,8 @@ export function termRename(state: ProjectState, op: Op<'collection.renameTerm'>)
   // Every list is read before anything changes: what each one lists now is what it must list after.
   const target = { collectionId: c.settings.id, taxonomyId: op.taxonomyId };
   const planned = plan(state, feedUses(state), target.collectionId, target.taxonomyId, (id) => (id === op.termId ? termId : id));
+  // Collection loops and connected lists filtering by it, by its ID or its old name, name it by its new ID.
+  const filters = queryTermSlots(state, target.collectionId, target.taxonomyId).map((slot) => ({ slot, was: termNamed(c, op.taxonomyId, slot.value.trim()) }));
   // The term keeps its place among the others, which is the order they are offered in.
   t.terms = Object.fromEntries(Object.entries(t.terms).map(([id, x]) => (id === op.termId ? [termId, { ...x, label }] : [id, x])));
   if (termId !== op.termId) {
@@ -405,8 +408,17 @@ export function termRename(state: ProjectState, op: Op<'collection.renameTerm'>)
       if (Array.isArray(ids) && ids.includes(op.termId)) e.terms[op.taxonomyId] = [...new Set(ids.map((id) => (id === op.termId ? termId : id)))];
     }
   }
+  // Each filter names by ID what it named before: the renamed term, or another its new ID or name would take over.
+  const followed = new Set<object>();
+  for (const { slot, was } of filters) {
+    const expected = was === op.termId ? termId : was;
+    if (termNamed(c, op.taxonomyId, slot.value.trim()) === expected) continue;
+    if (expected === undefined) fail(`${slot.where} filters by “${slot.value.trim().slice(0, 80)}”, which names no ${t.label.toLowerCase()} term now and would name “${label}” once “${term.label}” is renamed. Change that filter before renaming it.`);
+    slot.store(expected);
+    followed.add(slot.query);
+  }
   const feeds = keepLists(state, planned, target, (where, words) => fail(`${where} ${choosing(words)}, which renaming “${term.label}” would change, and it can't be rewritten here. Change that choice before renaming it.`));
-  return { ...result, feeds };
+  return { ...result, feeds: feeds + followed.size };
 }
 
 /** The places that list entries by the term in its collection (or may, reading their choice where they are shown), which deleting it would change. */
