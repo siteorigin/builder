@@ -190,7 +190,7 @@ describe.skipIf(!browserInstalled)('the shared popup menu', { timeout: 30_000 },
   it.each([200, 260, 420])('keeps a menu opened in a %ipx sidebar clear of the rail beside it, with its descriptions whole', async (width) => {
     const css = ['tokens', 'reset', 'primitives'].map((name) => readFileSync(resolve('src/renderer/src/styles', `${name}.css`), 'utf8')).join('\n');
     await page.addStyleTag({ content: css });
-    await page.locator('.side-panel').evaluate((el, [left, w]) => Object.assign((el as HTMLElement).style, { left: `${left}px`, width: `${w}px` }), [RAIL, width]);
+    await page.locator('.side-panel').evaluate((el, [left, w]) => Object.assign((el as unknown as { style: object }).style, { left: `${left}px`, width: `${w}px` }), [RAIL, width]);
     await page.locator('#side').click();
     await menu().waitFor();
     // Placed, and past its opening animation.
@@ -203,6 +203,19 @@ describe.skipIf(!browserInstalled)('the shared popup menu', { timeout: 30_000 },
     expect(box.x).toBeLessThan(button.x + button.width);
     expect(box.x + box.width).toBeGreaterThan(button.x);
     expect(box.y).toBeGreaterThanOrEqual(button.y + button.height);
-    expect(await menu().evaluate((el) => [el, ...el.querySelectorAll('.menu-desc')].filter((n) => n.scrollWidth > n.clientWidth).length)).toBe(0);
+    // Where there is room, it keeps its right edge on the button's.
+    if (width === 420) expect(Math.abs(box.x + box.width - (button.x + button.width))).toBeLessThan(1);
+    // No row runs out sideways, and each description shows every one of its lines, the long one on more than one.
+    const text = await page.evaluate<{ sideways: number; cut: number; lines: number }>(`(() => {
+      const all = [document.querySelector('[role="menu"]'), ...document.querySelectorAll('.menu-desc')];
+      const desc = all.slice(1);
+      return {
+        sideways: all.filter((n) => n.scrollWidth > n.clientWidth).length,
+        cut: desc.filter((n) => n.scrollHeight > n.clientHeight + 1).length,
+        lines: Math.round(desc[0].getBoundingClientRect().height / parseFloat(getComputedStyle(desc[0]).lineHeight))
+      };
+    })()`);
+    expect(text).toMatchObject({ sideways: 0, cut: 0 });
+    expect(text.lines).toBeGreaterThan(1);
   });
 });
