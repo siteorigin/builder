@@ -200,8 +200,8 @@ export interface ThemeLayoutRules {
  * Every rule of a stylesheet: its selector list and its own declarations (those of rules nested inside it are their
  * own rules), without comments. One pass, passing over comments and quoted strings.
  */
-function rulesOf(css: string): Array<{ selector: string; body: string }> {
-  const out: Array<{ selector: string; body: string }> = [];
+export function rulesOf(css: string): Array<{ selector: string; body: string; depth: number }> {
+  const out: Array<{ selector: string; body: string; depth: number }> = [];
   // Each open block: its selector, and the statements written directly inside it.
   const open: Array<{ selector: string; text: string }> = [];
   // The statement being read: a declaration once a semicolon or the block's end closes it, a selector once a brace opens.
@@ -231,7 +231,7 @@ function rulesOf(css: string): Array<{ selector: string; body: string }> {
     } else if (ch === '}') {
       flush();
       const block = open.pop();
-      if (block) out.push({ selector: block.selector, body: block.text });
+      if (block) out.push({ selector: block.selector, body: block.text, depth: open.length });
     } else {
       pending += ch;
       if (ch === ';') flush();

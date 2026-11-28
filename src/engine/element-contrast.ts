@@ -10,7 +10,7 @@ import { showsPart } from '@shared/page-shell';
 import { detachedClasses, effectiveTokens, pageNodeClass } from '@generator/index';
 import { paintsPicture } from '@generator/background';
 import { displayName } from './tree';
-import { themePaintRules, type ThemeLayoutRules } from './theme-layout-rules';
+import { rulesOf, themePaintRules, type ThemeLayoutRules } from './theme-layout-rules';
 import type { Diagnostic } from './validate';
 import type { Keeper } from './validation-cache';
 
@@ -83,7 +83,7 @@ type Key = `${Size}|${PaletteScheme}`;
 type Paints = Map<Key, Paint>;
 
 /** Style properties that decide what this reads: set in a container width range, they leave it unknown. */
-const READ_PROPS = new Set(['color', 'background', 'backgroundImage', 'opacity', 'hidden', 'customCss', 'textStyle', 'fontSize', 'fontWeight', 'backdropBlur', 'shadow', 'position', 'translateX', 'translateY', 'rotate', 'scale']);
+const READ_PROPS = new Set(['color', 'background', 'backgroundImage', 'opacity', 'hidden', 'customCss', 'textStyle', 'fontSize', 'fontWeight', 'backdropBlur', 'shadow', 'position', 'inset', 'translateX', 'translateY', 'rotate', 'scale']);
 /** Custom CSS that may paint text, or what is behind it, or change its size. */
 const PAINT_CSS =
   /^(color|-webkit-text-fill-color|background(-[a-z-]+)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode|box-shadow|font(-size|-weight)?|display|visibility|content-visibility|position|inset|top|bottom|left|right|transform|translate|rotate|scale|margin(-[a-z-]+)?)$/;
@@ -153,15 +153,38 @@ function lowest(fg: Rgba, ground: Ground): { ratio: number; at: Worst } {
   const hi = contrastBetween(compositeOver(fg, ground.hi), ground.hi);
   // Every colour between the ends is as light as some ground between them: text of that lightness (see-through or not,
   // since it then shows as nearly that ground) can't be told from it there.
-  const l = relativeLuminance(fg);
-  if (l >= relativeLuminance(ground.lo) && l <= relativeLuminance(ground.hi)) return { ratio: 1, at: 'close' };
-  return hi < lo ? { ratio: hi, at: 'light' } : { ratio: lo, at: 'dark' };
+  if (fg.a >= 1) {
+    const l = relativeLuminance(fg);
+    if (l >= relativeLuminance(ground.lo) && l <= relativeLuminance(ground.hi)) return { ratio: 1, at: 'close' };
+    return hi < lo ? { ratio: hi, at: 'light' } : { ratio: lo, at: 'dark' };
+  }
+  // See-through text shows some of the ground in it: measured over the greys between the ends, each a ground the
+  // picture can give, so the lowest found is one it can have.
+  let worst = hi < lo ? { ratio: hi, at: 'light' as Worst } : { ratio: lo, at: 'dark' as Worst };
+  for (let i = 1; i < 32; i++) {
+    const t = i / 32;
+    const g: Rgba = { r: ground.lo.r + (ground.hi.r - ground.lo.r) * t, g: ground.lo.g + (ground.hi.g - ground.lo.g) * t, b: ground.lo.b + (ground.hi.b - ground.lo.b) * t, a: 1 };
+    const ratio = contrastBetween(compositeOver(fg, g), g);
+    if (ratio < worst.ratio) worst = { ratio, at: 'close' };
+  }
+  return worst;
 }
 
 const HEADING = /^h[1-6]$/;
 
+/** Whether rich text holds a heading, which its own style sizes. */
+function richHeading(n: GraphNode & { kind: 'text' }): boolean {
+  if (!n.rich) return false;
+  try {
+    return toRichText(n.text).some((b) => /^h[1-6]$/.test(String((b as { type?: unknown }).type)));
+  } catch {
+    return true;
+  }
+}
+
 /** Whether text may be large enough to need only 3:1. */
 function mayBeLarge(n: GraphNode & { kind: 'text' }, p: Paint): boolean {
+  if (richHeading(n)) return true;
   const heading = typeof n.tag !== 'string' || HEADING.test(n.tag);
   if (p.px === undefined) return heading;
   if (p.px === null) return true;
@@ -217,17 +240,22 @@ function whereText(keys: Key[], schemes: PaletteScheme[]): string {
  * text colour from the site's Background and Primary text styles.
  */
 export function bodyPaints(css: string): boolean {
-  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]*)\{([^{}]*)\}/g)].filter((m) => /\bbody\b/i.test(m[1]));
-  // One rule, for the body alone: another (in a media query, say) may paint it otherwise.
-  if (rules.length !== 1 || rules[0][1].trim().toLowerCase() !== 'body') return false;
+  // Read in one pass (rulesOf), so no stylesheet a theme can ship slows validation down.
+  const rules = rulesOf(css).filter((r) => /\bbody\b/i.test(r.selector));
+  // One rule, for the body alone, outside any at-rule: another (in a media query, say) may paint it otherwise.
+  if (rules.length !== 1 || rules[0].depth !== 0 || rules[0].selector.trim().toLowerCase() !== 'body') return false;
   let background: string | undefined;
   let color: string | undefined;
-  for (const d of rules[0][2].split(';')) {
+  for (const d of rules[0].body.split(';')) {
     const colon = d.indexOf(':');
+    if (colon < 0) continue;
     const prop = d.slice(0, colon).trim().toLowerCase();
-    const value = d.slice(colon + 1).replace(/\s+/g, '');
-    if (prop === 'background' || prop === 'background-color') background = value;
-    else if (prop === 'color') color = value;
+    const value = d.slice(colon + 1).replace(/\s+/g, '').toLowerCase();
+    if (prop !== 'background' && prop !== 'background-color' && prop !== 'color') continue;
+    // An important declaration wins wherever it is written: not read.
+    if (value.includes('!important')) return false;
+    if (prop === 'color') color = value;
+    else background = value;
   }
   return background === `var(${tokenVar('color.background')})` && color === `var(${tokenVar('color.text')})`;
 }
@@ -363,9 +391,10 @@ function treeContrast(
         if (at.background !== undefined) {
           next.chosen = true;
           const bg = typeof at.background === 'string' && isGradient(at.background) ? null : read(at.background);
-          next.ground = bg ? over(bg, next.picture ? ANY : next.ground) : null;
-          // A colour over a picture covers it, or lets it show through: either way it is measured as it is.
-          if (!bg || bg.a > 0) next.picture = null;
+          // A colour over a bare picture covers it, or lets it show through: either way it is measured as it is. Over a
+          // gradient overlay, only one that covers it can be.
+          next.ground = !bg ? null : next.picture === 'gradient' && bg.a < 1 ? null : over(bg, next.picture === 'bare' ? ANY : next.ground);
+          if (!bg || bg.a >= 1 || (bg.a > 0 && next.picture === 'bare')) next.picture = null;
         }
         const image = at.backgroundImage;
         // One the site can't paint writes nothing, so a picture set elsewhere for this size may still show.

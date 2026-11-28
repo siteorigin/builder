@@ -26,6 +26,8 @@ function fresh(): ProjectState {
   return s;
 }
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
+/** A fresh site with the same site styles as `s`. */
+const fresh2 = (s: ProjectState) => Object.assign(fresh(), { tokens: structuredClone(s.tokens) });
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
 
 const el = (id: string, styles?: ResponsiveStyles, children: string[] = [], extra: Partial<ElementNode> = {}): ElementNode =>
@@ -265,7 +267,15 @@ describe('text over a background picture (#1489)', () => {
     expect(contrast(photo('rgba(255, 255, 255, 0.45)', '#000000'))[0].message).toContain('where the picture is dark it has as little as 4.4');
     // Gray text on a light overlay matches some part of any picture, see-through or not.
     expect(contrast(photo('rgba(0, 0, 0, 0.1)', '#777777'))[0].message).toContain('where the picture is close to the text’s color it has as little as 1.00:1');
-    expect(contrast(photo('rgba(0, 0, 0, 0.1)', 'rgba(119, 119, 119, 0.95)'))[0].message).toContain('as little as 1.00:1');
+    expect(contrast(photo('rgba(0, 0, 0, 0.1)', 'rgba(119, 119, 119, 0.95)'))[0].message).toContain('where the picture is close to the text’s color it has as little as 1.0');
+    // See-through text is measured over grounds the picture can give: never below what any of them makes.
+    expect(contrast(photo('rgba(255, 0, 0, 0.99)', 'rgba(0, 147, 0, 0.5)'))[0].message).toMatch(/as little as 1\.(7|8)\d:1/);
+    // A see-through card over a gradient overlay: what shows through can't be measured.
+    const overGradient = page(
+      [el('n_hero', { base: { backgroundImage: { assetId: 'as_dark', scrim: 'linear-gradient(#000000, #111111)' } } } as never, ['n_card']), el('n_card', { base: { background: 'rgb(0 0 0 / 40%)', color: '#ffffff' } }, ['n_t']), text('n_t')],
+      withPhoto(fresh())
+    );
+    expect(contrast(overGradient).map((d) => d.message.includes('with a gradient overlay'))).toEqual([true]);
     // A gradient overlay can't be measured.
     expect(contrast(photo('linear-gradient(to bottom, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.7))', '#ffffff'))[0].message).toContain('with a gradient overlay, so its contrast can’t be measured');
   });
@@ -280,6 +290,21 @@ describe('the check as Project health runs it', () => {
     expect(bodyPaints(`${ok} @media (prefers-color-scheme: dark) { body { background: #000; } }`)).toBe(false);
     expect(bodyPaints('main body { background: var(--so-color-background); color: var(--so-color-text); }')).toBe(false);
     expect(bodyPaints('body { color: var(--so-color-text); }')).toBe(false);
+    expect(bodyPaints('@media screen { body { background: var(--so-color-background); color: var(--so-color-text); } }')).toBe(false);
+    expect(bodyPaints('body { background: #000 !important; background: var(--so-color-background); color: var(--so-color-text); }')).toBe(false);
+    // Read in one pass: a long stylesheet with no braces at its end is quick.
+    const started = performance.now();
+    expect(bodyPaints(`${ok}${'@layer a, b, c;'.repeat(40_000)}`)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it('measures rich text holding a heading against 3:1', () => {
+    const s = fresh();
+    s.tokens.overrides['color.muted'] = '#888888';
+    const rich = (blocks: unknown) => ({ id: 'n_t', kind: 'text', tag: 'div', rich: true, text: blocks }) as unknown as TextNode;
+    const card = { base: { background: '#ffffff', color: { token: 'color.muted' } } };
+    expect(contrast(page([el('n_card', card, ['n_t']), rich([{ type: 'h3', spans: [{ text: 'Opening hours' }] }])], s))).toEqual([]);
+    expect(contrast(page([el('n_card', card, ['n_t']), rich([{ type: 'p', spans: [{ text: 'Opening hours' }] }])], fresh2(s))).map((d) => d.code)).toEqual([LOW]);
   });
 
   it('measures an inherited bold weight as unknown once a text style and a size meet', () => {
