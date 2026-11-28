@@ -6,9 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
-import { assetUsages } from '@engine/apply';
-import { generateProject } from '@generator/index';
-import type { AssetRecord, ProjectState } from '@shared/types';
+import { applyOperations, assetUsages } from '@engine/apply';
+import { generateProject, publishedState } from '@generator/index';
+import type { AssetRecord, ComponentDefinition, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { zipDirectory } from '../../src/main/zip';
 import { isPrivateFileName } from '../../src/main/project/private-files';
 import {
@@ -17,6 +18,8 @@ import {
   cleanWebsitePhotos,
   copyProjectSource,
   copyTree,
+  draftOnlyAssetFiles,
+  heldDraftAssetsNote,
   inProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
@@ -322,6 +325,72 @@ describe('website export assets', () => {
     write(dir, 'static/assets/my-own-file.pdf', 'x');
     expect(await pruneWebsiteAssets(dir, createStarterState('blank', 'Test', false))).toEqual([]);
     expect(existsSync(join(dir, 'static/assets/my-own-file.pdf'))).toBe(true);
+  });
+
+  it('#1450: names the files only drafts use, a draft photo whole, and never one the website or nothing uses', async () => {
+    let state = createStarterState('business', 'Test', false);
+    state.site.baseUrl = 'https://example.com';
+    const doc = (id: string, file: string, mime: string): AssetRecord => ({ id, name: `${id} file`, file, mime, bytes: 1, hash: 'x', kind: 'document', createdAt: '' });
+    const assets: AssetRecord[] = [
+      // On the draft only: held whole, with the AVIF copy its page never names (there is no full-width AVIF to offer).
+      image('sketch', 'static/assets/sketch-12345678.jpg', ['static/assets/sketch-12345678-480w.jpg', 'static/assets/sketch-12345678-480w.webp', 'static/assets/sketch-12345678-1000w.webp', 'static/assets/sketch-12345678-480w.avif']),
+      // On the draft, and public code shows its narrow copy: that copy stays for the website, the rest is held.
+      image('banner', 'static/assets/banner-77777777.jpg', ['static/assets/banner-77777777-480w.webp', 'static/assets/banner-77777777-1000w.webp']),
+      // Nothing uses it: it stays, as the editable project keeps its library.
+      image('spare', 'static/assets/spare-aaaaaaaa.svg'),
+      // Linked from the draft; the older format beside it, with the same name before its extension, is used by nothing.
+      doc('offer', 'static/assets/offer-1a2b3c4d.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+      doc('old', 'static/assets/offer-1a2b3c4d.doc', 'application/msword'),
+      // Shown only by a component of the project's own that the draft alone places.
+      image('boxed', 'static/assets/gallery-cccccccc.svg')
+    ];
+    const draft = { kind: 'page' as const, id: 'pg_draft01' };
+    state = applyOperations(state, [
+      ...assets.map((asset) => ({ type: 'asset.add' as const, asset })),
+      { type: 'page.create', pageId: 'pg_draft01', title: 'Soon' },
+      { type: 'page.update', pageId: 'pg_draft01', draft: true },
+      { type: 'node.insert', owner: draft, primitive: 'image', newNodeId: 'n_sketch' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_sketch', field: 'image', value: { assetId: 'sketch', alt: 'Sketch' } },
+      { type: 'node.insert', owner: draft, primitive: 'image', newNodeId: 'n_banner' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_banner', field: 'image', value: { assetId: 'banner', alt: 'Banner' } },
+      { type: 'node.insert', owner: draft, primitive: 'button', newNodeId: 'n_offer', text: 'Offer' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_offer', field: 'link', value: { type: 'document', target: 'offer' } },
+      { type: 'node.insert', owner: draft, primitive: 'container', newNodeId: 'n_box' },
+      { type: 'node.insert', owner: draft, parentId: 'n_box', primitive: 'image', newNodeId: 'n_boxed' },
+      { type: 'node.setContent', owner: draft, nodeId: 'n_boxed', field: 'image', value: { assetId: 'boxed', alt: 'Gallery' } },
+      { type: 'component.createFromNode', owner: draft, nodeId: 'n_box', name: 'Gallery box' }
+    ] as EditOperation[]).state;
+    const base = { ...Object.values(state.components)[0], kind: 'code', tree: undefined };
+    state.components['code.public'] = { ...base, id: 'code.public', name: 'Strip', sourcePath: 'src/lib/siteorigin/custom/Strip.svelte', source: '<img src="/assets/banner-77777777-480w.webp" alt="" />' } as ComponentDefinition;
+    state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, definitionId: 'code.public', newNodeId: 'n_strip' }] as EditOperation[]).state;
+
+    // The staged copy as leaveOutDrafts leaves it: the published site's generated files, and the drafts' text beside.
+    const dir = temp();
+    const full = generateProject(state);
+    const published = generateProject(publishedState(state));
+    for (const [path, text] of published) write(dir, path, text);
+    for (const a of assets) for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) write(dir, f, 'x');
+    write(dir, 'siteorigin/assets.json', JSON.stringify(state.assets));
+    const drafts = new Map([...full].filter(([path, text]) => published.get(path) !== text));
+    expect([...drafts.keys()].some((p) => p.startsWith('src/routes/soon/')), 'the draft has a page of its own').toBe(true);
+
+    expect(await draftOnlyAssetFiles(dir, state, drafts)).toEqual([
+      'static/assets/banner-77777777-1000w.webp',
+      'static/assets/banner-77777777.jpg',
+      'static/assets/gallery-cccccccc.svg',
+      'static/assets/offer-1a2b3c4d.docx',
+      'static/assets/sketch-12345678-1000w.webp',
+      'static/assets/sketch-12345678-480w.avif',
+      'static/assets/sketch-12345678-480w.jpg',
+      'static/assets/sketch-12345678-480w.webp',
+      'static/assets/sketch-12345678.jpg'
+    ]);
+    // The file of a component only drafts place names the picture too, which the website never reaches.
+    expect(await draftOnlyAssetFiles(dir, state, new Map())).toEqual(['static/assets/gallery-cccccccc.svg']);
+    // A project without drafts holds nothing back.
+    expect(await draftOnlyAssetFiles(dir, publishedState(state), new Map())).toEqual([]);
+    expect(heldDraftAssetsNote(state, ['static/assets/offer-1a2b3c4d.docx'])).toBe('offer file is used only by drafts, so its files are kept in siteorigin/draft-assets/ rather than static/assets/, and a build of the exported project leaves it out. Opening the project in SiteOrigin Builder puts it back.');
+    expect(heldDraftAssetsNote(state, [])).toBeNull();
   });
 });
 
