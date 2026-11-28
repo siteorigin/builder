@@ -275,6 +275,63 @@ describe('Markdown copies', () => {
     expect(full.length).toBeGreaterThan(4000);
   });
 
+  it('leaves out a part of a Foundation section hidden at every size, for every item or for one', () => {
+    const site = designedSite();
+    const owner = { kind: 'page' as const, id: site.home };
+    const items = [
+      { id: 'q1', question: 'Do I need experience?', answer: 'No. Beginners are welcome.' },
+      { id: 'q2', question: 'What should I wear?', answer: 'Old clothes.' }
+    ];
+    const faq = insert(discovery(site.state), site.home, 'faq.list', { eyebrow: '', heading: 'Questions we hear', lead: '', items });
+    expect(files(faq.state).get('static/index.html.md')).toContain('### Questions we hear\n\n**Do I need experience?**\n\nNo. Beginners are welcome.\n\n**What should I wear?**\n\nOld clothes.');
+    const s = run(
+      faq.state,
+      { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'heading', scope: 'base', property: 'hidden', value: true },
+      { type: 'node.setStyle', owner, nodeId: faq.nodeId, partId: 'answer', itemId: 'q1', scope: 'base', property: 'hidden', value: true }
+    );
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).not.toContain('Questions we hear');
+    expect(md).toContain('**Do I need experience?**');
+    expect(md).not.toContain('Beginners are welcome');
+    expect(md).toContain('**What should I wear?**\n\nOld clothes.');
+  });
+
+  it('writes nothing of a Foundation section made unique, or changed from what the app ships, whose code decides what it shows', () => {
+    const site = designedSite();
+    const placed = insert(discovery(site.state), site.home, 'content.text', { heading: 'How classes run', body: BODY });
+    expect(files(placed.state).get('static/index.html.md')).toContain('### How classes run');
+    const unique = run(placed.state, { type: 'component.makeUnique', owner: { kind: 'page', id: site.home }, nodeId: placed.nodeId });
+    expect(unique.components[(unique.pages[site.home].nodes[placed.nodeId] as InstanceNode).definitionId].owner).toBe('project');
+    const changed = structuredClone(placed.state);
+    const def = changed.components[(changed.pages[site.home].nodes[placed.nodeId] as InstanceNode).definitionId];
+    def.source = `${def.source}\n<p>{heading}</p>`;
+    for (const s of [unique, changed]) {
+      const md = files(s).get('static/index.html.md')!;
+      expect(md).not.toContain('How classes run');
+      expect(md).not.toContain('We throw');
+    }
+  });
+
+  it('writes the words Foundation’s sections show beyond what the canvas types into: a featured card, both periods’ prices, a comparison and a news list’s rows', () => {
+    const { state, home, services } = designedSite();
+    let s = discovery(run(state, { type: 'page.update', pageId: services, articleDate: '2027-01-05', excerpt: `Classes ${SECRET}` } as never));
+    for (const section of ['features.bento', 'pricing.toggle', 'pricing.compare']) s = insert(s, home, section, {}).state;
+    s = insert(s, home, 'content.news', { heading: 'Studio news' }).state;
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).toContain('- **One designer, start to finish**\n  The designer who walks your rooms');
+    // Both billing periods are on the page, the switch showing one at a time.
+    expect(md).toContain('$29 per month');
+    expect(md).toContain('$290 per year, billed once');
+    expect(md).toContain('|   | Consultation | Design (Recommended) | Full service |\n| --- | --- | --- | --- |\n|   | $350 One session | $4,800 From, per project | Custom Quoted after the visit |\n| Site visit: Two hours at your home, with measurements | Included | Included | Included |');
+    expect(md).toContain('Fees exclude furniture and building work, which are quoted separately.');
+    expect(md).toContain(`### Studio news\n\n- [Services](https://example.com/studio/services/)\n  January 5, 2027\n  Classes ${SECRET}`);
+    // Hidden from search engines, the article leaves the list: nothing of it is shown.
+    const hidden = files(run(s, { type: 'page.update', pageId: services, noindex: true })).get('static/index.html.md')!;
+    expect(hidden).toContain('### Studio news');
+    expect(hidden).not.toContain(SECRET);
+    expect(hidden).not.toContain('services');
+  });
+
   it('keeps a quote apart from the words after it in a list item, and a working button’s words when its page is not listed', () => {
     const { state, home, services, d } = designedSite();
     let s = discovery(run(state, { type: 'page.update', pageId: services, noindex: true }));
