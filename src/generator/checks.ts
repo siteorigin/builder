@@ -734,20 +734,15 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
     else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
   };
   for (const tree of trees) {
-    // The sizes each page node around what renders hides it at, from the outermost one in.
+    // The sizes each node on the way down hides what is inside it at, from the outermost one in: page nodes, and the
+    // nodes of every design around (a design that wraps an FAQ hides it with its own part).
     const hiding: Array<Set<Size>> = [];
-    const shown = (def: ComponentDefinition, nodeId: string, scope: Scope) => !hiddenEverySize([...hiding, ...hiddenInDesign(def, nodeId, scope)]);
+    const shown = () => !hiddenEverySize(hiding);
     walkRendered(state, tree, {
       // The theme's FAQ and Contact details are code: read through the designs that stand for what they show.
-      outline: (def) => shippedOutline(state, def),
-      enter: (n) => {
-        hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
-      },
-      leave: () => {
-        hiding.pop();
-      },
+      outline: (def) => (isComponent(def, 'faq.list') || isComponent(def, 'contact.details') ? shippedOutline(state, def) : undefined),
       text: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown(def, n.id, scope)) return;
+        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown()) return;
         // One entry per item of each rendering: its question and answer render together.
         const byItem = faqIn.get(scope.props) ?? new Map<string, Partial<FaqEntry>>();
         faqIn.set(scope.props, byItem);
@@ -761,12 +756,14 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
         entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
       },
       node: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
+        hiding.push(def ? (hiddenInDesign(def, n.id, scope)[0] ?? new Set()) : hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
+        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown()) return;
         // A method's value: a design's link, or the theme's own as its outline shows it (a link, or its words alone
         // while it goes nowhere).
         if (n.kind === 'link' && (n.id === 'method-value' || n.id === 'md-value')) contactFact(scope, evaluate(n.link, scope) as LinkValue | undefined, plainText(evaluate(n.label, scope)));
         else if (n.kind === 'text' && n.id === 'md-value-text') contactFact(scope, undefined, plainText(evaluate(n.text, scope), !!n.rich));
-      }
+      },
+      done: () => void hiding.pop()
     });
   }
   return {

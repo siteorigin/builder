@@ -17,6 +17,7 @@ import { blocksSaving, validateState } from '@engine/validate';
 import { formNameWarnings, runtimeFontWarnings } from '../../src/main/export';
 import { choosesFontAtRunTime, installedFonts } from '@catalogue/fonts';
 import { generateProject, nodeClass, pageFile } from '@generator/index';
+import { structuredContent } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
 import { codeImportantProps } from '@engine/tree';
 import { definitionPick, descOf, selectionFromChain, shownValue, type BridgeDesc } from '../../src/renderer/src/lib/model';
@@ -1208,6 +1209,46 @@ describe('structured data on a page with contact details and an FAQ', () => {
     const [faqPage] = ofType((await renderPage(s, contact)).head, 'FAQPage');
     expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `https://studio.example${contact.route}#webpage` });
     expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
+  });
+
+  it('leaves out what the shipped theme’s FAQ and Contact details hide, and what a design around them hides', () => {
+    const s = publishedRelease();
+    const contact = byTitle(s, 'Contact');
+    const faq = firstOf(s, contact, 'faq.list');
+    const details = firstOf(s, contact, 'contact.details');
+    const items = faq.props.items as ListItem[];
+    expect(structuredContent(s, contact).faq).toHaveLength(items.length);
+    // One question hidden at every size by its own item styles, and a contact method by the placement's part.
+    faq.itemOverrides = { item: { list: 'items', items: { [String(items[0].id)]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq.map((e) => e.question)).toEqual(items.slice(1).map((i) => i.question));
+    details.overrides = { method: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).businesses).toEqual([]);
+    delete details.overrides;
+    // The FAQ placed in a design's slot whose box the placement hides: none of it shows.
+    const box: ComponentSpec = {
+      componentId: 'test.box',
+      name: 'Box',
+      category: 'layout',
+      tags: [],
+      icon: 'square',
+      description: '',
+      properties: {},
+      parts: { root: { label: 'Box', nodeId: 'root' }, panel: { label: 'Panel', nodeId: 'panel' } },
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.el('panel', 'div', {}, [b.slot('body-slot', 'body')])])
+    };
+    const def = { ...FOUNDATION_AUTHOR.managed(box), owner: 'project' as const };
+    s.components[def.id] = def;
+    const wrapper = makeInstance(def, {});
+    wrapper.slots = { body: [faq.id] };
+    contact.rootIds = contact.rootIds.map((id) => (id === faq.id ? wrapper.id : id));
+    contact.nodes[wrapper.id] = wrapper;
+    expect(structuredContent(s, contact).faq.map((e) => e.question)).toEqual(items.slice(1).map((i) => i.question));
+    wrapper.overrides = { panel: { base: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toEqual([]);
+    // Hidden only on phones, the rest of the way it shows.
+    wrapper.overrides = { panel: { phone: { hidden: true } } };
+    expect(structuredContent(s, contact).faq).toHaveLength(items.length - 1);
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {
