@@ -51,6 +51,7 @@ describe('site details and search settings (#1494)', () => {
     expect(plan.changes.filter((c) => c.knockOn)).toEqual([]);
     expect(plan.notice).toBeUndefined();
     expect(after.site.name).toBe('Saltmarsh Studio');
+    for (const route of ['/', '/about/']) expect(pageAt(after, route).seo.description).toBe(pageAt(s, route).seo.description!.replaceAll(NAME, 'Saltmarsh Studio'));
     expect(pageAt(after, '/contact/').seo.description).toBe(pageAt(s, '/contact/').seo.description!.replace(NAME, 'Saltmarsh Studio'));
     expect(stored(after, NAME)).toBe(0);
     expect(findContent(after, NAME)).toEqual([]);
@@ -82,6 +83,7 @@ describe('site details and search settings (#1494)', () => {
     const s = starter();
     const name = findContent(s, NAME).filter((m) => siteName(m));
     expect(planReplace(s, name, '  ')).toMatchObject({ operations: [], error: 'Replacing would leave the site without a name. Use other words, or leave that match out.' });
+    expect(planReplace(s, name, 'x'.repeat(80)).error).toBeUndefined();
     expect(planReplace(s, name, 'x'.repeat(81))).toMatchObject({ operations: [], error: expect.stringMatching(/site name longer than 80 characters/) });
     const about = findContent(s, NAME).filter((m) => m.field.label === 'Search description' && m.field.where === 'About');
     expect(planReplace(s, about, 'x'.repeat(320))).toMatchObject({ operations: [], error: expect.stringMatching(/search description of “About” longer than 320 characters/) });
@@ -129,6 +131,47 @@ describe('site details and search settings (#1494)', () => {
     expect(pageAt(after, '/contact/').seo.title).toBe('Write to Saltmarsh Studio');
     expect(pageAt(after, '/about/').seo.title).toBe('Meet Saltmarsh Studio');
     expect(findContent(after, NAME).map((m) => m.field.entry?.entryId)).toEqual(['en_boat']);
+  });
+
+  it('says when a rename and a header edit leave the header naming the site differently', () => {
+    const s = createStarterState('business', 'Quill Harbour Quill', false);
+    const ms = findContent(s, 'Quill');
+    const site = ms.filter(siteName);
+    const header = ms.filter((m) => m.field.owner.kind === 'shell' && m.field.owner.id === 'header' && m.field.value === 'Quill Harbour Quill');
+    expect([site.length, header.length]).toEqual([2, 2]);
+    // Both renamed alike: the header goes on naming the site.
+    expect(planReplace(s, [site[0], header[0]], 'Tide').notice).toBeUndefined();
+    // The site's first word and the header's last: the rename carries, then the header's own edit wins.
+    const { plan, after } = replaced(s, [site[0], header[1]], 'Tide');
+    expect(after.site.name).toBe('Tide Harbour Quill');
+    expect(headerOf(after).props.siteName).toBe('Quill Harbour Tide');
+    expect(plan.notice).toBe('The shared header will show “Quill Harbour Tide” while the site is named “Tide Harbour Quill” in the browser tab and search results.');
+  });
+
+  it('clears a search setting replaced with spaces, and says a cleared site description leaves no default', () => {
+    const s = starter();
+    pageAt(s, '/about/').seo.description = NAME;
+    const about = findContent(s, NAME).filter((m) => m.field.setting?.kind === 'page' && m.field.where === 'About');
+    const { plan, after } = replaced(s, about, '  ');
+    expect(plan.operations).toEqual([{ type: 'page.update', pageId: pageAt(s, '/about/').id, description: '' }]);
+    expect(pageAt(after, '/about/').seo.description).toBeUndefined();
+    s.site.description = NAME;
+    const site = replaced(s, findContent(s, NAME).filter((m) => m.field.setting?.kind === 'site' && m.field.setting.field === 'description'), '');
+    expect(site.plan.changes.map((c) => c.after)).toEqual(['Empty']);
+  });
+
+  it('leaves out the search settings of entries without pages of their own, and stores a post’s trimmed', () => {
+    let s = starter();
+    s = applyOperations(s, [
+      { type: 'collection.create', collectionId: 'posts', name: 'Posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open', seoTitle: NAME }
+    ]).state;
+    const title = findContent(s, NAME).filter((m) => m.field.entry?.field === 'seoTitle');
+    expect(title).toHaveLength(1);
+    // Spaces around a replacement are trimmed as the entry stores them: the same title again changes nothing.
+    expect(planReplace(s, title, ' Quill Harbour ').operations).toEqual([]);
+    s.collections.posts.settings.pages = { ...(s.collections.posts.settings.pages as object), detail: false } as typeof s.collections.posts.settings.pages;
+    expect(findContent(s, NAME).filter((m) => m.field.entry)).toEqual([]);
   });
 
   it('finds no search settings a page leaves to its defaults', () => {

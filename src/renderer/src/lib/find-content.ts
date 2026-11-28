@@ -17,7 +17,7 @@ import { pageShowing, pagesShowing } from '@shared/page-shell';
 import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
-import { isSyncedCollection, orderedEntries } from '@shared/collections';
+import { hasDetailPages, isSyncedCollection, orderedEntries } from '@shared/collections';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { brandLabel, brandPlacements, followsSiteName, siteNameText, BRAND_PROP } from '@shared/site-name';
 
@@ -281,12 +281,18 @@ function entryFields(state: ProjectState): ContentField[] {
   const collections = Object.values(state.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name) || a.settings.id.localeCompare(b.settings.id));
   for (const c of collections) {
     const synced = isSyncedCollection(c.settings);
+    // Search settings belong to an entry's own page: without detail pages nothing shows them, and the writer hides them.
+    const paged = hasDetailPages(c.settings);
     for (const e of orderedEntries(c)) {
       const fields: Array<[EntryField, string | undefined]> = [
         ['title', e.title],
         ['excerpt', e.excerpt],
-        ['seoTitle', e.seo?.title],
-        ['seoDescription', e.seo?.description]
+        ...(paged
+          ? ([
+              ['seoTitle', e.seo?.title],
+              ['seoDescription', e.seo?.description]
+            ] as Array<[EntryField, string | undefined]>)
+          : [])
       ];
       for (const [field, value] of fields) {
         if (typeof value !== 'string' || !value.trim()) continue;
@@ -856,7 +862,9 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     const name = `“${clipped(state.pages[pageId]?.title ?? 'the page')}”`;
     if ((edit.seoTitle?.length ?? 0) > TEXT_LIMITS.seoTitle) return { operations: [], changes: [], error: tooLong(`the search title of ${name}`, TEXT_LIMITS.seoTitle), skipped };
     if ((edit.description?.length ?? 0) > TEXT_LIMITS.pageDescription) return { operations: [], changes: [], error: tooLong(`the search description of ${name}`, TEXT_LIMITS.pageDescription), skipped };
-    operations.push({ type: 'page.update', pageId, ...edit });
+    // Spaces alone are no search text: left empty, the page's default shows, as the review says.
+    const blank = (v: string | undefined) => (v !== undefined && !v.trim() ? '' : v);
+    operations.push({ type: 'page.update', pageId, ...(edit.seoTitle !== undefined ? { seoTitle: blank(edit.seoTitle) } : {}), ...(edit.description !== undefined ? { description: blank(edit.description) } : {}) });
   }
   for (const e of entryEdits.values()) {
     const entry = own(state.collections ?? {}, e.collectionId)?.entries[e.entryId];
@@ -875,13 +883,16 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
       if (excerpt !== (entry?.excerpt ?? '')) edit.excerpt = excerpt || null;
     }
     // Its own search title and description, as written; left empty, the entry's defaults show again.
+    // Trimmed, as the entry edit stores them.
     if (e.value.seoTitle !== undefined) {
-      if (e.value.seoTitle.length > TEXT_LIMITS.seoTitle) return { operations: [], changes: [], error: tooLong(`the search title of ${name}`, TEXT_LIMITS.seoTitle), skipped };
-      if (e.value.seoTitle !== (entry?.seo?.title ?? '')) edit.seoTitle = e.value.seoTitle;
+      const seoTitle = e.value.seoTitle.trim();
+      if (seoTitle.length > TEXT_LIMITS.seoTitle) return { operations: [], changes: [], error: tooLong(`the search title of ${name}`, TEXT_LIMITS.seoTitle), skipped };
+      if (seoTitle !== (entry?.seo?.title ?? '')) edit.seoTitle = seoTitle;
     }
     if (e.value.seoDescription !== undefined) {
-      if (e.value.seoDescription.length > TEXT_LIMITS.pageDescription) return { operations: [], changes: [], error: tooLong(`the search description of ${name}`, TEXT_LIMITS.pageDescription), skipped };
-      if (e.value.seoDescription !== (entry?.seo?.description ?? '')) edit.description = e.value.seoDescription;
+      const description = e.value.seoDescription.trim();
+      if (description.length > TEXT_LIMITS.pageDescription) return { operations: [], changes: [], error: tooLong(`the search description of ${name}`, TEXT_LIMITS.pageDescription), skipped };
+      if (description !== (entry?.seo?.description ?? '')) edit.description = description;
     }
     const stores: Record<EntryField, keyof typeof edit> = { title: 'title', excerpt: 'excerpt', seoTitle: 'seoTitle', seoDescription: 'description' };
     for (const field of ['title', 'excerpt', 'seoTitle', 'seoDescription'] as const) {
@@ -912,7 +923,8 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     if (c.field.rich) return [b ? c : { ...c, after: c.kind === 'link' ? 'No link' : 'Not shown' }];
     if (b && JSON.stringify(b.field.value) === JSON.stringify(c.field.value)) return [];
     // A setting left empty is still there: the site shows its default in its place.
-    const cleared = c.field.setting || (c.field.entry && c.field.entry.field.startsWith('seo')) ? 'Empty: the default shows' : 'Not shown';
+    // The site's own description is that default: pages without one of their own then have none.
+    const cleared = c.field.setting?.kind === 'site' ? 'Empty' : c.field.setting || (c.field.entry && c.field.entry.field.startsWith('seo')) ? 'Empty: the default shows' : 'Not shown';
     const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : cleared;
     // Spaces a page collapses still change what is stored: say so rather than show two equal lines.
     return [{ ...c, after: after === c.before ? `${after} (spacing changed)` : after }];
@@ -938,13 +950,16 @@ const SITE_NAME_MAX = 80;
  * it is: the browser tab, search results and link previews would go on naming the site the old way.
  */
 function renameNotice(state: ProjectState, after: ProjectState): string | undefined {
-  if (after.site.name !== state.site.name) return undefined;
   const now = brandPlacements(after);
+  const words = (t: string) => t.replace(/\s+/g, ' ');
   for (const p of brandPlacements(state)) {
     if (!followsSiteName(state, p.node, BRAND_PROP)) continue;
     const q = now.find((x) => x.part === p.part && x.node.id === p.node.id);
     const label = q ? brandLabel(q) : '';
-    if (q && label && label !== after.site.name) return `The shared ${p.part} will show “${clipped(label)}” while the site is still named “${clipped(state.site.name)}” in the browser tab and search results. Choose the Site name match to rename the site too.`;
+    if (!q || !label || words(label) === words(after.site.name)) continue;
+    return after.site.name === state.site.name
+      ? `The shared ${p.part} will show “${clipped(label)}” while the site is still named “${clipped(state.site.name)}” in the browser tab and search results. Choose the Site name match to rename the site too.`
+      : `The shared ${p.part} will show “${clipped(label)}” while the site is named “${clipped(after.site.name)}” in the browser tab and search results.`;
   }
   return undefined;
 }
