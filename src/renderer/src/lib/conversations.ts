@@ -9,6 +9,12 @@ const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(
  * When a conversation was last added to, short enough for a menu: the time of day for today (so a day's threads
  * read apart), Yesterday, the date this year, and the date with its year before that.
  */
+/** What a conversation's list row says when it owns the active background request, else null. */
+export function runLabel(id: string, run: { status: string | null; conversationId: string | null }): string | null {
+  if (!run.status || run.conversationId !== id) return null;
+  return run.status === 'awaiting-input' ? 'Needs your answer' : run.status === 'stopping' ? 'Stopping' : 'Working';
+}
+
 export function activityHint(iso: string, now = new Date(), locale?: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';

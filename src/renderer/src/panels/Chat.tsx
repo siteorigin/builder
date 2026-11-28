@@ -35,7 +35,7 @@ import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu, type MenuItem } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
-import { activityHint } from '../lib/conversations';
+import { activityHint, runLabel } from '../lib/conversations';
 import './Chat.css';
 
 /**
@@ -1316,7 +1316,7 @@ export function Chat() {
             ]
           : []),
         // Listed by their latest activity, so a conversation continued today is near the top.
-        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: activityHint(c.updatedAt, now), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
+        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: [runLabel(c.id, { status: getState().runStatus, conversationId: getState().runConversationId }), activityHint(c.updatedAt, now)].filter(Boolean).join(' · '), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         ...(list.length ? [{ label: 'Find, rename or delete…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
