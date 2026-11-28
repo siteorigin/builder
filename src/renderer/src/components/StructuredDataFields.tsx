@@ -21,6 +21,7 @@ import {
 } from '@shared/page-structured-data';
 import { commitOps, getState, toast, undoAction, useStore } from '../store';
 import { publicUrl } from '@shared/public-url';
+import { isDraftPage } from '@generator/index';
 import { pageUpdate } from '../lib/page-settings';
 import { DraftInput, Field, RequiredMark, type DraftHandle, type DraftProblem } from './ui';
 
@@ -40,7 +41,7 @@ const FACT_FIELDS: Record<TextFact, { label: string; hint?: string; multiline?: 
   steps: { label: 'Steps', multiline: true }
 };
 
-/** What each needed fact is called in the line saying what is still missing ("…until you add the price"). */
+/** What each needed fact is called in the line saying what is still missing ("Not included yet · add the price"). */
 const NEEDS: Partial<Record<StructuredFact | 'type', string>> = {
   serviceType: 'the service type',
   price: 'the price',
@@ -175,7 +176,6 @@ function suggestPrice(text: string, unit: string): string | undefined {
 }
 
 /** A list in a sentence: "a, b and c". */
-const sentenceList = (items: string[]) => (items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 /** Whether a fact (for the location, the venue or the address) has something saved, usable or not. */
 function written(stored: Record<string, unknown>, fact: StructuredFact | 'type'): boolean {
@@ -661,7 +661,9 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
   // What keeps complete details off the exported page, so "ready" never reads as "done": the page names nothing
   // without the site's public URL, and a page hidden from search engines carries no structured data.
   const noAddress = useStore((s) => !!s.snapshot && !publicUrl(s.snapshot.state.site));
-  const held = noAddress ? 'once the site has a public URL' : page.seo?.noindex ? 'once the page is no longer hidden from search engines' : null;
+  // A draft is left out of the export altogether, so nothing it says reaches search engines yet either.
+  const draft = useStore((s) => !!s.snapshot && isDraftPage(s.snapshot.state, page));
+  const held = draft ? 'Draft · left out of the export' : noAddress ? 'Needs the site’s public URL' : page.seo?.noindex ? 'Hidden from search engines' : null;
   const raw: unknown = page.seo && typeof page.seo === 'object' ? page.seo.structuredData : undefined;
   const found = inspectPageStructuredData(raw);
   const stored = isRecord(raw) ? raw : {};
@@ -693,18 +695,17 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
   const { add, fix } = needs(stored, found.issues);
   // Saved details the website leaves out while the rest are included.
   const left = [...new Set(found.issues.filter((i) => !i.blocking && i.field !== 'type').map((i) => FIXES[i.field] ?? STRUCTURED_FACT_LABELS[i.field as StructuredFact].toLowerCase()))];
-  const todo = [...(add.length ? [`add ${sentenceList(add.map((i) => NEEDS[i.field] ?? i.message))}`] : []), ...(fix.length ? [`correct ${sentenceList([...new Set(fix.map((i) => FIXES[i.field] ?? i.message))])}`] : [])].join(' and ');
+  // How many details stand between the page and its structured data: each is marked at its own field below.
+  const need = add.length + new Set(fix.map((i) => i.field)).size;
   const status: ReactNode =
-    type === 'WebPage' ? (
-      'Tells search engines what the page is. Choose Service, Product, Event or How-to guide to add details such as a price or a date.'
-    ) : !facts.length ? (
-      `Search engines are told this is the site’s ${type === 'AboutPage' ? 'about' : 'contact'} page.`
+    type === 'WebPage' ? null : !facts.length ? (
+      (held ?? `Marked as the site’s ${type === 'AboutPage' ? 'about' : 'contact'} page`)
     ) : found.ready && held ? (
       // Complete, but the export can't carry them yet: what holds them back leads, then any saved detail it would leave out.
       <span className="sd-status" data-structured-ready data-structured-held>
         <CircleDashed aria-hidden="true" />
         <span>
-          The saved {details} are ready. Search engines get them {held}.{left.length ? ` Correct the ${sentenceList(left)} below too.` : ''}
+          {held} · {details} ready
         </span>
       </span>
     ) : found.ready && left.length ? (
@@ -712,18 +713,18 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
       <span className="sd-status" data-structured-ready data-structured-partial>
         <CircleDashed aria-hidden="true" />
         <span>
-          Search engines get the saved {details}, except {sentenceList(left)}. Correct {left.length === 1 ? 'it' : 'them'} below.
+          {details.charAt(0).toUpperCase() + details.slice(1)} included · {left.length} to correct below
         </span>
       </span>
     ) : found.ready ? (
       <span className="sd-status" data-structured-ready>
         <CircleCheck aria-hidden="true" />
-        <span>Search engines get the saved {details}, with the page’s title and description.</span>
+        <span>{details.charAt(0).toUpperCase() + details.slice(1)} included</span>
       </span>
     ) : (
       <span className="sd-status" data-structured-missing>
         <CircleDashed aria-hidden="true" />
-        <span>{todo ? `${todo[0].toUpperCase()}${todo.slice(1)} to include the ${details} for search engines.` : `Correct the details below to include them for search engines.`}</span>
+        <span>Not included yet · {add.length === 1 && !fix.length ? `add ${NEEDS[add[0].field] ?? add[0].message}` : need ? `${need} ${need === 1 ? 'detail' : 'details'} to add or correct below` : 'correct the details below'}</span>
       </span>
     );
 
@@ -732,6 +733,7 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
     <div className="sd-fields">
       <Field
         label="Page type"
+        info="Tells search engines what the page is. Service, Product, Event and How-to guide add details such as a price or a date."
         hint={
           unusable ? undefined : choosing && removes ? (
             <>

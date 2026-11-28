@@ -205,7 +205,7 @@ export function PaletteHarmony({
         {/* Held, the reason above describes the button; a promise to replace colors would contradict it. */}
         {!held && (
           <span className="ss-palette-note" id={`${uid}-apply-note`}>
-            {inUse ? (dark !== null ? 'Your light colors use this palette.' : 'Your site uses this palette.') : `Replaces your ${dark !== null ? 'light ' : ''}colors with these. You can undo this.`}
+            {inUse ? (dark !== null ? 'Your light colors use this palette.' : 'Your site uses this palette.') : `Replaces your ${dark !== null ? 'light ' : ''}colors · you can undo it`}
           </span>
         )}
       </div>

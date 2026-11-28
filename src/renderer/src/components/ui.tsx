@@ -721,7 +721,6 @@ function revealable(el: HTMLElement, reveal?: () => void): Refocusable {
   };
 }
 
-/** A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). */
 /**
  * Open (and scroll to) a collapsible Section by its id. `scroll: false` only opens it; `focus`, a selector
  * inside it, names the control to scroll to and focus instead of the section's heading.
@@ -730,10 +729,168 @@ export function openSection(id: string, opts: { scroll?: boolean; focus?: string
   window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: { id, scroll: opts.scroll ?? true, focus: opts.focus } }));
 }
 
-export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: ReactNode; extra?: ReactNode; controlId?: string }) {
+/** What an info button is named after: its field's label when that is text, else a plain fallback. */
+const infoName = (label: ReactNode) => (typeof label === 'string' ? label : 'this setting');
+
+/** Closes the info bubble that is open, so opening another never leaves two on screen; and whether it was pinned. */
+let closeOpenTip: (() => void) | null = null;
+let openTipPinned = false;
+
+/**
+ * A field's optional explanation behind a small info button beside its label (a toggletip, as Carbon's Toggletip and
+ * Spectrum's ContextualHelp have it). A field's own hint is one visible line for what it is doing now (a meter, what
+ * an empty value uses, a consequence of its current state); what it is for, and advice about it, goes here.
+ *
+ * Click, Enter or Space opens it and keeps it open (announced once); resting the pointer on the button previews it,
+ * and it stays while the pointer is on the button, the bubble or the gap between them (WCAG 1.4.13). Escape, a click
+ * elsewhere or moving focus on closes it, and Escape returns focus to the button when it was there; scrolling moves it
+ * with its button. Only one is open at a time, and a pinned one is never replaced by a passing hover. The button sits
+ * beside the label, never inside it, so opening it never focuses or toggles the field. Field, ChoiceField, SwitchRow
+ * and ImageEditor also describe their control by the same text (a hidden copy), so a screen reader hears it with the
+ * field without opening anything.
+ */
+export function InfoTip({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  const bubble = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState<null | 'hover' | 'pinned'>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const later = (fn: () => void, ms: number) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(fn, ms);
+  };
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useLayoutEffect(() => {
+    const el = bubble.current;
+    const b = button.current;
+    if (!open || !el || !b) return;
+    const close = () => setOpen(null);
+    if (closeOpenTip && closeOpenTip !== close) closeOpenTip();
+    closeOpenTip = close;
+    openTipPinned = open === 'pinned';
+    const panel = b.closest<HTMLElement>('.panel-body');
+    const place = () => {
+      const r = b.getBoundingClientRect();
+      // Scrolled out of sight (under the panel's sticky header counts), it closes; otherwise it follows its button.
+      const view = panel?.getBoundingClientRect();
+      const head = panel?.querySelector<HTMLElement>('.insp-head')?.getBoundingClientRect();
+      const ceiling = Math.max(8, head && view && head.bottom > view.top ? head.bottom + 4 : (view?.top ?? 0) + 4);
+      const floor = Math.min(window.innerHeight - 8, (view?.bottom ?? window.innerHeight) - 4);
+      if (view && (r.bottom < ceiling || r.top > view.bottom)) return close();
+      // Above the label, so the field it explains stays in view; below it when there is no room above. Kept within
+      // the panel's fields, which sit 14px in from its content edges, and within the window otherwise.
+      const [min, max] = view && panel ? [view.left + 14, view.left + panel.clientWidth - 14] : [8, window.innerWidth - 8];
+      const left = Math.max(min, Math.min(r.left - 8, max - el.offsetWidth));
+      // Above, unless that would cover the panel's header or the dock's tabs.
+      const above = r.top - 6 - el.offsetHeight;
+      const fits = above >= ceiling;
+      const top = fits ? above : Math.min(r.bottom + 6, floor - el.offsetHeight);
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      // Which side the button is on, for the strip that keeps the pointer's path to the bubble unbroken.
+      el.dataset.side = fits ? 'above' : 'below';
+    };
+    place();
+    const inside = (t: EventTarget | null) => t instanceof Node && (el.contains(t) || b.contains(t));
+    const away = (e: Event) => {
+      if (!inside(e.target)) setOpen(null);
+    };
+    // Scrolling moves it with its button rather than taking it away while it is being read.
+    const scrolled = (e: Event) => {
+      if (!(e.target instanceof Node && el.contains(e.target))) place();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Closing the bubble is all this Escape does: the selection, a dialog or a menu behind it stays.
+      e.preventDefault();
+      e.stopPropagation();
+      // Focus comes back to the button only from the button or the bubble: a preview shown while typing elsewhere
+      // closes and leaves the caret where it was.
+      const from = document.activeElement;
+      setOpen(null);
+      if (inside(from)) b.focus();
+    };
+    document.addEventListener('pointerdown', away, true);
+    // Tabbing on to the next field closes it, so it never sits over what is being typed.
+    document.addEventListener('focusin', away, true);
+    document.addEventListener('keydown', key, true);
+    window.addEventListener('scroll', scrolled, true);
+    window.addEventListener('resize', away);
+    return () => {
+      if (closeOpenTip === close) {
+        closeOpenTip = null;
+        openTipPinned = false;
+      }
+      document.removeEventListener('focusin', away, true);
+      document.removeEventListener('pointerdown', away, true);
+      document.removeEventListener('keydown', key, true);
+      window.removeEventListener('scroll', scrolled, true);
+      window.removeEventListener('resize', away);
+    };
+  }, [open]);
+  const enter = (e: React.PointerEvent) => {
+    if (e.pointerType !== 'mouse') return;
+    if (open) window.clearTimeout(timer.current);
+    // A tip someone pinned open stays: passing over another button doesn't replace it.
+    else if (!openTipPinned) later(() => setOpen((o) => o ?? 'hover'), 350);
+  };
+  const leave = (e: React.PointerEvent) => {
+    if (e.pointerType !== 'mouse') return;
+    if (open === 'pinned') return;
+    later(() => setOpen((o) => (o === 'hover' ? null : o)), 200);
+  };
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        className="info-tip"
+        aria-label={`About ${label}`}
+        aria-expanded={!!open}
+        aria-controls={open ? id : undefined}
+        // Previewed, the button is described by what it shows; pressed open, the status below says it (once).
+        aria-describedby={open === 'hover' ? id : undefined}
+        onClick={() => {
+          window.clearTimeout(timer.current);
+          setOpen((o) => (o === 'pinned' ? null : 'pinned'));
+        }}
+        onPointerEnter={enter}
+        onPointerLeave={leave}
+      >
+        <Info aria-hidden="true" />
+      </button>
+      {/* Opened by a press, it is said at once, as a toggletip is: a screen reader hears it without moving. */}
+      <span className="sr-only" role="status">
+        {open === 'pinned' ? children : null}
+      </span>
+      {open &&
+        createPortal(
+          <div ref={bubble} id={id} role="tooltip" className="info-bubble" onPointerEnter={enter} onPointerLeave={leave}>
+            {children}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+/** The hidden copy of a field's explanation its control is described by, so it is heard without opening the button. */
+const InfoText = ({ id, children }: { id: string; children: ReactNode }) => (
+  <span id={id} hidden>
+    {children}
+  </span>
+);
+
+/**
+ * A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). `hint` is
+ * at most one visible line under the control, for what the field is doing now; `info` is its optional explanation,
+ * behind an info button beside the label (see InfoTip).
+ */
+export function Field({ label, children, hint, info, infoLabel, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; info?: ReactNode; /** The info button's name, when the label is not plain text. */ infoLabel?: string; error?: ReactNode; extra?: ReactNode; controlId?: string }) {
   const generated = useId();
   const id = explicitId ?? generated;
   const noteId = `${id}-note`;
+  const infoId = `${id}-info`;
   const labelable = (t: unknown) => t === 'input' || t === 'select' || t === 'textarea' || t === DraftInput;
   const only = Children.count(children) === 1 && isValidElement(children) && labelable(children.type) ? (children as ReactElement<Record<string, unknown>>) : null;
   // A composite child (a field plus its buttons) passes controlId and wires `${controlId}-note` itself. A single control
@@ -741,17 +898,33 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   const controlId = (only?.props.id as string | undefined) ?? explicitId ?? (only ? id : undefined);
   const note = error || hint;
   // A single control is described by the note (beside any description of its own, in the order it gives when it
-  // wires the note itself) and marked by the error, whether its ID was given or generated.
+  // wires the note itself), then by its explanation, and marked by the error, whether its ID was given or generated.
   const own = ((only?.props['aria-describedby'] as string | undefined) ?? '').split(/\s+/).filter(Boolean);
-  const describedBy = (note && !own.includes(noteId) ? [noteId, ...own] : own).join(' ') || undefined;
+  const described = note && !own.includes(noteId) ? [noteId, ...own] : own;
+  const describedBy = (info && !described.includes(infoId) ? [...described, infoId] : described).join(' ') || undefined;
   const control = only ? cloneElement(only, { id: controlId, 'aria-describedby': describedBy, 'aria-invalid': error ? true : only.props['aria-invalid'] }) : children;
   // A composite child (a segmented control, a row of fields) is named as a group by the label instead.
-  const grouped = !controlId && !!label;
+  const grouped = !controlId && !!label && Children.toArray(children).length > 0;
+  const groupDescribedBy = [note ? noteId : '', info ? infoId : ''].filter(Boolean).join(' ') || undefined;
   return (
     <div className="field">
       {label &&
-        (grouped ? (
-          <div className="field-label" id={`${id}-label`}>
+        (info ? (
+          // The info button is the label's neighbour, never inside it: inside, it would be part of the field's name.
+          <div className="field-head">
+            {controlId ? (
+              <label htmlFor={controlId}>{label}</label>
+            ) : (
+              // Grouped, it names the group; with no control at all (a note in its place), it is a heading only.
+              <div className="field-label" id={grouped ? `${id}-label` : undefined}>
+                {label}
+              </div>
+            )}
+            <InfoTip label={infoLabel ?? infoName(label)}>{info}</InfoTip>
+            {extra && <span className="field-extra">{extra}</span>}
+          </div>
+        ) : !controlId ? (
+          <div className="field-label" id={grouped ? `${id}-label` : undefined}>
             <span className="grow">{label}</span>
             {extra}
           </div>
@@ -762,7 +935,7 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
           </label>
         ))}
       {grouped ? (
-        <div role="group" aria-labelledby={`${id}-label`} aria-describedby={note ? noteId : undefined}>
+        <div role="group" aria-labelledby={`${id}-label`} aria-describedby={groupDescribedBy}>
           {control}
         </div>
       ) : (
@@ -777,6 +950,7 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
           {hint}
         </div>
       ) : null}
+      {info && <InfoText id={infoId}>{info}</InfoText>}
     </div>
   );
 }
@@ -863,19 +1037,31 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
  * radio group, so one tab stop and the arrow keys) and the hint describes it. Use it wherever a Segmented answers a
  * question the surrounding form does not already ask.
  */
-export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<SegmentedOption<T>>; onChange: (v: T) => void; full?: boolean }) {
+export function ChoiceField<T extends string>({ label, hint, info, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; info?: ReactNode; value: T; options: Array<SegmentedOption<T>>; onChange: (v: T) => void; full?: boolean }) {
   const id = useId();
+  const describedBy = [hint ? `${id}-hint` : '', info ? `${id}-info` : ''].filter(Boolean).join(' ') || undefined;
+  const name = (
+    <div className="field-label" id={`${id}-label`}>
+      {label}
+    </div>
+  );
   return (
     <div className="field">
-      <div className="field-label" id={`${id}-label`}>
-        {label}
-      </div>
-      <Segmented radio full={full} labelledBy={`${id}-label`} describedBy={hint ? `${id}-hint` : undefined} value={value} options={options} onChange={onChange} />
+      {info ? (
+        <div className="field-head">
+          {name}
+          <InfoTip label={infoName(label)}>{info}</InfoTip>
+        </div>
+      ) : (
+        name
+      )}
+      <Segmented radio full={full} labelledBy={`${id}-label`} describedBy={describedBy} value={value} options={options} onChange={onChange} />
       {hint && (
         <div className="field-hint" id={`${id}-hint`}>
           {hint}
         </div>
       )}
+      {info && <InfoText id={`${id}-info`}>{info}</InfoText>}
     </div>
   );
 }
@@ -898,26 +1084,45 @@ export function Switch({ checked, onChange, label, id, labelledBy, describedBy, 
 }
 
 /**
- * A switch with its visible title and optional hint. Both are one label for the switch, so a click anywhere on the
- * words toggles it; the switch is named by the title alone and described by the hint.
+ * A switch with its visible title, an optional one-line hint (what it is doing now) and an optional explanation behind
+ * an info button (see InfoTip). Title and hint are one label for the switch, so a click anywhere on the words toggles
+ * it; the info button sits beside the title, outside that label, so opening it leaves the switch alone. The switch is
+ * named by the title alone and described by the hint, then the explanation.
  */
-export function SwitchRow({ checked, onChange, label, hint, id: explicitId, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; id?: string; disabled?: boolean }) {
+export function SwitchRow({ checked, onChange, label, hint, info, infoLabel, id: explicitId, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; info?: ReactNode; /** The info button's name, when the label is not plain text. */ infoLabel?: string; id?: string; disabled?: boolean }) {
   const generated = useId();
   // A switch a destination focuses has an ID of its own (see open-destination).
   const id = explicitId ?? generated;
+  const describedBy = [hint ? `${id}-h` : '', info ? `${id}-i` : ''].filter(Boolean).join(' ') || undefined;
+  const hintNode = hint && (
+    <span className="field-hint" id={`${id}-h`}>
+      {hint}
+    </span>
+  );
   return (
     <div className="switch-row">
-      <label className="grow" htmlFor={id}>
-        <span className="switch-row-title" id={`${id}-l`}>
-          {label}
-        </span>
-        {hint && (
-          <span className="field-hint" id={`${id}-h`}>
-            {hint}
+      {info ? (
+        <div className="grow switch-row-text">
+          <div className="switch-row-head">
+            <label className="switch-row-title" id={`${id}-l`} htmlFor={id}>
+              {label}
+            </label>
+            {/* A word joiner: the button never starts a line of its own after a title that fills one. */}
+            {'\u2060'}
+            <InfoTip label={infoLabel ?? infoName(label)}>{info}</InfoTip>
+          </div>
+          {hintNode && <label htmlFor={id}>{hintNode}</label>}
+          <InfoText id={`${id}-i`}>{info}</InfoText>
+        </div>
+      ) : (
+        <label className="grow" htmlFor={id}>
+          <span className="switch-row-title" id={`${id}-l`}>
+            {label}
           </span>
-        )}
-      </label>
-      <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={hint ? `${id}-h` : undefined} disabled={disabled} />
+          {hintNode}
+        </label>
+      )}
+      <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={describedBy} disabled={disabled} />
     </div>
   );
 }

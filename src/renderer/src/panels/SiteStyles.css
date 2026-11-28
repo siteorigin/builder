@@ -216,8 +216,8 @@
      phone's and a desktop's width, then the scales as a radio group, each saying what it is before it is chosen. */
   .ss-scale { display: flex; flex-direction: column; gap: 8px; }
   .ss-scale-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ss-scale-title { display: flex; align-items: center; gap: 2px; }
   .ss-scale-now { min-width: 0; padding: 1px 7px; border-radius: var(--r-sm); background: var(--track); font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ss-scale-note { margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
   /* The scales as a list, one column so no dock width wraps them into uneven rows. Each is a tile: name over what it does.
      The chosen one takes the raised face, with the accent's ring and a check as its mark, so it never rests on hue alone. */
   .ss-scale-choices .segmented { flex-direction: column; align-self: stretch; gap: 6px; padding: 0; background: none; }
@@ -289,7 +289,6 @@
   /* The sample on the left, its size on a common right edge, so the sizes read down a column. */
   .ss-type-cell { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px; }
   .ss-type-sample { overflow: hidden; line-height: 1.1; white-space: nowrap; }
-  .ss-type-foot { margin: -2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
   .ss-type-px { color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
   /* Text styles: each one previewed in its own font, weight and (capped) size; the numbers open below. */
   .ss-text-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }

@@ -21,7 +21,7 @@ import { settleEdits } from '../lib/leave';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { useJumpMark } from '../lib/use-jump-mark';
-import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, InfoTip, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { SiteImageField } from './PropEditors';
@@ -49,20 +49,21 @@ import './SiteStyles.css';
  */
 const FOUNDATION_USES: Record<string, string> = {
   'color.background': 'Page background',
-  'color.surface': 'Cards, price plans, contact boxes',
-  'color.surface-alt': 'Alternate sections, soft backdrops',
+  'color.surface': 'Plans and contact boxes',
+  'color.surface-alt': 'Alternate sections',
   'color.text': 'Headings and body text',
-  'color.muted': 'Secondary text',
+  'color.muted': '',
   'color.brand': 'Buttons, links, highlights',
   'color.brand-strong': 'Buttons on hover',
   'color.on-brand': 'Text on buttons',
   'color.accent': 'Decorative highlights',
-  'color.inverse': 'Dark sections and panels',
-  'color.on-inverse': 'Text in dark sections',
+  'color.inverse': '',
+  'color.on-inverse': '',
   'color.border': 'Dividers',
-  'color.focus': 'Focus outline for keyboard users',
-  'color.error': 'Form errors and the fields to put right',
-  'color.error-on-inverse': 'Form errors in dark sections'
+  // The label says it ("Keyboard focus outline", "Text on dark sections"): no second line.
+  'color.focus': '',
+  'color.error': 'Form errors',
+  'color.error-on-inverse': 'Errors in dark sections'
 };
 
 /** What Foundation's layout values that are not self-explanatory do, so an owner can predict the effect. */
@@ -477,7 +478,7 @@ function publicUrlProblem(text: string): DraftProblem | null {
  * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
  * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
  */
-function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id, multiline, rows }: { id?: string; label: string; hint: ReactNode; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string; multiline?: boolean; rows?: number }) {
+function CheckedField({ label, hint, info, value: saved, check, onCommit, unusable, className, placeholder, id, multiline, rows }: { id?: string; label: string; hint?: ReactNode; info?: ReactNode; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string; multiline?: boolean; rows?: number }) {
   // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
   const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
@@ -506,7 +507,7 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
     </>
   );
   return (
-    <Field label={label} hint={hint} error={error}>
+    <Field label={label} hint={hint} info={info} error={error}>
       <DraftInput id={id} className={className} value={value} placeholder={placeholder} multiline={multiline} rows={rows} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
     </Field>
   );
@@ -527,6 +528,9 @@ function SiteImage({ id, hint, ...field }: { id: string; hint: string } & Parame
     </div>
   );
 }
+
+/** What a type scale does, behind the info button beside Type scale. */
+const SCALE_INFO = 'A scale sets the size, line height and letter spacing of every style in the table at once, keeping their fonts. The samples are drawn smaller; the numbers are the sizes on the site.';
 
 /** The longest language code a site can save (the site.update operation's limit). */
 const LANGUAGE_CODE_MAX = 20;
@@ -636,9 +640,13 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
       <div className="ss-group-label" id={`${uid}-identity`}>
         Publisher
       </div>
-      <Field label="Published by" hint={kind === 'LocalBusiness' && (identity.openingHours || identity.priceRange || identity.geo) ? 'Who search engines and AI answer engines are told the site belongs to. Another kind clears the opening hours, price range and map position; Undo brings them back.' : kind ? 'Who search engines and AI answer engines are told the site belongs to.' : 'Who search engines and AI answer engines are told the site belongs to. Not set describes it as an organization.'}>
+      <Field
+        label="Published by"
+        hint={kind === 'LocalBusiness' && (identity.openingHours || identity.priceRange || identity.geo) ? 'Another kind clears hours, prices and map position' : undefined}
+        info="Who search engines and AI answer engines are told the site belongs to."
+      >
         <select id="site-identity-kind" className="select" value={kind} onChange={(e) => onPatch({ kind: isEntityKind(e.target.value) ? e.target.value : null })}>
-          <option value="">Not set</option>
+          <option value="">Organization (default)</option>
           {ENTITY_KINDS.map((k) => (
             <option key={k} value={k}>
               {ENTITY_KIND_LABELS[k]}
@@ -646,26 +654,27 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
           ))}
         </select>
       </Field>
-      <Field label="Name" hint={kind === 'Person' ? 'Your name, when it is not the site’s. Leave it empty to use the site name.' : 'The legal or brand name, when it is not the site’s. Leave it empty to use the site name.'}>
+      <Field label="Name">
         <DraftInput id="site-identity-name" value={textOf(identity.name)} placeholder={state.site.name} limit={IDENTITY_LIMITS.name} quietCount onCommit={(v) => onPatch({ name: v.trim() || null })} />
       </Field>
       <CheckedField
         key={key('url')}
         id="site-identity-url"
         label="Home page"
-        hint="The publisher’s own website, when it is not this one."
+        info="The publisher’s own website, when it is not this one."
         value={identity.url}
         placeholder="https://"
         check={(v) => refusalOf(checkProfileUrl(v, 'The home page address'))}
         unusable={unusable}
         onCommit={(v) => commitChecked(checkProfileUrl(v), (url) => onPatch({ url: url || null }))}
       />
-      <SiteImage id="site-identity-logo" title={kind === 'Person' ? 'Photo' : 'Logo'} plain="logo" state={state} value={textOf(identity.logo) || null} onChange={(id) => onPatch({ logo: id })} hint={kind === 'Person' ? 'A photo search engines can show beside your name.' : 'Shown beside the name in search results. Use a square image.'} />
+      <SiteImage id="site-identity-logo" title={kind === 'Person' ? 'Photo' : 'Logo'} plain="logo" state={state} value={textOf(identity.logo) || null} onChange={(id) => onPatch({ logo: id })} hint={kind === 'Person' ? 'A photo shown beside your name' : 'Square, shown beside the name in results'} />
       <CheckedField
         key={key('profiles')}
         id="site-identity-profiles"
         label="Profiles"
-        hint="Pages elsewhere that say who it is, one address per line: Wikidata, LinkedIn, GitHub, X, YouTube."
+        hint="One address per line"
+        info="Pages elsewhere that say who it is, such as Wikidata, LinkedIn, GitHub, X or YouTube."
         value={linesOf(identity.sameAs)}
         placeholder="https://www.wikidata.org/wiki/…"
         multiline
@@ -674,19 +683,21 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
         unusable={unusable}
         onCommit={(v) => commitChecked(checkProfiles(v), (sameAs) => onPatch({ sameAs }))}
       />
-      <CheckedField key={key('x')} id="site-identity-x" label="X handle" hint="Named on link previews shared on X." value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTwitterHandle(v), (handle) => onPatch({ twitterSite: handle || null }))} />
-      <Field label="Address" hint="On one line, as people would write it on a letter.">
+      <CheckedField key={key('x')} id="site-identity-x" label="X handle" value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTwitterHandle(v), (handle) => onPatch({ twitterSite: handle || null }))} />
+      <Field label="Address">
         <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} quietCount onCommit={(v) => onPatch({ address: v.trim() || null })} />
       </Field>
-      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code, such as +27 21 555 0134." value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
-      <CheckedField key={key('email')} id="site-identity-email" label="Email" hint="An address people can write to." value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
+      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code" placeholder="+27 21 555 0134" value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
+      <CheckedField key={key('email')} id="site-identity-email" label="Email" value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
       {kind === 'LocalBusiness' && (
         <>
           <CheckedField
             key={key('hours')}
             id="site-identity-hours"
             label="Opening hours"
-            hint="One period per line, days then hours on a 24-hour clock: Mo-Fr 09:00-17:00, Sa 10:00-14:00."
+            hint="One period per line, 24-hour clock"
+            info="Days then hours, such as Mo-Fr 09:00-17:00 or Sa 10:00-14:00."
+            placeholder="Mo-Fr 09:00-17:00"
             value={linesOf(identity.openingHours)}
             multiline
             rows={3}
@@ -694,14 +705,15 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
             unusable={unusable}
             onCommit={(v) => commitChecked(checkHoursList(v), (openingHours) => onPatch({ openingHours }))}
           />
-          <Field label="Price range" hint="How much things cost, such as $$ or R100–R400.">
-            <DraftInput id="site-identity-price" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} quietCount onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
+          <Field label="Price range">
+            <DraftInput id="site-identity-price" placeholder="$$ or R100–R400" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} quietCount onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
           </Field>
           <CheckedField
             key={key('geo')}
             id="site-identity-geo"
             label="Map position"
-            hint="Latitude and longitude, such as -33.92, 18.42."
+            hint="Latitude, longitude"
+            placeholder="-33.92, 18.42"
             value={coordinatesText(identity.geo as SiteIdentity['geo'])}
             check={(v) => refusalOf(checkCoordinates(v))}
             unusable={unusable}
@@ -983,7 +995,6 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
               <strong>{theme.name}</strong>
               <span className="ss-theme-version">{theme.version}</span>
             </div>
-            {!choosing && <div className="ss-theme-desc">{theme.description}</div>}
           </div>
         </div>
       )}
@@ -1740,7 +1751,7 @@ export function SiteStyles() {
   const scale = activeTypeScale(tokens, theme.tokens);
   const pendingChoice = pendingScale && pendingScale.opening === snap.workspaceKey && (pendingScale.revision === undefined || snap.revision < pendingScale.revision) ? pendingScale.choice : null;
   const scaleName = (c: TypeScaleChoice) => (c === 'theme' ? 'Theme' : typeScale(c).label);
-  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes and spacing.` : typeScale(c).description);
+  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes and spacing` : typeScale(c).description);
   // Said in a toast with its Undo, as the palette's choices are: one step puts back every size it replaced, own sizes included.
   const chooseScale = (c: TypeScaleChoice) => {
     const run = scaleRun.current;
@@ -1937,7 +1948,7 @@ export function SiteStyles() {
         <div className="scope-note site">
           <Globe />
           <span>
-            <strong>Your whole site.</strong> Anything given its own value on the page keeps it.
+            <strong>Every page</strong> · unless it sets its own
           </span>
         </div>
       </div>
@@ -1951,14 +1962,10 @@ export function SiteStyles() {
             <p className="ss-hover-note">
               <span className="ss-chip" style={{ background: hex('color.brand-strong') }} aria-hidden="true" />
               <span>
-                Buttons still hover to the theme's{' '}
-                <span className="ss-nowrap">
-                  <button type="button" className="link-btn ss-jump" onClick={() => jumpTo('color.brand-strong')}>
-                    Brand (strong)
-                  </button>
-                  .
-                </span>{' '}
-                Change it to match your brand.
+                Buttons still hover to the theme’s{' '}
+                <button type="button" className="link-btn ss-jump" onClick={() => jumpTo('color.brand-strong')}>
+                  Brand (strong)
+                </button>
               </span>
             </p>
           )}
@@ -2014,7 +2021,10 @@ export function SiteStyles() {
           <div className="ss-scale">
             {/* What the sizes are now: the scale they match, or sizes of the owner's own (a state of its own, never an empty choice). */}
             <div className="ss-group-label ss-scale-head">
-              <span id={`${uid}-scale`}>Type scale</span>
+              <span className="ss-scale-title">
+                <span id={`${uid}-scale`}>Type scale</span>
+                <InfoTip label="Type scale">{SCALE_INFO}</InfoTip>
+              </span>
               <span className="ss-scale-now" id={`${uid}-scale-now`}>
                 {scale === 'theme' ? `${theme.name}'s sizes` : scale ? scaleName(scale) : 'Your own sizes'}
               </span>
@@ -2061,7 +2071,6 @@ export function SiteStyles() {
                 ))}
               </tbody>
             </table>
-            <p className="ss-type-foot">The samples are drawn smaller; the numbers are the sizes on the site.</p>
             {inverted.length > 0 && (
               <ul className="ss-scale-warn">
                 {inverted.map((line) => (
@@ -2072,13 +2081,14 @@ export function SiteStyles() {
                 ))}
               </ul>
             )}
-            <p className="ss-scale-note" id={`${uid}-scale-hint`}>
-              A scale sets the size, line height and letter spacing of every style in the table at once, keeping their fonts.
-            </p>
+            <span id={`${uid}-scale-hint`} hidden>
+              {SCALE_INFO}
+            </span>
             {/* A radio group (one tab stop, the arrows choose), each scale saying what it does before it is chosen. */}
             <div className="ss-scale-choices">
               <Segmented
                 radio
+                full
                 labelledBy={`${uid}-scale`}
                 describedBy={`${uid}-scale-now ${uid}-scale-hint`}
                 value={(pendingChoice ?? scale ?? '') as TypeScaleChoice}
@@ -2145,8 +2155,8 @@ export function SiteStyles() {
           <div className="ss-group-label" id="site-details-website">
             Website
           </div>
-          <CheckedField key={`name-${snap?.workspaceKey}`} id="site-name" label="Site name" hint={siteNameNote(st)} value={site.name} check={siteNameCheck(st)} unusable="" onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
-          <Field label="Default description" hint="Used by pages without a description of their own.">
+          <CheckedField key={`name-${snap?.workspaceKey}`} id="site-name" label="Site name" info={siteNameNote(st)} value={site.name} check={siteNameCheck(st)} unusable="" onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
+          <Field label="Default description">
             <DraftInput id="site-description" multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
           </Field>
           {/* Keyed by the project's opening: text one project refused never shows in the next. */}
@@ -2154,7 +2164,8 @@ export function SiteStyles() {
             key={`url-${snap?.workspaceKey}`}
             id="site-public-url"
             label="Public URL"
-            hint={urlSinceExport ? 'Where the site is published, for links search engines follow and the sitemap. The website you last exported was built without it: export it again to include them.' : 'Where the site is published, for links search engines follow and the sitemap.'}
+            hint={urlSinceExport ? 'Export again to include it' : undefined}
+            info={urlSinceExport ? 'Where the site is published, for links search engines follow and the sitemap. The website you last exported was built without it.' : 'Where the site is published, for links search engines follow and the sitemap.'}
             value={site.baseUrl}
             placeholder="https://example.com"
             check={publicUrlProblem}
@@ -2169,15 +2180,8 @@ export function SiteStyles() {
           <CheckedField
             key={`lang-${snap?.workspaceKey}`}
             label="Language"
-            hint={
-              namedLanguage(siteLanguage(site)) ? (
-                <>
-                  <strong className="sd-lang-name">{namedLanguage(siteLanguage(site))}</strong>. Type a language or a code, such as Spanish or en-AU.
-                </>
-              ) : (
-                'Type a language or a code, such as Spanish or en-AU.'
-              )
-            }
+            hint={namedLanguage(siteLanguage(site)) ? <strong className="sd-lang-name">{namedLanguage(siteLanguage(site))}</strong> : undefined}
+            info="Type a language or a code, such as Spanish or en-AU."
             className="input ss-lang"
             value={site.language}
             check={siteLanguageCheck(st)}
@@ -2201,8 +2205,8 @@ export function SiteStyles() {
           <div className="ss-group-label" id="site-details-images">
             Images
           </div>
-          <SiteImage id="site-favicon" title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} hint="The small icon in browser tabs. Use a square image larger than 48 by 48 pixels." />
-          <SiteImage id="site-social-image" title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} hint="Shown when a link to the site is shared. 1200 by 630 pixels fits link previews." />
+          <SiteImage id="site-favicon" title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} hint="Square, larger than 48 × 48 pixels" />
+          <SiteImage id="site-social-image" title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} hint="Wide, about 1200 × 630 pixels" />
         </div>
         <IdentityFields state={st} workspaceKey={snap?.workspaceKey} onPatch={(identity) => updSite({ identity })} />
       </Section>
