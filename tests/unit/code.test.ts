@@ -78,16 +78,52 @@ describe('syntax-tree code checks', () => {
     expect((await errors(star)).some((p) => p.message.includes('node:child_process'))).toBe(true);
   });
 
-  it('allows relative imports inside src/lib and $lib, but not traversal out of it', async () => {
+  it('allows relative imports inside src/lib and #lib, but not traversal out of it', async () => {
     const imp = (spec: string) => `<script>\n\timport X from '${spec}';\n</script>\n<X />\n`;
     expect(await errors(imp('./Card.svelte'))).toEqual([]);
     expect(await errors(imp('../runtime/Link.svelte'))).toEqual([]);
-    expect(await errors(imp('$lib/siteorigin/runtime/Image.svelte'))).toEqual([]);
+    expect(await errors(imp('#lib/siteorigin/runtime/Image.svelte'))).toEqual([]);
     expect((await errors(imp('../../../../../../etc/passwd'))).length).toBeGreaterThan(0);
     expect((await errors(imp('../../../routes/+page.svelte'))).length).toBeGreaterThan(0);
-    expect((await errors(imp('$lib/../../vite.config.js'))).length).toBeGreaterThan(0);
+    expect((await errors(imp('#lib/../../vite.config.js'))).length).toBeGreaterThan(0);
+    expect((await errors(imp('#libfoo/x.js'))).length).toBeGreaterThan(0);
     expect((await errors(imp('$app/server'))).length).toBeGreaterThan(0);
     expect((await errors(imp('$env/static/private'))).length).toBeGreaterThan(0);
+  });
+
+  it('refuses the $lib alias SvelteKit 3 removed, pointing to #lib (#1479)', async () => {
+    const src = `<script>\n\timport { estimateCluster } from '$lib/vektor-calc.js';\n</script>\n<p>{estimateCluster()}</p>\n`;
+    const found = await errors(src);
+    expect(found).toEqual([{ severity: 'error', line: 2, message: expect.stringContaining('"#lib/vektor-calc.js"') }]);
+    expect(found[0].message).toMatch(/\$lib.*removed/);
+    // The guidance for an unknown import names the alias that works, never the removed one.
+    const pkg = await errors(`<script>\n\timport confetti from 'canvas-confetti';\n</script>\n<p>x</p>\n`);
+    expect(pkg[0].message).toContain('#lib');
+    expect(pkg[0].message).not.toContain('$lib');
+  });
+
+  it('refuses a relative or #lib import of a file the project does not have (#1479)', async () => {
+    const files = new Set(['src/lib/vektor-calc.js', 'src/lib/siteorigin/runtime/Image.svelte']);
+    const check = async (spec: string) => (await checkSvelteSource(`<script>\n\timport X from '${spec}';\n</script>\n<X />\n`, { modules: (p) => files.has(p) })).filter((p) => p.severity === 'error');
+    expect(await check('#lib/vektor-calc.js')).toEqual([]);
+    expect(await check('#lib/vektor-calc')).toEqual([]);
+    expect(await check('../runtime/Image.svelte')).toEqual([]);
+    expect((await check('../runtime/SoImage.svelte'))[0].message).toMatch(/"\.\.\/runtime\/SoImage\.svelte", which is not a file in this project/);
+    expect((await check('#lib/vektor-calcs.js'))[0].message).toMatch(/"#lib\/vektor-calcs\.js", which is not a file in this project/);
+    // A query after the alias is still a query on the file it names: `#lib` itself is no fragment.
+    expect(await check('#lib/vektor-calc.js?raw')).toEqual([]);
+    expect((await check('#lib/missing.js?raw'))[0].message).toMatch(/"#lib\/missing\.js\?raw", which is not a file in this project/);
+    // The removed spelling is refused whether or not the file is there.
+    expect((await check('$lib/vektor-calc.js'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib/vektor-calc.js" instead.');
+    expect((await check('$lib?raw')).length).toBe(1);
+  });
+
+  it('holds strict code importing a component through #lib to the policy of that component (#1479)', async () => {
+    const DIR = 'src/lib/siteorigin/custom';
+    const card = `<script>\n\timport C from '#lib/siteorigin/custom/Card.svelte';\n</script>\n<C />\n`;
+    const strict = async (files: Record<string, string>) => (await checkSvelteSource(card, { strict: true, resolve: (p) => files[p] })).filter((p) => p.severity === 'error');
+    expect(await strict({ [`${DIR}/Card.svelte`]: '<p>card</p>\n' })).toEqual([]);
+    expect((await strict({ [`${DIR}/Card.svelte`]: `<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => { fetch('/x'); });\n</script>\n<p>x</p>\n` }))[0].message).toMatch(/uses network requests/);
   });
 
   it('rejects Function and constructor tricks in every mode', async () => {
@@ -303,9 +339,9 @@ describe('strict policy follows values and imports', () => {
   it('refuses importing a project component that breaks the policy, however far away', async () => {
     const direct = await strictErrors(importing('./Map.svelte'), { resolve: project({ [`${DIR}/Map.svelte`]: FETCHES }) });
     expect(direct.map((p) => p.message)).toEqual(['Code written by the assistant may not import "./Map.svelte", which uses network requests (line 3).']);
-    // Through another component, and through $lib.
+    // Through another component, and through #lib.
     const files = { [`${DIR}/Card.svelte`]: importing('./Map.svelte'), [`${DIR}/Map.svelte`]: FETCHES };
-    expect((await strictErrors(importing('$lib/siteorigin/custom/Card.svelte'), { resolve: project(files) })).length).toBe(1);
+    expect((await strictErrors(importing('#lib/siteorigin/custom/Card.svelte'), { resolve: project(files) })).length).toBe(1);
     // A component that does not exist, or any project component when nothing can be checked.
     expect((await strictErrors(importing('./Gone.svelte'), { resolve: project({}) }))[0].message).toMatch(/not a component in this project/);
     expect((await strictErrors(importing('./Card.svelte')))[0].message).toMatch(/cannot be checked/);
