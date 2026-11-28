@@ -512,6 +512,9 @@ const onWindowResize = (fn: () => void) => {
   return () => window.removeEventListener('resize', fn);
 };
 /** The window's width in CSS pixels (the editor fills the window), kept current as it is resized. */
+/** Sent on the window when the toolbar's bottom edge moves (its rows wrap), so what sits below it can measure again. */
+export const TOOLBAR_MOVED = 'builder:toolbar-moved';
+
 export const useWindowWidth = () => useSyncExternalStore(onWindowResize, () => window.innerWidth);
 
 /** A menu's rows, or a function that returns them: a function is read again each time the menu's owner renders, so
@@ -2213,7 +2216,8 @@ export function Toasts() {
       // The room the notices have: below the toolbar, and while a dialog is open, below the least of it a dialog keeps
       // (its 240px floor, centred between its margins), so a crowded stack never reaches a dialog's controls.
       const bottom = parseFloat(getComputedStyle(el).getPropertyValue('--notices-bottom')) || 40;
-      const toolbar = parseFloat(getComputedStyle(root).getPropertyValue('--toolbar-h')) || 52;
+      const style = getComputedStyle(root);
+      const toolbar = parseFloat(style.getPropertyValue('--toolbar-bottom')) || parseFloat(style.getPropertyValue('--toolbar-h')) || 52;
       let room = innerHeight - bottom - toolbar - 16;
       if (openDialogs.length) room = Math.min(room, Math.max(120, 0.89 * innerHeight - 240 - bottom - 16));
       el.style.setProperty('--notices-room', `${Math.floor(room)}px`);
@@ -2260,12 +2264,14 @@ export function Toasts() {
     const foot = new MutationObserver(measure);
     foot.observe(document.body, { attributes: true, attributeFilter: ['style'] });
     addEventListener('resize', measure);
+    addEventListener(TOOLBAR_MOVED, measure);
     el.addEventListener('scroll', measure, { passive: true });
     return () => {
       watch.disconnect();
       inside.disconnect();
       foot.disconnect();
       removeEventListener('resize', measure);
+      removeEventListener(TOOLBAR_MOVED, measure);
       el.removeEventListener('scroll', measure);
       root.style.removeProperty('--toast-band');
     };

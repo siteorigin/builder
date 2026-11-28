@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SAYS_DEVELOPER_MODE } from '@engine/developer-mode';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2295,6 +2296,62 @@ describe('tool definitions', () => {
     expect(inspected).toEqual([about.id]);
     const results = env.adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ isError?: boolean }>;
     expect(results.map((r) => !!r.isError)).toEqual([false, true, true, true]);
+  });
+
+  it('offers Settings when the answer says the request needs Developer mode while it is off (#1329)', async () => {
+    const blocked = 'A working calculator needs Developer mode, which is off. You can turn it on in Settings > General.';
+    const off = await setup([() => finish(blocked)], { codeEnabled: false });
+    const before = JSON.stringify(off.session.state);
+    const { result } = await off.run('Add an interactive mortgage calculator');
+    expect(result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // The setting is only offered: the run changed nothing, Developer mode included.
+    expect(JSON.stringify(off.session.state)).toBe(before);
+    // A question answered the same way offers it too.
+    const asked = await setup([() => finish(blocked)], { codeEnabled: false });
+    expect((await asked.run('Can you build a calculator?', { mode: 'ask' })).result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+    // With Developer mode on there is nothing to turn on, and an answer that only mentions it asks for nothing.
+    const on = await setup([() => finish(blocked)], { codeEnabled: true });
+    expect((await on.run('Add an interactive mortgage calculator')).result?.needs).toBeUndefined();
+    const fine = await setup([() => finish('I built the tabs with Developer mode off, from managed parts.')], { codeEnabled: false });
+    expect((await fine.run('Add tabs')).result?.needs).toBeUndefined();
+    // The run is told where the user turns it on, and that it cannot.
+    expect(JSON.stringify(off.adapter.requests[0])).toContain('Settings > General (you cannot)');
+  });
+
+  it('reads whether an answer says the request needs Developer mode, not that it only mentions it (#1329)', () => {
+    for (const said of ['A calculator needs Developer mode.', 'Developer mode is required for this change.', 'This requires **Developer mode**.', 'Custom code requires Developer mode, which is off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(true);
+    for (const said of ['They do not require Developer mode.', 'It doesn’t need Developer mode.', "Developer mode isn't required.", 'No Developer mode is required.', 'No **Developer mode** is required.', 'I built the tabs with Developer mode off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(false);
+  });
+
+  it('offers Settings when a question on the way said the request needs Developer mode, however the run then ends (#1329)', async () => {
+    const env = await setup([() => [call('q1', 'request_clarification', { question: 'A working calculator needs Developer mode, which is off. Build a static version instead?', choices: ['Static version', 'Leave it'] })], () => finish('Left the page as it was.')], { codeEnabled: false });
+    const r = await env.orch.send('Add an interactive calculator', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'Leave it');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect([...env.events].reverse().find((e) => e.message?.result)?.message?.result).toMatchObject({ status: 'no-changes', needs: 'developer-mode' });
+  });
+
+  it('offers nothing once the user took the version without code that a question offered, and it was built (#1329)', async () => {
+    const env = await setup(
+      [
+        () => [call('q1', 'request_clarification', { question: 'A working calculator needs Developer mode, which is off. Build a static version instead?', choices: ['Static version', 'Leave it'] })],
+        () => {
+          const home = env.session.state.pages[env.session.state.site.homePageId];
+          const hero = Object.values(home.nodes).find((n): n is InstanceNode => n.kind === 'instance' && typeof n.props.heading === 'string')!;
+          return [call('w1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: hero.id, prop: 'heading', value: 'Mortgage costs at a glance' }] })];
+        },
+        () => finish('Added a static version of the calculator.')
+      ],
+      { codeEnabled: false }
+    );
+    const r = await env.orch.send('Add an interactive calculator', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'Static version');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    const result = [...env.events].reverse().find((e) => e.message?.result)?.message?.result;
+    expect(result?.status).toBe('completed');
+    expect(result?.needs).toBeUndefined();
   });
 
   it('offers contract operations to a run selected inside a definition, even without Developer mode', async () => {

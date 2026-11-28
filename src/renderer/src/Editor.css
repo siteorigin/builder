@@ -41,7 +41,7 @@
   /* The shared dot's hover is the accent's tint; on the band it takes the mode's, like Done editing. */
   .studio-reset-slot .reset-dot:hover { background: color-mix(in srgb, var(--plum) 16%, transparent); }
 
-  .editor.defining { grid-template-rows: var(--toolbar-h) auto 1fr 28px; }
+  .editor.defining { grid-template-rows: auto auto 1fr 28px; }
   /* While editing a component everywhere, selection, the selected layer and set values use plum, so every
      cue agrees with the band. The page frame stays neutral: only the component is being edited. The canvas colour is
      the light plum in both themes, as --select always is, because it is drawn on the user's page, not the app. */

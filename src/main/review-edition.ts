@@ -60,8 +60,13 @@ export interface ReviewEditionInput {
   beforeCommit?: () => void;
   /** Runs the quick step that puts the edition in place (holding the project's ownership while it runs). */
   commit?: (publish: () => Promise<void>) => Promise<void>;
+  /** Told before each picture is taken (`done` of `total` tried so far, taken or not), and once every picture is in, before the edition is put in place. */
+  onProgress?: (p: ReviewShotProgress) => void;
   now?: () => Date;
 }
+
+/** Where picturing an edition has got to: the picture about to be taken, or every picture taken and the edition being kept. */
+export type ReviewShotProgress = { step: 'shot'; done: number; total: number; page: ReviewPage; width: ReviewWidth } | { step: 'saving'; done: number; total: number };
 
 /** Picture every page at every width and put the edition in place; returns its manifest and folder. */
 export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ manifest: ReviewEditionManifest; dir: string }> {
@@ -72,9 +77,12 @@ export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ m
   await fs.mkdir(join(assembled, 'images'), { recursive: true });
   const siteDigest = await reviewSiteDigest(input.site);
   const captures: ReviewCapture[] = [];
+  const total = input.pages.length * input.widths.length;
   for (const [i, page] of input.pages.entries()) {
-    for (const { width } of input.widths) {
+    for (const w of input.widths) {
+      const { width } = w;
       signal?.throwIfAborted();
+      input.onProgress?.({ step: 'shot', done: captures.length, total, page, width: w });
       const url = new URL(routeUrl(page.route).slice(1), input.server).href;
       const shot: ReviewShot = await input.shoot(url, width).catch((e: unknown) => ({ ok: false as const, reason: 'failed' as const, detail: `The page could not be captured: ${e instanceof Error ? e.message : String(e)}` }));
       signal?.throwIfAborted();
@@ -88,6 +96,8 @@ export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ m
       captures.push({ route: page.route, width, status: 'captured', file, height: shot.height, sha256: sha256(shot.png) });
     }
   }
+  signal?.throwIfAborted();
+  input.onProgress?.({ step: 'saving', done: captures.length, total });
   const body = { siteName: input.siteName, siteDigest, basePath: input.basePath, routes: input.pages.map((p) => ({ ...p })), widths: input.widths.map((w) => ({ ...w })), captures };
   const manifest: ReviewEditionManifest = { editionId, createdAt: createdAt.toISOString(), revision: input.revision, ...body, contentDigest: sha256(reviewDigestInput(body)) };
   await fs.writeFile(join(assembled, REVIEW_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
