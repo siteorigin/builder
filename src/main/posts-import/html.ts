@@ -26,11 +26,13 @@ export interface HtmlReport {
   tables: number;
   /** WordPress shortcodes removed, by name. */
   shortcodes: string[];
+  /** Galleries some of whose pictures were left out: how many each named, and how many of those the export lacks. */
+  galleries: Array<{ pictures: number; missing: number }>;
   /** Links whose address could not be kept (a script, or an address on the old site that is not a post): their words stay. */
   droppedLinks: number;
 }
 
-export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], droppedLinks: 0 });
+export const emptyReport = (): HtmlReport => ({ scripts: 0, embeds: [], embedLinks: 0, forms: 0, tables: 0, shortcodes: [], galleries: [], droppedLinks: 0 });
 
 /** A picture the HTML shows, as written. */
 export interface HtmlImage {
@@ -47,6 +49,16 @@ export interface ReadHtmlOptions {
   autop?: boolean;
   /** WordPress shortcodes: [caption] becomes a captioned picture, [embed] a link, and the rest are removed. */
   shortcodes?: boolean;
+  /** The export's pictures, for a [gallery] shortcode: without it a gallery is removed like any other shortcode. */
+  gallery?: GalleryPictures;
+}
+
+/** The pictures a WordPress export lists, as a [gallery] shortcode names them. */
+export interface GalleryPictures {
+  /** The picture an attachment ID names, or null when the export does not list it. */
+  picture: (id: string) => HtmlImage | null;
+  /** The IDs of the pictures attached to a post, in WordPress's order: `post` null for the post being read. */
+  attached: (post: string | null) => string[];
 }
 
 /** The most elements and runs of text one post may hold. */
@@ -160,7 +172,7 @@ const LONE_SHORTCODES = new Set(['gallery', 'video', 'audio', 'playlist', 'embed
  * every other shortcode is removed (the text it wraps stays) and named in the report. A word in square brackets that
  * is no shortcode ("[sic]") stays as written.
  */
-export function readShortcodes(html: string, report: HtmlReport): string {
+export function readShortcodes(html: string, report: HtmlReport, gallery?: GalleryPictures): string {
   if (!html.includes('[')) return html;
   // Names that close somewhere are shortcodes, as are the usual lone ones and plugin names (with _ or -).
   const closing = new Set([...html.matchAll(/\[\/([a-z][a-z0-9_-]{0,40})\]/gi)].map((m) => m[1].toLowerCase()));
@@ -181,6 +193,7 @@ export function readShortcodes(html: string, report: HtmlReport): string {
     report.embedLinks++;
     return `<p><a href="${url}">${url}</a></p>`;
   });
+  if (gallery) text = text.replace(/\[gallery\b((?:[^\]["']|"[^"\][]{0,2000}"|'[^'\][]{0,2000}'){0,4000})\]/gi, (_m, attrs: string) => galleryFigures(attrs, gallery, report));
   // Attributes never hold a bracket, and each part is either quoted or not, so a shortcode left open is given up on at
   // the next bracket: one pass, whatever the post holds.
   return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,500}"|'[^'\][]{0,500}'){0,2000})\]/gi, (whole, _slash: string, name: string) => {
@@ -189,6 +202,39 @@ export function readShortcodes(html: string, report: HtmlReport): string {
     note(n);
     return '';
   });
+}
+
+/** The most pictures one gallery brings. */
+const MAX_GALLERY_PICTURES = 500;
+
+/** A shortcode attribute's value, quoted or not, or null when it is not given. */
+function shortcodeAttr(attrs: string, name: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"']*))`, 'i').exec(attrs);
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
+}
+
+const attachmentIds = (list: string | null) => (list ?? '').split(',').map((id) => id.trim()).filter((id) => /^\d{1,20}$/.test(id));
+
+const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * A [gallery] as its pictures, one figure after another, as WordPress chose them: the attachments `ids` (or `include`)
+ * names, in that order, or else those attached to the post (`id` names another), less any `exclude` names. A picture
+ * the export does not list is counted in the report.
+ */
+function galleryFigures(attrs: string, gallery: GalleryPictures, report: HtmlReport): string {
+  const named = attachmentIds(shortcodeAttr(attrs, 'ids') ?? shortcodeAttr(attrs, 'include'));
+  const exclude = new Set(attachmentIds(shortcodeAttr(attrs, 'exclude')));
+  const ids = [...new Set(named.length ? named : gallery.attached(attachmentIds(shortcodeAttr(attrs, 'id'))[0] ?? null))].filter((id) => !exclude.has(id)).slice(0, MAX_GALLERY_PICTURES);
+  let missing = 0;
+  let out = '';
+  for (const id of ids) {
+    const pic = gallery.picture(id);
+    if (!pic) missing++;
+    else out += `<figure><img src="${escapeAttr(pic.src)}" alt="${escapeAttr(pic.alt)}"></figure>`;
+  }
+  if (missing || !ids.length) report.galleries.push({ pictures: ids.length, missing });
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +509,7 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
  */
 export function htmlToRichText(html: string, opts: ReadHtmlOptions, report: HtmlReport = emptyReport()): RichText {
   let text = html;
-  if (opts.shortcodes) text = readShortcodes(text, report);
+  if (opts.shortcodes) text = readShortcodes(text, report, opts.gallery);
   if (opts.autop) text = autop(text);
   const tree = convert(parseHtml(text, report), opts, report);
   const { blocks, droppedLinks } = blocksFromDom(tree, {}, { link: opts.link });

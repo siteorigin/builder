@@ -15,6 +15,22 @@ export function reportNotes(r: HtmlReport): string[] {
   if (r.forms) out.push(`Removed ${count(r.forms, 'form', 'forms')}.`);
   if (r.tables) out.push(`${cap(count(r.tables, 'table', 'tables'))} became plain lines of text.`);
   if (r.shortcodes.length) out.push(`Removed the shortcode${r.shortcodes.length === 1 ? '' : 's'} ${r.shortcodes.map((s) => `[${s}]`).join(', ')}.`);
+  const empty = r.galleries.filter((g) => !g.pictures).length;
+  if (empty) out.push(`Left out ${empty === 1 ? 'a gallery' : `${empty} galleries`}: the export lists no pictures for ${empty === 1 ? 'it' : 'them'}.`);
+  const short = r.galleries.filter((g) => g.missing);
+  if (short.length) {
+    const missing = short.reduce((n, g) => n + g.missing, 0);
+    const { pictures, missing: one } = short[0];
+    const what =
+      short.length > 1
+        ? `${missing} pictures of ${short.length} galleries (${short.map((g) => `${g.missing} of ${g.pictures}`).join(', ')})`
+        : one === pictures
+          ? pictures === 1
+            ? 'a gallery’s picture'
+            : `a gallery’s ${pictures} pictures`
+          : `${one} of a gallery’s ${pictures} pictures`;
+    out.push(`Left out ${what}: the export does not include ${missing === 1 ? 'it' : 'them'}. Export All content to bring pictures’ details along.`);
+  }
   if (r.droppedLinks) out.push(`Kept the words of ${count(r.droppedLinks, 'link', 'links')} whose address could not be kept.`);
   return out;
 }

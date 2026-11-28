@@ -88,9 +88,14 @@ describe('reading a WordPress export', () => {
     // A link to another post of the export goes to it, by its key.
     expect(winter.body[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'spring menu', link: { type: 'entry', target: 'post:wp:13' } }]) });
     expect(winter.notes).toEqual(['Removed a script.', 'Left out an embedded frame or player (https://ads.example/banner).', 'Kept an embedded video or post as a link to it.']);
-    expect(text(spring.body)).toEqual(['Our spring menu is here.\nIt has new pastries.', '[m3]', 'Click here for the workshop.']);
+    // Its gallery shows the one of its two pictures the export lists (the featured snow picture) and says the other is missing.
+    expect(text(spring.body)).toEqual(['Our spring menu is here.\nIt has new pastries.', '[m3]', '[m2]', 'Click here for the workshop.']);
     expect(spring.body[1]).toEqual({ type: 'image', assetId: 'm3', alt: 'Rhubarb tart', caption: 'Rhubarb tart' });
-    expect(spring.notes).toEqual(['Removed a script.', 'Removed the shortcode [gallery].', 'Kept the words of a link whose address could not be kept.']);
+    expect(spring.notes).toEqual([
+      'Removed a script.',
+      'Left out 1 of a gallery’s 2 pictures: the export does not include it. Export All content to bring pictures’ details along.',
+      'Kept the words of a link whose address could not be kept.'
+    ]);
     // A draft at the source needs no reason.
     expect(summer.draftReason).toBeUndefined();
     // Pictures: the original of a resized upload, the featured picture, and one not beside the export.
@@ -624,6 +629,70 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     writeFileSync(join(path, '..', 'uploads', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
     const source = await readWordPress(path, {});
     expect(source.media).toEqual([expect.objectContaining({ problem: 'it is an SVG drawing, which is added in Assets rather than with posts' })]);
+  });
+});
+
+describe('reading a WordPress export: galleries (#1513)', () => {
+  const attachment = (id: number, url: string, extra = '') =>
+    `<wp:post_id>${id}</wp:post_id><wp:post_type>attachment</wp:post_type><wp:attachment_url><![CDATA[${url}]]></wp:attachment_url>${extra}`;
+  const alt = (text: string) => `<wp:postmeta><wp:meta_key>_wp_attachment_image_alt</wp:meta_key><wp:meta_value><![CDATA[${text}]]></wp:meta_value></wp:postmeta>`;
+  const published = { title: 'Gallery', 'wp:status': 'publish', 'wp:post_date': '2018-01-02 00:00:00' };
+  const withUploads = (path: string, files: string[]) => {
+    for (const f of files) {
+      mkdirSync(join(path, '..', 'wp-content/uploads/2018/01'), { recursive: true });
+      writeFileSync(join(path, '..', 'wp-content/uploads/2018/01', f), `picture ${f}`);
+    }
+    return path;
+  };
+
+  it('brings a gallery’s pictures into the post, one after another, from the attachments the export lists', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', alt('First "pic" <b>')),
+        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg'),
+        item(1, published, 'Before.\n\n[caption]<img src="https://site.example/wp-content/uploads/2018/01/g2-100.jpg" alt="Solo"> Solo[/caption]\n\n[gallery ids="5000,5001" columns="3"]\n\nAfter.')
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const [post] = source.posts;
+    expect(text(post.body)).toEqual(['Before.', '[m1]', '[m2]', '[m1]', 'After.']);
+    expect(post.body[2]).toEqual({ type: 'image', assetId: 'm2', alt: 'First "pic" <b>' });
+    expect(post.body[3]).toEqual({ type: 'image', assetId: 'm1', alt: '' });
+    expect(source.media.map((m) => m.path)).toEqual([join(path, '..', 'wp-content/uploads/2018/01/g2-100.jpg'), join(path, '..', 'wp-content/uploads/2018/01/g1-100.jpg')]);
+    expect(post.notes).toEqual([]);
+  });
+
+  it('says how many of a gallery’s pictures were left out when the export does not list them', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg'),
+        item(1, published, '[gallery ids="5000, 5002"]\n\n[gallery include="7,8,9"]')
+      ]),
+      ['g1-100.jpg']
+    );
+    const [post] = (await readWordPress(path, {})).posts;
+    expect(text(post.body)).toEqual(['[m1]']);
+    expect(post.notes).toEqual(['Left out 4 pictures of 2 galleries (1 of 2, 3 of 3): the export does not include them. Export All content to bring pictures’ details along.']);
+  });
+
+  it('shows a gallery that names no pictures with the pictures attached to its post, in their order', async () => {
+    const path = withUploads(
+      wxr([
+        attachment(5001, 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>2</wp:menu_order>'),
+        attachment(5000, 'https://site.example/wp-content/uploads/2018/01/g1-100.jpg', '<wp:post_parent>1</wp:post_parent><wp:menu_order>1</wp:menu_order>'),
+        attachment(5003, 'https://site.example/wp-content/uploads/2018/01/other.jpg', '<wp:post_parent>2</wp:post_parent>'),
+        item(1, published, '[gallery]'),
+        item(2, { ...published, title: 'Empty' }, 'Text\n\n[gallery exclude="5003"]')
+      ]),
+      ['g1-100.jpg', 'g2-100.jpg']
+    );
+    const source = await readWordPress(path, {});
+    const [one, two] = source.posts;
+    expect(text(one.body)).toEqual(['[m1]', '[m2]']);
+    expect(source.media.map((m) => m.ref)).toEqual(['https://site.example/wp-content/uploads/2018/01/g1-100.jpg', 'https://site.example/wp-content/uploads/2018/01/g2-100.jpg']);
+    expect(text(two.body)).toEqual(['Text']);
+    expect(two.notes).toEqual(['Left out a gallery: the export lists no pictures for it.']);
   });
 });
 
