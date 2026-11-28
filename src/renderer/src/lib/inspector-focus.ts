@@ -40,30 +40,36 @@ export function focusInspector(ms = 1000): () => void {
 }
 
 /** The recoveries installed now, each told to stand down by `forgetInspectorFocus`. */
-const recoveries = new Set<() => void>();
+const recoveries = new Set<(before?: number) => void>();
+const NAME = '.insp-name h3';
 
 /**
  * When the control that had focus is taken out of the Inspector (a selection change, an undo, a row removed) and
  * nothing else took focus, it goes to the selection's name rather than back to the start of the window. Focus that
- * moved to the canvas, Layers or a dialog is left where it is, and so is a selection the pointer made on the page
- * (`forgetInspectorFocus`): the page is where the author is working then. Returns the cleanup.
+ * moved to the canvas, Layers or a dialog is left where it is, and so is focus a selection the pointer made on the
+ * page set aside (`forgetInspectorFocus`): the page is where the author is working then. Returns the cleanup.
  */
 export function recoverInspectorFocus(panel: HTMLElement): () => void {
   // The Inspector control focus was last on, and only while focus stays in the Inspector: focus that has moved to
   // Layers, the canvas or a menu clears it, so their own handoffs are never overruled.
   let last: Element | null = null;
+  let lastAt = 0;
   let frame = 0;
-  const onIn = (e: FocusEvent) => (last = e.target instanceof Element && panel.contains(e.target) ? e.target : null);
+  const onIn = (e: FocusEvent) => {
+    last = e.target instanceof Element && panel.contains(e.target) ? e.target : null;
+    lastAt = performance.now();
+  };
   const idle = () => !document.activeElement || document.activeElement === document.body;
   const mo = new MutationObserver(() => {
     if (!last || last.isConnected || !idle()) return;
     last = null;
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
-      if (idle()) panel.querySelector<HTMLElement>('.insp-name h3')?.focus();
+      if (idle()) panel.querySelector<HTMLElement>(NAME)?.focus();
     });
   });
-  const forget = () => {
+  const forget = (before?: number) => {
+    if (before !== undefined && lastAt > before) return;
     last = null;
     cancelAnimationFrame(frame);
   };
@@ -79,12 +85,21 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
 }
 
 /**
- * A press of the pointer on the page is making the selection (#1476): the Inspector control focus was on is not
- * brought back to the new selection's name. The click reached only the page's frame, so the editor's window would
- * count that focus as the keyboard's and ring the name; and with focus left on the body, Delete and the other
- * selection keys go on reaching the selection (#1361). Focus that comes to the Inspector afterwards is recovered as
- * before.
+ * A press of the pointer on the page changed the selection (#1476): the Inspector control focus was on is not brought
+ * back to the new selection's name. The click reached only the page's frame, so the editor's window would count that
+ * focus as the keyboard's and ring the name; and with focus left on the body, Delete and the other selection keys go
+ * on reaching the selection (#1361). `before`, for a click taken after a wait, is when it was made: focus that came to
+ * the Inspector since is still recovered.
  */
-export function forgetInspectorFocus(): void {
-  for (const forget of recoveries) forget();
+export function forgetInspectorFocus(before?: number): void {
+  for (const forget of recoveries) forget(before);
+}
+
+/**
+ * The selection's name in the Inspector gives up focus to a press of the pointer on the page (#1476), even one that
+ * leaves the selection as it was: it is only where focus lands, and ringed, it would say the keyboard was there.
+ */
+export function releaseInspectorName(): void {
+  const a = document.activeElement;
+  if (a instanceof HTMLElement && a.matches(`#dock-panel-inspect ${NAME}`)) a.blur();
 }

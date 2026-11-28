@@ -72,6 +72,15 @@ await frame.locator(`[data-so-ctx="page:${home.pageId}"][data-so-node="${home.he
 await eventually(async () => assert.equal(sectionOf(await selected()), home.hero, 'the click selects in the Split hero'));
 assert.deepEqual(await focusAfterPick(), { body: true, ring: false }, 'focus rests on the body after the second pick too');
 
+step('the selection’s name, focused from the Inspector, gives focus up to a click on the page (#1476)');
+await win.keyboard.press('Shift');
+await win.evaluate(() => document.querySelector('#dock-panel-inspect .insp-name h3').focus());
+await frame.locator(`[data-so-ctx="page:${home.pageId}"][data-so-node="${home.hero}"]`).first().getByRole('heading', { name: typed, exact: true }).click();
+assert.deepEqual(await focusAfterPick(), { body: true, ring: false }, 'the name lets focus go, whatever the click selects');
+// The click went one level into the hero; Escape, which the body hands to the selection, comes back out of it.
+if (sectionOf(await selected()) === home.hero && (await selected()).partId) await win.keyboard.press('Escape');
+await eventually(async () => assert.equal((await selected())?.nodeId, home.hero, 'the Split hero is selected again'));
+
 step('selecting the hero and its heading with the Inspector open leaves the editor in its window (#897)');
 await openInspector(win);
 /** The editor document's own scroll position, and how far it reaches past the window. */
