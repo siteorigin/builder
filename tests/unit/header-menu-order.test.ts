@@ -247,16 +247,16 @@ describe('the header menu order setting (#749)', () => {
       expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Lookbook', '  Kitchens', '  Baths']);
     });
 
-    it('still asks for a replacement for the page’s other links, and points only those at it', () => {
+    it('takes the page’s footer item out with it too', () => {
       let s = following();
       s = apply(s, [{ type: 'instance.listInsert', owner: FOOTER, nodeId: menuOf(s, 'footer').id, prop: 'links', item: { label: 'Services', link: { type: 'page', target: 'pg_services' } } }]);
       const review = reviewPageRemoval(s, 'pg_services', pageId(s, 'Contact'));
       expect(review.menu).toEqual(['Services']);
-      expect(review.uses.map((u) => u.where)).toEqual(['Footer']);
-      expect(() => apply(s, [{ type: 'page.remove', pageId: 'pg_services' }])).toThrow(/Choose a replacement page/);
-      s = apply(s, planPageRemoval(s, 'pg_services', pageId(s, 'Contact'), new Map()).operations!);
+      expect(review.footer).toEqual(['Services']);
+      expect(review.uses).toEqual([]);
+      s = apply(s, [{ type: 'page.remove', pageId: 'pg_services' }]);
       expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Lookbook', '  Kitchens', '  Baths']);
-      expect(links(s, 'footer')[0].link).toEqual({ type: 'page', target: pageId(s, 'Contact') });
+      expect(links(s, 'footer').some((l) => l.link.target === 'pg_services')).toBe(false);
     });
 
     it('points Home’s menu link at a new blank Home, which stands in its place in the pages', () => {
@@ -323,17 +323,17 @@ describe('the header menu order setting (#749)', () => {
   });
 
   describe('with its own order', () => {
-    it('leaves the menu alone on a reorder, adds a page at the end, and points a deleted page’s link elsewhere', () => {
+    it('leaves the menu alone on a reorder, adds a page at the end, and takes a deleted page’s item out', () => {
       let s = site();
       const before = rows(s);
       s = apply(s, [reorder(s, ['Services', 'Home', 'About', 'Contact', 'Lookbook', 'Kitchens', 'Baths'])]);
       expect(rows(s)).toEqual(before);
       s = apply(s, [{ type: 'page.create', pageId: 'pg_pricing1', title: 'Pricing', afterPageId: pageId(s, 'Home'), addToNavigation: true }]);
       expect(rows(s).at(-1)).toBe('Pricing');
-      expect(reviewPageRemoval(s, 'pg_services', undefined).menu).toEqual([]);
-      expect(() => apply(s, [{ type: 'page.remove', pageId: 'pg_services' }])).toThrow(/Choose a replacement page/);
-      s = apply(s, [{ type: 'page.remove', pageId: 'pg_services', replacementPageId: pageId(s, 'Contact') }]);
-      expect(links(s).filter((l) => l.link.target === pageId(s, 'Contact')).map((l) => l.label)).toEqual(['Contact', 'Services']);
+      expect(reviewPageRemoval(s, 'pg_services', undefined).menu).toEqual(['Services']);
+      s = apply(s, [{ type: 'page.remove', pageId: 'pg_services' }]);
+      expect(rows(s)).not.toContain('Services');
+      expect(links(s).filter((l) => l.link.target === pageId(s, 'Contact')).map((l) => l.label)).toEqual(['Contact']);
       // A hand move is the author's to make.
       expect(rows(apply(s, [moveRow(s, 'Contact', 0)]))[0]).toBe('Contact');
     });

@@ -7,7 +7,7 @@
  * stays where the author put it, and every submenu stays whole.
  */
 import { isBinding, type InstanceNode, type LinkValue, type ProjectState } from '@shared/types';
-import { headerMenu, isSubItem, menuGroups, shownUnder } from './tree';
+import { headerMenu, isSubItem, menuGroups, shellMenu, shownUnder } from './tree';
 
 export type MenuItem = Record<string, unknown>;
 
@@ -230,7 +230,22 @@ export function followingSlot(state: ProjectState, items: ReadonlyArray<MenuItem
  * nothing changes, when the menu would end up with fewer links than it must hold.
  */
 export function dropHeaderLinks(state: ProjectState, pageId: string, duplicateOf?: string): string[] {
-  const menu = headerMenu(state);
+  return dropMenuLinks(headerMenu(state), pageId, duplicateOf);
+}
+
+/**
+ * Take the links to `pageId` that exist only to reach it out of a shell menu: a header's or footer's plain links to the
+ * page (a link to one of its sections is content, and is pointed at the replacement like any other). A header that
+ * follows the pages drops every link to it, as `dropHeaderLinks` does. Returns the header's and the footer's labels.
+ */
+export function dropOwnMenuLinks(state: ProjectState, pageId: string): { header: string[]; footer: string[] } {
+  return {
+    header: dropMenuLinks(headerMenu(state), pageId, undefined, !followsPageOrder(state)),
+    footer: dropMenuLinks(shellMenu(state, 'footer'), pageId, undefined, true)
+  };
+}
+
+function dropMenuLinks(menu: ReturnType<typeof headerMenu>, pageId: string, duplicateOf?: string, plainOnly = false): string[] {
   const items = menu && menuItems(menu);
   if (!menu || !items) return [];
   const plain = (it: MenuItem, id: string) => {
@@ -242,7 +257,7 @@ export function dropHeaderLinks(state: ProjectState, pageId: string, duplicateOf
   const goes = (it: MenuItem) => {
     const link = it?.link as LinkValue | undefined;
     if (duplicateOf !== undefined) return plain(it, pageId);
-    return !!link && typeof link === 'object' && link.type === 'page' && link.target === pageId;
+    return !!link && typeof link === 'object' && link.type === 'page' && link.target === pageId && (!plainOnly || !link.anchor);
   };
   if (!items.some(goes)) return [];
   const kept = items.filter((it) => !goes(it));

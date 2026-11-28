@@ -2,8 +2,9 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses, type PageLinkUse } from '@engine/page-links';
-import { dropHeaderLinks, followsPageOrder } from '@engine/header-order';
+import { dropHeaderLinks, dropOwnMenuLinks, followsPageOrder, menuItems } from '@engine/header-order';
 import { elementIds, pageIds, planSectionPick } from '@generator/checks';
+import { shellMenu } from '@engine/tree';
 import { SECTION_NODE } from './sections';
 
 /**
@@ -27,8 +28,10 @@ export interface PageRemovalReview {
   uses: PageLinkUse[];
   /** Cards for the page in page lists: they are removed from their lists with the page. */
   cards: PageLinkUse[];
-  /** The header menu's links to the page, by label, taken out of a menu that follows the pages rather than moved. */
+  /** The header menu's items for the page, by label: taken out with the page rather than moved. */
   menu: string[];
+  /** The footer menu's items for the page, by label: taken out with the page rather than moved. */
+  footer: string[];
   /** Sections those links jump to that the replacement page lacks: each needs a section there, or the top. */
   missing: MissingSection[];
 }
@@ -42,10 +45,10 @@ export function reviewPageRemoval(state: ProjectState, pageId: string, replaceme
   // A new blank Home has no sections: every link, the header menu's too, opens its top, with nothing to choose.
   if (replacementId === NEW_HOME) {
     const all = pageLinkUses(state, pageId);
-    return { uses: all.filter((u) => !u.card), cards: all.filter((u) => u.card), menu: [], missing: [] };
+    return { uses: all.filter((u) => !u.card), cards: all.filter((u) => u.card), menu: [], footer: [], missing: [] };
   }
   // A header menu that follows the pages lets go of its links to the page first, as the engine does: they need no replacement.
-  const { view: base, menu } = withoutMenuLinks(state, pageId, replacementId);
+  const { view: base, menu, footer } = withoutMenuLinks(state, pageId, replacementId);
   const all = pageLinkUses(base, pageId);
   const uses = all.filter((u) => !u.card);
   const cards = all.filter((u) => u.card);
@@ -53,17 +56,26 @@ export function reviewPageRemoval(state: ProjectState, pageId: string, replaceme
   const ids = replacementId && Object.hasOwn(view.pages, replacementId) ? pageIds(view, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
   for (const u of uses) if (u.link.anchor && !ids.has(u.link.anchor)) missing.set(u.link.anchor, [...(missing.get(u.link.anchor) ?? []), u]);
-  return { uses, cards, menu, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+  return { uses, cards, menu, footer, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
 }
 
-/** The project once a header menu that follows the pages has let go of its links to the page, and their labels. */
-function withoutMenuLinks(state: ProjectState, pageId: string, replacementId?: PageReplacement): { view: ProjectState; menu: string[] } {
+/** The project once the page's own header and footer menu items have left with it, and their labels. */
+function withoutMenuLinks(state: ProjectState, pageId: string, replacementId?: PageReplacement): { view: ProjectState; menu: string[]; footer: string[] } {
+  const none = { view: state, menu: [], footer: [] };
+  const isHome = pageId === state.site.homePageId;
   // Home's link in a menu with its own order goes too when the page taking Home's place is already in it, as the engine does.
-  const repeat = !followsPageOrder(state) && pageId === state.site.homePageId && typeof replacementId === 'string' && replacementId && Object.hasOwn(state.pages, replacementId) ? replacementId : undefined;
-  if (!followsPageOrder(state) && !repeat) return { view: state, menu: [] };
+  const repeat = !followsPageOrder(state) && isHome && typeof replacementId === 'string' && replacementId && Object.hasOwn(state.pages, replacementId) ? replacementId : undefined;
+  if (isHome && !followsPageOrder(state) && !repeat) return none;
+  // Nothing in either menu links to the page: no copy of the project is needed to look.
+  const linked = (part: 'header' | 'footer') => {
+    const menu = shellMenu(state, part);
+    const items = menu && menuItems(menu);
+    return !!items?.some((it) => (it?.link as { target?: unknown } | undefined)?.target === pageId);
+  };
+  if (!isHome && !linked('header') && !linked('footer')) return none;
   const view = structuredClone(state);
-  const menu = dropHeaderLinks(view, pageId, repeat);
-  return menu.length ? { view, menu } : { view: state, menu: [] };
+  const dropped = isHome ? { header: dropHeaderLinks(view, pageId, repeat), footer: [] as string[] } : dropOwnMenuLinks(view, pageId);
+  return dropped.header.length || dropped.footer.length ? { view, menu: dropped.header, footer: dropped.footer } : none;
 }
 
 /**
@@ -98,7 +110,8 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   // Only Home leaves a new blank Home behind, and it takes every link and kept address with nothing to choose.
   if (replacementId === NEW_HOME) return pageId === state.site.homePageId && Object.hasOwn(state.pages, pageId) ? { operations: [{ type: 'page.remove', pageId, newHome: true }], lost: [] } : none;
   const review = reviewPageRemoval(state, pageId, replacementId);
-  if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
+  // A kept old address of the page needs a replacement to follow to, even when nothing else links to it.
+  if (!review.uses.length && pageId !== state.site.homePageId && !state.site.redirects?.some((r) => r.pageId === pageId)) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
   // Sections are the ones the replacement page still has once the menu's links and the cards are gone, as the engine finds them.
   const base = withoutMenuLinks(state, pageId, replacementId).view;
