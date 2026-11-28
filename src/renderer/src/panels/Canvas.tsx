@@ -67,6 +67,7 @@ import { SpacingHandles } from './SpacingHandles';
 import { QuickInsert } from './QuickInsert';
 import { addPoints, offeredAt, pointLabel, resolvePoint, type AddPoint, type QuickItem } from '../lib/inline-insert';
 import { placeAdds, underHeader, type AddBox } from '../lib/add-place';
+import { headerClip, inHeader, tagPlace } from '../lib/header-clip';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -3342,6 +3343,13 @@ export function Canvas() {
       ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
   // The shared header's boxes as the page shows them now: an edge's Add button keeps off them (see placeAdd).
   const headerBoxes = rects.headers.map(toBox);
+  // The page's own elements are neither outlined nor named on the shared header (#1315): one scrolled under a header
+  // that stays in view shows its outline only where the element shows. The header's own elements are outlined whole.
+  // Told by what the boxes were measured for (a part of a header placement can be a component's in Edit Everywhere),
+  // not what is picked now: until the page measures a new pick, the boxes drawn are still the last one's.
+  const headerOwned = (desc: BridgeDesc | null, ref: ElementRef | null) => (desc ? inHeader(desc.ctx) : ref?.owner.kind === 'shell' && ref.owner.id === 'header');
+  const selHeaders = headerOwned(rectsFor.current.selected, selection) ? [] : headerBoxes;
+  const hovHeaders = headerOwned(rectsFor.current.hovered, hover) ? [] : headerBoxes;
   const placedAdds = placeAdds(
     addButtons.map((b) => ({ ...b, key: b.p.key, side: b.p.side })),
     { width: frameW, height: frameH * z },
@@ -3748,16 +3756,19 @@ export function Canvas() {
                     // room either side (as tall as the visible page) keeps it inside, so it is still shown.
                     const tall = b.height >= 40 && (!textKind(hover) || (b.top < 24 && b.top + b.height + 20 > frameH * z));
                     // Near the page's right edge the name is anchored to the element's right, so the page edge never cuts it.
-                    const side = b.left > frameW - 160 ? (tall ? { left: 'auto', right: 4 } : { left: 'auto', right: 0 }) : tall ? {} : { left: 0 };
-                    const tagAt = { ...side, ...(tall ? (b.top < 0 ? { top: 4 - b.top } : {}) : b.top >= 24 ? { top: -19 } : { top: b.height - 1 }) };
-                    const show = i === 0 && !tagHidden && b.top + b.height > (tall ? 30 : 0);
+                    const right = b.left > frameW - 160;
+                    // Kept off the header too: below it, inside the part of the element that shows, or not shown.
+                    const place = i === 0 && !tagHidden ? tagPlace(b, tall, hovHeaders, right) : null;
+                    const inside = place?.at === 'inside';
+                    const side = right ? (inside ? { left: 'auto', right: 4 } : { left: 'auto', right: 0 }) : inside ? {} : { left: 0 };
+                    const tagAt = { ...side, ...(place?.at === 'inside' ? { top: place.top } : place?.at === 'above' ? { top: -19 } : { top: b.height - 1 }) };
                     return (
-                      <div key={`h${i}`} className="ov-box ov-hover" style={b}>
-                        {show && (
+                      <div key={`h${i}`} className="ov-box ov-hover" style={{ ...b, clipPath: headerClip(hovHeaders, b) }}>
+                        {place && (
                           // Outside its element the name is hoverable (WCAG 1.4.13): the pointer can rest on it without the
                           // hover moving on, and a click there selects what it names, as a click on the element would.
-                          <span className={`ov-label${tall ? '' : b.top >= 24 ? ' outside' : ' outside below'}`} style={tagAt} onClick={
-                              tall
+                          <span className={`ov-label${inside ? '' : place.at === 'above' ? ' outside' : ' outside below'}`} style={tagAt} onClick={
+                              inside
                                 ? undefined
                                 : () => {
                                     overTag.current = false;
@@ -3775,7 +3786,7 @@ export function Canvas() {
                     );
                   })}
                 {revBoxes.map((b, i) => (
-                  <div key={`r${i}`} className="ov-box ov-revealed" style={b} />
+                  <div key={`r${i}`} className="ov-box ov-revealed" style={{ ...b, clipPath: headerClip(selHeaders, b) }} />
                 ))}
                 {/* Placing something new, the selection steps aside: the marks are where it goes, not what is picked. */}
                 {!(insertDrop && !insertDrop.moving) && !imageDrop && selBoxes.map((b, i) => (
@@ -3783,7 +3794,7 @@ export function Canvas() {
                   <div
                     key={i === 0 && arriving ? `s0-${arrival.n}` : `s${i}`}
                     className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && (reorder || insertDrop?.moving) ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}${inkPaged ? ' paged' : ''}`}
-                    style={b}
+                    style={{ ...b, clipPath: headerClip(selHeaders, b) }}
                   />
                 ))}
                 {placedAdds.map(({ p, box, at }) => {
