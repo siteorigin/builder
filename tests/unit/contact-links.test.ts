@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { contactInText, contactMismatch, followText, joinedLines, sameContact, type Contact } from '@shared/contact-links';
 import { createStarterState } from '@catalogue/starters';
@@ -438,7 +438,13 @@ describe('contact links in the shipped theme', () => {
   });
 
   it('reads the pairs of a project’s own code from the item each link shows', () => {
-    const list = (fields: string[]) => ({ type: 'list' as const, label: 'List', itemLabel: 'Item', fields: Object.fromEntries(fields.map((k) => [k, ['link', 'url', 'alt'].includes(k) ? { type: 'link' as const, label: k } : { type: 'string' as const, label: k }])) });
+    const list = (fields: string[]): PropSchema => ({
+      type: 'list',
+      label: 'List',
+      itemLabel: 'Item',
+      default: [],
+      fields: Object.fromEntries(fields.map((k): [string, PropSchema] => [k, ['link', 'url', 'alt'].includes(k) ? { type: 'link', label: k, default: { type: 'none', target: '' } } : { type: 'string', label: k, default: '' }]))
+    }) as PropSchema;
     const code = (properties: ComponentDefinition['properties'], lines: string[]) => ({ ...release().components[details(release()).definitionId], owner: 'project', properties, source: lines.join('\n') }) as ComponentDefinition;
     const def = code({ ways: list(['text', 'link', 'note']), other: list(['text', 'link']), shared: list(['a', 'b', 'url']), groups: list(['title', 'link', 'url']), quoted: list(['text', 'link', 'alt']) }, [
       '<script>const x = `{#each other as way}<SoLink link={way.link}>{way.text}</SoLink>{/each}`;</script>',
@@ -466,5 +472,18 @@ describe('contact links in the shipped theme', () => {
     // Spread attributes can replace the link, so what it opens is not known.
     const spread = code({ items: list(['value', 'link', 'alt']) }, ['{#each items as item}{@const to = { link: item.alt }}<SoLink link={item.link} {...to}>{item.value}</SoLink>{/each}']);
     expect(itemLinkPairs(spread, 'items')).toEqual([]);
+    const hidden = code({ items: list(['value', 'link', 'alt']) }, ['{#each items as item}<SoLink link={item.link} data-debug="{"x"}" {...to}>{item.value}</SoLink>{/each}']);
+    expect(itemLinkPairs(hidden, 'items')).toEqual([]);
+    // Literal text that reads like a block does not close or empty one.
+    const literal = code({ items: list(['value', 'link']), rows: list(['value', 'link']) }, ['{#each items as item}{#each rows as item}{\'{:else}\'}{"{/each}"}<SoLink link={item.link}>{item.value}</SoLink>{/each}{/each}']);
+    expect(itemLinkPairs(literal, 'items')).toEqual([]);
+    expect(itemLinkPairs(literal, 'rows')).toEqual([{ text: 'value', link: 'link' }]);
+    // A name bound again inside the list (destructured, a const, an await's result) is not the outer item.
+    for (const inner of ['{#each rows as { item }}', '{#each rows as [item, i]}', '{#await p}{:then item}', '{#if ok}{@const item = other}', '{#snippet row(item)}'])
+      expect(itemLinkPairs(code({ items: list(['value', 'link']), rows: list(['item']) }, [`{#each items as item}${inner}<SoLink link={item.link}>{item.value}</SoLink>{/${inner.slice(2, inner.search(/[\s}]/))}}{/each}`]), 'items'), inner).toEqual([]);
+    // A long run of spaces in a block's head is read in one pass.
+    const started = performance.now();
+    itemLinkPairs(code({ items: list(['value']) }, [`{#each items${' '.repeat(58000)}as {value}}<p>{value}</p>{/each}`]), 'items');
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });

@@ -166,49 +166,75 @@ const ATTRIBUTE = /\s*([^\s=/>"'{]+)(?:\s*=\s*("[^"]*"|'[^']*'|\{[^{}]*\}|[^\s>"
 /**
  * The links a code component's markup draws for each item of a list, each showing only one field of the item:
  * `{#each items as item}…<SoLink link={item.link} …>{item.value}</SoLink>…{/each}` reads as `{ text: 'value', link:
- * 'link' }`. The item is the one the innermost open `#each` names, as Svelte scopes it: a nested list with the same
- * name hides its parent's, and an `{:else}` (shown when the list is empty) has no item of its own.
+ * 'link' }`. A name means what Svelte scopes it to: the innermost block that binds it (a nested list, a snippet's
+ * parameter, an `{@const}` or an await's result), and an each's `{:else}` (shown when it is empty) binds nothing.
+ * Anything it cannot read for certain pairs nothing, since a wrong pair would move a link its text never showed.
  */
 function codeItemLinks(source: string, listProp: string): Array<{ text: string; link: string }> {
-  const markup = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '').replace(/<!--[\s\S]*?-->/g, '');
+  const markup = source
+    .replace(/(^|\n)[ \t]*<(script|style)\b[^>]*>[\s\S]*?<\/\2>/g, '$1')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // Literal text in braces (`{'{/each}'}`) is not markup.
+    .replace(/\{\s*(['"`])(?:\\[\s\S]|(?!\1)[^\\])*\1\s*\}/g, '{0}');
   const out: Array<{ text: string; link: string }> = [];
   // Every block is kept, so each `{/…}` closes its own; only an `#each` over a property names a list's item.
-  const open: Array<{ list: string | null; item: string | null }> = [];
-  const tokens = /\{#(\w+)\s*([^}]*)\}|\{:else\b[^}]*\}|\{\/\w+\s*\}|<SoLink\b((?:[^>"'{]|"[^"]*"|'[^']*'|\{[^{}]*\})*)>\s*\{([^{}]*)\}\s*<\/SoLink>/g;
+  type Block = { list: string | null; item: string | null; binds: Set<string> };
+  const open: Block[] = [];
+  const names = (code: string) => new Set(code.match(new RegExp(JS_ID, 'g')) ?? []);
+  // A name bound again inside a block is no longer the list's item there.
+  const bind = (block: Block, code: string) =>
+    names(code).forEach((n) => {
+      block.binds.add(n);
+      if (block.item === n) block.item = null;
+    });
+  const tokens = /\{([#:@])(\w+)([^}]*)\}|\{\/\w+\s*\}|<SoLink\b((?:[^>"'{]|"[^"]*"|'[^']*'|\{[^{}]*\})*)>\s*\{([^{}]*)\}\s*<\/SoLink>/g;
   for (const m of markup.matchAll(tokens)) {
-    if (m[1] !== undefined) {
-      const each = m[1] === 'each' ? new RegExp(`^(.*?)\\s+as\\s+(${JS_ID})\\b`, 's').exec(m[2]) : null;
-      const list = each && new RegExp(`^\\s*(${JS_ID})\\s*$`).exec(each[1]);
-      open.push({ list: list?.[1] ?? null, item: each?.[2] ?? null });
-    } else if (m[0].startsWith('{:else')) {
-      // An `{:else if}` of an `#if` keeps its block; an each's `{:else}` shows no item.
-      const top = open.at(-1);
-      if (top?.item) open[open.length - 1] = { list: null, item: null };
-    } else if (m[0].startsWith('{/')) open.pop();
-    else {
-      const text = ITEM_FIELD.exec(m[4]);
-      const link = linkAttribute(m[3]);
+    const [whole, sigil, word, rest] = m;
+    if (sigil === '#') open.push(word === 'each' ? eachBlock(rest, names) : { list: null, item: null, binds: word === 'snippet' ? names(rest.replace(/^\s*[\w$]+/, '')) : new Set() });
+    else if (sigil === ':' && open.length) {
+      const top = open[open.length - 1];
+      if (word === 'else' && top.item) open[open.length - 1] = { list: null, item: null, binds: new Set() };
+      else if (word === 'then' || word === 'catch') bind(top, rest);
+    } else if (sigil === '@' && word === 'const' && open.length) bind(open[open.length - 1], rest.split('=')[0]);
+    else if (whole.startsWith('{/')) open.pop();
+    else if (m[4] !== undefined) {
+      const text = ITEM_FIELD.exec(m[5]);
+      const link = linkAttribute(m[4]);
       if (!text || !link || link[1] !== text[1]) continue;
-      const each = open.findLast((e) => e.item === text[1]);
-      if (each?.list === listProp) out.push({ text: text[2], link: link[2] });
+      const scope = open.findLast((e) => e.binds.has(text[1]));
+      if (scope?.item === text[1] && scope.list === listProp) out.push({ text: text[2], link: link[2] });
     }
   }
   return out;
 }
 
+/** An `{#each list as item, i (key)}` block: the property it repeats and the item's name, or what else it binds. */
+function eachBlock(head: string, names: (code: string) => Set<string>): { list: string | null; item: string | null; binds: Set<string> } {
+  // A plain search, so a long run of spaces costs one pass.
+  const at = head.search(/\sas\s/);
+  if (at < 0) return { list: null, item: null, binds: new Set() };
+  const list = new RegExp(`^\\s*(${JS_ID})\\s*$`).exec(head.slice(0, at));
+  const ctx = head.slice(at + 4);
+  const item = new RegExp(`^\\s*(${JS_ID})\\s*(?:[,(]|$)`).exec(ctx);
+  // A destructured item binds every name in it; the key and index are counted too, which only hides more.
+  return { list: list?.[1] ?? null, item: item?.[1] ?? null, binds: names(ctx) };
+}
+
 /**
  * The `item.field` a SoLink's `link={…}` attribute names, read attribute by attribute so quoted text never counts.
- * None when the tag spreads attributes, which can replace the link.
+ * None when the tag spreads attributes, which can replace the link, or holds anything the reading cannot follow.
  */
 function linkAttribute(attrs: string): RegExpExecArray | null {
+  if (/\{\s*\.\.\./.test(attrs)) return null;
   let found: RegExpExecArray | null = null;
+  let end = 0;
   ATTRIBUTE.lastIndex = 0;
   for (let m = ATTRIBUTE.exec(attrs); m && m[0]; m = ATTRIBUTE.exec(attrs)) {
-    if (m[3] && /^\{\s*\.\.\./.test(m[3])) return null;
+    end = m.index + m[0].length;
     if (m[1] !== 'link') continue;
     found = m[2]?.startsWith('{') ? ITEM_FIELD.exec(m[2].slice(1, -1)) : null;
   }
-  return found;
+  return attrs.slice(end).trim() ? null : found;
 }
 
 /**
