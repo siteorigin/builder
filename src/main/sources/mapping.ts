@@ -7,6 +7,7 @@
 import type { LinkValue, RichText, SourceMapping } from '@shared/types';
 import { readPath } from '@shared/source-paths';
 import { TEXT_LIMITS } from '@shared/text-limits';
+import { isArticleDate } from '@shared/articles';
 import { contentfulRichText, htmlRichText, markdownRichText, plainRichText, type LinkRead } from './richtext';
 import { decodeEntities } from '../posts-import/html';
 import type { FieldKinds, NormalizedRecord, SourceImageRef } from './protocol';
@@ -14,7 +15,8 @@ import type { FieldKinds, NormalizedRecord, SourceImageRef } from './protocol';
 /** A mapping problem, by the record's place in the list and the detail. */
 export class MappingError extends Error {}
 
-const DAY = /^(\d{4}-\d{2}-\d{2})/;
+/** A day, alone or followed by its time (`2026-11-18`, `2026-11-18T13:30:00Z`, `2026-11-18 13:30`). */
+const DAY = /^(\d{4}-\d{2}-\d{2})(?:$|[Tt ]\d{2}:\d{2})/;
 
 /** Text as one line, cut to `max` characters at a word where it can be, and never inside a character. */
 export function oneLine(v: string, max: number): string {
@@ -41,13 +43,19 @@ function text(v: unknown): string | undefined {
   return undefined;
 }
 
-/** A calendar day (YYYY-MM-DD) from a date or a date and time, or undefined. */
+/** A calendar day (YYYY-MM-DD) from a date or a date and time, or undefined. A day the calendar lacks is none. */
 export function calendarDay(v: unknown): string | undefined {
   if (typeof v === 'number' && Number.isFinite(new Date(v).getTime())) return new Date(v).toISOString().slice(0, 10);
   const t = text(v);
   const m = t ? DAY.exec(t.trim()) : null;
-  return m && !Number.isNaN(Date.parse(m[1])) ? m[1] : undefined;
+  return m && isArticleDate(m[1]) ? m[1] : undefined;
 }
+
+/** How a date is said to be written, where one cannot be read. */
+const DATE_WORDS = 'a date written YYYY-MM-DD, such as 2026-11-18';
+
+/** Whether a record has nothing at a path: no value, or only blank text. */
+const absent = (v: unknown): boolean => v === undefined || v === null || (typeof v === 'string' && !v.trim());
 
 /** A web address as a picture's, from the address itself or an object holding one (a CMS's asset). */
 function imageUrl(v: unknown): string | undefined {
@@ -95,7 +103,7 @@ export function richTextOf(v: unknown, format: SourceMapping['bodyFormat'], read
   return plainRichText(t);
 }
 
-const KIND_WORDS: Record<string, string> = { number: 'a number', boolean: 'true or false', date: 'a date', image: 'a picture’s web address', link: 'a web, email or phone address', richtext: 'text' };
+const KIND_WORDS: Record<string, string> = { number: 'a number', boolean: 'true or false', date: DATE_WORDS, image: 'a picture’s web address', link: 'a web, email or phone address', richtext: 'text' };
 
 /** A value as the kind of custom field it is synced into holds it, or undefined when it cannot be. */
 export function fieldValue(v: unknown, kind: string | undefined, read: LinkRead = { dropped: 0 }): unknown {
@@ -154,10 +162,14 @@ export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKi
   const r: NormalizedRecord = { externalId: id.trim(), title: oneLine(plainText(title), 200) };
   const slug = text(at('slug'));
   if (slug?.trim()) r.slug = slug.trim().slice(0, 400);
-  const published = calendarDay(at('publishedAt'));
-  if (published) r.publishedAt = published;
-  const updated = calendarDay(at('updatedAt'));
-  if (updated) r.updatedAt = updated;
+  // A date there that cannot be read is said, never left for the sync's own day to stand in for it.
+  for (const [k, words] of [['publishedAt', 'published date'], ['updatedAt', 'updated date']] as const) {
+    const raw = at(k);
+    if (absent(raw)) continue;
+    const day = calendarDay(raw);
+    if (!day) throw new MappingError(`${where}’s ${words} at ${mapping[k]!.slice(0, 60)} is not ${DATE_WORDS}`);
+    r[k] = day;
+  }
   const draft = at('draft');
   // Anything that says draft, in any of the ways a source writes true, keeps it a draft.
   if (draft !== undefined && draft !== null) r.draft = draft === true || draft === 1 || (typeof draft === 'string' && /^(true|1|yes|draft)$/i.test(draft.trim()));
