@@ -1957,7 +1957,7 @@ export function applyAiEvent(e: AiEvent) {
     const key = s.snapshot?.workspaceKey;
     const still = () => {
       const now = getState();
-      return !!opening && !!now.snapshot && now.snapshot.workspaceKey === key && now.conversation?.id === e.conversationId && now.activeRunId === e.runId && openingInSite(now.snapshot.state, opening);
+      return !!opening && !!now.snapshot && now.snapshot.workspaceKey === key && now.conversation?.id === e.conversationId && now.activeRunId === e.runId && now.runStatus !== 'stopping' && openingInSite(now.snapshot.state, opening);
     };
     if (opening && still()) editorOpener?.(opening, still);
     return;

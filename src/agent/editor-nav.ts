@@ -15,13 +15,14 @@ import { normalizeRoute } from '@shared/routes';
 export const GO_TO =
   /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in\s+(?:a\s+)?new|a\s+new|on\s+(?:a\s+)?(?:click|hover|tap))\b)|\bshow\s+me\b|\b(?:show|display)\s+(?:the\s+)?(?:[\p{L}\p{N}/'’-]+\s+){0,2}?page\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/iu;
 
-const fold = (v: string) => v.normalize('NFKC').trim().toLowerCase();
+/** Folded for comparing, ignoring case; anything not text (a damaged document's) is nothing. */
+const fold = (v: unknown) => (typeof v === 'string' ? v.normalize('NFKC').trim().toLowerCase() : '');
 
 /**
  * Whether `text` names `name` as a whole word or phrase (ignoring case). One Latin letter is a word of the request
  * ("a"), never a name in it; a name in another script is found wherever it is, as those are not written with spaces.
  */
-export function namedIn(text: string): (name: string) => boolean {
+export function namedIn(text: string): (name: unknown) => boolean {
   const words = fold(text);
   return (raw) => {
     const n = fold(raw);
@@ -42,6 +43,14 @@ const HOW_TO = /^\s*(?:how|where)\s+(?:do|can|would|should|could)\s+(?:i|we|you)
 /** Words for a placed section, and for being brought to one ("scroll to the testimonials", "select the hero section"). */
 const SECTION_WORDS = /\bsections?\b/iu;
 const SECTION_VERBS = /\b(?:scroll|jump|skip)\s+(?:down\s+|up\s+|back\s+)?to\b|\b(?:select|highlight|focus\s+on|find)\b/iu;
+/** A request that starts by asking to be brought to something ("Select Testimonials", "Scroll to pricing"). */
+const LEADING_NAV = /^\s*(?:please\s+)?(?:select|highlight|scroll\s+(?:down\s+|up\s+|back\s+)?to|jump\s+to)\b/iu;
+/** What a link or button does for visitors ("make the footer link scroll to Pricing") is an edit, not going there. */
+const VISITOR_BEHAVIOUR = /\b(?:links?|buttons?|anchors?|menu\s+items?|ctas?|clicks?|visitors?)\b/iu;
+/** "show Site styles" and "display the SEO view": a view named right after showing it. */
+const SHOW_VIEW = new RegExp(`\\b(?:show|display)\\s+(?:me\\s+)?(?:the\\s+)?${VIEW_NAMES.source}`, 'iu');
+/** An entry named by its ID. */
+const ENTRY_ID = /\ben_[a-z0-9]{4,32}\b/u;
 /** Words for an entry, when its collection is not named ("open the blog post about pricing"). */
 const ENTRY_WORDS = /\b(?:posts?|blog\s+posts?|articles?|entr(?:y|ies)|collections?|content)\b/iu;
 
@@ -51,16 +60,15 @@ const ENTRY_WORDS = /\b(?:posts?|blog\s+posts?|articles?|entr(?:y|ies)|collectio
  */
 export function asksToOpenInEditor(text: string, state?: ProjectState): boolean {
   if (HOW_TO.test(text)) return false;
-  if (EXPORT_OR_SHARE.test(text)) return true;
-  if (SECTION_VERBS.test(text) && SECTION_WORDS.test(text)) return true;
-  if (/\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(text)) return true;
+  if (EXPORT_OR_SHARE.test(text) || LEADING_NAV.test(text) || SHOW_VIEW.test(text)) return true;
+  if (!VISITOR_BEHAVIOUR.test(text) && ((SECTION_VERBS.test(text) && SECTION_WORDS.test(text)) || /\b(?:scroll|jump)\s+(?:down\s+|up\s+|back\s+)?to\b/iu.test(text))) return true;
   if (!GO_TO.test(text)) return false;
-  if (VIEW_NAMES.test(text) || ENTRY_WORDS.test(text) || SECTION_WORDS.test(text)) return true;
+  if (VIEW_NAMES.test(text) || ENTRY_WORDS.test(text) || SECTION_WORDS.test(text) || ENTRY_ID.test(text)) return true;
   const named = namedIn(text);
   for (const c of Object.values(state?.collections ?? {})) {
     if (!c?.settings) continue;
-    if (named(c.settings.name) || (c.settings.singularName && named(c.settings.singularName))) return true;
-    for (const e of Object.values(c.entries ?? {})) if (typeof e?.title === 'string' && named(e.title)) return true;
+    if (named(c.settings.name) || named(c.settings.singularName)) return true;
+    for (const e of Object.values(c.entries ?? {})) if (named(e?.title)) return true;
   }
   return false;
 }
@@ -71,7 +79,18 @@ export function asksToOpenInEditor(text: string, state?: ProjectState): boolean 
  */
 export function asksToSaveVersion(text: string): boolean {
   if (HOW_TO.test(text)) return false;
-  return /\b(?:save|create|take|make|keep|add)\b[^.?!\n]{0,40}?\b(?:versions?|snapshots?|checkpoints?|restore\s+points?|backups?)\b(?!\s+of\b)/iu.test(text);
+  // A snapshot is always the site's; a version is when it is saved or kept ("save a version"), or named as the site's
+  // ("create a version of the website"). Making a version of something else ("a mobile version") is an edit.
+  return (
+    /\b(?:save|create|take|make|keep|add)\b[^.?!\n]{0,40}?\b(?:snapshots?|checkpoints?|restore\s+points?|backups?)\b/iu.test(text) ||
+    /\b(?:save|keep|take)\b[^.?!\n]{0,40}?\bversions?\b(?!\s+of\b)/iu.test(text) ||
+    /\b(?:save|keep|take|create|make|add)\b[^.?!\n]{0,40}?\bversions?\s+of\s+(?:the\s+|my\s+|this\s+|our\s+)?(?:whole\s+|entire\s+)?(?:web\s*)?(?:site|project)\b/iu.test(text)
+  );
+}
+
+/** "On this page", "here": a section the author asks for is on the page they are on, and only there (#1406). */
+export function asksForThisPage(text: string): boolean {
+  return /\b(?:this|the\s+current|my\s+current)\s+page\b|\bon\s+here\b|\bhere\s*[.?!]?\s*$/iu.test(text);
 }
 
 type Found<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -84,7 +103,7 @@ function collectionsNamed(state: ProjectState, ref: string): Collection[] {
   const all = Object.values(state.collections ?? {}).filter((c) => !!c?.settings);
   const exact = all.filter((c) => c.settings.id === ref);
   if (exact.length) return exact;
-  return all.filter((c) => [c.settings.id, c.settings.name, c.settings.singularName ?? ''].some((n) => n && fold(n) === wanted));
+  return all.filter((c) => [c.settings.id, c.settings.name, c.settings.singularName].some((n) => fold(n) !== '' && fold(n) === wanted));
 }
 
 /**
@@ -111,9 +130,12 @@ export function findEntryToOpen(state: ProjectState, ref: string, collection?: s
     const hit = pick(entries.filter((h) => entryRoute(h.c, h.entry) === route));
     if (hit) return hit;
   }
-  const titled = entries.filter((h) => typeof h.entry.title === 'string' && fold(h.entry.title) === wanted);
-  if (titled.length > 1) return { ok: false, message: `More than one entry is titled "${ref.trim()}": ${list(titled, describe)}. Nothing was opened. Ask the author which one they meant, then open it by its ID.` };
-  const hit = pick(titled) ?? pick(entries.filter((h) => typeof h.entry.slug === 'string' && fold(h.entry.slug) === wanted));
+  const several = (hits: typeof entries, what: string) => ({ ok: false as const, message: `More than one entry has the ${what} "${ref.trim()}": ${list(hits, describe)}. Nothing was opened. Ask the author which one they meant, then open it by its ID.` });
+  const titled = entries.filter((h) => fold(h.entry.title) === wanted);
+  if (titled.length > 1) return several(titled, 'title');
+  const slugged = titled.length ? [] : entries.filter((h) => fold(h.entry.slug) === wanted);
+  if (slugged.length > 1) return several(slugged, 'slug');
+  const hit = pick(titled) ?? pick(slugged);
   if (hit) return hit;
   const where = collection ? `in ${within.map((c) => c.settings.name).join(', ')}` : 'in any collection';
   return { ok: false, message: `No entry ${where} has the ID, address, title or slug "${ref.trim()}". Nothing was opened. Tell the author so; list_collection_entries lists what each collection has.` };
@@ -155,10 +177,10 @@ function sectionsOn(state: ProjectState, pageId: string): PlacedSection[] {
 /**
  * The placed section the author named to go to (#1406): by its node ID, by its name or its component's name (ignoring
  * case, and a trailing "section"), then by every word of what was named. Looked for on `page` when the model names
- * one, else on the page the author was on and, when that has none, on every page (header and footer on the first page
- * that shows them). Several that fit name none of them: the model is told each, with where it is, to ask which.
+ * one, else on the page the author was on and, when that has none (and they did not ask for that page alone,
+ * `onlyShown`), on every page (header and footer on the first page that shows them). Several that fit name none of them: the model is told each, with where it is, to ask which.
  */
-export function findSectionToOpen(state: ProjectState, ref: string, shownPageId: string, page?: { pageId: string }): Found<{ pageId: string; ref: ElementRef }> {
+export function findSectionToOpen(state: ProjectState, ref: string, shownPageId: string, page?: { pageId: string }, onlyShown = false): Found<{ pageId: string; ref: ElementRef }> {
   const order = (state.site.pageOrder ?? []).filter((id) => Object.hasOwn(state.pages, id));
   const shown = Object.hasOwn(state.pages, shownPageId) ? shownPageId : state.site.homePageId;
   const wanted = fold(ref)
@@ -170,7 +192,7 @@ export function findSectionToOpen(state: ProjectState, ref: string, shownPageId:
     const exact = all.filter((s) => fold(s.name) === wanted || (s.component && fold(s.component) === wanted));
     if (exact.length) return exact;
     const words = wanted.split(/\s+/).filter(Boolean);
-    return words.length ? all.filter((s) => words.every((w) => `${fold(s.name)} ${fold(s.component)}`.includes(w))) : [];
+    return words.length ? all.filter((s) => words.every((w) => `${fold(s.name)} ${fold(s.component)} ${fold(s.where)}`.includes(w))) : [];
   };
   const pick = (hits: PlacedSection[]): Found<{ pageId: string; ref: ElementRef }> | null => {
     // The header or footer found on several pages is one section: it opens on the first of them.
@@ -186,6 +208,8 @@ export function findSectionToOpen(state: ProjectState, ref: string, shownPageId:
   const here = sectionsOn(state, shown);
   const local = pick(match(here));
   if (local) return local;
+  // Asked for on this page: one elsewhere is not what was asked for.
+  if (onlyShown) return { ok: false, message: `No section on the page the author is on, ${state.pages[shown]?.title ?? 'Home'}, fits "${ref.trim()}". Its sections are ${list(here, (s) => `"${s.name}" (${s.ref.nodeId})`) || 'none'}. Nothing was opened: tell the author so.` };
   const everywhere = pick(match(order.flatMap((id) => sectionsOn(state, id))));
   if (everywhere) return everywhere;
   return { ok: false, message: `No section in the site fits "${ref.trim()}". The page the author is on, ${state.pages[shown]?.title ?? 'Home'}, has ${list(here, (s) => `"${s.name}" (${s.ref.nodeId})`) || 'no sections'}. Nothing was opened: tell the author so.` };

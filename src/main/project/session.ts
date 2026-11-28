@@ -4929,18 +4929,21 @@ export class ProjectSession extends EventEmitter {
    * nothing can: its documents are then the author's own, settled, and the version holds no provisional work. A
    * version is no change to the site, so the run keeps the project and may go on to change it.
    */
-  saveVersionForRun(runId: string, name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+  saveVersionForRun(runId: string, name: string, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run || run.id !== runId) return { ok: false, message: 'This request no longer holds the project.' };
       if (this.runChanged() || this.revision !== run.startRevision) return { ok: false, message: 'This request has already changed the site, so a version saved now would hold its unfinished changes. Nothing was saved: the author can save it from History, Versions, once this request finishes.' };
       const blocked = await this.writeBlocked();
-      return this.storeVersion(name, blocked ? (blocked.error?.message ?? LOCK_UNCHECKED) : this.versions.problem);
+      return this.storeVersion(name, blocked ? (blocked.error?.message ?? LOCK_UNCHECKED) : this.versions.problem, stopped);
     });
   }
 
-  /** saveVersion's work, run inside serialize once `why` (what stops a version being saved now, if anything) is known. */
-  private async storeVersion(name: string, why: string | null): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
+  /**
+   * saveVersion's work, run inside serialize once `why` (what stops a version being saved now, if anything) is known.
+   * `stopped`: the request that asked was stopped meanwhile, so the version it captured is never listed.
+   */
+  private async storeVersion(name: string, why: string | null, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }> {
     why ??= await this.pendingVersionBlocks();
     if (why) return { ok: false, message: why };
     const clean = name.replace(/\s+/g, ' ').trim();
@@ -4957,6 +4960,7 @@ export class ProjectSession extends EventEmitter {
       const late = await this.unloadedEdit(new Set());
       if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
       if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+      if (stopped?.()) return { ok: false, message: 'Canceled' };
       v = await this.versions.add(v);
     } catch (e) {
       return { ok: false, message: (e as Error).message };

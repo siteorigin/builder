@@ -800,7 +800,16 @@ describe('an entry, a section or an editor view the author asked Chat to open (#
     store.applyAiEvent(event({ ...entry, entryId: 'en_gone' }));
     store.applyAiEvent(event({ ...section, ref: { ...section.ref, nodeId: 'n_gone' } } as EditorOpening));
     store.applyAiEvent(event({ ...section, pageId: 'pg_gone' } as EditorOpening));
+    // The shared footer, on a page that has stopped showing it.
+    const footer = state.site.shell.footer.rootIds[0];
+    const hidden = structuredClone(state);
+    hidden.pages[home.id].showFooter = false;
+    store.setState({ snapshot: { state: hidden, workspaceKey: 'w1' } } as Partial<ChatState>);
+    store.applyAiEvent(event({ kind: 'section', pageId: home.id, ref: { owner: { kind: 'shell', id: 'footer' }, instancePath: [], nodeId: footer } }));
     expect(opened).toEqual([]);
+    store.setState({ snapshot: { state, workspaceKey: 'w1' } } as Partial<ChatState>);
+    store.applyAiEvent(event({ kind: 'section', pageId: home.id, ref: { owner: { kind: 'shell', id: 'footer' }, instancePath: [], nodeId: footer } }));
+    expect(opened).toHaveLength(1);
   });
 
   it('stops holding once the author moves on while the opening waits (another thread, the request ended, another project)', () => {
@@ -814,5 +823,10 @@ describe('an entry, a section or an editor view the author asked Chat to open (#
     expect(still()).toBe(false);
     store.setState({ activeRunId: 'r1', snapshot: { state, workspaceKey: 'w2' } } as Partial<ChatState>);
     expect(still()).toBe(false);
+    // Stop pressed: the request still names itself the active one while it stops, and opens nothing more.
+    store.setState({ snapshot: { state, workspaceKey: 'w1' }, runStatus: 'stopping' } as Partial<ChatState>);
+    expect(still()).toBe(false);
+    store.setState({ runStatus: 'running' } as Partial<ChatState>);
+    expect(still()).toBe(true);
   });
 });

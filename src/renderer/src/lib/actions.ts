@@ -20,7 +20,7 @@ import { postAt, postWorkspace } from './posts';
 import { withTypedSeo, type TypedSeo } from './seo-preview';
 import type { SeoSubject } from '@shared/seo';
 import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
-import { flushOpenPost, savePostIfOpen } from './post-draft';
+import { flushOpenPost, saveOpenPost, savePostIfOpen } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { COPYRIGHT_PROP, keptCopyrightYear, shownCopyright } from '@shared/site-name';
@@ -1635,15 +1635,13 @@ export function openSeoViewFrom(subject: SeoSubject, place: SeoSettingsPlace): b
  * to bring that picture of its text into view, as Show in Assets does. False when the post open now has text that
  * could not be saved, which keeps it open.
  */
-export async function openPost(collectionId: string, entryId: string, picture?: number, still?: () => boolean): Promise<boolean> {
+export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<boolean> {
   const s = getState();
   // Never over text the open post could not save: it stays, with its note above the text.
   if (s.post?.entryId !== entryId && !(await flushOpenPost())) {
     toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
     return false;
   }
-  // Asked for by something that may have moved on while the open post saved (Chat, #1406): only if it still holds.
-  if (still && !still()) return false;
   setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
   return true;
 }
@@ -1659,10 +1657,13 @@ export function revealSection(pageId: string, ref: ElementRef) {
 
 /**
  * Open what the author asked Chat to open (#1406), as the editor's own control for it does. `still` says whether the
- * request is still the one to follow; an entry checks it again once the post open now has saved its text.
+ * request is still the one to follow; an entry checks it again once the entry open now has saved what it holds. A
+ * dialog the author has open (a draft in it, a choice half made) is never closed or replaced: Chat says what it could
+ * not open instead.
  */
 export function openFromChat(opening: EditorOpening, still: () => boolean) {
-  if (opening.kind === 'entry') return void openPost(opening.collectionId, opening.entryId, undefined, still);
+  if (getState().modal) return toast(`Close the open dialog to see ${chatOpeningName(opening)}.`, 'info');
+  if (opening.kind === 'entry') return void openEntryFromChat(opening, still);
   if (opening.kind === 'section') return revealSection(opening.pageId, opening.ref);
   switch (opening.view) {
     case 'site_styles':
@@ -1694,3 +1695,22 @@ export function openFromChat(opening: EditorOpening, still: () => boolean) {
   }
 }
 setEditorOpener(openFromChat);
+
+/** What Chat was opening, for a notice that it could not. */
+function chatOpeningName(o: EditorOpening): string {
+  if (o.kind === 'entry') return 'the entry Chat opened';
+  if (o.kind === 'section') return 'the section Chat found';
+  return o.view === 'export' ? 'Export' : o.view === 'share' ? 'Share' : 'what Chat opened';
+}
+
+/**
+ * An entry Chat opens in Content's writer: as the Content panel opens one, everything the entry open now holds is
+ * saved first (its fields as well as its text, #675), and it stays when something could not be. Asked for again once
+ * that save is done, the request may have moved on, or a dialog been opened meanwhile.
+ */
+async function openEntryFromChat(o: Extract<EditorOpening, { kind: 'entry' }>, still: () => boolean) {
+  const saved = getState().post?.entryId === o.entryId || (await saveOpenPost());
+  if (!still() || getState().modal) return;
+  if (!saved) return toast('The entry you are writing has a change that is not saved yet, so Chat could not open another. See the note beside it.', 'error');
+  setState({ leftTab: 'posts', post: { collectionId: o.collectionId, entryId: o.entryId }, postView: 'write', postReveal: null });
+}

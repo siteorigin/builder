@@ -1148,6 +1148,8 @@ export interface ToolHost {
   saveVersion?(name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>;
   /** The page the editor showed when the request was sent, for a section open_in_editor looks for (#1406). */
   shownPageId?(): string;
+  /** Whether the request asks for a section on that page alone ("on this page"), never one elsewhere. */
+  onlyShownPage?(): boolean;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
@@ -1190,7 +1192,7 @@ function runOpenInEditor(a: z.infer<(typeof TOOL_ARGS)['open_in_editor']>, state
     const page = a.page ? findPageToOpen(state, a.page) : null;
     if (page && !page.ok) return toolError('INVALID_ARGUMENT', page.message);
     const shown = host.shownPageId?.() ?? state.site.homePageId;
-    const found = findSectionToOpen(state, a.target, shown, page?.ok ? { pageId: page.pageId } : undefined);
+    const found = findSectionToOpen(state, a.target, shown, page?.ok ? { pageId: page.pageId } : undefined, !page && !!host.onlyShownPage?.());
     if (!found.ok) return toolError('INVALID_ARGUMENT', found.message);
     const tree = found.value.ref.owner.kind === 'page' ? state.pages[found.value.ref.owner.id] : state.site.shell[found.value.ref.owner.id as 'header' | 'footer'];
     const node = tree.nodes[found.value.ref.nodeId];

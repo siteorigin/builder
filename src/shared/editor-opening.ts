@@ -1,5 +1,6 @@
 import type { EditorOpening } from './api';
 import type { ProjectState } from './types';
+import { pageShowing } from './page-shell';
 
 /**
  * Whether what the assistant opens in the editor (#1406) is still in the site `state` holds: an entry, or a section's
@@ -10,7 +11,8 @@ export function openingInSite(state: ProjectState, opening: EditorOpening): bool
   if (opening.kind === 'section') {
     if (!Object.hasOwn(state.pages, opening.pageId)) return false;
     const owner = opening.ref.owner;
-    const tree = owner.kind === 'page' ? (Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id] : undefined) : owner.kind === 'shell' && (owner.id === 'header' || owner.id === 'footer') ? state.site.shell[owner.id] : undefined;
+    // A shared part shows on its page only while that page shows it.
+    const tree = owner.kind === 'page' ? (Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id] : undefined) : owner.kind === 'shell' && (owner.id === 'header' || owner.id === 'footer') && pageShowing(state, owner.id, opening.pageId) === opening.pageId ? state.site.shell[owner.id] : undefined;
     return !!tree && Object.hasOwn(tree.nodes, opening.ref.nodeId);
   }
   return true;

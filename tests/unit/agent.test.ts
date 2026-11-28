@@ -558,7 +558,7 @@ describe('opening entries, sections and editor views, and saving versions, from 
           { type: 'collection.create', collectionId: 'properties', name: 'Properties', singularName: 'Property', kind: 'structured' },
           { type: 'entry.create', collectionId: 'properties', entryId: 'en_bastide01', title: 'Bastide de Lourmarin' },
           { type: 'entry.create', collectionId: 'properties', entryId: 'en_mas0001', title: 'Mas des Oliviers' },
-          { type: 'collection.create', collectionId: 'journal', name: 'Journal' },
+          { type: 'collection.create', collectionId: 'journal', name: 'Field notes' },
           { type: 'entry.create', collectionId: 'journal', entryId: 'en_mas0002', title: 'Mas des Oliviers' }
         ] as EditOperation[]
       },
@@ -605,15 +605,27 @@ describe('opening entries, sections and editor views, and saving versions, from 
     expect(lastResult(adapter, 2).note).toMatch(/Nothing was exported/);
     expect(openings(events)).toEqual([{ kind: 'view', view: 'export' }]);
     expect(session.versionsInfo().list.map((v) => v.name)).toEqual(['Before spring launch']);
-    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
+    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false, versionsSaved: ['Before spring launch'] });
+    expect(result?.checks).toContainEqual({ status: 'pass', text: 'Saved the version "Before spring launch" (History, Versions).' });
     expect(session.revision).toBe(revision);
     expect(session.historyInfo().entries).toHaveLength(0);
   });
 
   it('saves a version asked for twice in one request once', async () => {
-    const { session, run } = await setup([() => [call('v1', 'save_version', { name: 'Launch' })], () => [call('v2', 'save_version', { name: ' launch ' })], () => finish('Saved.')]);
+    const { session, run, adapter } = await setup([() => [call('v1', 'save_version', { name: 'Launch' })], () => [call('v2', 'save_version', { name: ' launch ' })], () => finish('Saved.')]);
     await run('Save a version called Launch');
     expect(session.versionsInfo().list).toHaveLength(1);
+    const [first, second] = [lastResult(adapter, 1), lastResult(adapter, 2)];
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toMatchObject({ ok: true, saved: { id: first.saved.id } });
+  });
+
+  it('says a version it saved was kept when the request fails after it', async () => {
+    const { session, run } = await setup([() => [call('v', 'save_version', { name: 'Kept' })], () => [{ type: 'error', code: 'server', message: 'The provider failed.' }]]);
+    const { result } = await run('Save a version called Kept, then add a Services page');
+    expect(result?.status).toBe('failed');
+    expect(result?.versionsSaved).toEqual(['Kept']);
+    expect(session.versionsInfo().list.map((v) => v.name)).toEqual(['Kept']);
   });
 
   it('refuses to save a version once the request has changed the site, and keeps the change', async () => {
@@ -648,16 +660,16 @@ describe('opening entries, sections and editor views, and saving versions, from 
     await withEntries(session);
     await run('Open Mas des Oliviers', { mode: 'ask' });
     const message = lastResult(adapter, 1).error.message;
-    expect(message).toMatch(/More than one entry is titled "Mas des Oliviers"/);
+    expect(message).toMatch(/More than one entry has the title "Mas des Oliviers"/);
     expect(message).toContain('in Properties');
-    expect(message).toContain('in Journal');
+    expect(message).toContain('in Field notes');
     expect(openings(events)).toEqual([]);
   });
 
   it('opens an entry its collection narrows down, and says when no entry matches', async () => {
-    const { session, run, adapter, events } = await setup([() => [call('a', 'open_in_editor', { view: 'entry', target: 'mas des oliviers', collection: 'Journal' })], () => [call('b', 'open_in_editor', { view: 'entry', target: 'Château Nowhere' })], () => finish('Done.')]);
+    const { session, run, adapter, events } = await setup([() => [call('a', 'open_in_editor', { view: 'entry', target: 'mas des oliviers', collection: 'field Notes' })], () => [call('b', 'open_in_editor', { view: 'entry', target: 'Château Nowhere' })], () => finish('Done.')]);
     await withEntries(session);
-    await run('Open the journal entry Mas des Oliviers, then Château Nowhere', { mode: 'ask' });
+    await run('Open the field notes entry Mas des Oliviers, then Château Nowhere', { mode: 'ask' });
     expect(openings(events)).toEqual([{ kind: 'entry', collectionId: 'journal', entryId: 'en_mas0002' }]);
     expect(lastResult(adapter, 2).error.message).toMatch(/No entry in any collection has the ID, address, title or slug "Château Nowhere"/);
   });
@@ -718,6 +730,16 @@ describe('opening entries, sections and editor views, and saving versions, from 
     expect(session.activeRun?.id).toBe('r1');
   });
 
+  it('keeps a section asked for on this page to that page, and says it has none', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'section', target: aboutCta(session).name })], () => finish('Contact has none.')]);
+    session = s;
+    const contact = Object.values(session.state.pages).find((p) => p.title === 'Contact')!;
+    await run(`Scroll to the ${aboutCta(session).name} section on this page`, { mode: 'ask', pageId: contact.id, pageTitle: 'Contact' });
+    expect(lastResult(adapter, 1).error.message).toMatch(/No section on the page the author is on, Contact,/);
+    expect(openings(events)).toEqual([]);
+  });
+
   it('refuses arguments a view does not take', async () => {
     const { run, adapter, events } = await setup([() => [call('nav', 'open_in_editor', { view: 'settings', target: 'Billing' })], () => finish('Done.')]);
     await run('Open Settings', { mode: 'ask' });
@@ -747,11 +769,15 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
     'Open the blog post about pricing',
     'Scroll to the testimonials',
     'Select the hero section',
-    'go to Versions'
+    'go to Versions',
+    'Show Site Styles',
+    'Select Testimonials',
+    'Open en_bastide01',
+    'Open the hero section'
   ])('hears "%s" as opening something in the editor', (text) => {
     expect(asksToOpenInEditor(text, state)).toBe(true);
   });
-  it.each(['Change the SEO title of the About page', 'Add a Share button to the footer', 'How do I export my website?', 'Make the hero bigger', 'Make the settings link open in a new tab', 'Write a section about our history'])('hears "%s" as no request to open anything', (text) => {
+  it.each(['Change the SEO title of the About page', 'Add a Share button to the footer', 'How do I export my website?', 'Make the hero bigger', 'Make the settings link open in a new tab', 'Write a section about our history', 'Make the footer link scroll to Pricing', 'Make the button jump to the contact form'])('hears "%s" as no request to open anything', (text) => {
     expect(asksToOpenInEditor(text, state)).toBe(false);
   });
   it('hears an entry by its title, and a collection by what one entry is called', () => {
@@ -761,10 +787,16 @@ describe('asksToOpenInEditor and asksToSaveVersion (#1406)', () => {
     expect(asksToOpenInEditor('open the property', named)).toBe(true);
     expect(asksToOpenInEditor('pull up the weather', named)).toBe(false);
   });
-  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version'])('hears "%s" as saving a version', (text) => {
+  it('reads a damaged collection without failing the request', () => {
+    const damaged = structuredClone(state);
+    damaged.collections = { odd: { settings: { id: 'odd', name: 7, singularName: { x: 1 } }, entries: { en_x: { id: 'en_x', title: null } } } } as never;
+    expect(() => asksToOpenInEditor('open Pricing', damaged)).not.toThrow();
+    expect(asksToOpenInEditor('pull up Pricing', damaged)).toBe(false);
+  });
+  it.each(['Save a version snapshot called Before spring launch and export my website', 'take a snapshot', 'Create a checkpoint named v1', 'save a version', 'Save a version of the site called Launch', 'Create a version of the website named Draft 2'])('hears "%s" as saving a version', (text) => {
     expect(asksToSaveVersion(text)).toBe(true);
   });
-  it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions'])('hears "%s" as no request to save one', (text) => {
+  it.each(['Make a version of the hero in blue', 'How do I save a version?', 'Save the changes to the About page', 'open Versions', 'Make a mobile version called Compact'])('hears "%s" as no request to save one', (text) => {
     expect(asksToSaveVersion(text)).toBe(false);
   });
 });

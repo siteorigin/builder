@@ -792,6 +792,8 @@ export interface ChatMessage {
     /** The same checks with their status; `validation` is their text. */
     checks?: ChatCheck[];
     canUndo: boolean;
+    /** Versions of the site the request saved when the author asked (#1406), by name: kept however it ended, and no change to Undo. */
+    versionsSaved?: string[];
     error?: string;
     /** The run's tokens in all, and each answered model turn's in order: null where the provider did not report them. */
     usage?: TokenUsage & { turns?: Array<TokenUsage | null> };

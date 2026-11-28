@@ -22,7 +22,7 @@ import { describeOps, InspectionLog, pagesTouched, type Viewport } from './repor
 import { narrowedInspection } from './layout-targets';
 import { BRIEF_RUN_LABEL, briefOnly, briefWriteIntent, updateBriefTool, withoutBriefAsks } from './brief-tools';
 import type { BriefWriteGrant } from '@shared/brief';
-import { asksToOpenInEditor, asksToSaveVersion } from './editor-nav';
+import { asksForThisPage, asksToOpenInEditor, asksToSaveVersion } from './editor-nav';
 import { openingInSite } from '@shared/editor-opening';
 import { asksForCollection, asksForComponent, asksForHistory, asksForPerformance, asksForPreview, asksForSource, asksToOpenPage, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type EditorTools, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
@@ -156,7 +156,7 @@ export interface RunSession {
    */
   stepHistoryForRun?(runId: string, direction: 'undo' | 'redo', steps: number): Promise<{ ok: boolean; revision: number; label?: string; error?: ToolError }>;
   /** Save a named version for the run, which the author asked for (#1406): only while the run has changed nothing. */
-  saveVersionForRun?(runId: string, name: string): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>;
+  saveVersionForRun?(runId: string, name: string, stopped?: () => boolean): Promise<{ ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>;
   /** `undoLabel` and `redoLabel`: what Undo and Redo would step now, as History names it. */
   historyInfo(): TurnHistory & { undoLabel?: string; redoLabel?: string };
 }
@@ -795,7 +795,7 @@ const OPEN_EDITOR_GUIDANCE =
 
 /** Saving a named version the author asked for (#1406): no change to the site, and nothing to undo. */
 const SAVE_VERSION_GUIDANCE =
-  '\n\nWhen the author asks to save a version or snapshot of the site, call save_version with the name they gave, before any change this request makes, and once it succeeds say it was saved under that name. If they gave no name, ask for one. Never say a version was saved unless save_version succeeded.';
+  '\n\nWhen the author asks to save a version or snapshot of the site, call save_version with the name they gave, and once it succeeds say it was saved under that name. If they gave no name, ask for one. It saves the site as it is before this request changes anything: when they ask for it before their changes, or with none, save it first. When they ask for it after changes this request makes ("then save a version"), do not call it: make the changes, then tell them to save the version from History, Versions, once they are done. Never say a version was saved unless save_version succeeded.';
 
 /** Going to a page the author asked for (#1357): it moves the editor, never the site, and only when asked. */
 const OPEN_PAGE_GUIDANCE =
@@ -1703,6 +1703,8 @@ export class Orchestrator {
     /** The run's span, from here to its result (scripts/perf: the ai scenario). */
     const perf = this.deps.perf?.on ? this.deps.perf : null;
     const endRun = perf ? perf.span('ai.run', { mode: run.mode }) : NO_SPAN;
+    /** The versions this request saved (#1406), by name: the same one asked for twice is saved once. */
+    const savedVersions = new Map<string, { ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>();
     const finish = async (status: RunStatus, summary: string, extra: Partial<NonNullable<ChatMessage['result']>> = {}) => {
       endRun({ status });
       if (!drafts.reverted && drafts.applied.length) {
@@ -1712,7 +1714,9 @@ export class Orchestrator {
         drafts.applied = [];
       }
       const sourceDrafts = [...drafts.rejected, ...drafts.applied];
-      const checks = [...(extra.checks ?? []), ...drafts.lost.map((text): ChatCheck => ({ status: 'issue', text }))];
+      // A version the request saved stays however the run ends, and the card says so (#1406).
+      const versionsSaved = [...savedVersions.values()].map((v) => v.name).filter((n): n is string => !!n);
+      const checks = [...(extra.checks ?? []), ...drafts.lost.map((text): ChatCheck => ({ status: 'issue', text })), ...versionsSaved.map((n): ChatCheck => ({ status: 'pass', text: `Saved the version "${n}" (History, Versions).` }))];
       // A turn its model never answered (stopped before a reply, refused, never delivered) still says which model it
       // was for, and that it went unanswered: that model may not have its messages, so the next one still warns.
       if (!run.reached && msg.model) msg.model.unanswered = true;
@@ -1723,6 +1727,7 @@ export class Orchestrator {
         validation: checks.map((c) => c.text),
         ...(checks.length ? { checks } : {}),
         canUndo: !!extra.canUndo,
+        ...(versionsSaved.length ? { versionsSaved } : {}),
         error: extra.error,
         usage: extra.usage,
         ...(extra.incomplete ? { incomplete: true } : {}),
@@ -1911,8 +1916,6 @@ export class Orchestrator {
     let briefShown = !delegation;
     /** The History step this request took, when the author asked it to undo or redo (#1405): its one change. */
     let stepped: { direction: 'undo' | 'redo'; steps: number; label?: string } | null = null;
-    /** The versions this request saved (#1406), by name: the same one asked for twice is saved once. */
-    const savedVersions = new Map<string, { ok: boolean; message?: string; id?: string; name?: string; missing?: string[] }>();
     /**
      * The editor's own controls (#1405), for the author's own requests: a guest's request never moves the host's view
      * or History. Undo and Redo only for a request that may change the site, from a session that can run them.
@@ -2311,6 +2314,7 @@ export class Orchestrator {
       diagnostics: () => (ask ? startDiagnostics : projectDiagnostics()),
       ...(editor.preview ? { controlPreview: (settings: PreviewControlSettings) => this.deps.controlPreview!(settings, signal) } : {}),
       // The page on screen when the request was sent, for a section it asks to go to; never the model's to read (#1406).
+      onlyShownPage: () => asksForThisPage(userMsg.text),
       shownPageId: () => (typeof ctx?.shownPageId === 'string' && Object.hasOwn(readState().pages, ctx.shownPageId) ? ctx.shownPageId : (ctx?.pageId ?? readState().site.homePageId)),
       ...(versionAsked && !delegation && !ask && session.saveVersionForRun
         ? {
@@ -2319,7 +2323,7 @@ export class Orchestrator {
               const key = name.replace(/\s+/g, ' ').trim().toLowerCase();
               const earlier = savedVersions.get(key);
               if (earlier) return { ...earlier };
-              const r = await session.saveVersionForRun!(runId, name);
+              const r = await session.saveVersionForRun!(runId, name, () => signal.aborted);
               if (r.ok) savedVersions.set(key, r);
               return r;
             }
