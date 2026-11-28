@@ -2320,7 +2320,7 @@ describe('tool definitions', () => {
 
   it('reads whether an answer says the request needs Developer mode, not that it only mentions it (#1329)', () => {
     for (const said of ['A calculator needs Developer mode.', 'Developer mode is required for this change.', 'This requires **Developer mode**.', 'Custom code requires Developer mode, which is off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(true);
-    for (const said of ['They do not require Developer mode.', 'It doesn’t need Developer mode.', "Developer mode isn't required.", 'No Developer mode is required.', 'I built the tabs with Developer mode off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(false);
+    for (const said of ['They do not require Developer mode.', 'It doesn’t need Developer mode.', "Developer mode isn't required.", 'No Developer mode is required.', 'No **Developer mode** is required.', 'I built the tabs with Developer mode off.']) expect(SAYS_DEVELOPER_MODE.test(said), said).toBe(false);
   });
 
   it('offers Settings when a question on the way said the request needs Developer mode, however the run then ends (#1329)', async () => {

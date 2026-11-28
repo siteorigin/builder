@@ -327,7 +327,7 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await page.evaluate('so.blocked()');
     const turn = page.locator('[data-message-id="m_live"]');
     const offer = turn.locator('.developer-mode-offer');
-    await expect.poll(() => offer.innerText()).toContain('Turn it on in Settings › General');
+    await expect.poll(() => offer.innerText()).toContain('Turn it on in Settings › General, then ask again for what needs code.');
     // Earlier turns offer nothing.
     expect(await page.locator('.developer-mode-offer').count()).toBe(1);
     await offer.getByRole('button', { name: 'Open Settings' }).click();
@@ -338,7 +338,7 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Unsent words');
     // Once it is on, the turn says to ask again instead.
     await page.evaluate('so.developerMode()');
-    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Send the request again as an edit for the AI');
+    await expect.poll(() => offer.innerText()).toContain('Developer mode is on now. Ask again, as an edit, for what needs code.');
     expect(await offer.getByRole('button').count()).toBe(0);
   });
 
@@ -346,7 +346,7 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     const question = 'A working calculator needs Developer mode, which is off. Build a static version instead?';
     await page.evaluate(([q]) => (globalThis as unknown as { so: { ask(t: string, g?: string): void } }).so.ask(q), [question]);
     const offer = page.locator('.question-card .developer-mode-offer');
-    await expect.poll(() => offer.innerText()).toContain('then send the request again once this one finishes');
+    await expect.poll(() => offer.innerText()).toContain('then ask again for what needs code once this request finishes');
     await offer.getByRole('button', { name: 'Open Settings' }).click();
     expect(await page.evaluate('so.modal()')).toEqual({ kind: 'settings', tab: 'general', focus: 'developer-mode' });
     // Once it is on, a request that started without it has nothing more to say.

@@ -2160,8 +2160,9 @@ const openDeveloperMode = () => setState({ modal: { kind: 'settings', tab: 'gene
 
 /**
  * Where Developer mode is turned on, under a turn (or the user's own waiting question) that said the request needs it
- * while it is off (#1329). Turning it on stays the user's to do in Settings; once it is on, a finished turn says to send
- * the request again, as an edit when it was a question. A request still waiting started without it, so says no more.
+ * while it is off (#1329). Turning it on stays the user's to do in Settings; once it is on, a finished turn says to ask
+ * again for what needs code (only that: what the turn kept stays), as an edit when it was a question. A request still
+ * waiting started without it, so says no more.
  */
 function DeveloperModeOffer({ question = false, waiting = false }: { question?: boolean; waiting?: boolean }) {
   const devMode = useStore((s) => !!s.settings?.developerMode);
@@ -2170,10 +2171,10 @@ function DeveloperModeOffer({ question = false, waiting = false }: { question?: 
     <div className="scope-note developer-mode-offer" role="note">
       <Info aria-hidden="true" />
       {devMode ? (
-        <span>Developer mode is on now. Send the request again{question ? ' as an edit' : ''} for the AI to write it in code.</span>
+        <span>Developer mode is on now. Ask again{question ? ', as an edit,' : ''} for what needs code.</span>
       ) : (
         <span>
-          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then send the request again{waiting ? ' once this one finishes' : ''}.{' '}
+          Custom code needs Developer mode, which is off. Turn it on in Settings › General, then ask again for what needs code{waiting ? ' once this request finishes' : ''}.{' '}
           <button className="link" onClick={openDeveloperMode}>
             Open Settings
           </button>
