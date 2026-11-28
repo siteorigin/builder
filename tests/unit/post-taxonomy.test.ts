@@ -4,7 +4,8 @@
  * in one change, and deleted from every post it was on, refused while a list of posts chooses it.
  */
 import { describe, expect, it } from 'vitest';
-import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
+import { queryEntries } from '@shared/collection-query';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -240,6 +241,44 @@ describe('renaming a term', () => {
     // Filed under the old ID first, the post moves with the rest.
     const t = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_wheel', terms: { categories: ['news'] } }, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' });
     expect(t.collections.posts.entries.en_wheel.terms.categories).toEqual(['studio-updates']);
+  });
+
+  /** A collection loop on Home over the posts `where` keeps, and the IDs of the posts it lists. */
+  const withLoop = (s: ProjectState, where: Array<Record<string, unknown>>) => {
+    const r = applyOperations(s, [{ type: 'node.insert', owner: page(s.site.homePageId), parentId: null, primitive: 'repeat', query: { collectionId: 'posts', where } }]);
+    return { s: r.state, loop: r.results[0].nodeId as string };
+  };
+  const loopQuery = (s: ProjectState, loop: string) => (s.pages[s.site.homePageId].nodes[loop] as RepeatNode).list as { $query: { where: Array<{ value: unknown }> } };
+  const loopLists = (s: ProjectState, loop: string) => queryEntries(s, loopQuery(s, loop).$query).map((e) => e.id).sort();
+
+  it('a collection loop filtering by the term follows it (#1523)', () => {
+    const { s, loop } = withLoop(blog(), [{ field: 'categories', op: 'eq', value: 'news' }]);
+    const before = loopLists(s, loop);
+    expect(before).toEqual(['en_glaze', 'en_kiln']);
+    const r = applyOperations(s, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(r.results[0]).toMatchObject({ termId: 'studio-updates', feeds: 1 });
+    expect(loopQuery(r.state, loop).$query.where[0].value).toBe('studio-updates');
+    expect(loopLists(r.state, loop)).toEqual(before);
+  });
+
+  it('a loop naming the term by its label, among others, follows it and keeps the others (#1523)', () => {
+    const { s, loop } = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['NEWS', 'craft'] }]);
+    const before = loopLists(s, loop);
+    const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' });
+    expect(loopQuery(after, loop).$query.where[0].value).toEqual(['studio-updates', 'craft']);
+    expect(loopLists(after, loop)).toEqual(before);
+    // A loop filtering by a tag is left alone by a category's rename, and follows its own tag.
+    const tagged = withLoop(after, [{ field: 'terms.tags', op: 'ne', value: 'Glaze' }]);
+    const renamed = run(tagged.s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'tags', termId: 'glaze', label: 'Glazes' });
+    expect(loopQuery(renamed, tagged.loop).$query.where[0].value).toBe('glazes');
+    expect(loopLists(renamed, tagged.loop)).toEqual(loopLists(tagged.s, tagged.loop));
+  });
+
+  it('a loop filtering by the term keeps listing it when only its name changes (#1523)', () => {
+    const { s, loop } = withLoop(blog(), [{ field: 'categories', op: 'eq', value: 'News' }]);
+    const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Latest news', newTermId: 'news' });
+    expect(loopQuery(after, loop).$query.where[0].value).toBe('news');
+    expect(loopLists(after, loop)).toEqual(['en_glaze', 'en_kiln']);
   });
 });
 
