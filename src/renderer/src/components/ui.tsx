@@ -2006,7 +2006,7 @@ export function Toasts() {
       const notices = [...el.querySelectorAll<HTMLElement>('.toast')];
       root.style.setProperty('--toast-band', notices.length && box.height ? `${Math.ceil(innerHeight - box.top + 16)}px` : '0px');
       // The room the notices have: below the toolbar, and while a dialog is open, below the least of it a dialog keeps
-      // (its 240px floor under the 11vh it starts at), so a crowded stack never reaches a dialog's controls.
+      // (its 240px floor, centred between its margins), so a crowded stack never reaches a dialog's controls.
       const bottom = parseFloat(getComputedStyle(el).getPropertyValue('--notices-bottom')) || 40;
       const toolbar = parseFloat(getComputedStyle(root).getPropertyValue('--toolbar-h')) || 52;
       let room = innerHeight - bottom - toolbar - 16;
