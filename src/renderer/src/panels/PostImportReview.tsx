@@ -167,7 +167,7 @@ function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks'
         {links.map((l) => (
           <li key={l.url}>
             <b>{l.url}</b> · {plural(l.posts, 'post', 'posts')}
-            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under it is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
+            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post ${/\/tag\/[^/]+\/$/.test(l.to) ? 'with that tag' : 'filed under that category'} is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
           </li>
         ))}
       </ul>

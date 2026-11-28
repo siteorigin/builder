@@ -76,6 +76,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   redirects: 0,
   redirectsPending: 0,
   searchSettings: 0,
+  archiveRedirects: { kept: 0, pending: 0, lost: [] },
   skipped: [],
   oldSiteLinks: [],
   problems: [],
@@ -217,6 +218,21 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   it('says nothing of drafts when every old address works now (#1501)', async () => {
     await mount(site, preview(true, { redirects: 1 }));
     await page.getByText(/^1 keeps working$/).waitFor();
+  });
+
+  it('issue 1512: counts the old category and tag addresses with the posts’ own', async () => {
+    await mount(
+      site,
+      preview(true, {
+        site: 'https://old.example',
+        redirects: 2,
+        redirectsPending: 1,
+        archiveRedirects: { kept: 3, pending: 1, lost: [] },
+        oldSiteLinks: [{ url: 'https://old.example/tag/legumes/', posts: 1, to: '/blog/tag/legumes/', pending: true }]
+      })
+    );
+    await page.getByText(/^3 keep working · 2 once their posts are published$/).waitFor();
+    expect(await page.getByTestId('post-import-old-links').locator('li').allTextContents()).toEqual(['https://old.example/tag/legumes/ · 1 post · sends visitors to /blog/tag/legumes/ once a post with that tag is published']);
   });
 
   it('says when no old address can be kept (#1501)', async () => {

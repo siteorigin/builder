@@ -198,7 +198,7 @@ describe('a collection’s index and category archives', () => {
 
   it('splits the index into pages of the page size, newest first, with Previous and Next between them', () => {
     const s = sized(2);
-    const pages = archivePages(publishedState(s)).filter((p) => !p.category);
+    const pages = archivePages(publishedState(s)).filter((p) => !p.term);
     expect(pages.map((p) => [p.route, p.entryIds])).toEqual([
       ['/blog/', ['en_kiln', 'en_glaze']],
       ['/blog/page/2/', ['en_open', 'en_wheel']],
@@ -246,7 +246,7 @@ describe('a collection’s index and category archives', () => {
     expect(files.has(route('/blog/category/events/'))).toBe(false);
     // Turned off, the collection has its index alone.
     const off = run(s, { type: 'collection.update', collectionId: 'posts', termArchives: false } as EditOperation);
-    expect(archivePages(publishedState(off)).filter((p) => p.category)).toEqual([]);
+    expect(archivePages(publishedState(off)).filter((p) => p.term)).toEqual([]);
     expect(generateProject(publishedState(off)).get(route('/blog/'))).not.toContain('/blog/category/');
   });
 
@@ -396,7 +396,7 @@ describe('the addresses archives use', () => {
     pg.route = '/blog/page/3/';
     s.pages[pg.id] = pg;
     s.site.pageOrder.push(pg.id);
-    const index = archivePages(s).filter((p) => !p.category);
+    const index = archivePages(s).filter((p) => !p.term);
     expect(index.map((p) => p.route)).toEqual(['/blog/', '/blog/page/2/']);
     expect(index[1].next).toBeUndefined();
   });
@@ -519,7 +519,7 @@ describe('after the review', () => {
     s.collections.child.entries = {};
     const pages = archivePages(s);
     expect(pages.filter((p) => p.route === '/blog/category/news/').map((p) => p.collectionId)).toEqual(['child']);
-    expect(pages.some((p) => p.collectionId === 'posts' && p.category === 'news')).toBe(false);
+    expect(pages.some((p) => p.collectionId === 'posts' && p.term?.id === 'news')).toBe(false);
   });
 
   it('refuses to number a duplicate inside an archive folder, rather than trying forever', () => {
@@ -676,7 +676,7 @@ describe('after the focused review', () => {
     s.pages[pg.id] = pg;
     s.site.pageOrder.push(pg.id);
     const live = publishedState(s);
-    const routes = (st: ProjectState) => archivePages(st).filter((p) => !p.category).map((p) => p.route);
+    const routes = (st: ProjectState) => archivePages(st).filter((p) => !p.term).map((p) => p.route);
     expect(routes(s)).toEqual(['/blog/', '/blog/page/2/', '/blog/page/3/']);
     expect(routes(live)).toEqual(routes(s));
     // The archive page is what the website and the preview have there, and the export does not count it as the draft's.
@@ -777,7 +777,7 @@ describe('after the last review', () => {
   it('gives an old address leading nowhere no hold on an archive page, with or without drafts', () => {
     const s = structuredClone(sized());
     s.site.redirects = [{ from: '/blog/page/2/', pageId: 'pg_gone' }];
-    const index = (st: ProjectState) => archivePages(st).filter((p) => !p.category).map((p) => p.route);
+    const index = (st: ProjectState) => archivePages(st).filter((p) => !p.term).map((p) => p.route);
     expect(index(s)).toEqual(['/blog/', '/blog/page/2/', '/blog/page/3/']);
     expect(index(publishedState(s))).toEqual(index(s));
   });
