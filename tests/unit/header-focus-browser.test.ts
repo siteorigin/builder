@@ -2,7 +2,8 @@
  * Focus under Foundation's sticky site header (#1544), in a real headless browser: the showcase's exported header and
  * page, mounted with the theme's stylesheets. A browser leaves an element it counts as on screen where it is, even
  * when the header covers it, so what takes keyboard focus has to come to rest below the header: walking back through
- * a page with Shift+Tab never leaves the focused element under it. The header's own links never move the page.
+ * a page with Shift+Tab never leaves the focused element under it. The header's own links never move the page,
+ * its notice comes into view while its link has focus, and a dialog's content takes no margin.
  */
 import { existsSync } from 'node:fs';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -46,6 +47,9 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
       const noticed = sitePage(files, 'pricing');
       noticed.set('src/routes/+page.svelte', noticed.get('src/routes/+page.svelte')!.replace('notice={""}', 'notice={"Now booking."}').replace('noticeLabel={""}', 'noticeLabel={"See dates"}').replace('noticeLink={null}', 'noticeLink={{"href":"/contact/"}}'));
       sites.set(`${theme}/notice`, { script: await bundle(noticed, noticed), css });
+      const long = new Map(noticed);
+      long.set('src/routes/+page.svelte', long.get('src/routes/+page.svelte')!.replace('Now booking.', 'Now booking kitchens, studios, shops, offices and whole homes for the spring and summer, with a first visit at no charge.'));
+      sites.set(`${theme}/long-notice`, { script: await bundle(long, long), css });
     }
     browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
   }, 180_000);
@@ -83,25 +87,30 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
   const frames = (page: Page) => page.evaluate(`new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))`);
 
   /** Shift+Tab from the end of the page up to the header: how many stops there were, and those the header covers. */
-  async function walkBack(page: Page): Promise<{ stops: number; covered: string[] }> {
+  async function walkBack(page: Page): Promise<{ stops: number; reachedHeader: boolean; covered: string[] }> {
     await page.evaluate(`(() => { const end = document.createElement('button'); end.id = 'end'; document.body.append(end); end.focus(); })()`);
     const covered: string[] = [];
-    let stops = 0;
-    while (stops < 400) {
+    const seen = new Set<number>();
+    let reachedHeader = false;
+    for (let press = 0; press < 400 && !reachedHeader; press++) {
       await page.keyboard.press('Shift+Tab');
       await frames(page);
       const at = (await page.evaluate(`(() => {
         const el = document.activeElement;
-        if (!el || el === document.body || el.closest('.so-header, .so-skip-link')) return null;
+        if (!el || el === document.body) return null;
+        if (el.closest('.so-header, .so-skip-link')) return 'header';
+        window.stops ??= [];
+        if (!window.stops.includes(el)) window.stops.push(el);
         const box = el.getBoundingClientRect();
         const header = document.querySelector('.so-header').getBoundingClientRect().bottom;
-        return { name: el.tagName + ' ' + (el.textContent || el.getAttribute('name') || '').trim().slice(0, 40), top: box.top, height: box.height, header, room: innerHeight - header };
-      })()`)) as { name: string; top: number; height: number; header: number; room: number } | null;
-      if (!at) break;
-      stops++;
+        return { id: window.stops.indexOf(el), name: el.tagName + ' ' + (el.textContent || el.getAttribute('name') || '').trim().slice(0, 40), top: box.top, height: box.height, header, room: innerHeight - header };
+      })()`)) as { id: number; name: string; top: number; height: number; header: number; room: number } | 'header' | null;
+      reachedHeader = at === 'header';
+      if (!at || at === 'header') continue;
+      seen.add(at.id);
       if (at.height <= at.room && at.top < at.header - 0.5) covered.push(`${at.name} at ${Math.round(at.top)}, header ends at ${Math.round(at.header)}`);
     }
-    return { stops, covered };
+    return { stops: seen.size, reachedHeader, covered };
   }
 
   describe.each(THEMES)('%s', (theme) => {
@@ -112,8 +121,10 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
     ])('walking back through %s at %ipx never leaves focus under the header', async (route, width) => {
       const page = await open(theme, route, width);
       try {
-        const { stops, covered } = await walkBack(page);
-        expect(stops).toBeGreaterThan(8);
+        const { stops, reachedHeader, covered } = await walkBack(page);
+        // More controls than the footer's links alone, and on up to the header.
+        expect(stops).toBeGreaterThan(14);
+        expect(reachedHeader).toBe(true);
         expect(covered).toEqual([]);
       } finally {
         await page.close();
@@ -144,8 +155,12 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
         await page.keyboard.press('Shift+Tab');
         await frames(page);
         expect(await page.evaluate(`document.activeElement === target`)).toBe(true);
-        const [top, header] = (await page.evaluate(`[target.getBoundingClientRect().top, document.querySelector('.so-header').getBoundingClientRect().bottom]`)) as number[];
+        const [top, header, bottom] = (await page.evaluate(`[target.getBoundingClientRect().top, document.querySelector('.so-header').getBoundingClientRect().bottom, target.getBoundingClientRect().bottom]`)) as number[];
         expect(top).toBeGreaterThanOrEqual(header);
+        expect(bottom).toBeLessThanOrEqual(800);
+        // The margin is whatever height the header publishes and 1rem, not one header's height.
+        await page.evaluate(`document.documentElement.style.setProperty('--so-header-offset', '200px')`);
+        expect(await page.evaluate(`getComputedStyle(target).scrollMarginTop`)).toBe('216px');
       } finally {
         await page.close();
       }
@@ -160,8 +175,9 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
           second.focus({ preventScroll: true });
           scrollTo({ top: first.getBoundingClientRect().top + scrollY - 20, behavior: 'instant' });
         })()`);
+        expect(await page.evaluate(`target.getBoundingClientRect().top < document.querySelector('.so-header').getBoundingClientRect().bottom && getComputedStyle(document.documentElement).scrollBehavior`)).toBe('smooth');
         await page.keyboard.press('Shift+Tab');
-        await expect.poll(() => page.evaluate(`document.activeElement === target && target.getBoundingClientRect().top >= document.querySelector('.so-header').getBoundingClientRect().bottom`)).toBe(true);
+        await expect.poll(() => page.evaluate(`document.activeElement === target && target.getBoundingClientRect().top >= document.querySelector('.so-header').getBoundingClientRect().bottom`), { timeout: 5_000 }).toBe(true);
       } finally {
         await page.close();
       }
@@ -181,23 +197,52 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
       }
     });
 
-    it('shows the notice’s link when Shift+Tab reaches it on a scrolled page, without moving the page', async () => {
-      const page = await open(theme, 'notice', 1280);
+    it.each([
+      ['notice', 1280, 800],
+      ['long-notice', 320, 240]
+    ])('shows the link of a %s when Shift+Tab reaches it on a scrolled page (%ix%i), then pins the header again', async (route, width, height) => {
+      const page = await open(theme, route, width);
       try {
+        await page.setViewportSize({ width, height });
+        await frames(page);
         await page.evaluate(`scrollTo(0, 900)`);
-        await page.evaluate(`document.querySelector('.so-header__brand').focus()`);
+        await page.evaluate(`document.querySelector('.so-header__brand').focus({ preventScroll: true })`);
         await page.keyboard.press('Shift+Tab');
         await frames(page);
-        const at = () => page.evaluate(`[document.activeElement.matches('.so-header__notice-action'), document.querySelector('.so-header__notice-link').getBoundingClientRect().top, scrollY]`) as Promise<[boolean, number, number]>;
-        const [onLink, top, y] = await at();
+        const [onLink, top, bottom] = (await page.evaluate(`(() => {
+          const words = document.querySelector('.so-header__notice-link').getClientRects();
+          return [document.activeElement.matches('.so-header__notice-action'), words[0].top, words[words.length - 1].bottom];
+        })()`)) as [boolean, number, number];
         expect(onLink).toBe(true);
         expect(top).toBeGreaterThanOrEqual(0);
-        // The link's box reaches the band's edges, a fraction past the header's own top, so allow that.
-        expect(Math.abs(y - 900)).toBeLessThanOrEqual(1);
-        // On to the brand, and the notice is away again above the window.
+        expect(bottom).toBeLessThanOrEqual(height);
+        // A resize meanwhile publishes no height; focus moving on publishes the pinned header's again.
+        await page.setViewportSize({ width, height: height + 1 });
+        await expect.poll(() => page.evaluate(`document.documentElement.style.getPropertyValue('--so-header-offset')`)).toBe('0px');
         await page.keyboard.press('Tab');
         await frames(page);
+        await page.evaluate(`scrollTo(0, 900)`);
+        await frames(page);
+        expect(await page.evaluate(`getComputedStyle(document.querySelector('.so-header')).position`)).toBe('sticky');
         expect(await page.evaluate(`document.querySelector('.so-header__notice').getBoundingClientRect().bottom`)).toBeLessThanOrEqual(1);
+        // A header taller than a short window's upper half publishes nothing, which is right there too.
+        const published = () => page.evaluate(`parseFloat(document.documentElement.style.getPropertyValue('--so-header-offset'))`);
+        if (height > 400) await expect.poll(published).toBeGreaterThan(0);
+      } finally {
+        await page.close();
+      }
+    });
+
+    it('gives a dialog’s content no margin, so its own panel never scrolls for a header that cannot cover it', async () => {
+      const page = await open(theme, 'pricing', 1280);
+      try {
+        await page.evaluate(`(() => {
+          const dialog = document.body.appendChild(document.createElement('dialog'));
+          dialog.innerHTML = '<button>One</button><button>Two</button>';
+          dialog.showModal();
+          dialog.lastChild.focus();
+        })()`);
+        expect(await page.evaluate(`getComputedStyle(document.activeElement).scrollMarginTop`)).toBe('0px');
       } finally {
         await page.close();
       }
@@ -216,11 +261,13 @@ describe.skipIf(!browserInstalled)('Focus under the sticky site header', () => {
           await page.keyboard.press('Enter');
           await frames(page);
         }
+        await page.evaluate(`window.stops = new Set()`);
         for (let i = 0; i < 4; i++) {
           await page.keyboard.press('Tab');
           await frames(page);
           expect(await page.evaluate(`Boolean(document.activeElement.closest('.so-header'))`)).toBe(true);
           expect(await page.evaluate(`scrollY`)).toBe(900);
+          expect(await page.evaluate(`window.stops.add(document.activeElement).size`)).toBe(i + 1);
         }
       } finally {
         await page.close();
