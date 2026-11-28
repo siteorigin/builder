@@ -253,12 +253,21 @@ describe('the milestone of an export (#1156)', () => {
   it.each<[string, (dir: string) => void]>([
     ['replaced', (dir) => writeFileSync(join(dir, 'README.md'), '# Changed meanwhile\n')],
     ['removed', (dir) => rmSync(join(dir, 'README.md'))],
-    ['added', (dir) => writeFileSync(join(dir, 'NOTICE.md'), 'Added meanwhile\n')]
+    ['added', (dir) => writeFileSync(join(dir, 'NOTICE.md'), 'Added meanwhile\n')],
+    // The developer's own setup files and tests, which a snapshot holds too (#1484).
+    ['replaced (tsconfig.json)', (dir) => writeFileSync(join(dir, 'tsconfig.json'), '{"changed":true}\n')],
+    ['added (wrangler.toml)', (dir) => writeFileSync(join(dir, 'wrangler.toml'), 'name = "bookshop"\n')],
+    ['replaced (a test)', (dir) => writeFileSync(join(dir, 'tests/api.test.js'), '// changed meanwhile\n')],
+    ['removed (a test)', (dir) => rmSync(join(dir, 'tests/api.test.js'))],
+    ['added (a test)', (dir) => writeFileSync(join(dir, 'tests/e2e/new.spec.js'), '// added meanwhile\n')]
   ])('stops a source export whose setup file was %s while its milestone was saved', async (_, change) => {
     git.enabled = true;
     const dir = await project('Bookshop', 'Approved');
-    // The README a new project is made with.
+    // The README a new project is made with, and setup files and tests of the developer's own.
     writeFileSync(join(dir, 'README.md'), '# Bookshop\n');
+    writeFileSync(join(dir, 'tsconfig.json'), '{}\n');
+    mkdirSync(join(dir, 'tests/e2e'), { recursive: true });
+    writeFileSync(join(dir, 'tests/api.test.js'), '// a test\n');
     const c = await open(dir);
     const capture = ProjectSession.prototype.captureExported;
     vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {

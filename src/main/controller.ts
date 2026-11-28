@@ -143,7 +143,10 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
     const bytes = await read(join(dest, rel));
     if (bytes ? sha(bytes) !== hash : !existsSync(join(dir, rel))) return false;
   }
-  for (const e of await fs.readdir(dest, { withFileTypes: true })) if (e.isFile() && !covered(e.name) && !files.has(e.name) && !docs.has(e.name) && snapshotPlace(e.name).kind === 'tree') return false;
+  // The project's top and its tests (#1484): the folders a snapshot takes that the fingerprint doesn't cover.
+  const tests = (await listFiles(join(dest, 'tests'))).map((f) => `tests/${f.split(sep).join('/')}`);
+  const added = [...(await fs.readdir(dest, { withFileTypes: true })).filter((e) => e.isFile()).map((e) => e.name), ...tests];
+  for (const rel of added) if (!covered(rel) && !files.has(rel) && !docs.has(rel) && snapshotPlace(rel).kind === 'tree') return false;
   return true;
 }
 

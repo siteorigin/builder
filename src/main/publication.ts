@@ -9,7 +9,7 @@
  * canonical documents are then replaced by the published state's own: drafts left out, every collection detached
  * from its source (its entries are the site's own, as synced), no brief and no sources, the library as it ships. The
  * tree is the snapshot allowlist's (snapshotPlace) over that copy, so what a saved version never holds a publication
- * never holds either. Every text file of it is searched for the user's secrets and for addresses that carry a
+ * never holds either, less the developer's own setup files and tests (developerOnly), which build no part of the website. Every text file of it is searched for the user's secrets and for addresses that carry a
  * password or token before anything is written.
  *
  * Its history is its own: the first publication is a root commit and each one after it follows the last, never a
@@ -30,7 +30,7 @@ import { redirectHost } from '@generator/host-redirects';
 import { holdsSecret } from './sources/sync';
 import { withoutCodeMarkers } from './codecheck';
 import { GIT_LIMITS, GitError, PUBLISH_BRANCH, PUBLISH_EMAIL, type GitRepository, type Identity, type Oid } from './git/protocol';
-import { snapshotPlace } from './project/snapshot-inventory';
+import { developerOnly, snapshotPlace } from './project/snapshot-inventory';
 import { CUSTOM_SOURCE_RE, isCanonicalPath, MANIFEST_FILE, stateToDocs } from './project/documents';
 import { readIfExists, sha } from './project/fsutil';
 import { sameContent } from './project/session';
@@ -60,6 +60,9 @@ import {
 
 /** The publication's history in the versions repository: a branch of its own, never one with a saved version in it. */
 export { PUBLISH_BRANCH };
+
+/** Whether a publication carries the project file at `rel`: what a snapshot holds, but the developer's own setup files and tests. */
+const carried = (rel: string) => snapshotPlace(rel).kind === 'tree' && !developerOnly(rel);
 
 /** Who a publication's commit is by: the app, at the time it was made, in UTC, so it carries nothing of the computer. */
 export const publicationIdentity = (now = Date.now()): Identity => ({ name: 'SiteOrigin Builder', email: PUBLISH_EMAIL, timestamp: Math.floor(now / 1000), timezoneOffset: 0 });
@@ -300,7 +303,7 @@ async function buildInputProblem(dir: string, staged: readonly string[]): Promis
       if (!spec.startsWith('./') && !spec.startsWith('../')) continue;
       const base = spec.split('/').reduce<string[]>((parts, part) => (part === '..' ? parts.slice(0, -1) : part === '.' || !part ? parts : [...parts, part]), []).join('/');
       const found = MODULE_ENDINGS.map((end) => base + end).find((rel) => have.has(rel));
-      if (found && snapshotPlace(found).kind !== 'tree') return `${config} loads ${found}, which a publication does not carry. Move it into src/, then prepare the publication again.`;
+      if (found && !carried(found)) return `${config} loads ${found}, which a publication does not carry. Move it into src/, then prepare the publication again.`;
     }
   }
   return null;
@@ -340,7 +343,7 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   const staged = await stagedFiles(dir);
   const input = await buildInputProblem(dir, staged);
   if (input) return stop(input);
-  for (const rel of staged) if (snapshotPlace(rel).kind !== 'tree' || EDITOR_COPY.test(rel.slice(rel.lastIndexOf('/') + 1))) await fs.rm(join(dir, rel), { force: true });
+  for (const rel of staged) if (!carried(rel) || EDITOR_COPY.test(rel.slice(rel.lastIndexOf('/') + 1))) await fs.rm(join(dir, rel), { force: true });
   if (await documentsUnread(dir, state)) return stop('The project changed on disk while the publication was being prepared. Prepare the publication again in a moment.');
   const draftStop = draftLinksStop(state);
   if (draftStop) return { ok: false, ...draftStop };
@@ -422,7 +425,7 @@ export interface PublicationFile {
 export async function publicationFiles(dir: string): Promise<{ ok: true; files: PublicationFile[] } | { ok: false; message: string }> {
   const listed: Array<{ path: string; abs: string; size: number; executable: boolean }> = [];
   for (const path of await stagedFiles(dir)) {
-    if (snapshotPlace(path).kind !== 'tree') continue;
+    if (!carried(path)) continue;
     const abs = join(dir, path);
     const st = await fs.stat(abs);
     listed.push({ path, abs, size: st.size, executable: process.platform !== 'win32' && (st.mode & 0o111) !== 0 });
