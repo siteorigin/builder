@@ -305,6 +305,31 @@ describe('component packages: export and import (#371)', () => {
     await Promise.all([src.s.close(), same.close(), other.close(), theme.close()]);
   });
 
+  it('carries a custom colour’s dark value, so a recipient with a dark palette shows the component as styled for dark (#1441)', async () => {
+    const src = await pricingCard();
+    ok(
+      await src.s.apply(
+        {
+          operations: [
+            { type: 'token.setColorScheme', mode: 'system' },
+            { type: 'token.set', tokenId: src.token, scheme: 'dark', value: '#8bf0de' }
+          ]
+        },
+        { label: 'Dark' }
+      )
+    );
+    const { path } = await exportTo(src.s, src.rootId);
+    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).tokens.find((t) => t.id === src.token)).toMatchObject({ value: '#0a6e8a', dark: '#8bf0de' });
+
+    const dest = await blank('Dark recipient');
+    ok(await dest.apply({ operations: [{ type: 'token.setColorScheme', mode: 'system' }] }, { label: 'Dark' }));
+    ok(await importInto(dest, path));
+    expect(dest.state.tokens.custom.find((t) => t.id === 'color.custom-sea')).toMatchObject({ value: '#0a6e8a' });
+    expect(dest.state.tokens.darkOverrides?.['color.custom-sea']).toBe('#8bf0de');
+    expect(validateState(dest.state).filter((d) => d.severity === 'error')).toEqual([]);
+    await Promise.all([src.s.close(), dest.close()]);
+  });
+
   it('carries a site style a design uses only at part strength, and keeps the strength where the style is renamed (#353)', async () => {
     const s = await blank('Glass');
     const owner = home(s);
