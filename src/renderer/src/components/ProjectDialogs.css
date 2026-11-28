@@ -98,10 +98,10 @@
      smallest window to most of Home's first screen on a tall one, so a few pixels of height never step them. A
      problem or the offline note takes its own height from the previews, so Create stays where it was. The budget is
      the dialog's own height limit (89vh less its margin, primitives.css) less the rest of the form at its spacing. */
-  .new-project-form { --np-rest: 443px; --np-problem: 0px; --np-note: 0px; --np-path: 0px; }
+  .new-project-form { --np-rest: 475px; --np-problem: 0px; --np-note: 0px; --np-path: 0px; }
   .new-project-form:has(> .np-identity > .scope-note) { --np-problem: 44px; }
   .new-project-form:has(> #new-project-tools-note) { --np-note: 50px; }
-  .new-project-form .starter-art { height: clamp(112px, calc(89vh - var(--np-rest) - var(--np-problem) - var(--np-note) - var(--np-path)), 300px); container: np-art / size; }
+  .new-project-form .starter-art { height: clamp(80px, calc(89vh - var(--np-rest) - var(--np-problem) - var(--np-note) - var(--np-path)), 300px); container: np-art / size; }
   /* At its shallowest, Business shows About alone beside Home, whole enough to read, rather than two slivers. */
   @container np-art (max-height: 150px) {
     .starter-art .sheet.side:last-child:not(:first-child) { display: none; }
@@ -110,7 +110,7 @@
   .new-project-form .starter-art.blank .sheet.home { flex-basis: 92%; }
   /* The minimum window: the tallest form (a problem and its note) fits without scrolling. */
   @media (max-height: 740px) {
-    .new-project-form { --np-rest: 412px; gap: 6px; }
+    .new-project-form { --np-rest: 444px; gap: 6px; }
     .new-project-form:has(> #new-project-tools-note) { --np-note: 44px; }
     .new-project-form .np-identity { gap: 6px; }
     .new-project-form .starter-art { padding-top: 10px; }
