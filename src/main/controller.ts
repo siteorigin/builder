@@ -89,7 +89,7 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
-import { copyEditorBatchProblem } from '@engine/copy-editor';
+import { copyEditableProps, copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
 import { LiveHostManager, type LiveGuestEdit, type LiveNotesAnswer } from './live/host';
@@ -802,11 +802,13 @@ export class Controller {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
     const settled = this.settled.get(s) ?? { state: s.state, revision: s.revision };
-    const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const source = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
-    const snapshot = liveSnapshot(source, [s.dir, homedir()]);
-    this.shared = { ...source, snapshot };
+    // What a copy editor may change is worked out from the same documents the guests are sent, once for each.
+    const copyEditable = last && last.state === source.state ? last.copyEditable : copyEditableProps(source.state);
+    const snapshot = liveSnapshot({ ...source, copyEditable } satisfies LiveSnapshotSource, [s.dir, homedir()]);
+    this.shared = { ...source, copyEditable, snapshot };
     return snapshot;
   }
 

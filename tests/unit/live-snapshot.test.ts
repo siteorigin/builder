@@ -38,13 +38,13 @@ function project(): ProjectState {
   return state;
 }
 
-const share = (state = project(), hostPaths = [DIR, HOME]) => liveSnapshot({ state, revision: 7, readOnly: true, aiBusy: true, runtime: 'starting' }, hostPaths);
+const share = (state = project(), hostPaths = [DIR, HOME]) => liveSnapshot({ state, revision: 7, readOnly: true, aiBusy: true, runtime: 'starting', copyEditable: { theme_form: ['heading'] } }, hostPaths);
 
 describe('the project as guests are given it', () => {
   it('holds only the documents and whether they can be edited now', () => {
     const snap = share();
-    expect(Object.keys(snap).sort()).toEqual(['aiBusy', 'readOnly', 'revision', 'runtime', 'state']);
-    expect(snap).toMatchObject({ revision: 7, readOnly: true, aiBusy: true, runtime: { state: 'starting' } });
+    expect(Object.keys(snap).sort()).toEqual(['aiBusy', 'copyEditable', 'readOnly', 'revision', 'runtime', 'state']);
+    expect(snap).toMatchObject({ revision: 7, readOnly: true, aiBusy: true, runtime: { state: 'starting' }, copyEditable: { theme_form: ['heading'] } });
     expect(Object.keys(snap.state).sort()).toEqual(['assets', 'collections', 'components', 'manifest', 'pages', 'site', 'themeLock', 'tokens'].sort());
   });
 
@@ -68,6 +68,9 @@ describe('the project as guests are given it', () => {
     expect((snap.state.collections.leads.entries.e1 as unknown as { values: { files: string[] } }).values.files).toEqual([`${P}/static/a.pdf`, 'plain']);
     expect(Object.keys(snap.state.site)).toContain(`${P}/note`);
     expect(JSON.stringify(snap).toLowerCase()).not.toContain(`${DIR}`.toLowerCase());
+    // What a copy editor may change names properties as the shared designs do (#1318).
+    const named = liveSnapshot({ state: project(), revision: 7, readOnly: false, aiBusy: false, runtime: 'ready', copyEditable: { theme_form: [`${DIR}/heading`] } }, [DIR, HOME]);
+    expect(named.copyEditable).toEqual({ theme_form: [`${P}/heading`] });
   });
 
   it('leaves web addresses and other people’s folders as they are', () => {

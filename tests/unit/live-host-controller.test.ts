@@ -432,6 +432,10 @@ describe('a live session hosted by the open project', () => {
     expect(c.session!.state.components['foundation.hero.split']).toBe(read);
     const file = join(dir, `siteorigin/pages/${owner.id}.json`);
     const setProp = (prop: string, value: unknown) => ({ type: 'instance.setProp', owner, nodeId: hero, prop, value });
+    // Guests are told which of its properties a copy editor may change (#1318): the hero's copy, never its buttons.
+    const offered = c.guestSnapshot(c.snapshot()!.workspaceKey)!.copyEditable['foundation.hero.split'];
+    expect(offered).toEqual(expect.arrayContaining(['eyebrow', 'heading']));
+    for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(offered).not.toContain(prop);
 
     const before = c.session!.revision;
     expect(await rpc(guest, 'project.apply', [{ operations: [setProp('eyebrow', 'Bakery'), setProp('heading', 'Fresh bread daily')], expectedRevision: before, label: 'Reword' }])).toMatchObject({ ok: true, result: { revision: before + 1 } });

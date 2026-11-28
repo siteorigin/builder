@@ -1,6 +1,6 @@
 import './StatusBar.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from 'react';
-import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
+import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, Info, Link2, Lock, Network, Pencil, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
 import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
@@ -197,9 +197,19 @@ export function StatusBar() {
           <span className="status-sep" aria-hidden="true" />
           {isRemoteOpening(snap.workspaceKey) ? (
             // The host's project in a live session (#766): its health is the host's; the reason is all there is to say.
+            // A copy editor (#1318) edits its words and pictures, unless editing is paused.
             <span className="read-only" title={snap.readOnly.reason}>
-              <Lock aria-hidden="true" />
-              Read-only
+              {snap.readOnly.copyOnly && !snap.readOnly.copyOnly.paused ? (
+                <>
+                  <Pencil aria-hidden="true" />
+                  Copy editing
+                </>
+              ) : (
+                <>
+                  <Lock aria-hidden="true" />
+                  Read-only
+                </>
+              )}
             </span>
           ) : (
             <button className="read-only" title={`${snap.readOnly.reason} Open Project health for what you can do.`} onClick={openHealth}>

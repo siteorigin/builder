@@ -543,7 +543,7 @@ describe('ending', () => {
 // ---------------------------------------------------------------------------
 // Guests' editor calls (#765)
 
-const SNAPSHOT: LiveProjectSnapshot = { revision: 3, state: {} as LiveProjectSnapshot['state'], readOnly: false, aiBusy: false, runtime: { state: 'ready' } };
+const SNAPSHOT: LiveProjectSnapshot = { revision: 3, state: {} as LiveProjectSnapshot['state'], readOnly: false, aiBusy: false, runtime: { state: 'ready' }, copyEditable: {} };
 const EDIT = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title', field: 'text', value: 'Hello' }] };
 /** A layout edit: one a collaborator may make, and a copy editor may not. */
 const LAYOUT = { operations: [{ type: 'node.remove', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] };

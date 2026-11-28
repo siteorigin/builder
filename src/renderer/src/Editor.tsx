@@ -53,7 +53,7 @@ import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePa
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
-import { admittedRemote, confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, remoteRightTabs, remoteRunStatus, showsRemote } from './lib/remote-session';
+import { admittedRemote, confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS, REMOTE_MODALS, remoteLeftTabs, remoteRightTabs, remoteRunStatus, showsRemote } from './lib/remote-session';
 import { RemoteChat } from './panels/RemoteChat';
 import { timedPanel } from './lib/perf-panels';
 import { perfMark } from './lib/perf';
@@ -433,8 +433,10 @@ export function Editor() {
   // Another computer's project, as a guest in its live session (#766): only what a guest may do there is offered,
   // and the views and dialogs that are the host's alone are never mounted.
   const remoteShell = useStore(isRemoteShell);
-  // A collaborator has the AI view too (#769); a viewer has only the Inspector and Site styles.
+  // A collaborator has the AI view too (#769); a viewer has only the Inspector and Site styles, and a copy editor
+  // (#1318) the Inspector, with the pages and their layers and nothing to insert.
   const remoteTabs = useStore((s) => remoteRightTabs(admittedRemote(s)?.role));
+  const remoteLeft = useStore((s) => remoteLeftTabs(admittedRemote(s)?.role));
   useFirstStepsTracking();
   const leftTab = useStore((s) => s.leftTab);
   const rightTab = useStore((s) => s.rightTab);
@@ -445,13 +447,14 @@ export function Editor() {
   const templateModeOn = useStore((s) => !!s.templateMode);
   const editMode = useStore((s) => s.mode === 'edit');
   const modal = remoteShell && storedModal && !REMOTE_MODALS.has(storedModal.kind) ? null : storedModal;
-  const leftTabs = remoteShell ? LEFT_TABS.filter((t) => REMOTE_LEFT_TABS.has(t.id)) : LEFT_TABS;
+  const leftTabs = remoteShell ? LEFT_TABS.filter((t) => remoteLeft.has(t.id)) : LEFT_TABS;
+  const stylesRail = !remoteShell || remoteTabs.has('styles');
   const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => remoteTabs.has(t)) : RIGHT_TABS;
   // A view or dialog of the host's alone, asked for some other way (a command, a shortcut), gives way at once.
   useEffect(() => {
     if (!remoteShell) return;
     const s = getState();
-    if (s.leftTab && !REMOTE_LEFT_TABS.has(s.leftTab)) setState({ leftTab: 'pages' });
+    if (s.leftTab && !remoteLeftTabs(admittedRemote(s)?.role).has(s.leftTab)) setState({ leftTab: 'pages' });
     if (!remoteRightTabs(admittedRemote(s)?.role).has(s.rightTab)) setState({ rightTab: 'inspect' });
     if (s.modal && !REMOTE_MODALS.has(s.modal.kind)) setState({ modal: null });
     // Component definitions and collection layouts are the host's: editing one everywhere, or Component Studio, is not
@@ -459,7 +462,7 @@ export function Editor() {
     // went to, and stays.
     if (s.definitionMode) setState({ definitionMode: null });
     if (s.templateMode && s.mode === 'edit') setState({ templateMode: null });
-  }, [remoteShell, remoteTabs, leftTab, rightTab, storedModal, definitionModeOn, templateModeOn, editMode]);
+  }, [remoteShell, remoteTabs, remoteLeft, leftTab, rightTab, storedModal, definitionModeOn, templateModeOn, editMode]);
   const dockOpen = useStore((s) => s.dockOpen);
   const windowWidth = useWindowWidth();
   // The panels are drawn at their preferred widths while the canvas keeps its minimum; in a smaller window
@@ -724,8 +727,9 @@ export function Editor() {
 
   // The rail is one stop in the Tab order (WAI-ARIA APG toolbar): the button last focused, else the open view.
   const [railStop, setRailStop] = useState<string | null>(null);
-  const railIds = [...leftTabs.map((t) => t.id as string), 'styles'];
-  const railTab = railStop ?? leftTab ?? 'pages';
+  const railIds = [...leftTabs.map((t) => t.id as string), ...(stylesRail ? ['styles'] : [])];
+  // A stop the rail no longer has (a role change took its view away) gives way, so the rail stays in the Tab order.
+  const railTab = (railStop && railIds.includes(railStop) ? railStop : null) ?? leftTab ?? 'pages';
   const onRailKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const i = railIds.indexOf(railTab);
     const n = e.key === 'ArrowDown' ? i + 1 : e.key === 'ArrowUp' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? railIds.length - 1 : null;
@@ -872,27 +876,29 @@ export function Editor() {
               {t.icon}
             </button>
           ))}
-          <div className="rail-sep" role="separator" aria-orientation="horizontal" />
-          <button
-            data-rail="styles"
-            className="icon-btn shortcut"
-            tabIndex={railTab === 'styles' ? 0 : -1}
-            aria-pressed={dockOpen && rightTab === 'styles'}
-            aria-controls={dockOpen && rightTab === 'styles' ? 'editor-dock' : undefined}
-            title="Site styles"
-            aria-label="Site styles"
-            onFocus={() => setRailStop('styles')}
-            onClick={() => {
-              const lent = stylesBorrowed.current;
-              if (stylesShortcutCloses(getState())) return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
-              // Already showing, beside a workspace: nothing more is borrowed.
-              const before = dockOpen && rightTab === 'styles' ? lent : { opened: !dockOpen, tab: rightTab };
-              openSiteStyles();
-              stylesBorrowed.current = before;
-            }}
-          >
-            <Palette />
-          </button>
+          {stylesRail && <div className="rail-sep" role="separator" aria-orientation="horizontal" />}
+          {stylesRail && (
+            <button
+              data-rail="styles"
+              className="icon-btn shortcut"
+              tabIndex={railTab === 'styles' ? 0 : -1}
+              aria-pressed={dockOpen && rightTab === 'styles'}
+              aria-controls={dockOpen && rightTab === 'styles' ? 'editor-dock' : undefined}
+              title="Site styles"
+              aria-label="Site styles"
+              onFocus={() => setRailStop('styles')}
+              onClick={() => {
+                const lent = stylesBorrowed.current;
+                if (stylesShortcutCloses(getState())) return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
+                // Already showing, beside a workspace: nothing more is borrowed.
+                const before = dockOpen && rightTab === 'styles' ? lent : { opened: !dockOpen, tab: rightTab };
+                openSiteStyles();
+                stylesBorrowed.current = before;
+              }}
+            >
+              <Palette />
+            </button>
+          )}
         </div>
         {/* Each view is built the first time it shows, and stays mounted while hidden from then on, so a search,
             expanded layers or scroll position survive switching; it is held while hidden, so it does no work for what

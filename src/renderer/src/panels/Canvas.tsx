@@ -79,6 +79,7 @@ import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
 import { perfCount, perfMark, perfOn, perfWork } from '../lib/perf';
 import { aiRunning } from '../lib/blocked';
+import { copyEditing, copyGrant } from '../lib/copy-only';
 
 /** Whether two reports measured the same element (or both nothing). */
 const sameMeasured = (a: BridgeDesc | null, b: BridgeDesc | null) => a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot);
@@ -839,7 +840,7 @@ export function Canvas() {
     setEditing(true);
     markDraft(CANVAS_DRAFT, true);
     // Marked text is edited as the text its property is: the page refuses an element that shows it otherwise.
-    post('beginTextEdit', { desc, editId, hit, ...(code ? { rich: code.rich } : {}) });
+    post('beginTextEdit', { desc, editId, hit, ...(code ? { rich: code.rich } : {}), ...(copyGrant(getState().snapshot) ? { copyOnly: true } : {}) });
   }
   /** Edit text from the editor's own controls (the chip's Edit text, or the menu's): the page takes focus for it,
    *  after a menu has closed and handed focus back, so the edit keeps the focus it is given. */
@@ -1291,8 +1292,11 @@ export function Canvas() {
             selectOnPage(ref, { rightTab: 'inspect' });
             const r = resolveRef(st, ref);
             const bound = r.node?.kind === 'text' ? r.node.text : r.node?.kind === 'link' ? r.node.label : undefined;
+            // A copy editor (#1318) types here only into a page's own text, and only while editing is not paused.
+            if (copyGrant(s.snapshot) && (r.node?.kind === 'text' || r.node?.kind === 'link'))
+              toast(copyEditing(s.snapshot) ? 'Only the host can change this text. What you can change here is in the Inspector.' : s.snapshot!.readOnly!.reason, 'info');
             // A News card or article header shows a page's article details, changed in that page's settings.
-            if (computedAt(st, ref, bound)) toast('This comes from the article’s page settings. Open the article’s page to change its title, date, byline or excerpt.', 'info');
+            else if (computedAt(st, ref, bound)) toast('This comes from the article’s page settings. Open the article’s page to change its title, date, byline or excerpt.', 'info');
             else if (ref.owner.kind === 'template' && (r.node?.kind === 'text' || r.node?.kind === 'link'))
               toast('This shows each entry’s own words, so it is edited in the entry. Choose what it shows in the Inspector.', 'info');
             else if (r.node?.kind === 'text' || r.node?.kind === 'link')

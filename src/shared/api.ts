@@ -375,6 +375,18 @@ export type FileText = { state: 'text'; text: string } | { state: 'missing' } | 
 /** How a file conflict is settled: the file on disk kept, Builder's version restored, or a design's file made code. */
 export type ConflictChoice = 'keep' | 'restore' | 'convert' | 'remove';
 
+/**
+ * A live session's copy editor's way into the host's project (#1318): the project stays read-only to it but for the
+ * words of the text on its pages and the copy and pictures of the components placed there that the host lets a copy
+ * editor change. The host checks every edit again (engine/copy-editor.ts).
+ */
+export interface CopyOnlyGrant {
+  /** By design, the properties of a placed component a copy editor may change (engine/copy-editor.ts copyEditableProps). */
+  props: Record<string, string[]>;
+  /** Editing is paused for now (the host reconnecting, its AI making changes): the read-only reason says why. */
+  paused: boolean;
+}
+
 export interface ProjectSnapshot {
   dir: string;
   state: ProjectState;
@@ -396,8 +408,11 @@ export interface ProjectSnapshot {
   conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean; convert?: { definitionId: string }; deletedCode?: { definitionId: string } }>;
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
-  /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
-  readOnly?: { reason: string; canUnlock: boolean } | null;
+  /**
+   * Set when the project is open for inspection only (a newer format, or another app is editing it), or open to a live
+   * session's copy editor, who changes only its words and pictures (`copyOnly`).
+   */
+  readOnly?: { reason: string; canUnlock: boolean; copyOnly?: CopyOnlyGrant } | null;
   /** Installed theme components with a newer version in the theme. */
   themeUpdates?: ThemeUpdates;
   localState: LocalWorkspaceState;
