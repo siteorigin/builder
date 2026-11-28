@@ -52,7 +52,7 @@ describe('publishing or unpublishing several posts', () => {
       { type: 'entry.update', collectionId: 'posts', entryId: 'en_b', draft: false },
       { type: 'entry.update', collectionId: 'posts', entryId: 'en_c', draft: false }
     ]);
-    expect(pub.future).toEqual(['Summer fair']);
+    expect(pub.future).toEqual([{ id: 'en_c', title: 'Summer fair', date: '2027-06-01' }]);
     const after = run(s, ...pub.ops);
     expect([entry(after, 'en_b').draft, entry(after, 'en_c').draft]).toEqual([false, false]);
     const down = bulkStatusOps(after, 'posts', ['en_a', 'en_b', 'en_d', 'en_gone'], true);
@@ -104,8 +104,26 @@ describe('deleting several posts', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_a', body: [{ type: 'p', spans: [{ text: 'See ' }, { text: 'winter hours', link: { type: 'entry', target: 'en_b' } }] }] });
     const plan = bulkDeletePlan(s, 'posts', ['en_a', 'en_b', 'en_c']);
     expect(plan.free.map((f) => f.id)).toEqual(['en_a', 'en_c']);
-    expect(plan.held).toEqual(['Winter hours']);
+    expect(plan.held).toEqual([{ id: 'en_b', title: 'Winter hours' }]);
     const after = run(s, ...plan.ops);
     expect(Object.keys(after.collections.posts.entries).sort()).toEqual(['en_b', 'en_d']);
+  });
+  it('holds posts an old address goes to, and posts other picked posts name, so the change never fails part-way', () => {
+    let s = run(
+      blog(),
+      { type: 'collection.create', collectionId: 'venues', kind: 'structured', name: 'Venues', singularName: 'Venue', fields: { next: { type: 'reference', label: 'Next', collection: 'venues' } } },
+      { type: 'entry.create', collectionId: 'venues', entryId: 'en_hall', title: 'Hall', draft: false },
+      { type: 'entry.create', collectionId: 'venues', entryId: 'en_garden', title: 'Garden', draft: false },
+      { type: 'entry.create', collectionId: 'venues', entryId: 'en_annexe', title: 'Annexe', draft: false }
+    );
+    s = run(s, { type: 'entry.update', collectionId: 'venues', entryId: 'en_hall', values: { next: 'en_garden' } }, { type: 'entry.update', collectionId: 'venues', entryId: 'en_garden', values: { next: 'en_hall' } });
+    const plan = bulkDeletePlan(s, 'venues', ['en_hall', 'en_garden', 'en_annexe']);
+    // Hall and Garden name each other: the engine would refuse whichever went first.
+    expect(plan.held.map((h) => h.id).sort()).toEqual(['en_garden', 'en_hall']);
+    expect(plan.free.map((f) => f.id)).toEqual(['en_annexe']);
+    expect(Object.keys(run(s, ...plan.ops).collections.venues.entries).sort()).toEqual(['en_garden', 'en_hall']);
+    const kept = structuredClone(blog());
+    kept.site.redirects = [{ from: '/old-winter/', entryId: 'en_b' }] as never;
+    expect(bulkDeletePlan(kept, 'posts', ['en_a', 'en_b']).held).toEqual([{ id: 'en_b', title: 'Winter hours' }]);
   });
 });

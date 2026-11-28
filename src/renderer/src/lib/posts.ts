@@ -398,11 +398,11 @@ function pickedEntries(state: ProjectState, collectionId: string, ids: readonly 
  * Publishing the picked entries, or moving them to drafts, as one change: only those not already so. `future` names
  * the drafts dated after `today`, which Publish asks about first (#1115).
  */
-export function bulkStatusOps(state: ProjectState, collectionId: string, ids: readonly string[], draft: boolean, today = ''): { ops: EditOperation[]; future: string[] } {
+export function bulkStatusOps(state: ProjectState, collectionId: string, ids: readonly string[], draft: boolean, today = ''): { ops: EditOperation[]; future: Array<{ id: string; title: string; date: string }> } {
   const changing = pickedEntries(state, collectionId, ids).filter((e) => (e.draft !== false) !== draft);
   return {
     ops: changing.map((e) => ({ type: 'entry.update', collectionId, entryId: e.id, draft })),
-    future: draft ? [] : changing.filter((e) => isFutureDay(e.publishedAt, today)).map((e) => e.title)
+    future: draft ? [] : changing.flatMap((e) => (isFutureDay(e.publishedAt, today) ? [{ id: e.id, title: e.title, date: e.publishedAt }] : []))
   };
 }
 
@@ -446,16 +446,44 @@ export function bulkTermOps(state: ProjectState, collectionId: string, ids: read
 
 /**
  * Deleting the picked entries as one change (#1507): those nothing links to or names, and with no old address kept
- * working, go at once. The rest (`held`, by title) ask what takes their place, so they are left for the author to
- * delete one at a time, where that is asked. `checked` is what each was confirmed against (deleteFingerprint).
+ * working, go at once. The rest (`held`) ask what takes their place, so they are left for the author to delete one at a
+ * time, where that is asked. A link or reference from another picked entry holds one too: the engine removes them in
+ * turn, so two naming each other would refuse the whole change. One pass over the project for all of them, however
+ * many are picked.
  */
-export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: readonly string[]): { ops: EditOperation[]; free: Array<{ id: string; title: string; checked: string }>; held: string[] } {
-  const free: Array<{ id: string; title: string; checked: string }> = [];
-  const held: string[] = [];
-  for (const e of pickedEntries(state, collectionId, ids)) {
-    const ref = { collectionId, entryId: e.id };
-    if (deleteAsksWhere(state, ref)) held.push(e.title);
-    else free.push({ id: e.id, title: e.title, checked: deleteFingerprint(state, ref) });
+export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: readonly string[]): { ops: EditOperation[]; free: Array<{ id: string; title: string }>; held: Array<{ id: string; title: string }> } {
+  const entries = pickedEntries(state, collectionId, ids);
+  const set = new Set(entries.map((e) => e.id));
+  const holds = new Set<string>();
+  for (const u of entryLinkUses(state, set)) holds.add(u.link.target);
+  const kept: unknown = state.site.redirects;
+  if (Array.isArray(kept)) for (const r of kept) if (typeof (r as { entryId?: unknown })?.entryId === 'string') holds.add((r as { entryId: string }).entryId);
+  for (const r of entryReferenceUses(state, set)) {
+    const v: unknown = r.entry.values?.[r.field];
+    for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string') holds.add(id);
   }
-  return { ops: free.map((f) => ({ type: 'entry.remove', collectionId, entryId: f.id })), free, held };
+  // Both pass over holders among the picked themselves: their links and references to one another, here. Any link
+  // value anywhere in one of them counts, which may hold more than the engine would, never less.
+  const linksIn = (x: unknown, self: string): void => {
+    if (Array.isArray(x)) return x.forEach((y) => linksIn(y, self));
+    if (!x || typeof x !== 'object') return;
+    const l = x as { type?: unknown; target?: unknown };
+    if (l.type === 'entry' && typeof l.target === 'string' && l.target !== self && set.has(l.target)) holds.add(l.target);
+    for (const y of Object.values(x)) linksIn(y, self);
+  };
+  for (const e of entries) linksIn(e, e.id);
+  for (const c of Object.values(state.collections ?? {})) {
+    const refs = Object.entries(c.settings?.fields ?? {}).filter(([, f]) => f?.type === 'reference').map(([name]) => name);
+    if (!refs.length) continue;
+    for (const e of Object.values(c.entries)) {
+      if (!set.has(e.id)) continue;
+      for (const field of refs) {
+        const v: unknown = e.values && Object.hasOwn(e.values, field) ? e.values[field] : undefined;
+        for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string' && id !== e.id) holds.add(id);
+      }
+    }
+  }
+  const row = (e: EntryDoc) => ({ id: e.id, title: e.title });
+  const free = entries.filter((e) => !holds.has(e.id)).map(row);
+  return { ops: free.map((f) => ({ type: 'entry.remove', collectionId, entryId: f.id })), free, held: entries.filter((e) => holds.has(e.id)).map(row) };
 }
