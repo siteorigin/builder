@@ -121,6 +121,23 @@ describe.skipIf(!browserInstalled)('Inspector focus recovery', { timeout: 30_000
     expect(await run("remove('a')")).toBe('BODY');
   });
 
+  it('counts neither its own focus on the name nor focus outside the Inspector as newer than a waiting click', async () => {
+    await page.getByLabel('A').focus();
+    await page.waitForTimeout(20);
+    const madeAt = await page.evaluate<number>('performance.now()');
+    await page.waitForTimeout(20);
+    // While the click waits, the field goes and the recovery puts focus on the name.
+    expect(await run("remove('a')")).toBe('name');
+    await run(`pick(false, ${madeAt})`);
+    expect(await active()).toBe('BODY');
+    // A recovery still waiting for its frame is given up though a control outside took focus and let it go meanwhile.
+    await page.getByLabel('B').focus();
+    await page.waitForTimeout(20);
+    const later = await page.evaluate<number>('performance.now()');
+    await page.waitForTimeout(20);
+    expect(await run(`remove('b', () => { document.getElementById('outside').focus(); document.activeElement.blur(); pick(true, ${later}); })`)).toBe('BODY');
+  });
+
   it('takes focus off the selection’s name on any pick, and off nothing else', async () => {
     await run("document.getElementById('name').focus()");
     await run('pick(false)');

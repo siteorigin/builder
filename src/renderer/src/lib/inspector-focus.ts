@@ -61,9 +61,13 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
   let last: Element | null = null;
   let lastAt = 0;
   let frame = 0;
+  // While this recovery puts focus on the name itself: that is no newer focus of the author's (see `picked`).
+  let recovering = false;
   const onIn = (e: FocusEvent) => {
-    last = e.target instanceof Element && panel.contains(e.target) ? e.target : null;
-    lastAt = performance.now();
+    const inside = e.target instanceof Element && panel.contains(e.target);
+    last = inside ? (e.target as Element) : null;
+    // When focus last came to the Inspector by the author's hand: focus elsewhere sets nothing here aside.
+    if (inside && !recovering) lastAt = performance.now();
   };
   const idle = () => !document.activeElement || document.activeElement === document.body;
   const mo = new MutationObserver(() => {
@@ -71,7 +75,13 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
     last = null;
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
-      if (idle()) panel.querySelector<HTMLElement>(NAME)?.focus();
+      if (!idle()) return;
+      recovering = true;
+      try {
+        panel.querySelector<HTMLElement>(NAME)?.focus();
+      } finally {
+        recovering = false;
+      }
     });
   });
   const forget = () => {
@@ -79,7 +89,7 @@ export function recoverInspectorFocus(panel: HTMLElement): () => void {
     cancelAnimationFrame(frame);
   };
   const picked = ({ changed, madeAt }: PagePick) => {
-    // Focus that came to the Inspector while the click waited is the keyboard's, and stays as it is.
+    // Focus the author moved into the Inspector while the click waited is the keyboard's, and stays as it is.
     if (madeAt !== undefined && lastAt > madeAt) return;
     if (changed) forget();
     // The name is only where focus lands: ringed, it would say the keyboard was there.
