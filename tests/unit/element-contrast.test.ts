@@ -12,7 +12,7 @@ import { listThemes } from '@catalogue/index';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { adviceValidation, blocksSaving, validateState, type Diagnostic } from '@engine/validate';
-import { elementContrastDiagnostics } from '@engine/element-contrast';
+import { bodyPaints, elementContrastDiagnostics } from '@engine/element-contrast';
 import { ValidationCache } from '@engine/validation-cache';
 
 const LOW = 'TEXT_CONTRAST_LOW';
@@ -199,6 +199,7 @@ describe('text whose own colours disappear into its background (#1489)', () => {
     expect(inCard(text('n_t', '  '))).toEqual([]);
     expect(inCard({ id: 'n_b', kind: 'link', link: { type: 'url', href: 'https://example.com' }, label: 'Order', appearance: 'primary' } as unknown as GraphNode)).toEqual([]);
     expect(inCard(text('n_t', undefined, undefined, { when: { $entry: 'title' } } as never))).toEqual([]);
+    expect(inCard(text('n_t', undefined, undefined, { unless: { $entry: 'title' } } as never))).toEqual([]);
     expect(inCard({ id: 'n_loop', kind: 'repeat', list: { $query: { collection: 'posts' } }, children: ['n_t'] } as unknown as GraphNode, text('n_t'))).toEqual([]);
     expect(inCard(text('n_t', { $entry: 'title' } as never))).toEqual([]);
     expect(inCard(text('n_t'))).toHaveLength(1);
@@ -244,6 +245,11 @@ describe('text over a background picture (#1489)', () => {
     const broken = withPhoto(fresh());
     broken.assets.assets.as_dark.file = 'static/assets/night photo.jpg';
     expect(contrast(page([el('n_hero', { base: { backgroundImage: { assetId: 'as_dark' } } as never }, ['n_t']), text('n_t')], broken))).toEqual([]);
+    // Nor does one on desktops that the site can't show: the picture set for every size may still be there, under its overlay.
+    const both = withPhoto(fresh());
+    both.assets.assets.as_bad = { ...both.assets.assets.as_dark, id: 'as_bad', file: 'static/assets/bad name.jpg' };
+    const hero = { base: { background: '#ffffff', color: '#ffffff', backgroundImage: { assetId: 'as_dark', scrim: '#000000' } }, desktop: { backgroundImage: { assetId: 'as_bad', scrim: '#000000' } } };
+    expect(contrast(page([el('n_hero', hero as never, ['n_t']), text('n_t')], both))).toEqual([]);
   });
 
   it('checks the text against its overlay: a solid one exactly, a see-through one over both light and dark parts', () => {
@@ -266,6 +272,24 @@ describe('text over a background picture (#1489)', () => {
 });
 
 describe('the check as Project health runs it', () => {
+  it('starts a page from the theme’s colours only when its body rule paints with them alone', () => {
+    const ok = 'body { margin: 0; background: var(--so-color-background); color: var( --so-color-text ); }';
+    expect(bodyPaints(ok)).toBe(true);
+    expect(bodyPaints('/* body */ ' + ok)).toBe(true);
+    expect(bodyPaints('body { background: var(--so-color-background); background-color: #000; color: var(--so-color-text); }')).toBe(false);
+    expect(bodyPaints(`${ok} @media (prefers-color-scheme: dark) { body { background: #000; } }`)).toBe(false);
+    expect(bodyPaints('main body { background: var(--so-color-background); color: var(--so-color-text); }')).toBe(false);
+    expect(bodyPaints('body { color: var(--so-color-text); }')).toBe(false);
+  });
+
+  it('measures an inherited bold weight as unknown once a text style and a size meet', () => {
+    const s = fresh();
+    s.tokens.overrides['color.muted'] = '#888888';
+    const card = { base: { background: '#ffffff', color: { token: 'color.muted' }, textStyle: { token: 'text.h3' }, fontSize: '24px', fontWeight: '700' } };
+    // #888 on white is 3.54:1: a 20px paragraph that may be bold needs only 3:1.
+    expect(contrast(page([el('n_card', card as never, ['n_t']), text('n_t', undefined, { base: { fontSize: '20px' } })], s))).toEqual([]);
+  });
+
   it('finds nothing in any starter of any theme', () => {
     for (const theme of listThemes())
       for (const starter of STARTERS) expect(contrast(createStarterState(starter.id, 'Site', false, theme.id)), `${theme.id} ${starter.id}`).toEqual([]);

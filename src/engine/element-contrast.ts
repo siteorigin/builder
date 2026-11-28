@@ -75,8 +75,8 @@ interface Paint {
   chosen: boolean;
   /** The text size set on the way, in CSS pixels at most; undefined for the theme's own, null for one this can't read. */
   px: number | null | undefined;
-  /** The weight set on the way; undefined for the theme's own. */
-  weight: number | undefined;
+  /** The weight set on the way; undefined for the theme's own, null for one this can't read. */
+  weight: number | null | undefined;
 }
 
 type Key = `${Size}|${PaletteScheme}`;
@@ -86,7 +86,7 @@ type Paints = Map<Key, Paint>;
 const READ_PROPS = new Set(['color', 'background', 'backgroundImage', 'opacity', 'hidden', 'customCss', 'textStyle', 'fontSize', 'fontWeight', 'backdropBlur', 'shadow', 'position', 'translateX', 'translateY', 'rotate', 'scale']);
 /** Custom CSS that may paint text, or what is behind it, or change its size. */
 const PAINT_CSS =
-  /^(color|-webkit-text-fill-color|background(-[a-z-]+)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode|box-shadow|font(-size|-weight)?|display|visibility|content-visibility|position|inset|top|bottom|left|right|transform|translate|margin(-[a-z-]+)?)$/;
+  /^(color|-webkit-text-fill-color|background(-[a-z-]+)?|opacity|filter|backdrop-filter|-webkit-backdrop-filter|mix-blend-mode|box-shadow|font(-size|-weight)?|display|visibility|content-visibility|position|inset|top|bottom|left|right|transform|translate|rotate|scale|margin(-[a-z-]+)?)$/;
 /** The resting rules: what shows before any hover, focus or press. */
 const RESTING = ['base', 'phone', 'tablet', 'desktop'] as const;
 
@@ -165,7 +165,7 @@ function mayBeLarge(n: GraphNode & { kind: 'text' }, p: Paint): boolean {
   const heading = typeof n.tag !== 'string' || HEADING.test(n.tag);
   if (p.px === undefined) return heading;
   if (p.px === null) return true;
-  return p.px >= 24 || (p.px >= 18.66 && (p.weight === undefined ? heading : p.weight >= 700));
+  return p.px >= 24 || (p.px >= 18.66 && (p.weight === undefined ? heading : p.weight === null || p.weight >= 700));
 }
 
 /** Whether a text node shows any text. */
@@ -216,10 +216,20 @@ function whereText(keys: Key[], schemes: PaletteScheme[]): string {
  * Whether a theme's stylesheet paints the page as contrast.ts assumes: its `body` rule sets the page background and the
  * text colour from the site's Background and Primary text styles.
  */
-function bodyPaints(css: string): boolean {
-  const rule = /(?:^|[}\s])body\s*\{([^{}]*)\}/.exec(css)?.[1] ?? '';
-  const decl = (prop: string) => [...rule.matchAll(new RegExp(`(?:^|;)\\s*${prop}\\s*:([^;]*)`, 'g'))].map((m) => m[1].trim()).pop();
-  return (decl('background') ?? decl('background-color')) === `var(${tokenVar('color.background')})` && decl('color') === `var(${tokenVar('color.text')})`;
+export function bodyPaints(css: string): boolean {
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]*)\{([^{}]*)\}/g)].filter((m) => /\bbody\b/i.test(m[1]));
+  // One rule, for the body alone: another (in a media query, say) may paint it otherwise.
+  if (rules.length !== 1 || rules[0][1].trim().toLowerCase() !== 'body') return false;
+  let background: string | undefined;
+  let color: string | undefined;
+  for (const d of rules[0][2].split(';')) {
+    const colon = d.indexOf(':');
+    const prop = d.slice(0, colon).trim().toLowerCase();
+    const value = d.slice(colon + 1).replace(/\s+/g, '');
+    if (prop === 'background' || prop === 'background-color') background = value;
+    else if (prop === 'color') color = value;
+  }
+  return background === `var(${tokenVar('color.background')})` && color === `var(${tokenVar('color.text')})`;
 }
 
 interface Finding {
@@ -311,9 +321,11 @@ function treeContrast(
   const inside = (n: GraphNode & { kind: 'element' | 'text' }, around: Paints): Paints | null => {
     const tag = n.tag;
     // A card renders as the runtime's link while its destination resolves; one with an action, inside one.
-    const linked = n.kind === 'element' && ((n.link !== undefined && n.link !== null) || (n.action !== undefined && n.action !== null));
+    const acts = n.kind === 'element' && n.action !== undefined && n.action !== null;
+    const linked = acts || (n.kind === 'element' && n.link !== undefined && n.link !== null);
     const renders = typeof tag === 'string' ? [tag, ...(linked ? ['a'] : [])] : undefined;
-    if (theme.reaches([pageNodeClass(n.id), ...detachedClasses(n), ...(linked ? ['so-card-link', 'so-action'] : [])], renders)) return null;
+    const runtime = acts ? ['so-card-link', 'so-action', 'so-action--image'] : linked ? ['so-card-link'] : [];
+    if (theme.reaches([pageNodeClass(n.id), ...detachedClasses(n), ...runtime], renders)) return null;
     const styles = n.styles && typeof n.styles === 'object' ? n.styles : {};
     /** The sizes custom CSS may paint at: nothing inside can be read there. */
     const custom = new Set<Size>();
@@ -346,7 +358,8 @@ function treeContrast(
         if (blur !== undefined && blur !== 'none' && Number.parseFloat(String(blur)) !== 0) next.off = true;
         // Placed or moved away from where it sits, it may be over anything.
         const position = at.position;
-        if (position === 'absolute' || position === 'fixed' || ['translateX', 'translateY', 'rotate', 'scale'].some((t) => at[t] !== undefined)) [next.ground, next.picture] = [null, null];
+        const offset = at.inset !== undefined && position !== undefined && position !== 'static';
+        if (position === 'absolute' || position === 'fixed' || offset || ['translateX', 'translateY', 'rotate', 'scale'].some((t) => at[t] !== undefined)) [next.ground, next.picture] = [null, null];
         if (at.background !== undefined) {
           next.chosen = true;
           const bg = typeof at.background === 'string' && isGradient(at.background) ? null : read(at.background);
@@ -355,7 +368,9 @@ function treeContrast(
           if (!bg || bg.a > 0) next.picture = null;
         }
         const image = at.backgroundImage;
-        if (image !== undefined && paintsPicture(image, state.assets.assets)) {
+        // One the site can't paint writes nothing, so a picture set elsewhere for this size may still show.
+        if (image !== undefined && !paintsPicture(image, state.assets.assets)) [next.ground, next.picture] = [null, null];
+        else if (image !== undefined) {
           next.chosen = true;
           const scrim = typeof image === 'object' && typeof (image as { scrim?: unknown }).scrim === 'string' ? (image as { scrim: string }).scrim.trim() : '';
           const solid = scrim && !isGradient(scrim) ? parseColor(scrim) : null;
@@ -377,8 +392,9 @@ function treeContrast(
           next.fg = read(at.color);
         }
         if (at.textStyle !== undefined && (at.fontSize !== undefined || at.fontWeight !== undefined)) {
-          // Which of them wins depends on where each is set: the size is not known.
+          // Which of them wins depends on where each is set: the size and weight are not known.
           next.px = null;
+          next.weight = null;
         } else if (at.textStyle !== undefined) {
           const raw = at.textStyle;
           const id = linkOf(raw, 'text') ?? (typeof raw === 'string' && tokens.some((t) => t.id === raw && t.group === 'text') ? raw : null);
