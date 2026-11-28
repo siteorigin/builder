@@ -17,3 +17,23 @@ describe('turnName', () => {
     expect(turnName('', 'Make it **bold**')).toBe('Make it bold');
   });
 });
+
+describe('turnName edge cases', () => {
+  it('keeps code and URLs as written', () => {
+    expect(turnName('Renamed `__init__` and a * b * c.', 'x')).toBe('Renamed __init__ and a * b * c.');
+    expect(turnName('See https://example.com/_docs_/ now.', 'x')).toBe('See https://example.com/_docs_/ now.');
+    expect(turnName('Linked <https://example.com> here.', 'x')).toBe('Linked https://example.com here.');
+  });
+  it('does not end the sentence inside a link text', () => {
+    expect(turnName('I linked [Acme Inc.](/acme) in the footer. More text.', 'x')).toBe('I linked Acme Inc. in the footer.');
+    expect(turnName('I set it to “Ready!” The CTA now says Go.', 'x')).toBe('I set it to “Ready!”');
+  });
+  it('handles targets with parentheses', () => {
+    expect(turnName('See [FAQ](https://example.com/FAQ_(shop)) today.', 'x')).toBe('See FAQ today.');
+  });
+  it('cuts a long word and never leaves a name empty', () => {
+    expect(turnName(`I updated the hero and its ${'x'.repeat(90)}.`, 'y')).toBe('I updated the hero and its…');
+    expect(turnName('```\ncode\n```', 'Add a hero')).toBe('Add a hero');
+    expect(turnName('', '')).toBe('Changes');
+  });
+});
