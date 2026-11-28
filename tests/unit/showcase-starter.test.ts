@@ -5,6 +5,7 @@ import { STARTERS, STARTER_ASSETS, createStarterState, starterProblem, starterTa
 import { showcaseKind, showcasePages } from '@catalogue/showcase';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
+import { pageHeadings } from '@generator/checks';
 import { registerBeside, restorePacks, testPack } from './fixtures/packs';
 
 const shipped = listThemes().filter((t) => !t.devOnly);
@@ -50,7 +51,8 @@ describe('Component showcase starter', () => {
       const home = s.site.homePageId;
       const outside = [
         ...Object.values(s.pages)
-          .filter((p) => p.id !== home)
+          // The sample news articles are made of the sections an article takes, whatever the kind pages hold.
+          .filter((p) => p.id !== home && !p.route.startsWith('/news/'))
           .flatMap((p) => componentIds(s, placed(p))),
         ...componentIds(s, placed(s.site.shell.header)),
         ...componentIds(s, placed(s.site.shell.footer))
@@ -95,6 +97,41 @@ describe('Component showcase starter', () => {
     // The post and news lists have something to show: published posts, and dated pages other than their own.
     expect(Object.values(s.collections.posts.entries).filter((e) => !e.draft)).toHaveLength(3);
     expect(Object.values(s.pages).filter((p) => p.article && !p.article.hidden)).toHaveLength(2);
+  });
+
+  // #1550: a news list's headline led to a page with only the header and footer on it.
+  for (const theme of shipped)
+    it(`opens each of ${theme.name}’s sample news articles as an article: its title, date and some text`, () => {
+      const s = createStarterState('showcase', 'Showcase', false, theme.id);
+      const news = Object.values(s.pages).filter((p) => p.article && !p.article.hidden);
+      const files = generateProject(s);
+      expect(news).toHaveLength(2);
+      for (const page of news) {
+        expect(componentIds(s, placed(page)), page.route).toEqual(['content.article', 'content.text']);
+        const out = String(files.get(`src/routes${page.route}+page.svelte`));
+        // The Article header is given the page's own details, and the text section the article's words.
+        for (const part of [`"title":"${page.title}"`, `"date":"${page.article!.date}"`, page.article!.excerpt!]) expect(out.replaceAll('\\"', '"'), page.route).toContain(part);
+        const body = placed(page)[1].props.body as Array<{ spans: Array<{ text: string }> }>;
+        expect(body.length, page.route).toBeGreaterThanOrEqual(2);
+        expect(out, page.route).toContain(body[0].spans[0].text);
+      }
+    });
+
+  // A theme need not ship either section: the articles still open with their title, date and words.
+  it('writes the sample news articles in plain text for a theme without the article sections', () => {
+    const author = testPack('plain', { name: 'Plain', license: 'MIT' });
+    registerBeside(author.define(FOUNDATION.components.filter((c) => c.componentId !== 'content.article' && c.componentId !== 'content.text').map((c) => author.adopt(c))));
+    const s = createStarterState('showcase', 'Plain', false, 'plain');
+    const news = Object.values(s.pages).filter((p) => p.article && !p.article.hidden);
+    expect(news).toHaveLength(2);
+    const files = generateProject(s);
+    for (const page of news) {
+      expect(pageHeadings(s, page.id, { shell: false }).outline.map((h) => [h.level, h.text]), page.route).toEqual([[1, page.title]]);
+      const out = String(files.get(`src/routes${page.route}+page.svelte`));
+      expect(out, page.route).toContain(`datetime=`);
+      expect(out, page.route).toContain(page.article!.date);
+    }
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
   });
 
   it('fills empty images, galleries and carousels with the sample photos when asked, and generates', () => {
