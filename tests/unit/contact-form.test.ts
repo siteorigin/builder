@@ -667,7 +667,10 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       mkdirSync(join(dir, 'components'));
       mkdirSync(join(dir, 'runtime'));
       for (const file of ['visitor-text.js', 'util.js']) writeFileSync(join(dir, 'runtime', file), exportedSite().files.get(`${RUNTIME_DIR}/${file}`)!);
-      writeFileSync(join(dir, 'components', 'form.js'), compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code);
+      // The page the server renders, which a test can name for another page of the site.
+      writeFileSync(join(dir, 'app-state.js'), "export const page = { get url() { return new URL(globalThis.soTestPagePath ?? '/contact/', 'https://site.test/'); } };\n");
+      const code = compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code;
+      writeFileSync(join(dir, 'components', 'form.js'), code.replace(/(["'])\$app\/state\1/g, JSON.stringify(join(dir, 'app-state.js'))));
       serverForm = (await import(/* @vite-ignore */ join(dir, 'components', 'form.js'))).default;
     });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -802,6 +805,192 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await context.close();
       }
     }, 20_000);
+  });
+
+  describe('dropdowns, dates, times and hidden fields (issue #1337)', () => {
+    const ENDPOINT = `${ORIGIN}/f/abc`;
+    const SUITES = [
+      { id: 's1', label: 'Garden suite', value: 'Garden' },
+      { id: 's2', label: 'Harbour suite', value: 'Harbour' }
+    ];
+    /** An enquiry about a stay: a required dropdown, an optional one with its own prompt, a date, a time, two hidden fields. */
+    const STAY = [
+      { id: 'f1', label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
+      { id: 'f2', label: 'Suite', name: 'suite', type: 'select', required: true, placeholder: '', options: SUITES },
+      { id: 'f3', label: 'Budget', name: 'budget', type: 'select', required: false, placeholder: 'No preference', options: [{ id: 'b1', label: 'Under 500', value: 'Under 500' }] },
+      { id: 'f4', label: 'Arrival', name: 'arrival', type: 'date', required: true, placeholder: '' },
+      { id: 'f5', label: 'Check-in time', name: 'check-in', type: 'time', required: false, placeholder: '' },
+      { id: 'f6', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' },
+      { id: 'f7', label: 'Campaign', name: 'campaign', type: 'hidden', required: false, placeholder: '', value: ' Spring campaign ' }
+    ];
+    const hidden = (page: Page) => page.evaluate<Array<[string, string]>>(`[...document.querySelectorAll('main form input[type="hidden"]')].map((i) => [i.name, i.value])`);
+    const optionsOf = (page: Page, label: string) => page.locator('form').getByLabel(label).locator('option').allInnerTexts();
+    let serverForm: Component<Record<string, unknown>>;
+    let dir: string;
+
+    beforeAll(async () => {
+      // The exported component rendered on the server, as a page reaches a visitor whose JavaScript is off.
+      mkdirSync(resolve('.tmp'), { recursive: true });
+      dir = mkdtempSync(join(resolve('.tmp'), 'contact-form-fields-ssr-'));
+      mkdirSync(join(dir, 'components'));
+      mkdirSync(join(dir, 'runtime'));
+      for (const file of ['visitor-text.js', 'util.js']) writeFileSync(join(dir, 'runtime', file), exportedSite().files.get(`${RUNTIME_DIR}/${file}`)!);
+      writeFileSync(join(dir, 'app-state.js'), "export const page = { get url() { return new URL(globalThis.soTestPagePath ?? '/contact/', 'https://site.test/'); } };\n");
+      const code = compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code;
+      writeFileSync(join(dir, 'components', 'form.js'), code.replace(/(["'])\$app\/state\1/g, JSON.stringify(join(dir, 'app-state.js'))));
+      serverForm = (await import(/* @vite-ignore */ join(dir, 'components', 'form.js'))).default;
+    });
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+    it('asks with a labelled dropdown, date and time, holds back what is missing, and sends the answers with the hidden fields', async () => {
+      const props = { provider: 'netlify', formName: 'contact', fields: STAY };
+      await withForm(props, async ({ page, field, button, status, nextPost, fetches, leave, arrive, onPage }) => {
+        expect(await field('Suite').evaluate((el) => el.tagName)).toBe('SELECT');
+        // Until an answer is picked the dropdown says so in the site's words, or in its own placeholder.
+        expect(await optionsOf(page, 'Suite')).toEqual(['Choose an answer', 'Garden suite', 'Harbour suite']);
+        expect(await optionsOf(page, 'Budget')).toEqual(['No preference', 'Under 500']);
+        expect(await field('Arrival').getAttribute('type')).toBe('date');
+        expect(await field('Check-in time').getAttribute('type')).toBe('time');
+        // Hidden fields are sent, never shown: no label, no row.
+        expect(await page.locator('form').innerText()).not.toMatch(/Listing|Campaign/);
+        expect(await hidden(page)).toEqual([
+          ['form-name', 'contact'],
+          ['listing', '/contact/'],
+          ['campaign', 'Spring campaign']
+        ]);
+
+        await field('Name').fill('Ada');
+        await button.click();
+        await page.waitForTimeout(250);
+        expect(await fetches()).toBe(0);
+        // The required dropdown and date are what is wrong, each said under it; the optional ones are not.
+        expect(await field('Suite').getAttribute('aria-invalid')).toBe('true');
+        expect(await field('Arrival').getAttribute('aria-invalid')).toBe('true');
+        expect(await field('Budget').getAttribute('aria-invalid')).toBeNull();
+        expect(await page.evaluate<string | null>(`document.activeElement?.getAttribute('name') ?? null`)).toBe('suite');
+        await field('Suite').selectOption({ label: 'Harbour suite' });
+        expect(await field('Suite').getAttribute('aria-invalid')).toBeNull();
+        await field('Arrival').fill('2026-03-14');
+        await field('Check-in time').fill('09:30');
+        await button.click();
+        const post = await nextPost();
+        expect(post.entries).toEqual([
+          ['form-name', 'contact'],
+          ['name', 'Ada'],
+          ['suite', 'Harbour'],
+          ['budget', ''],
+          ['arrival', '2026-03-14'],
+          ['check-in', '09:30'],
+          ['listing', '/contact/'],
+          ['campaign', 'Spring campaign'],
+          ['bot-field', '']
+        ]);
+        // While the reply is held back the dropdown is locked, as the text fields are.
+        await expect.poll(() => field('Suite').isDisabled()).toBe(true);
+        expect(await field('Arrival').isEditable()).toBe(false);
+        await post.respond(200);
+        await expect.poll(status).toBe(SENT);
+        // The visitor's answers are emptied; the hidden fields are the page's, and stay.
+        expect(await field('Suite').inputValue()).toBe('');
+        expect(await field('Arrival').inputValue()).toBe('');
+        expect(await field('Suite').isEnabled()).toBe(true);
+        expect((await hidden(page)).slice(1)).toEqual([
+          ['listing', '/contact/'],
+          ['campaign', 'Spring campaign']
+        ]);
+        // On a listing's own page the same form sends that page.
+        await leave();
+        await onPage('/suites/oak/');
+        await arrive([props]);
+        expect((await hidden(page)).slice(1)).toEqual([
+          ['listing', '/suites/oak/'],
+          ['campaign', 'Spring campaign']
+        ]);
+      });
+    }, 20_000);
+
+    it('refuses to send while a dropdown has nothing to choose from, and says why', async () => {
+      const fields = [...FIELDS, { id: 'f4', label: 'Suite', name: 'suite', type: 'select', required: false, placeholder: '', options: [{ id: 'o1', label: '  ' }] }];
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, notice, fetches }) => {
+        expect(await optionsOf(page, 'Suite')).toEqual(['Choose an answer']);
+        expect(await button.isDisabled()).toBe(true);
+        expect(await notice()).toBe('A question in this form has no answers to choose from yet, so it cannot be sent.');
+        await page.evaluate(`document.querySelector('form').requestSubmit()`);
+        await page.waitForTimeout(250);
+        expect(await fetches()).toBe(0);
+      });
+    }, 20_000);
+
+    it('sends the page it was rendered for without JavaScript, and the browser holds back an unpicked required dropdown', async () => {
+      const props = { provider: 'endpoint', endpoint: ENDPOINT, fields: STAY };
+      (globalThis as { soTestPagePath?: string }).soTestPagePath = '/suites/oak/';
+      let html: string;
+      try {
+        html = render(serverForm, { props }).body;
+      } finally {
+        delete (globalThis as { soTestPagePath?: string }).soTestPagePath;
+      }
+      const context = await browser.newContext({ javaScriptEnabled: false });
+      try {
+        const page = await context.newPage();
+        const posts: Array<Array<[string, string]>> = [];
+        await page.route(`${ORIGIN}/**`, async (route) => {
+          const request = route.request();
+          if (request.method() === 'GET') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><main>${html}</main></body></html>` });
+          const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': request.headers()['content-type'] ?? '' } }).formData();
+          posts.push([...data].map(([k, v]) => [k, String(v)]));
+          return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><p>Received</p>' });
+        });
+        await page.goto(`${ORIGIN}/suites/oak/?campaign=spring#enquire`);
+        const field = (label: string) => page.locator('form').getByLabel(label);
+        const button = page.getByRole('button', { name: 'Send message' });
+        await field('Name').fill('Ada');
+        await field('Arrival').fill('2026-03-14');
+        await button.click();
+        await page.waitForTimeout(250);
+        expect(posts).toEqual([]);
+        expect(await page.locator('select:invalid').count()).toBe(1);
+        await field('Suite').selectOption({ label: 'Garden suite' });
+        await Promise.all([page.waitForURL(ENDPOINT), button.click()]);
+        // The page's path as it was rendered, without the address's query or fragment.
+        expect(posts).toEqual([
+          [
+            ['name', 'Ada'],
+            ['suite', 'Garden'],
+            ['budget', ''],
+            ['arrival', '2026-03-14'],
+            ['check-in', ''],
+            ['listing', '/suites/oak/'],
+            ['campaign', 'Spring campaign'],
+            ['_gotcha', '']
+          ]
+        ]);
+      } finally {
+        await context.close();
+      }
+    }, 20_000);
+
+    it('keeps the signup to one row when its one field has a hidden field beside it', async () => {
+      const signup = await bundleForm('block.signup');
+      const fields = [FIELDS[1], { id: 'f6', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' }];
+      await withForm(
+        { provider: 'endpoint', endpoint: ENDPOINT, fields },
+        async ({ page, field, nextPost }) => {
+          expect(await page.locator('.so-form__row .so-form__send').count()).toBe(1);
+          expect(await page.locator('.so-form__actions').count()).toBe(0);
+          await field('Email').fill('ada@example.com');
+          await page.locator('.so-form__send').click();
+          const post = await nextPost();
+          expect(post.entries).toEqual([
+            ['email', 'ada@example.com'],
+            ['listing', '/contact/'],
+            ['_gotcha', '']
+          ]);
+          await post.respond(200);
+        },
+        signup
+      );
+    }, 30_000);
   });
 
   describe('in the tab history (issue #274)', () => {
@@ -1207,6 +1396,59 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         const REPLACED = { ...CHOICES, fields: CHOICES.fields.map((f) => (f.id === 'f4' ? { ...f, options: [f.options![0], { id: 'c3', label: 'Call me', value: 'Lighting' }] } : f)) };
         await arrive([REPLACED], answered);
         expect(await ticked()).toEqual(['yes']);
+      });
+    }, 20_000);
+
+    it('brings back a dropdown’s choice by the choice picked, never a choice made since with its value (issue #1337)', async () => {
+      const PICK = {
+        provider: 'endpoint',
+        endpoint: `${ORIGIN}/f/abc`,
+        fields: [
+          { id: 'f1', label: 'Name', name: 'name', type: 'text', required: false, placeholder: '' },
+          {
+            id: 'f2',
+            label: 'Suite',
+            name: 'suite',
+            type: 'select',
+            required: true,
+            placeholder: '',
+            options: [
+              { id: 'c1', label: 'Garden suite', value: 'Garden' },
+              { id: 'c2', label: 'Harbour suite', value: 'Harbour' }
+            ]
+          },
+          { id: 'f3', label: 'Listing', name: 'listing', type: 'hidden', required: false, placeholder: '', value: '' }
+        ]
+      };
+      await withForm(PICK, async ({ page, field, leave, arrive }) => {
+        const picked = () => field('Suite').inputValue();
+        // A dropdown nobody touched holds no draft, and a hidden field is never one.
+        expect(kept(await leave())).toBeNull();
+        await arrive([PICK]);
+        await field('Suite').selectOption({ label: 'Harbour suite' });
+        const answered = await leave();
+        expect(kept(answered)).toEqual({ path: '/contact', drafts: [{ key: 'page f1 f2:select', n: 0, message: expect.any(String), values: [['f1', ''], ['f2', 'c2']] }] });
+        await arrive([PICK], answered);
+        expect(await picked()).toBe('Harbour');
+        await leave();
+        // A choice picked before the draft came back stays.
+        await arrive([PICK]);
+        await page.evaluate(`document.querySelector('main select').value = 'Garden'`);
+        await page.evaluate(`window.restoreSnapshots(${JSON.stringify(answered)})`);
+        expect(await picked()).toBe('Garden');
+        await leave();
+        // The choice was removed and another made with its value: the visitor never picked that one.
+        const REPLACED = { ...PICK, fields: PICK.fields.map((f) => (f.id === 'f2' ? { ...f, options: [f.options![0], { id: 'c3', label: 'Call me', value: 'Harbour' }] } : f)) };
+        await arrive([REPLACED], answered);
+        expect(await picked()).toBe('');
+        await leave();
+        // A text answer never picks anything: a question that became a dropdown is another form.
+        const TYPED = { ...PICK, fields: PICK.fields.map((f) => (f.id === 'f2' ? { ...f, type: 'text' } : f)) };
+        await arrive([TYPED]);
+        await field('Suite').fill('Harbour');
+        const typed = await leave();
+        await arrive([PICK], typed);
+        expect(await picked()).toBe('');
       });
     }, 20_000);
   });
