@@ -200,10 +200,14 @@ describe('the backgroundImage value', () => {
       expect(def.kind).toBe('code');
       const offered = placementStyleControls(def, 'root', codeTakesOverrides(def))!;
       expect(offered.slice(offered.indexOf('background'), offered.indexOf('background') + 2)).toEqual(['background', 'backgroundImage']);
-      // A part inside the code may be anything, so it keeps its own list.
-      for (const part of Object.keys(def.parts)) if (part !== 'root') expect(partStyleControls(def, part)).toEqual(def.parts[part].styleControls);
-      // A copy in the project may have had its code rewritten.
+      // A part inside the code may be anything, even one that lets its background change.
+      const inner = { nodeId: 'inner', label: 'Inner', styleControls: ['background'] };
+      expect(partStyleControls({ ...def, parts: { ...def.parts, inner } }, 'inner')).toEqual(['background']);
+      // A copy in the project may have had its code rewritten, and a design's root says by its tree whether it is a box.
       expect(partStyleControls({ ...def, owner: 'project' }, 'root')).not.toContain('backgroundImage');
+      expect(partStyleControls({ ...def, kind: 'managed' }, 'root')).not.toContain('backgroundImage');
+      // Another section written in code is not one of the two.
+      expect(partStyleControls({ ...def, componentId: 'cta.banner' }, 'root')).not.toContain('backgroundImage');
     }
   });
 });
