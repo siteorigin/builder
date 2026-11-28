@@ -568,7 +568,7 @@
   /* A guest pointed at another page (#768): a notice over the top of the page, with a way there. */
   .peer-away { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; flex-direction: column; gap: 6px; max-width: min(480px, calc(100% - 16px)); }
   /* Over a workspace that covers the canvas, the prompt shows under the toolbar, in the window. */
-  .peer-away.floating { position: fixed; top: 64px; z-index: 60; }
+  .peer-away.floating { position: fixed; top: calc(var(--toolbar-bottom, 52px) + 12px); z-index: 60; }
   .peer-away-row { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px 4px 10px; border-radius: var(--r-md); background: var(--raised); color: var(--text, var(--ink)); box-shadow: inset 3px 0 0 var(--peer), 0 0 0 1px var(--border), var(--shadow-md); font-size: 13px; }
   .peer-away-row > svg { flex: none; width: 16px; height: 16px; color: var(--peer); }
   .peer-away-row .ellipsis { flex: 1; min-width: 0; }

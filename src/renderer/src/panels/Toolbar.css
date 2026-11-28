@@ -1,7 +1,7 @@
 @layer components {
   /* A pixel of room above as well as the hairline below, so the 28px controls centre on whole pixels (12px from the
      top) and their 1px edges draw crisp on a 1x display rather than smeared across two rows. */
-  .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: var(--z-chrome); }
+  .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; min-height: var(--toolbar-h); padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: var(--z-chrome); }
   .toolbar.mac .toolbar-start { padding-left: 70px; }
   /* The centre group is centred on the window when there is room (from about 1400px on macOS). Narrower, the start
      column (identity and save state) keeps a floor and borrows from the empty space on the right instead. The tracks
@@ -11,6 +11,18 @@
      then moves Zoom and Settings into More) the centre group stops centring on the window: the identity takes
      what the controls leave, and the project and page names shorten. */
   .toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
+  /* The overflow toolbar is one row while it fits, as those tracks would draw it: the identity takes what the
+     controls leave. Narrower (the editor zoomed in from the View menu: an 1100px window from about 110%), the
+     identity keeps the floor its names, chevron and save status need, and the preview controls, then the actions,
+     wrap onto rows under it, the actions to the right. Nothing is drawn over anything else or runs out of the window;
+     the bar grows instead (the editor's first row is the bar's height). The floor is measured: the mark, Sidebar, the
+     title at its floors and the quiet states' slot, plus the traffic lights on macOS. */
+  .toolbar[data-tier='overflow'] { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; row-gap: 0; }
+  .toolbar[data-tier='overflow'] .toolbar-start { flex: 1 1 0; min-width: min(100%, 352px); min-height: calc(var(--toolbar-h) - 2px); }
+  .toolbar.mac[data-tier='overflow'] .toolbar-start { min-width: min(100%, 422px); }
+  /* A wrapped row is shorter than the bar's own: 6px above and below its controls. */
+  .toolbar[data-tier='overflow'] :is(.toolbar-center, .toolbar-end) { flex: none; min-height: 40px; }
+  .toolbar[data-tier='overflow'] .toolbar-end { margin-left: auto; }
   /* One 28px rail: every control in the bar (switcher, status, segments, field, zoom, toggles, Export) shares a height
      and a centre line. */
   .toolbar .icon-btn { flex: none; width: 28px; height: 28px; }
