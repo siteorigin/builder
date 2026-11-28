@@ -136,7 +136,8 @@ export interface PackManifest extends Omit<ThemePack, 'digest' | 'source'> {
 
 /** Pack IDs and component IDs are short, lower-case and safe in file and CSS names. */
 export const PACK_ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
-export const PACK_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/** A canonical semver release (no leading zeros or empty parts), so two spellings never name one release. */
+export const PACK_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 
 /**
  * Semver precedence of two pack versions (PACK_VERSION_RE): negative when `a` is older than `b`, 0 when they rank

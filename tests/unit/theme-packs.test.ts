@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
-import type { AuthoredPack, ThemePack } from '@catalogue/pack';
+import { comparePackVersions, PACK_VERSION_RE, type AuthoredPack, type ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
 import { builtinFont } from '@catalogue/builtin-fonts';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
@@ -262,6 +262,18 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('1.2.0'))).toMatch(/needs "studio" 1\.2\.0 or newer, but the installed copy is 1\.2\.0-rc\.1/);
     expect(themePinProblem(state('1.2.0-rc.0'))).toBeNull();
     expect(themePinProblem(state('1.2.0-rc.2'))).toMatch(/or newer/);
+    await restorePacks();
+  });
+
+  it('orders pack versions by semver precedence and names each release one way', async () => {
+    const ascending = ['0.9.0', '1.0.0-1', '1.0.0-2', '1.0.0-10', '1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-rc.1', '1.0.0', '1.0.1', '1.2.0', '1.10.0', '2.0.0'];
+    for (const [i, a] of ascending.entries())
+      for (const [j, b] of ascending.entries()) expect(Math.sign(comparePackVersions(a, b)), `${a} vs ${b}`).toBe(Math.sign(i - j));
+    for (const v of ascending) expect(PACK_VERSION_RE.test(v), v).toBe(true);
+    // Leading zeros and empty parts would give one release two spellings, and the same-version check would miss it.
+    for (const v of ['1.02.0', '01.2.0', '1.2.00', '1.2.0-01', '1.2.0-', '1.2.0-a..b', '1.2', 'v1.2.0']) expect(PACK_VERSION_RE.test(v), v).toBe(false);
+    withInstalled('d1', { version: '1.1.0' });
+    expect(themePinProblem({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: '1.02.0', digest: 'd0' } } })).toMatch(/records "1\.02\.0", which is not a release version/);
     await restorePacks();
   });
 
