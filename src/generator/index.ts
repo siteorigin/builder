@@ -126,7 +126,7 @@ import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerS
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
 // static-pages imports this module too: only its functions are used here, at generation time, never while loading.
-import { HYDRATED_PAGE_JS, STATIC_PAGE_JS, staticPageIds, staticPageModule, staticRouteIds } from './static-pages';
+import { HYDRATED_PAGE_JS, STATIC_HTML_DATA, STATIC_PAGE_JS, staticPageIds, staticPageModule } from './static-pages';
 import { generateWebManifest, siteColors, HEAD_ASSET, HEAD_ASSET_SCRIPT, siteIconLinks, themeColorMeta } from './site-icons';
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
@@ -4564,13 +4564,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
   // The page says its scripts run (SCRIPTS_CLASS) before any of it is drawn, as a classic script in its head, after the
-  // remembered theme: on every page but those served as plain HTML (see ./static-pages), which load no script at all
-  // and show nothing that needs one. Worked out as a derived value, so the layout follows which pages those are, not
-  // everything that decides it. The editor's preview runs every page's scripts.
-  const statics = opts.instrument ? [] : derived(state, 'staticRouteIds', staticRouteIds);
+  // remembered theme: on every page but one served as plain HTML, whose route module says so in its data (see
+  // ./static-pages), and which loads no script and shows nothing that needs one. The editor's preview runs every page's
+  // scripts.
   const marker = `<script>document.documentElement.classList.add(${js(SCRIPTS_CLASS)});</script>`;
-  const scriptsMark = statics.length ? `\n\t{#if !staticRoutes.has(page.route.id ?? '')}${marker}{/if}` : `\n\t${marker}`;
-  const staticRoutes = statics.length ? `\n\t// The pages served as plain HTML, with no scripts (see their +page.js).\n\tconst staticRoutes = new Set(${js(statics)});` : '';
+  const scriptsMark = opts.instrument ? `\n\t${marker}` : `\n\t{#if !page.data?.${STATIC_HTML_DATA}}${marker}{/if}`;
   // The site's own head code and its integrations' tags (shared/site-code.ts, shared/integrations.ts), on the published
   // website alone: never in the editor's preview, and never under `vite dev`, which the editor's canvas runs, so the
   // author's scripts never run while they edit and their analytics never count their own visits.
@@ -4611,7 +4609,7 @@ ${imports}${languages}${devBridge}
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
 	const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));
-	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));${staticRoutes}${toggleStart}
+	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));${toggleStart}
 ${editing}</script>
 
 <svelte:head>${bootstrap}${scriptsMark}
@@ -5713,7 +5711,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${hasArchiveLayout(state.collections[collectionId].settings) ? mode : ''}`, (s) => generateArchive(s, collectionId, route, opts)));
   // A page served as plain HTML says so in a route module beside its file (see ./static-pages): only one whose file
   // nothing written above took over. The editor's preview runs its scripts. Which pages those are decides only which
-  // files exist, so it is asked of the plain state, as for search; the layout works the same list out for itself.
+  // files exist, so it is asked of the plain state, as for search; the layout reads the module's data, not the list.
   for (const id of staticPageIds(state)) files.set(staticPageModule(state.pages[id]), opts.instrument ? HYDRATED_PAGE_JS : STATIC_PAGE_JS);
   // The not-found page and the site's server hook (in the library) that makes it work at any address both read the
   // whole site's sections; the hook also gives each page in another language than the site's its own <html lang>.

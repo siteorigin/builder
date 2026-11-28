@@ -95,6 +95,8 @@ import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type
 import { fileTrouble, findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, libraryName } from './project/asset-files';
 import { DRAFT_ASSETS_DIR } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
+import { isPageModule, ownRouteFiles } from './project/page-module';
+import { STATIC_PAGE_JS } from '@generator/static-pages';
 import { BUILD_FAILED_UNPLACED, type ExportNote, type MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
@@ -2241,6 +2243,27 @@ export function notFoundHostNote(base: string, host: RedirectHost): string {
   }
   if (named) return `${page} ${named} uses it automatically when it publishes the exported website as it is.`;
   return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, ${errorDocument}.`;
+}
+
+/**
+ * A page served as plain HTML says so in a route module SiteOrigin Builder writes beside its file
+ * (generator/static-pages.ts). The project's own route files can be a step ahead of it, added since SiteOrigin Builder
+ * last wrote the module: a staged copy settles it as the next regeneration would, leaving the module out where the page
+ * has route files of its own (see ownRouteFiles), so the copy never holds two modules for one page or serves a page
+ * without the scripts its own files may need. generated-manifest.json then lists what the copy has.
+ */
+export async function settlePageModules(dir: string): Promise<void> {
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const files = manifest.files ?? {};
+  const generated = sha(STATIC_PAGE_JS);
+  const claimed = (path: string) => Object.hasOwn(files, path);
+  const theirs = Object.keys(files).filter((path) => files[path] === generated && isPageModule(path) && ownRouteFiles(dir, path, claimed));
+  if (!theirs.length) return;
+  for (const path of theirs) {
+    await fs.rm(join(dir, path), { force: true });
+    delete files[path];
+  }
+  await fs.writeFile(join(dir, MANIFEST_PATH), toJson(manifest));
 }
 
 /**

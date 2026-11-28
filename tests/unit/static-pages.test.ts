@@ -18,15 +18,18 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { GenerationCache } from '@generator/cache';
 import { SCRIPTS_CLASS, defFile, generateProject, pageFile } from '@generator/index';
-import { HYDRATED_PAGE_JS, STATIC_CODE, STATIC_PAGE_JS, staticHtmlReason, staticHtmlVerdict, staticPageIds, staticPageModule, staticRouteIds } from '@generator/static-pages';
+import { HYDRATED_PAGE_JS, STATIC_CODE, STATIC_HTML_DATA, STATIC_PAGE_JS, staticHtmlReason, staticHtmlVerdict, staticPageIds, staticPageModule } from '@generator/static-pages';
 import { sha256Hex } from '@shared/sha256';
 import { withoutCodeMarkers } from '../../src/main/codecheck';
-import { ownPageModule } from '../../src/main/project/page-module';
+import { ownRouteFiles } from '../../src/main/project/page-module';
+import { settlePageModules } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
 import { projectDesign } from './fixtures/packs';
 
 const LANDING = 'pg_landing';
 const MARKER = `<script>document.documentElement.classList.add("${SCRIPTS_CLASS}");</script>`;
+/** A script the browser runs: any but structured data. */
+const EXECUTABLE = /<script(?![^>]*type="application\/ld\+json")[\s>]/;
 const page = (id: string) => ({ kind: 'page' as const, id });
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -58,9 +61,13 @@ const roots: string[] = [];
 afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 const GEN = '\0gen:';
-/** The head the website prerenders for a route: its generated layout around its page, compiled for the server. */
+/**
+ * The head the website prerenders for a route, the layout's and the page's, without comments: its generated layout
+ * around its page, compiled for the server, with the data the page's route module loads, as SvelteKit gives them.
+ */
 async function renderedHead(files: Map<string, string>, routeId: string, route: string): Promise<string> {
-  const entry = `export { render } from 'svelte/server';\nexport { createRawSnippet } from 'svelte';\nexport { default as Layout } from ${JSON.stringify(GEN + 'src/routes/+layout.svelte')};\nexport { default as Page } from ${JSON.stringify(GEN + route)};`;
+  const module = route.replace(/\+page\.svelte$/, '+page.js');
+  const entry = `export { render } from 'svelte/server';\nexport { createRawSnippet } from 'svelte';\nexport { page } from '$app/state';\nexport { default as Layout } from ${JSON.stringify(GEN + 'src/routes/+layout.svelte')};\nexport { default as Page } from ${JSON.stringify(GEN + route)};\n${files.has(module) ? `export * as routeModule from ${JSON.stringify(GEN + module)};` : 'export const routeModule = {};'}`;
   const out = (await build({
     configFile: false,
     logLevel: 'silent',
@@ -81,7 +88,7 @@ async function renderedHead(files: Map<string, string>, routeId: string, route: 
         load(id) {
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
-          if (id === '\0$app/state') return `export const page = { route: { id: ${JSON.stringify(routeId)} }, url: new URL('https://site.test${routeId}/') };`;
+          if (id === '\0$app/state') return `export const page = { route: { id: ${JSON.stringify(routeId)} }, url: new URL('https://site.test${routeId}/'), data: {} };`;
           if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const onNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
           if (id === '\0$app/env') return 'export const dev = false; export const building = true;';
           if (!id.startsWith(GEN)) return null;
@@ -101,10 +108,13 @@ async function renderedHead(files: Map<string, string>, routeId: string, route: 
   roots.push(dir);
   const file = join(dir, 'route.mjs');
   writeFileSync(file, chunk.code);
-  const mod = (await import(pathToFileURL(file).href)) as { render: (c: unknown, o: { props: Record<string, unknown> }) => { head: string; body: string }; createRawSnippet: (f: () => { render: () => string }) => unknown; Layout: unknown; Page: unknown };
-  const body = mod.render(mod.Page, { props: {} }).body;
-  const children = mod.createRawSnippet(() => ({ render: () => `<div>${body}</div>` }));
-  return mod.render(mod.Layout, { props: { children } }).head;
+  type Rendered = { head: string; body: string };
+  const mod = (await import(pathToFileURL(file).href)) as { render: (c: unknown, o: { props: Record<string, unknown> }) => Rendered; createRawSnippet: (f: () => { render: () => string }) => unknown; page: { data: Record<string, unknown> }; routeModule: { load?: () => Record<string, unknown> }; Layout: unknown; Page: unknown };
+  mod.page.data = mod.routeModule.load?.() ?? {};
+  const own = mod.render(mod.Page, { props: { data: mod.page.data } });
+  const children = mod.createRawSnippet(() => ({ render: () => `<div>${own.body}</div>` }));
+  const clean = (html: string) => html.replace(/<!--[\s\S]*?-->/g, '');
+  return clean(mod.render(mod.Layout, { props: { children } }).head + own.head);
 }
 
 describe('a page that asks for plain HTML', () => {
@@ -113,26 +123,44 @@ describe('a page that asks for plain HTML', () => {
     const module = staticPageModule(s.pages[LANDING]);
     expect(module).toBe('src/routes/landing/+page.js');
     expect(staticPageIds(s)).toEqual([LANDING]);
-    expect(staticRouteIds(s)).toEqual(['/landing']);
     const clean = generateProject(s);
     const dev = generateProject(s, { instrument: true });
     expect(clean.get(module)).toBe(STATIC_PAGE_JS);
     expect(STATIC_PAGE_JS).toMatch(/^export const csr = false;$/m);
+    expect(STATIC_PAGE_JS).toContain(`export const load = () => ({ ${STATIC_HTML_DATA}: true });`);
     // The editor's preview loads the same route module from its own copy, which runs the page's scripts.
     expect(dev.get(module)).toBe(HYDRATED_PAGE_JS);
     expect(HYDRATED_PAGE_JS).toMatch(/^export const csr = true;$/m);
+    expect(HYDRATED_PAGE_JS).not.toContain(STATIC_HTML_DATA);
     // No other page has one, and none is written for the Home page that did not ask.
     expect([...clean.keys()].filter((p) => p.endsWith('/+page.js') && p !== module && !p.includes('404'))).toEqual([]);
-    // No script in app.html: the mark that a page's scripts run is the layout's, on every other route.
+    // No script in app.html: the mark that a page's scripts run is the layout's, left out where the route module says
+    // the page is plain. The editor's preview marks every page.
     expect(clean.get('src/app.html')).not.toContain('<script');
-    expect(clean.get('src/routes/+layout.svelte')).toContain('const staticRoutes = new Set(["/landing"]);');
-    expect(dev.get('src/routes/+layout.svelte')).not.toContain('staticRoutes');
-    expect(dev.get('src/routes/+layout.svelte')).toContain(`<svelte:head>\n\t${MARKER}`);
-    // As the website prerenders them: the landing page's head has no script at all, Home's marks it first thing.
+    expect(clean.get('src/routes/+layout.svelte')).toContain(`<svelte:head>\n\t{#if !page.data?.${STATIC_HTML_DATA}}${MARKER}{/if}`);
+    expect(dev.get('src/routes/+layout.svelte')).toContain(`<svelte:head>\n\t${MARKER}\n`);
+    // As the website prerenders them: the landing page's head has no script the browser runs, Home's marks it first.
     const plain = await renderedHead(clean, '/landing', pageFile(s.pages[LANDING]));
-    expect(plain).not.toContain('<script');
+    expect(plain).toContain('<title>');
+    expect(plain).not.toMatch(EXECUTABLE);
     const home = await renderedHead(clean, '/', pageFile(s.pages[s.site.homePageId]));
-    expect(home.replace(/<!--[\s\S]*?-->/g, '').trimStart().startsWith(MARKER)).toBe(true);
+    expect(home.trimStart().startsWith(MARKER)).toBe(true);
+    // A route whose module the project's own files replace (no data saying it is plain) is marked again.
+    const replaced = new Map(clean);
+    replaced.set(module, 'export const csr = true;\n');
+    expect((await renderedHead(replaced, '/landing', pageFile(s.pages[LANDING]))).trimStart().startsWith(MARKER)).toBe(true);
+  }, 60_000);
+
+  it('serves the Home page as plain HTML too, from the route module beside it', async () => {
+    const s0 = createStarterState('business', 'Plain Home', false);
+    const home = s0.site.homePageId;
+    let s = run(s0, ...s0.pages[home].rootIds.map((nodeId): EditOperation => ({ type: 'node.remove', owner: page(home), nodeId })));
+    s = run(s, { type: 'node.insert', owner: page(home), componentId: 'hero.split', index: 0 } as EditOperation, { type: 'page.update', pageId: home, showHeader: false, preferStaticHtml: true });
+    expect(staticPageModule(s.pages[home])).toBe('src/routes/+page.js');
+    const clean = generateProject(s);
+    expect(clean.get('src/routes/+page.js')).toBe(STATIC_PAGE_JS);
+    expect(generateProject(s, { instrument: true }).get('src/routes/+page.js')).toBe(HYDRATED_PAGE_JS);
+    expect(await renderedHead(clean, '/', pageFile(s.pages[home]))).not.toMatch(EXECUTABLE);
   }, 60_000);
 
   it('keeps its scripts, and the preference, while the page shows the header, and is plain again once it does not', () => {
@@ -150,19 +178,19 @@ describe('a page that asks for plain HTML', () => {
     files = generated(s, cache);
     expect(files.clean.has(module)).toBe(false);
     expect(files.dev.has(module)).toBe(false);
-    expect(files.clean.get('src/routes/+layout.svelte')).not.toContain('staticRoutes');
-    expect(files.clean.get('src/routes/+layout.svelte')).toContain(`\n\t${MARKER}\n`);
 
     s = run(s, { type: 'page.update', pageId: LANDING, showHeader: false });
     files = generated(s, cache);
     expect(files.clean.get(module)).toBe(STATIC_PAGE_JS);
-    expect(files.clean.get('src/routes/+layout.svelte')).toContain('new Set(["/landing"])');
 
-    // Turned off, the page loads its scripts and its document no longer carries the preference.
+    // Turned off, the page loads its scripts and its document no longer carries the preference. The layout is the same
+    // either way: each route's module says for itself whether its page is plain.
+    const layout = files.clean.get('src/routes/+layout.svelte');
     s = run(s, { type: 'page.update', pageId: LANDING, preferStaticHtml: false });
     expect(Object.hasOwn(s.pages[LANDING], 'preferStaticHtml')).toBe(false);
     files = generated(s, cache);
     expect(files.clean.has(module)).toBe(false);
+    expect(files.clean.get('src/routes/+layout.svelte')).toBe(layout);
   });
 
   it('follows its route when it moves, and a copy keeps the preference', () => {
@@ -180,7 +208,7 @@ describe('a page that asks for plain HTML', () => {
     const s = run(landing(), { type: 'page.update', pageId: LANDING, draft: true });
     expect(blocked(s)).toMatchObject({ blocker: 'draft' });
     expect(generateProject(s).has('src/routes/landing/+page.js')).toBe(false);
-    expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: 'false' }).ok).toBe(false);
+    for (const value of ['false', null, 0, 1]) expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: value }).ok, String(value)).toBe(false);
     expect(validateOperation({ type: 'page.update', pageId: LANDING, preferStaticHtml: false }).ok).toBe(true);
   });
 });
@@ -208,14 +236,17 @@ describe('what keeps a page’s scripts', () => {
     }
   });
 
-  it('takes any edit to checked code as code it cannot vouch for, even one that keeps its name and ID', () => {
+  it('takes any edit to checked code as code it cannot vouch for, even one that keeps its name and ID', async () => {
     const s = landing();
+    expect(blocked(s)).toBeNull();
     const hero = Object.values(s.pages[LANDING].nodes).find((n) => n.kind === 'instance') as InstanceNode;
     const def = s.components[hero.definitionId];
-    const edited = { ...s, components: { ...s.components, [def.id]: { ...def, source: def.source!.replace('</script>', '\n\t$effect(() => {});\n</script>') } } };
-    expect(blocked(edited)).toMatchObject({ blocker: 'code', name: def.name });
+    const withSource = (source: string) => ({ ...s, components: { ...s.components, [def.id]: { ...def, source } } });
+    expect(blocked(withSource(def.source!.replace('</script>', '\n\t$effect(() => {});\n</script>')))).toMatchObject({ blocker: 'code', name: def.name });
     // As both exports read it, without the editor's markers, the same code is still the theme's.
-    expect(STATIC_CODE['foundation.hero.centered']).toHaveLength(2);
+    const unmarked = await withoutCodeMarkers(def.source!);
+    expect(unmarked).not.toBe(def.source);
+    expect(blocked(withSource(unmarked))).toBeNull();
   });
 
   it('keeps every page’s scripts for the Light/Dark switch and the search the site offers AI agents', () => {
@@ -252,9 +283,11 @@ describe('what keeps a page’s scripts', () => {
     expect(blocked(design((d) => (el(d, 'inner').action = { $prop: 'open' })))).toMatchObject({ blocker: 'image-viewer' });
     expect(blocked(design((d) => (el(d, 'inner').action = 'link')))).toBeNull();
     expect(blocked(design((d) => (el(d, 'inner').appear = 'fade')))).toMatchObject({ blocker: 'appear' });
+    expect(blocked(design((d) => (el(d, 'inner').overlay = 'dialog' as ElementNode['overlay'])))).toMatchObject({ blocker: 'state' });
+    expect(blocked(design((d) => (d.tree!.nodes.list = { id: 'list', kind: 'link', link: { type: 'none' }, label: 'Open', appearance: 'primary', stateAction: { state: 'open', action: 'toggle' } } as unknown as ElementNode)))).toMatchObject({ blocker: 'state' });
     // A condition that hides it today still leaves it in the page's code.
     expect(blocked(design((d) => Object.assign(el(d, 'inner'), { when: { $prop: 'never' }, appear: 'fade' })))).toMatchObject({ blocker: 'appear' });
-    expect(blocked(design((d) => (d.state = { open: { type: 'boolean', default: false } } as ComponentDefinition['state'])))).toMatchObject({ blocker: 'state' });
+    expect(blocked(design((d) => (d.state = { open: { type: 'boolean', label: 'Open', initial: false } })))).toMatchObject({ blocker: 'state' });
     expect(blocked(design((d) => (d.tree!.nodes.list = { id: 'list', kind: 'repeat', list: { $prop: 'items' }, children: [], filter: { field: 'kind' } })))).toMatchObject({ blocker: 'filter' });
     // A slot's fallback, shown while a placement gives it nothing.
     expect(
@@ -278,7 +311,7 @@ describe('what keeps a page’s scripts', () => {
 
     // A design inside another: the inner one's state keeps the page's scripts, named as the inner one.
     const inner = projectDesign(s, { componentId: 'project.toggle', name: 'Toggle', properties: {}, parts: { root: { nodeId: 'root', label: 'Toggle' } }, build: (b) => b.el('root', 'div', {}, []) });
-    s = { ...s, components: { ...s.components, [inner.id]: { ...inner, state: { open: { type: 'boolean', default: false } } as ComponentDefinition['state'] } } };
+    s = { ...s, components: { ...s.components, [inner.id]: { ...inner, state: { open: { type: 'boolean', label: 'Open', initial: false } } } } };
     const nested = design((d) => (d.tree!.nodes.list = { id: 'list', kind: 'instance', definitionId: inner.id, props: {} } as InstanceNode));
     expect(blocked(nested)).toMatchObject({ blocker: 'state', name: 'Toggle' });
     // A design that places itself, and one that names a component or node the project does not have.
@@ -297,18 +330,57 @@ describe('what keeps a page’s scripts', () => {
   });
 });
 
-describe('a project’s own route module', () => {
-  it('wins over the generated one: a TypeScript one beside it, or one at its path SiteOrigin Builder did not write', () => {
+describe('a project’s own route files', () => {
+  it('win over the generated module: any page or layout file of its own in the page’s folder, a layout above it, a client hook', () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-page-module-'));
     roots.push(dir);
+    mkdirSync(join(dir, 'src/routes/services/design'), { recursive: true });
+    const path = 'src/routes/services/design/+page.js';
+    const ours = new Set(['src/routes/+layout.svelte', 'src/routes/+layout.js', 'src/routes/+page.svelte', 'src/routes/services/+page.svelte', 'src/routes/services/+page.js', 'src/routes/services/design/+page.svelte']);
+    for (const p of ours) writeFileSync(join(dir, p), '\n');
+    const claimed = (p: string) => ours.has(p);
+    expect(ownRouteFiles(dir, path, claimed)).toBe(false);
+    /** Whether a file of the project's own at `rel` keeps the page's scripts; it is removed again after. */
+    const own = (rel: string) => {
+      mkdirSync(join(dir, posix.dirname(rel)), { recursive: true });
+      writeFileSync(join(dir, rel), '\n');
+      try {
+        return ownRouteFiles(dir, path, claimed);
+      } finally {
+        rmSync(join(dir, rel), { recursive: true });
+      }
+    };
+    // Its module at the generated one's path, or as TypeScript, unclaimed: SvelteKit takes one.
+    expect(own(path)).toBe(true);
+    expect(own('src/routes/services/design/+page.ts')).toBe(true);
+    // A server module, which may turn server rendering off, or a layout of its own around it.
+    expect(own('src/routes/services/design/+page.server.js')).toBe(true);
+    expect(own('src/routes/services/design/+layout.svelte')).toBe(true);
+    expect(own('src/routes/services/+layout.svelte')).toBe(true);
+    expect(own('src/routes/+layout.server.ts')).toBe(true);
+    expect(own('src/hooks.client.js')).toBe(true);
+    // Another page's files above it are not its own.
+    expect(own('src/routes/services/+page.server.js')).toBe(false);
+    expect(own('src/routes/services/design/notes.txt')).toBe(false);
+  });
+
+  it('leave the generated module out of a staged copy, which then lists only what it has', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-page-module-stage-'));
+    roots.push(dir);
     mkdirSync(join(dir, 'src/routes/landing'), { recursive: true });
+    mkdirSync(join(dir, 'siteorigin'), { recursive: true });
     const path = 'src/routes/landing/+page.js';
-    expect(ownPageModule(dir, path, false)).toBe(false);
-    writeFileSync(join(dir, path), 'export const ssr = true;\n');
-    expect(ownPageModule(dir, path, false)).toBe(true);
-    expect(ownPageModule(dir, path, true)).toBe(false);
+    writeFileSync(join(dir, path), STATIC_PAGE_JS);
+    writeFileSync(join(dir, 'src/routes/landing/+page.svelte'), '<p>Landing</p>\n');
+    const files = { [path]: sha256Hex(STATIC_PAGE_JS), 'src/routes/landing/+page.svelte': 'abc' };
+    writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ files }));
+    await settlePageModules(dir);
+    expect(readFileSync(join(dir, path), 'utf8')).toBe(STATIC_PAGE_JS);
     writeFileSync(join(dir, 'src/routes/landing/+page.ts'), 'export const prerender = true;\n');
-    expect(ownPageModule(dir, path, true)).toBe(true);
+    await settlePageModules(dir);
+    expect(existsSync(join(dir, path))).toBe(false);
+    expect(readFileSync(join(dir, 'src/routes/landing/+page.ts'), 'utf8')).toBe('export const prerender = true;\n');
+    expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).toEqual({ 'src/routes/landing/+page.svelte': 'abc' });
   });
 
   it('keeps a page with one of its own on its own module, and serves no page as plain HTML while generated code is edited outside the app', async () => {
@@ -341,10 +413,21 @@ describe('a project’s own route module', () => {
       await s.apply({ operations: [{ type: 'page.update', pageId: LANDING, title: 'Landing again' }] }, { label: 'Rename' });
       expect(s.conflicts.map((c) => c.path)).toContain(heroPath);
       expect(existsSync(module)).toBe(false);
+      expect(existsSync(join(dir, '.siteorigin/cache/dev/src/routes/landing/+page.js'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).not.toHaveProperty('src/routes/landing/+page.js');
       // Restored, the page is plain again.
       writeFileSync(heroFile, generatedHero);
       await s.apply({ operations: [{ type: 'page.update', pageId: LANDING, title: 'Landing' }] }, { label: 'Rename' });
       expect(readFileSync(module, 'utf8')).toBe(STATIC_PAGE_JS);
+      expect(s.conflicts).toEqual([]);
+
+      // Its module edited outside the app, then no longer the page's: it stays claimed, in conflict, so no export
+      // carries a page served without the scripts it now needs.
+      writeFileSync(module, `${STATIC_PAGE_JS}// mine\n`);
+      await s.apply({ operations: [{ type: 'page.update', pageId: LANDING, preferStaticHtml: false }] }, { label: 'Load scripts' });
+      expect(readFileSync(module, 'utf8')).toContain('// mine');
+      expect(s.conflicts.find((c) => c.path === 'src/routes/landing/+page.js')?.reason).toContain('route module');
+      expect(JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')).files).toHaveProperty('src/routes/landing/+page.js');
     } finally {
       await s.close();
     }

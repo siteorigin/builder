@@ -1039,9 +1039,9 @@ export interface PageDoc extends NodeTree {
   /** Whether this page shows the site's shared footer, independently of the header. */
   showFooter: boolean;
   /**
-   * The author prefers this page as plain HTML on the website: no JavaScript, while nothing it shows needs any (see
-   * generator/static-pages.ts). A page that gains something that does keeps the preference and loads its scripts again
-   * until that is gone. Absent: the page loads the site's scripts, as every page does by default.
+   * The author prefers this page as plain HTML on the website, without SvelteKit's scripts, while nothing it shows needs
+   * them (see generator/static-pages.ts). A page that gains something that does keeps the preference and loads its
+   * scripts again until that is gone. Absent: the page loads the site's scripts, as every page does by default.
    */
   preferStaticHtml?: boolean;
   /**

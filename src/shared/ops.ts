@@ -411,7 +411,7 @@ export const OPERATION_SCHEMAS = {
     preferStaticHtml: z
       .boolean()
       .optional()
-      .describe('true prefers this page as plain HTML on the website, loading no JavaScript, while nothing it shows needs any (forms, search, tabs, carousels, entrances, the shared header\'s menu). While something does, the page keeps the preference and loads its scripts. false loads them always, the default.'),
+      .describe('true prefers this page as plain HTML on the website, without SvelteKit\'s scripts, while nothing it shows needs them (forms, search, tabs, carousels, entrances, the shared header\'s menu). While something does, the page keeps the preference and loads its scripts. false loads them always, the default. The site\'s own head code loads either way.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
     canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
     updatedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('When its content was last revised, YYYY-MM-DD, for the sitemap. null removes it.'),

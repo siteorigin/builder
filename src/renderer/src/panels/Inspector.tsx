@@ -3482,7 +3482,7 @@ function addressNote(published: boolean, inside: number): string | undefined {
 }
 
 /**
- * Whether the website serves a page as plain HTML, loading no JavaScript (generator/static-pages.ts): the author's
+ * Whether the website serves a page as plain HTML, without SvelteKit's scripts (generator/static-pages.ts): the author's
  * preference, and while it is on, whether the page gets it or the first thing that keeps its scripts. The preference
  * stays as the author set it when something that needs scripts is added, and takes effect again once that is gone.
  */
@@ -3490,7 +3490,7 @@ function PageStaticHtml({ page, state, upd }: { page: PageDoc; state: ProjectSta
   const on = page.preferStaticHtml === true;
   const verdict = useMemo(() => (on ? staticHtmlVerdict(state, page.id) : null), [on, state, page.id]);
   const hint = !verdict ? undefined : verdict.static ? (
-    'The website loads no JavaScript on this page'
+    'Served as plain HTML, without SvelteKit’s scripts'
   ) : (
     <>
       Still loads JavaScript. {staticHtmlReason(verdict)}
@@ -3503,7 +3503,7 @@ function PageStaticHtml({ page, state, upd }: { page: PageDoc; state: ProjectSta
       onChange={(v) => upd({ preferStaticHtml: v }, v ? 'Prefer static HTML for page' : 'Load scripts on page')}
       label="Prefer static HTML"
       hint={hint}
-      info="The website serves the page as plain HTML that loads no JavaScript, while nothing on it needs any: no form, search, tabs, carousel, entrance or menu that opens. The editor’s preview always runs it."
+      info="The website serves the page as plain HTML, without SvelteKit’s scripts, while nothing on it needs them: no form, search, tabs, carousel, entrance or menu that opens. The site’s own head code and integrations still load. The editor’s preview always runs the scripts."
     />
   );
 }

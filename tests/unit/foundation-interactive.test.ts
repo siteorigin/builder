@@ -322,7 +322,7 @@ describe('without scripts (#885)', () => {
     const files = generateProject(state);
     // The page marks itself as running scripts first thing in <head>, before the body shows (the layout's script, on
     // every page that runs them); without that mark nothing a state hides is hidden.
-    expect(files.get('src/routes/+layout.svelte')).toMatch(new RegExp(`<svelte:head>\\n\\t<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>`));
+    expect(files.get('src/routes/+layout.svelte')).toMatch(new RegExp(`<svelte:head>\\n\\t\\{#if !page\\.data\\?\\.soStaticHtml\\}<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>\\{/if\\}`));
     expect(files.get('src/app.html')).not.toContain(SCRIPTS_CLASS);
     const css = siteCss(state);
     // No rule hides it whether or not scripts run.
