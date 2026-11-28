@@ -1,5 +1,5 @@
 /**
- * Shortcuts the author can reassign: for now only Ask AI. A binding is kept as text such as `Mod+J` or
+ * Shortcuts the author can reassign: for now only Edit with AI. A binding is kept as text such as `Mod+J` or
  * `Mod+Shift+L`, where Mod is Command on macOS and Ctrl elsewhere. It always holds Mod, may hold Shift, and ends in a
  * letter or a digit. Alt is never part of one: Option changes the letter a Mac reports, and Ctrl+Alt is AltGr, which
  * types characters, on many Windows layouts.
@@ -173,7 +173,7 @@ const PLATFORM_TEXT_KEYS: Record<string, Record<string, string>> = {
 export const MAC_SYSTEM_HINT = 'macOS keeps ⇧⌘3 to ⇧⌘6 and ⇧⌘Q for itself.';
 
 /**
- * Why a binding cannot be Ask AI's, naming what already has it, or null when it is free. `platform` as Node names it
+ * Why a binding cannot be Edit with AI's, naming what already has it, or null when it is free. `platform` as Node names it
  * (darwin, win32, linux).
  */
 export function shortcutConflict(binding: string, platform: string): string | null {
