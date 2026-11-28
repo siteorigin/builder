@@ -75,6 +75,8 @@
   .insp .section-head svg.chev { flex: none; }
   /* Keyboard focus scrolls fields clear of the selection header at the height it wraps to (measured in Header). */
   .insp :is(input, select, textarea, button) { scroll-margin-top: var(--insp-head-h, 150px); }
+  /* So does a table's Columns shortcut, which scrolls the whole part and then focuses Add column where it landed. */
+  .insp .table-editor-part { scroll-margin-top: var(--insp-head-h, 150px); }
   /* A closed section's state summary gives way before the section's name does. */
   .insp .section-head .scope { min-width: 0; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .insp-mini-row { display: inline-flex; align-items: center; gap: 2px; flex: none; margin: -3px -6px -3px auto; }
