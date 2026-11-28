@@ -128,6 +128,30 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
   const store = (patch: string) => page.evaluate(`window.store.setState(${patch})`);
   const storeRead = <T>(expr: string) => page.evaluate<T>(`(() => { const s = window.store.getState(); return ${expr}; })()`);
 
+  it('opens no chat from Edit with AI… on a row that went while its menu was open (#1585)', async () => {
+    await store(`{ chatMode: 'ask', rightTab: 'inspect' }`);
+    const chat = () => storeRead<string[]>('[s.chatMode, s.rightTab]');
+    const item = page.locator('[role="menu"] [role="menuitem"]', { hasText: 'Edit with AI…' });
+    const gone = await sections().nth(1).getAttribute('data-node');
+    await sections().nth(1).locator('.layer-name').dispatchEvent('contextmenu');
+    await item.waitFor();
+    // As an AI run or a change on disk takes it away: a new snapshot without the section.
+    await page.evaluate((id) => {
+      const { snapshot } = (window as any).store.getState();
+      const state = structuredClone(snapshot.state);
+      const p = state.pages[state.site.homePageId];
+      p.rootIds = p.rootIds.filter((x: string) => x !== id);
+      delete p.nodes[id];
+      (window as any).store.setState({ snapshot: { ...snapshot, state, revision: 2 } });
+    }, gone);
+    await item.click();
+    expect(await chat()).toEqual(['ask', 'inspect']);
+    // A row still there is edited.
+    await sections().nth(0).locator('.layer-name').dispatchEvent('contextmenu');
+    await item.click();
+    expect(await chat()).toEqual(['edit', 'chat']);
+  });
+
   it('names the page Layers shows in its head, and switches page from there (#953)', async () => {
     const about = state.site.pageOrder.find((id) => state.pages[id].route === '/about/')!;
     await expect.poll(() => subject().getAttribute('aria-label')).toBe('Home, switch page');
