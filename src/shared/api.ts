@@ -1,3 +1,4 @@
+import type { PerformanceStatus } from './performance';
 import type { ReviewCaptureProgress, ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { AltReview, ElementRef, OwnerRef, ProjectState } from './types';
@@ -130,6 +131,8 @@ export interface Diagnostic {
   nodeId?: string;
   /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
   site?: string;
+  /** For a finding in a collection's layout: the published entry whose page shows it (see the engine's Diagnostic). */
+  entryId?: string;
 }
 
 /**
@@ -421,6 +424,8 @@ export interface ProjectSnapshot {
   workspaceKey: string;
   /** What this opening of the project exported, newest first. */
   recentExports: RecentExport[];
+  /** What the last website export measured of each page's first visit (#1488), and whether the project changed since. */
+  performance?: PerformanceStatus | null;
   /** Named versions of the site saved in this project. */
   versions?: VersionsInfo;
   /** A save that failed, until a later one succeeds (or, when unfinished, until the project is reopened). */
@@ -1833,6 +1838,8 @@ export interface BuilderApi {
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
+  /** F10, off macOS: open the application menu as the menu button does (#1355). */
+  on(channel: 'menu:open', cb: () => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   /** The host's live session changed: started, a guest joined or left, it dropped or came back, or it ended. */
   on(channel: 'live:state', cb: (state: LiveHostState) => void): () => void;
@@ -1864,6 +1871,11 @@ export interface BuilderApi {
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */
   menuReceived(id: number): void;
+  /**
+   * Open the application menu under a point of the page, in CSS pixels (the menu button's bottom-left corner), on the
+   * platforms that show the menu button rather than a menu bar (#1355). Resolves once the menu has closed.
+   */
+  popupMenu(at: { x: number; y: number }): Promise<void>;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
   leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;

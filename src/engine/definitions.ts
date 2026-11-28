@@ -23,6 +23,7 @@ import { bindingSource, requiredValueProblems } from './required';
 import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredGap, shownValue } from '@shared/required';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
+import { dropDetailKeeps, renameDetailKeeps } from './business-details';
 import {
   MAX_UI_STATES,
   STATE_FIELDS,
@@ -356,6 +357,7 @@ function removeProp(state: ProjectState, def: ComponentDefinition, name: string,
   for (const { node } of instancesOf(state, def.id)) {
     delete node.props[name];
     releaseKept(node, name);
+    dropDetailKeeps(node, name);
   }
 }
 
@@ -475,6 +477,8 @@ function moveProps(state: ProjectState, def: ComponentDefinition, renames: PropR
       releaseKept(node, r.from);
       releaseKept(node, r.to);
     }
+    // A value kept through changes of the site's details moves with its property (#1368).
+    renameDetailKeeps(node, renamed);
   }
   for (const ex of def.examples ?? []) if (ex.props) move(ex.props);
 }

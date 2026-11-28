@@ -1402,7 +1402,7 @@ p:where(.so-draft-note) { display: flex; align-items: flex-start; gap: var(--so-
 `;
 
 /**
- * Rewrites the built not-found page so it works at any address (see generateServerHook). Plain JavaScript, written
+ * Rewrites the built not-found page so it works at any address (see generateSiteHandle). Plain JavaScript, written
  * with String.raw so its regular expressions keep their backslashes.
  */
 export const NOT_FOUND_JS = String.raw`/**
@@ -1411,7 +1411,7 @@ export const NOT_FOUND_JS = String.raw`/**
  * serves it at whatever address was missing, however deep, where they would lead nowhere. Each becomes an address
  * from the root, under the sub-path the site is built for, and SvelteKit starts from there rather than from the
  * address the browser shows. Links to sections the page does not have ("#pricing", in the shared header or footer)
- * go to the page that has the section. src/hooks.server.js calls this while the site is built.
+ * go to the page that has the section. The site's server hook (handle.server.js) calls this while the site is built.
  */
 
 /** Scripts and styles whole, or a start tag as Svelte writes one: values in double quotes, quotes inside them escaped. */

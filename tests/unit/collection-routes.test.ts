@@ -341,7 +341,7 @@ describe('draft entries and the website export', () => {
     const home = s.site.homePageId;
     s.pages[home].nodes.n_typed001 = { id: 'n_typed001', kind: 'link', label: 'Our plans', appearance: 'primary', link: { type: 'url', target: 'https://example.com/blog/plans/#soon' } } as never;
     s.pages[home].rootIds.push('n_typed001');
-    expect(publicationPlan(s).draftLinks).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed001', label: 'Our plans', inText: false, entryId: 'en_secret', anchor: 'soon' }]);
+    expect(publicationPlan(s).draftLinks).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed001', label: 'Our plans', key: ':n_typed001:', inText: false, entryId: 'en_secret', anchor: 'soon' }]);
     const stop = draftLinksStop(s)!;
     expect(stop.message).toBe('A published page links to Secret plans, which is a draft and is left out of the website. Change the link or publish the entry, then export again.');
     expect(stop.warnings).toEqual(['Home: “Our plans” goes to Secret plans (/blog/plans/#soon)']);
@@ -560,8 +560,8 @@ describe('links in entries that the website cannot follow', () => {
   it('stops the website export over a published entry’s link to a draft, naming the entry', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the plans](entry:en_secret) and [typed](https://example.com/blog/secret-plans/).'] });
     expect(publicationPlan(s).draftLinks).toEqual([
-      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'the plans', inText: true, entryId: 'en_secret' },
-      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'typed', inText: true, entryId: 'en_secret' }
+      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'the plans', key: 'body:0', inText: true, entryId: 'en_secret' },
+      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'typed', key: 'body:1', inText: true, entryId: 'en_secret' }
     ]);
     expect(draftLinksStop(s)!.warnings).toEqual(['Winter workshop (Posts): “the plans” goes to Secret plans (/blog/secret-plans/)', 'Winter workshop (Posts): “typed” goes to Secret plans (/blog/secret-plans/)']);
     // A draft's own links are not checked.
@@ -575,7 +575,7 @@ describe('links in entries that the website cannot follow', () => {
     const home = s.site.homePageId;
     s.pages[home].nodes.n_typed002 = { id: 'n_typed002', kind: 'link', label: 'Workshop', appearance: 'primary', link: { type: 'url', target: 'https://example.com/blog/winter-workshop/' } } as never;
     s.pages[home].rootIds.push('n_typed002');
-    expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === 'n_typed002')).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed002', label: 'Workshop', inText: false, entryId: 'en_winter' }]);
+    expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === 'n_typed002')).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed002', label: 'Workshop', key: ':n_typed002:', inText: false, entryId: 'en_winter' }]);
   });
 });
 

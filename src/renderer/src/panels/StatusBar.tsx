@@ -4,8 +4,9 @@ import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck,
 import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
+import { BUDGETED_KINDS, KIND_NAMES, bytesText, type PagePerformance, type PerformanceFinding, type PerformanceStatus } from '@shared/performance';
 import { diagnosticKey } from '@engine/validate';
-import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { api, applyOps, confirmDialog, getState, keepSamples, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { saveFailureNotice } from '../lib/savestate';
@@ -14,6 +15,8 @@ import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
+import { healthDiagnostics, sampleGroups, sampleKindOf } from '../lib/sample-review';
+import type { SampleContactKind } from '@shared/sample-contact';
 import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, diffCaption, lineDiff, sameVersions, savedCopyDay, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
@@ -53,7 +56,7 @@ function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady
  */
 function useHealthAnnouncement(quietConflicts: () => boolean): string {
   const health = useStore((s) => {
-    const d = s.snapshot?.diagnostics ?? [];
+    const d = healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples);
     const conflicts = s.snapshot?.conflicts.length ?? 0;
     const info = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
     const broken = info.broken;
@@ -125,6 +128,8 @@ export function StatusBar() {
   const previewActionable = useStore((s) => !s.openingPage && ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
   // While the canvas outlines the project's first page, that outline is the opening's one sign: the preview's line waits.
   const openingPage = useStore((s) => s.openingPage);
+  // The project's findings with the starter's sample contact details not kept on purpose, as Project health lists them.
+  const diagnostics = useStore((s) => healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples));
   useLayoutEffect(() => {
     if (previewActionable || !previewHadFocus.current) return;
     previewHadFocus.current = false;
@@ -138,8 +143,8 @@ export function StatusBar() {
   // (the SEO view or the post writer over it), since the outline on it says so otherwise.
   const info = runtimeInfo(runtime, pageIssue, frameReady);
   const { dot, label, broken, phase } = openingPage ? { ...info, dot: 'busy', label: info.phase === 'opening' ? 'Opening page' : 'Starting preview', phase: 'starting' as const } : info;
-  const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
-  const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
+  const errors = diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
+  const warnings = diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
   // overview, then the design's own layers down to the selection.
   const def = definitionMode && !covered ? snap.state.components[definitionMode.definitionId] : undefined;
@@ -389,7 +394,8 @@ function showElement(ref: ElementRef) {
   if (ref.owner.kind === 'page') {
     if (pageOutOfSight(s, ref.owner.id)) selectPage(ref.owner.id);
   } else if (!goToShellPart(ref.owner.id)) {
-    toast(`No page shows the shared ${ref.owner.id} right now.`, 'error');
+    // Shown only on a post's page or a collection's index: opened there, as the export's notes open it.
+    openEditorDestination({ kind: 'element', owner: ref.owner, nodeId: ref.nodeId });
     return;
   }
   setState({ modal: null, mode: 'edit', selection: ref, rightTab: 'inspect', dockOpen: true });
@@ -421,6 +427,35 @@ function showHeadings(pageId: string, d: Diagnostic) {
   let tries = 0;
   const step = () => (++tries > 2 && land()) || tries > 12 || requestAnimationFrame(step);
   requestAnimationFrame(step);
+}
+
+/**
+ * A sample contact detail's choices in Project health, as the Export dialog offers them: replace it everywhere it is
+ * on a page (Find and Replace), change it where Site settings names the publisher, or keep it on purpose, which this
+ * project remembers and the Export dialog respects.
+ */
+function SampleActions({ kind, state, readOnly, onKept }: { kind: SampleContactKind; state: ProjectState; readOnly: boolean; onKept: (value: string) => void }) {
+  const g = sampleGroups(state).find((x) => x.kind === kind);
+  if (!g) return null;
+  const identity = { kind: 'site', field: 'identity' } as const;
+  return (
+    <>
+      {g.matches.length > 0 && (
+        <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
+          {g.identity ? 'Replace on pages…' : 'Replace everywhere…'}
+        </button>
+      )}
+      {g.identity && (
+        <button className="btn btn-sm" onClick={() => openEditorDestination(identity)}>
+          {destinationLabel(identity)}
+        </button>
+      )}
+      {/* A read-only project keeps nothing. */}
+      <button className="btn btn-sm btn-ghost" disabled={readOnly} onClick={() => (keepSamples([g.value], true), onKept(g.value))}>
+        Keep it
+      </button>
+    </>
+  );
 }
 
 type Tone = 'danger' | 'warn' | 'quiet';
@@ -767,6 +802,144 @@ function SeoSharedRow({ findings, state }: { findings: SeoFinding[]; state: Proj
   );
 }
 
+/** How a performance finding reads in its row: what it says, as a warning or a note. */
+function PerformanceRow({ finding: f }: { finding: PerformanceFinding }) {
+  const warn = f.severity === 'warning';
+  return (
+    <HealthRow tone={warn ? 'warn' : 'quiet'} icon={warn ? <TriangleAlert /> : <Info />}>
+      <span className="sr-only">{warn ? 'Warning: ' : 'Note: '}</span>
+      {f.message}
+    </HealthRow>
+  );
+}
+
+/** A page's download by kind, as one line: "Scripts 120 KB · Styles 30 KB · …", the kinds over budget said so. */
+function pageBytes(p: PagePerformance, budgets: PerformanceStatus['report']['budgets']): string {
+  // Other files (a video, a document) only when the page downloads any.
+  const kinds = [...BUDGETED_KINDS, 'html' as const, ...(p.totals.other ? (['other'] as const) : [])];
+  return kinds.map((k) => `${KIND_NAMES[k]} ${bytesText(p.totals[k])}${k !== 'html' && k !== 'other' && p.totals[k] > budgets[k] ? ` (over ${bytesText(budgets[k])})` : ''}`).join(' · ');
+}
+
+/** One page of the report: its download by kind, and below it, its findings, largest files and fonts. */
+function PerformancePage({ page: p, budgets }: { page: PagePerformance; budgets: PerformanceStatus['report']['budgets'] }) {
+  const warnings = p.findings.filter((f) => f.severity === 'warning');
+  const name = p.title ? `${p.title} (${p.route})` : p.route;
+  if (p.status === 'unmeasured')
+    return (
+      <HealthRow tone="quiet" icon={<Info />}>
+        <strong>{name}</strong> <span className="health-hint">Not measured: {p.detail?.replace(/\.$/, '')}.</span>
+      </HealthRow>
+    );
+  return (
+    <HealthRow
+      tone={warnings.length ? 'warn' : 'quiet'}
+      icon={warnings.length ? <TriangleAlert /> : p.complete ? <CircleCheck /> : <Info />}
+      details={
+        <Disclosure label={p.findings.length ? `Findings and largest files (${p.findings.length})` : 'Largest files'} summaryLabel={`${p.findings.length ? `Findings (${p.findings.length}) and largest files` : 'Largest files'} of ${name}`}>
+          {p.findings.length > 0 && (
+            <ul className="health-list perf-findings">
+              {p.findings.map((f, i) => (
+                <PerformanceRow key={i} finding={f} />
+              ))}
+            </ul>
+          )}
+          <dl className="health-terms">
+            <dt>Largest files</dt>
+            <dd>{p.largest.length ? p.largest.map((r) => `${r.url} (${bytesText(r.bytes)})`).join(', ') : 'None'}</dd>
+            <dt>Fonts</dt>
+            <dd>{p.fonts.length ? p.fonts.map((r) => `${r.url} (${bytesText(r.bytes)}${r.preloaded ? ', preloaded' : ''})`).join(', ') : 'None loaded'}</dd>
+            <dt>Largest picture on the first screen</dt>
+            <dd>{p.hero ? `${p.hero.url}, ${p.hero.preloaded ? 'preloaded' : 'not preloaded'}${p.hero.from === 'estimate' ? ' (judged by its size: the browser reported no largest paint)' : ''}` : 'None'}</dd>
+          </dl>
+        </Disclosure>
+      }
+    >
+      <span className="sr-only">{warnings.length ? 'Warning: ' : ''}</span>
+      <strong>{name}</strong>
+      {!p.complete && ' (measured in part: some files were still arriving, or its pictures could not be read)'}
+      <span className="health-hint">
+        {pageBytes(p, budgets)}
+        {warnings.length > 0 && ` · ${warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`}`}
+      </span>
+    </HealthRow>
+  );
+}
+
+/**
+ * What the last website export measured of each page's first visit (#1488): its download by kind against budgets,
+ * whether the largest picture on its first screen is preloaded, pictures that do not fit their space, and how the host
+ * caches the website's hashed files. Nothing is measured until the website is exported, and a change since makes it
+ * out of date, which it says; either way it offers the export.
+ */
+function PerformanceReadiness({ status }: { status: PerformanceStatus | null }) {
+  const headId = useId();
+  const exportSite = () => setState({ modal: { kind: 'export' } });
+  if (!status)
+    return (
+      <section className="health-group performance-readiness quiet" aria-labelledby={headId} data-group="performance" data-testid="health-performance">
+        <h3 id={headId} tabIndex={-1}>
+          Performance
+        </h3>
+        <p className="health-note">
+          <Info aria-hidden="true" /> <span>Not measured yet. Each page is measured as the website is exported: what a first visit downloads, whether its main picture is preloaded, and how its pictures fit.</span>
+        </p>
+        <button className="btn btn-sm" onClick={exportSite}>
+          Export website…
+        </button>
+      </section>
+    );
+  const { report, stale } = status;
+  const warnings = [...report.findings, ...report.pages.flatMap((p) => p.findings)].filter((f) => f.severity === 'warning').length;
+  // Pages with warnings, and those not measured or measured only in part, before the rest.
+  const flagged = report.pages.filter((p) => p.status === 'unmeasured' || !p.complete || p.findings.some((f) => f.severity === 'warning'));
+  const fine = report.pages.filter((p) => !flagged.includes(p));
+  const at = new Date(report.measuredAt);
+  const when = Number.isNaN(at.getTime()) ? 'at the last export' : `at the last export, ${at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  return (
+    <section className={`health-group performance-readiness ${warnings ? 'warn' : 'quiet'}`} aria-labelledby={headId} data-group="performance" data-testid="health-performance">
+      <h3 id={headId} tabIndex={-1}>
+        Performance{' '}
+        {warnings > 0 && (
+          <span className="health-count">
+            {warnings}
+            <span className="sr-only"> {warnings === 1 ? 'warning' : 'warnings'}</span>
+          </span>
+        )}
+      </h3>
+      <p className="health-note">
+        {stale ? <TriangleAlert aria-hidden="true" /> : <Info aria-hidden="true" />}{' '}
+        <span>
+          Measured {when}, as a first visit at a {report.viewport.width}px window with nothing cached. Sizes are before the host compresses them.
+          {stale && <strong> The project has changed since the version this export was built from: export again to measure the changes.</strong>}
+        </span>
+      </p>
+      <div className="perf-actions" role="group" aria-labelledby={headId}>
+        <button className="btn btn-sm" onClick={exportSite}>
+          Export again…
+        </button>
+        {warnings > 0 && <AiHandoffButton label="Improve with AI" request={() => ({ mode: 'edit', scope: 'site', text: 'Make the website load faster: work through the performance findings the last export measured' })} />}
+      </div>
+      <ul className="health-list">
+        {report.findings.map((f, i) => (
+          <PerformanceRow key={`site-${i}`} finding={f} />
+        ))}
+        {flagged.map((p) => (
+          <PerformancePage key={p.route} page={p} budgets={report.budgets} />
+        ))}
+      </ul>
+      {fine.length > 0 && (
+        <Fold className="seo-notes" summary={`${fine.length === 1 ? '1 page' : `${fine.length} pages`} with no warnings`}>
+          <ul className="health-list">
+            {fine.map((p) => (
+              <PerformancePage key={p.route} page={p} budgets={report.budgets} />
+            ))}
+          </ul>
+        </Fold>
+      )}
+    </section>
+  );
+}
+
 export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
   // Converting a design's edited file makes code, which needs Developer mode as all code does.
@@ -776,6 +949,8 @@ export function HealthModal() {
   const frameReady = useStore((s) => s.frameReady);
   // Opened at Search & AI readiness (from the export dialog's preflight): its heading takes focus, not the summary.
   const atSeo = useStore((s) => s.modal?.kind === 'health' && s.modal.section === 'seo');
+  // The project's findings with the starter's sample contact details not kept on purpose, as the status bar counts them.
+  const diagnostics = useStore((s) => healthDiagnostics(s.snapshot?.state, s.snapshot?.diagnostics, s.keptSamples));
   // The SEO audit reads the project as it is now, while the dialog is open.
   const projectState = snap?.state;
   const seoAudit = useMemo(() => (projectState ? auditForHealth(projectState) : null), [projectState]);
@@ -813,7 +988,7 @@ export function HealthModal() {
   // Settling a problem (or removing a saved copy) removes the row holding the focused button, and one that failed may
   // have left focus nowhere: carry on from the summary, which says what is left.
   // The Search & AI readiness count too: the summary's jump to it goes once its last finding is fixed.
-  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, !!snap?.saveFailure, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
+  const listed = [diagnostics.length, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, !!snap?.saveFailure, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body) summaryRef.current?.focus();
@@ -919,7 +1094,7 @@ export function HealthModal() {
   );
 
   // Conflicts are listed with their actions, so their diagnostic copies are skipped. The counts match the status bar's.
-  const listedDiagnostics = snap.diagnostics.filter((d) => d.code !== 'CONFLICT');
+  const listedDiagnostics = diagnostics.filter((d) => d.code !== 'CONFLICT');
   const errors = listedDiagnostics.filter((d) => d.severity === 'error');
   const warnings = listedDiagnostics.filter((d) => d.severity === 'warning');
   const notes = listedDiagnostics.filter((d) => d.severity === 'info');
@@ -1003,17 +1178,21 @@ export function HealthModal() {
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
     // A page with nothing on it has no element to show: the page itself is opened.
     const blankPage = d.code === 'PAGE_EMPTY' && d.owner?.kind === 'page' ? d.owner.id : null;
+    // A sample contact detail from the starter: replaced everywhere at once, changed in Site settings, or kept.
+    const sample = sampleKindOf(d);
     // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
     return (
       <HealthRow
-        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
+        key={sample ? d.site : `${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={
-          asset ? (
+          sample ? (
+            <SampleActions kind={sample} state={st} readOnly={readOnly} onKept={(value) => setStatus(`${value} is kept as you chose.`)} />
+          ) : asset ? (
             <button className="btn btn-sm" onClick={() => openAsset(asset)}>
               Open in Assets
             </button>
@@ -1279,6 +1458,7 @@ export function HealthModal() {
           </HealthGroup>
         )}
         {seoAudit && projectState && <SeoReadiness audit={seoAudit} state={projectState} focusOnOpen={atSeo} />}
+        {snap.performance !== undefined && <PerformanceReadiness status={snap.performance} />}
         {updates.length > 0 && (
           <HealthGroup title="Updates" count={updates.length} tone="quiet" anchor="updates">
             <HealthRow

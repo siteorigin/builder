@@ -20,6 +20,8 @@ import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { appMenuTemplate, noticesFile, offersDeveloperItems } from './app-menu';
+import { createMenuPopups } from './app-menu-popup';
+import { opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
 import { captureMainErrors, createMainLog } from './main-log';
 import { writingMenuTemplate } from './writing-menu';
@@ -97,7 +99,14 @@ if (process.env.SITEORIGIN_DOCUMENTS) app.setPath('documents', process.env.SITEO
 let win: BrowserWindow | null = null;
 /** The editor's Appearance, as last saved. It styles the editor only: Electron's theme stays on System. */
 let appearance: Appearance = 'system';
-const windowBackground = () => editorBackground(editorScheme(appearance, nativeTheme.shouldUseDarkColors));
+const windowScheme = () => editorScheme(appearance, nativeTheme.shouldUseDarkColors);
+const windowBackground = () => editorBackground(windowScheme());
+/** The window's backing color and, on Windows, its caption buttons follow the editor's Appearance (#1355). */
+function applyWindowAppearance() {
+  if (!win || win.isDestroyed()) return;
+  win.setBackgroundColor(windowBackground());
+  if (windowChrome(process.platform).titleBar === 'overlay') win.setTitleBarOverlay(titleBarOverlay(windowScheme()));
+}
 const controller = new Controller(() => win);
 /** Images pasted into the AI composer, written as files for the importer while it reads them (#1410). */
 const pastedImages = new PastedImages();
@@ -126,7 +135,7 @@ controller.reviewShoot = (url, width, signal) =>
   win && !win.isDestroyed() ? reviewShooter.shoot(url, width, signal) : Promise.resolve({ ok: false as const, reason: 'failed' as const, detail: 'The editor is closed.' });
 /** Opens each page of a website export as a visitor's browser does (#1534), each in a hidden window of its own, while the editor is open. */
 const pageChecker = createPageChecker();
-controller.pageCheck = (url, signal) => (win && !win.isDestroyed() ? pageChecker.check(url, signal) : Promise.resolve({ status: 'unchecked' as const, detail: 'The editor is closed.' }));
+controller.pageCheck = (url, signal, measureUntil) => (win && !win.isDestroyed() ? pageChecker.check(url, signal, measureUntil) : Promise.resolve({ status: 'unchecked' as const, detail: 'The editor is closed.' }));
 // The hidden windows belong to the project's previews: they close with the project, not only with the editor.
 controller.onSessionClosed = () => {
   thumbCapturer.dispose();
@@ -520,6 +529,7 @@ const orchestrator = new Orchestrator({
   inspectLayout,
   controlPreview,
   fileDiagnostics: () => controller.fileDiagnostics(),
+  performance: () => controller.performanceStatus(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
   sources: (signal) => controller.agentSources(signal),
   onBusyChange: (busy) => {
@@ -662,7 +672,7 @@ function registerIpc() {
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
     if (s.appearance !== appearance) {
       appearance = s.appearance;
-      if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
+      applyWindowAppearance();
       controller.send('appearance', appearance);
     }
     return s;
@@ -670,8 +680,11 @@ function registerIpc() {
   // While Settings records a shortcut, the app's menus leave every key to it (Cmd/Ctrl+W, say, is refused there by
   // name rather than closing the window). The editor's page still sees every key press.
   handle('app:recordShortcut', (on: unknown) => {
-    if (win && !win.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(on === true);
+    recordingShortcut = on === true;
+    if (win && !win.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(recordingShortcut);
   });
+  // The menu button's (and F10's) application menu, for every screen, the failure screens' too (#1355).
+  handle('menu:popup', (at: unknown) => popupApplicationMenu(at), { anytime: true });
   handle(
     'app:openExternal',
     async (url: string) => {
@@ -1163,8 +1176,9 @@ async function createWindow() {
     show: false,
     title: 'SiteOrigin Builder',
     icon: windowIcon({ platform: process.platform, packaged: app.isPackaged, here, resourcesPath: process.resourcesPath }),
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: { x: 16, y: 17 },
+    // macOS's traffic lights over the top bar; Windows's caption buttons over it in the editor's colors; Linux's own
+    // frame. Off macOS no menu bar shows: the menu button opens the menu (#1355).
+    ...windowChromeOptions(process.platform, windowScheme()),
     // The app's --bg (styles.css), so the window never flashes a different color before the editor paints.
     backgroundColor: windowBackground(),
     webPreferences: {
@@ -1183,6 +1197,7 @@ async function createWindow() {
     }
   });
   perf.mark('launch.windowCreated', { window: win.id });
+  hideMenuBar();
   // A preview stopped while no window was open starts again now, while the editor loads (#1036).
   controller.windowOpened();
   // A frame inside the editor (the canvas's preview, a page being measured) means the editor's own code has run here.
@@ -1232,10 +1247,17 @@ async function createWindow() {
   });
   // Editor shortcuts come from real keyboard input (including while the preview frame has focus),
   // so content inside the previewed site cannot fake them.
-  win.webContents.on('before-input-event', (_e, input) => {
+  win.webContents.on('before-input-event', (e, input) => {
     if (input.type !== 'keyDown') return;
     const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt };
     if (forwardsKey(chord, currentShortcuts().askAi, process.platform === 'darwin')) controller.send('input:key', chord);
+    // F10 opens the application menu where the menu button stands in for a menu bar, as it opens a menu bar, from
+    // the editor or the preview alike: the button opens it (WindowMenuButton.tsx), so Edit acts on the field that had
+    // focus, as a press of the button does. Not while a shortcut is recorded.
+    else if (!recordingShortcut && opensMenuKey(process.platform, { ...chord, isAutoRepeat: input.isAutoRepeat })) {
+      e.preventDefault();
+      if (!editorContents.isDestroyed()) editorContents.send('menu:open');
+    }
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
@@ -1276,12 +1298,16 @@ async function createWindow() {
   });
   recoveries.set(self, recovery);
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
-  self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
+  self.webContents.on('did-navigate', () => {
+    recordingShortcut = false;
+    self.webContents.setIgnoreMenuShortcuts(false);
+  });
   self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
     if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
   });
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
+    recordingShortcut = false;
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
@@ -1477,6 +1503,54 @@ function buildMenu() {
   };
   const options = { projectOpen: controller.openingKey !== null, remoteActive: controller.remote.active, developer: offersDeveloperItems({ packaged: app.isPackaged, automated, developerMode: developerModeOn }) };
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, copyBuildDetails, showLog, openNotices })));
+  hideMenuBar();
+}
+
+/** Whether Settings is recording a shortcut, which takes every key, F10 too; cleared with the page that recorded it. */
+let recordingShortcut = false;
+
+/**
+ * Off macOS the window shows no menu bar, though its menu is installed, so its accelerators still work (#1355). Hidden
+ * outright rather than auto-hidden, so Alt never brings the bar back.
+ */
+function hideMenuBar() {
+  if (!windowChrome(process.platform).menuButton || !win || win.isDestroyed()) return;
+  win.setAutoHideMenuBar(false);
+  win.setMenuBarVisibility(false);
+}
+
+const menuPopups = createMenuPopups();
+
+/**
+ * The installed application menu, popped up over the editor window at a point in its page (under the menu button, which
+ * F10 presses too), so
+ * it is the very menu the menu bar would show, with the same enabled states. Read when asked, so a menu built again
+ * since (Developer mode) is the one shown. An automated run records it instead of showing it (headless-desktop.ts).
+ * Resolves once the menu has closed.
+ */
+function popupApplicationMenu(at: unknown): Promise<void> {
+  const w = win && !win.isDestroyed() ? win : null;
+  const menu = Menu.getApplicationMenu();
+  if (!w || !menu || !windowChrome(process.platform).menuButton) return Promise.resolve();
+  const [width, height] = w.getContentSize();
+  const point = popupPoint(at, w.webContents.getZoomFactor(), { width, height });
+  if (!point) return Promise.resolve();
+  if (desktop) {
+    desktop.menuPopup(point);
+    return Promise.resolve();
+  }
+  const contents = w.webContents;
+  return menuPopups.open(
+    (closed) => menu.popup({ window: w, x: point.x, y: point.y, callback: closed }),
+    (gone) => {
+      w.once('closed', gone);
+      contents.once('render-process-gone', gone);
+      return () => {
+        w.off('closed', gone);
+        if (!contents.isDestroyed()) contents.off('render-process-gone', gone);
+      };
+    }
+  );
 }
 
 /** Help > Third-Party Notices: the notices file, in the desktop's own viewer (recorded instead in an automated run). */
@@ -1573,9 +1647,7 @@ app.whenReady().then(async () => {
   void sweepSpools(sourceSpoolRoot());
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
-  nativeTheme.on('updated', () => {
-    if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
-  });
+  nativeTheme.on('updated', () => applyWindowAppearance());
   // Registered before the first window loads: a first load that fails must not leave macOS without a way to open one.
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void createWindow();

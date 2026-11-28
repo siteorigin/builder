@@ -1797,6 +1797,21 @@ export interface RenderedImage {
   item?: string;
 }
 
+/**
+ * The image value an image node shows where it renders. An object's field it has no value for shows the property's
+ * own default for it, as the page does: an image its condition seemed to leave out is then shown.
+ */
+function shownImage(state: ProjectState, n: GraphNode & { kind: 'image' }, scope: Scope): unknown {
+  const def = scope.instance && Object.hasOwn(state.components, scope.instance.definitionId) ? state.components[scope.instance.definitionId] : undefined;
+  const value = evaluate(n.image, scope);
+  const b = n.image;
+  if (value === undefined && def && isBinding(b) && '$prop' in b && b.field !== undefined) {
+    const schema = def.properties[b.$prop];
+    if (schema?.type === 'object') return Object.hasOwn(schema.default ?? {}, b.field) ? schema.default[b.field] : schema.fields[b.field]?.default;
+  }
+  return value;
+}
+
 /** Whether an image value shows a picture from the library. */
 const imageChosen = (state: ProjectState, v: unknown): boolean => {
   const id = (v as ImageValue | undefined)?.assetId;
@@ -2240,14 +2255,7 @@ export function renderedImages(state: ProjectState, tree: NodeTree): RenderedIma
   };
   const push = (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string, hidden: boolean) => {
     const def = scope.instance && Object.hasOwn(state.components, scope.instance.definitionId) ? state.components[scope.instance.definitionId] : undefined;
-    // An object's field it has no value for shows the property's own default for it, as the page does: an image its
-    // condition seemed to leave out is then shown.
-    let value = evaluate(n.image, scope);
-    const b = n.image;
-    if (value === undefined && def && isBinding(b) && '$prop' in b && b.field !== undefined) {
-      const schema = def.properties[b.$prop];
-      if (schema?.type === 'object') value = Object.hasOwn(schema.default ?? {}, b.field) ? schema.default[b.field] : schema.fields[b.field]?.default;
-    }
+    const value = shownImage(state, n, scope);
     if (hidden && imageChosen(state, value)) hidden = false;
     let box: string | undefined;
     if (hidden) {
@@ -2371,6 +2379,126 @@ export function renderedImages(state: ProjectState, tree: NodeTree): RenderedIma
     }
   });
   for (const [i, scope] of shownThrough) if (scope.codeSlot || (scope.slots ?? []).some((k) => again.has(k))) out[i].multiple = true;
+  return out;
+}
+
+/** One image a page or shell tree shows as an empty placeholder box: no picture is chosen for it (see unfilledImages). */
+export interface UnfilledImage {
+  /** The tree's node that holds it: the image itself, or the placement it is shown through. */
+  nodeId: string;
+  /** Where it is in that node, told apart from the node's other images: the placements, design node, field and item. */
+  site: string;
+  /** Its layer name, or the label of the component field it shows. */
+  name: string;
+  /** The title of the list item it is shown for. */
+  item?: string;
+  /** The component field it shows, for an image a placement's own value fills: what to choose a picture in. */
+  field?: PlacementField;
+}
+
+/** An image value left empty on purpose to be filled: `assetId: null`, and not marked decorative. */
+const emptyImage = (v: unknown): boolean => !!v && typeof v === 'object' && !isBinding(v) && (v as ImageValue).assetId === null && (v as ImageValue).decorative !== true;
+
+/**
+ * The names a code component's markup can test an image value by: the value's own name (a property, or a list item's
+ * field) and every name its script declares from one of them (`const hasMedia = $derived(has(image))`), followed on.
+ */
+function namesFor(source: string, names: string[]): string[] {
+  const out = new Set(names);
+  const script = [...source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  // The script's declarations, and the markup's own (`{@const hasMedia = !!image?.src}`), outside its comments.
+  const markup = source.replace(/<!--[\s\S]*?-->/g, '');
+  const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g), ...markup.matchAll(/\{@const\s+([A-Za-z_$][\w$]*)\s*=([^}]*)\}/g)].map((m) => [m[1], m[2]] as const);
+  // A name declared more than once (a `{@const}` in each of two blocks) tests the value only where every one of its
+  // declarations reads it: one of them may hold something else entirely.
+  const byName = new Map<string, string[]>();
+  for (const [name, rhs] of decls) byName.set(name, [...(byName.get(name) ?? []), rhs]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, all] of byName) if (!out.has(name) && all.every((rhs) => [...out].some((n) => mentions(rhs, n)))) (out.add(name), (grew = true));
+  }
+  return [...out];
+}
+
+/** Whether code mentions a name as a name (`image`, `item.image`), not as part of a longer one (`images`, `imageSize`). */
+const mentions = (code: string, name: string) => new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(code);
+
+/**
+ * Whether code markup may leave its one `<SoImage>` (at `at`) out while the image value is empty: it sits inside a
+ * `{#if}` (or a later branch of one) whose conditions test any of `names`, or inside a snippet, which the markup may
+ * render anywhere, or only under a condition. Read from the source: a condition testing the value under another name
+ * this does not follow shows a placeholder this misses, never one that is not there.
+ */
+function guardedImage(source: string, at: number, names: string[]): boolean {
+  const known = namesFor(source, names);
+  // The markup alone, at its own offsets: braces in a script, a stylesheet or a comment open no block.
+  const markup = source.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
+  const open: Array<{ block: string; conditions: string[] }> = [];
+  for (const m of markup.slice(0, at).matchAll(/\{([#:/])\s*([a-z]+)/g)) {
+    const end = closingBrace(markup, m.index);
+    const inner = end < 0 ? markup.slice(m.index + 1, at) : markup.slice(m.index + 1, end);
+    if (m[1] === '#') open.push({ block: m[2], conditions: m[2] === 'if' ? [inner.replace(/^#\s*if\b/, '')] : [] });
+    else if (m[1] === '/') open.pop();
+    else if (m[2] === 'else' && open.length && open[open.length - 1].block === 'if') open[open.length - 1].conditions.push(inner.replace(/^:\s*else\b\s*(?:if\b)?/, ''));
+  }
+  return open.some((b) => b.block === 'snippet' || b.conditions.some((c) => known.some((n) => mentions(c, n))));
+}
+
+/**
+ * Every image a page or shell tree shows as an empty placeholder box, the way the generated pages show them: an image
+ * element (on the page, or in a design it places, a tab not chosen at first included) whose value has no picture
+ * chosen (`assetId: null`); and a code placement's one image property, or each item's picture of its one list of
+ * pictures, left empty where its markup shows it with no condition on it. An image a design leaves out until it has
+ * one (`when` on its own value), one marked decorative, and one whose picture is gone from the library (reported as a
+ * missing asset) are not listed, and neither is code placed inside a design.
+ */
+export function unfilledImages(state: ProjectState, tree: NodeTree): UnfilledImage[] {
+  const out: UnfilledImage[] = [];
+  const seen = new Set<string>();
+  const add = (nodeId: string, site: string, name: string, item: unknown, field: PlacementField | null) => {
+    const key = `${nodeId}|${site}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ nodeId, site: key, name, ...(typeof item === 'string' && item.trim() ? { item: item.trim() } : {}), ...(field ? { field } : {}) });
+  };
+  walkRendered(state, tree, {
+    everyState: true,
+    image: (n, scope, reportId) => {
+      if (!emptyImage(shownImage(state, n, scope))) return;
+      const def = scope.instance && Object.hasOwn(state.components, scope.instance.definitionId) ? state.components[scope.instance.definitionId] : undefined;
+      const list = scope.list && def ? def.properties[scope.list] : undefined;
+      const title = list?.type === 'list' && list.titleField ? scope.item?.[list.titleField] : undefined;
+      // The field a placement fills it from, when it is the tree's own placement's.
+      const f = scope.instance ? placementField(n.image, scope) : null;
+      const field = f && fieldSchema(state, tree, reportId, f)?.type === 'image' ? f : null;
+      // Told apart by the placements, the design's node and the items it is shown for, those of a list around the
+      // design it is in (a card placed in each item) included.
+      add(reportId, `${(scope.instances ?? []).join('/')}|${n.id}|${(scope.path ?? []).join('/')}|${scope.occurrence ?? ''}`, n.name?.trim() || 'Image', title, field);
+    },
+    code: (def, props, reportId, _placement, n, _scope, inDef) => {
+      if (inDef) return;
+      const source = def.source ?? '';
+      const at = Object.hasOwn(tree.nodes, n.id) ? n.id : reportId;
+      const prop = codeImageProp(def);
+      if (prop) {
+        const shown = soImageAttr(source);
+        if (shown && emptyImage(props[prop]) && showsWithSoImage(source, prop) && !guardedImage(source, shown.at, [prop])) add(at, `code|${prop}`, def.properties[prop].label?.trim() || 'Image', undefined, { prop });
+        return;
+      }
+      const pictures = codeImageList(def);
+      const schema = pictures ? def.properties[pictures.prop] : undefined;
+      if (!pictures || schema?.type !== 'list' || Object.hasOwn(n.listSources ?? {}, pictures.prop) || !showsItemsWithSoImage(source, pictures.prop, pictures.field)) return;
+      const shown = soImageAttr(source);
+      const rows = props[pictures.prop];
+      if (!shown || !Array.isArray(rows) || guardedImage(source, shown.at, [pictures.field])) return;
+      rows.forEach((r, i) => {
+        const row = r && typeof r === 'object' ? (r as Record<string, unknown>) : null;
+        if (!row || !emptyImage(row[pictures.field])) return;
+        const id = typeof row.id === 'string' ? row.id : '';
+        add(at, `code|${pictures.prop}|${id || i}|${pictures.field}`, schema.fields[pictures.field]?.label?.trim() || 'Image', schema.titleField ? row[schema.titleField] : undefined, id ? { prop: pictures.prop, itemId: id, field: pictures.field } : null);
+      });
+    }
+  });
   return out;
 }
 
@@ -2899,6 +3027,8 @@ export interface DraftLink {
   nodeId: string;
   /** The link's text, when it has one. */
   label: string;
+  /** Which of the node's links it is (a field, or a link in its text), or `body:N` for the Nth link in an entry's text. */
+  key: string;
   /** A link inside rich text. */
   inText: boolean;
   /** The draft page it goes to, or else the draft collection entry (a typed address of the entry's). */
@@ -2981,7 +3111,7 @@ export function ownSiteAddress(state: ProjectState, target: string): { route: st
  * Those links would lead visitors to a page the website does not have, so the website export stops until they
  * change. Links on a draft are not checked: the draft is not published.
  */
-export function publicationPlan(state: ProjectState): PublicationPlan {
+export function publicationPlan(state: ProjectState, parts?: CheckParts): PublicationPlan {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const published = pages.filter((p) => !isDraftPage(state, p));
   const drafts = pages.filter((p) => isDraftPage(state, p));
@@ -3025,22 +3155,32 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     }
     return mayLink.get(collectionId)!;
   };
-  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree; shownOn?: string }> = [
-    ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
+  const sources: Array<{ owner: DraftLink['owner']; tree: () => NodeTree; shownOn?: string }> = [
+    ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: () => p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
-    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: () => state.site.shell[part] })),
     // Each collection's layout, as each published entry shows it: its own words on the layout's buttons, and only the
     // elements that entry shows. Read only for a layout that links where a draft could be at all.
     ...entries
       .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
-      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id })),
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: () => entryArticle(state, e.collection, e.entry), shownOn: e.entry.id })),
     // Each archive layout an archive page shows, once: a collection's index shows it with no entry published yet.
-    ...shownArchiveLayouts(state, archives).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree }))
+    ...shownArchiveLayouts(state, archives).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree: () => tree }))
   ];
+  // With `parts`, the links each page and shared part renders are kept with its tree, and each entry's page's (which
+  // read what any part of the project but the pages' trees may hold) with those; where they go is read afresh.
+  const entryLinks = parts?.shared('draftLayoutLinks', () => new Map<string, RenderedLink[]>());
+  const linksOf = (src: (typeof sources)[number]): RenderedLink[] => {
+    if (!parts || !entryLinks || src.owner.kind === 'archive') return renderedLinks(state, src.tree(), true);
+    if (src.owner.kind === 'page' || src.owner.kind === 'shell') return parts.tree({ owner: { kind: src.owner.kind, id: src.owner.id }, tree: src.tree(), label: '' }, 'draftLinks', () => renderedLinks(state, src.tree(), true));
+    const key = JSON.stringify([src.owner.id, src.shownOn ?? null]);
+    if (!entryLinks.has(key)) entryLinks.set(key, renderedLinks(state, src.tree(), true));
+    return entryLinks.get(key)!;
+  };
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
   for (const src of sources)
-    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree, true)) {
+    for (const { link, label, reportId, key, inText } of linksOf(src)) {
       const to =
         link.type === 'page' && draftIds.has(link.target)
           ? { pageId: link.target, ...(link.anchor ? { anchor: link.anchor } : {}) }
@@ -3055,13 +3195,13 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       const id = JSON.stringify([src.owner, reportId, key, to]);
       if (seen.has(id)) continue;
       seen.add(id);
-      draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to, ...(src.shownOn ? { shownOn: src.shownOn } : {}) });
+      draftLinks.push({ owner: src.owner, nodeId: reportId, label, key, inText, ...to, ...(src.shownOn ? { shownOn: src.shownOn } : {}) });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
   for (const { entry, collection } of entries) {
     if (draftEntryIds.has(entry.id)) continue;
     const found: DraftLink[] = [];
-    for (const { link, label } of entryTextLinks(entry.body)) {
+    for (const [i, { link, label }] of entryTextLinks(entry.body).entries()) {
       const to: (DraftTarget & { anchor?: string }) | null =
         link.type === 'entry' && draftEntryIds.has(link.target)
           ? { entryId: link.target }
@@ -3070,7 +3210,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
             : link.type === 'url'
               ? targetAtAddress(state, link.target, withheld)
               : null;
-      if (to) found.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, inText: true, ...to });
+      if (to) found.push({ owner: { kind: 'entry', id: entry.id }, nodeId: '', label, key: `body:${i}`, inText: true, ...to });
     }
     // Text the entry's layout does not show links nowhere on the website.
     if (found.length && showsBody(collection, entryArticle(state, collection, entry))) draftLinks.push(...found);

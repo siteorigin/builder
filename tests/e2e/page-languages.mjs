@@ -123,7 +123,7 @@ try {
   const aboutHtml = await served('/about/');
   assert.equal(htmlLang(aboutHtml), 'en');
   assert.deepEqual(alternates(aboutHtml, '/about/'), []);
-  assert.doesNotMatch(readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), /LANGUAGES/, 'the server hook lists no page languages');
+  assert.doesNotMatch(readFileSync(join(dir, 'src', 'lib', 'siteorigin', 'runtime', 'handle.server.js'), 'utf8'), /LANGUAGES/, 'the server hook lists no page languages');
 
   step('About duplicated as À propos, then given French and linked in Page settings');
   let state = (await snapshot()).state;
@@ -234,7 +234,9 @@ try {
   const source = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
   assert.equal(source.ok, true, `the source export succeeds: ${source.message}`);
   assert.equal(readFileSync(join(source.path, 'src', 'hooks.server.js'), 'utf8'), readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), 'the source export has the server hook');
-  assert.match(readFileSync(join(source.path, 'src', 'hooks.server.js'), 'utf8'), /"\/fr\/a-propos": "fr"/);
+  const handle = (root) => readFileSync(join(root, 'src', 'lib', 'siteorigin', 'runtime', 'handle.server.js'), 'utf8');
+  assert.equal(handle(source.path), handle(dir), 'the source export has the site’s server hook');
+  assert.match(handle(source.path), /"\/fr\/a-propos": "fr"/);
 
   step('unlinked and back to the site language: one language again, and the hook lists no languages');
   await pageSettings('À propos');
@@ -243,7 +245,7 @@ try {
   await language.fill('');
   await language.press('Enter');
   await eventually(async () => assert.equal('language' in (await snapshot()).state.pages[fr], false));
-  await eventually(() => assert.doesNotMatch(readFileSync(join(dir, 'src', 'hooks.server.js'), 'utf8'), /LANGUAGES/, 'the server hook no longer lists page languages'), 20000);
+  await eventually(() => assert.doesNotMatch(readFileSync(join(dir, 'src', 'lib', 'siteorigin', 'runtime', 'handle.server.js'), 'utf8'), /LANGUAGES/, 'the server hook no longer lists page languages'), 20000);
   assert.doesNotMatch(readFileSync(join(dir, 'src', 'routes', '+layout.svelte'), 'utf8'), /pageLanguages/, 'the layout no longer follows page languages');
   await eventually(
     async () => {
