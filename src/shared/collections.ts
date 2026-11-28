@@ -6,6 +6,7 @@
  */
 import type { Collection, CollectionKind, EntryDoc, ProjectState } from './types';
 import { numberedSlug, slugify, validateRoute, validateSegment } from './routes';
+import { keptPublishedAddresses } from './published';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
 export const COLLECTION_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -253,7 +254,8 @@ export function collectionRoutes(state: ProjectState): RouteOwner[] {
 export function routeOwners(state: ProjectState): RouteOwner[] {
   const out: RouteOwner[] = Object.values(state.pages).map((p) => ({ kind: 'page' as const, route: p.route, pageId: p.id, label: `the page “${p.title}”` }));
   const kept: unknown = state.site.redirects;
-  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []) {
+  // With the addresses exports delivered for pages that have left them, which the site keeps working too (#1382).
+  for (const r of [...(Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []), ...keptPublishedAddresses(state)]) {
     if (typeof r?.from !== 'string') continue;
     if (typeof r.pageId === 'string') out.push({ kind: 'redirect', route: r.from, pageId: r.pageId, label: `the old address of “${state.pages[r.pageId]?.title ?? r.pageId}”` });
     else if (typeof r.entryId === 'string') out.push({ kind: 'redirect', route: r.from, entryId: r.entryId, label: `the old address of “${findEntry(state, r.entryId)?.entry.title ?? r.entryId}”` });

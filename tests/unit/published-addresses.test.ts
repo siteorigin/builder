@@ -15,6 +15,9 @@ import { headerMenu, headerMenuRoom } from '@engine/tree';
 import { generateHostRedirects } from '@generator/host-redirects';
 import { liveRedirects, publishedState } from '@generator/index';
 import { planPageAddress } from '@shared/page-address';
+import { redirectRecords } from '@shared/redirects';
+import { routeOwners } from '@shared/collections';
+import { publicationState } from '../../src/main/publication';
 import { PUBLISHED_FILE, publishedDocProblem, publishedPageAt, wasPublishedFor, withPublished } from '@shared/published';
 import { validateRoute } from '@shared/routes';
 import { isCanonicalPath, stateToDocs } from '../../src/main/project/documents';
@@ -82,7 +85,89 @@ describe('old addresses of pages never exported', () => {
     expect(redirects(after)).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
     expect(planHomeChange(exported(withPage()), 'pg_services', true).kept).toBe('/services/');
     // Declined, an exported address is not kept either.
-    expect(redirects(applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state)).toEqual([]);
+    const declined = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state;
+    expect(redirects(declined)).toEqual([]);
+    expect(liveRedirects(declined)).toEqual([]);
+  });
+});
+
+describe('addresses exported for a page that has left them some other way (#1382)', () => {
+  /** Services exported at /services/, moved to /what-we-do/ and exported again, then put back as Undo does: the documents from before the move. */
+  function undoneMove(): ProjectState {
+    const first = exported(withPage());
+    const moved = exported(applyOperations(first, [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }]).state);
+    return { ...first, published: moved.published };
+  }
+  const kept = (s: ProjectState) => redirectRecords(s).map((r) => [r.from, r.pageId ?? r.to]);
+
+  it('keeps the newer address working, as an old address the site lists, without writing it', () => {
+    const s = undoneMove();
+    expect(s.pages.pg_services.route).toBe('/services/');
+    expect(redirects(s)).toEqual([]);
+    expect(kept(s)).toEqual([['/what-we-do/', 'pg_services']]);
+    expect(liveRedirects(s).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
+    // A new page is never given it without asking, and a collection cannot take it.
+    expect(applyOperations(s, [{ type: 'page.create', pageId: 'pg_wwd', title: 'What we do' }]).state.pages.pg_wwd.route).not.toBe('/what-we-do/');
+    expect(routeOwners(s).some((o) => o.kind === 'redirect' && o.route === '/what-we-do/' && o.pageId === 'pg_services')).toBe(true);
+  });
+
+  it('stays gone once the author removes it, until the removal is undone', () => {
+    const s = undoneMove();
+    const removed = applyOperations(s, [{ type: 'redirect.remove', from: '/what-we-do/' }]).state;
+    expect(kept(removed)).toEqual([]);
+    expect(removed.site.droppedAddresses).toEqual([{ from: '/what-we-do/', pageId: 'pg_services' }]);
+    expect(generateHostRedirects(removed)).toBeNull();
+    // Undo puts back the site settings from before, where it was kept.
+    expect(kept({ ...removed, site: s.site })).toEqual([['/what-we-do/', 'pg_services']]);
+  });
+
+  it('stays gone when the author removes the redirect a move recorded for it', () => {
+    const moved = applyOperations(exported(withPage()), [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }]).state;
+    expect(redirects(moved)).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
+    const removed = applyOperations(moved, [{ type: 'redirect.remove', from: '/services/' }]).state;
+    expect(redirects(removed)).toEqual([]);
+    expect(kept(removed)).toEqual([]);
+    // Nor does sending it somewhere else bring the page's back.
+    const elsewhere = applyOperations(moved, [{ type: 'redirect.update', from: '/services/', to: '/about/' }]).state;
+    expect(kept(elsewhere)).toEqual([['/services/', '/about/']]);
+  });
+
+  it('is sent somewhere else as a redirect of the site’s own, and refused as a new one', () => {
+    const s = undoneMove();
+    const sent = applyOperations(s, [{ type: 'redirect.update', from: '/what-we-do/', to: '/about/' }]).state;
+    expect(redirects(sent)).toEqual([{ from: '/what-we-do/', to: '/about/' }]);
+    expect(kept(sent)).toEqual([['/what-we-do/', '/about/']]);
+    expect(() => applyOperations(s, [{ type: 'redirect.add', from: '/what-we-do/', pageId: 'pg_services' }])).toThrow(/already sends visitors on/);
+  });
+
+  it('gives way to a page that takes the address, and to one an export delivered there since', () => {
+    const s = undoneMove();
+    const taken = applyOperations(s, [{ type: 'page.create', pageId: 'pg_wwd', title: 'What we do', route: '/what-we-do/' }]).state;
+    expect(kept(taken)).toEqual([]);
+    // Exported there and moved on, the address leads to that page now.
+    const movedOn = exported(taken);
+    const left = applyOperations(movedOn, [{ type: 'page.update', pageId: 'pg_wwd', route: '/our-work/' }]).state;
+    expect(kept(left)).toEqual([['/what-we-do/', 'pg_wwd']]);
+    // A draft there leaves it working until it is published.
+    const draft = applyOperations(s, [{ type: 'page.create', pageId: 'pg_wwd', title: 'What we do', route: '/what-we-do/', draft: true }]).state;
+    expect(liveRedirects(publishedState(draft)).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
+  });
+
+  it('keeps nothing for a page removed since, or for a new Home page told not to keep its address', () => {
+    expect(kept(applyOperations(undoneMove(), [{ type: 'page.remove', pageId: 'pg_services' }]).state)).toEqual([]);
+    const home = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state;
+    expect(kept(home)).toEqual([]);
+    expect(home.site.droppedAddresses).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
+  });
+
+  it('is a redirect of the publication, which carries no record of exports or of the addresses dropped', () => {
+    const s = undoneMove();
+    const published = publicationState(s);
+    expect(published.published).toBeUndefined();
+    expect(published.site.redirects).toEqual([{ from: '/what-we-do/', pageId: 'pg_services' }]);
+    const removed = publicationState(applyOperations(s, [{ type: 'redirect.remove', from: '/what-we-do/' }]).state);
+    expect(removed.site.redirects).toBeUndefined();
+    expect(removed.site.droppedAddresses).toBeUndefined();
   });
 });
 
@@ -233,6 +318,55 @@ describe('recording an export in the project', () => {
     expect((await s.redo()).ok).toBe(true);
     expect(s.state.pages.pg_services.route).toBe('/what-we-do/');
     expect(liveRedirects(publishedState(s.state)).map((r) => [r.from, r.to])).toEqual([['/services/', '/what-we-do/']]);
+    await s.close();
+  });
+
+  it('keeps every exported address leading straight back when History steps back over several moves, and on redo', async () => {
+    const { s } = await session();
+    const move = async (route: string) => expect((await s.apply({ operations: [{ type: 'page.update', pageId: 'pg_services', route }] }, { label: 'Change page address' })).ok).toBe(true);
+    const saved = await s.saveVersion('Before any move');
+    expect(saved.ok).toBe(true);
+    expect(await s.recordPublished(s.state)).toBeNull();
+    await move('/what-we-do/');
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' })).ok).toBe(true);
+    await move('/our-work/');
+    expect(await s.recordPublished(s.state)).toBeNull();
+    const live = () => liveRedirects(publishedState(s.state)).map((r) => [r.from, r.to]);
+    const first = s.historyInfo().entries[0];
+    expect((await s.stepTo(first.id, 'undo')).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/services/');
+    expect(live()).toEqual([
+      ['/our-work/', '/services/'],
+      ['/what-we-do/', '/services/']
+    ]);
+    // Put back one step at a time, each address leads to where the page is then.
+    expect((await s.redo()).ok).toBe(true);
+    expect(live()).toEqual([
+      ['/services/', '/what-we-do/'],
+      ['/our-work/', '/what-we-do/']
+    ]);
+    expect((await s.redo()).ok).toBe(true);
+    expect((await s.redo()).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/our-work/');
+    expect(live().sort()).toEqual([
+      ['/services/', '/our-work/'],
+      ['/what-we-do/', '/our-work/']
+    ]);
+    // And back one step at a time, past the unrelated rename too.
+    for (let i = 0; i < 3; i++) expect((await s.undo()).ok).toBe(true);
+    expect(live()).toEqual([
+      ['/our-work/', '/services/'],
+      ['/what-we-do/', '/services/']
+    ]);
+    // A version from before the moves puts the page back where it was, its later addresses kept working.
+    await move('/our-work/');
+    expect((await s.restoreVersion(saved.id!, s.revision)).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/services/');
+    expect(live()).toEqual([
+      ['/our-work/', '/services/'],
+      ['/what-we-do/', '/services/']
+    ]);
     await s.close();
   });
 
