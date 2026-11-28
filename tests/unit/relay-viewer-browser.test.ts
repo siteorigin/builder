@@ -565,4 +565,57 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.done();
     }
   });
+
+  it('leaves a note begun the moment the site’s own router shows another page on that page (#1497)', async () => {
+    // The site moves the way SvelteKit's client router does: it loads the next page, puts its address in the history
+    // with pushState, which raises no event, and shows it, all without loading a document.
+    const router = `<script>
+      document.addEventListener('click', (event) => {
+        const link = event.target.closest('a[href^="/"]');
+        if (!link) return;
+        event.preventDefault();
+        setTimeout(() => {
+          history.pushState({}, '', link.getAttribute('href'));
+          document.title = document.querySelector('h1').textContent = link.textContent;
+        }, 60);
+      });
+    </script>`;
+    const site: Site = new Map([['/', page('Home', router)], ['/about/', page('About', router)]]);
+    const s = await scene({ site });
+    try {
+      const guestId = await ask(s);
+      const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
+      const frame = await admit(s, guestId);
+      const list = await s.host.next('rpc:request');
+      expect(list.method).toBe('notes.list');
+      answer(list.requestId, 'notes.list', { notes: [], guestNotes: true });
+      await s.tab.uncheck('#follow');
+      await poll(async () => (await frame.evaluate<string | null>(`document.querySelector('h1')?.textContent ?? null`)) === 'Home', 'the home page');
+
+      await frame.click('a[href="/about/"]');
+      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`, undefined, { polling: 'raf' });
+      // As soon as About shows, the guest opens Notes and starts typing: the note is for About.
+      await s.tab.click('#notes-button');
+      await s.tab.fill('#note-text', 'Shorter heading');
+      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
+      const opened = await s.host.next('rpc:request');
+      expect(opened.method).toBe('notes.list');
+      answer(opened.requestId, 'notes.list', { notes: [], guestNotes: true });
+      await s.tab.click('#note-send');
+      const add = await s.host.next('rpc:request');
+      expect(add).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Shorter heading', previewPath: '/about/' }] });
+      answer(add.requestId, 'notes.add', { kept: true });
+      await poll(async () => (await s.tab.inputValue('#note-text')) === '', 'the note sent');
+
+      // A note begun on About stays on About when the guest's router moves on before it is sent.
+      await s.tab.fill('#note-text', 'Bigger logo');
+      await frame.click('a[href="/"]');
+      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'Home'`, undefined, { polling: 'raf' });
+      await s.tab.click('#notes-button');
+      expect(await s.tab.inputValue('#note-text')).toBe('Bigger logo');
+      expect(await s.tab.textContent('#note-where')).toBe('Leave a note on this page (/about/)');
+    } finally {
+      await s.done();
+    }
+  });
 });

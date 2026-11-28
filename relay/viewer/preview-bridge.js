@@ -178,16 +178,20 @@
     location.reload();
   });
 
-  // The site's own router moves with history.pushState, which raises no event; a cheap look each half second catches it
-  // without touching the site's code.
+  // The site's own router moves with history.pushState, which raises no history event of its own. The Navigation API
+  // says so the moment the address changes, before the router shows the page, so a note the guest begins on the page
+  // now on screen is left on that page (#1497). Where the browser has no Navigation API, a cheap look each half second
+  // still catches it, without touching the site's code.
   let last = path();
   const ready = () => {
     last = path();
     window.parent.postMessage({ type: 'siteorigin-live:ready', path: last }, viewer);
   };
+  const moved = () => {
+    if (path() !== last) ready();
+  };
   ready();
   window.addEventListener('popstate', ready);
-  setInterval(() => {
-    if (path() !== last) ready();
-  }, 500);
+  window.navigation?.addEventListener?.('currententrychange', moved);
+  setInterval(moved, 500);
 })();

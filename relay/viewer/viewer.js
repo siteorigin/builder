@@ -758,6 +758,8 @@ window.addEventListener('message', (event) => {
   else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) {
     framePath = data.path;
     shownPath = data.path;
+    // A note begun before any page was confirmed is for the first page the frame says it shows, wherever it goes next.
+    if (!notePath && ui.noteText.value.trim()) notePath = data.path;
     const first = !bridgeReady;
     bridgeReady = true;
     frameReady();
