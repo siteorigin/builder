@@ -2566,6 +2566,8 @@ export class Controller {
     this.watchers = [];
     this.unwatched.clear();
     this.watchGeneration++;
+    // Its watches' look holds the closed session: let it go with them.
+    this.lookAfterAi = () => undefined;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);

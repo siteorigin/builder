@@ -522,11 +522,12 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     // Second is fixed too: the whole batch loads as one outside change, and nothing is refused.
     writeFileSync(join(dir, ids.Second.path), '<p>Second, fixed</p>\n');
     tell(ids.Second.path);
-    await vi.waitFor(() => expect(session.historyInfo().undoLabel).toBe('External change'), { timeout: 5000, interval: 20 });
+    // The notices go with the change that loads the batch, once it is recorded.
+    await vi.waitFor(() => expect(refusals()).toEqual([]), { timeout: 5000, interval: 20 });
+    expect(session.historyInfo().undoLabel).toBe('External change');
     expect(session.state.components[ids.Second.id].source).toBe('<p>Second, fixed</p>\n');
     expect(session.state.components[ids.First.id].source).toBe('<p>First, fixed</p>\n');
     expect(session.state.pages[home].title).toBe('Retitled in another editor');
-    expect(refusals()).toEqual([]);
   });
 
   it('holds a fixed file back, saying why, while another changed file cannot be loaded', async () => {
