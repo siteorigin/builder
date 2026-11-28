@@ -131,6 +131,24 @@ describe.skipIf(!browserInstalled)('the redirect form', { timeout: 30_000 }, () 
     expect(await edit.getByRole('textbox', { name: 'Address', exact: true }).count()).toBe(1);
   });
 
+  it('names the draft at an old address, which takes it over once it is published (#1363)', async () => {
+    const about = Object.values(before.pages).find((p) => p.title === 'About')!.id;
+    const held = [
+      { type: 'redirect.add', from: '/old-studio/', pageId: about },
+      { type: 'page.create', pageId: 'pg_draft', title: 'Studio rewrite' },
+      { type: 'page.update', pageId: 'pg_draft', draft: true },
+      { type: 'page.update', pageId: 'pg_draft', route: '/old-studio/' }
+    ] as const;
+    const state = held.reduce((s, op) => applyOperations(s, [op]).state, before);
+    await page.evaluate((s) => {
+      (window as unknown as { after: unknown }).after = s;
+      (window as unknown as { take: () => void }).take();
+    }, state);
+    const row = page.locator('[data-from="/old-studio/"]');
+    await row.waitFor();
+    expect(await row.locator('.so-redirect-main').innerText()).toMatch(/About \(\/about\/\)\s+Added by you · The draft “Studio rewrite” has this address and takes it over once it is published$/);
+  });
+
   it('closes once its own add is answered', async () => {
     await page.getByRole('button', { name: 'Add redirect' }).click();
     await page.getByRole('textbox', { name: 'Old address' }).fill('/old-services/');

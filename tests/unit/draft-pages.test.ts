@@ -376,6 +376,26 @@ describe('a staged copy without its drafts', () => {
     for (const [path, content] of published) expect(readFileSync(join(dir, path), 'utf8'), path).toBe(content);
   });
 
+  it('puts the old address’s page where the draft’s was when a redirect is kept at the draft’s address (#1363)', async () => {
+    let { s, draft } = withDraft('Shop', '/shop/');
+    s = applyOperations(s, [{ type: 'page.create', pageId: 'pg_books001', title: 'Books', route: '/books/' }]).state;
+    // The only old address the site keeps, at the draft's address: the website still sends visitors on from it.
+    s.site.redirects = [{ from: '/shop/', pageId: 'pg_books001' }];
+    const dir = project(s);
+    const written = JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8'));
+    writeFileSync(join(dir, 'siteorigin/generated-manifest.json'), JSON.stringify({ ...written, pending: { 'src/routes/shop/+page.svelte': 'abc' } }));
+    expect(existsSync(join(dir, 'static/_redirects'))).toBe(false);
+    await leaveOutDrafts(dir, s);
+    const live = publishedState(s);
+    expect(readFileSync(join(dir, 'src/routes/shop/+page.svelte'), 'utf8')).toBe(generateRedirect(live, '/shop/', live.pages.pg_books001));
+    expect(readFileSync(join(dir, 'static/_redirects'), 'utf8')).toContain('/shop/ /books/ 301');
+    expect(existsSync(join(dir, 'siteorigin', 'pages', `${draft}.json`))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8'));
+    expect(manifest.pending).toEqual({});
+    const published = generateProject(live, { instrument: false });
+    expect(manifest.files).toEqual(Object.fromEntries([...published].map(([path, content]) => [path, sha(content)]).sort()));
+  });
+
   it('rewrites published files that link to a draft, and records their new content', async () => {
     const s = fresh();
     const about = byTitle(s, 'About').id;

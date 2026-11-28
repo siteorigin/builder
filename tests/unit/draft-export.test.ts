@@ -242,6 +242,29 @@ describe('exporting a project with a draft', () => {
     expect(readFileSync(join(source.path!, 'README.md'), 'utf8')).toContain('copy `vercel.json` into `build/` after each build');
   });
 
+  it('issue 1363: publishes an old address kept at a draft’s address, and still refuses a file of the draft’s there', async () => {
+    const dir = temp('project');
+    let state = createStarterState('business', 'Bookshop', false);
+    const about = Object.values(state.pages).find((p) => p.title === 'About')!.id;
+    state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview', route: '/winter/' }, { type: 'page.update', pageId: 'pg_winter01', draft: true }]).state;
+    state.site.redirects = [{ from: '/winter/', pageId: about }];
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    // The editor shows the draft there.
+    expect(readFileSync(join(dir, 'src/routes/winter/+page.svelte'), 'utf8')).not.toContain('is an old address of a page');
+    const ok = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(ok).toMatchObject({ ok: true });
+    const page = readFileSync(join(ok.path!, 'winter/index.html'), 'utf8');
+    expect(page).toContain('/winter/ is an old address of a page');
+    expect(page).not.toContain('Winter stock preview');
+    expect(readFileSync(join(ok.path!, '_redirects'), 'utf8')).toContain('/winter/ /about/ 301');
+    // A copy of the page as winter.html is no part of the old address's: it would publish the draft.
+    writeFileSync(join(dir, 'static/winter.html'), '<p>An older copy</p>');
+    const dest = join(temp('out'), 'site');
+    expect(await c.buildStaticTo(dest)).toMatchObject({ ok: false, message: 'The website has a page at /winter/, which leads to the draft Winter stock preview. Remove the file that puts it there, then export again.' });
+    expect(existsSync(dest)).toBe(false);
+  });
+
   it('refuses to publish anything at a draft’s address, even a file of the author’s own', async () => {
     const { c, dir } = await projectWithDraft();
     mkdirSync(join(dir, 'static/winter-stock-preview'), { recursive: true });
