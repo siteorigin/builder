@@ -927,8 +927,21 @@ describe('a font whose file left the project folder (#1425)', () => {
     const font = s.state.assets.assets[id];
     expect((await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: "'Lora', system-ui, sans-serif" }] }, { label: 'Use font', source: 'user' })).ok).toBe(true);
     expect(c.snapshot()!.assetUsage[id]).toBeGreaterThan(0);
+    const untilMissing = async (what: string) => {
+      let probedAt = 0;
+      await until(() => {
+        if (c.snapshot()!.missingAssets.some((m) => m.assetId === id)) return true;
+        // macOS may coalesce a rapid restore and delete. Repeat the directory change until its watcher reports it.
+        if (Date.now() - probedAt > 500) {
+          probedAt = Date.now();
+          writeFileSync(join(dir, font.file), readFileSync(LORA));
+          unlinkSync(join(dir, font.file));
+        }
+        return false;
+      }, what, 10_000);
+    };
     unlinkSync(join(dir, font.file));
-    await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === id), 'the missing font to be noticed', 10_000);
+    await untilMissing('the missing font to be noticed');
     expect(c.snapshot()!.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING' && d.owner?.id === id)).toMatchObject({ severity: 'error', message: expect.stringMatching(new RegExp(`^${font.name} is missing its font file`)) });
     // A website export stops before the build, naming the face; an editable one goes ahead and says which face it lacks.
     const site = await c.buildStaticTo(join(temp('dest'), 'site'));
@@ -946,9 +959,10 @@ describe('a font whose file left the project folder (#1425)', () => {
     expect(s.state.assets.assets[id]).toEqual(font);
     expect(JSON.stringify(s.state.tokens)).toBe(tokens);
     expect(c.snapshot()!.missingAssets).toEqual([]);
-    // Locate file does the same.
+    // Locate file does the same. Refresh this second deletion directly: the watcher was exercised above.
     unlinkSync(join(dir, font.file));
-    await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === id), 'the missing font to be noticed again', 10_000);
+    await s.refreshAssetFiles();
+    expect(c.snapshot()!.missingAssets.some((m) => m.assetId === id)).toBe(true);
     expect(await c.locateAsset(id, sourceFile('somewhere.woff2', readFileSync(LORA)))).toEqual({ ok: true, message: `${font.name} is back in the project folder.` });
     expect(s.revision).toBe(revision);
     expect(c.snapshot()!.missingAssets).toEqual([]);

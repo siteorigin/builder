@@ -700,7 +700,8 @@ export function Canvas() {
         if (samePath(route, frameAt.current) && !frameLoadFailed.current) return;
         frameLoadFailed.current = false;
         frame.src = live.url + route;
-        return;
+        // A newly added route can still hit SvelteKit's transient hydration error on the first reload. Keep checking
+        // until its frame reports the route, within this bounded recovery window.
       }
     })();
   };
@@ -1856,6 +1857,10 @@ export function Canvas() {
     const navId = askFrame(nav.current, viewKey(getState()) ?? '', path);
     frameAt.current = null;
     post('navigate', { path, navId, fullReload });
+    // A route added during a preview update can render before SvelteKit's browser loaders catch up. If its frame
+    // never reports that it opened, load the now-published route again instead of leaving Preview on an error page.
+    const revision = getState().snapshot?.revision;
+    if (revision !== undefined) recoverRoute(path, revision, session);
     // A post previewed is on its way: what the frame showed before is not named in its place (see notePostPreviewAt).
     if (getState().postView === 'preview' && getState().postPreviewAt !== null) setState({ postPreviewAt: null });
     return true;
