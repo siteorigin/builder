@@ -2416,6 +2416,42 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Sorting the list from its options menu is never chosen by a test', owner: 'posts' }]
   },
   {
+    id: 'posts.bulk',
+    area: 'posts',
+    intent: 'Pick several posts and publish, unpublish, file or delete them together',
+    start: 'Business site with five posts, some drafts',
+    routes: [
+      'item:Posts:Select *',
+      'item:Posts:Deselect *',
+      'item:Posts:Select all * shown',
+      'item:Posts:Clear selection',
+      'item:Posts:Publish',
+      'item:Posts:Publish * *',
+      'item:Posts:Move to drafts',
+      'item:Posts:Move * to drafts',
+      'item:Posts:*…',
+      'item:Posts:Delete *…'
+    ],
+    outcome: 'Shift+click and Shift+Down pick a range, Cmd+click one more or one less, Cmd+Space one more, and Select all what the filter shows; a filter lets go of the picked posts it hides; the picked posts are published, filed under a category or deleted as one change, and a picked row’s menu offers what is done to them all; publishing or unpublishing several changes only those not already so',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'picks a range with Shift+click and one more or one less with Cmd+click, keeping the open post apart' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'picks from the keyboard: Shift+Down for a range, Cmd+Space for one more, Cmd+A for all shown' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'a filter that hides picked posts lets go of them, so nothing hidden is changed' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'selects all a filter shows, publishes them as one change, and leaves the posts it hides alone' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'files the picked posts under a category from the dialog, in one change' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'deletes the picked posts with one question and one change, and keeps the one that is linked to picked' },
+      { test: 'tests/unit/posts-bulk-browser.test.ts', kind: 'unit', step: 'a picked row’s menu offers what is done to them all, and its own commands' },
+      { test: 'tests/unit/posts-bulk.test.ts', kind: 'unit', step: 'changes only those not already so, as one change, and names the drafts dated after today' }
+    ],
+    gaps: [
+      {
+        missing: 'From the picked posts’ Actions menu, Move to drafts (counted or not), Publish when only some are drafts, Select all and Clear selection are never chosen by a test, nor a row menu’s Select post; Select all is chosen only from the list’s options',
+        owner: 'posts'
+      }
+    ]
+  },
+  {
     id: 'posts.import',
     area: 'posts',
     intent: 'Bring my blog over from WordPress or a folder of Markdown',
