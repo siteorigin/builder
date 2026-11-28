@@ -24,7 +24,9 @@ const ENTRY = [
   'window.commits = [];',
   'window.plainBlurs = 0;',
   "const ref = (nodeId) => ({ owner: { kind: 'page', id: 'home' }, instancePath: [], nodeId });",
-  "flushSync(() => useStore.setState({ snapshot: { workspaceKey: 'w', state: {} }, pageId: 'home', selection: ref('hero') }));",
+  // A project with nothing in it, but a project: what was typed is named from it as it is typed (#1462).
+  "const project = () => ({ pages: {}, components: {}, collections: {}, site: { shell: {} } });",
+  "flushSync(() => useStore.setState({ snapshot: { workspaceKey: 'w', state: project() }, pageId: 'home', selection: ref('hero') }));",
   // Keyed as the Inspector keys what it shows: another selection, or with none another page, is another set of fields.
   'function Panel() {',
   '  const selection = useStore((s) => s.selection);',
@@ -47,7 +49,7 @@ const ENTRY = [
   '  pick: (nodeId) => setState({ selection: nodeId ? ref(nodeId) : null }),',
   '  page: (pageId) => setState({ pageId }),',
   // The project changed on disk and took the selected element with it.
-  "  removed: () => setState({ snapshot: { workspaceKey: 'w', state: {} }, selection: null }),",
+  "  removed: () => setState({ snapshot: { workspaceKey: 'w', state: project() }, selection: null }),",
   "  notices: () => useStore.getState().toasts.map((t) => t.text),",
   '};',
   'window.useStore = () => useStore.getState();'
