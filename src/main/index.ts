@@ -638,7 +638,7 @@ function handle(channel: string, fn: (...args: never[]) => unknown, { anytime = 
     try {
       answer = anytime ? run() : packs.after(authorize, run);
     } catch (e) {
-      trace('ipc', `#${id} ${channel} threw after ${Date.now() - asked}ms: ${traced(e)}`);
+      if (!quiet) trace('ipc', `#${id} ${channel} threw after ${Date.now() - asked}ms: ${traced(e)}`);
       throw e;
     }
     if (!quiet)
@@ -658,7 +658,9 @@ let ipcAsked = 0;
 function traceWindow(self: BrowserWindow) {
   const contents = self.webContents;
   const where = (url: string) => (url.length > 200 ? `${url.slice(0, 200)}…` : url);
+  // Warnings and errors only: what a page logs as it works (a component's own console.log) is its business, not the trace's.
   contents.on('console-message', (e) => {
+    if (e.level !== 'warning' && e.level !== 'error') return;
     const frame = (() => {
       try {
         return e.frame && e.frame !== contents.mainFrame ? ` (frame ${where(e.frame.url)})` : '';
@@ -666,7 +668,7 @@ function traceWindow(self: BrowserWindow) {
         return ' (frame gone)';
       }
     })();
-    trace('console', `${e.level}${frame}: ${e.message.slice(0, 800)}${e.level === 'error' || e.level === 'warning' ? ` at ${where(e.sourceId)}:${e.lineNumber}` : ''}`);
+    trace('console', `${e.level}${frame}: ${e.message.slice(0, 400)} at ${where(e.sourceId)}:${e.lineNumber}`);
   });
   contents.on('did-start-navigation', (d) => {
     if (!d.isSameDocument) trace('window', `${d.isMainFrame ? 'page' : 'frame'} navigating to ${where(d.url)}`);
@@ -1182,7 +1184,7 @@ function registerIpc() {
   // The editor shows its screen and listens for File menu commands: one waiting for it is sent now.
   // The editor's own steps, for the trace (src/renderer/src/lib/trace.ts): from its page only, as short text.
   ipcMain.on('app:trace', (event, area: unknown, message: unknown) => {
-    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    if (!tracing() || !win || event.sender !== win.webContents || !event.senderFrame || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
     if (typeof area === 'string' && typeof message === 'string') trace(`editor ${area.slice(0, 40)}`, message.slice(0, 1500));
   });
   ipcMain.on('menu:ready', (event) => {
@@ -1647,10 +1649,15 @@ const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'mai
 const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
 /** The developer's trace of this launch (trace.ts), beside the log. */
 const TRACE_FILE = join(app.getPath('userData'), 'logs', 'trace.log');
-/** Trace this launch from now: in a build run from the source, or with Developer mode on (offersDeveloperItems). */
+/**
+ * Trace this launch from now: in a build run from the source, or with Developer mode on (offersDeveloperItems). Turned
+ * on again later in the launch, it carries on after what it wrote before.
+ */
+let traceBegun = false;
 function beginTrace() {
-  startTrace(TRACE_FILE);
-  trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
+  startTrace(TRACE_FILE, { resumed: traceBegun });
+  if (!traceBegun) trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
+  traceBegun = true;
 }
 if (logging) {
   captureMainErrors(mainLog, { console, process });

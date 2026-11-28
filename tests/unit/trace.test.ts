@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { clearTrace, startTrace, stopTrace, trace, tracing } from '../../src/main/trace';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { clearTrace, startTrace, stopTrace, trace, traced, tracing } from '../../src/main/trace';
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -24,12 +24,32 @@ describe('the app trace (logs/trace.log)', () => {
   });
 
   it('writes each step under its area, timed from the launch', () => {
-    const file = join(scratch(), 'logs', 'trace.log');
+    vi.useFakeTimers({ now: new Date('2026-11-28T15:44:08.000Z') });
+    try {
+      const file = join(scratch(), 'logs', 'trace.log');
+      startTrace(file);
+      vi.setSystemTime(new Date('2026-11-28T15:44:09.234Z'));
+      trace('open', 'asked to open', '/projects/site');
+      expect(lines(file)).toEqual(['2026-11-28T15:44:08.000Z [trace] +0ms trace: started', '2026-11-28T15:44:09.234Z [trace] +1234ms open: asked to open /projects/site']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('carries on after what this launch wrote when tracing is turned on again', () => {
+    const file = join(scratch(), 'trace.log');
     startTrace(file);
-    trace('open', 'asked to open', '/projects/site');
-    const written = lines(file);
-    expect(written[0]).toMatch(/^\S+Z \[trace\] \+0ms trace: started$/);
-    expect(written[1]).toMatch(/^\S+Z \[trace\] \+\d+ms open: asked to open \/projects\/site$/);
+    trace('open', 'before');
+    stopTrace();
+    startTrace(file, { resumed: true });
+    trace('open', 'after');
+    expect(lines(file).map((l) => l.replace(/^.*ms /, ''))).toEqual(['trace: started', 'open: before', 'trace: resumed', 'open: after']);
+  });
+
+  it('never throws on what it is given to say', () => {
+    const odd = Object.create(null) as object;
+    expect(traced(odd)).toBe('an error that cannot be shown');
+    expect(traced(new Error('boom'))).toBe('boom');
   });
 
   it('holds one launch only: a new start removes the last trace and the part of it moved aside', () => {

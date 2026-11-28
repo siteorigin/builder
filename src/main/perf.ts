@@ -43,7 +43,13 @@ export const PERF_TRACED: Perf = Object.freeze({
       if (ended) return;
       ended = true;
       const all = attrs || more ? { ...attrs, ...more } : null;
-      trace('step', `${name} ${Date.now() - began}ms${all ? ` ${JSON.stringify(all).slice(0, 300)}` : ''}`);
+      let said = '';
+      try {
+        said = all ? ` ${JSON.stringify(all).slice(0, 300)}` : '';
+      } catch {
+        // Attributes that cannot be written out are left out.
+      }
+      trace('step', `${name} ${Date.now() - began}ms${said}`);
     };
   }
 });

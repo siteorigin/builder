@@ -27,7 +27,7 @@ import { projectDisplayName, windowTitle } from '@shared/project-name';
 import { perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
 import { editorModule, loadEditor } from './lib/editor-module';
 import { askRecentsEarly, takeEarlyRecents } from './lib/early-recents';
-import { followForTrace, traceEditor } from './lib/trace';
+import { followForTrace, reasonOf, traceEditor } from './lib/trace';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -58,7 +58,7 @@ export function App() {
     traceEditor('screen', 'loading the editor code');
     loadEditor().then(
       (m) => (traceEditor('screen', 'editor code loaded'), live && setLoadedEditor(m)),
-      (e: unknown) => (traceEditor('error', `the editor code could not be loaded: ${e instanceof Error ? e.message : String(e)}`), live && setEditorFailed(e instanceof Error ? e : new Error(String(e))))
+      (e: unknown) => (traceEditor('error', () => `the editor code could not be loaded: ${reasonOf(e)}`), live && setEditorFailed(e instanceof Error ? e : new Error(String(e))))
     );
     return () => {
       live = false;
@@ -87,7 +87,9 @@ export function App() {
     setOpeningSaid(openingName ? `Opening ${openingName}…` : 'Opening a project…');
   }, [opening, openingName, openingSince, saidFor]);
   // Which screen shows, and why, for the app's trace (lib/trace.ts).
-  useEffect(() => traceEditor('screen', `${shown}${shown === 'opening' ? ` (editor code ${editor ? 'loaded' : editorFailed ? 'failed' : 'loading'}, themes ${packsReady ? 'ready' : 'waiting'})` : ''}`), [shown, !!editor, packsReady, !!editorFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (booted) traceEditor('screen', `${shown}${shown === 'opening' ? ` (editor code ${editor ? 'loaded' : editorFailed ? 'failed' : 'loading'}, themes ${packsReady ? 'ready' : 'waiting'})` : ''}`);
+  }, [booted, shown, !!editor, packsReady, !!editorFailed]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     presented = shown;
     // A command held back while Welcome stood in for the editor is offered again now that the screen on show is the

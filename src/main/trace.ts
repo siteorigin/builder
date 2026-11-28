@@ -34,12 +34,17 @@ export function clearTrace(file: string): void {
   }
 }
 
-/** Start a trace in `file`, in place of any there. */
-export function startTrace(file: string, { maxBytes = 4 * 1024 * 1024, now = () => new Date() }: TraceOptions = {}): void {
-  clearTrace(file);
-  began = now().getTime();
+/**
+ * Start a trace in `file`, in place of any there; or, `resumed`, after what this launch has written already (tracing
+ * turned off and on again keeps it).
+ */
+export function startTrace(file: string, { maxBytes = 4 * 1024 * 1024, now = () => new Date(), resumed = false }: TraceOptions & { resumed?: boolean } = {}): void {
+  if (!resumed) {
+    clearTrace(file);
+    began = now().getTime();
+  }
   log = createMainLog({ file, maxBytes, maxEntry: 2000, now });
-  log.write('trace', '+0ms trace: started');
+  log.write('trace', `+${now().getTime() - began}ms trace: ${resumed ? 'resumed' : 'started'}`);
 }
 
 /** Whether a trace is being written. */
@@ -56,5 +61,11 @@ export function stopTrace(): void {
   log = null;
 }
 
-/** An error's message, for a trace line. */
-export const traced = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** An error's message, for a trace line: never throws, whatever was thrown. */
+export function traced(e: unknown): string {
+  try {
+    return e instanceof Error ? String(e.message) : String(e);
+  } catch {
+    return 'an error that cannot be shown';
+  }
+}

@@ -767,7 +767,8 @@ export class DevServer {
     const text = message.replace(/\x1b\[[0-9;]*m/g, '');
     this.logs.push({ level, message: text, time: Date.now() });
     if (this.logs.length > 200) this.logs.shift();
-    trace('vite', `${level}: ${text.trim().slice(0, 600)}`);
+    // Its warnings and errors: the lines it logs for each request it answers would crowd out everything else.
+    if (level !== 'info') trace('vite', `${level}: ${text.trim().slice(0, 600)}`);
   }
 
   async start(): Promise<void> {
@@ -814,7 +815,7 @@ export class DevServer {
           this.set({ state: 'ready', url: m.url! });
           resolve();
         } else if (m.type === 'log') this.log(m.level ?? 'info', m.message ?? '');
-        else if (m.type === 'trace') trace('preview worker', String(m.message ?? '').slice(0, 600));
+        else if (m.type === 'trace' && typeof m.message === 'string') trace('preview worker', m.message.slice(0, 600));
         else if (m.type === 'error') {
           this.log('error', m.message ?? '');
           if (this.status.state !== 'ready') {

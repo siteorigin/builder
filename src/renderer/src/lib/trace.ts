@@ -5,13 +5,16 @@ import { api, getState, useStore, type State } from '../store';
  * got, the preview's state as the editor sees it, and anything that went wrong on the page. Short text only: never
  * what the project's pages or a chat say.
  */
-export function traceEditor(area: string, message: string): void {
+export function traceEditor(area: string, message: string | (() => string)): void {
   try {
-    api.trace(area, message);
+    api.trace(area, typeof message === 'function' ? message() : message);
   } catch {
-    // Tracing never gets in the way.
+    // Tracing never gets in the way, whatever it was given to say.
   }
 }
+
+/** What went wrong, for a trace line (inside traceEditor's guard: a value that cannot be shown is never thrown). */
+export const reasonOf = (e: unknown): string => (e instanceof Error ? String(e.message) : String(e));
 
 /** What the trace follows of the editor's state: what an opening, and its first page, wait on. */
 function followed(s: State): Record<string, string | number | boolean | null> {
@@ -22,7 +25,6 @@ function followed(s: State): Record<string, string | number | boolean | null> {
     openingTimed: s.openingSince !== null,
     openingPage: s.openingPage,
     project: s.snapshot?.workspaceKey ?? null,
-    revision: s.snapshot?.revision ?? null,
     runtime: `${runtime.state}${'message' in runtime && runtime.message ? `: ${runtime.message.slice(0, 160)}` : ''}`,
     frameReady: s.frameReady,
     previewIssue: s.previewIssue,
@@ -43,8 +45,8 @@ export function followForTrace(): () => void {
     last = now;
     if (moved.length) traceEditor('state', moved.map((k) => `${k}=${JSON.stringify(now[k])}`).join(' '));
   });
-  const onError = (e: ErrorEvent) => traceEditor('error', `${e.message} at ${e.filename}:${e.lineno}`);
-  const onRejection = (e: PromiseRejectionEvent) => traceEditor('error', `unhandled rejection: ${e.reason instanceof Error ? e.reason.message : String(e.reason)}`);
+  const onError = (e: ErrorEvent) => traceEditor('error', () => `${reasonOf(e.message)} at ${e.filename}:${e.lineno}`);
+  const onRejection = (e: PromiseRejectionEvent) => traceEditor('error', () => `unhandled rejection: ${reasonOf(e.reason)}`);
   const onVisibility = () => traceEditor('page', `${document.visibilityState}`);
   window.addEventListener('error', onError);
   window.addEventListener('unhandledrejection', onRejection);
