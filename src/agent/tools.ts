@@ -140,7 +140,7 @@ export const TOOL_ARGS = {
     itemId: z.string().optional().describe('For a list property: the id of one item.'),
     field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
   }),
-  open_page: z.object({ page: z.string().min(1).max(200).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
+  open_page: z.object({ page: z.string().min(1).max(600).describe('The page to open: its ID, its route (such as /about/) or its title, as the author named it.') }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   update_page_seo: PAGE_SEO_ARGS,
@@ -253,7 +253,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
-  open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found or several match: ask which.',
+  open_page: 'Show a page in the editor (canvas and Pages), only when the author asks to go to one; changes nothing. page: ID, route or title. Not found: say so. Several match: ask which.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
   update_page_seo: PAGE_SEO_BRIEF,
@@ -833,36 +833,48 @@ function runTools(opts: {
   return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
-/** The modes a request to go to a page is answered in: what the editor shows is the author's, wherever the run may write. */
-const OPENS_PAGES = new Set<ToolMode>(['ask', 'site', 'page', 'selection', 'general', 'definition']);
-
 /**
- * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357). It changes nothing
- * in the site, so it widens no run; a request that never asks to go anywhere is never offered it, so no edit moves the
- * editor. A post, a collection layout, a code component's source and Create component keep their own sets.
+ * open_page beside a run's own tools, when the request asks to go to a page (asksToOpenPage, #1357), in every mode a
+ * request can be typed in, as Pages can be clicked from any of them. It changes nothing in the site, so it widens no
+ * run; a request that never asks to go anywhere is never offered it, so no edit moves the editor. Create component
+ * keeps its own set. Ambiguity is asked about in the same run, which a set without the question tool could not do.
  */
 function withPageOpener(run: RunTools, asked: boolean): RunTools {
-  if (!asked || !OPENS_PAGES.has(run.mode) || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
-  return { ...run, tools: [...run.tools, plainTool('open_page')] };
+  if (!asked || run.task || run.tools.some((t) => t.name === 'open_page')) return run;
+  const ask = run.tools.some((t) => t.name === 'request_clarification') ? [] : [narrowQuestion()];
+  return { ...run, tools: [...run.tools, plainTool('open_page'), ...ask] };
 }
 
-const GO_TO = /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\b(?:open|show|view|display|visit|load)\b|\b(?:bring|pull)\s+up\b/i;
-const NAMES_A_PAGE = /\b(?:pages?|home\s?page)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$)/iu;
+/** request_clarification without widenScope: asking which page widens nothing. */
+function narrowQuestion(): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name: 'request_clarification', ...describe('request_clarification'), parameters: schema };
+}
+
+// "Open" is going somewhere, but not a link that opens in a new tab; "show" is going there when it is "show me".
+const GO_TO = /\b(?:take|bring|get)\s+me\b|\b(?:go|navigate|jump|switch|head|move|skip|return)\s+(?:back\s+|over\s+|straight\s+)?(?:to|into)\b|\bgo\s+(?:back\s+)?home\b|\bopen\b(?!\s+(?:in|on)\b)|\bshow\s+me\b|\b(?:view|visit)\b|\b(?:bring|pull)\s+up\b/i;
+const NAMES_A_PAGE = /\b(?:pages?|home\s?page|home)\b|(?:^|[\s"'“‘(])\/(?:[\p{L}\p{N}._~-]|\/|$|["'”’)])/iu;
 
 /**
  * Whether a request typed into the chat asks to go to a page (#1357): a word for going there ("take me to", "open",
- * "show me") with a page named, as a page, by its route, or by a title one of the project's pages has.
+ * "show me") with a page named, as a page, by its route (with or without its slashes), or by a title one of the
+ * project's pages has.
  */
 export function asksToOpenPage(text: string, state?: ProjectState): boolean {
   if (!GO_TO.test(text)) return false;
   if (NAMES_A_PAGE.test(text)) return true;
   const fold = (v: string) => v.normalize('NFKC').toLowerCase();
   const words = fold(text);
+  const named = (n: string) => {
+    if (!n) return false;
+    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(n)) return words.includes(n);
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
+  };
   return Object.values(state?.pages ?? {}).some((p) => {
     const title = typeof p?.title === 'string' ? fold(p.title.trim()) : '';
-    if (!title) return false;
-    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(title)) return words.includes(title);
-    return title.length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(words);
+    const route = typeof p?.route === 'string' ? fold(p.route.replace(/^\/+|\/+$/g, '')) : '';
+    return named(title) || named(route);
   });
 }
 

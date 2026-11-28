@@ -392,15 +392,22 @@ describe('going to a page from Chat (#1357)', () => {
   const lastResult = (adapter: FakeAdapter, i: number) => JSON.parse((adapter.requests[i].items.at(-1) as { content: string }).content);
 
   it('opens a page named by its title, in a question, as no change to the site', async () => {
-    const { session, run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'about' })], () => finish('The About page is open.')]);
+    // Its route says nothing of its title, so only the title can find it.
+    const { session, run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'about' })], () => finish('The About page is open.')], {
+      prepare: (s) => {
+        Object.values(s.pages).find((p) => p.title === 'About')!.route = '/our-story/';
+      }
+    });
     const revision = session.revision;
     const about = pageTitled(session, 'About');
     const { result, runId } = await run('Take me to the About page', { mode: 'ask' });
     expect(adapter.requests[0].tools.map((t) => t.name)).toContain('open_page');
     expect(adapter.requests[0].system).toContain('call open_page');
-    expect(lastResult(adapter, 1)).toMatchObject({ ok: true, opened: { pageId: about.id, title: 'About', route: about.route } });
-    expect(events.filter((e) => e.kind === 'open-page')).toEqual([{ runId, conversationId: expect.any(String), kind: 'open-page', pageId: about.id }]);
-    expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: true, opened: { pageId: about.id, title: 'About', route: '/our-story/' } });
+    const tagged = events.find((e) => e.kind === 'message')!.conversationId;
+    expect(tagged).not.toBe('');
+    expect(events.filter((e) => e.kind === 'open-page')).toEqual([{ runId, conversationId: tagged, kind: 'open-page', pageId: about.id }]);
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'The About page is open.', changes: [], canUndo: false });
     expect(session.revision).toBe(revision);
     expect(session.historyInfo().entries).toHaveLength(0);
   });
@@ -408,7 +415,7 @@ describe('going to a page from Chat (#1357)', () => {
   it('opens a page named by its route from an edit request, changing nothing', async () => {
     const { session, run, events } = await setup([() => [call('nav', 'open_page', { page: '/contact' })], () => finish('Contact is open.')]);
     const contact = pageTitled(session, 'Contact');
-    const { result } = await run('open /contact');
+    const { result } = await run('open /contact', { scope: 'page' });
     expect(opens(events)).toEqual([contact.id]);
     expect(result).toMatchObject({ status: 'no-changes', changes: [], canUndo: false });
     expect(session.historyInfo().entries).toHaveLength(0);
@@ -416,13 +423,29 @@ describe('going to a page from Chat (#1357)', () => {
 
   it('says a page that does not exist was not found, and opens nothing', async () => {
     const { run, adapter, events } = await setup([() => [call('nav', 'open_page', { page: 'Careers' })], () => finish('There is no Careers page.')]);
-    const { result } = await run('Take me to the Careers page');
+    const { result } = await run('Take me to the Careers page', { scope: 'page' });
     const answer = lastResult(adapter, 1);
     expect(answer).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     expect(answer.error.message).toMatch(/No page has the ID, route or title "Careers"/);
     expect(answer.error.message).toContain('"About"');
     expect(opens(events)).toEqual([]);
-    expect(result).toMatchObject({ status: 'no-changes', changes: [] });
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'There is no Careers page.', changes: [] });
+  });
+
+  it('tells the model a page deleted while a question was answered was not opened', async () => {
+    let session!: ProjectSession;
+    const { session: s, run, adapter, events } = await setup([
+      async () => {
+        const about = pageTitled(session, 'About');
+        expect((await session.apply({ operations: [{ type: 'page.remove', pageId: about.id, replacementPageId: session.state.site.homePageId }] }, { label: 'Delete page', source: 'user' })).ok).toBe(true);
+        return [call('nav', 'open_page', { page: about.id })];
+      },
+      () => finish('The About page has gone.')
+    ]);
+    session = s;
+    await run('Take me to the About page', { mode: 'ask' });
+    expect(lastResult(adapter, 1)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/deleted while you answered/) } });
+    expect(opens(events)).toEqual([]);
   });
 
   it('opens nothing for a title two pages share, so the model can ask which one', async () => {
@@ -430,10 +453,14 @@ describe('going to a page from Chat (#1357)', () => {
       prepare: (s) => {
         const about = Object.values(s.pages).find((p) => p.title === 'About')!;
         s.pages.pg_about_team = { ...structuredClone(about), id: 'pg_about_team', route: '/about-team/' };
+        s.site.pageOrder = [...(s.site.pageOrder ?? []), 'pg_about_team'];
       }
     });
     await run('Show me the About page', { mode: 'ask' });
-    expect(lastResult(adapter, 1).error.message).toMatch(/More than one page is titled "About"/);
+    const message = lastResult(adapter, 1).error.message;
+    expect(message).toMatch(/More than one page is titled "About"/);
+    expect(message).toContain('/about/');
+    expect(message).toContain('/about-team/');
     expect(opens(events)).toEqual([]);
   });
 
@@ -444,14 +471,59 @@ describe('going to a page from Chat (#1357)', () => {
     expect(lastResult(adapter, 1)).toMatchObject({ ok: false });
     expect(opens(events)).toEqual([]);
   });
+
+  it('moves nothing when an edit to another page lands', async () => {
+    let about = '';
+    const { session, run, events } = await setup([
+      () => {
+        return [call('e1', 'apply_operations', { expectedRevision: session.revision, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: about, title: 'Our story' }] })];
+      },
+      () => finish('Renamed About to Our story.')
+    ]);
+    about = pageTitled(session, 'About').id;
+    const { result } = await run('Rename the About page to Our story');
+    expect(result?.status).toBe('completed');
+    expect(session.state.pages[about].title).toBe('Our story');
+    expect(opens(events)).toEqual([]);
+  });
+
+  it('lets a small model with only its selection tools ask which page, in the same run', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.pages[state.site.homePageId];
+    const base = { state, capabilities: { toolCalling: 'native' as const, contextWindowTokens: 12_000 }, codeEnabled: false, definitionOps: false };
+    const at = (nodeId: string) => ({ ...base, selection: { owner: { kind: 'page' as const, id: home.id }, nodeId } as never });
+    // A selection whose small set has no question of its own.
+    const nodeId = Object.keys(home.nodes).find((id) => {
+      const run = toolsForRun(at(id));
+      return run.mode === 'selection' && !run.tools.some((t) => t.name === 'request_clarification');
+    })!;
+    expect(nodeId).toBeDefined();
+    const plain = toolsForRun(at(nodeId));
+    const asked = toolsForRun({ ...at(nodeId), pageRequest: true });
+    expect(plain.tools.map((t) => t.name)).not.toContain('open_page');
+    const names = asked.tools.map((t) => t.name);
+    expect(names).toContain('open_page');
+    expect(names.filter((n) => n === 'request_clarification')).toHaveLength(1);
+    const question = asked.tools.find((t) => t.name === 'request_clarification')!;
+    expect(Object.keys((question.parameters as { properties: object }).properties)).not.toContain('widenScope');
+  });
 });
 
 describe('asksToOpenPage', () => {
   const state = createStarterState('business', 'Test', false);
-  it.each(['Take me to the About page', 'open /contact', 'show me Contact', 'Go to the home page', 'switch to Contact', 'navigate to /about/'])('hears "%s" as going to a page', (text) => {
+  it.each(['Take me to the About page', 'open /contact', 'show me Contact', 'Go to the home page', 'go home', 'switch to Contact', 'navigate to /about/', 'open contact/', 'open "/"'])('hears "%s" as going to a page', (text) => {
     expect(asksToOpenPage(text, state)).toBe(true);
   });
-  it.each(['Change the heading on the About page to Our story', 'Make the hero bigger', 'Add a Services section', 'What does the Contact page say?'])('hears "%s" as no request to go anywhere', (text) => {
+  it.each([
+    'Change the heading on the About page to Our story',
+    'Make the hero bigger',
+    'Add a Services section',
+    'What does the Contact page say?',
+    'Make the About page link open in a new tab',
+    'Show the phone number on the Contact page',
+    // A title is a whole word: "Contact" is not in "contacts".
+    'Open our contacts list'
+  ])('hears "%s" as no request to go anywhere', (text) => {
     expect(asksToOpenPage(text, state)).toBe(false);
   });
 });

@@ -3186,12 +3186,18 @@ export class Orchestrator {
           const offered = tools.some((t) => t.name === call.name);
           // A component the update tool does not offer this run is refused, even from a model that ignored its choices.
           const outside = offered && call.name === 'update_theme_component' ? outsideOffer(tools.find((t) => t.name === call.name), call.arguments) : null;
-          const outcome: ResultOutcome = !offered
+          const reached: ResultOutcome = !offered
             ? // A question is never offered a change, so none can be made in it; elsewhere one may be offered once the scope widens.
               stamp(toolError('INVALID_ARGUMENT', `Unknown tool "${call.name}".`, { recoverable: !(ask && mutating) }), readRevision())
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
               : await (startReads(index), started.get(call) ?? runCall(call));
+          // A question reads the site as it was asked about: a page deleted since then cannot be opened, and the model
+          // is told so rather than told it is open (#1357).
+          const outcome: ResultOutcome =
+            reached.ok && reached.openPage && !Object.hasOwn(session.state.pages, reached.openPage)
+              ? stamp(toolError('INVALID_ARGUMENT', 'That page was deleted while you answered. Nothing was opened: tell the author so.'), readRevision())
+              : reached;
           // Kept before a repeated failure can end the run with this result never sent. A call Stop cut short is not,
           // unless its change landed first: the outcome says whether it was rolled back.
           if (!signal.aborted || outcome.mutated) learnResult(call, outcome);
@@ -3205,9 +3211,8 @@ export class Orchestrator {
           }
           if (signal.aborted) throw new Error('Canceled');
           activity.status = outcome.ok ? 'done' : 'error';
-          // A page the author asked to go to opens now, if it is still there (a question read the site as it was asked
-          // about). The editor moves, the site does not: nothing is recorded as a change.
-          if (outcome.ok && outcome.openPage && Object.hasOwn(session.state.pages, outcome.openPage)) {
+          // A page the author asked to go to opens now. The editor moves, the site does not: nothing is recorded as a change.
+          if (outcome.ok && outcome.openPage) {
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'open-page', pageId: outcome.openPage });
           }
           if (outcome.ok && outcome.location) {

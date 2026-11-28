@@ -758,4 +758,12 @@ describe('a page the author asked Chat to go to (#1357)', () => {
     store.applyAiEvent(event());
     expect(opened).toEqual([]);
   });
+
+  it('moves nothing once its request has ended', () => {
+    prime();
+    store.applyAiEvent({ runId: 'r1', conversationId: 'c1', kind: 'status', status: 'no-changes', mode: 'ask' });
+    store.applyAiEvent(event());
+    expect(opened).toEqual([]);
+  });
+
 });
