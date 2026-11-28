@@ -117,6 +117,8 @@ function beyondGuestGrant(op: EditOperation): string | null {
     const fields = (['articleDate', 'newsHidden', 'draft'] as const).filter((k) => op[k] !== undefined);
     if (fields.length) return `Only the host can set a new page’s ${fields.join(', ')}.`;
   }
+  // A draft copy keeps a page out of the website, which is the host's call as much as drafting it.
+  if (op.type === 'page.duplicate' && op.draft !== undefined) return 'Only the host can set a copy’s draft.';
   return null;
 }
 
