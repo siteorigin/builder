@@ -71,13 +71,6 @@ export function menuHistoryOwner(c: HistoryContext, fromKey: boolean): HistoryOw
 const PREVIEW_KEYS = new Set(['k', 's', 'e', 'f', '\\', '|']);
 
 /**
- * Whether an editor shortcut forwarded by the main process (the preview frame had focus, so the editor's own
- * keydown handler could not see it) should run. In Preview the page is the visitor's, and a text field on the
- * page keeps its keys in Edit mode too: Undo, Delete and paste belong to the field, never to the project. While
- * an editor menu or dialog is open, only the editor-wide shortcuts run, as from the editor itself. While site
- * copy is edited on the page, only Save runs: it hands that text back and saves it.
- */
-/**
  * Back or Forward through the visitor's journey, for a key press forwarded while the preview frame has focus: only
  * in Preview, with no editor menu or dialog open. It never reaches project Undo, which has keys of its own.
  */
@@ -86,9 +79,23 @@ export function forwardedVisitorStep(c: HistoryContext, k: KeyChord, mac: boolea
   return dir && c.editor && c.focus === 'canvas' && c.mode === 'preview' && !c.overlay ? dir : null;
 }
 
+/**
+ * Whether an editor shortcut forwarded by the main process (the preview frame had focus, so the editor's own
+ * keydown handler could not see it) should run. In Preview the page is the visitor's, and a text field on the
+ * page keeps its keys in Edit mode too: Undo, Delete and paste belong to the field, never to the project. While
+ * an editor menu or dialog is open, only the editor-wide shortcuts run, as from the editor itself. While site
+ * copy is edited on the page, only Save runs: it hands that text back and saves it.
+ *
+ * Delete and Backspace never run from the page (#1361): what has focus there can be any of the website's own controls
+ * (a link or button reached with Tab), and nothing here can tell it from the selection. They remove the selection from
+ * Layers, its chip and the canvas around the page (lib/clip-keys), which a click on the page hands the keyboard to
+ * (see Canvas's `select`).
+ */
 export function forwardedKeyRuns(c: HistoryContext, key: string, mod: boolean, askAi = false): boolean {
   if (!c.editor || c.focus !== 'canvas') return false;
   if (c.inlineEdit) return mod && key.toLowerCase() === 's';
+  // Shift or Alt held is still the editor's Delete (Editor's handleShortcut), so only Cmd/Ctrl makes it another key.
+  if (!mod && (key === 'Delete' || key === 'Backspace')) return false;
   if (c.mode === 'edit' && !c.frameText && !c.overlay) return true;
   return mod ? askAi || PREVIEW_KEYS.has(key.toLowerCase()) : key === 'Escape';
 }

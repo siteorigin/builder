@@ -1724,7 +1724,10 @@ document.addEventListener(
       }
       scheduleRects();
     }
-    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
+    // `pointer`: a press of the mouse, a pen or a finger, which hands the keyboard back to the editor. Not Enter or Space
+    // on a control reached with Tab (a click with no pointer type) or a click the page's own code made: those keep the
+    // keyboard where it is on the page.
+    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey, pointer: e.isTrusted && !!e.pointerType });
   },
   true
 );
@@ -1802,8 +1805,10 @@ document.addEventListener('keydown', (e) => {
     e.stopPropagation();
     return;
   }
-  // Forward editor shortcuts so they work while the preview has focus.
-  if (e.metaKey || e.ctrlKey || e.key === 'Escape' || e.key === 'Delete' || e.key === 'Backspace') {
+  // Forward editor shortcuts so they work while the preview has focus. Delete and Backspace are left to the page: they
+  // are never the editor's from here (#1361), and a field the page's own code made (in a shadow root, whose key reaches
+  // this listener from its host) keeps deleting what was typed in it.
+  if (e.metaKey || e.ctrlKey || e.key === 'Escape') {
     if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable))) {
       e.preventDefault();
       send('key', { key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
@@ -2431,14 +2436,23 @@ function onEditKey(e) {
   }
   if (e.key === 'Escape') {
     e.preventDefault();
-    cancelEdit();
+    endEditByKey(cancelEdit);
   } else if (e.key === 'Enter' && !e.shiftKey && !editing.rich) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   }
+}
+/**
+ * End the edit with a key the author pressed in it (in its text or its toolbar), where the keyboard stays: the editor
+ * takes it back for the selection (#1361). Said after the commit or cancel, so the editor has closed the edit by then.
+ */
+function endEditByKey(end) {
+  const { editId } = editing;
+  end();
+  if (!editing) send('editLeftByKey', { editId });
 }
 function onEditBlur(e) {
   // Moving into the link editor or the toolbar is still the same edit.
@@ -2830,7 +2844,7 @@ function onToolbarKey(e) {
     restoreText();
   } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
-    commitEdit();
+    endEditByKey(commitEdit);
   }
 }
 /** Each command is one step of the text's own Undo while editing; the whole edit is one step once it is done. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { focusedSurface, forwardedKeyRuns, historyOwner, menuHistoryOwner, type HistoryContext } from '../../src/renderer/src/lib/history';
 import { menuKeyCopy } from '../../src/main/history-keys';
+import { keyboardLeavesPage } from '../../src/renderer/src/lib/clip-keys';
 
 const ctx = (over: Partial<HistoryContext> = {}): HistoryContext => ({ editor: true, mode: 'edit', inlineEdit: false, frameText: false, overlay: false, focus: 'other', ...over });
 const visitor = ctx({ mode: 'preview', focus: 'canvas' });
@@ -39,9 +40,36 @@ describe('undo and redo routing', () => {
   it('undoes the project from the canvas in Edit mode exactly once', () => {
     const canvas = ctx({ focus: 'canvas' });
     for (const key of ['z', 'y']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
-    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false)).toBe(true);
     // The forwarded key undoes the project; the menu's copy of that key press must not undo a second step.
     expect(menu(canvas)).toEqual({ click: 'project', key: 'none' });
+  });
+
+  it('never deletes the selection with a key pressed on the page, whatever on it has focus (#1361)', () => {
+    // The reported bug: Split hero selected in Layers, the header's About link reached with Tab, and Backspace or Delete
+    // removed the hero. The page reports no field there, so only the forwarded key's own routing can keep it.
+    const canvas = ctx({ focus: 'canvas' });
+    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false)).toBe(false);
+    // Shift or Alt held is still Delete to the editor (only Cmd/Ctrl makes another key), and is still not the page's to run.
+    for (const askAi of [false, true]) for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false, askAi)).toBe(false);
+    // The editor's other keys still run from there, and so do Cmd/Ctrl with these two (none is a shortcut of the editor's).
+    for (const key of ['z', 'd', 'c', 'v', 'g']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
+    expect(forwardedKeyRuns(canvas, 'Escape', false)).toBe(true);
+    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
+  });
+
+  it('takes the keyboard back from the page for a pointer pick taken at once, or an edit Enter or Escape ended (#1361)', () => {
+    const at = { frameFocused: true, mode: 'edit', inlineEdit: false };
+    const pick = { pointer: true, picked: true, held: false };
+    expect(keyboardLeavesPage(at, pick)).toBe(true);
+    // No pick: Enter or Escape ended an edit of the page's text, which kept the focus.
+    expect(keyboardLeavesPage(at)).toBe(true);
+    // A pick from the keyboard, one that selected nothing, and one held for a save and taken later.
+    for (const p of [{ ...pick, pointer: false }, { ...pick, pointer: undefined }, { ...pick, pointer: 'true' }, { ...pick, picked: false }, { ...pick, held: true }]) expect(keyboardLeavesPage(at, p)).toBe(false);
+    // Nothing once the page no longer has the keyboard (Layers or another panel does), in Preview, or while its text is edited.
+    for (const a of [{ ...at, frameFocused: false }, { ...at, mode: 'preview' }, { ...at, inlineEdit: true }]) {
+      expect(keyboardLeavesPage(a, pick)).toBe(false);
+      expect(keyboardLeavesPage(a)).toBe(false);
+    }
   });
 
   it('keeps inline site copy’s own history while it is being edited', () => {
