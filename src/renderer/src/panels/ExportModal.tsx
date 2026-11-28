@@ -6,7 +6,7 @@ import type { SiteEntry } from '@shared/collections';
 import type { Diagnostic, ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
-import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from '../lib/actions';
+import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout, showArchiveLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
 import { settleEdits } from '../lib/leave';
 import { afterEditsSettle } from '../lib/pending';
@@ -55,14 +55,15 @@ function openFailedPage(pageId: string) {
 function openDraftLink(l: DraftLink) {
   // A collection entry's text has no place in the inspector yet (the dialog offers no button for one).
   if (l.owner.kind === 'entry') return;
-  const owner = l.owner as { kind: 'page' | 'shell' | 'template'; id: string };
+  const owner = l.owner as { kind: 'page' | 'shell' | 'template' | 'archive'; id: string };
   const s = getState();
   const st = s.snapshot?.state;
   const tree = st && treeFor(st, owner);
   if (!tree?.nodes[l.nodeId]) return toast('That link is no longer on the site.', 'info');
-  // A link in a collection's layout is shown on one of its entries.
-  if (owner.kind === 'template') {
-    openLayout(owner.id, l.shownOn);
+  // A link in a collection's layout is shown on one of its entries; one in its archive layout, on its index.
+  if (owner.kind === 'template' || owner.kind === 'archive') {
+    if (owner.kind === 'archive') showArchiveLayout(owner.id);
+    else openLayout(owner.id, l.shownOn);
     setState({ modal: null, selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true });
     setTimeout(() => openSection('content'), 50);
     return;

@@ -12,9 +12,10 @@ import { applyOperations } from '@engine/apply';
 import { formNameDiagnostics, validateState, websiteFormNotes, websiteFormProblems } from '@engine/validate';
 import { describeDraftLink, netlifyFormClashes, publicationPlan } from '@generator/checks';
 import { generateProject } from '@generator/index';
-import { showsSiteSearch } from '@generator/webmcp';
+import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
 import { draftLinksStop, formNameWarnings } from '../../src/main/export';
 import { withSupportedForm } from './fixtures/webmcp-designs';
+import { destinationForDiagnostic, noteState } from '../../src/renderer/src/lib/destinations';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const ARCHIVE: OwnerRef = { kind: 'archive', id: 'notes' };
@@ -61,6 +62,18 @@ describe('a link to a draft in a collection’s archive layout', () => {
     expect(draftLinksStop(run(s, { type: 'page.update', pageId: 'pg_soon', draft: false }))).toBeNull();
   });
 
+  it('follows the address the index answers at: a published page holding it shows no layout, a draft one gives it back', () => {
+    // Made by hand, as a project from before archive pages may have it: the edits refuse the clash.
+    const held = structuredClone(withBanner(notes()));
+    held.pages.pg_notes = { ...structuredClone(held.pages.pg_soon), id: 'pg_notes', title: 'Notes page', route: '/notes/', rootIds: [], nodes: {} };
+    delete held.pages.pg_notes.draft;
+    held.site.pageOrder.push('pg_notes');
+    expect(generateProject(held).get('src/routes/notes/+page.svelte')).not.toContain('/soon/');
+    expect(publicationPlan(held).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([]);
+    held.pages.pg_notes.draft = true;
+    expect(publicationPlan(held).draftLinks.filter((l) => l.owner.kind === 'archive')).toEqual([expect.objectContaining({ owner: ARCHIVE, nodeId: 'n_soonbanner', pageId: 'pg_soon' })]);
+  });
+
   it('says nothing while the collection shows no archive pages, or shows the ready-made cards', () => {
     const s = withBanner(notes());
     const cards = run(s, { type: 'collection.update', collectionId: 'notes', archiveTemplate: null });
@@ -91,6 +104,36 @@ describe('a contact form visitors cannot send, in a collection’s archive layou
     expect(websiteFormNotes(s).filter((n) => n.destination?.kind === 'form' && n.destination.nodeId === 'n_noteform')).toEqual([
       { message: health[0].message, destination: { kind: 'form', owner: ARCHIVE, nodeId: 'n_noteform', setting: 'connection' } }
     ]);
+  });
+
+  it('leads to its form in the archive layout, and says once it was fixed or is no longer on the website', () => {
+    const s = withForm(notes(), ARCHIVE, 'n_noteform');
+    const health = validateState(s).find((d) => d.code === 'FORM_UNCONNECTED' && d.nodeId === 'n_noteform')!;
+    expect(destinationForDiagnostic(s, health)).toEqual({ kind: 'form', owner: ARCHIVE, nodeId: 'n_noteform', setting: 'connection' });
+    const note = websiteFormNotes(s).find((n) => n.destination?.kind === 'form' && n.destination.nodeId === 'n_noteform')!;
+    expect(noteState(s, note, websiteFormNotes(s))).toBe('open');
+    const connected = run(s, { type: 'instance.setProp', owner: ARCHIVE, nodeId: 'n_noteform', prop: 'endpoint', value: 'https://formspree.io/f/abcd1234' });
+    expect(noteState(connected, note, websiteFormNotes(connected))).toBe('fixed');
+    const cards = run(s, { type: 'collection.update', collectionId: 'notes', archiveTemplate: null });
+    expect(noteState(cards, note, websiteFormNotes(cards))).toBe('gone');
+  });
+
+  it('counts the shared footer the index shows, when no page shows it', () => {
+    let s = createStarterState('business', 'Test Studio', false);
+    const footer: OwnerRef = { kind: 'shell', id: 'footer' };
+    s = withForm(s, footer, 'n_footerform');
+    for (const id of s.site.pageOrder) s.pages[id].showFooter = false;
+    expect(websiteFormProblems(s).filter((d) => d.nodeId === 'n_footerform')).toEqual([]);
+    // A collection with no entry yet: its index shows the footer.
+    s = run(s, { type: 'collection.create', collectionId: 'notes', name: 'Notes', kind: 'editorial', route: '/notes/', pages: { detail: true, archive: true } } as EditOperation);
+    expect(websiteFormProblems(s).filter((d) => d.nodeId === 'n_footerform').map(at)).toEqual(['shell:footer:n_footerform']);
+    // Sent to Netlify, it clashes with a form of the index's own layout under the same Netlify form name.
+    s = run(s, { type: 'instance.setProp', owner: footer, nodeId: 'n_footerform', prop: 'provider', value: 'netlify' }, { type: 'collection.update', collectionId: 'notes', archiveTemplate: 'start' });
+    s = withForm(s, ARCHIVE, 'n_noteform', { provider: 'netlify' });
+    expect(formNameDiagnostics(s).map(at).sort()).toEqual(['archive:notes:n_noteform', 'shell:footer:n_footerform']);
+    const clash = formNameDiagnostics(s).find((d) => d.nodeId === 'n_noteform')!;
+    expect(clash.message).toMatch(/^Notes archive layout: 2 contact forms send to the Netlify form “contact” \(the shared footer and the Notes archive layout\)/);
+    expect(destinationForDiagnostic(s, clash)).toEqual({ kind: 'form', owner: ARCHIVE, nodeId: 'n_noteform', setting: 'formName' });
   });
 
   it('is left out while no archive page shows the layout', () => {
@@ -135,5 +178,13 @@ describe('Site search placed only in a collection’s archive layout', () => {
     // Back to the ready-made cards, the box is on no page.
     s = run(s, { type: 'collection.update', collectionId: 'notes', archiveTemplate: null });
     expect(showsSiteSearch(s)).toBe(false);
+  });
+
+  it('counts a contact form declaring a tool there too', () => {
+    const s = withForm(withSupportedForm(notes()), ARCHIVE, 'n_noteform');
+    expect(showsFormTool(s)).toBe(true);
+    const off = structuredClone(s);
+    off.collections.notes.settings.pages = { detail: true, archive: false };
+    expect(showsFormTool(off)).toBe(false);
   });
 });

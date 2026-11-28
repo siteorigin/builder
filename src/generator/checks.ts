@@ -23,6 +23,7 @@ import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
+import { hasArchiveLayout } from './archive';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -748,15 +749,30 @@ export interface FormNameClash {
 
 /**
  * Contact forms the site shows that send to Netlify Forms under the same form name. Netlify files a site's messages
- * by form name, so theirs would be mixed together in one list. Each published page, and the shared header and footer
- * where a published page shows them, is walked once as it renders: a form repeated in a list counts once per item.
- * With `parts`, the forms each of them shows are kept between states (CheckParts).
+ * by form name, so theirs would be mixed together in one list. Each published page, the shared header and footer
+ * where the website shows them (a published page that does, or any page of a collection), the layout of each
+ * collection with a published entry and each archive layout an archive page shows (shownArchiveLayouts) is walked
+ * once as it renders: a form repeated in a list counts once per item, and a layout's form, the same on every page it
+ * is on, counts once. With `parts`, the forms each of them shows are kept between states (CheckParts).
  */
 export function netlifyFormClashes(state: ProjectState, parts?: CheckParts): FormNameClash[] {
   const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
+  // The collections' pages the website has, read from it as published (drafts left out before addresses are shared out).
+  const collections = () => {
+    const live = publishedState(state);
+    const entries = siteEntries(live);
+    return { layouts: [...new Set(entries.map((e) => e.collection.settings.id))], archives: shownArchiveLayouts(live), shown: entries.length > 0 || archivePages(live).length > 0 };
+  };
+  const { layouts, archives, shown } = parts ? parts.shared('collectionPagesShown', collections) : collections();
   const trees: Array<{ owner: OwnerRef; tree: NodeTree }> = [
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p })),
-    ...SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
+    ...SHELL_PARTS.filter((part) => shown || pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
+    // A layout's form settings are never an entry's (#1127), so the layout is read once, as stored.
+    ...layouts.flatMap((id) => {
+      const tree = storedLayout(state, id);
+      return tree ? [{ owner: { kind: 'template' as const, id }, tree }] : [];
+    }),
+    ...archives.map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree }))
   ];
   const byName = new Map<string, FormNameClash['forms']>();
   for (const { owner, tree } of trees)
@@ -791,8 +807,9 @@ function netlifyForms(state: ProjectState, owner: OwnerRef, tree: NodeTree): Arr
 /**
  * Whether the website shows a code component `test` picks: on a published page, in the shared header or footer where
  * the website shows it (a published page that does, or any page of a collection: its entries and archives always do),
- * at any depth (inside designs, content areas and kept panels), or in the layout of a collection with a published
- * entry. A component only installed, or placed only on drafts, is not shown. With
+ * at any depth (inside designs, content areas and kept panels), in the layout of a collection with a published
+ * entry, or in an archive layout an archive page shows (shownArchiveLayouts), entries or none. A component only
+ * installed, or placed only on drafts, is not shown. With
  * `throughCode`, code that places the component itself (a design converted to code) shows it too.
  */
 export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean, opts: { throughCode?: boolean } = {}): boolean {
@@ -821,7 +838,21 @@ export function siteShowsCode(state: ProjectState, test: (def: ComponentDefiniti
   // A collection's layout counts once an entry is published and the layout places such a component anywhere, whatever
   // its conditions say of each entry: reading every entry's page would cost each one its feeds again, and the tools
   // this decides are offered for the site as a whole (site search reads the index, whichever page shows its box).
-  return [...new Set(entries.map((e) => e.collection.settings.id))].some((id) => treePlaces(live, live.collections[id]?.settings?.template, picks));
+  if ([...new Set(entries.map((e) => e.collection.settings.id))].some((id) => treePlaces(live, live.collections[id]?.settings?.template, picks))) return true;
+  // So does an archive layout, read the same way: its loop over the page's entries repeats what it places.
+  return shownArchiveLayouts(live).some(({ tree }) => treePlaces(live, tree, picks));
+}
+
+/**
+ * The archive layouts the website shows: each collection's own layout (`archiveTemplate`) while it has an archive page
+ * (shared/archives.ts) and that page shows the layout in place of the ready-made cards (hasArchiveLayout). A
+ * collection's index is an archive page from the start, so its layout is shown before any entry is published.
+ */
+export function shownArchiveLayouts(state: ProjectState, archives = archivePages(state)): Array<{ collectionId: string; tree: NodeTree }> {
+  return [...new Set(archives.map((p) => p.collectionId))].flatMap((collectionId) => {
+    const settings = state.collections[collectionId]?.settings;
+    return settings && hasArchiveLayout(settings) ? [{ collectionId, tree: settings.archiveTemplate! }] : [];
+  });
 }
 
 /** Whether a tree places, anywhere and whatever its conditions, a component `picks` says yes to, or a design that does. */
@@ -2097,9 +2128,9 @@ function entryTextLinks(body: unknown): Array<{ link: LinkValue; label: string }
 export interface DraftLink {
   /**
    * Where the link is: a published page, the shared header or footer shown on one, the layout of a collection with a
-   * published entry, or a published entry's text.
+   * published entry, an archive layout an archive page shows (shownArchiveLayouts), or a published entry's text.
    */
-  owner: { kind: 'page' | 'shell' | 'entry' | 'template'; id: string };
+  owner: { kind: 'page' | 'shell' | 'entry' | 'template' | 'archive'; id: string };
   /** The page or shell node that holds it (the instance, for links inside a component). */
   nodeId: string;
   /** The link's text, when it has one. */
@@ -2170,7 +2201,8 @@ function targetAtAddress<T extends object>(state: ProjectState, target: string, 
 
 /**
  * Which pages the website export publishes and which drafts it leaves out, with every link the published pages
- * show (the shared header or footer included, when a published page or entry shows it) that goes to a draft: a link
+ * show (the shared header or footer included, when a published page or entry shows it, and each collection's layout
+ * as its published entries and archive pages show it) that goes to a draft: a link
  * to the page, or a typed address on the site's own public URL that opens a draft page or a draft collection entry.
  * Those links would lead visitors to a page the website does not have, so the website export stops until they
  * change. Links on a draft are not checked: the draft is not published.
@@ -2198,9 +2230,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     )
   ]);
   // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive.
-  for (const p of archivePages(state)) withheld.delete(p.route.toLowerCase());
+  const archives = archivePages(state);
+  for (const p of archives) withheld.delete(p.route.toLowerCase());
   // An entry shows both shared parts, and its collection's layout; so does a collection's index (an archive page).
-  const entryShown = entries.length > draftEntries.length || archivePages(state).length > 0;
+  const entryShown = entries.length > draftEntries.length || archives.length > 0;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
   // A layout's links go where the layout says, whatever the entry, apart from Previous and Next, which never lead to a
   // draft: one with no link to a page, an entry or an address has none to a draft on any entry's page.
@@ -2224,7 +2257,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     // elements that entry shows. Read only for a layout that links where a draft could be at all.
     ...entries
       .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
-      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id }))
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id })),
+    // Each archive layout an archive page shows, once: a collection's index shows it with no entry published yet.
+    ...shownArchiveLayouts(state, archives).map(({ collectionId, tree }) => ({ owner: { kind: 'archive' as const, id: collectionId }, tree }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -2351,11 +2386,21 @@ export function siteLinks(state: ProjectState): SiteLink[] {
  * preview (/winter-stock-preview/)".
  */
 export function describeDraftLink(state: ProjectState, l: DraftLink): string {
-  const layout = l.owner.kind === 'template' ? state.collections[l.owner.id] : undefined;
-  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : layout?.settings.template;
+  const layout = l.owner.kind === 'template' || l.owner.kind === 'archive' ? state.collections[l.owner.id] : undefined;
+  const archive = l.owner.kind === 'archive';
+  const tree = l.owner.kind === 'shell' ? state.site.shell[l.owner.id as 'header' | 'footer'] : l.owner.kind === 'page' ? state.pages[l.owner.id] : archive ? layout?.settings.archiveTemplate : layout?.settings.template;
   const entry = l.owner.kind === 'entry' ? findEntry(state, l.owner.id) : undefined;
+  // A layout is named as Project health names it (templateTrees).
   const place =
-    l.owner.kind === 'shell' ? (l.owner.id === 'header' ? 'Header' : 'Footer') : layout ? `${layout.settings.name} layout` : entry ? `${entry.entry.title} (${entry.collection.settings.name})` : (state.pages[l.owner.id]?.title ?? 'A page');
+    l.owner.kind === 'shell'
+      ? l.owner.id === 'header'
+        ? 'Header'
+        : 'Footer'
+      : layout
+        ? `${layout.settings.name} ${archive ? 'archive layout' : 'layout'}`
+        : entry
+          ? `${entry.entry.title} (${entry.collection.settings.name})`
+          : (state.pages[l.owner.id]?.title ?? 'A page');
   const node = tree?.nodes[l.nodeId];
   const where = node && node.kind === 'instance' ? `${place} · ${displayName(state, node)}` : place;
   const draft = draftTarget(state, l);

@@ -1136,6 +1136,21 @@ export async function openArchiveLayout(collectionId: string) {
   const st = getState().snapshot?.state;
   if (!st || !Object.hasOwn(st.collections ?? {}, collectionId)) return;
   if (!st.collections[collectionId].settings.archiveTemplate && !(await applyOps([{ type: 'collection.update', collectionId, archiveTemplate: 'start' }], `Design the ${st.collections[collectionId].settings.name} index`))) return;
+  enterArchiveLayout(collectionId);
+}
+
+/**
+ * Edit a collection's index layout on the canvas, as openArchiveLayout does, only while it has one: a destination (a
+ * form, a link to a draft) leads to what is there and never starts a layout. False when it has none.
+ */
+export function showArchiveLayout(collectionId: string): boolean {
+  const st = getState().snapshot?.state;
+  if (!st || !Object.hasOwn(st.collections ?? {}, collectionId) || !st.collections[collectionId].settings.archiveTemplate) return false;
+  enterArchiveLayout(collectionId);
+  return true;
+}
+
+function enterArchiveLayout(collectionId: string) {
   setState({ templateMode: { collectionId, entryId: null, archive: true }, definitionMode: null, selection: null, mode: 'edit', previewReturn: null, leftTab: 'layers' });
 }
 
