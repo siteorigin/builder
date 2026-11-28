@@ -412,8 +412,13 @@ export function termRename(state: ProjectState, op: Op<'collection.renameTerm'>)
   const followed = new Set<object>();
   for (const { slot, was } of filters) {
     const expected = was === op.termId ? termId : was;
-    if (termNamed(c, op.taxonomyId, slot.value.trim()) === expected) continue;
-    if (expected === undefined) fail(`${slot.where} filters by “${slot.value.trim().slice(0, 80)}”, which names no ${t.label.toLowerCase()} term now and would name “${label}” once “${term.label}” is renamed. Change that filter before renaming it.`);
+    const now = termNamed(c, op.taxonomyId, slot.value.trim());
+    if (now === expected) continue;
+    if (expected === undefined) {
+      // Words naming no term among others of an `in` filter that already name the one they would: it lists the same.
+      if (filters.some((f) => f.slot.clause === slot.clause && f.slot !== slot && (f.was === op.termId ? termId : f.was) === now)) continue;
+      fail(`${slot.where()} filters by “${slot.value.trim().slice(0, 80)}”, which names no ${t.label.toLowerCase()} term now and would name “${label}” once “${term.label}” is renamed. Change that filter before renaming it.`);
+    }
     slot.store(expected);
     followed.add(slot.query);
   }

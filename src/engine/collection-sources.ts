@@ -82,8 +82,11 @@ const filterTaxonomy = (field: string) => (field === 'categories' ? 'categories'
 /** One term named in a query's filter: its words, where the list is, which query, and how to write other words. */
 export interface QueryTermSlot {
   value: string;
-  where: string;
+  /** Where the list is, for a refusal (read only then: a node elsewhere that cannot be named never blocks a change). */
+  where: () => string;
   query: object;
+  /** The filter it is in: an `in` filter's other terms list the same entries whatever this one names of theirs. */
+  clause: object;
   store: (value: string) => void;
 }
 
@@ -94,7 +97,7 @@ export interface QueryTermSlot {
  */
 export function queryTermSlots(state: ProjectState, collectionId: string, taxonomyId: string): QueryTermSlot[] {
   const out: QueryTermSlot[] = [];
-  const visit = (owner: OwnerRef, where: string, query: unknown) => {
+  const visit = (owner: OwnerRef, where: () => string, query: unknown) => {
     if (!query || typeof query !== 'object' || queryCollectionOf(state, owner, query as CollectionQuery)?.settings.id !== collectionId) return;
     const clauses = (query as CollectionQuery).where;
     if (!Array.isArray(clauses)) return;
@@ -102,15 +105,15 @@ export function queryTermSlots(state: ProjectState, collectionId: string, taxono
       if (!c || typeof c.field !== 'string' || filterTaxonomy(c.field) !== taxonomyId || c.op === 'exists') continue;
       if (Array.isArray(c.value)) {
         const values = c.value;
-        values.forEach((v, i) => typeof v === 'string' && out.push({ value: v, where, query, store: (w) => (values[i] = w) }));
-      } else if (typeof c.value === 'string') out.push({ value: c.value, where, query, store: (w) => (c.value = w) });
+        values.forEach((v, i) => typeof v === 'string' && out.push({ value: v, where, query, clause: c, store: (w) => (values[i] = w) }));
+      } else if (typeof c.value === 'string') out.push({ value: c.value, where, query, clause: c, store: (w) => (c.value = w) });
     }
   };
   for (const { owner, tree, label } of allTrees(state)) {
     if (owner.kind === 'component' && own(state.components, owner.id)?.owner === 'theme') continue;
     for (const n of Object.values(tree?.nodes ?? {})) {
       if (!n || typeof n !== 'object') continue;
-      const where = `“${displayName(state, n)}” in ${label}`;
+      const where = () => `“${displayName(state, n)}” in ${label}`;
       if (n.kind === 'instance' && n.listSources && typeof n.listSources === 'object') for (const raw of Object.values(n.listSources)) visit(owner, where, (raw as { query?: unknown } | undefined)?.query);
       if (n.kind === 'repeat' && isCollectionLoop(n)) visit(owner, where, (n.list as { $query?: unknown }).$query);
     }

@@ -17,6 +17,8 @@ import { archivePages } from '@shared/archives';
 import { codeEntryQueries, entryQuery, entryRows } from '@shared/entry-feed';
 import { defFile, publishedState } from '@generator/index';
 import { toolDefinitions } from '@agent/tools';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const result = (s: ProjectState, op: EditOperation) => applyOperations(s, [op]).results[0] as Record<string, unknown>;
@@ -292,6 +294,25 @@ describe('renaming a term', () => {
     expect(query(renamed.state).where[0].value).toEqual(['studio-updates', 'craft']);
   });
 
+  it('a list connected to the posts, filtering by the term, follows it (#1523)', () => {
+    const s = structuredClone(blog());
+    const def = projectDesign(s, {
+      componentId: 'project.titles',
+      name: 'Titles',
+      properties: { items: P.list('Items', 'Item', { name: P.str('Name', 'Name') }, [{ name: 'Sample' }]) },
+      parts: { root: { nodeId: 'root', label: 'Titles' } },
+      build: (b) => b.el('root', 'ul', { name: 'Titles' }, [])
+    });
+    const owner = page(s.site.homePageId);
+    const ins = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, definitionId: def.id }]);
+    const id = ins.results[0].nodeId as string;
+    const linked = run(ins.state, { type: 'instance.setListSource', owner, nodeId: id, prop: 'items', source: { query: { collectionId: 'posts', where: [{ field: 'categories', op: 'eq', value: 'News' }] }, fields: { name: 'title' } } });
+    const r = applyOperations(linked, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(r.results[0]).toMatchObject({ feeds: 1 });
+    const query = (r.state.pages[r.state.site.homePageId].nodes[id] as InstanceNode).listSources!.items.query as { where: Array<{ value: unknown }> };
+    expect(query.where[0].value).toBe('studio-updates');
+  });
+
   it('a loop keeps the term it names when a rename gives another term its words (#1523)', () => {
     // “updates” names Craft by its name, until News is renamed to the ID "updates".
     const s0 = run(blog(), { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'craft', label: 'Updates', newTermId: 'craft' });
@@ -302,8 +323,14 @@ describe('renaming a term', () => {
     expect(loopQuery(after, loop).$query.where[0].value).toBe('craft');
     expect(loopLists(after, loop)).toEqual(before);
     // Words that named no term would come to name the renamed one, and the list would grow: refused.
-    const dangling = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['craft', 'later'] }]);
-    expect(refused(dangling.s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Later' })).toMatch(/“Repeated items” in Home filters by “later”, which names no categories term now and would name “Later”/);
+    const dangling = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['craft', 'Late News'] }]);
+    expect(refused(dangling.s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'late news', newTermId: 'late' })).toMatch(/“Repeated items” in Home filters by “Late News”, which names no categories term now and would name “late news”/);
+    // Beside words that already name the renamed term, they list nothing more: the rename goes ahead.
+    const redundant = withLoop(blog(), [{ field: 'categories', op: 'in', value: ['news', ' News ', 'later'] }]);
+    const kept = applyOperations(redundant.s, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Later' }]);
+    expect(kept.results[0]).toMatchObject({ termId: 'later', feeds: 1 });
+    expect(loopQuery(kept.state, redundant.loop).$query.where[0].value).toEqual(['later', 'later', 'later']);
+    expect(loopLists(kept.state, redundant.loop)).toEqual(loopLists(redundant.s, redundant.loop));
   });
 });
 
