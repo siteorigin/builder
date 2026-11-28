@@ -1025,3 +1025,52 @@ describe('last review: what a draft setting, an address or a name can hide', () 
     expect(htmlToRichTextFromMarkdown('[go](https://example.org/?q=&#65)')[0]).toMatchObject({ spans: [{ link: { target: 'https://example.org/?q=&#65' } }] });
   });
 });
+
+describe('reading a static site folder (#1517)', () => {
+  const pictures = (source: ParsedSource) => source.media.map((m) => [m.ref, m.path ? m.path.slice(source.root.length + 1) : undefined, m.problem]);
+
+  it('reads a Jekyll site’s _posts and finds its pictures at the site’s root', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\ntitle: Jekyll post\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/cover.jpg) ![Beside](beside.jpg) [Next](2020-02-01-later.md)',
+      '_posts/2020-02-01-later.md': '---\ntitle: Later\n---\nText',
+      '_posts/beside.jpg': 'jpg',
+      'assets/img/cover.jpg': 'jpg',
+      'index.md': '---\nlayout: home\n---\nHome page',
+      'about.md': '---\ntitle: About\n---\nAbout page'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => [p.from, p.title, p.date])).toEqual([
+      ['_posts/2020-01-01-jekyll-post.md', 'Jekyll post', '2020-01-01'],
+      ['_posts/2020-02-01-later.md', 'Later', '2020-02-01']
+    ]);
+    const [post] = source.posts;
+    expect(post.featured).toBe('m1');
+    expect(pictures(source)).toEqual([
+      ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined],
+      ['beside.jpg', join('_posts', 'beside.jpg'), undefined]
+    ]);
+    expect(JSON.stringify(post.body)).toContain('md:_posts/2020-02-01-later.md');
+  });
+
+  it('reads a Hugo site’s content/posts, page bundles included, and finds root pictures in static/', async () => {
+    const dir = mdFolder({
+      'content/posts/hugo-post.md': '---\ntitle: Hugo post\ndate: 2021-03-01\nimage: /images/cover.jpg\n---\nText',
+      'content/posts/bundle/index.md': '---\ntitle: Bundle\ndate: 2021-04-01\n---\n![Here](here.jpg)',
+      'content/posts/bundle/here.jpg': 'jpg',
+      'content/about.md': '---\ntitle: About\n---\nAbout page',
+      'static/images/cover.jpg': 'jpg'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['content/posts/bundle/index.md', 'content/posts/hugo-post.md']);
+    expect(pictures(source).sort()).toEqual([
+      ['/images/cover.jpg', join('static', 'images', 'cover.jpg'), undefined],
+      ['here.jpg', join('content', 'posts', 'bundle', 'here.jpg'), undefined]
+    ]);
+  });
+
+  it('still reads a folder of posts chosen on its own', async () => {
+    const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['one.md']);
+  });
+});

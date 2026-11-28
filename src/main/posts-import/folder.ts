@@ -1,6 +1,7 @@
 /**
  * A folder of Markdown posts, as Jekyll, Hugo, Eleventy or Astro keep them: each `*.md` file in the folder is a post,
- * and so is each subfolder's `index.md` (a post kept with its pictures). Files named with a leading `_` or `.`, and
+ * and so is each subfolder's `index.md` (a post kept with its pictures). The folder may also be the whole site's, whose
+ * posts are then read from its `_posts`, `content/posts` or the like (POST_FOLDERS). Files named with a leading `_` or `.`, and
  * a README, are not posts. Frontmatter gives the title, date, draft state, author, excerpt, categories, tags and
  * featured picture; a file without them is still a post, titled from its first heading or its name.
  */
@@ -29,19 +30,38 @@ interface Found {
   stem: string;
 }
 
+/**
+ * Where a static site generator keeps its posts inside the site's folder: Jekyll, Hugo, Astro and Eleventy. When the
+ * folder chosen is the site's, its posts are read from the first of these that has any, so its pages (`index.md`,
+ * `about.md`) are not taken for posts and a picture addressed from the site's root (`/assets/cover.jpg`) is found there.
+ */
+const POST_FOLDERS = [['_posts'], ['content', 'posts'], ['content', 'post'], ['content', 'blog'], ['src', 'content', 'blog'], ['src', 'content', 'posts'], ['src', 'posts']];
+
 async function findPosts(root: string): Promise<{ found: Found[]; over: number }> {
+  for (const at of POST_FOLDERS) {
+    const st = await fs.lstat(join(root, ...at)).catch(() => null);
+    if (!st?.isDirectory()) continue;
+    const posts = await findPostsIn(root, at);
+    if (posts.found.length) return posts;
+  }
+  return findPostsIn(root, []);
+}
+
+/** The posts of the folder `at` (segments from the chosen folder): its Markdown files, and its subfolders' `index.md`. */
+async function findPostsIn(root: string, at: string[]): Promise<{ found: Found[]; over: number }> {
   const found: Found[] = [];
   let over = 0;
   const add = (f: Found) => (found.length < MAX_IMPORT_POSTS ? found.push(f) : over++);
-  const entries = (await fs.readdir(root, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const rel = (...segs: string[]) => [...at, ...segs].join('/');
+  const entries = (await fs.readdir(join(root, ...at), { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries.slice(0, 20_000)) {
     if (/^[._]/.test(e.name)) continue;
-    if (e.isFile() && MARKDOWN.test(e.name) && !/^readme\./i.test(e.name)) add({ rel: e.name, dir: [], stem: e.name.replace(MARKDOWN, '') });
+    if (e.isFile() && MARKDOWN.test(e.name) && !/^readme\./i.test(e.name)) add({ rel: rel(e.name), dir: at, stem: e.name.replace(MARKDOWN, '') });
     else if (e.isDirectory() && e.name !== 'node_modules') {
       for (const index of ['index.md', 'index.markdown']) {
-        const st = await fs.lstat(join(root, e.name, index)).catch(() => null);
+        const st = await fs.lstat(join(root, ...at, e.name, index)).catch(() => null);
         if (st?.isFile()) {
-          add({ rel: `${e.name}/${index}`, dir: [e.name], stem: e.name });
+          add({ rel: rel(e.name, index), dir: [...at, e.name], stem: e.name });
           break;
         }
       }
@@ -114,7 +134,7 @@ export async function readMarkdownFolder(root: string, pages: RichPages, emit?: 
   const realRoot = await fs.realpath(root);
   const label = basename(root);
   const { found, over } = await findPosts(root);
-  if (!found.length) throw new Error(`${label} has no Markdown posts (.md files) in it. Choose the folder that holds them, such as _posts or content/posts.`);
+  if (!found.length) throw new Error(`${label} has no Markdown posts (.md files) in it. Choose the site’s folder, or the folder that holds its posts.`);
   const media = new MediaTable(root, realRoot);
   const skipped: string[] = [];
   let total = 0;
