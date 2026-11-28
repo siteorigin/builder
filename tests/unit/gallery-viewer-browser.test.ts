@@ -211,7 +211,7 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
     page.evaluate(`(() => {
       const d = document.querySelector('dialog.so-viewer[open]');
       const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
-      const parts = { close: '.so-viewer__close', previous: '.so-viewer__step', next: '.so-viewer__step:last-of-type', count: '.so-viewer__count', caption: '.so-viewer__caption', photo: '.so-viewer__img' };
+      const parts = { close: '.so-viewer__close', previous: '.so-viewer__step', next: '.so-viewer__step:last-of-type', count: '.so-viewer__count', caption: '.so-viewer__caption', photo: '.so-viewer__img', figure: '.so-viewer__figure' };
       return {
         root: parseFloat(getComputedStyle(document.documentElement).fontSize),
         pan: d.scrollWidth - d.clientWidth,
@@ -242,7 +242,11 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
       expect(r.top, `${label}: ${name} top`).toBeGreaterThanOrEqual(0);
       expect(r.bottom, `${label}: ${name} bottom`).toBeLessThanOrEqual(layout.view.height + 0.5);
     }
-    const { photo, close, previous, next } = layout.parts;
+    const { photo, close, previous, next, caption, figure } = layout.parts;
+    // The caption scrolls within its share of the figure instead of spilling over the photo or the arrows.
+    expect(caption.top, `${label}: caption top`).toBeGreaterThanOrEqual(figure.top - 0.5);
+    expect(caption.bottom, `${label}: caption bottom`).toBeLessThanOrEqual(figure.bottom + 0.5);
+    expect(caption.top, `${label}: caption below the photo`).toBeGreaterThanOrEqual(photo.bottom - 0.5);
     expect(layout.natural, `${label}: the photo loaded`).toBe(800);
     expect(photo.height, `${label}: photo height`).toBeGreaterThanOrEqual(layout.view.height * 0.25);
     expect(photo.width, `${label}: photo width`).toBeGreaterThan(0);
@@ -269,7 +273,8 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
           { width: 568, height: 320 }
         ]) {
           await page.setViewportSize(viewport);
-          await expectFits(page, `${viewport.width} × ${viewport.height} at ${fontSize} px`);
+          const layout = await expectFits(page, `${viewport.width} × ${viewport.height} at ${fontSize} px`);
+          expect(layout.view).toEqual(viewport);
         }
         expect(problems).toEqual([]);
       } finally {
