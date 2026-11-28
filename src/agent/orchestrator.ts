@@ -2010,7 +2010,8 @@ export class Orchestrator {
       }
     };
     /** A change the run itself refuses, at the revision the run reads (a question's is the one it started at). */
-    const refused = (code: ToolErrorCode, message: string, recoverable: boolean) => ({ ok: false as const, revision: readRevision(), error: { code, message, recoverable } });
+    /** `author`: what the author's step says of it, where the message names tools and operations for the model. */
+    const refused = (code: ToolErrorCode, message: string, recoverable: boolean, author?: string) => ({ ok: false as const, revision: readRevision(), error: { code, message, recoverable, ...(author ? { author } : {}) } });
     /** A call's result as the model receives it, in the one shape every tool result has. */
     // A change that worked landed, this time or the first time it was sent: a cut report of it never asks for it again.
     const resultItem = (call: ToolCall, outcome: ResultOutcome): CanonicalItem => ({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content, call.name, outcome.ok && MUTATING_TOOLS.has(call.name as never)), isError: !outcome.ok });
@@ -2137,9 +2138,10 @@ export class Orchestrator {
                   : authority.kind === 'template'
                     ? `This request was sent with ${authority.label} open, so changes are limited to it: its sections and elements, never a page, the header or footer, or the collection's entries.`
                     : `This request was sent with ${limit} selected, so changes are limited to it.`;
+          const author = `This would change more than ${authority.kind === 'selection' ? 'the selection' : authorityLabel(authority)}, so nothing was changed.`;
           // Recoverable: the user can let the run change more. A layout's run never widens: it says what it could not do.
-          if (authority.kind === 'template') return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Tell the user what else would need changing.`, true);
-          return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.`, true);
+          if (authority.kind === 'template') return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Tell the user what else would need changing.`, true, author);
+          return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.`, true, author);
         };
         if (asked && 'code' in asked) {
           // A scope that names nothing (or something it cannot tell apart) is a wrong ID, not a request for more.
@@ -2148,7 +2150,8 @@ export class Orchestrator {
           return beyond(asked.message);
         }
         if (denied) return beyond(denied);
-        if (own) return refused('SCOPE_MISMATCH', `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.`, true);
+        if (own)
+          return refused('SCOPE_MISMATCH', `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.`, true, 'This would change more than the assistant set out to change, so nothing was changed.');
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         const endBaselines = perf ? perf.span('ai.baselines') : NO_SPAN;
         await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
@@ -2980,7 +2983,8 @@ export class Orchestrator {
           const key = `${call.name}:${call.arguments}`;
           if (outcome.ok) failures.delete(key);
           else {
-            activity.detail = outcome.content.ok ? undefined : outcome.content.error.message;
+            // The author is told in their own words where the failure has some; the model's message is the model's.
+            activity.detail = outcome.content.ok ? undefined : (outcome.content.error.author ?? outcome.content.error.message);
             // Only a change that keeps failing ends the run; a read or check that fails (a preview that is
             // not running) costs a step but never throws away the work.
             // A tool this step did not offer never ran, so it says nothing about the change itself.

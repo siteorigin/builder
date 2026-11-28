@@ -3776,9 +3776,34 @@ describe('a code component part reaches the text its code marks inside it (#1416
     const offered = Object.keys((tool?.parameters as { properties: { props: { properties: Record<string, unknown> } } } | undefined)?.properties.props.properties ?? {});
     expect(offered).toEqual(expect.arrayContaining(['primaryLabel', 'secondaryLabel']));
     expect(offered).not.toContain('heading');
+    // Only that label changed, and nothing was asked.
+    expect(propOf(session.state, heroId, 'primaryLabel')).toBe('Book a call');
+    const turn = [...env.events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message;
+    expect(turn?.questions ?? []).toEqual([]);
+    // The model is told what the part shows.
+    const context = JSON.stringify(env.adapter.requests[0].items);
+    expect(context).toContain('the text it shows (primaryLabel, secondaryLabel)');
   });
 
-  it('changes a button label inside the selected Panel of a Call to action, and still refuses the heading of another part', async () => {
+  it('refuses text outside the selected part, telling the model why and the author in plain words', async () => {
+    let session!: ProjectSession;
+    let heroId = '';
+    const env = await setup([
+      () => [call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId(session.state) }, nodeId: heroId, prop: 'heading', value: 'Changed' }] })],
+      () => finish('That needs a wider change.')
+    ]);
+    session = env.session;
+    heroId = await place(session, 'hero.centered');
+    await env.run('change the heading', partSelection(session.state, heroId, 'actions', 'Actions in Centered hero'));
+    const refused = resultOf(env.adapter.requests[1]);
+    expect(refused.error).toMatchObject({ code: 'SCOPE_MISMATCH' });
+    expect(refused.error.message).toMatch(/instance\.setProp changes more of Actions in Centered hero than the selected part.*request_wider_scope/);
+    expect(refused.error).not.toHaveProperty('author');
+    const step = [...env.events].reverse().find((e) => e.kind === 'message' && e.message?.activities?.length)?.message?.activities?.find((a) => a.tool === 'apply_operations');
+    expect(step).toMatchObject({ status: 'error', detail: 'This would change more than the selection, so nothing was changed.' });
+  });
+
+  it('changes a button label inside the selected Panel of a Call to action', async () => {
     let session!: ProjectSession;
     let ctaId = '';
     const env = await setup([

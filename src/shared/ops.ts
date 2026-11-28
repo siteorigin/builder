@@ -1154,9 +1154,15 @@ export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 /** Why a change or a tool call failed. `recoverable`: a corrected or later call can still succeed in this run. */
 export interface ToolError {
   code: ToolErrorCode;
+  /** What the model is told: what failed and what to do, in the tools' and operations' own names. */
   message: string;
   recoverable: boolean;
   details?: unknown;
+  /**
+   * What the author is shown for the failed step (#1416), where `message` speaks to the model. The model's copy of the
+   * result never carries it (serializeResult).
+   */
+  author?: string;
 }
 
 export interface ApplyResult {

@@ -132,6 +132,11 @@ const NAME_CHARS = 60;
  * `tool`: which tool it came from; `applied`: the call changed the project, so it must never be sent again for the rest.
  */
 export function serializeResult(result: ToolResult, tool = '', applied = false): string {
+  // What the author is shown of a failure is theirs: the model reads its own message.
+  if (!result.ok && result.error.author !== undefined) {
+    const { author: _author, ...error } = result.error;
+    result = { ...result, error };
+  }
   const whole = JSON.stringify(result);
   if (whole.length <= MAX_RESULT_CHARS) return whole;
   let head: Record<string, unknown>;
