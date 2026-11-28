@@ -39,7 +39,7 @@ beforeEach(async () => {
     rightTab: 'inspect',
     dockOpen: false,
     chatMode: 'ask',
-    chatContextEnabled: { page: true, scope: 'site' }
+    chatContextEnabled: { page: true, scope: 'page' }
   });
 });
 
@@ -47,11 +47,15 @@ beforeEach(async () => {
 afterEach(() => void vi.useRealTimers());
 
 describe('Edit with AI', () => {
-  it('opens the chat to edit the element chosen, from Ask mode, and keeps Edit for the next opening', () => {
-    actions.askAiAbout(pageRef);
+  it.each([
+    ['on the page', pageRef],
+    ['in the shared header', headerRef]
+  ])('opens the chat to edit the element chosen %s, from Ask mode, and keeps Edit for the next opening', (_where, ref) => {
+    store.setState({ selection: null });
+    actions.askAiAbout(ref);
     const s = store.getState();
     expect([s.rightTab, s.dockOpen]).toEqual(['chat', true]);
-    expect(s.selection).toEqual(pageRef);
+    expect(s.selection).toEqual(ref);
     expect(s.chatContextEnabled).toEqual({ page: true, scope: 'selection' });
     expect(s.chatMode).toBe('edit');
     expect(saved).toEqual([{ chatMode: 'edit' }]);
@@ -63,7 +67,7 @@ describe('Edit with AI', () => {
     const s = store.getState();
     expect([s.rightTab, s.dockOpen]).toEqual(['chat', true]);
     expect(s.selection).toEqual(headerRef);
-    expect(s.chatContextEnabled).toEqual({ page: true, scope: 'site' });
+    expect(s.chatContextEnabled).toEqual({ page: true, scope: 'page' });
     expect(s.chatMode).toBe(mode);
     expect(saved).toEqual([]);
   });

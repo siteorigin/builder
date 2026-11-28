@@ -19,7 +19,7 @@ import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, eyeFace, hiddenAncestor, hideHereEdits, holdsSelection, isSelectedRow, layerLabel, rowVisibility, selectionKeysOf, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
-import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
+import { createComponentTarget, refExists, resolveRef, treeFor } from '../lib/model';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { turnIntoSlotItem, turnIntoSlotTarget } from '../lib/turn-into-slot';
 import { placeWords } from '../lib/edit-label';
@@ -669,7 +669,8 @@ export function LayersPanel() {
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
-      { label: 'Edit with AI…', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => askAiAbout(ref) },
+      // Never about a row that has gone while the menu was open: the chat would fall back to editing the whole page.
+      { label: 'Edit with AI…', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => { const now = getState().snapshot?.state; if (now && refExists(now, ref)) askAiAbout(ref); } },
       ...(editable && here
         ? [
             { separator: true },

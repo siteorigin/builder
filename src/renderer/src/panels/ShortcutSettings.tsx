@@ -89,7 +89,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
       <InlineRow
         id="settings-ask-ai-key"
         label="Edit with AI"
-        hint={recording ? instruction : 'Opens the AI chat from anywhere in the editor, set to edit what’s selected.'}
+        hint={recording ? instruction : 'Opens the AI chat from anywhere in the editor. With an element selected, it’s set to edit that element.'}
         // A refusal while recording keeps the way on and the way out in the same line.
         error={problem && (recording ? `${problem} ${suggestion ? `Try ${label(suggestion)}, or` : 'Press another, or'} Esc to cancel.` : problem)}
       >
