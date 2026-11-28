@@ -25,6 +25,28 @@ function addToHome(s: ProjectState, ...nodes: GraphNode[]): PageDoc {
   return page;
 }
 
+/** A project design made of `nodes`, its first the root, added to the project. */
+function design(s: ProjectState, id: string, nodes: GraphNode[], extra: Partial<ComponentDefinition> = {}): ComponentDefinition {
+  const def = {
+    schemaVersion: 1,
+    id,
+    componentId: id,
+    contractVersion: 1,
+    kind: 'managed',
+    owner: 'project',
+    name: id,
+    description: '',
+    category: 'content',
+    tags: [],
+    properties: {},
+    parts: {},
+    tree: { rootIds: [nodes[0].id], nodes: Object.fromEntries(nodes.map((n) => [n.id, n])) },
+    ...extra
+  } as ComponentDefinition;
+  s.components[id] = def;
+  return def;
+}
+
 const text = (id: string, tag: TextNode['tag'], words: string, extra: Partial<TextNode> = {}): TextNode => ({ id, kind: 'text', tag, text: words, ...extra });
 const link = (id: string, extra: Partial<LinkNode> = {}): LinkNode => ({ id, kind: 'link', link: { type: 'url', target: 'https://example.com/' }, label: '', appearance: 'link', ...extra });
 const box = (id: string, children: string[], extra: Partial<ElementNode> = {}): ElementNode => ({ id, kind: 'element', tag: 'div', children, ...extra });
@@ -69,7 +91,13 @@ describe('HTML ids rendered twice on a page', () => {
     const page = addToHome(s, box('a1', [], { anchor: 'team' }));
     page.nodes.a2 = box('a2', [], { anchor: 'team' });
     page.rootIds.push('a2');
-    const [d] = advice(s, 'HTML_ID_DUPLICATE');
+    // Another page with the same id is another document.
+    const other = s.pages[s.site.pageOrder.find((id) => id !== page.id)!];
+    other.nodes.o1 = box('o1', [], { anchor: 'team' });
+    other.rootIds.push('o1');
+    const found = advice(s, 'HTML_ID_DUPLICATE');
+    expect(found).toHaveLength(1);
+    const [d] = found;
     expect(d).toMatchObject({ severity: 'warning', owner: { kind: 'page', id: page.id }, nodeId: 'a2', site: 'id:team' });
     expect(d.message).toMatch(/2 elements on the page have the ID “team”/);
     page.nodes.a2 = box('a2', [], { anchor: 'team-2' });
@@ -114,6 +142,23 @@ describe('HTML ids rendered twice on a page', () => {
     expect(advice(two, 'HTML_ID_DUPLICATE')).toEqual([expect.objectContaining({ nodeId: 'row', site: 'id:member' })]);
   });
 
+  it('counts an element given the id of the layout’s main content', () => {
+    const s = fresh();
+    addToHome(s, box('a1', [], { anchor: 'main' }));
+    expect(advice(s, 'HTML_ID_DUPLICATE')).toEqual([expect.objectContaining({ nodeId: 'a1', message: expect.stringMatching(/2 elements on the page and in the page’s layout \(its main content\) have the ID “main”/) })]);
+  });
+
+  it('leaves out an id in a loop that a condition shows row by row', () => {
+    const s = applyOperations(fresh(), [
+      { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false }, fields: { role: { type: 'string', label: 'Role' } } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false, values: { role: 'Architect' } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_okafor', title: 'Ben Okafor', draft: false, values: { role: '' } }
+    ]).state;
+    const loop: RepeatNode = { id: 'loop', kind: 'repeat', list: { $query: { collectionId: 'team' } }, children: ['row'] };
+    addToHome(s, box('wrap', ['loop']), loop, box('row', [], { anchor: 'member', when: { $item: 'field.role' } as never }));
+    expect(advice(s, 'HTML_ID_DUPLICATE')).toEqual([]);
+  });
+
   it('counts slot content a design shows twice through two slots of one name', () => {
     const s = fresh();
     const def: ComponentDefinition = {
@@ -148,6 +193,8 @@ describe('HTML ids rendered twice on a page', () => {
     expect(advice(s, 'HTML_ID_DUPLICATE').map((d) => d.site)).toEqual(['id:so-site-nav']);
     const def = s.components[placed!.definitionId];
     s.components[def.id] = { ...def, source: `<script>\n\tlet id = 'scripted';\n</script>\n<div id="written"></div><p id="written"></p>` };
+    // The page's own "scripted" is the only element with it: the script's is no element's.
+    home(s).nodes.a1 = box('a1', [], { anchor: 'scripted' });
     expect(advice(s, 'HTML_ID_DUPLICATE').map((d) => d.site)).toEqual(['id:written']);
   });
 });
@@ -156,7 +203,9 @@ describe('headings with no words', () => {
   it('reports an empty heading on a page, leading to the element itself', () => {
     const s = fresh();
     const page = addToHome(s, text('t1', 'h2', ''));
-    const [d] = advice(s, 'EMPTY_HEADING');
+    const found = advice(s, 'EMPTY_HEADING');
+    expect(found).toHaveLength(1);
+    const [d] = found;
     expect(d).toMatchObject({ severity: 'warning', owner: { kind: 'page', id: page.id }, nodeId: 't1', message: `${page.title}: a Heading 2 has no words, so screen readers announce an empty heading. Give it its words, or remove it.` });
     // Not a heading outline finding: its row selects the element rather than opening the outline.
     expect(d.code.startsWith('HEADING_')).toBe(false);
@@ -171,6 +220,9 @@ describe('headings with no words', () => {
     header.rootIds.push('t1');
     addToHome(s, text('p1', 'p', ''));
     expect(advice(s, 'EMPTY_HEADING')).toEqual([expect.objectContaining({ owner: { kind: 'shell', id: 'header' }, nodeId: 't1', message: expect.stringMatching(/^Header: a Heading 3 has no words/) })]);
+    // No page shows the header, and the site has no collection pages: no visitor meets it.
+    for (const id of s.site.pageOrder) s.pages[id].showHeader = false;
+    expect(advice(s, 'EMPTY_HEADING')).toEqual([]);
   });
 });
 
@@ -184,12 +236,33 @@ describe('links, buttons and cards with no accessible name', () => {
     expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
   });
 
+  it('reports a link with no words and no icon, and a button that changes what its design shows', () => {
+    const s = fresh();
+    addToHome(s, link('l1'));
+    const def = design(
+      s,
+      'p_more',
+      [box('root', ['btn', 'more']), link('btn', { link: { type: 'none', target: '' }, appearance: 'secondary', stateAction: { state: 'open', op: 'toggle' } }), text('more', 'p', 'Cancel any time', { when: { $state: 'open' } as never })],
+      { state: { open: { type: 'boolean', label: 'Open', initial: false } } as never }
+    );
+    const inst = makeInstance(def, {});
+    addToHome(s, inst);
+    expect(advice(s).map((d) => [d.code, d.nodeId])).toEqual([
+      ['LINK_NAME_MISSING', 'l1'],
+      ['BUTTON_NAME_MISSING', inst.id]
+    ]);
+    expect(advice(s, 'BUTTON_NAME_MISSING')[0].message).toMatch(/a button in the .* is a button with no words and no accessible name/);
+    (def.tree!.nodes.btn as LinkNode).label = 'More';
+    expect(advice(s, 'BUTTON_NAME_MISSING')).toEqual([]);
+  });
+
   it('leaves a link with words, and one that goes nowhere, alone', () => {
     const s = fresh();
     addToHome(s, link('l1', { label: 'Read more' }));
     const page = home(s);
     page.nodes.l2 = link('l2', { link: { type: 'none', target: '' } });
-    page.rootIds.push('l2');
+    page.nodes.l3 = link('l3', { link: { type: 'page', target: 'no-such-page' } });
+    page.rootIds.push('l2', 'l3');
     expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
   });
 
@@ -207,6 +280,18 @@ describe('links, buttons and cards with no accessible name', () => {
     page.nodes.c1 = { ...card, children: ['c1-img', 'c1-t'] };
     page.nodes['c1-t'] = text('c1-t', 'p', 'Visit the harbour');
     expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
+    // Words hidden at every size name nothing; an accessible name of the card's own does.
+    page.nodes['c1-t'] = text('c1-t', 'p', 'Visit the harbour', { styles: { base: { hidden: true } } as never });
+    expect(advice(s, 'LINK_NAME_MISSING')).toHaveLength(1);
+    page.nodes.c1 = { ...card, children: ['c1-img', 'c1-t'], ariaLabel: 'Visit the harbour' };
+    expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
+  });
+
+  it('leaves a broken card, which renders as its plain container, to its own problem', () => {
+    const s = fresh();
+    addToHome(s, box('c1', ['c1-d'], { link: { type: 'url', target: 'https://example.com/' } }), box('c1-d', [], { tag: 'details' }));
+    expect(validateState(s).some((d) => d.code === 'CARD_LINK_INTERACTIVE')).toBe(true);
+    expect(advice(s, 'LINK_NAME_MISSING')).toEqual([]);
   });
 
   it('leaves out what is hidden at every size', () => {
@@ -217,8 +302,8 @@ describe('links, buttons and cards with no accessible name', () => {
 });
 
 describe('videos visitors cannot use', () => {
-  const placeVideo = (s: ProjectState, props: Record<string, unknown>) => {
-    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, componentId: 'block.video', props }]);
+  const placeVideo = (s: ProjectState, props: Record<string, unknown>, componentId = 'block.video') => {
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, componentId, props }]);
     const page = home(r.state);
     return { s: r.state, nodeId: page.rootIds[page.rootIds.length - 1] };
   };
@@ -237,7 +322,14 @@ describe('videos visitors cannot use', () => {
 
   it('says nothing of a titled video, or of one with no address yet', () => {
     expect(advice(placeVideo(fresh(), { url: 'https://vimeo.com/76979871', title: 'Our studio' }).s)).toEqual([]);
-    expect(advice(placeVideo(fresh(), { url: '', title: '' }).s, 'VIDEO_URL_UNSUPPORTED')).toEqual([]);
+    expect(advice(placeVideo(fresh(), { url: '', title: '' }).s)).toEqual([]);
+  });
+
+  it('reads the Video section as the Compact video', () => {
+    const untitled = placeVideo(fresh(), { url: 'https://vimeo.com/76979871', title: '' }, 'media.video');
+    expect(advice(untitled.s).map((d) => [d.code, d.nodeId])).toEqual([['VIDEO_TITLE_MISSING', untitled.nodeId]]);
+    const unplayable = placeVideo(fresh(), { url: 'https://example.com/clip.mp4', title: 'Our studio' }, 'media.video');
+    expect(advice(unplayable.s).map((d) => [d.code, d.nodeId])).toEqual([['VIDEO_URL_UNSUPPORTED', unplayable.nodeId]]);
   });
 });
 

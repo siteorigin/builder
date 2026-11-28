@@ -7,7 +7,9 @@
 import { getTheme } from '@catalogue/index';
 import { evaluatePairs, formatRatio, isFailing } from '@shared/contrast';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
-import { effectiveTokens } from '@generator/index';
+import { effectiveTokens, isDraftEntry, siteEntries } from '@generator/index';
+import { cardKey } from '@generator/card-links';
+import { archivePages } from '@shared/archives';
 import type { NodeTree, OwnerRef, PageDoc, ProjectState } from '@shared/types';
 import { accessibilityProblems, pageTrees, partHeadings, treeIdUses, type IdUse, type OutlineHeading, type UnnamedControl, type VideoProblem } from '@generator/checks';
 import { loopEntries } from '@generator/collection-loops';
@@ -71,12 +73,22 @@ const nodeName = (state: ProjectState, tree: NodeTree, nodeId: string) => (Objec
  * an element with an id inside a loop renders it once per entry the loop shows.
  */
 function pageIdUses(state: ProjectState, page: PageDoc): IdUse[] {
-  const out: IdUse[] = [];
+  // The layout's own landmark, which its skip link goes to.
+  const out: IdUse[] = [{ id: 'main', owner: { kind: 'page', id: page.id }, nodeId: '' }];
   for (const { owner, tree } of pageTrees(state, page)) {
     out.push(...treeIdUses(state, owner, tree));
-    for (const [nodeId, loop] of loopMembers(tree)) {
+    const loops = loopMembers(tree);
+    if (!loops.size) continue;
+    const parents = new Map<string, string>();
+    for (const n of Object.values(tree.nodes)) for (const c of n.kind === 'element' || n.kind === 'repeat' ? n.children : []) parents.set(c, n.id);
+    // A condition on the way from the loop decides row by row whether the element renders: such an id is not counted.
+    const conditional = (id: string, loop: string) => {
+      for (let at: string | undefined = id; at && at !== loop; at = parents.get(at)) if (tree.nodes[at]?.when || tree.nodes[at]?.unless) return true;
+      return false;
+    };
+    for (const [nodeId, loop] of loops) {
       const anchor = tree.nodes[nodeId]?.anchor;
-      if (!anchor) continue;
+      if (!anchor || conditional(nodeId, loop.id)) continue;
       const rows = loopEntries(state, loop, {}).entries.length;
       for (let i = 0; i < rows; i++) out.push({ id: anchor, owner, nodeId });
     }
@@ -96,10 +108,12 @@ export function duplicateIdDiagnostics(state: ProjectState, page: PageDoc): Diag
   const out: Diagnostic[] = [];
   for (const [id, uses] of byId) {
     if (uses.length < 2) continue;
-    const own = uses.filter((u) => u.owner.kind === 'page');
-    const at = own[1] ?? own[0] ?? uses[1];
+    // The layout's landmark is never the one to change.
+    const authored = uses.filter((u) => u.nodeId);
+    const own = authored.filter((u) => u.owner.kind === 'page');
+    const at = own[1] ?? own[0] ?? authored[1] ?? authored[0];
     // The page's own content first, then the shared parts it shows.
-    const places = [...new Set(uses.map((u) => (u.owner.kind === 'shell' ? `in ${PLACE_NAMES[u.owner.id]}` : 'on the page')))].sort((a, b) => Number(a !== 'on the page') - Number(b !== 'on the page'));
+    const places = [...new Set(uses.map((u) => (!u.nodeId ? 'in the page’s layout (its main content)' : u.owner.kind === 'shell' ? `in ${PLACE_NAMES[u.owner.id]}` : 'on the page')))].sort((a, b) => Number(a !== 'on the page') - Number(b !== 'on the page'));
     const where = at.owner.kind === 'page' ? page.title : partLabel(at.owner.id);
     out.push({
       severity: 'warning',
@@ -146,8 +160,8 @@ const CONTROL_CODES: Record<UnnamedControl['what'], string> = { link: 'LINK_NAME
 const VIDEO_CODES: Record<VideoProblem['problem'], string> = { title: 'VIDEO_TITLE_MISSING', url: 'VIDEO_URL_UNSUPPORTED' };
 
 /** What a tree renders that screen readers cannot use (accessibilityProblems), as Project health reports it. `label` names the page or shared part. */
-export function treeAccessibilityDiagnostics(state: ProjectState, owner: OwnerRef, tree: NodeTree, label: string): Diagnostic[] {
-  const { controls, videos } = accessibilityProblems(state, tree);
+export function treeAccessibilityDiagnostics(state: ProjectState, owner: OwnerRef, tree: NodeTree, label: string, broken?: ReadonlySet<string>): Diagnostic[] {
+  const { controls, videos } = accessibilityProblems(state, owner, tree, broken);
   const out: Diagnostic[] = [];
   for (const c of controls) {
     const node = Object.hasOwn(tree.nodes, c.nodeId) ? tree.nodes[c.nodeId] : undefined;
@@ -164,25 +178,28 @@ export function treeAccessibilityDiagnostics(state: ProjectState, owner: OwnerRe
   }
   for (const v of videos) {
     const lead = v.problem === 'title' ? `the ${v.name} has no title.` : `the ${v.name} has no video its player can play.`;
-    out.push({ severity: 'warning', code: VIDEO_CODES[v.problem], message: `${label}: ${lead} ${v.message}`, owner, nodeId: v.nodeId, site: `video:${v.placementId}` });
+    out.push({ severity: 'warning', code: VIDEO_CODES[v.problem], message: `${label}: ${lead} ${v.message}`, owner, nodeId: v.nodeId, site: `video:${v.key}` });
   }
   return out;
 }
 
 /**
  * Project health's accessibility advice on what the site's pages render, in site order, then the shared header and
- * footer each once while a page shows it: unnamed links, buttons and cards, unusable videos, and the HTML ids a page
+ * footer each once while a page or a collection's page shows it: unnamed links, buttons and cards, unusable videos, and the HTML ids a page
  * renders twice. A shared part's id clash is said once, however many pages show it. The pages' empty headings are
  * reported with their heading outlines (headingDiagnostics), the shared parts' here.
  */
 export function pageAccessibilityDiagnostics(state: ProjectState, keep: Keeper): Diagnostic[] {
   const out: Diagnostic[] = [];
   const said = new Set<string>();
+  // The cards that render as their plain containers, worked out once, and only for a part not kept from before.
+  let brokenCards: Set<string> | undefined;
+  const broken = () => (brokenCards ??= new Set(keep.cards.flatMap((p) => p.cards.map(cardKey))));
   for (const id of state.site.pageOrder) {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
     if (!page) continue;
     const owner: OwnerRef = { kind: 'page', id };
-    const found = keep.tree({ owner, tree: page, label: page.title }, 'accessibility', () => [...treeAccessibilityDiagnostics(state, owner, page, page.title), ...duplicateIdDiagnostics(state, page)]);
+    const found = keep.tree({ owner, tree: page, label: page.title }, 'accessibility', () => [...treeAccessibilityDiagnostics(state, owner, page, page.title, broken()), ...duplicateIdDiagnostics(state, page)]);
     for (const d of found) {
       const key = diagnosticKey(d);
       if (d.owner?.kind === 'shell' && said.has(key)) continue;
@@ -190,12 +207,14 @@ export function pageAccessibilityDiagnostics(state: ProjectState, keep: Keeper):
       out.push(d);
     }
   }
+  // A collection's entry, index and archive pages show both shared parts, whatever the pages choose.
+  const collectionPages = siteEntries(state).some((e) => !isDraftEntry(e.entry)) || archivePages(state).length > 0;
   for (const part of SHELL_PARTS) {
-    if (!pagesShowing(state, part).length) continue;
+    if (!collectionPages && !pagesShowing(state, part).length) continue;
     const owner: OwnerRef = { kind: 'shell', id: part };
     const tree = state.site.shell[part];
     const label = partLabel(part);
-    out.push(...keep.tree({ owner, tree, label }, 'accessibility', () => [...emptyHeadingDiagnostics(state, partHeadings(state, part), label, tree), ...treeAccessibilityDiagnostics(state, owner, tree, label)]));
+    out.push(...keep.tree({ owner, tree, label }, 'accessibility', () => [...emptyHeadingDiagnostics(state, partHeadings(state, part), label, tree), ...treeAccessibilityDiagnostics(state, owner, tree, label, broken())]));
   }
   return out;
 }

@@ -19,7 +19,7 @@ import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormNa
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
-import { actionWraps } from './card-links';
+import { actionWraps, cardKey } from './card-links';
 import { isVideoContract, parseVideoUrl, videoFieldNotes } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
@@ -1134,6 +1134,16 @@ export function blankPages(state: ProjectState): PageDoc[] {
   });
 }
 
+/**
+ * Whether what a walk reached through `path` (the nodes on the way down, outermost first, each with its scope and the
+ * definition it belongs to) is hidden at every size: by its own styles, a part around it, or its placement's.
+ */
+function hiddenOnPath(path: ReadonlyArray<{ n: GraphNode; scope: Scope; def: ComponentDefinition | undefined }>): boolean {
+  const sizes = (variants: boolean) =>
+    path.map(({ n, scope, def }) => (def ? (hiddenInDesign(def, n.id, scope, variants)[0] ?? new Set<Size>()) : hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined])));
+  return hiddenEverySize(sizes(false)) && hiddenEverySize(sizes(true));
+}
+
 export interface EmptySection {
   /** Node in the page or shell tree (the outermost placement, for a section inside a component's design). */
   nodeId: string;
@@ -1208,11 +1218,7 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
   // The nodes on the way down, whose styles decide whether what is inside them shows at any size (see
   // firstSectionImages): read only where a section may be reported, so a page with none pays nothing for them.
   const path: Array<{ n: GraphNode; scope: Scope; def: ComponentDefinition | undefined }> = [];
-  const hidden = () => {
-    const sizes = (variants: boolean) =>
-      path.map(({ n, scope, def }) => (def ? (hiddenInDesign(def, n.id, scope, variants)[0] ?? new Set<Size>()) : hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined])));
-    return hiddenEverySize(sizes(false)) && hiddenEverySize(sizes(true));
-  };
+  const hidden = () => hiddenOnPath(path);
   // The placements being walked that may have nothing to show, innermost last, until something they render says otherwise.
   const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean; connected: string | undefined; connectedNeeds: string | undefined; slots: number }> = [];
   const filled = () => open.forEach((o) => (o.filled = true));
@@ -1293,8 +1299,8 @@ export interface UnnamedControl {
 /** A video a tree renders whose player visitors cannot use: one with no title for screen readers, or no address its player can play. */
 export interface VideoProblem {
   nodeId: string;
-  /** The video's placement: `nodeId`, or the one inside that placement's design. */
-  placementId: string;
+  /** Tells apart the videos of one placement: the placements from the tree down to the video's, with their list items. */
+  key: string;
   name: string;
   problem: 'title' | 'url';
   message: string;
@@ -1310,70 +1316,78 @@ const nameText = (v: unknown) => (typeof v === 'number' ? String(v) : plainText(
  * or that a condition leaves out. Panels a visitor can open count. Code shows what its own markup says, so the links
  * and cards inside it are not judged, and neither is a card around it.
  */
-export function accessibilityProblems(state: ProjectState, tree: NodeTree): { controls: UnnamedControl[]; videos: VideoProblem[] } {
+export function accessibilityProblems(state: ProjectState, owner: OwnerRef, tree: NodeTree, broken: ReadonlySet<string> = new Set()): { controls: UnnamedControl[]; videos: VideoProblem[] } {
   const controls: UnnamedControl[] = [];
   const videos: VideoProblem[] = [];
   const at = (n: GraphNode, scope: Scope) => `${scope.trail ?? ''}:${n.id}:${(scope.path ?? []).join('/')}`;
-  // Page nodes hidden at every size, from the outermost in: nothing inside them is met by anyone.
-  const hiding: boolean[] = [];
-  let hidden = 0;
+  // The nodes on the way down, whose styles decide whether what is inside them shows at any size (see hiddenOnPath).
+  const path: Array<{ n: GraphNode; scope: Scope; def: ComponentDefinition | undefined }> = [];
+  const hidden = () => hiddenOnPath(path);
   // The cards being walked, innermost last, until something inside them names them.
   const cards: Array<{ n: GraphNode; scope: Scope; reportId: string; named: boolean }> = [];
-  const named = () => cards.forEach((c) => (c.named = true));
+  // The slots whose content names the cards around it: shown again by a second slot, it names those cards too.
+  const naming = new Set<string>();
+  const named = (scope: Scope) => {
+    cards.forEach((c) => (c.named = true));
+    for (const slot of scope.slots ?? []) naming.add(slot);
+  };
   walkRendered(state, tree, {
     everyState: true,
-    enter: (n) => {
-      const hides = hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined);
-      hiding.push(hides);
-      if (hides) hidden++;
+    again: (slot) => {
+      if (naming.has(slot)) cards.forEach((c) => (c.named = true));
     },
-    leave: () => {
-      if (hiding.pop()) hidden--;
-    },
-    node: (n, scope, reportId) => {
-      if (n.kind === 'text' && nameText(evaluate(n.text, scope))) named();
-      if (n.kind === 'icon' && nameText(evaluate(n.ariaLabel, scope))) named();
-      if (n.kind === 'image') {
-        const img = evaluate(n.image, scope) as Partial<ImageValue> | null | undefined;
-        // A described picture names the card it is in, and so does what it stands for (said as hidden text when it is
-        // decorative); a decorative picture's own description is never said.
-        if ((img && !img.decorative && nameText(img.alt)) || nameText(evaluate(n.fallbackAlt, scope))) named();
+    node: (n, scope, reportId, inDef, def) => {
+      path.push({ n, scope, def });
+      // What is hidden at every size names nothing: an accessible name leaves out what is not displayed.
+      if (cards.length && !hidden()) {
+        let names = false;
+        if (n.kind === 'text') names = !!nameText(evaluate(n.text, scope));
+        if (n.kind === 'icon') names = !!nameText(evaluate(n.ariaLabel, scope));
+        if (n.kind === 'image') {
+          const img = evaluate(n.image, scope) as Partial<ImageValue> | null | undefined;
+          // A described picture names the card it is in, and so does what it stands for (said as hidden text when it is
+          // decorative); a decorative picture's own description is never said.
+          names = !!((img && !img.decorative && nameText(img.alt)) || nameText(evaluate(n.fallbackAlt, scope)));
+        }
+        // A link or button inside a card is a problem of its own (CARD_LINK_INTERACTIVE), and has words of its own.
+        if (n.kind === 'link') names = !!(nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope)));
+        // Code says what its own markup says: whatever it shows may name the card.
+        if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') names = true;
+        if (names) named(scope);
       }
-      // A link or button inside a card is a problem of its own (CARD_LINK_INTERACTIVE), and has words of its own.
-      if (n.kind === 'link' && (nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope)))) named();
-      // Code says what its own markup says: whatever it shows may name the card.
-      if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') named();
       if (n.kind !== 'element' || n.link === undefined) return;
       // A card links the whole container. One with an action follows its destination only while that action is `link`.
       if (n.action !== undefined && n.action !== null && (!actionWraps(n) || evaluate(n.action, scope) !== 'link')) return;
+      // A card with a link or control inside renders as its plain container (CARD_LINK_INTERACTIVE says so).
+      if (broken.has(cardKey({ owner: inDef && def ? { kind: 'component', id: def.id } : owner, cardId: n.id }))) return;
       const link = evaluate(n.link, scope) as LinkValue | undefined;
-      if (!resolveLink(link, { state })) return;
+      if (!resolveLink(link, { state }) || hidden()) return;
       cards.push({ n, scope, reportId, named: !!nameText(evaluate(n.ariaLabel, scope)) });
     },
     done: (n) => {
+      path.pop();
       const card = cards[cards.length - 1];
       if (card?.n !== n) return;
       cards.pop();
-      if (!card.named && !hidden) controls.push({ nodeId: card.reportId, what: 'card', key: at(n, card.scope) });
+      if (!card.named) controls.push({ nodeId: card.reportId, what: 'card', key: at(n, card.scope) });
     },
     link: (n, scope, reportId, _inDef, _ownId, def) => {
-      if (hidden || nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope))) return;
+      if (nameText(evaluate(n.label, scope)) || nameText(evaluate(n.ariaLabel, scope))) return;
       const link = evaluate(n.link, scope) as LinkValue | undefined;
       const goes = !!resolveLink(link, { state });
       // A button that changes its component's state renders as a real button with nowhere to go. One choosing an option
-      // or an item says that option's or item's name when it has no words of its own.
+      // of a choice says that option's name when it has no words of its own (see choiceLabel).
       const action = n.stateAction;
       const control = !goes && stateActionWorks(def, action, n.id);
-      if (!goes && !control) return;
-      if (control && (action?.op === 'select' || (action?.op === 'set' && typeof action.value === 'string'))) return;
+      if ((!goes && !control) || (control && action?.op === 'set' && typeof action.value === 'string') || hidden()) return;
       controls.push({ nodeId: reportId, what: control ? 'button' : 'link', key: at(n, scope) });
     },
-    code: (def, props, reportId, _placement, n) => {
-      if (hidden || !(isComponent(def, 'media.video') || isComponent(def, 'block.video'))) return;
+    code: (def, props, reportId, placement, n) => {
+      if (!(isComponent(def, 'media.video') || isComponent(def, 'block.video')) || hidden()) return;
       const notes = videoFieldNotes(props);
       const name = displayName(state, n);
-      if (notes.url?.error) videos.push({ nodeId: reportId, placementId: n.id, name, problem: 'url', message: notes.url.error });
-      if (notes.title?.error) videos.push({ nodeId: reportId, placementId: n.id, name, problem: 'title', message: notes.title.error });
+      if (notes.url?.error) videos.push({ nodeId: reportId, key: placement, name, problem: 'url', message: notes.url.error });
+      if (notes.title?.error) videos.push({ nodeId: reportId, key: placement, name, problem: 'title', message: notes.title.error });
     }
   });
   return { controls, videos };
