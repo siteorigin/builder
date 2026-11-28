@@ -31,6 +31,8 @@ Definition of done for a change: typecheck green, unit tests covering the change
 - Exported sites must stay free of Builder lock-in: editor instrumentation lives only in `.siteorigin/cache/dev`, never in `src/`.
 - Temporary output goes in `.tmp/` (gitignored), never the repo root.
 
+**The `design-review` label** routes an issue to `/design-review` (an expensive scored visual loop) instead of `/work`. Use it only when a surface's layout or composition is an open question worth iterating on, never for logic bugs, small CSS fixes, copy or wiring.
+
 ## Audit and issue screenshots (R2)
 
 GitHub CLI cannot upload local images into issue bodies directly, so visual evidence for GitHub issues and usability audits goes into the public Cloudflare R2 bucket `siteorigin-builder-audit`. The repository is public, so all objects in this bucket are served publicly by default at `https://pub-423baa1e74ff457f9b976d8f9d801dc4.r2.dev`.
