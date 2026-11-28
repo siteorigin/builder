@@ -1810,7 +1810,8 @@ export function SiteStyles() {
     const look: React.CSSProperties = {
       borderRadius: r ? resolvedText(tokens, r.id) || undefined : undefined,
       fontFamily: shownStack(stack),
-      fontSize: px !== null ? Math.max(11, Math.min(24, px)) : v?.size,
+      // A keyword (x-large) can't go inside clamp(); one is never bigger than the dock can show.
+      fontSize: px !== null ? Math.max(11, Math.min(24, px)) : v && /\d/.test(v.size) ? `clamp(11px, ${v.size}, 24px)` : v?.size,
       ...(v ? { fontWeight: v.weight, lineHeight: v.lineHeight, letterSpacing: v.tracking, textTransform: (v.transform as React.CSSProperties['textTransform']) ?? 'none' } : {})
     };
     const ink = shownHex('color.text') || undefined;

@@ -99,8 +99,8 @@ describe('the Buttons styles a theme declares', () => {
 
   it('name the styles that already follow one, directly or along a chain, so a link to them is never offered', () => {
     // The indirect follower comes first, so one pass over the list would miss it.
-    const tokens = [tok('radius.md', 'radius', { token: 'radius.pill' }), tok('radius.sm', 'radius', '6px'), tok('radius.pill', 'radius', { token: 'radius.button' }), tok('radius.button', 'radius', '0px'), tok('color.brand', 'color', { token: 'radius.button' })];
-    expect([...tokenFollowers(tokens, 'radius.button', 'radius')].sort()).toEqual(['radius.md', 'radius.pill']);
+    const tokens = [tok('radius.lg', 'radius', { token: 'radius.md' }), tok('radius.md', 'radius', { token: 'radius.pill' }), tok('radius.sm', 'radius', '6px'), tok('radius.pill', 'radius', { token: 'radius.button' }), tok('radius.button', 'radius', '0px'), tok('color.brand', 'color', { token: 'radius.button' })];
+    expect([...tokenFollowers(tokens, 'radius.button', 'radius')].sort()).toEqual(['radius.lg', 'radius.md', 'radius.pill']);
     expect([...tokenFollowers(tokens, 'radius.sm', 'radius')]).toEqual([]);
     // The colour picker's loop filter reads the same helper, within its own group.
     const colors = [tok('color.accent', 'color', { token: 'color.link' }), tok('color.link', 'color', { token: 'color.brand' }), tok('color.brand', 'color', '#123456')];

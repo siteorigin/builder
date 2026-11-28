@@ -173,13 +173,30 @@ export function findTokenCycle(state: ProjectState): string | null {
 /**
  * Theme styles to put back to their theme values, in an order that never passes through a loop. Each reset is checked
  * as it is made, and a theme value can follow a style the owner made follow it back (Pill set to follow the button
- * corners, whose theme value follows Pill) until that one is put back too. Each step takes the first style, in the
- * order given, whose reset leaves neither palette looping; any that never can come last, for the engine to refuse.
+ * corners, whose theme value follows Pill) until that one is put back too. The styles are tried in the order their
+ * theme values are followed (a style before the ones that follow it), and each step takes the first whose reset leaves
+ * neither palette looping, so a theme's own chains go back in one pass. Any that never can come last, for the engine
+ * to refuse.
  */
 export function tokenResetOrder(state: ProjectState, ids: readonly string[]): string[] {
+  const declared = new Map(declaredTokens(state).map((t) => [t.id, t]));
+  const theme = new Map(getTheme(state.site.themeId).tokens.map((t) => [t.id, t]));
+  // How many links the theme's own value is from a value of its own; a link that loops or leaves the theme ends it.
+  const depth = (id: string): number => {
+    const seen = new Set<string>();
+    let d = 0;
+    for (let cur = id, t = theme.get(cur); t; t = theme.get(cur)) {
+      const to = linkOf(t.value, t.group);
+      if (!to || seen.has(to) || !declared.has(to)) break;
+      seen.add(cur);
+      cur = to;
+      d++;
+    }
+    return d;
+  };
   const overrides = { ...state.tokens.overrides };
   const trial: ProjectState = { ...state, tokens: { ...state.tokens, overrides } };
-  const left = [...ids];
+  const left = ids.map((id, i) => ({ id, i, d: depth(id) })).sort((x, y) => x.d - y.d || x.i - y.i).map((x) => x.id);
   const out: string[] = [];
   while (left.length) {
     const i = left.findIndex((id) => {
