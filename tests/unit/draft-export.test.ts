@@ -470,7 +470,7 @@ describe('exporting a project with a draft', () => {
     expect(readFileSync(join(out, menu))).toEqual(bytes[menu]);
     // They are kept beside the documents instead, and the export and the README say so.
     expect(filesIn(join(out, 'siteorigin/draft-assets')).sort()).toEqual(['winter-prices-2b3c4d5e.pdf', 'winter-sketch-1a2b3c4d.svg']);
-    expect(r.warnings).toContain('Winter prices and Winter sketch are used only by drafts, so their files are kept in siteorigin/draft-assets/ rather than static/assets/, and a build of the exported project leaves them out. Opening the project in SiteOrigin Builder puts them back.');
+    expect(r.warnings).toContain('Files only drafts use are kept in siteorigin/draft-assets/ rather than static/assets/, so a build of the exported project leaves them out: Winter prices and Winter sketch. Opening the project in SiteOrigin Builder puts them back.');
     expect(readFileSync(join(out, 'README.md'), 'utf8')).toContain('kept in `siteorigin/draft-assets/` rather than `static/assets/`, so the build leaves those out too.');
     // Opened in SiteOrigin Builder, the draft has its files back, exactly as they were, and nothing is missing.
     await c.close();
@@ -484,9 +484,28 @@ describe('exporting a project with a draft', () => {
     expect((await reopened.exportSourceTo(again)).ok).toBe(true);
     for (const rel of [sketch, prices]) expect(existsSync(join(again, rel)), rel).toBe(false);
     expect(filesIn(join(again, 'siteorigin/draft-assets')).sort()).toEqual(['winter-prices-2b3c4d5e.pdf', 'winter-sketch-1a2b3c4d.svg']);
+
+    // A file someone put in the held one's place before the project was opened stays, and so does the held copy: the
+    // opening says so, and the next editable export waits until the author has chosen.
+    await reopened.close();
+    writeFileSync(join(again, prices), '%PDF-1.4 someone else’s prices');
+    const third = await open(again);
+    expect(readFileSync(join(again, prices), 'utf8')).toBe('%PDF-1.4 someone else’s prices');
+    expect(readFileSync(join(again, 'siteorigin/draft-assets/winter-prices-2b3c4d5e.pdf'))).toEqual(bytes[prices]);
+    expect(readFileSync(join(again, sketch))).toEqual(bytes[sketch]);
+    expect(third.snapshot()!.recoveryNotes).toContain(
+      'siteorigin/draft-assets/winter-prices-2b3c4d5e.pdf was left where it is, in the folder where an exported project keeps the files only its drafts use: it is no file of the project’s assets, another file is in its place in static/assets/, or it could not be moved. Move it into static/assets/ to use it, or delete it.'
+    );
+    const stop = 'siteorigin/draft-assets/winter-prices-2b3c4d5e.pdf is still kept aside from an earlier export of this project. Move it into static/assets/ or delete it, then export again.';
+    expect(await third.exportSourceTo(join(temp('out'), 'refused'))).toMatchObject({ ok: false, message: stop });
+    const asked = env.dialogs;
+    expect(await third.exportSource('folder')).toMatchObject({ ok: false, message: stop });
+    expect(env.dialogs, 'refused before asking where to save it').toBe(asked);
+    rmSync(join(again, 'siteorigin/draft-assets'), { recursive: true });
+    expect((await third.exportSourceTo(join(temp('out'), 'fourth'))).ok).toBe(true);
   });
 
-  it('#1450: a project with no drafts, or none that use a file, holds nothing back', async () => {
+  it('#1450: holds back nothing when no draft uses a file, and keeps a file nothing uses where it is', async () => {
     const { c, dir } = await projectWithDraft();
     const unused = 'static/assets/spare-4d5e6f7a.pdf';
     const added = await c.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_spare', name: 'Spare', file: unused, mime: 'application/pdf', bytes: 3, hash: 'h', kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' } }] });

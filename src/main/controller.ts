@@ -59,7 +59,7 @@ import { isImageBlock } from '@shared/richtext';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
-import { holdDraftAssets } from './project/draft-assets';
+import { heldDraftAssetFiles, heldDraftAssetsStop, holdDraftAssets } from './project/draft-assets';
 import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
@@ -4142,6 +4142,9 @@ export class Controller {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session;
+    // Before asking where to save it: files kept aside by an earlier export stop this one until the author decides.
+    const leftover = await heldDraftAssetFiles(s!.dir);
+    if (leftover.length) return { ok: false, message: heldDraftAssetsStop(leftover), warnings: [] };
     const dest = await this.chooseExportTarget('source', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
     if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
@@ -4257,6 +4260,10 @@ export class Controller {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder, { milestone: EXPORTED_SOURCE, held });
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+      // Files an earlier export kept aside that the project still has (an opening left them where they were): the
+      // author decides what becomes of them, before this export keeps others aside in their place.
+      const leftover = await heldDraftAssetFiles(folder);
+      if (leftover.length) return { ok: false, message: heldDraftAssetsStop(leftover), warnings: [] };
       if (snap.unsaved) warn(snap.unsaved);
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.

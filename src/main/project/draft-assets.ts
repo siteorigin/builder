@@ -4,20 +4,30 @@
  * itself is not. The export moves them to `siteorigin/draft-assets/`, at the same paths below it as below
  * `static/assets/`, and the project's first writable opening in SiteOrigin Builder puts them back.
  */
-import { promises as fs, constants as fsConstants } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
+import type { AssetRecord } from '@shared/types';
 import { removeEmptyDirs, safeJoin } from './fsutil';
 
 /** Where an exported editable project keeps the library files only its drafts use. */
 export const DRAFT_ASSETS_DIR = 'siteorigin/draft-assets';
 const ASSETS_DIR = 'static/assets';
 
+/** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
+export const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
+
+/** Errors of a disk that has no hard links (as src/main/git/repo.ts knows them), or no more for one file: the file is copied instead. */
+const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EINVAL', 'EISDIR', 'UNKNOWN', 'EMLINK']);
+
+/** What a copy being made beside a held file is called until it is whole and put in place. */
+const PARTIAL = '.siteorigin-restoring';
+
 /** Every regular file below `dir`, relative to it with forward slashes. A link, or anything in a linked folder, is none. */
-async function heldFiles(dir: string, base = ''): Promise<string[]> {
+async function filesBelow(dir: string, base = ''): Promise<string[]> {
   const out: string[] = [];
   for (const e of await fs.readdir(join(dir, base), { withFileTypes: true }).catch(() => [])) {
     const rel = base ? `${base}/${e.name}` : e.name;
-    if (e.isDirectory()) out.push(...(await heldFiles(dir, rel)));
+    if (e.isDirectory()) out.push(...(await filesBelow(dir, rel)));
     else if (e.isFile()) out.push(rel);
   }
   return out;
@@ -30,79 +40,161 @@ async function allFolders(dir: string): Promise<string[]> {
   return out;
 }
 
+/** Whether any part of `rel` below `root` that is there is a link: a file is never moved, compared or removed through one. */
+async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split('/')) {
+    const st = await fs.lstat((at = join(at, part))).catch(() => null);
+    if (!st) return false;
+    if (st.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+/** Whether every part of `rel` below `root` is there spelled exactly so, as a disk that ignores case may not show it. */
+async function spelledAs(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split('/')) {
+    if (!(await fs.readdir(at).catch(() => [] as string[])).includes(part)) return false;
+    at = join(at, part);
+  }
+  return true;
+}
+
+/** The held folder's own files, as project paths (`siteorigin/draft-assets/…`), or none when it is not a folder of its own. */
+export async function heldDraftAssetFiles(dir: string): Promise<string[]> {
+  if (await linkOnTheWay(dir, DRAFT_ASSETS_DIR)) return [];
+  const st = await fs.lstat(join(dir, DRAFT_ASSETS_DIR)).catch(() => null);
+  return st?.isDirectory() ? (await filesBelow(join(dir, DRAFT_ASSETS_DIR))).map((rel) => `${DRAFT_ASSETS_DIR}/${rel}`) : [];
+}
+
 /**
- * Put `from` at `to` without replacing anything there: linked and then let go of where the disk can, so the file is
- * at one path or both but never half written, and copied where it cannot (a disk without hard links). False when
- * something is already at `to`.
+ * Put `from` at `to` without replacing anything there: linked and then let go of where the disk can, so the file is at
+ * one path or both but never half written. Where it can't, it is copied beside `from` first and put in place once
+ * whole, so a copy cut short is never at `to`. False when something is already at `to`.
  */
 async function moveNew(from: string, to: string): Promise<boolean> {
   try {
     await fs.link(from, to);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = (e as NodeJS.ErrnoException).code ?? '';
     if (code === 'EEXIST') return false;
-    if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EXDEV' && code !== 'EMLINK' && code !== 'ENOSYS') throw e;
-    try {
-      await fs.copyFile(from, to, fsConstants.COPYFILE_EXCL);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      throw err;
+    if (!NO_LINKS.has(code)) throw e;
+    const partial = from + PARTIAL;
+    await fs.copyFile(from, partial);
+    if (await fs.lstat(to).then(() => true, () => false)) {
+      await fs.rm(partial, { force: true });
+      return false;
     }
+    await fs.rename(partial, to);
   }
   await fs.rm(from);
   return true;
 }
 
+/** Whether the file at `to` (the project path `target`) is the held file `from` put back already: the same bytes, at exactly that name, through no link. */
+async function putBack(dir: string, from: string, to: string, target: string): Promise<boolean> {
+  if ((await fs.realpath(from)) === (await fs.realpath(to))) return false;
+  if (!(await fs.lstat(to)).isFile() || !(await spelledAs(dir, target))) return false;
+  return (await fs.readFile(from)).equals(await fs.readFile(to));
+}
+
+/**
+ * Let the owner write in `folder` of a staged copy (which keeps its original's modes) while files are moved out of
+ * or into it, noting its own mode in `opened` to be given back. Windows reports no such bits for a folder, nor needs them.
+ */
+async function openFolder(folder: string, opened: Map<string, number>): Promise<void> {
+  if (process.platform === 'win32' || opened.has(folder)) return;
+  const mode = (await fs.stat(folder)).mode & 0o7777;
+  if ((mode & 0o300) === 0o300) return;
+  opened.set(folder, mode);
+  await fs.chmod(folder, mode | 0o700);
+}
+
 /**
  * Move the project files `files` (each in `static/assets/`) of the staged copy `dir` into `siteorigin/draft-assets/`,
- * at the same paths below it. Whatever that folder held before (one the project still had, say) goes first: the copy
- * holds what its drafts use now.
+ * at the same paths below it. The export stops before this while the project has files there of its own
+ * (heldDraftAssetFiles), so anything still there is no file of the project's.
  */
 export async function holdDraftAssets(dir: string, files: readonly string[]): Promise<void> {
   await fs.rm(join(dir, DRAFT_ASSETS_DIR), { recursive: true, force: true });
-  for (const rel of files) {
-    if (!rel.startsWith(`${ASSETS_DIR}/`)) continue;
-    const target = `${DRAFT_ASSETS_DIR}/${rel.slice(ASSETS_DIR.length + 1)}`;
-    await fs.mkdir(safeJoin(dir, posix.dirname(target)), { recursive: true });
-    await fs.rename(safeJoin(dir, rel), safeJoin(dir, target));
+  const opened = new Map<string, number>();
+  try {
+    for (const rel of files) {
+      if (!rel.startsWith(`${ASSETS_DIR}/`)) continue;
+      const target = `${DRAFT_ASSETS_DIR}/${rel.slice(ASSETS_DIR.length + 1)}`;
+      await openFolder(join(dir, 'siteorigin'), opened);
+      await fs.mkdir(safeJoin(dir, posix.dirname(target)), { recursive: true });
+      const from = safeJoin(dir, rel);
+      await openFolder(dirname(from), opened);
+      await fs.rename(from, safeJoin(dir, target));
+    }
+  } finally {
+    for (const [folder, mode] of opened) await fs.chmod(folder, mode).catch(() => undefined);
   }
 }
 
 /**
  * Put the library files an export held back (holdDraftAssets) where the project uses them, in `static/assets/`, and
- * remove the folder once it is empty. A file is never put over one already there: one with the same bytes is the
- * same file (a move cut short), so the held copy goes; anything else there stays as it is, beside the held copy. Only
- * files of their own are moved, never a link nor anything through one. Returns the paths in `static/assets/` of the
- * files left held (another file in the place, or the move refused), for the opening to say so.
+ * remove the folder once it is empty. Only a file an export could have held is moved: one of `assets`' own files, or
+ * one named like an imported file directly in `static/assets/`. A file is never put over one already there: one with
+ * the same bytes at exactly that name is the same file (a move cut short), so the held copy goes; anything else there
+ * stays as it is, beside the held copy. Nothing is moved, compared or removed through a link. Returns the held files
+ * left where they are (as `siteorigin/draft-assets/…`), for the opening to say so.
  */
-export async function restoreDraftAssets(dir: string): Promise<string[]> {
+export async function restoreDraftAssets(dir: string, assets: Readonly<Record<string, AssetRecord>>): Promise<string[]> {
   const held = join(dir, DRAFT_ASSETS_DIR);
-  const st = await fs.lstat(held).catch(() => null);
-  if (!st?.isDirectory()) return [];
+  const listed = await heldDraftAssetFiles(dir);
+  if (!listed.length && !(await fs.lstat(held).then((st) => st.isDirectory(), () => false))) return [];
+  const library = new Set<string>();
+  for (const a of Object.values(assets)) for (const f of [a?.file, ...(a?.variants ?? []).map((v) => v?.file)]) if (typeof f === 'string') library.add(f.toLowerCase());
   const kept: string[] = [];
-  for (const rel of await heldFiles(held)) {
+  for (const path of listed) {
+    const rel = path.slice(DRAFT_ASSETS_DIR.length + 1);
+    // A copy cut short (moveNew) is only ever the start of one.
+    if (rel.endsWith(PARTIAL)) {
+      await fs.rm(safeJoin(dir, path), { force: true }).catch(() => kept.push(path));
+      continue;
+    }
     const target = `${ASSETS_DIR}/${rel}`;
+    if (!library.has(target.toLowerCase()) && (rel.includes('/') || !IMPORTED_ASSET.test(rel))) {
+      kept.push(path);
+      continue;
+    }
     try {
-      const from = safeJoin(dir, `${DRAFT_ASSETS_DIR}/${rel}`);
+      const from = safeJoin(dir, path);
+      if (await linkOnTheWay(dir, target)) {
+        kept.push(path);
+        continue;
+      }
       await fs.mkdir(safeJoin(dir, posix.dirname(target)), { recursive: true });
+      if (await linkOnTheWay(dir, target)) {
+        kept.push(path);
+        continue;
+      }
       const to = safeJoin(dir, target);
       if (await moveNew(from, to)) continue;
-      const there = await fs.lstat(to);
-      if (there.isFile() && (await fs.readFile(from)).equals(await fs.readFile(to))) await fs.rm(from);
-      else kept.push(target);
+      if (await putBack(dir, from, to, target)) await fs.rm(from);
+      else kept.push(path);
     } catch {
-      kept.push(target);
+      kept.push(path);
     }
   }
   for (const folder of (await allFolders(held)).reverse()) await removeEmptyDirs(folder, dirname(held));
   return kept;
 }
 
-/** What the opening says of held files it could not put back (restoreDraftAssets), each named by its path in `static/assets/`. */
+/** What the opening says of held files it left where they are (restoreDraftAssets), each named by its project path. */
 export function keptDraftAssetsNote(kept: readonly string[]): string | null {
   if (!kept.length) return null;
-  const at = (rel: string) => `${DRAFT_ASSETS_DIR}/${rel.slice(ASSETS_DIR.length + 1)}`;
   return kept.length === 1
-    ? `${kept[0]} was kept aside for a draft when the project was exported, and could not be put back: another file is in its place, or it could not be moved. It is still at ${at(kept[0])}; move it to ${kept[0]} to use it.`
-    : `${kept.length} files kept aside for drafts when the project was exported could not be put back: another file is in each one’s place, or it could not be moved. They are still in ${DRAFT_ASSETS_DIR}/; move each to the same place in ${ASSETS_DIR}/ to use it: ${kept.join(', ')}.`;
+    ? `${kept[0]} was left where it is, in the folder where an exported project keeps the files only its drafts use: it is no file of the project’s assets, another file is in its place in ${ASSETS_DIR}/, or it could not be moved. Move it into ${ASSETS_DIR}/ to use it, or delete it.`
+    : `${kept.length} files were left where they are in ${DRAFT_ASSETS_DIR}/, where an exported project keeps the files only its drafts use: each is no file of the project’s assets, has another file in its place in ${ASSETS_DIR}/, or could not be moved. Move them into ${ASSETS_DIR}/ to use them, or delete them: ${kept.join(', ')}.`;
+}
+
+/** Why an editable export stops while the project still has held files (heldDraftAssetFiles), each named by its project path. */
+export function heldDraftAssetsStop(files: readonly string[]): string {
+  return files.length === 1
+    ? `${files[0]} is still kept aside from an earlier export of this project. Move it into ${ASSETS_DIR}/ or delete it, then export again.`
+    : `${files.length} files in ${DRAFT_ASSETS_DIR}/ are still kept aside from an earlier export of this project: ${files.join(', ')}. Move them into ${ASSETS_DIR}/ or delete them, then export again.`;
 }

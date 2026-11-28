@@ -1116,7 +1116,7 @@ export class ProjectSession extends EventEmitter {
     if (pin) throw new ThemeUnavailableError(pin);
     // The library files an editable export kept aside for drafts (#1450) go back where the project uses them, before
     // anything looks for them: the preview, the publication, Project health's look at the library, the saved versions.
-    const kept = keptDraftAssetsNote(await restoreDraftAssets(dir));
+    const kept = keptDraftAssetsNote(await restoreDraftAssets(dir, s.state.assets.assets));
     if (kept) s.recoveryNotes.push(kept);
     startPreview?.(s);
     // With a file in conflict the update waits: its stored version is the user's to choose first.

@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
-import { generateProject, publishedState, RUNTIME_DIR } from '@generator/index';
+import { defFile, generateProject, publishedState, RUNTIME_DIR } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import type { AssetRecord, ComponentDefinition, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -26,6 +26,7 @@ import {
   explainBuildFailure,
   exportedAssetFilter,
   finishExportedSource,
+  leaveOutDrafts,
   isGeneratedReadme,
   leaveOutRetiredAssets,
   locatedPhotos,
@@ -343,7 +344,9 @@ describe('website export assets', () => {
       doc('offer', 'static/assets/offer-1a2b3c4d.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
       doc('old', 'static/assets/offer-1a2b3c4d.doc', 'application/msword'),
       // Shown only by a component of the project's own that the draft alone places.
-      image('boxed', 'static/assets/gallery-cccccccc.svg')
+      image('boxed', 'static/assets/gallery-cccccccc.svg'),
+      // Used by nothing by its ID; only one of its copies is named below, by the drafts' text alone.
+      image('leaflet', 'static/assets/leaflet-dddddddd.jpg', ['static/assets/leaflet-dddddddd-480w.webp', 'static/assets/leaflet-dddddddd-1000w.webp'])
     ];
     const draft = { kind: 'page' as const, id: 'pg_draft01' };
     state = applyOperations(state, [
@@ -365,15 +368,18 @@ describe('website export assets', () => {
     state.components['code.public'] = { ...base, id: 'code.public', name: 'Strip', sourcePath: 'src/lib/siteorigin/custom/Strip.svelte', source: '<img src="/assets/banner-77777777-480w.webp" alt="" />' } as ComponentDefinition;
     state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, definitionId: 'code.public', newNodeId: 'n_strip' }] as EditOperation[]).state;
 
-    // The staged copy as leaveOutDrafts leaves it: the published site's generated files, and the drafts' text beside.
+    // The project's generated files, with the drafts, left out as an export leaves them: what the drafts add to them
+    // is what leaveOutDrafts gives back.
     const dir = temp();
-    const full = generateProject(state);
-    const published = generateProject(publishedState(state));
-    for (const [path, text] of published) write(dir, path, text);
+    const full = generateProject(state, { instrument: false });
+    for (const [path, text] of full) write(dir, path, text);
+    write(dir, 'siteorigin/generated-manifest.json', JSON.stringify({ files: Object.fromEntries([...full].map(([path, text]) => [path, sha(text)])) }));
     for (const a of assets) for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) write(dir, f, 'x');
     write(dir, 'siteorigin/assets.json', JSON.stringify(state.assets));
-    const drafts = new Map([...full].filter(([path, text]) => published.get(path) !== text));
-    expect([...drafts.keys()].some((p) => p.startsWith('src/routes/soon/')), 'the draft has a page of its own').toBe(true);
+    const drafts = new Map<string, string>();
+    await leaveOutDrafts(dir, state, undefined, drafts);
+    expect(existsSync(join(dir, 'src/routes/soon/+page.svelte')), 'the copy has no page for the draft').toBe(false);
+    expect(drafts.get('src/routes/soon/+page.svelte'), 'the draft’s page is among what the drafts add').toBe(full.get('src/routes/soon/+page.svelte'));
 
     const held = [
       'static/assets/banner-77777777-1000w.webp',
@@ -391,15 +397,31 @@ describe('website export assets', () => {
     // only it places, whose file the website never reaches. The component's picture is in its definition, which the
     // published site keeps, so only its file says the draft alone shows it.
     expect(await draftOnlyAssetFiles(dir, state, new Map())).toEqual(held);
-    // A file the drafts' text names, and no draft uses by its ID, is held too; the search index's words are no use.
+    // A file the drafts' text names, and no draft uses by its ID, is held too, with the rest of its record; the search
+    // index's words are no use.
     const named = new Map([
-      ['src/routes/soon/+page.svelte', '<a href="/assets/spare-aaaaaaaa.svg">Spare</a>'],
+      ['src/routes/soon/+page.svelte', '<a href="/assets/spare-aaaaaaaa.svg">Spare</a><img src="/assets/leaflet-dddddddd-480w.webp" alt="" />'],
       [`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, 'export default ["offer-1a2b3c4d.doc"];']
     ]);
-    expect(await draftOnlyAssetFiles(dir, state, named)).toEqual([...held, 'static/assets/spare-aaaaaaaa.svg'].sort());
+    expect(await draftOnlyAssetFiles(dir, state, named)).toEqual(
+      [...held, 'static/assets/leaflet-dddddddd-1000w.webp', 'static/assets/leaflet-dddddddd-480w.webp', 'static/assets/leaflet-dddddddd.jpg', 'static/assets/spare-aaaaaaaa.svg'].sort()
+    );
+    // Code of the published site's that imports the component only the draft places makes it the website's, and its picture too.
+    const box = Object.values(state.components).find((d) => d.name === 'Gallery box')!;
+    write(dir, 'src/lib/Showcase.svelte', `<script>\n\timport Box from '$lib/${defFile(box).replace(/^src\/lib\//, '')}';\n</script>\n\n<Box />\n`);
+    expect(await draftOnlyAssetFiles(dir, state, drafts)).toEqual(held.filter((f) => f !== 'static/assets/gallery-cccccccc.svg'));
+    rmSync(join(dir, 'src/lib/Showcase.svelte'));
+    // On a disk that ignores case, the copy may spell a record's file otherwise: it is still that record's.
+    if (existsSync(join(dir, 'STATIC/ASSETS/OFFER-1A2B3C4D.DOCX'))) {
+      const { renameSync } = await import('node:fs');
+      renameSync(join(dir, 'static/assets/offer-1a2b3c4d.docx'), join(dir, 'static/assets/Offer-1a2b3c4d.docx'));
+      expect(await draftOnlyAssetFiles(dir, state, drafts)).toContain('static/assets/Offer-1a2b3c4d.docx');
+    }
     // A project without drafts holds nothing back.
     expect(await draftOnlyAssetFiles(dir, publishedState(state), new Map())).toEqual([]);
-    expect(heldDraftAssetsNote(state, ['static/assets/offer-1a2b3c4d.docx'])).toBe('offer file is used only by drafts, so its files are kept in siteorigin/draft-assets/ rather than static/assets/, and a build of the exported project leaves it out. Opening the project in SiteOrigin Builder puts it back.');
+    expect(heldDraftAssetsNote(state, ['static/assets/offer-1a2b3c4d.docx', 'static/assets/banner-77777777.jpg'])).toBe(
+      'Files only drafts use are kept in siteorigin/draft-assets/ rather than static/assets/, so a build of the exported project leaves them out: banner.jpg and offer file. Opening the project in SiteOrigin Builder puts them back.'
+    );
     expect(heldDraftAssetsNote(state, [])).toBeNull();
   });
 });

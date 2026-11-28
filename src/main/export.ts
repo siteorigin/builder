@@ -89,7 +89,7 @@ import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE, missingParts } from './project/asset-files';
-import { DRAFT_ASSETS_DIR } from './project/draft-assets';
+import { DRAFT_ASSETS_DIR, IMPORTED_ASSET } from './project/draft-assets';
 import { ownServerHook } from './project/server-hook';
 import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -281,8 +281,6 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
   return out;
 }
 
-/** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
-const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
 /**
  * Which project files an export carries. Every library file stays, used or not, because the editable project
@@ -585,9 +583,12 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   // in an entry's field its layout leaves out).
   const published = assetUsages(live);
   const drafted = new Set(Object.entries(assetUsages(state)).flatMap(([id, n]) => (n > 0 && !(published[id] > 0) ? [id] : [])));
+  // A record's files as the copy spells them: a disk that ignores case reads `Photo-…` as the record's `photo-…`.
+  const spelled = new Map<string, string[]>();
+  for (const rel of unshipped) spelled.set(rel.toLowerCase(), [...(spelled.get(rel.toLowerCase()) ?? []), rel]);
   for (const a of Object.values(state.assets.assets)) {
-    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)];
-    if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) if (unshipped.has(f)) held.add(f);
+    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)].flatMap((f) => (typeof f === 'string' ? (spelled.get(f.toLowerCase()) ?? []) : []));
+    if (drafted.has(a.id) || own.some((f) => held.has(f))) for (const f of own) held.add(f);
   }
   return candidates.filter((rel) => held.has(rel));
 }
@@ -597,8 +598,7 @@ export function heldDraftAssetsNote(state: ProjectState, files: readonly string[
   if (!files.length) return null;
   const byFile = assetsByFile(state);
   const names = [...new Set(files.map((f) => byFile.get(f)?.name ?? basename(f)))].sort((a, b) => a.localeCompare(b));
-  const one = names.length === 1;
-  return `${listNames(names)} ${one ? 'is' : 'are'} used only by drafts, so ${one ? 'its files are' : 'their files are'} kept in ${DRAFT_ASSETS_DIR}/ rather than static/assets/, and a build of the exported project leaves ${one ? 'it' : 'them'} out. Opening the project in SiteOrigin Builder puts ${one ? 'it' : 'them'} back.`;
+  return `Files only drafts use are kept in ${DRAFT_ASSETS_DIR}/ rather than static/assets/, so a build of the exported project leaves them out: ${listNames(names)}. Opening the project in SiteOrigin Builder puts them back.`;
 }
 
 export interface MissingInExport {
