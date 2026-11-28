@@ -178,6 +178,13 @@ export function App() {
           () => api.componentPreviewResult(req.requestId, [])
         )
       ),
+      // The assistant's set_preview (#1405), answered whatever happens, as an inspection is.
+      api.on('preview-control:request', (req) =>
+        void loadEditor().then(
+          (m) => m.runPreviewControl(req),
+          () => api.previewControlResult(req.requestId, { error: 'The editor could not be loaded, so the preview controls could not be changed.' })
+        )
+      ),
       api.on('component-preview:cancel', (req) => void loadEditor().then((m) => m.cancelComponentPreviews(req.requestId), () => undefined)),
       api.on('menu:command', ({ cmd, id }) => {
         // A screen that failed cannot act on it: it waits, unconfirmed, for the screen that comes back (RenderFailure).
