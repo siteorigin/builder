@@ -1054,19 +1054,22 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
 }
 
 /**
- * The published pages with nothing on them, in site order: no content at all, or only empty containers. Visitors see
- * such a page as its header and footer, or as nothing. A container with a background image shows its picture, and
- * anything else placed on a page counts as content, whatever it renders: what a placed section has to show is
- * emptySections' to say.
+ * The published pages with nothing on them, in site order: no content at all, or only empty containers and content
+ * hidden at every size. Visitors see such a page as its header and footer, or as nothing. A container with a
+ * background image shows its picture, and anything else shown on a page counts as content, whatever it renders: what
+ * a placed section has to show is emptySections' to say.
  */
 export function blankPages(state: ProjectState): PageDoc[] {
-  const blank = (page: PageDoc, id: string): boolean => {
+  // `seen` ends the walk of a damaged document whose container holds itself, which validation reports.
+  const blank = (page: PageDoc, id: string, seen: Set<string>): boolean => {
     const n = Object.hasOwn(page.nodes, id) ? page.nodes[id] : undefined;
-    return !n || (n.kind === 'element' && !hasBackgroundImage(n.styles) && n.children.every((c) => blank(page, c)));
+    if (!n || seen.has(id) || hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined)) return true;
+    seen.add(id);
+    return n.kind === 'element' && !hasBackgroundImage(n.styles) && (n.children ?? []).every((c) => blank(page, c, seen));
   };
   return state.site.pageOrder.flatMap((id) => {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
-    return page && !isDraftPage(state, page) && page.rootIds.every((r) => blank(page, r)) ? [page] : [];
+    return page && !isDraftPage(state, page) && page.rootIds.every((r) => blank(page, r, new Set())) ? [page] : [];
   });
 }
 

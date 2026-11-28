@@ -366,7 +366,8 @@ function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null
 
 function showPage(pageId: string) {
   selectPage(pageId, null);
-  setState({ modal: null, mode: 'edit' });
+  // With the Inspector, which holds the page's own settings.
+  setState({ modal: null, mode: 'edit', rightTab: 'inspect', dockOpen: true });
 }
 
 function showElement(ref: ElementRef) {

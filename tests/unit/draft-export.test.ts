@@ -166,6 +166,18 @@ describe('exporting a project with a draft', () => {
     expect(zip).toMatchObject({ ok: true, message: 'Source project exported as a ZIP file. Private files such as .env, keys and credentials were left out.', warnings: [], notes: [] });
   });
 
+  it('#1550: names a published page with nothing on it in the notes of both exports', async () => {
+    const dir = temp('project');
+    await (await ProjectSession.create(dir, createStarterState('blank', 'Bookshop', false))).close();
+    const c = await open(dir);
+    const built = await c.buildStaticTo(join(temp('out'), 'site'));
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    for (const r of [built, source]) {
+      expect(r.ok).toBe(true);
+      expect(r.warnings).toContain('Home (/)');
+    }
+  });
+
   it('#884: counts the published entries by their collection, as the Export dialog does', async () => {
     const dir = temp('project');
     let state = createStarterState('business', 'Bookshop', false);

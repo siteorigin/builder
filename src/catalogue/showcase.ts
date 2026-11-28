@@ -279,7 +279,9 @@ function newsPage(state: ProjectState, n: (typeof SAMPLE_NEWS)[number], place: (
   } else section([text('h1', n.title), text('p', formatArticleDate(n.date, state.site.language), n.date)]);
 
   const words = find('content.text');
-  if (words?.properties.body?.type === 'richtext') {
+  // The section goes under the article's header with no heading of its own, so a theme that requires one is passed over.
+  const optional = (k: string) => !words?.properties[k]?.required;
+  if (words?.properties.body?.type === 'richtext' && optional('eyebrow') && optional('heading')) {
     const node = place(words.componentId);
     for (const k of ['eyebrow', 'heading']) if (words.properties[k]?.type === 'string') node.props[k] = '';
     node.props.body = n.body.map((p) => ({ type: 'p', spans: [{ text: p }] }));

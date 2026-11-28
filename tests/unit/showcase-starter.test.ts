@@ -46,7 +46,7 @@ describe('Component showcase starter', () => {
   });
 
   for (const theme of shipped)
-    it(`places every component ${theme.name} ships exactly once outside Home`, () => {
+    it(`places every component ${theme.name} ships exactly once outside Home and the sample news articles`, () => {
       const s = createStarterState('showcase', 'Showcase', false, theme.id);
       const home = s.site.homePageId;
       const outside = [
@@ -108,6 +108,7 @@ describe('Component showcase starter', () => {
       expect(news).toHaveLength(2);
       for (const page of news) {
         expect(componentIds(s, placed(page)), page.route).toEqual(['content.article', 'content.text']);
+        expect(placed(page)[1].props, page.route).toMatchObject({ eyebrow: '', heading: '' });
         const out = String(files.get(`src/routes${page.route}+page.svelte`));
         // The Article header is given the page's own details, and the text section the article's words.
         for (const part of [`"title":"${page.title}"`, `"date":"${page.article!.date}"`, page.article!.excerpt!]) expect(out.replaceAll('\\"', '"'), page.route).toContain(part);
@@ -130,6 +131,25 @@ describe('Component showcase starter', () => {
       const out = String(files.get(`src/routes${page.route}+page.svelte`));
       expect(out, page.route).toContain(`datetime=`);
       expect(out, page.route).toContain(page.article!.date);
+      const paragraphs = Object.values(page.nodes).flatMap((n) => (n.kind === 'text' && n.tag === 'p' && !n.datetime ? [String(n.text)] : []));
+      expect(paragraphs, page.route).toHaveLength(2);
+      for (const words of paragraphs) expect(out, page.route).toContain(words);
+    }
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('writes the articles’ words in plain text for a theme whose Text section requires a heading', () => {
+    const author = testPack('headed', { name: 'Headed', license: 'MIT' });
+    const defs = FOUNDATION.components.map((c) => {
+      const d = author.adopt(c);
+      if (d.componentId === 'content.text') d.properties.heading = { ...d.properties.heading, required: true };
+      return d;
+    });
+    registerBeside(author.define(defs));
+    const s = createStarterState('showcase', 'Headed', false, 'headed');
+    for (const page of Object.values(s.pages).filter((p) => p.article && !p.article.hidden)) {
+      expect(componentIds(s, placed(page)), page.route).toEqual(['content.article']);
+      expect(page.rootIds, page.route).toHaveLength(2);
     }
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
   });
