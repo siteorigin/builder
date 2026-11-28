@@ -356,15 +356,17 @@ describe('theme token properties', () => {
       const options = typeOptions('string', inList, groups);
       expect(options).toContainEqual(['token:color', 'Theme color']);
       expect(options).toContainEqual(['token:space', 'Spacing']);
-      expect(options.map(([t]) => t)).not.toContain('token:shadow');
+      expect(options.map(([t]) => t).filter((t) => t.startsWith('token:'))).toEqual(['token:color', 'token:space']);
     }
+    expect(typeOptions('string', false, new Set(['radius', 'font'] as const)).slice(-2).map(([t]) => t)).toEqual(['token:font', 'token:radius']);
     // A group with no tokens left is still named on the row that takes it.
     expect(typeOptions('token:shadow', false, groups)).toContainEqual(['token:shadow', 'Shadow']);
   });
 
   it('retypes to a token of the group, starting on its first, which the engine accepts as it is', () => {
     const s = createStarterState('business', 'Test Studio', false);
-    const row = retype(rowsFromProperties({ p: stored.heading })[0], 'token:color', [{ id: 'color.brand', group: 'color' }]);
+    // The group's first token: not the first of all, and not the group's last.
+    const row = retype(rowsFromProperties({ p: stored.heading })[0], 'token:color', [tokens[2], tokens[0], tokens[1]]);
     expect(row.schema).toEqual({ type: 'token', label: 'Heading', tokenGroup: 'color', default: { token: 'color.brand' } });
     expect(normalizeProperties(propertiesFromRows([row]), s).p).toEqual(row.schema);
     expect(retype(row, 'string').schema).toEqual({ type: 'string', label: 'Heading' });
@@ -381,6 +383,8 @@ describe('theme token properties', () => {
     const row = rowsFromProperties({ cards: list })[0];
     const saved = (r: SchemaRow) => propertiesFromRows([r]).cards as { default: unknown };
     expect(saved(row).default).toEqual(list.default);
-    expect(saved(setItemField(row, 0, retype(row.fields![0], 'token:space', tokens))).default).toEqual([{ id: 'i_one' }]);
+    const regrouped = setItemField(row, 0, retype(row.fields![0], 'token:space', tokens));
+    expect(regrouped.fields![0].schema).toMatchObject({ type: 'token', tokenGroup: 'space' });
+    expect(saved(regrouped).default).toEqual([{ id: 'i_one' }]);
   });
 });

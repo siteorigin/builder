@@ -215,7 +215,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
   const lossless: Record<string, string[]> = { string: ['richtext', 'enum', 'number'], richtext: ['string'], enum: ['string'], number: ['string'] };
   // A token property that takes another group is as much a change of type: no value of the old group fits it.
   const retyped = prev && (prev.type !== schema.type || (prev.type === 'token' && schema.type === 'token' && prev.tokenGroup !== schema.tokenGroup));
-  const regrouped = regroupedFields(prev, schema);
+  const carried = movedTokenFields(prev, schema);
   // List items carry IDs, and each placement needs its own, as a new placement gets them. A property that starts
   // holding items now gives every placement without a value its own copy of the default items, so no two share an
   // item's ID and the items the Inspector shows are the ones its edits find. A computed list stores nothing.
@@ -237,7 +237,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       if (startsList) node.props[name] = ownItems(owner, node);
       continue;
     }
-    const v = regrouped(node.props[name]);
+    const v = carried(node.props[name]);
     if (isBinding(v)) {
       // Bound straight through from an enclosing component: both ends must keep the same type.
       const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
@@ -277,26 +277,30 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
 const typeName = (schema: PropSchema | ScalarPropSchema) => (schema.type === 'token' ? `${schema.tokenGroup} token` : schema.type);
 
 /**
- * A placement's list items or object, moving each token field that takes another group: a value still at what the old
- * field started with takes the new default. A chosen token is left for the new schema to refuse.
+ * Carries a placement's list items or object through a change of a field to or from a token, or to another token group:
+ * no value of the old field fits the new one, so a value still at what it started with (the object's own default for
+ * the field, else the field's) takes the new start. Anything else is left for the new schema to refuse: a new item's
+ * ID does not say which starting item it came from.
  */
-function regroupedFields(prev: PropSchema | undefined, schema: PropSchema): (v: unknown) => unknown {
+function movedTokenFields(prev: PropSchema | undefined, schema: PropSchema): (v: unknown) => unknown {
   const kept = (v: unknown) => v;
   if ((prev?.type !== 'list' && prev?.type !== 'object') || prev.type !== schema.type) return kept;
-  const moves = Object.entries((schema as ListProp | ObjectProp).fields).flatMap(([field, now]) => {
+  const next = schema as ListProp | ObjectProp;
+  const moves = Object.entries(next.fields).flatMap(([field, now]) => {
     const was = own(prev.fields, field);
-    if (was?.type !== 'token' || now.type !== 'token' || was.tokenGroup === now.tokenGroup) return [];
-    // An object can start a field at a default of its own.
-    const objectDefault = prev.type === 'object' ? own(prev.default as Record<string, unknown>, field) : undefined;
-    return [{ field, from: JSON.stringify(objectDefault ?? was.default), to: now.default }];
+    if (!was || (was.type !== 'token' && now.type !== 'token')) return [];
+    const same = was.type === 'token' && now.type === 'token' ? was.tokenGroup === now.tokenGroup : was.type === now.type;
+    return same ? [] : [{ field, was, now }];
   });
   if (!moves.length) return kept;
   const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v) && !isBinding(v);
+  // An object can start a field at a default of its own.
+  const start = (of: PropSchema, field: string, otherwise: unknown) => (of.type === 'object' && record(of.default) && Object.hasOwn(of.default, field) ? of.default[field] : otherwise);
   const move = (holder: unknown) => {
     if (!record(holder)) return holder;
-    const next = { ...holder };
-    for (const m of moves) if (JSON.stringify(next[m.field]) === m.from) next[m.field] = clone(m.to);
-    return next;
+    const out = { ...holder };
+    for (const m of moves) if (Object.hasOwn(out, m.field) && JSON.stringify(out[m.field]) === JSON.stringify(start(prev, m.field, m.was.default))) out[m.field] = clone(start(schema, m.field, m.now.default));
+    return out;
   };
   return (v) => (Array.isArray(v) ? v.map(move) : move(v));
 }

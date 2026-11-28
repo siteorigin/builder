@@ -77,9 +77,11 @@ describe.skipIf(!browserInstalled)('theme token properties in the Properties tab
     expect(await tint.locator('option:checked').textContent()).toBe('Theme color');
     await page.getByRole('button', { name: 'tint settings: Default Brand' }).click();
     const chosen = page.getByRole('combobox', { name: 'tint default' });
+    await chosen.waitFor();
     expect(await chosen.locator('option').allTextContents()).toEqual(['Brand', 'Accent']);
     await chosen.selectOption({ label: 'Accent' });
     await page.getByRole('button', { name: 'tint settings: Default Accent' }).waitFor();
+    expect(await chosen.inputValue()).toBe('color.accent');
     expect((await properties()).tint).toEqual({ type: 'token', label: 'Tint', tokenGroup: 'color', default: { token: 'color.accent' } });
 
     const heading = page.getByRole('combobox', { name: 'heading type' });

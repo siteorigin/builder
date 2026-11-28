@@ -1441,6 +1441,9 @@ describe('token properties (issue #96)', () => {
     const inst = () => home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
     const toColor = { type: 'component.setPropSchema' as const, definitionId: def.id, prop: 'spacing', schema: { type: 'token', label: 'Tint', tokenGroup: 'color', default: 'color.accent' } };
     expect(applyOperations(s, [toColor]).state.pages[s.site.homePageId].nodes[inst().id]).toMatchObject({ props: { spacing: { token: 'color.accent' } } });
+    // Another default in the same group is not a change of type: the placement keeps what it holds.
+    const sameGroup = { type: 'component.setPropSchema' as const, definitionId: def.id, prop: 'spacing', schema: { type: 'token', label: 'Spacing', tokenGroup: 'space', default: 'space.lg' } };
+    expect(applyOperations(s, [sameGroup]).state.pages[s.site.homePageId].nodes[inst().id]).toMatchObject({ props: { spacing: { token: space } } });
     // A token the placement chose is content a color property cannot keep.
     expect(space).not.toBe('space.lg');
     s = applyOperations(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: inst().id, prop: 'spacing', value: 'space.lg' }]).state;
@@ -1463,6 +1466,32 @@ describe('token properties (issue #96)', () => {
     expect(props.frame).toEqual({ note: 'Kept', edge: (after.components[def.id].properties.frame as any).fields.edge.default });
     const chosen = applyOperations(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: inst.id, prop: 'cards', value: [{ title: 'One', accent: color }] }]).state;
     expect(() => applyOperations(chosen, [regroup[0]])).toThrow(/is a color token; choose a space token/);
+    const edged = applyOperations(s, [{ type: 'instance.setProp', owner: owner(s), nodeId: inst.id, prop: 'frame', value: { edge: color } }]).state;
+    expect(() => applyOperations(edged, [regroup[1]])).toThrow(/is a color token; choose a radius token/);
+  });
+
+  it('moves an object field from the object’s own default to the new one', () => {
+    const { s: base, def } = tokenDef(fresh());
+    const { frame } = base.components[def.id].properties as Record<string, any>;
+    // The object's own default for the field is another token than the field starts with, before and after.
+    const seeded = applyOperations(base, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'frame', schema: { ...frame, default: { note: '', edge: 'color.accent' } } }]).state;
+    const s = applyOperations(seeded, [{ type: 'node.insert', owner: owner(seeded), parentId: null, definitionId: def.id }]).state;
+    const id = home(s).rootIds.at(-1)!;
+    const edge = { type: 'token', label: 'Edge', tokenGroup: 'space', default: 'space.md' };
+    const after = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'frame', schema: { ...frame, fields: { ...frame.fields, edge }, default: { note: '', edge: 'space.lg' } } }]).state;
+    expect((after.pages[after.site.homePageId].nodes[id] as InstanceNode).props.frame).toEqual({ note: '', edge: { token: 'space.lg' } });
+  });
+
+  it('turns an untouched text field of placed items into a token, and back', () => {
+    const { s: base, def } = tokenDef(fresh());
+    const s = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: null, definitionId: def.id, props: { cards: [{ title: 'One' }] } }]).state;
+    const id = home(s).rootIds.at(-1)!;
+    const { cards } = s.components[def.id].properties as Record<string, any>;
+    const set = (from: ProjectState, accent: Record<string, unknown>) => applyOperations(from, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'cards', schema: { ...cards, fields: { ...cards.fields, accent } } }]).state;
+    const accentOf = (from: ProjectState) => ((from.pages[from.site.homePageId].nodes[id] as InstanceNode).props.cards as Array<{ accent: unknown }>)[0].accent;
+    const text = set(s, { type: 'string', label: 'Accent', default: '' });
+    expect(accentOf(text)).toBe('');
+    expect(accentOf(set(text, { type: 'token', label: 'Accent', tokenGroup: 'color', default: 'color.accent' }))).toEqual({ token: 'color.accent' });
   });
 
   it('declares a token property through the schema operation, starting on a token of its group', () => {
