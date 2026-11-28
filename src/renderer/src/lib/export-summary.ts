@@ -140,12 +140,13 @@ export interface HealthNotes {
 /**
  * Count what Project health lists for the Export dialog's line, each once: a diagnostic that is also a search finding
  * is counted with the search findings, a form the dialog already names (`shown`) is not counted again, and conflicts
- * (which stop the export, and say so) are left out.
+ * and links to drafts (which stop the export, and the dialog lists) are left out.
  */
 export function healthNotes({ seo, diagnostics, shown }: { seo: readonly SeoFinding[]; diagnostics: readonly Diagnostic[]; shown: readonly Diagnostic[] }): HealthNotes {
   const seoKeys = new Set(seo.map(diagnosticKey));
   const shownKeys = new Set(shown.map(formKey));
-  const rest = diagnostics.filter((d) => d.code !== 'CONFLICT' && !seoKeys.has(diagnosticKey(d)) && !shownKeys.has(formKey(d)));
+  // Links to drafts the dialog lists itself, above the export they stop.
+  const rest = diagnostics.filter((d) => d.code !== 'CONFLICT' && d.code !== 'LINK_TO_DRAFT' && !seoKeys.has(diagnosticKey(d)) && !shownKeys.has(formKey(d)));
   const due = seo.filter((f) => f.severity !== 'info').length;
   const restDue = rest.filter((d) => d.severity !== 'info');
   return { seo: due, other: seo.length - due + rest.length, otherDue: restDue.length, atSeo: !restDue.some((d) => d.severity === 'error') && (due > 0 || rest.length === 0) };

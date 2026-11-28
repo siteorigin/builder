@@ -12,6 +12,7 @@ import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { TOOLBAR_FULL_MIN } from '../../src/renderer/src/lib/layout';
+import { MENU_BUTTON_ROOM } from '@shared/window-chrome';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://toolbar-live-fit.test';
@@ -212,11 +213,14 @@ describe.skipIf(!browserInstalled)('the toolbar in a live session fits its windo
     await leave.click({ trial: true });
     expect((await fit(1640, guest('collaborator'))).tier).toBe('full');
     expect(await page!.getByRole('button', { name: 'Leave session' }).innerText()).toBe('Leave session');
-    // Windows and Linux have no traffic lights, and the full toolbar's start column keeps a 30px narrower floor there.
+    // Linux has no traffic lights: the full toolbar's start column keeps a 30px narrower floor there, and the menu
+    // button takes its room before it (#1355).
     if (macFonts) {
-      const r = await fit(TOOLBAR_FULL_MIN.guest - 30, guest('collaborator'), 'dual', 'win32');
+      const first = TOOLBAR_FULL_MIN.guest - 30 + MENU_BUTTON_ROOM;
+      const r = await fit(first, guest('collaborator'), 'dual', 'linux');
       expect(r.tier).toBe('full');
-      expect(fits(r)).toEqual(fitted(TOOLBAR_FULL_MIN.guest - 30));
+      expect(fits(r)).toEqual(fitted(first));
+      expect((await fit(first - 1, guest('collaborator'), 'dual', 'linux')).tier).toBe('compact');
     }
   });
 

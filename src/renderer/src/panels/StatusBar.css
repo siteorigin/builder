@@ -218,6 +218,12 @@
   .seo-shared-name { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
   .seo-shared-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
   .seo-readiness .health-row .health-hint { color: var(--text-2); }
+  /* Performance: what the last export measured, its actions under its summary, each page's files below its row. */
+  .perf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0 0 8px; }
+  .performance-readiness .health-hint { display: block; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .performance-readiness .health-details-body { max-width: 80ch; line-height: 1.45; }
+  .performance-readiness .health-terms dd { overflow-wrap: anywhere; }
+  .perf-findings { align-self: stretch; }
   .health-copy { display: flex; align-items: center; gap: 8px; }
   .health-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 1px; }
   .health-inline-actions .btn svg:not(.disclosure-mark) { width: 13px; height: 13px; }

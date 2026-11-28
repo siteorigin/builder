@@ -37,6 +37,15 @@ const bridge = (platform: string) => `
     apply: () => any('')
   });
   window.builder = any('');
+  // Windows's window controls overlay as Electron reports it (#1355): three 46px caption buttons at the top bar's right,
+  // fewer CSS pixels as the editor zooms in (a width under 1100px here is the 1100px window zoomed in).
+  window.captions = () => 138 * Math.min(1, innerWidth / 1100);
+  if (${JSON.stringify(platform)} === 'win32') {
+    const overlay = new EventTarget();
+    overlay.visible = true;
+    overlay.getTitlebarAreaRect = () => ({ x: 0, y: 0, width: innerWidth - window.captions(), height: 52 });
+    Object.defineProperty(navigator, 'windowControlsOverlay', { value: overlay, configurable: true });
+  }
 `;
 
 async function bundle(): Promise<{ script: string; styles: string }> {
@@ -133,9 +142,10 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
     return page;
   }
 
-  // 1100, 1280 and 1440px windows from 100% to 207%, and both sides of where the overflow toolbar starts to wrap.
+  // 1100, 1280 and 1440px windows from 100% to 207%, and both sides of where the overflow toolbar starts to wrap; and a
+  // 1600px window, which has Windows's full toolbar beside its caption buttons.
   // Every 4px from the 1100px window down to 207% of it, so each place a group wraps is crossed.
-  const widths = [1440, 1280, ...Array.from({ length: Math.floor((1100 - 531) / 4) + 1 }, (_, i) => 1100 - 4 * i), 531];
+  const widths = [1600, 1440, 1280, ...Array.from({ length: Math.floor((1100 - 531) / 4) + 1 }, (_, i) => 1100 - 4 * i), 531];
   const snapshot = (conflicts: unknown[], shown = state) => ({ state: shown, revision: 1, workspaceKey: 'w1', conflicts, history: { canUndo: false, canRedo: false } });
   // The quiet state, the longest one ("AI is waiting for you", which lets the project name give way) and a conflict.
   const now = Date.now();
@@ -174,6 +184,9 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
         if (!m.controls.some((c) => c.name.includes('export-btn'))) problems.push(`${at}: Export is not drawn`);
         const lowest = Math.max(m.toolbar.bottom, ...m.controls.map((c) => c.bottom));
         if (m.workspace.top < lowest - 0.5) problems.push(`${at}: the editor's next row starts under the toolbar's controls`);
+        // Off macOS the menu button holds the bar's start, and on Windows the caption buttons its end (#1355).
+        const chrome: Rect[] = platform === 'win32' ? [{ name: 'the menu button', left: 10, right: 38, top: 12, bottom: 40 }, { name: 'the caption buttons', left: width - 138 * Math.min(1, width / 1100), right: width, top: 0, bottom: 52 * Math.min(1, width / 1100) }] : [];
+        for (const a of m.controls) for (const c of chrome) if (overlaps(a, c)) problems.push(`${at}: ${a.name} is under ${c.name}`);
         for (let i = 0; i < m.controls.length; i++) {
           const a = m.controls[i];
           if (a.left < -0.5 || a.right > width + 0.5) problems.push(`${at}: ${a.name} runs out of the window (${Math.round(a.left)} to ${Math.round(a.right)})`);
