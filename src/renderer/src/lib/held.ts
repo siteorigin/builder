@@ -35,7 +35,7 @@ const gone = (what: string): FieldRead => ({ found: false, what });
 
 /** Entry fields `entry.update` can set, and where each is stored: most under their own name, search settings in `seo`. */
 const ENTRY_FIELDS: Record<string, string[]> = {
-  ...Object.fromEntries(['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'].map((k) => [k, [k]])),
+  ...Object.fromEntries(['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'featuredImageAlt', 'terms', 'values', 'body'].map((k) => [k, [k]])),
   seoTitle: ['seo', 'title'],
   description: ['seo', 'description'],
   socialImage: ['seo', 'socialImage'],

@@ -13,6 +13,7 @@ import type { AssetRecord, Collection, EntryDoc, EntrySeo, PageDoc, PageSeo, Pro
 import { storedCanonical, type ArchiveSeo, type EffectiveSeo, type SeoImageSource, type SeoSubject, type SeoVisibility } from '@shared/seo';
 import { pageSharing } from '@shared/sharing';
 import { libraryAlt } from '@shared/asset-alt';
+import { featuredPicture } from '@shared/entry-fields';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { pageLanguage, siteLanguage } from '@shared/languages';
@@ -152,7 +153,9 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
     image,
     imageSource,
     imageUrl: base && image ? fileUrl(base, image) : null,
-    imageAlt: libraryAlt(image),
+    // The featured image is shared with the words the entry's page shows it with; an image chosen for sharing, even the
+    // same file, with the library's.
+    imageAlt: imageSource === 'featured' ? featuredPicture(state, entry).alt : libraryAlt(image),
     published: day(entry.publishedAt),
     modified: day(entry.updatedAt),
     author: text(entry.author).trim(),

@@ -578,6 +578,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       // review list yet.
       if (!op.uses) {
         for (const e of collectionEntries(state)) {
+          // An entry's description of its featured image is always its own words, never a copy of a suggestion, so it
+          // is kept for the author to check, as a picture field's own is; without one, the new image's suggestion shows.
           if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
           if (entrySharingImage(e) === op.assetId) e.seo!.socialImage = op.withAssetId;
         }

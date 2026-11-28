@@ -6,6 +6,7 @@
  */
 import type { LinkValue, RichText, SourceMapping } from '@shared/types';
 import { readPath } from '@shared/source-paths';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { contentfulRichText, htmlRichText, markdownRichText, plainRichText, type LinkRead } from './richtext';
 import { decodeEntities } from '../posts-import/html';
 import type { FieldKinds, NormalizedRecord, SourceImageRef } from './protocol';
@@ -16,7 +17,7 @@ export class MappingError extends Error {}
 const DAY = /^(\d{4}-\d{2}-\d{2})/;
 
 /** Text as one line, cut to `max` characters at a word where it can be, and never inside a character. */
-function oneLine(v: string, max: number): string {
+export function oneLine(v: string, max: number): string {
   const t = v.replace(/\s+/g, ' ').trim();
   if (t.length <= max) return t;
   let cut = '';
@@ -69,7 +70,7 @@ function imageAlt(v: unknown): string | undefined {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
   for (const path of ['alt', 'alternativeText', 'alt_text', 'fields.description', 'fields.title', 'description']) {
     const a = readPath(v, path);
-    if (typeof a === 'string' && a.trim()) return oneLine(a, 300);
+    if (typeof a === 'string' && a.trim()) return oneLine(a, TEXT_LIMITS.imageAlt);
   }
   return undefined;
 }
@@ -167,7 +168,7 @@ export function mapRecord(item: unknown, mapping: SourceMapping, fields: FieldKi
   const image = at('featuredImageUrl');
   if (image !== undefined && image !== null && image !== '') {
     const alt = text(at('featuredImageAlt'));
-    const ref = imageRef(image, alt?.trim() ? oneLine(alt, 300) : undefined);
+    const ref = imageRef(image, alt?.trim() ? oneLine(alt, TEXT_LIMITS.imageAlt) : undefined);
     // An address there that is not a picture's on the web is said, never cleared from the entry.
     if (!ref) throw new MappingError(`${where}’s featured image at ${mapping.featuredImageUrl!.slice(0, 60)} is not a picture’s web address`);
     r.featuredImage = ref;

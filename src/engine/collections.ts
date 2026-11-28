@@ -716,7 +716,7 @@ export function entryReferenceUses(state: ProjectState, entryIds: string | Reado
 }
 
 type EntryFields = Partial<
-  Pick<Op<'entry.update'>, 'title' | 'slug' | 'publishedAt' | 'updatedAt' | 'draft' | 'author' | 'excerpt' | 'featuredImage' | 'terms' | 'values' | 'body' | 'seoTitle' | 'description' | 'socialImage' | 'canonical' | 'noindex' | 'searchHidden'>
+  Pick<Op<'entry.update'>, 'title' | 'slug' | 'publishedAt' | 'updatedAt' | 'draft' | 'author' | 'excerpt' | 'featuredImage' | 'featuredImageAlt' | 'terms' | 'values' | 'body' | 'seoTitle' | 'description' | 'socialImage' | 'canonical' | 'noindex' | 'searchHidden'>
 >;
 
 function date(v: string, what: string): string {
@@ -744,13 +744,24 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
     if (t) entry[k] = t;
     else delete entry[k];
   }
-  if (op.featuredImage === null || op.featuredImage === '') delete entry.featuredImage;
-  else if (op.featuredImage !== undefined) {
+  // A featured image's description is of that one picture: it goes with it, and another picture given without one
+  // starts with none of its own, showing the library's suggestion for it.
+  const describe = op.featuredImageAlt === undefined ? undefined : (op.featuredImageAlt ?? '').replace(/\s+/g, ' ').trim();
+  if (op.featuredImage === null || op.featuredImage === '') {
+    if (describe) fail(`${label}: a featured image description needs a featured image to describe.`);
+    delete entry.featuredImage;
+    delete entry.featuredImageAlt;
+  } else if (op.featuredImage !== undefined) {
     const a = own(state.assets.assets, op.featuredImage);
     if (!a) fail(`${label}: the featured image "${op.featuredImage.slice(0, 60)}" is not in the library.`);
     if (a!.kind !== 'image') fail(`${label}: “${a!.name}” is a ${a!.kind}, not a picture. Choose an image for the featured image.`);
+    if (op.featuredImage !== entry.featuredImage) delete entry.featuredImageAlt;
     entry.featuredImage = op.featuredImage;
   }
+  if (describe) {
+    if (!entry.featuredImage) fail(`${label} has no featured image to describe. Choose one first.`);
+    entry.featuredImageAlt = describe;
+  } else if (describe === '') delete entry.featuredImageAlt;
   if (op.terms !== undefined) {
     const terms = { ...entry.terms };
     for (const [tax, ids] of Object.entries(op.terms)) {

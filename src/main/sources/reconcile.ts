@@ -10,7 +10,9 @@ import type { Collection, EntrySource, ProjectState, SourceDoc } from '@shared/t
 import type { EditOperation } from '@shared/ops';
 import { findEntry } from '@shared/collections';
 import { sourceRemoval } from '@shared/sources';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { recordHash } from './hash';
+import { oneLine } from './mapping';
 import { imageKey, isImageRef, recordImages, TEXT_IMAGE, textImages, type NormalizedRecord, type SourceImage } from './protocol';
 
 export class SyncPlanError extends Error {}
@@ -167,6 +169,10 @@ export function syncOperations(plan: SyncPlan, state: ProjectState, assetIds: Re
       author: r.author ?? null,
       excerpt: r.excerpt ?? null,
       featuredImage: r.featuredImage ? asset(r.featuredImage.$image) : null,
+      // The record's own words for its picture, from the record and never the picture's (two records may show one file
+      // and say different things of it); none clears yesterday's, the file unchanged. One line within the limit,
+      // whatever a converter gave.
+      featuredImageAlt: r.featuredImage?.$image.alt?.trim() ? oneLine(r.featuredImage.$image.alt, TEXT_LIMITS.imageAlt) : null,
       terms,
       values,
       body: text(r.body ?? [])
