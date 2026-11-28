@@ -103,7 +103,7 @@ describe('agent instructions match the tool definitions (#815)', () => {
     const base = (await executeTool('read_project', '{}', host, 'c0')).content as Record<string, unknown>;
     expect(base.pages).toBeDefined();
     expect(base.shell).toBeDefined();
-    const field = { tokens: 'tokens', catalogue: 'catalogue', components: 'installedComponents' } as const;
+    const field = { tokens: 'tokens', catalogue: 'catalogue', components: 'installedComponents', siteCode: 'siteCode' } as const;
     for (const s of PROJECT_SECTIONS) {
       expect(base[field[s]], s).toBeUndefined();
       const read = await executeTool('read_project', JSON.stringify({ sections: [s] }), host, `c_${s}`);

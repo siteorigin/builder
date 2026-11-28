@@ -16,6 +16,7 @@ import { entryQuery, feedRows } from '@shared/entry-feed';
 import { SO_ID_ATTR, anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
+import { inGenerationRun } from './structured-data';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
@@ -3076,6 +3077,11 @@ export interface SiteLink {
  * choosing a tab or opening a disclosure counts as one shown at first. A link the walk reaches twice is listed once.
  */
 export function siteLinks(state: ProjectState): SiteLink[] {
+  // As one generator run: every post's terms resolve against the same archive pages, worked out once.
+  return inGenerationRun(() => linksOfSite(state));
+}
+
+function linksOfSite(state: ProjectState): SiteLink[] {
   // Read as the website has it: conditions on a draft, and links to one, are judged as the export judges them.
   const live = publishedState(state);
   const published = live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id) && typeof live.pages[id]?.route === 'string').map((id) => live.pages[id]);
@@ -3089,8 +3095,8 @@ export function siteLinks(state: ProjectState): SiteLink[] {
     if (link.type === 'page') return published.some((p) => p.id === link.target) ? link.target : undefined;
     return link.type === 'url' ? targetAtAddress(live, link.target, addresses)?.pageId : undefined;
   };
-  // A link that goes nowhere renders as no link at all.
-  const leads = (link: LinkValue) => link.type !== 'none' && typeof link.target === 'string' && !!link.target.trim();
+  // A link that goes nowhere renders as no link at all, as does an entry's term without an archive to go to.
+  const leads = (link: LinkValue) => link.type !== 'none' && typeof link.target === 'string' && !!link.target.trim() && (!link.term || !!resolveLink(link, { state: live }));
   const sources: Array<{ owner: SiteLink['owner']; tree: NodeTree; entryId?: string }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     ...SHELL_PARTS.filter((part) => entries.length > 0 || archived || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part] })),

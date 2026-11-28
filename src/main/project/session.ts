@@ -3725,13 +3725,14 @@ export class ProjectSession extends EventEmitter {
         if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
       }
       // The assistant reaches a collection only through its collection and entry tools, and a layout only from a request
-      // sent while it is open: each grants exactly that batch (see shared/collection-grant). Any other collection change
+      // sent while it is open or through a whole-site run's layout tool: each grants exactly that batch (see
+      // shared/collection-grant). Any other collection change
       // is the editor's.
       const ai = opts.source === 'ai' || !!opts.runId;
       const granted = ai && opts.collectionWrite ? collectionGrantRefusal(ops, opts.collectionWrite, this.state.collections) : null;
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection, upsert_collection_entry and edit_collection_layout write and a layout edited from a request sent while it is open.', recoverable: true } };
       // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
       // the request covers are listed instead. So does new code's whole property schema, which renames or drops the values
       // a layout's placement holds: the code alone may change. Each is checked against the project as the batch leaves it

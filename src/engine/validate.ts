@@ -38,6 +38,8 @@ import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { elementContrastDiagnostics } from './element-contrast';
 import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
+import { codeProblemText, globalCssProblem, headCodeProblem, type CodeProblem } from '@shared/site-code';
+import { fathomSiteId } from '@shared/integrations';
 import { formConnectionProblem, formNoun, isFormDefinition, readsFormServices, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
@@ -283,6 +285,29 @@ function siteDiagnostics(state: ProjectState): Diagnostic[] {
     if ((p.route === '/') !== (p.id === state.site.homePageId))
       out.push({ severity: 'error', code: 'HOME_ROUTE', message: p.route === '/' ? `${p.title} uses "/" but is not the Home page.` : `The Home page (${p.title}) must use "/".`, owner: { kind: 'page', id: p.id } });
   }
+  out.push(...siteCodeDiagnostics(state.site));
+  return out;
+}
+
+/**
+ * The site's own code and integrations as a hand edit can leave them: what the website cannot use, it leaves out
+ * (shared/site-code.ts, shared/integrations.ts), and says so here until the author corrects or removes it.
+ */
+function siteCodeDiagnostics(site: ProjectState['site']): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const code = (key: 'headCode' | 'globalCss', what: string, problem: (v: string) => CodeProblem | null) => {
+    const v: unknown = site[key];
+    if (v === undefined) return;
+    const found = typeof v === 'string' ? problem(v) : { message: 'It is not text.', line: 1, column: 1 };
+    if (found) out.push({ severity: 'warning', code: 'SITE_CODE_INVALID', message: `${codeProblemText(what, found)} The website is built without it until it is corrected in Site settings.`, site: key });
+  };
+  code('headCode', 'Head code', headCodeProblem);
+  code('globalCss', 'Custom CSS', globalCssProblem);
+  const integrations: unknown = site.integrations;
+  if (integrations !== undefined && (!integrations || typeof integrations !== 'object' || Array.isArray(integrations)))
+    out.push({ severity: 'warning', code: 'INTEGRATION_INVALID', message: 'The site’s integrations are not a set of settings, so the website is built without them.', site: 'integrations' });
+  else if (integrations && Object.hasOwn(integrations, 'fathom') && !fathomSiteId(site))
+    out.push({ severity: 'warning', code: 'INTEGRATION_INVALID', message: 'Fathom Analytics has no site ID it can use, so the website is built without it. Enter its site ID in Site settings.', site: 'integrations.fathom' });
   return out;
 }
 

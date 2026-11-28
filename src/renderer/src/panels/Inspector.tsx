@@ -1011,7 +1011,7 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
   if (owner.kind === 'archive')
     return (
       <Scope tone="shared" icon={<Users />} aside={aside}>
-        <strong>{state.collections[owner.id]?.settings.name ?? 'Collection'} index layout.</strong> Changes show on its index and category pages.
+        <strong>{state.collections[owner.id]?.settings.name ?? 'Collection'} index layout.</strong> Changes show on its index and its category and tag pages.
       </Scope>
     );
   return (
@@ -3741,7 +3741,7 @@ function LayoutOverview({ state, collectionId, entryId, archive }: { state: Proj
         </Header>
         <div className="insp-empty">
           <MousePointerClick aria-hidden="true" />
-          <p>The {c.settings.name} index and its category pages are shown with this layout, below their heading and above their page links. Its list repeats once for each entry a page lists. Click part of it on the page, or in Layers, to change it.</p>
+          <p>The {c.settings.name} index and its category and tag pages are shown with this layout, below their heading and above their page links. Its list repeats once for each entry a page lists. Click part of it on the page, or in Layers, to change it.</p>
         </div>
       </>
     );

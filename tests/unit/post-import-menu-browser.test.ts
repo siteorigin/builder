@@ -76,6 +76,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   redirects: 0,
   redirectsPending: 0,
   searchSettings: 0,
+  archiveRedirects: { kept: 0, pending: 0, lost: [] },
   skipped: [],
   oldSiteLinks: [],
   problems: [],
@@ -217,6 +218,37 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
   it('says nothing of drafts when every old address works now (#1501)', async () => {
     await mount(site, preview(true, { redirects: 1 }));
     await page.getByText(/^1 keeps working$/).waitFor();
+  });
+
+  it('issue 1512: counts the old category and tag addresses with the posts’ own', async () => {
+    await mount(
+      site,
+      preview(true, {
+        site: 'https://old.example',
+        redirects: 2,
+        redirectsPending: 1,
+        archiveRedirects: { kept: 3, pending: 1, lost: [] },
+        oldSiteLinks: [{ url: 'https://old.example/tag/legumes/', posts: 1, to: '/blog/tag/legumes/', pending: true }]
+      })
+    );
+    await page.getByText(/^3 keep working · 1 once its post is published · 1 once a post filed under its category or tag is published$/).waitFor();
+    expect(await page.getByTestId('post-import-old-links').locator('li').allTextContents()).toEqual(['https://old.example/tag/legumes/ · 1 post · sends visitors to /blog/tag/legumes/ once a post with that tag is published']);
+  });
+
+  it('issue 1512: names the old archive addresses that can’t be kept, a few at a time for each reason', async () => {
+    const off = 'the Posts collection has no category and tag pages';
+    const lost = [...['/category/soil/', '/tag/a/', '/tag/b/', '/tag/c/', '/tag/d/'].map((from) => ({ from, reason: off })), { from: '/tag/rye/', reason: 'it is the address of the page “Rye”' }];
+    await mount(site, preview(true, { kind: 'wordpress', redirects: 1, archiveRedirects: { kept: 0, pending: 0, lost } }));
+    await page.getByText(/^1 keeps working · 6 can’t/).waitFor();
+    expect(await page.getByTestId('post-import-archives-lost').locator('li').allTextContents()).toEqual([
+      `/category/soil/, /tag/a/, /tag/b/ and 2 more can’t keep working: ${off}.`,
+      '/tag/rye/ can’t keep working: it is the address of the page “Rye”.'
+    ]);
+  });
+
+  it('issue 1512: says when only old archive addresses are kept', async () => {
+    await mount(site, preview(true, { kind: 'wordpress', archiveRedirects: { kept: 2, pending: 0, lost: [] } }));
+    await page.getByText(/^2 keep working$/).waitFor();
   });
 
   it('says when no old address can be kept (#1501)', async () => {

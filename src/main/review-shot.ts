@@ -8,6 +8,7 @@
  * (main/review-capture) and a test's headless Chromium run exactly the same steps.
  */
 import type { ReviewCaptureReason } from '@shared/review-edition';
+import { integrationRequest } from '@shared/integrations';
 
 /** A DevTools Protocol session attached to one page. */
 export interface CdpPage {
@@ -196,8 +197,9 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
       case 'Network.loadingFailed': {
         const at = pending.get(id) ?? streams.get(id);
         if (!pending.delete(id) && !streams.delete(id)) return;
-        // A request the page called off itself (a responsive image it chose another size of) took nothing away.
-        if (p.canceled === true) break;
+        // A request the page called off itself (a responsive image it chose another size of) took nothing away, nor did
+        // an integration's the window left out itself (quietRequest in shared/integrations.ts).
+        if (p.canceled === true || (String(p.errorText ?? '').startsWith('net::ERR_BLOCKED_BY_CLIENT') && integrationRequest(at ?? ''))) break;
         const what = `${shortUrl(at ?? '', origin)} (${String(p.errorText ?? 'failed')})`;
         if (p.type === 'Document' && !document) documentFailed = what;
         else failed.push(what);
