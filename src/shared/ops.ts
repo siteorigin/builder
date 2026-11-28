@@ -10,6 +10,7 @@ import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
 import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
+import { MAX_BROWSE_KEYS } from './collection-browse';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -296,7 +297,19 @@ const COLLECTION_SETTINGS = {
     .describe('The layout of its archive pages, in place of the ready-made cards: a tree of sections and elements whose collection loop over { "$archive": true } shows the page\'s entries. "start" begins one (a list of linked titles and excerpts); null goes back to the ready-made cards.'),
   description: limited(TEXT_LIMITS.pageDescription)
     .optional()
-    .describe('What the collection\'s index tells search engines and link previews. "" removes it: the index then uses the site\'s description, else a sentence naming the collection.')
+    .describe('What the collection\'s index tells search engines and link previews. "" removes it: the index then uses the site\'s description, else a sentence naming the collection.'),
+  browse: z
+    .object({
+      search: z.boolean().optional(),
+      filters: z.array(z.string().max(80)).max(MAX_BROWSE_KEYS).optional(),
+      sort: z.array(z.string().max(80)).max(MAX_BROWSE_KEYS).optional()
+    })
+    .strict()
+    .nullable()
+    .optional()
+    .describe(
+      'Controls the first page of its index gives visitors, working in their browser over every published entry (ready-made cards only): search (its titles and excerpts), filters (terms.<grouping> or field.<name> of an enum, boolean or number field: pick terms or options, yes or no, or a number range) and sort (title, publishedAt, or field.<name> of a string, number or date field: both directions each). Replaces the whole setting; null removes it.'
+    )
 };
 
 /**

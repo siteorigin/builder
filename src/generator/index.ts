@@ -113,6 +113,7 @@ import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, 
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseIndexFile, browseJs, browsingCollections, generateBrowseIndex, usesBrowse } from './collection-browse';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -5401,6 +5402,13 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   if (usesSiteSearch(state)) {
     put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
     put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
+  }
+  // Search, filters and sorting on a collection's index, with each browsing collection's index of entries, while one
+  // browses (see generator/collection-browse.ts). Written ahead of the archive pages that import them.
+  if (usesBrowse(state)) {
+    put(`${RUNTIME_DIR}/${BROWSE_HELPER_FILE}`, () => browseJs());
+    put(`${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`, () => BROWSE_SVELTE);
+    for (const id of browsingCollections(state)) put(`${RUNTIME_DIR}/${browseIndexFile(id)}`, () => file(`browse:${id}`, (s) => generateBrowseIndex(s, id)));
   }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
   // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
