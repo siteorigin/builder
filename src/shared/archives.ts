@@ -138,10 +138,13 @@ export function archivePages(state: ProjectState): ArchivePage[] {
 /** The key a term's archive is known by in termArchiveRoutes: its collection, grouping and ID. */
 export const termArchiveKey = (collectionId: string, term: ArchiveTerm): string => `${collectionId}\n${term.taxonomy}\n${term.id}`;
 
-/** The address of the first page of every category's and tag's archive the website has, by termArchiveKey. */
-export function termArchiveRoutes(pages: readonly ArchivePage[]): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const p of pages) if (p.term && p.page === 1) out.set(termArchiveKey(p.collectionId, p.term), p.route);
+/**
+ * The address of the first page of every category's and tag's archive the website has, by termArchiveKey: a plain
+ * record, so a cached run sees the same addresses as the same value.
+ */
+export function termArchiveRoutes(pages: readonly ArchivePage[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of pages) if (p.term && p.page === 1) out[termArchiveKey(p.collectionId, p.term)] = p.route;
   return out;
 }
 

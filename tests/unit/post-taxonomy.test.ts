@@ -75,6 +75,9 @@ describe('adding a term', () => {
     // Never an object-prototype name.
     expect(result(s, { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Constructor' })).toMatchObject({ termId: 'constructor-2' });
     expect(termIdFor({}, 'Constructor')).toBe('constructor-2');
+    // A term's ID is a folder of its archive's address: never a name some systems keep for a device.
+    expect(termIdFor({}, 'AUX')).toBe('aux-2');
+    expect(termIdFor({}, 'Com1')).toBe('com1-2');
     // Or the ID asked for.
     expect(result(s, { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Kyoto', termId: 'kyoto-trip' })).toMatchObject({ termId: 'kyoto-trip' });
   });

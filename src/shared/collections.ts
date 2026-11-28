@@ -97,8 +97,9 @@ export function isEntryId(id: unknown): boolean {
   return typeof id === 'string' && ENTRY_ID_RE.test(id);
 }
 
+/** A term's ID is a folder of its archive's address (`tag/<ID>/`), so never one some systems can't make. */
 export function isTermId(id: unknown): boolean {
-  return typeof id === 'string' && TERM_ID_RE.test(id) && !PROTO_NAMES.has(id) && !(id in Object.prototype);
+  return typeof id === 'string' && TERM_ID_RE.test(id) && !DEVICE_NAMES.test(id) && !PROTO_NAMES.has(id) && !(id in Object.prototype);
 }
 
 /**

@@ -210,7 +210,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
           <SwitchRow checked={draft.detail} onChange={(detail) => set({ detail, archive: detail && draft.archive })} label="A page for each entry" hint="Off, the entries are records other pages show, with no address of their own." />
           {draft.detail && (
             <>
-              <SwitchRow checked={draft.archive} onChange={(archive) => set({ archive })} label="A page listing them all" hint="At the address below, with a page for each category." />
+              <SwitchRow checked={draft.archive} onChange={(archive) => set({ archive })} label="A page listing them all" hint="At the address below, with a page for each category and tag." />
               <Field label="Address" controlId={`${uid}-route`} hint={`Each entry’s address starts with it, such as ${draft.route.replace(/\/?$/, '/')}an-entry/.`}>
                 <input id={`${uid}-route`} className="input" maxLength={200} spellCheck={false} value={draft.route} onChange={(e) => set({ route: e.target.value })} />
               </Field>

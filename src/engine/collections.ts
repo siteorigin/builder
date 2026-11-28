@@ -282,6 +282,14 @@ export function archivesAtStartOf(state: ProjectState): ArchivesAtStart {
 /** The rest of an archive page's address after its collection's own (`page/2/`, `category/news/`, `tag/nitrogen/`, or none for the index). */
 const ARCHIVE_REST = /^(?:page\/\d+\/|(?:category|tag)\/[a-z0-9-]+\/(?:page\/\d+\/)?)?$/;
 
+/** Whether `route` is where one of collection `c`'s archive pages is, or would be once it has entries to list there. */
+export function isArchiveAddressOf(c: Collection, route: string): boolean {
+  const prefix = c.settings.route;
+  if (typeof prefix !== 'string' || prefix === '/' || !hasArchivePages(c.settings)) return false;
+  const key = route.toLowerCase();
+  return key.startsWith(prefix.toLowerCase()) && ARCHIVE_REST.test(key.slice(prefix.length));
+}
+
 /**
  * Keeps the archive pages collection `collectionId` had at `from` (`before`) working at their old addresses now it
  * is at `prefix` (#1548): each old address of its index, of a later page or of a category's or tag's archive sends visitors on

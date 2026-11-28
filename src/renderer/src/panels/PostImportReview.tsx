@@ -185,6 +185,17 @@ function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks'
   );
 }
 
+/** The old archive addresses that can't keep working, by why: every one of a collection without archives has one reason. */
+function lostByReason(lost: PostImportPreview['archiveRedirects']['lost']): Array<{ reason: string; froms: string[] }> {
+  const out = new Map<string, string[]>();
+  for (const l of lost) out.set(l.reason, [...(out.get(l.reason) ?? []), l.from]);
+  return [...out].map(([reason, froms]) => ({ reason, froms }));
+}
+
+/** A few addresses by name, the rest counted ("/a/, /b/, /c/ and 4 more"). */
+const LOST_NAMED = 3;
+const listed = (froms: string[]) => (froms.length <= LOST_NAMED + 1 ? froms.join(', ') : `${froms.slice(0, LOST_NAMED).join(', ')} and ${(froms.length - LOST_NAMED).toLocaleString()} more`);
+
 /** "From export.xml (https://riverside.example)" names a file; a folder is named as one. */
 const sourceOf = (p: PostImportPreview) => `${p.kind === 'markdown' ? `The folder “${p.source}”` : p.source}${p.site ? ` (${p.site})` : ''}`;
 
@@ -483,10 +494,17 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             <>
               {(() => {
                 // The posts' old addresses and their categories' and tags' archives, counted together. Those kept for
-                // drafts, or for a term no published post is filed under yet, start working once they are published.
-                const pending = preview.redirectsPending + chosen.archiveRedirects.pending;
-                const now = preview.redirects + chosen.archiveRedirects.kept - pending;
-                const later = pending ? `${pending.toLocaleString()} once ${pending === 1 ? 'its post is' : 'their posts are'} published` : '';
+                // drafts start working once their posts are published; those of a term no published post is filed
+                // under yet, once one is.
+                const pending = preview.redirectsPending;
+                const filing = chosen.archiveRedirects.pending;
+                const now = preview.redirects + chosen.archiveRedirects.kept - pending - filing;
+                const later = [
+                  pending ? `${pending.toLocaleString()} once ${pending === 1 ? 'its post is' : 'their posts are'} published` : '',
+                  filing ? `${filing.toLocaleString()} once a post filed under ${filing === 1 ? 'its category or tag' : 'their categories or tags'} is published` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ');
                 return now ? `${plural(now, 'keeps', 'keep')} working${later ? ` · ${later}` : ''}` : later ? `${later.charAt(0).toUpperCase()}${later.slice(1)}` : 'None keep working';
               })()}
               {(preview.redirectsLost ?? 0) + chosen.archiveRedirects.lost.length > 0 && (
@@ -497,9 +515,9 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
               )}
               {chosen.archiveRedirects.lost.length > 0 && (
                 <ul className="import-summary-list" data-testid="post-import-archives-lost">
-                  {chosen.archiveRedirects.lost.map((l) => (
-                    <li key={l.from}>
-                      {l.from} can’t keep working: {l.reason}.
+                  {lostByReason(chosen.archiveRedirects.lost).map(({ reason, froms }) => (
+                    <li key={reason}>
+                      {listed(froms)} can’t keep working: {reason}.
                     </li>
                   ))}
                 </ul>

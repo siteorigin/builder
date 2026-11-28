@@ -519,7 +519,7 @@ describe('after the review', () => {
     s.collections.child.entries = {};
     const pages = archivePages(s);
     expect(pages.filter((p) => p.route === '/blog/category/news/').map((p) => p.collectionId)).toEqual(['child']);
-    expect(pages.some((p) => p.collectionId === 'posts' && p.term?.id === 'news')).toBe(false);
+    expect(pages.some((p) => p.collectionId === 'posts' && p.term?.taxonomy === 'categories' && p.term.id === 'news')).toBe(false);
   });
 
   it('refuses to number a duplicate inside an archive folder, rather than trying forever', () => {

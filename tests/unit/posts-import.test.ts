@@ -297,9 +297,9 @@ describe('planning an import', () => {
     expect(after.site.redirects).toEqual([
       { from: '/2019/03/winter-workshop/', entryId: winter.id },
       { from: '/2019/04/spring-menu/', entryId: spring.id },
-      { from: '/category/news/', custom: true, to: '/blog/category/news/' },
-      { from: '/category/workshops/', custom: true, to: '/blog/category/workshops/' },
-      { from: '/tag/bread/', custom: true, to: '/blog/tag/bread/' }
+      { from: '/category/news/', custom: true, to: '/blog/category/news/', archiveOf: 'posts' },
+      { from: '/category/workshops/', custom: true, to: '/blog/category/workshops/', archiveOf: 'posts' },
+      { from: '/tag/bread/', custom: true, to: '/blog/tag/bread/', archiveOf: 'posts' }
     ]);
     expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([
       ['/category/news/', '/blog/category/news/'],
@@ -1026,9 +1026,9 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     const second = Object.values(after.collections.posts.entries).find((e) => e.title === 'Second')!;
     expect(JSON.stringify(second.body)).toContain(`{"text":"the first","link":{"type":"entry","target":"${first.id}","query":"?m=spring&s="}}`);
     expect(after.site.redirects?.filter((r) => 'to' in r)).toEqual([
-      { from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/' },
-      { from: '/category/page/', custom: true, to: '/blog/category/page/' },
-      { from: '/category/clay/', custom: true, to: '/blog/category/clay/' }
+      { from: '/category/soil-science/', custom: true, to: '/blog/category/soil-science/', archiveOf: 'posts' },
+      { from: '/category/page/', custom: true, to: '/blog/category/page/', archiveOf: 'posts' },
+      { from: '/category/clay/', custom: true, to: '/blog/category/clay/', archiveOf: 'posts' }
     ]);
     expect(resolveRedirects(after, 'website').live.flatMap((r) => ('to' in r.rule ? [[r.from, r.to]] : []))).toEqual([
       ['/category/soil-science/', '/blog/category/soil-science/'],
@@ -1094,8 +1094,8 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     // Skipping, the archive only the skipped post's category would have had is never sent to.
     // (The first import kept the old address of its own category, soil.)
     expect(commit(first, again).after.site.redirects?.filter((r) => 'to' in r)).toEqual([
-      { from: '/category/soil/', custom: true, to: '/blog/category/soil/' },
-      { from: '/category/clay/', custom: true, to: '/blog/category/clay/' }
+      { from: '/category/soil/', custom: true, to: '/blog/category/soil/', archiveOf: 'posts' },
+      { from: '/category/clay/', custom: true, to: '/blog/category/clay/', archiveOf: 'posts' }
     ]);
     expect(
       commit(first, again, 'update')
@@ -1143,14 +1143,83 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(live(published)).toContainEqual(['/tag/legumes/', '/blog/tag/legumes/']);
     // Imported again, the addresses are kept already: none is added twice.
     expect(planPostImport(after, source, '2026-11-24').archiveRedirects).toEqual([]);
-    // Without category and tag pages, none is kept.
+    // Without category and tag pages, none is kept, and the review says each can't be.
     const flat = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', termArchives: false }]).state;
-    expect(planPostImport(flat, source, '2026-11-24')).toMatchObject({ archiveRedirects: [], archiveRedirectsLost: [] });
+    const unarchived = planPostImport(flat, source, '2026-11-24');
+    expect(unarchived.archiveRedirects).toEqual([]);
+    expect(unarchived.archiveRedirectsLost.map((l) => [l.from, l.reason])).toEqual(
+      ['/category/soil-science/', '/tag/nitrogen/', '/tag/cover-crops/', '/tag/rye/', '/tag/legumes/'].map((from) => [from, 'the Posts collection has no category and tag pages'])
+    );
     // A site installed under a path had its archives under it too.
     const under = await readWordPress(wxr([post(1, 'Grazing paradox', term('post_tag', 'nitrogen', 'Nitrogen'))], '<wp:base_blog_url>https://old.example/news</wp:base_blog_url>'), pages(s));
     expect(planPostImport(s, under, '2026-11-24').archiveRedirects).toEqual([{ from: '/news/tag/nitrogen/', to: '/blog/tag/nitrogen/' }]);
     // A Markdown folder names no old site, so it has no archive addresses to keep.
     expect(planPostImport(s, { ...source, kind: 'markdown', site: undefined, siteKey: undefined }, '2026-11-24').archiveRedirects).toEqual([]);
+  });
+
+  it('issue 1512: keeps an old archive address with the collection when it moves before its post is published, and says which can’t be kept', async () => {
+    const term = (domain: string, slug: string, label: string) => `<category domain="${domain}" nicename="${slug}"><![CDATA[${label}]]></category>`;
+    const post = (id: number, title: string, terms: string, status = 'publish', link = `https://old.example/2020/${id}/`, body = '<p>No links.</p>') =>
+      item(id, { title, link, 'wp:status': status, 'wp:post_date': `2020-01-0${id} 00:00:00` }, body) + terms;
+    const s = applyOperations(site(), [{ type: 'redirect.add', from: '/tag/rye/', to: '/' }]).state;
+    const source = await readWordPress(
+      wxr([
+        post(1, 'Rye', term('post_tag', 'rye', 'Rye') + term('post_tag', 'field_notes', 'Field notes')),
+        post(2, 'Later', term('post_tag', 'legumes', 'Legumes'), 'draft'),
+        // A post whose own old address is a tag's: the post keeps it.
+        post(3, 'Clover', term('post_tag', 'clover', 'Clover'), 'publish', 'https://old.example/tag/clover/')
+      ]),
+      pages(s)
+    );
+    const { plan, after } = commit(s, source);
+    expect(plan.archiveRedirects).toEqual([{ from: '/tag/legumes/', to: '/blog/tag/legumes/', pending: true }]);
+    // One kept already for something else stays so, and one no address can spell is said; the post's own is neither.
+    expect(plan.archiveRedirectsLost.map((l) => [l.from, l.reason])).toEqual([
+      ['/tag/rye/', 'it is already a redirect to /'],
+      ['/tag/field_notes/', expect.stringMatching(/^"field_notes" can’t be part of an address/)]
+    ]);
+    expect(after.site.redirects).toContainEqual({ from: '/tag/legumes/', custom: true, to: '/blog/tag/legumes/', archiveOf: 'posts' });
+    // Moved before its draft is published, the old address goes with the collection, and works once it is.
+    const moved = applyOperations(after, [{ type: 'collection.update', collectionId: 'posts', route: '/journal/' }]).state;
+    const later = Object.values(moved.collections.posts.entries).find((e) => e.title === 'Later')!;
+    const published = applyOperations(moved, [{ type: 'entry.update', collectionId: 'posts', entryId: later.id, draft: false }]).state;
+    expect(resolveRedirects(published, 'website').live.find((r) => r.from === '/tag/legumes/')?.to).toBe('/journal/tag/legumes/');
+    // An old address the engine keeps for a collection's archive must be one of its archive's.
+    expect(() => applyOperations(after, [{ type: 'redirect.add', from: '/tag/oats/', to: '/about/', archiveOf: 'posts' }])).toThrow(/archive pages/);
+    expect(() => applyOperations(after, [{ type: 'redirect.add', from: '/tag/oats/', to: '/blog/tag/oats/', archiveOf: 'nope' }])).toThrow(/does not exist/);
+  });
+
+  it('issue 1512: keeps the archive addresses of the terms each post keeps, inside the site’s installation, waiting as the posts imported leave them', async () => {
+    const s = site();
+    const term = (domain: string, slug: string, label: string) => `<category domain="${domain}" nicename="${slug}"><![CDATA[${label}]]></category>`;
+    const post = (id: number, title: string, terms: string, status = 'publish', body = '<p>No links.</p>') =>
+      item(id, { title, link: `https://old.example/news/2020/${id}/`, 'wp:status': status, 'wp:post_date': `2020-01-0${id} 00:00:00` }, body) + terms;
+    const installed = '<wp:base_blog_url>https://old.example/news</wp:base_blog_url>';
+    // A draft with more tags than a post keeps: the last is not brought, so its address is not kept.
+    const many = Array.from({ length: 51 }, (_, i) => term('post_tag', `t${i + 1}`, `Tag ${i + 1}`)).join('');
+    const links = '<p><a href="https://old.example/news/category/farming/soil/">Soil</a> and <a href="https://old.example/category/soil/">another site’s</a>.</p>';
+    const source = await readWordPress(wxr([post(1, 'Soil', term('category', 'soil', 'Soil'), 'publish', links), post(2, 'Many', many, 'draft')], installed), pages(s));
+    const plan = planPostImport(s, source, '2026-11-24');
+    const froms = plan.archiveRedirects.map((r) => r.from);
+    expect(froms.slice(0, 2)).toEqual(['/news/category/soil/', '/news/tag/t1/']);
+    expect(froms).toHaveLength(52);
+    expect(froms).not.toContain('/news/tag/t51/');
+    // A category under another, as a post links to it, inside the installation; never another installation's.
+    expect(froms.at(-1)).toBe('/news/category/farming/soil/');
+    expect(froms).not.toContain('/category/soil/');
+
+    // Imported again: one post already here gains a category a new draft has too.
+    const { after: first } = commit(s, await readWordPress(wxr([post(1, 'Soil', '')], installed), pages(s)));
+    const again = await readWordPress(wxr([post(1, 'Soil', term('category', 'loam', 'Loam')), post(3, 'Draft', term('category', 'loam', 'Loam'), 'draft')], installed), pages(first));
+    const both = planPostImport(first, again, '2026-11-24');
+    const preview = postImportPreview('r', both);
+    // Skipping, only the draft is filed under it, so its archive waits; updating, the published post is too.
+    expect(preview.archiveRedirects).toEqual({ kept: 1, pending: 1, lost: [] });
+    expect(preview.update?.archiveRedirects).toEqual({ kept: 1, pending: 0, lost: [] });
+    // With nothing new to import, skipping keeps no address.
+    const onlyOld = planPostImport(first, await readWordPress(wxr([post(1, 'Soil', term('category', 'loam', 'Loam'))], installed), pages(first)), '2026-11-24');
+    expect(selectPlan(onlyOld, 'skip').archiveRedirects).toEqual([]);
+    expect(selectPlan(onlyOld, 'update').archiveRedirects).toEqual([{ from: '/news/category/loam/', to: '/blog/category/loam/' }]);
   });
 
   it('says when a featured picture is not in the export', async () => {

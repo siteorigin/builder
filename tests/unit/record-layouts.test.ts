@@ -87,7 +87,7 @@ describe('a records layout', () => {
     expect(named(t, 'Brochure') as LinkNode).toMatchObject({ kind: 'link', label: 'Brochure', link: { $entry: 'field.brochure' }, when: { $entry: 'field.brochure' } });
     // Its pictures go with the featured one, its rich text after the text, under its own heading.
     const reading = nodes(t).find((n) => (n as ElementNode).children?.includes(named(t, 'Floor plan')!.id)) as ElementNode;
-    expect(reading.children.map((id) => t.nodes[id].name)).toEqual(['Featured image', 'Floor plan', 'Text', 'Highlights']);
+    expect(reading.children.map((id) => t.nodes[id].name)).toEqual(['Featured image', 'Floor plan', 'Text', 'Highlights', 'Tags']);
     expect(validateState(s).filter((d) => d.owner?.kind === 'template' && d.severity !== 'info')).toEqual([]);
     expect(isDefaultLayout(s, s.collections.properties.settings)).toBe(true);
   });

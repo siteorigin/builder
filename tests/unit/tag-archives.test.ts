@@ -11,6 +11,7 @@ import { validateState } from '@engine/validate';
 import { generateProject, liveRedirects, publishedState } from '@generator/index';
 import { archivePages, archiveWords, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { entryFieldValue, isLinkedForm } from '@shared/entry-fields';
+import { siteLinks } from '@generator/checks';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const route = (f: string) => `src/routes/${f.replace(/^\/|\/$/g, '')}/+page.svelte`;
@@ -32,7 +33,8 @@ function blog(): ProjectState {
         tags: { label: 'Tags', terms: { glaze: { label: 'Glaze' }, 'cover-crops': { label: 'Cover crops' }, secret: { label: 'Secret' } } }
       }
     } as EditOperation,
-    post('en_kiln', 'New kiln', '2026-04-01', { categories: ['news'], tags: ['glaze', 'cover-crops'] }),
+    // Its tags in the other order from the one they are offered in.
+    post('en_kiln', 'New kiln', '2026-04-01', { categories: ['news'], tags: ['cover-crops', 'glaze'] }),
     post('en_glaze', 'Glaze night', '2026-03-10', { categories: ['glaze'], tags: ['cover-crops'] }),
     post('en_open', 'Open studio', '2026-02-20', { categories: ['news'], tags: ['cover-crops'] }),
     post('en_plans', 'Plans', '2026-05-01', { tags: ['secret'] }, { draft: true })
@@ -68,6 +70,7 @@ describe('tag archives', () => {
     // The category of the same ID lists its own posts.
     expect(out.get(route('/blog/tag/glaze/'))).toContain('{"Glaze"}</h1>');
     expect(out.get(route('/blog/category/glaze/'))).toContain('{"Glazes"}</h1>');
+    expect(out.get(route('/blog/category/glaze/'))).toMatch(/<span aria-hidden="true">\/<\/span>\{"Category"\}<\/p>/);
     expect(archiveWords(s, pages[4]).name).toBe('Cover crops – Page 2 of 2');
     const sitemap = out.get('static/sitemap.xml')!;
     for (const r of ['/blog/tag/glaze/', '/blog/tag/cover-crops/', '/blog/tag/cover-crops/page/2/']) expect(sitemap.split(`<loc>https://example.com${r}</loc>`)).toHaveLength(2);
@@ -97,7 +100,7 @@ describe('a post’s tags', () => {
     const collection = s.collections.posts;
     const read = (id: string, field: string) => entryFieldValue({ state: s, collection, entry: collection.entries[id], neighbours: {} }, field);
     const link = (taxonomy: string, id: string) => ({ type: 'collection', target: 'posts', term: { taxonomy, id } });
-    expect(read('en_kiln', 'tags.links')).toEqual([{ type: 'p', spans: [{ text: 'Glaze', link: link('tags', 'glaze') }, { text: ', ' }, { text: 'Cover crops', link: link('tags', 'cover-crops') }] }]);
+    expect(read('en_kiln', 'tags.links')).toEqual([{ type: 'p', spans: [{ text: 'Cover crops', link: link('tags', 'cover-crops') }, { text: ', ' }, { text: 'Glaze', link: link('tags', 'glaze') }] }]);
     expect(read('en_kiln', 'categories.links')).toEqual([{ type: 'p', spans: [{ text: 'News', link: link('categories', 'news') }] }]);
     // None, nothing.
     expect(read('en_glaze', 'categories.links')).toEqual([{ type: 'p', spans: [{ text: 'Glazes', link: link('categories', 'glaze') }] }]);
@@ -112,22 +115,30 @@ describe('a post’s tags', () => {
   it('show on its page under its text, each linking to its archive while it has one', () => {
     const out = files(blog());
     const kiln = out.get(route('/blog/new-kiln/'))!;
-    expect(kiln).toContain('<SoRichText value={[{"type":"p","spans":[{"text":"Glaze","link":{"href":"/blog/tag/glaze/"}},{"text":", "},{"text":"Cover crops","link":{"href":"/blog/tag/cover-crops/"}}]}]}');
+    expect(kiln).toContain('<SoRichText value={[{"type":"p","spans":[{"text":"Cover crops","link":{"href":"/blog/tag/cover-crops/"}},{"text":", "},{"text":"Glaze","link":{"href":"/blog/tag/glaze/"}}]}]}');
+    // Under the post's text.
+    expect(kiln.indexOf('/blog/tag/cover-crops/')).toBeGreaterThan(kiln.indexOf('{"text":"New kiln."}'));
     // A post without tags shows no tags.
     const untagged = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_open', terms: { tags: [] } } as EditOperation);
-    expect(files(untagged).get(route('/blog/open-studio/'))).not.toContain('/blog/tag/');
+    const open = files(untagged).get(route('/blog/open-studio/'))!;
+    expect(open).not.toContain('/blog/tag/');
+    // No empty element either: the text alone is rich text.
+    expect(open.match(/<SoRichText value=/g)).toHaveLength(1);
     // The archive's address as the site has it, followed when the collection moves.
     const moved = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' } as EditOperation);
     expect(files(moved).get(route('/journal/new-kiln/'))).toContain('{"text":"Glaze","link":{"href":"/journal/tag/glaze/"}}');
-    expect(termArchiveRoutes(archivePages(publishedState(moved))).get(termArchiveKey('posts', { taxonomy: 'tags', id: 'glaze' }))).toBe('/journal/tag/glaze/');
+    expect(termArchiveRoutes(archivePages(publishedState(moved)))[termArchiveKey('posts', { taxonomy: 'tags', id: 'glaze' })]).toBe('/journal/tag/glaze/');
   });
 
   it('show a tag without an archive as its name alone', () => {
     // With archives off, no tag has one.
     const s = run(blog(), { type: 'collection.update', collectionId: 'posts', termArchives: false } as EditOperation);
     const kiln = files(s).get(route('/blog/new-kiln/'))!;
-    expect(kiln).toContain('<SoRichText value={[{"type":"p","spans":[{"text":"Glaze"},{"text":", "},{"text":"Cover crops"}]}]}');
+    expect(kiln).toContain('<SoRichText value={[{"type":"p","spans":[{"text":"Cover crops"},{"text":", "},{"text":"Glaze"}]}]}');
     expect(kiln).not.toContain('/blog/tag/');
+    // Nor does Project health count it as a link.
+    expect(siteLinks(s).some((l) => l.link.term)).toBe(false);
+    expect(siteLinks(blog()).filter((l) => l.link.term).map((l) => l.label)).toEqual(expect.arrayContaining(['Cover crops', 'Glaze']));
   });
 
   it('leave a collection without tags with a layout that is valid', () => {

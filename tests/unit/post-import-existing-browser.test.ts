@@ -172,7 +172,7 @@ describe.skipIf(!browserInstalled)('Posts import review with posts already in th
     await open(p);
     await page.getByText(/^2 keep working$/).waitFor();
     await page.getByTestId('post-import-update').check();
-    await page.getByText(/^3 keep working · 1 once its post is published · 1 can’t/).waitFor();
+    await page.getByText(/^3 keep working · 1 once a post filed under its category or tag is published · 1 can’t/).waitFor();
     expect(await page.getByTestId('post-import-archives-lost').textContent()).toBe('/tag/rye/ can’t keep working: it is the address of the page “Rye”.');
     await page.getByLabel('Skip them').check();
     await page.getByText(/^2 keep working$/).waitFor();

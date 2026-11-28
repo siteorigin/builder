@@ -129,7 +129,7 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 import { codeImageProp, eagerCodeImage, evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
-import { graphScript, inGenerationRun } from './structured-data';
+import { graphScript, inGenerationRun, perRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
@@ -324,6 +324,12 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
+/** Every category's and tag's archive address, worked out once per run outside a cached one too: every post's terms read it. */
+function termArchiveRoutesOf(state: ProjectState): Record<string, string> {
+  if (isTracked(state)) return termArchiveRoutes(derived(state, 'archivePages', archivePages));
+  return perRun(state, 'termArchiveRoutes', (s) => termArchiveRoutes(archivePages(s)));
+}
+
 /**
  * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
  * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
@@ -373,10 +379,10 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // A category's or tag's archive, at its current address, while it has one (an entry's linked terms); otherwise
       // its words alone.
       if (link.term) {
-        const terms = derived(ctx.state, 'termArchiveRoutes', (s) => termArchiveRoutes(derived(s, 'archivePages', archivePages)));
-        const to = terms.get(termArchiveKey(link.target, link.term));
-        if (!to) return null;
-        href = to;
+        const terms = derived(ctx.state, 'termArchiveRoutes', termArchiveRoutesOf);
+        const key = termArchiveKey(link.target, link.term);
+        if (!Object.hasOwn(terms, key)) return null;
+        href = terms[key];
         break;
       }
       // The first page of the collection's list, at its current address: one the website has no index for shows its
