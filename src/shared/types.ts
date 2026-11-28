@@ -1136,6 +1136,11 @@ export interface SiteDoc {
    */
   webmcp?: boolean;
   /**
+   * Which search the website's Site search runs (src/shared/site-search.ts): its own index while this is absent, or the
+   * SearchSocket service it names.
+   */
+  search?: SiteSearchSettings;
+  /**
    * Which crawlers the website's robots.txt asks to stay away, and whether its pages ask AI services not to train on
    * them (src/shared/crawler-policy.ts). Absent: every crawler is let in, as the website always did.
    */
@@ -1145,6 +1150,21 @@ export interface SiteDoc {
    * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.
    */
   identity?: SiteIdentity;
+}
+
+/**
+ * The site's search settings (src/shared/site-search.ts). The SearchSocket fields are kept when the site goes back to
+ * its own index, so switching back finds them again.
+ */
+export interface SiteSearchSettings {
+  /** Absent: the site's own index. */
+  provider?: 'searchsocket';
+  /** The SearchSocket service's public search address (https://…/api/search). */
+  endpoint?: string;
+  /** The part of the site results come from ("/docs/"). Absent: all of it. */
+  pathPrefix?: string;
+  /** False: a result opens its page at the top rather than scrolled to the passage found. */
+  scrollToText?: false;
 }
 
 /** The kinds of entity a site can be published by. */

@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect, SiteSearchSettings } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
@@ -47,6 +47,7 @@ import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
+import { checkSearchEndpoint, checkSearchPathPrefix } from '@shared/site-search';
 import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionKind, collectionRouteOwner, findEntry, hasArchivePages, keptPublishedAddresses, siteEntries } from '@shared/collections';
 import { defaultLayout, isDefaultLayout } from './collection-layouts';
@@ -3325,6 +3326,40 @@ function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
   return {};
 }
 
+/**
+ * Change the site's search settings (shared/site-search.ts): only the fields given, each checked as the website will
+ * use it. The site's own index is no setting, so it is stored as none; the SearchSocket fields stay for a switch back.
+ */
+function setSiteSearch(s: ProjectState['site'], patch: NonNullable<Op<'site.update'>['search']> | null): void {
+  if (patch === null) {
+    delete s.search;
+    return;
+  }
+  const next: SiteSearchSettings = s.search && typeof s.search === 'object' && !Array.isArray(s.search) ? { ...s.search } : {};
+  if (patch.provider !== undefined) {
+    if (patch.provider === 'searchsocket') next.provider = 'searchsocket';
+    else delete next.provider;
+  }
+  if (patch.endpoint !== undefined) {
+    const check = checkSearchEndpoint(patch.endpoint);
+    if (!check.ok) fail(check.message);
+    if (check.value) next.endpoint = check.value;
+    else delete next.endpoint;
+  }
+  if (patch.pathPrefix !== undefined) {
+    const check = checkSearchPathPrefix(patch.pathPrefix);
+    if (!check.ok) fail(check.message);
+    if (check.value) next.pathPrefix = check.value;
+    else delete next.pathPrefix;
+  }
+  if (patch.scrollToText !== undefined) {
+    if (patch.scrollToText) delete next.scrollToText;
+    else next.scrollToText = false;
+  }
+  if (Object.keys(next).length) s.search = next;
+  else delete s.search;
+}
+
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
   if (op.name !== undefined) {
@@ -3388,6 +3423,7 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
   }
+  if (op.search !== undefined) setSiteSearch(s, op.search);
   // The header menu keeps its own order unless it follows the pages (engine/header-order.ts): stored only then.
   if (op.headerMenuOrder !== undefined) {
     if (op.headerMenuOrder === 'follow') s.headerMenuOrder = 'follow';

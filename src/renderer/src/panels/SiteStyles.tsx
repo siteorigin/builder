@@ -33,6 +33,7 @@ import { NOT_FOUND_ENGLISH, NOT_FOUND_LIMITS, clipText, notFoundCopy, notFoundDe
 import { VisitorTextFields, WordingField, visitorTextScope, type Wording } from './VisitorText';
 import { directionHint, languageCodeFor, namedLanguage, notFoundScope, ownWording, siteDetailsScope } from './site-details';
 import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
+import { SiteSearchFields, siteSearchScope } from './SiteSearchFields';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
 import { redirectRecords } from '@shared/redirects';
@@ -2209,6 +2210,11 @@ export function SiteStyles() {
           <SiteImage id="site-social-image" title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} hint="Wide, about 1200 × 630 pixels" />
         </div>
         <IdentityFields state={st} workspaceKey={snap?.workspaceKey} onPatch={(identity) => updSite({ identity })} />
+      </Section>
+
+      <Section title="Site search" id="site-search" defaultOpen={false} keepMounted scope={siteSearchScope(site)}>
+        {/* Keyed by the project's opening: an address typed in one project is never offered in the next. */}
+        <SiteSearchFields key={`search-${snap?.workspaceKey}`} state={st} onChange={updSite} />
       </Section>
 
       <Section title="AI agents" id="site-agents" defaultOpen={false} scope={agentsScope(site)}>

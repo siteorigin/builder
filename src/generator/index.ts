@@ -112,7 +112,7 @@ import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } fro
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
-import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, hiddenEverywhere, searchJs, usesSiteSearch } from './search';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -3128,7 +3128,11 @@ const PART_CLASS_ID = /^[A-Za-z][A-Za-z0-9_-]{0,80}$/;
 
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const p = pad(ctx);
-  const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id);
+  // A page's or the shared header's or footer's layer hidden at every size shows visitors nothing, so search services
+  // that index the built site leave it out, as the site's own index does (see generator/search.ts). A design's own
+  // layer is never marked: a placement or a variant can show it again, and its markup is every placement's.
+  const unseen = !ctx.def && 'styles' in node && hiddenEverywhere(node.styles) ? ' data-search-ignore' : '';
+  const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id) + unseen;
   switch (node.kind) {
     case 'element': {
       const overlay = ctx.widgets?.overlays.get(node.id);
@@ -4201,8 +4205,17 @@ export function seoHead(state: ProjectState, meta: Omit<SeoMetadata, 'subject'>,
     if (meta.imageAlt) head.push(`\t<meta name="twitter:image:alt" content={${js(meta.imageAlt)}} />`);
   }
   if (meta.noindex) head.push(`\t<meta name="robots" content="noindex" />`);
+  // Left out of site search: search services that index the built site leave the page out too.
+  if (meta.searchHidden) head.push(`\t${SEARCH_NOINDEX_META}`);
   return head;
 }
+
+/**
+ * What leaves a page out of the search services that index the built site, whatever search engines are told:
+ * SearchSocket reads its own meta tag, and any element with data-search-noindex. A Source export's SearchSocket
+ * configuration reads only this, not robots noindex, so site search follows the site's own switch for it.
+ */
+export const SEARCH_NOINDEX_META = '<meta name="searchsocket:noindex" content="true" data-search-noindex />';
 
 /** The page's name for SvelteKit's `asset`, which the hero's preload link makes its addresses with. */
 const HERO_ASSET_IMPORT = `\timport { asset as so_asset } from '$app/paths';`;
@@ -4521,7 +4534,7 @@ ${editing}</script>
 	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
 </svelte:head>
 
-<a class="so-skip-link" href="#main" lang={textLang('skipLink')}>{text().skipLink}</a>
+<a class="so-skip-link" href="#main" lang={textLang('skipLink')} data-search-ignore>{text().skipLink}</a>
 {#if showHeader}
 ${header}
 {/if}
@@ -5010,7 +5023,8 @@ export function generateRedirect(state: ProjectState, from: string, page: Pick<P
 
 <svelte:head>
 	<meta http-equiv="refresh" content={'0; url=' + to} />
-	<meta name="robots" content="noindex" />${canonical}
+	<meta name="robots" content="noindex" />
+	${SEARCH_NOINDEX_META}${canonical}
 </svelte:head>
 
 <p><a bind:this={link} href={to}>{${js(siteVisitorText(state.site).redirect)}}</a>{@html go}</p>
@@ -5125,6 +5139,7 @@ export function generateNotFound(state: ProjectState): string {
 <svelte:head>
 	<title>{${js(title)}}</title>
 	<meta name="robots" content="noindex" />
+	${SEARCH_NOINDEX_META}
 </svelte:head>
 
 <section class="so-not-found">
@@ -5398,8 +5413,10 @@ export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: F
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
   // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
   // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.
+  // The website asks the SearchSocket service its settings name, if any; the editor's preview always searches the
+  // site's own index, since its form practice answers requests that carry what a visitor typed (runtime/bridge.client.js).
   if (usesSiteSearch(state)) {
-    put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
+    put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => (opts.instrument ? SEARCH_JS : file('site-search.js#clean', searchJs)));
     put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
   }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like

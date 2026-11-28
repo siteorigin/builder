@@ -103,7 +103,7 @@ describe('choosing the shared header and footer per page', () => {
     expect(generateProject(s).get(LAYOUT)).toContain("const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));");
     expect(generateProject(s).get(LAYOUT)).toContain("const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));");
     // The main landmark and skip link are on every page, whatever it shows.
-    expect(generateProject(s).get(LAYOUT)).toMatch(/<a class="so-skip-link" href="#main" lang=\{textLang\('skipLink'\)\}>\{text\(\)\.skipLink\}<\/a>\n\{#if showHeader\}[\s\S]*\{\/if\}\n<main id="main">/);
+    expect(generateProject(s).get(LAYOUT)).toMatch(/<a class="so-skip-link" href="#main" lang=\{textLang\('skipLink'\)\} data-search-ignore>\{text\(\)\.skipLink\}<\/a>\n\{#if showHeader\}[\s\S]*\{\/if\}\n<main id="main">/);
     // An instrumented build for the canvas decides the same way.
     const dev = guarded(generateProject(s, { instrument: true }).get(LAYOUT)!);
     expect([dev.withoutHeader, dev.withoutFooter]).toEqual([g.withoutHeader, g.withoutFooter]);

@@ -8,6 +8,7 @@ import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
+import { SEARCH_ENDPOINT_MAX, SEARCH_PATH_PREFIX_MAX } from './site-search';
 import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
 
@@ -705,6 +706,17 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('The header menu\'s order. "own" (default): its links keep the order the author gave them, whatever the page order. "follow": its links to pages stay in the page order through every edit (a page.reorder, a page added to the menu), a deleted page\'s menu links are removed rather than pointed at its replacement, and its links cannot be moved by hand. Other links and submenus keep their places.'),
     webmcp: z.boolean().optional().describe('WebMCP: declare each contact and signup form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
+    search: z
+      .object({
+        provider: z.enum(['builtin', 'searchsocket']).optional().describe('"builtin" (default): Site search finds pages in an index written with the site. "searchsocket": it asks the SearchSocket service at endpoint, which the author hosts and which indexes the built site.'),
+        endpoint: z.string().max(SEARCH_ENDPOINT_MAX).optional().describe('The SearchSocket service\'s public search address (https://…/api/search). "" removes it.'),
+        pathPrefix: z.string().max(SEARCH_PATH_PREFIX_MAX).optional().describe('Only results whose address starts with this ("/docs/"). "" is the whole site.'),
+        scrollToText: z.boolean().optional().describe('A result opens its page scrolled to the passage found. Default true.')
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .describe('Which search Site search runs. Only the fields given change; null restores the site\'s own index and forgets the rest.'),
     redirectHost: z
       .enum(['cloudflare', 'netlify', 'vercel'])
       .optional()
