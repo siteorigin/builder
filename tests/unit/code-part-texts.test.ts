@@ -70,6 +70,56 @@ describe('the text the code marks in each part', () => {
     expect(texts).toMatchObject({ card: ['plans.name'] });
   });
 
+  it('leaves out text the script works out something shown elsewhere from, but not only whether it is there', async () => {
+    const texts = await codePartTexts(`<script>
+\timport { has } from '../runtime/util.js';
+\timport SoLink from '../runtime/Link.svelte';
+\tlet { label = '', title = '', so_text, so_o = undefined } = $props();
+\tconst shout = $derived(title.toUpperCase());
+\tconst hasActions = $derived(has(label));
+</script>
+{#if hasActions}
+\t<div class={so_o?.actions}><SoLink data-so-text={so_text?.('label')}>{label}</SoLink></div>
+\t<p>More</p>
+{/if}
+<h2 class={so_o?.heading}><span data-so-text={so_text?.('title')}>{title}</span></h2>
+<footer>{shout}</footer>
+`);
+    expect(texts).toMatchObject({ actions: ['label'], heading: [] });
+  });
+
+  it('leaves out a list field the markup shows outside the part too, unmarked', async () => {
+    const texts = await codePartTexts(`${script(`items = []`)}
+{#each items as row (row.id)}
+\t<h3 class={so_o?.title} data-so-text={so_text?.('items.title', row.id)}>{row.title}</h3>
+\t<p class={so_o?.text} data-so-text={so_text?.('items.text', row.id)}>{row.text}</p>
+\t<p>{row.title}</p>
+{/each}
+`);
+    expect(texts).toMatchObject({ title: [], text: ['items.text'] });
+  });
+
+  it('takes the part an element is as the preview does: its written-out marker, else its last part class', async () => {
+    const texts = await codePartTexts(`${script(`label = '', note = ''`)}
+<div>
+\t<a href="/" class={so_o?.actions} data-so-text={so_text?.('label')}>{label}</a>
+\t<p data-so-part="caption" class={[so_o?.actions, so_o?.caption]} data-so-text={so_text?.('note')}>{note}</p>
+</div>
+`);
+    expect(texts).toMatchObject({ actions: ['label'], caption: ['note'] });
+  });
+
+  it('gives a part nothing that a component other than the Builder’s own shows', async () => {
+    const texts = await codePartTexts(`<script>
+\timport Split from './Split.svelte';
+\tlet { label = '', note = '', so_text, so_o = undefined } = $props();
+</script>
+<Split class={so_o?.actions}><span data-so-text={so_text?.('label')}>{label}</span></Split>
+<div class={so_o?.panel}><Split><span data-so-text={so_text?.('note')}>{note}</span></Split></div>
+`);
+    expect(texts).toMatchObject({ actions: [], panel: [] });
+  });
+
   it('reads nothing from code without the text hook, and nothing from code that does not parse', async () => {
     expect(await codePartTexts(`<script>let { heading = '', so_o } = $props();</script>\n<h2 class={so_o?.heading}>{heading}</h2>\n`)).toEqual({});
     expect(await codePartTexts('<div class={')).toBeNull();

@@ -1100,6 +1100,8 @@ export async function codeContractNames(source: string): Promise<{ parts: string
 
 /** What a code component's markup can give a part's class to, or mark as a part: an element or a component it places. */
 const PART_HOSTS = new Set(['RegularElement', 'SvelteElement', 'Component', 'SvelteComponent', 'SvelteSelf']);
+/** The Builder's own components, which show what they are given where they are placed: their element is the part's. */
+const IN_PLACE = /^(?:\.\.|\$lib\/siteorigin)\/runtime\/(?:Link|Image|Action|RichText|Icon)\.svelte$/;
 
 /** The path a well-formed text marker names (`so_text?.('heading')`, `so_text?.('features.title', item.id)`), or null. */
 function markedTextPath(attr: Node, hook: string): { path: string; prop: string; field?: string } | null {
@@ -1115,16 +1117,37 @@ function markedTextPath(attr: Node, hook: string): { path: string; prop: string;
   return { path: written!, ...path };
 }
 
+/** Whether an identifier is a name being read, not a property after a dot or an object literal's key. */
+function isRead(n: Node, parent: Node | undefined): boolean {
+  if (parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) return false;
+  return !(parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n);
+}
+
+/** Whether a node is in a pattern that names what it binds: `{#each plans as plan}`, `const x = …`, a function's or snippet's parameters. */
+function inBinding(n: Node, around: Node[]): boolean {
+  return around.some((a, i) => {
+    const next = around[i + 1] ?? n;
+    if (a.type === 'EachBlock') return next === a.context;
+    if (a.type === 'VariableDeclarator') return next === a.id;
+    if (a.type === 'SnippetBlock') return ((a.parameters as Node[]) ?? []).includes(next) || next === a.expression;
+    return FUNCTION_TYPES.has(a.type) && (((a.params as Node[]) ?? []).includes(next) || next === a.id);
+  });
+}
+
 /**
  * The text each part of a code component shows, read from its syntax tree (#1416): by part, the path of each text
- * marked for the canvas (`data-so-text`, "heading" or "features.title") on the element the part's class is given to
- * (`so_o?.actions`, or a written-out `data-so-part`) or inside it, so the assistant may change it from a selection of
- * that part, as the author may type over it there. A text counts only where everything the markup shows of it is in
- * the part: the code marks it nowhere else, and reads its property nowhere else in the markup (a list's items only in
- * the `{#each}` the part repeats in). The script's own reads (a `hasActions` worked out from the labels) show nothing
- * of the text. Text in a snippet defined inside the part, which may be rendered anywhere, and a list's field marked
- * inside a list repeated in another, which shows the same items in every outer item, are no part's. Null when the
- * code cannot be parsed.
+ * marked for the canvas (`data-so-text`, "heading" or "features.title") on the element that is the part (a written-out
+ * `data-so-part`, or else the last part class it is given, `so_o?.actions`, as the preview tells them) or inside it, so
+ * the assistant may change it from a selection of that part, as the author may type over it there.
+ *
+ * A text counts only where everything the markup shows of it is in the part: the code marks it nowhere else, and the
+ * markup outside the part reads neither its property, a list item's field of it, nor anything the script works out
+ * from it (`const title = $derived(heading.toUpperCase())`). Whether it is there at all (`has(label)`, and what the
+ * script works out only from that, a `hasActions`) may decide an `{#if}` anywhere: emptying a text hides what only it
+ * decides. A plain test of it may decide an `{#if}` that shows only the part, and a list may be read where the part
+ * repeats over it. A component other than the Builder's own may show what it is given anywhere, so nothing in it, or
+ * that is one, is a part's; nor is text in a snippet, which may be rendered anywhere, or a list's field marked in a
+ * list repeated inside another, which shows the same items in every outer item. Null when the code cannot be parsed.
  */
 export async function codePartTexts(source: string): Promise<Record<string, string[]> | null> {
   const { parse } = await import('svelte/compiler');
@@ -1137,56 +1160,114 @@ export async function codePartTexts(source: string): Promise<Record<string, stri
   const locals = propsLocals(ast);
   const hook = locals.get(CODE_TEXT_HOOK)?.local;
   if (!hook) return {};
+  const propOf = new Map([...locals].map(([prop, { local }]) => [local, prop]));
+  const script = (ast.instance as { content?: { body?: Node[] } } | null)?.content?.body ?? [];
+  // The Builder's own components, and its `has`, by the names the script imports them under.
+  const inPlace = new Set<string>();
+  let has: string | null = null;
+  for (const st of script) {
+    if (st.type !== 'ImportDeclaration') continue;
+    const from = String((st.source as Node)?.value ?? '');
+    for (const sp of (st.specifiers as Node[]) ?? []) {
+      const local = String((sp.local as Node)?.name ?? '');
+      if (sp.type === 'ImportDefaultSpecifier' && IN_PLACE.test(from)) inPlace.add(local);
+      if (sp.type === 'ImportSpecifier' && /^(?:\.\.|\$lib\/siteorigin)\/runtime\/util\.js$/.test(from) && ((sp.imported as Node)?.name ?? (sp.imported as Node)?.value) === 'has') has = local;
+    }
+  }
+  /** Whether an identifier is the one value `has()` is asked about. */
+  const presence = (n: Node, parent: Node | undefined) => !!has && parent?.type === 'CallExpression' && (parent.callee as Node)?.type === 'Identifier' && (parent.callee as Node).name === has && ((parent.arguments as Node[]) ?? []).length === 1 && (parent.arguments as Node[])[0] === n;
+  // What each name the script declares is worked out from: by property, its value or only whether it is there.
+  const derived = new Map<string, Map<string, 'value' | 'presence'>>();
+  const uses = new Map<string, Array<{ name: string; presence: boolean }>>();
+  // The markup's own {@const} tags work things out as the script does.
+  const consts: Node[] = [];
+  walkAst(ast.fragment, (n) => {
+    if (n.type === 'ConstTag' && n.declaration) consts.push(n.declaration as Node);
+  });
+  for (const st of [...script, ...consts]) {
+    const decls: Array<{ names: string[]; body: unknown }> =
+      st.type === 'VariableDeclaration'
+        ? ((st.declarations as Node[]) ?? []).filter((d) => !((d.init as Node)?.type === 'CallExpression' && ((d.init as Node).callee as Node)?.name === '$props')).map((d) => ({ names: [...boundNames(d.id as Node)], body: d.init }))
+        : st.type === 'FunctionDeclaration' && (st.id as Node)?.type === 'Identifier'
+          ? [{ names: [String((st.id as Node).name)], body: st.body }]
+          : [];
+    for (const { names, body } of decls) {
+      const used: Array<{ name: string; presence: boolean }> = [];
+      walkAst(body, (n, around) => {
+        if (n.type === 'Identifier' && isRead(n, around[around.length - 1]) && !inBinding(n, around)) used.push({ name: String(n.name), presence: presence(n, around[around.length - 1]) });
+      });
+      for (const name of names) uses.set(name, [...(uses.get(name) ?? []), ...used]);
+    }
+  }
+  for (let changed = true, guard = 0; changed && guard <= uses.size + 1; guard++) {
+    changed = false;
+    for (const [name, used] of uses) {
+      const from = new Map(derived.get(name) ?? []);
+      for (const u of used) {
+        const direct = propOf.get(u.name);
+        const via: Array<[string, 'value' | 'presence']> = direct !== undefined ? [[direct, u.presence ? 'presence' : 'value']] : [...(derived.get(u.name) ?? [])];
+        for (const [prop, kind] of via) if (from.get(prop) !== 'value' && from.get(prop) !== kind) from.set(prop, kind);
+      }
+      if (from.size !== (derived.get(name)?.size ?? 0) || [...from].some(([p, k]) => derived.get(name)?.get(p) !== k)) {
+        derived.set(name, from);
+        changed = true;
+      }
+    }
+  }
   /** Each part's elements, with the nodes around each, outermost first. */
   const hosts = new Map<string, Array<{ node: Node; around: Node[] }>>();
   const markers: Array<{ path: string; prop: string; field?: string; around: Node[] }> = [];
-  const byLocal = new Map([...locals].map(([prop, { local }]) => [local, prop]));
-  const reads: Array<{ prop: string; node: Node; around: Node[] }> = [];
+  /** What the markup reads: a property (`field` for one field of its items, `null` for all of them), and how. */
+  const reads: Array<{ prop: string; field?: string | null; presence: boolean; node: Node; around: Node[] }> = [];
   walkAst(ast.fragment, (n, around) => {
     const parent = around[around.length - 1];
     if (PART_HOSTS.has(n.type) && Array.isArray(n.attributes)) {
+      let marked: string | null = null;
+      let hooked: string | null = null;
       for (const a of n.attributes as Node[]) {
         if (a.type !== 'Attribute') continue;
-        const ids: string[] = [];
         const name = attrName(a, n);
-        if (name === 'data-so-part') {
-          const id = markerName(a);
-          if (id !== null) ids.push(id);
-        } else if (name === 'class')
+        if (name === 'data-so-part') marked = markerName(a) ?? marked;
+        else if (name === 'class')
           walkAst(a.value, (x) => {
-            const id = hookedPart(x);
-            if (id !== null) ids.push(id);
+            hooked = hookedPart(x) ?? hooked;
           });
-        for (const id of ids) hosts.set(id, [...(hosts.get(id) ?? []), { node: n, around }]);
       }
+      const id = marked ?? hooked;
+      if (id !== null) hosts.set(id, [...(hosts.get(id) ?? []), { node: n, around }]);
     }
     if (n.type === 'Attribute' && attrName(n, parent) === CODE_TEXT_ATTR) {
       const path = markedTextPath(n, hook);
       if (path) markers.push({ ...path, around });
-      // The marker's own call names the property as text, not a read of it.
       return;
     }
-    if (n.type !== 'Identifier' || !byLocal.has(String(n.name))) return;
-    // A name that is not a read: a property after a dot, or an object literal's key.
-    if (parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) return;
-    if (parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n) return;
-    reads.push({ prop: byLocal.get(String(n.name))!, node: n, around });
+    if (n.type !== 'Identifier' || !isRead(n, parent) || inBinding(n, around)) return;
+    const name = String(n.name);
+    const prop = propOf.get(name);
+    if (prop !== undefined) reads.push({ prop, presence: presence(n, parent), node: n, around });
+    for (const [p, kind] of derived.get(name) ?? []) reads.push({ prop: p, presence: kind === 'presence', node: n, around });
+    // An item of a list the markup repeats over: one field of it, or the whole item.
+    const each = [...around].reverse().find((a) => a.type === 'EachBlock' && (a.expression as Node)?.type === 'Identifier' && propOf.has(String((a.expression as Node).name)) && boundNames(a.context as Node).has(name));
+    if (each) {
+      const list = propOf.get(String((each.expression as Node).name))!;
+      const ctx = each.context as Node;
+      const keyed = ctx.type === 'ObjectPattern' ? ((ctx.properties as Node[]) ?? []).find((p) => p.type === 'Property' && boundNames(p.value as Node).has(name)) : undefined;
+      const field = keyed ? String((keyed.key as Node)?.name ?? (keyed.key as Node)?.value) : parent?.type === 'MemberExpression' && parent.object === n && !parent.computed ? String((parent.property as Node)?.name) : null;
+      reads.push({ prop: list, field, presence: false, node: n, around });
+    }
   });
-  /** Whether a node sits in one of the part's elements (or is one), with no snippet between that could show it elsewhere. */
+  /**
+   * Whether a node sits in one of the part's elements (or on one), with nothing between that could show it elsewhere:
+   * a snippet, or a component other than the Builder's own.
+   */
+  const opaque = (a: Node) => a.type === 'SnippetBlock' || ((a.type === 'Component' || a.type === 'SvelteComponent' || a.type === 'SvelteSelf') && !(a.type === 'Component' && inPlace.has(String(a.name))));
   const inside = (part: string, around: Node[]) =>
     (hosts.get(part) ?? []).some(({ node }) => {
       const at = around.indexOf(node);
-      return at >= 0 && !around.slice(at + 1).some((a) => a.type === 'SnippetBlock');
+      return at >= 0 && !around.slice(at).some(opaque);
     });
   const out: Record<string, string[]> = {};
   for (const part of hosts.keys()) {
-    const paths = new Set<string>();
-    const outside = new Set<string>();
-    for (const m of markers) {
-      const nested = m.field !== undefined && m.around.filter((a) => a.type === 'EachBlock').length > 1;
-      if (nested || !inside(part, m.around)) outside.add(m.path);
-      else paths.add(m.path);
-    }
     const own = new Set((hosts.get(part) ?? []).map((h) => h.node));
     /** An {#if} that shows the part's element and nothing else: its test decides only whether the part shows. */
     const guardsPart = (r: { node: Node; around: Node[] }) =>
@@ -1195,12 +1276,25 @@ export async function codePartTexts(source: string): Promise<Record<string, stri
         const shown = (((a.consequent as Node)?.nodes as Node[]) ?? []).filter((c) => !(c.type === 'Text' && !String(c.data).trim()));
         return shown.length === 1 && own.has(shown[0]);
       });
+    /** Whether a read is in an {#if}'s test. */
+    const tested = (r: { node: Node; around: Node[] }) => r.around.some((a, i) => a.type === 'IfBlock' && (r.around[i + 1] ?? r.node) === a.test);
+    const paths = new Set<string>();
+    const outside = new Set<string>();
+    for (const m of markers) {
+      const nested = m.field !== undefined && m.around.filter((a) => a.type === 'EachBlock').length > 1;
+      if (nested || !inside(part, m.around)) outside.add(m.path);
+      else paths.add(m.path);
+    }
     for (const r of reads) {
-      if (inside(part, r.around) || guardsPart(r)) continue;
+      if (inside(part, r.around) || (r.presence && tested(r)) || (r.field === undefined && guardsPart(r))) continue;
       const each = r.around[r.around.length - 1];
       // The list a repeated part is shown once per item of, read where the part repeats over it.
-      const repeats = each?.type === 'EachBlock' && each.expression === r.node && (hosts.get(part) ?? []).some((h) => h.around.includes(each));
-      for (const p of paths) if (p.split('.')[0] === r.prop && !(repeats && p.includes('.'))) outside.add(p);
+      const repeats = r.field === undefined && each?.type === 'EachBlock' && each.expression === r.node && (hosts.get(part) ?? []).some((h) => h.around.includes(each));
+      for (const p of paths) {
+        const [prop, field] = p.split('.');
+        if (prop !== r.prop) continue;
+        if (r.field !== undefined ? r.field === null || r.field === field : !(repeats && field !== undefined)) outside.add(p);
+      }
     }
     out[part] = [...paths].filter((p) => !outside.has(p) && locals.has(p.split('.')[0])).sort();
   }
