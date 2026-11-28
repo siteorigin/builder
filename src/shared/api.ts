@@ -132,6 +132,12 @@ export interface Diagnostic {
 }
 
 /**
+ * The code of a Diagnostic for a code component's file edited outside the app into code with errors: the project keeps
+ * the version that last loaded, `site` is the file, and the message names its line and first error (#1533).
+ */
+export const EXTERNAL_SOURCE_REFUSED = 'EXTERNAL_SOURCE_REFUSED';
+
+/**
  * What a web-sized copy of a large library image would be, measured by making it: its format and size, `lighter:
  * false` when it would hardly be lighter than the original (so none is offered), or null when none can be made.
  */

@@ -36,7 +36,7 @@ import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } fr
 import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
 import type { MissingAssetFiles } from '@shared/api';
 import type { WriteFailure } from './save-error';
-import { HISTORY_LIMIT } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, HISTORY_LIMIT } from '@shared/api';
 import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
@@ -6151,7 +6151,7 @@ export class ProjectSession extends EventEmitter {
 
   /** The outside edits of code components refused for their errors, as Project health and the source editor show them. */
   refusedSourceDiagnostics(): Diagnostic[] {
-    return [...this.refusedSources].map(([id, r]) => ({ severity: 'error', code: 'EXTERNAL_SOURCE_REFUSED', message: r.message, owner: { kind: 'component', id }, site: r.path }));
+    return [...this.refusedSources].map(([id, r]) => ({ severity: 'error', code: EXTERNAL_SOURCE_REFUSED, message: r.message, owner: { kind: 'component', id }, site: r.path }));
   }
 
   /** Read-only inspection follows the owner's edits without writing anything. */

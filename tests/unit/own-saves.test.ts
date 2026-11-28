@@ -479,6 +479,12 @@ describe('an outside edit that breaks a code component (#1533)', () => {
     expect(session.state.components[id].source).toBe(source);
     expect(session.historyInfo().undoLabel).toBe(undo);
     expect(readFileSync(join(dir, path), 'utf8')).toBe(broken);
+    // A save made from the version that loaded is refused rather than written over the outside edit.
+    const { sourceHash } = await import('../../src/engine/apply');
+    const saved = await session.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source: '<p>Saved in the app</p>\n', expectedHash: sourceHash(source) }] }, { label: 'Edit Greeting source', codeAllowed: true });
+    expect(saved.ok).toBe(false);
+    expect(readFileSync(join(dir, path), 'utf8')).toBe(broken);
+    expect(refusals()).toHaveLength(1);
     // The file put back as it was loads nothing new, and the refusal goes.
     sent.length = 0;
     writeFileSync(join(dir, path), source);

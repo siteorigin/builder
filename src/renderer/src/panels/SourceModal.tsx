@@ -11,7 +11,7 @@ import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, row
 import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
-import type { SourceManifest } from '@shared/api';
+import { EXTERNAL_SOURCE_REFUSED, type SourceManifest } from '@shared/api';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -249,6 +249,10 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => s.snapshot?.state.components[definitionId]);
   const canFix = useStore((s) => !!s.providers.find((p) => p.id === s.settings?.ai.provider)?.configured);
   const [src, setSrc] = useState<{ source: string; hash: string; path: string; editable: boolean } | null>(null);
+  // The file was edited outside the app into code with errors, so it was not loaded: what shows is the version that
+  // last loaded, and saving waits for the file to be put right rather than write over the edit (#1533).
+  const refused = useStore((s) => s.snapshot?.diagnostics.find((d) => d.code === EXTERNAL_SOURCE_REFUSED && d.owner?.id === definitionId));
+  const projectDir = useStore((s) => s.snapshot?.dir);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -436,7 +440,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     reloadProps();
   };
   const save = async () => {
-    if (!src?.editable || !dirty || saving) return;
+    if (!src?.editable || !dirty || saving || refused) return;
     setErrors([]);
     setSaved(false);
     if (propsStale) return setTab('manifest');
@@ -503,8 +507,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   // Property problems the table shows in place. Text still being typed counts once it commits, which Save does.
   const propIssues = propsDirty && !typing ? schemaProblems(rows).length : 0;
   // Save waits: for an edit when the listed errors can't be repaired here, for a choice between two versions, for
-  // the latest code to load, or for the property problems to be fixed.
-  const blocked = (reviewing && listed) || codeStale || refreshFailed || propIssues > 0;
+  // the latest code to load, for the file edited outside the app to be put right, or for the property problems to be fixed.
+  const blocked = (reviewing && listed) || codeStale || refreshFailed || !!refused || propIssues > 0;
   const reviewErrors = () => {
     if (saving) return;
     const line = firstLine(errors);
@@ -537,6 +541,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const footNote = () => {
     if (status) return tidy(status);
     if (writing) return 'Saving…';
+    if (refused) return 'Showing the last version that loaded. Saving waits until the file on disk is fixed.';
     if (justSaved) return 'Saved. Every page using this component is updated.';
     if (!dirty) return 'No unsaved changes';
     if (refreshFailed) return 'Saving waits until the latest code loads.';
@@ -651,6 +656,19 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             <button className="btn btn-sm" disabled={loading} onClick={() => setReload((n) => n + 1)}>
               {loading ? 'Loading…' : 'Try again'}
             </button>
+          </div>
+        )}
+        {refused && (
+          <div className="scope-note danger source-stale" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span className="grow">
+              <strong>The file on disk has an edit that was not loaded.</strong> This is the last version that loaded{dirty ? ', and your edits are based on it' : ''}. {refused.message}
+            </span>
+            {projectDir && refused.site && (
+              <button className="btn btn-sm" onClick={() => void api.projects.reveal(`${projectDir}/${refused.site}`)}>
+                Show file
+              </button>
+            )}
           </div>
         )}
         {codeStale && (
