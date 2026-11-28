@@ -262,13 +262,14 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const blocks = content.includes('<!-- wp:');
     // A web address alone on a line of a classic post is one WordPress shows embedded.
     const prose = blocks ? content : content.replace(/^[ \t]*(https?:\/\/[^\s<>"]+)[ \t]*$/gm, (_m, url: string) => (report.embedLinks++, `<p><a href="${url}">${url}</a></p>`));
+    const oldPath = oldPathOf(childText(item, 'link').trim(), siteOrigin);
     let body;
     try {
       const postId = childText(item, 'wp:post_id').trim();
       const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
       body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery, wordpress: { footnotes: footnotesOf(item) } }, report);
     } catch (e) {
-      add(failedPost(item, key, (e as Error).message));
+      add(failedPost(item, key, (e as Error).message, oldPath));
       continue;
     }
     const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
@@ -277,18 +278,9 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     const thumbUrl = thumbId ? attachments.get(thumbId)?.src : undefined;
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
-    const linkUrl = childText(item, 'link').trim();
     report.droppedLinks = Math.max(0, report.droppedLinks - namedLost);
     const notes = [...reportNotes(report), ...links.list()];
     if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
-    let oldPath: string | undefined;
-    try {
-      const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
-      // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).
-      if (!url.search && (!siteOrigin || url.origin === siteOrigin) && url.pathname.length <= MAX_OLD_PATH) oldPath = sitePath(url.pathname);
-    } catch {
-      oldPath = undefined;
-    }
     add({
       key,
       from: title,
@@ -333,10 +325,27 @@ function isImageAttachment(item: XmlElement): boolean {
   return !ext || [...PICTURE_EXTENSIONS, 'svg', 'bmp', 'tif', 'tiff', 'heic', 'ico'].includes(ext);
 }
 
-/** A post whose text could not be read: imported with its details and no text, the reason in its notes. */
-function failedPost(item: XmlElement, key: string, why: string): SourcePost {
+/** The address a post's `<link>` gives it on the old site, when it is one of the site's own that can be kept. */
+function oldPathOf(linkUrl: string, siteOrigin: string | undefined): string | undefined {
+  // No link is no address: read against the site's own, it would be taken for the Home page's.
+  if (!linkUrl) return undefined;
+  try {
+    const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
+    // An address longer than a site's addresses can be is no old address to keep (and never worth reading whole).
+    if (!url.search && (!siteOrigin || url.origin === siteOrigin) && url.pathname.length <= MAX_OLD_PATH) return sitePath(url.pathname);
+  } catch {
+    // No address at all.
+  }
+  return undefined;
+}
+
+/**
+ * A post whose text could not be read: imported with its details and no text, the reason in its notes, and its old
+ * address kept for when the author publishes it.
+ */
+function failedPost(item: XmlElement, key: string, why: string, oldPath: string | undefined): SourcePost {
   const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
-  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
+  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`], ...(oldPath ? { oldPath } : {}) };
 }
 
 function decodeSlug(s: string): string {

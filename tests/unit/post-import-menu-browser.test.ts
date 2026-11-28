@@ -73,6 +73,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   missing: [],
   newTerms: { categories: [], tags: [] },
   redirects: 0,
+  redirectsPending: 0,
   skipped: [],
   oldSiteLinks: [],
   problems: [],
@@ -182,6 +183,26 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
     expect(await importing()).toEqual(['review-1', 'w', false]);
+  });
+
+  it('says how many old addresses wait for their draft to be published (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 4, redirectsPending: 1, redirectsLost: 2 }));
+    await page.getByText(/^3 keep working · 1 once its post is published · 2 can’t$/).waitFor();
+  });
+
+  it('says when every old address waits for its draft (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 2, redirectsPending: 2 }));
+    await page.getByText(/^2 once their posts are published$/).waitFor();
+  });
+
+  it('says nothing of drafts when every old address works now (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 1 }));
+    await page.getByText(/^1 keeps working$/).waitFor();
+  });
+
+  it('says when no old address can be kept (#1501)', async () => {
+    await mount(site, preview(true, { redirectsLost: 2 }));
+    await page.getByText(/^None keep working · 2 can’t$/).waitFor();
   });
 
   it('issue 1518: lists the old site’s addresses the posts still link to, with how many posts link to each', async () => {
