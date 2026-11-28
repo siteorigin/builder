@@ -106,6 +106,7 @@ import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
 import { perf, perfNow, serializedSize, timed } from './perf';
+import { trace, traced } from './trace';
 import { pagePerformance, unmeasuredPage, cacheFinding, PERFORMANCE_BUDGETS, PERFORMANCE_VIEWPORT, type PerformanceReport, type PerformanceStatus } from '@shared/performance';
 import { exportCachePolicies, immutableFiles } from './cache-policy';
 
@@ -342,6 +343,20 @@ const hashConfig = (files: ConfigFiles): string => sha(CONFIG_FILES.map((f) => f
 
 async function configHash(dir: string): Promise<string> {
   return hashConfig(await readConfig(dir));
+}
+
+/** What the editor is sent, for the trace (trace.ts): each message's channel, and for the open project's, what moved. */
+function traceSent(channel: string, payload: unknown) {
+  // The assistant's events stream as it answers: far too many, and none of them the opening's.
+  if (channel === 'ai:event') return;
+  const p = (payload ?? {}) as Record<string, unknown>;
+  if (channel === 'runtime:status') return trace('send', `runtime:status ${String(p.state)}${typeof p.message === 'string' ? `: ${p.message.slice(0, 200)}` : ''}${typeof p.url === 'string' ? ` at ${p.url}` : ''}`);
+  if (channel === 'project:changed') {
+    const snap = (p.snapshot ?? p.fields ?? {}) as Record<string, unknown>;
+    const runtime = snap.runtime as { state?: unknown } | undefined;
+    return trace('send', `project:changed #${String(p.seq)} revision ${String(p.revision)}${p.base === null ? ' whole' : ` on #${String(p.base)}`}${typeof snap.workspaceKey === 'string' ? ` for ${snap.workspaceKey}` : ''}${runtime ? `, runtime ${String(runtime.state)}` : ''}`);
+  }
+  trace('send', channel);
 }
 
 type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
@@ -760,8 +775,9 @@ export class Controller {
 
   send(channel: string, payload?: unknown) {
     const w = this.getWindow();
-    if (!w || w.isDestroyed()) return;
+    if (!w || w.isDestroyed()) return void (channel !== 'ai:event' && trace('send', `${channel} not sent: no window`));
     w.webContents.send(channel, payload);
+    traceSent(channel, payload);
     // What the editor is sent on every change (src/shared/perf.ts), only while marks are on: marked as sent now, then
     // sized as IPC serializes it, after the send so the editor gets it no later than it would. Sizing never throws.
     if (perf.on && channel === 'project:changed') {
@@ -1402,9 +1418,11 @@ export class Controller {
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
+    trace('open', `asked to open ${dir}`);
     if (!(await isTrusted(dir, await configHash(dir)))) {
       // The trust prompt names the project, so a manifest that cannot be read (a truncated copy, say) stops here.
       const manifest = await readManifestSummary(dir);
+      trace('open', `not trusted: ${manifest.ok ? 'asking to trust it' : manifest.message}`);
       if (!manifest.ok) return { ok: false, message: manifest.message };
       return { ok: false, needsTrust: { dir, name: manifest.name, reason: (await wasTrusted(dir)) ? 'changed' : 'new' } };
     }
@@ -1502,6 +1520,7 @@ export class Controller {
   async trustAndOpen(opened: string, opts: { replaces?: string } = {}): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
+      trace('open', `trusted and opening ${dir}`);
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir, { replaces: opts.replaces });
     } catch (e) {
@@ -1531,17 +1550,26 @@ export class Controller {
     let ready!: (s: ProjectSession) => void;
     const readied = new Promise<{ session: ProjectSession; shownEarly: boolean }>((r) => (ready = (session) => r({ session, shownEarly: true })));
     const early = !this.session && !this.remote.active;
+    const began = Date.now();
+    trace('open', `reading ${dir}${this.session ? ` (beside ${this.session.dir}, which stays open until it has opened)` : ''}`);
     const opening = ProjectSession.open(dir, INSTANCE_ID, { force: opts.force, preview: { start: (s) => this.prepareRuntime(s), stop: (s) => this.dropEarly(s) }, sweepLater: true, ...(early ? { shown: (s: ProjectSession) => (ready(s), gate) } : {}) });
     let session: ProjectSession;
     try {
       const first = await Promise.race([readied, opening.then((s) => ({ session: s, shownEarly: false }))]);
       session = first.session;
+      trace('open', `read in ${Date.now() - began}ms: revision ${session.revision}${session.readOnly ? ', read-only' : ''}, ${first.shownEarly ? 'shown before its publication' : 'opened whole'}`);
+      if (first.shownEarly)
+        void opening.then(
+          () => trace('open', `publication done ${Date.now() - began}ms after the open began`),
+          (e: unknown) => trace('open', `publication failed after ${Date.now() - began}ms: ${traced(e)}`)
+        );
       // Shown before its publication: the preview waits for it (startRuntimeWork), the editor is told what it found.
       if (first.shownEarly) {
         this.publications.set(session, opening.then(() => undefined, () => undefined));
         void this.afterPublication(session, opening).catch(() => undefined);
       }
     } catch (e) {
+      trace('open', `could not be read after ${Date.now() - began}ms: ${(e as Error)?.constructor?.name ?? 'Error'}: ${traced(e)}`);
       // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
       const locked = e instanceof ProjectLockedError;
       if (locked || (e instanceof ProjectFormatError && e.readOnly)) {
@@ -1573,6 +1601,7 @@ export class Controller {
         workspace = {};
       }
       const way = await this.makeWay(since).catch((e: Error) => ({ ok: false, message: `The open project could not be closed: ${e.message}` }));
+      trace('open', way.ok ? 'attaching' : `not attached: ${way.message ?? 'the project open now stays'}`);
       if (!way.ok) {
         shown();
         await this.dropEarly(session);
@@ -1586,6 +1615,7 @@ export class Controller {
     }
     // Only an opening that is listed takes over a missing entry: one open read-only leaves the list as it was.
     if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state), session.state.manifest.projectId, opts.replaces).catch(() => undefined);
+    trace('open', `answered ok ${Date.now() - began}ms after the open began`);
     return { ok: true };
   }
 
@@ -1594,6 +1624,7 @@ export class Controller {
     // Attached in the same turn as the switch (attach makes it the open project before it waits on anything), so no
     // other switch can come between the two.
     void this.attach(session, workspace, null, shown).catch(async (e) => {
+      trace('open', `attaching failed: ${traced(e)}`);
       await this.dropEarly(session);
       if (this.session === session) await this.close();
       else await session.close();
@@ -1695,6 +1726,7 @@ export class Controller {
       shown?.();
     }
     attaching({ revision: session.revision });
+    trace('open', `attached as ${this.workspaceKey}${runtimeError ? `, with the preview's error: ${runtimeError.state}` : ', starting the preview'}`);
     if (runtimeError) this.send('runtime:status', runtimeError);
     else await this.startRuntime();
   }
@@ -1900,18 +1932,21 @@ export class Controller {
     const mine = async () => this.early === early && (await session.stillOwner()) && this.early === early;
     early.started = (async () => {
       // No preview can run from this folder (#1366): the start says why, with no server forked.
-      if (unservableProject(dir)) return;
-      if (!(await isTrusted(dir, await configHash(dir)))) return;
-      if (this.early !== early || !(await dependenciesReady(dir)) || !(await mine())) return;
+      if (unservableProject(dir)) return void trace('preview', 'early start skipped: the folder cannot be served');
+      if (!(await isTrusted(dir, await configHash(dir)))) return void trace('preview', 'early start skipped: not trusted');
+      if (this.early !== early) return;
+      if (!(await dependenciesReady(dir))) return void trace('preview', 'early start skipped: the website tools need setting up');
+      if (!(await mine())) return void trace('preview', 'early start skipped: the lock is not this app\'s');
       // One started for this folder by an earlier opening and stopped since has exited first.
       await this.earlyExits.get(dir);
       await clearComponentPreviews(dir).catch(() => undefined);
       // Nobody to see it (the window closed while the project opened): it starts once a window shows the project.
-      if (!(await mine()) || this.previewUnseen()) return;
+      if (!(await mine()) || this.previewUnseen()) return void trace('preview', 'early start skipped: no window, or the lock went');
+      trace('preview', 'early start: forking the preview server while the project opens');
       const dev: DevServer = new DevServer(dir, async (): Promise<boolean> => this.dev === dev && (await session.stillOwner()));
       early.dev = dev;
       await dev.start();
-    })().catch(() => undefined);
+    })().catch((e: unknown) => trace('preview', `early start failed: ${traced(e)}`));
   }
 
   /**
@@ -1955,10 +1990,11 @@ export class Controller {
     const session = this.session;
     if (!session) return;
     // The server started while it opened is judged only once the opening's publication is done (usableEarly).
+    if (this.publications.has(session)) trace('preview', 'start waits for the opening\'s publication');
     await this.publications.get(session);
-    if (this.session !== session) return;
+    if (this.session !== session) return void trace('preview', 'start dropped: another project is open now');
     await this.stopPreview();
-    if (this.session !== session) return;
+    if (this.session !== session) return void trace('preview', 'start dropped: another project is open now');
     // Nobody can see it (a restart asked for with no window open, a takeover's copy): it starts, with every check
     // below, once a window shows the project again. At rest from now, before the wait below, so a window brought up
     // meanwhile starts it.
@@ -1971,6 +2007,7 @@ export class Controller {
     // before the checks below: so they run, as always, with no wait between them and anything running in the folder.
     // One that can be is taken only after them (startRuntimeNow stops it if the start ends without it).
     const early = await this.usableEarly(session);
+    trace('preview', early ? 'taking over the server started while the project opened' : 'starting a server of its own');
     if (!early) await this.earlyExits.get(session.dir);
     await this.startRuntimeChecked(session, early);
   }
@@ -1989,6 +2026,7 @@ export class Controller {
       return;
     }
     const ready = await dependenciesReady(session.dir);
+    trace('preview', ready ? 'website tools are set up' : 'website tools need setting up');
     // A project in a folder the preview cannot run from (#1366) still gets its tools (an export copies them), but a
     // setup that fails there says what would stop the preview anyway, not that the tools need reinstalling.
     const unservableHere = session.readOnly ? null : unservableProject(session.dir);

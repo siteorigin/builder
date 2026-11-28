@@ -24,6 +24,7 @@ import { createMenuPopups } from './app-menu-popup';
 import { opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
 import { captureMainErrors, createMainLog } from './main-log';
+import { startTrace, trace, traced } from './trace';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator, type RunDelegation } from '@agent/orchestrator';
@@ -628,8 +629,61 @@ function handle(channel: string, fn: (...args: never[]) => unknown, { anytime = 
     };
     authorize();
     const run = () => (fn as (...a: unknown[]) => unknown)(...args);
-    return anytime ? run() : packs.after(authorize, run);
+    // Each request and its answer are traced (trace.ts), so one that never answers shows as asked and nothing more.
+    const id = ++ipcAsked;
+    const asked = Date.now();
+    const quiet = QUIET_IPC.has(channel);
+    if (!quiet) trace('ipc', `#${id} ${channel} asked`);
+    let answer: unknown;
+    try {
+      answer = anytime ? run() : packs.after(authorize, run);
+    } catch (e) {
+      trace('ipc', `#${id} ${channel} threw after ${Date.now() - asked}ms: ${traced(e)}`);
+      throw e;
+    }
+    if (!quiet)
+      void Promise.resolve(answer).then(
+        () => trace('ipc', `#${id} ${channel} answered in ${Date.now() - asked}ms`),
+        (e: unknown) => trace('ipc', `#${id} ${channel} failed after ${Date.now() - asked}ms: ${traced(e)}`)
+      );
+    return answer;
   });
+}
+
+/** The requests made so often that tracing each would crowd out the steps around them. */
+const QUIET_IPC = new Set(['live:presence', 'remote:presence', 'menu:popup']);
+let ipcAsked = 0;
+
+/** The window's pages and frames in the trace: their loads, failures, console output and crashes. */
+function traceWindow(self: BrowserWindow) {
+  const contents = self.webContents;
+  const where = (url: string) => (url.length > 200 ? `${url.slice(0, 200)}…` : url);
+  contents.on('console-message', (e) => {
+    const frame = (() => {
+      try {
+        return e.frame && e.frame !== contents.mainFrame ? ` (frame ${where(e.frame.url)})` : '';
+      } catch {
+        return ' (frame gone)';
+      }
+    })();
+    trace('console', `${e.level}${frame}: ${e.message.slice(0, 800)}${e.level === 'error' || e.level === 'warning' ? ` at ${where(e.sourceId)}:${e.lineNumber}` : ''}`);
+  });
+  contents.on('did-start-navigation', (d) => {
+    if (!d.isSameDocument) trace('window', `${d.isMainFrame ? 'page' : 'frame'} navigating to ${where(d.url)}`);
+  });
+  contents.on('did-frame-navigate', (_e, url, code, status, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'frame'} at ${where(url)}: ${code} ${status}`));
+  contents.on('did-frame-finish-load', (_e, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'a frame'} finished loading`));
+  contents.on('did-fail-load', (_e, code, description, url, isMainFrame) => trace('window', `${isMainFrame ? 'page' : 'frame'} failed to load ${where(url)}: ${code} ${description}`));
+  contents.on('preload-error', (_e, path, error) => trace('window', `preload ${path} failed: ${traced(error)}`));
+  contents.on('render-process-gone', (_e, d) => trace('window', `the editor's page ended: ${d.reason} (exit code ${d.exitCode})`));
+  self.on('unresponsive', () => trace('window', 'the editor stopped responding'));
+  self.on('responsive', () => trace('window', 'the editor responds again'));
+  self.on('show', () => trace('window', 'shown'));
+  self.on('hide', () => trace('window', 'hidden'));
+  self.on('focus', () => trace('window', 'focused'));
+  self.on('blur', () => trace('window', 'lost focus'));
+  self.on('minimize', () => trace('window', 'minimized'));
+  self.on('restore', () => trace('window', 'restored'));
 }
 
 function registerIpc() {
@@ -1123,6 +1177,11 @@ function registerIpc() {
     leaveGate.reply(requestId, answer);
   });
   // The editor shows its screen and listens for File menu commands: one waiting for it is sent now.
+  // The editor's own steps, for the trace (src/renderer/src/lib/trace.ts): from its page only, as short text.
+  ipcMain.on('app:trace', (event, area: unknown, message: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    if (typeof area === 'string' && typeof message === 'string') trace(`editor ${area.slice(0, 40)}`, message.slice(0, 1500));
+  });
   ipcMain.on('menu:ready', (event) => {
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
     menuCommands.ready(win);
@@ -1314,6 +1373,9 @@ async function createWindow() {
   self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
     if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
   });
+  // What the window and the frames in it do, for the trace (trace.ts): the editor's and the preview's console output,
+  // every page and frame load, and a page that stops answering.
+  traceWindow(self);
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     recordingShortcut = false;
@@ -1583,6 +1645,8 @@ const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
 if (logging) {
   captureMainErrors(mainLog, { console, process });
   mainLog.write('start', launchLine());
+  startTrace(join(app.getPath('userData'), 'logs', 'trace.log'));
+  trace('app', launchLine(), headless ? '(headless)' : '(window shown)', DEV_URL ? `editor from ${DEV_URL}` : 'editor from the build');
 }
 // Learning mode (#1566, learning.ts): on only when SITEORIGIN_LEARNING turns it on at launch, and never in an automated
 // run, so a test never writes a person's recordings.

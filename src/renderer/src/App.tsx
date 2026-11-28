@@ -27,6 +27,7 @@ import { projectDisplayName, windowTitle } from '@shared/project-name';
 import { perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
 import { editorModule, loadEditor } from './lib/editor-module';
 import { askRecentsEarly, takeEarlyRecents } from './lib/early-recents';
+import { followForTrace, traceEditor } from './lib/trace';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -54,9 +55,10 @@ export function App() {
     // Already here (an open on Welcome loaded it): shown as it is, with no render more.
     if (loadedEditor || editorModule()) return;
     let live = true;
+    traceEditor('screen', 'loading the editor code');
     loadEditor().then(
-      (m) => live && setLoadedEditor(m),
-      (e: unknown) => live && setEditorFailed(e instanceof Error ? e : new Error(String(e)))
+      (m) => (traceEditor('screen', 'editor code loaded'), live && setLoadedEditor(m)),
+      (e: unknown) => (traceEditor('error', `the editor code could not be loaded: ${e instanceof Error ? e.message : String(e)}`), live && setEditorFailed(e instanceof Error ? e : new Error(String(e))))
     );
     return () => {
       live = false;
@@ -84,6 +86,8 @@ export function App() {
     setSaidFor(openingSince);
     setOpeningSaid(openingName ? `Opening ${openingName}…` : 'Opening a project…');
   }, [opening, openingName, openingSince, saidFor]);
+  // Which screen shows, and why, for the app's trace (lib/trace.ts).
+  useEffect(() => traceEditor('screen', `${shown}${shown === 'opening' ? ` (editor code ${editor ? 'loaded' : editorFailed ? 'failed' : 'loading'}, themes ${packsReady ? 'ready' : 'waiting'})` : ''}`), [shown, !!editor, packsReady, !!editorFailed]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     presented = shown;
     // A command held back while Welcome stood in for the editor is offered again now that the screen on show is the
@@ -236,7 +240,9 @@ export function App() {
       ...followRemote(),
       syncRemotePresence(),
       // The shown project's pinned notes (#770).
-      followNotes()
+      followNotes(),
+      // The editor's steps in the app's trace (lib/trace.ts).
+      followForTrace()
     ];
     // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
     // its code and the catalogue are here: Welcome never shows in between. The changes that follow are made against

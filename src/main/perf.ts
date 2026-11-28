@@ -10,6 +10,7 @@
 import { closeSync, constants, fstatSync, openSync, writeSync } from 'node:fs';
 import { serialize } from 'node:v8';
 import { PERF_COUNTERS_VERSION, PERF_ENV, readSent, type PerfAttrs, type PerfProc, type PerfRecord } from '@shared/perf';
+import { trace } from './trace';
 
 export interface Perf {
   readonly on: boolean;
@@ -27,6 +28,25 @@ export interface Perf {
 
 const ENDED = () => {};
 export const PERF_OFF: Perf = Object.freeze({ on: false, mark() {}, span: () => ENDED, count() {}, take: () => false, stop() {} });
+
+/** The spans the app trace (trace.ts) keeps while marks are off: the steps of opening a project, each with its time. */
+const TRACED_SPANS = /^(session\.open\.|session\.generate$|session\.sweep$|controller\.(attach|assetCheck)$|tools\.)/;
+
+/** Marks off, as PERF_OFF, but the opening's steps are traced (trace.ts) with how long each took. */
+export const PERF_TRACED: Perf = Object.freeze({
+  ...PERF_OFF,
+  span: (name: string, attrs?: PerfAttrs) => {
+    if (!TRACED_SPANS.test(name)) return ENDED;
+    const began = Date.now();
+    let ended = false;
+    return (more?: PerfAttrs) => {
+      if (ended) return;
+      ended = true;
+      const all = attrs || more ? { ...attrs, ...more } : null;
+      trace('step', `${name} ${Date.now() - began}ms${all ? ` ${JSON.stringify(all).slice(0, 300)}` : ''}`);
+    };
+  }
+});
 
 export interface PerfSink {
   write(line: string): void;
@@ -174,7 +194,9 @@ export const perf: Perf = sink
       meta: { platform: process.platform, arch: process.arch, electron: process.versions.electron ?? null, node: process.versions.node, counters: PERF_COUNTERS_VERSION },
       stallMs: 50
     })
-  : PERF_OFF;
+  : (process as { type?: string }).type === 'browser'
+    ? PERF_TRACED
+    : PERF_OFF;
 
 /**
  * A picture or other media file read by the main process to answer about it or keep it (`media.reads`,
