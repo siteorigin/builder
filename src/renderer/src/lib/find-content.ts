@@ -17,7 +17,7 @@ import { pageShowing, pagesShowing } from '@shared/page-shell';
 import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
-import { hasDetailPages, isSyncedCollection, orderedEntries } from '@shared/collections';
+import { entryRoute, hasDetailPages, isSyncedCollection, orderedEntries } from '@shared/collections';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { brandLabel, brandPlacements, followsSiteName, siteNameText, BRAND_PROP } from '@shared/site-name';
 
@@ -311,6 +311,49 @@ function entryFields(state: ProjectState): ContentField[] {
           entry: { collectionId: c.settings.id, entryId: e.id, field, draft: e.draft !== false, synced }
         });
       }
+    }
+  }
+  return out;
+}
+
+/** Names the page, shared part, entry or site details a field belongs to: one result group's worth. */
+export const placeKey = (f: ContentField): string => `${f.owner.kind}:${f.owner.id}`;
+
+/** A title as two places are compared by it: spacing and capitals alone don't tell them apart (nor does a screen reader). */
+const titleAs = (t: string) => oneLine(t).trim().toLowerCase();
+
+/** Where a place is: a page's or an entry's address, and for an entry without a page, its collection and slug. */
+function placeAddress(state: ProjectState, owner: ContentOwner): string | undefined {
+  if (owner.kind === 'page') return own(state.pages, owner.id)?.route;
+  if (owner.kind === 'shell') return 'Shared';
+  if (owner.kind === 'site') return 'Whole site';
+  if (owner.kind !== 'entry') return undefined;
+  const c = own(state.collections ?? {}, owner.collectionId);
+  const entry = c && own(c.entries, owner.id);
+  return entry ? (entryRoute(c, entry) ?? `${c.settings.name} · ${entry.slug}`) : undefined;
+}
+
+/**
+ * What tells apart the places among `fields` that share a title, by place (see `placeKey`): each one's full address,
+ * since a part of it may be the same for two of them. A place whose title is its own gets none. Two collections of
+ * one name, without pages, can hold the same slug: their IDs are added.
+ */
+export function placeQualifiers(state: ProjectState, fields: ContentField[]): Map<string, string> {
+  const places = new Map<string, ContentField>();
+  for (const f of fields) if (!places.has(placeKey(f))) places.set(placeKey(f), f);
+  const titled = new Map<string, ContentField[]>();
+  for (const f of places.values()) {
+    const title = titleAs(f.where);
+    titled.set(title, [...(titled.get(title) ?? []), f]);
+  }
+  const out = new Map<string, string>();
+  for (const alike of titled.values()) {
+    if (alike.length < 2) continue;
+    const found = alike.map((f) => ({ f, at: placeAddress(state, f.owner) }));
+    for (const { f, at } of found) {
+      if (!at) continue;
+      const shared = f.owner.kind === 'entry' && found.filter((x) => x.at === at).length > 1;
+      out.set(placeKey(f), shared && f.owner.kind === 'entry' ? `${at} · ${f.owner.collectionId}` : at);
     }
   }
   return out;
