@@ -188,6 +188,10 @@ describe('the contact form’s code', () => {
     // A field outside both, which would go undescribed or change under an agent.
     expect(changed('\t\t\t</form>', '\t\t\t\t<input name="company" />\n\t\t\t</form>')).toBeNull();
     expect(changed('\t\t\t</form>', "\t\t\t\t<input class=\"x\" disabled={status === 'sending'} />\n\t\t\t</form>")).toBeNull();
+    // However it is spaced or written, and under a name the service's own fields use.
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name = "company" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input name="access_key" />\n\t\t\t</form>')).toBeNull();
+    expect(changed('\t\t\t</form>', '\t\t\t\t<input class="x" disabled={"sending" === status} />\n\t\t\t</form>')).toBeNull();
     // A list inside the loop closing at the loop's own indentation ends the loop early, leaving the checkbox outside it.
     expect(changed('\t\t\t\t\t\t\t\t{/each}', '\t\t\t\t{/each}')).toBeNull();
     // The button outside them is the form's own.

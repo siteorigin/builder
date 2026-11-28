@@ -1295,10 +1295,20 @@ describe('structured data on a page with contact details and an FAQ', () => {
     // Each row hidden by its own styles: which rows show is the placement's to say, so it stays, in doubt.
     hide(...ids);
     expect(structuredContent(s, contact).faq).toHaveLength(count);
-    // Every row hidden by the placement's style for all of them: no row shows it.
-    delete wrapper.itemOverrides;
+    // Every row hidden by the placement's style for all of them: no row shows it, whatever else a row's own styles say.
+    wrapper.itemOverrides = { row: { list: 'rows', items: { [ids[0]]: { base: { opacity: '0.5' } } } } };
     wrapper.overrides = { row: { base: { hidden: true } } };
     expect(structuredContent(s, contact).faq).toEqual([]);
+    // Unless a row's own styles show it again.
+    hide(ids[0]);
+    wrapper.itemOverrides!.row.items[ids[0]] = { base: { hidden: false } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count);
+    // The FAQ's own rows still hide by their own styles there.
+    delete wrapper.overrides;
+    delete wrapper.itemOverrides;
+    const first = String((faq.props.items as ListItem[])[0].id);
+    faq.itemOverrides = { item: { list: 'items', items: { [first]: { base: { hidden: true } } } } };
+    expect(structuredContent(s, contact).faq).toHaveLength(count - 1);
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {

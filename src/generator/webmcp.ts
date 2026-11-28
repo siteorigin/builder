@@ -58,10 +58,19 @@ const FIELD_NAME = /\n(\t+)(name=\{names\[i\]\})/g;
 /** A single-choice question's group, whose description agents read for all of its answers. */
 const CHOICES_OPEN = '<fieldset class="so-form__field so-form__choices"';
 /**
- * The names the form's markup may give outside the field regions: the form's own (Netlify's form name), the service's
- * hidden fields, which agents never fill in, and the spam trap.
+ * The names the form's markup gives outside the field regions, each once: the form's own (Netlify's form name) and the
+ * service's hidden fields, which agents never fill in. The spam trap's are the only others.
  */
-const OTHER_NAMES = ["name={provider === 'netlify' ? netlifyName : undefined}", 'name="form-name"', 'name="access_key"', 'name={honeypot}'];
+const OTHER_NAMES: Array<[string, number]> = [
+  ["name={provider === 'netlify' ? netlifyName : undefined}", 1],
+  ['name="form-name"', 1],
+  ['name="access_key"', 1]
+];
+/** A name, and what locks a control, however the attribute is spaced (`aria-disabled` aside). */
+const NAME_ATTR = /(?<![\w-])name\s*=/g;
+const LOCK_ATTR = /(?<![\w-])(?:readonly|disabled)\s*=/g;
+/** The one lock outside the fields: the send button's, while the form cannot send. */
+const SEND_LOCK = 'disabled={!ready}';
 /** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
 /** What makes a field read-only, or a question unanswerable, while a message sends. */
@@ -124,13 +133,14 @@ export function adaptFormSource(source: string): string | null {
   const fields = regions.map(([a, b]) => markup.slice(a, b));
   const all = fields.join('\n');
   const named = count(all, FIELD_NAME);
-  if (!named || named !== count(all, /\bname=/g)) return null;
-  if (count(all, WHILE_SENDING) !== count(all, /\b(?:readonly|disabled)=/g)) return null;
+  if (!named || named !== count(all, NAME_ATTR)) return null;
+  if (count(all, WHILE_SENDING) !== count(all, LOCK_ATTR)) return null;
   if (count(all, CHOICES_OPEN) !== 1) return null;
   // Outside them, nothing an agent fills in: only the form's own name, the service's hidden fields and the trap, and
   // nothing that locks itself while sending.
   const outside = [markup.slice(0, regions[0][0]), markup.slice(regions[0][1], regions[1][0]), markup.slice(regions[1][1])].join('\n');
-  if (count(outside, /\bname=/g) !== OTHER_NAMES.reduce((n, name) => n + count(outside, name), 0) || /(?<![\w-])(?:readonly=|disabled=\{status ===)/.test(outside)) return null;
+  if (OTHER_NAMES.some(([name, n]) => count(outside, name) !== n)) return null;
+  if (count(outside, NAME_ATTR) !== OTHER_NAMES.length + count(outside, TRAP) || count(outside, LOCK_ATTR) !== count(outside, SEND_LOCK)) return null;
   const adaptFields = (text: string) =>
     text
       .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
