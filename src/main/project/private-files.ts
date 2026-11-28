@@ -1,13 +1,13 @@
 /**
  * Private files that never leave the project folder, by name, wherever they are in it: credentials and keys (Wrangler's
- * local secrets, `.dev.vars` and `.dev.vars.<environment>`, and direnv's `.envrc` and `.envrc.<name>` among them), and the app's own credential files
+ * local secrets, `.dev.vars` and `.dev.vars.<environment>`, direnv's `.envrc` and `.envrc.<name>`, and the `.auth` folder a test tool keeps a signed-in browser's cookies in, among them), and the app's own credential files
  * (`api-keys.json`, the source secrets of #676, the remote publishing tokens of #1157) should a copy of one land in a project,
  * with the copies an editor or a file manager leaves (`source-secrets.json~`, `.source-secrets.json.swp`,
  * `api-keys (1).json`, `source-secrets (copy).json`, `Copy of api-keys.json`). Only `.json` files: a library image
  * named after them is not one. Without case: on a case-insensitive disk, another spelling is the same file. Any
  * character after a name's start, a line break included: a file may be named with one.
  */
-export const PRIVATE_FILE = /^(\.env(\..*)?|\.envrc(\..*)?|\.dev\.vars(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/is;
+export const PRIVATE_FILE = /^(\.env(\..*)?|\.envrc(\..*)?|\.auth|\.dev\.vars(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/is;
 
 /** The app's own credential files, by the name before `.json`. */
 export const CREDENTIAL_STEMS: readonly string[] = ['source-secrets', 'api-keys', 'remote-credentials'];

@@ -3,7 +3,7 @@
  * has never had one, saved once it is open and never again on reopening (a duplicate gets one of its own), and the
  * version an export was staged from, listed under the export's name only once the export is delivered.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -292,6 +292,12 @@ describe('the milestone of an export (#1156)', () => {
     // A fixture checkout, which no snapshot reads, though the export copies it.
     writeFileSync(join(dir, 'tests/fixtures/repo/.git'), 'gitdir: ../../../.git/modules/repo\n');
     writeFileSync(join(dir, 'tests/fixtures/repo/index.js'), '// theirs\n');
+    // One whose marker is a link, which the export's copy leaves out.
+    if (process.platform !== 'win32') {
+      mkdirSync(join(dir, 'tests/fixtures/linked'), { recursive: true });
+      symlinkSync(join(dir, 'tests/fixtures/repo/.git'), join(dir, 'tests/fixtures/linked/.git'));
+      writeFileSync(join(dir, 'tests/fixtures/linked/index.js'), '// theirs too\n');
+    }
     const c = await open(dir);
     const capture = ProjectSession.prototype.captureExported;
     vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {

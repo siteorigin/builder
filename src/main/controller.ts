@@ -145,8 +145,15 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
   }
   // Chosen from the copy as a snapshot chooses (never into a nested repository, nor through a link): its setup files
   // and tests (#1484), which the fingerprint doesn't cover.
-  for (const { path: rel } of await listSnapshotFiles(dest)) if (!covered(rel) && !files.has(rel) && !docs.has(rel)) return false;
-  return true;
+  const copied = (await listSnapshotFiles(dest)).filter(({ path: rel }) => !covered(rel) && !files.has(rel) && !docs.has(rel));
+  if (!copied.length) return true;
+  // One the project's own walk leaves out is none a snapshot takes (in a repository whose marker, a link, the copy
+  // dropped), unless it is gone from the project since.
+  const held = await listSnapshotFiles(dir).then(
+    (l) => new Set(l.map((f) => f.path)),
+    () => null
+  );
+  return !!held && copied.every(({ path: rel }) => !held.has(rel) && existsSync(join(dir, rel)));
 }
 
 /** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */

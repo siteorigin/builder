@@ -85,8 +85,6 @@ export const GENERATED_MANIFEST = 'siteorigin/generated-manifest.json';
 export const SNAPSHOT_SYNC_SCRIPT = 'scripts/sync-sources.mjs';
 /** `.gitmodules` among them: Git reads one as its own settings, so no version can hold one (checkTreePath). */
 const LOCAL_STATE = new Set(['.git', '.gitmodules', '.siteorigin']);
-/** A folder a test tool keeps a signed-in browser's cookies and storage in (Playwright's `.auth`): private wherever it is. */
-const SIGNED_IN = '.auth';
 /** Wrangler's local state (#1126) among them: its local databases and bundles hold what `.dev.vars` gave them. */
 const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp', '.wrangler']);
 const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
@@ -119,7 +117,7 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
   const p = fold(part);
   if (LOCAL_STATE.has(p)) return 'local-state';
   if (CACHES.has(p) || (i === 0 && p === 'build')) return 'cache';
-  return p === SIGNED_IN || isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
+  return isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
 }
 
 /** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */

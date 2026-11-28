@@ -194,7 +194,8 @@ describe('which files a snapshot holds', () => {
         'api-keys.config.json',
         // A test tool's signed-in browser state.
         'tests/.auth/user.json',
-        'src/.auth/state.json'
+        'src/.auth/state.json',
+        'tests/.Auth/state.json'
       ],
       // `ſ` is a long s, which APFS takes for an s; HFS+ ignores a zero-width non-joiner.
       // Git reads a `.gitmodules` as its settings, wherever it is (a test's fixture of a repository).
