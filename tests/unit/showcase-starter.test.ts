@@ -6,7 +6,8 @@ import { showcaseKind, showcasePages } from '@catalogue/showcase';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { pageHeadings } from '@generator/checks';
-import { registerBeside, restorePacks, testPack } from './fixtures/packs';
+import { P, prop } from '@catalogue/dsl';
+import { foundationDesign, registerBeside, restorePacks, testPack } from './fixtures/packs';
 
 const shipped = listThemes().filter((t) => !t.devOnly);
 /** Foundation as the app loads it. */
@@ -196,6 +197,32 @@ describe('Component showcase starter', () => {
     const content = Object.values(s.pages).find((p) => p.title === 'Content')!;
     expect(componentIds(s, placed(content))).toContain('content.quote');
     expect(showcasePages('sparse').flatMap((p) => p.components.map((c) => c.componentId))).not.toContain('hero.split');
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('leaves a button that works its own component without a destination, and links the design’s others', () => {
+    const author = testPack('controls', { name: 'Controls', license: 'MIT' });
+    const none = { type: 'none' as const, target: '' };
+    const disclosure = foundationDesign({
+      componentId: 'content.disclosure',
+      name: 'Disclosure',
+      properties: { actionLabel: P.str('Toggle label', 'Show details'), actionLink: P.link('Toggle link'), linkLabel: P.str('Link label', 'Read more'), link: P.link('Link') },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      state: { open: { type: 'boolean', label: 'Open', initial: false } },
+      build: (b) =>
+        b.el('root', 'section', { name: 'Section' }, [
+          b.link('toggle', prop('actionLink'), prop('actionLabel'), 'primary', { stateAction: { state: 'open', op: 'toggle' } }),
+          b.link('more', prop('link'), prop('linkLabel'), 'text'),
+          b.el('panel', 'div', { when: { $state: 'open' } }, [b.text('details', 'p', 'The details.')])
+        ])
+    });
+    registerBeside(author.define([...FOUNDATION.components, disclosure].map((c) => author.adopt(c))));
+    const s = createStarterState('showcase', 'Controls', false, 'controls');
+    const placement = Object.values(s.pages)
+      .flatMap((p) => placed(p))
+      .find((n) => s.components[n.definitionId].componentId === 'content.disclosure')!;
+    expect(placement.props.actionLink).toEqual(none);
+    expect(placement.props.link).toMatchObject({ type: 'page' });
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
   });
 

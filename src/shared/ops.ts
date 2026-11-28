@@ -1061,7 +1061,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('entry.remove'),
     collectionId: z.string(),
     entryId: z.string(),
-    replacementEntryId: z.string().optional().describe('Links to the removed entry are pointed to this entry. One of the replacements is required while anything links to it.'),
+    replacementEntryId: z.string().optional().describe('Links to the removed entry, and its old addresses, are pointed to this entry, which needs a page of its own to take them (reference fields move only to another entry of the same collection). One of the replacements is required while anything links to it.'),
     replacementPageId: z.string().optional().describe('Links to the removed entry are pointed to this page instead.')
   }),
 

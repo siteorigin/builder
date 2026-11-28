@@ -7,8 +7,9 @@ import type { Collection, CollectionFieldSchema, CollectionKind, CollectionTaxon
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import { redirectRecords } from '@shared/redirects';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, feedsByDefault, inSiteFeed, collectionRoutes, hasArchivePages, hasDetailPages, isCollectionId, isSyncedCollection, isTermId } from '@shared/collections';
+import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, feedsByDefault, inSiteFeed, collectionRoutes, findEntry, hasArchivePages, hasDetailPages, isCollectionId, isSyncedCollection, isTermId, orderedEntries } from '@shared/collections';
 import { numberedSlug, slugify, suggestRoute } from '@shared/routes';
+import { canReplaceEntry, entryReferenceUses } from '@engine/collections';
 import { checkPropName } from '@engine/schema';
 import { optionValueFor } from './ui-state';
 
@@ -603,4 +604,34 @@ export function schemaLosses(collection: Collection, draft: SchemaDraft): string
     if (n || Object.keys(t.terms ?? {}).length) out.push(`${t.label}: its terms${n ? `, and ${n === 1 ? 'one entry' : `${n} entries`} filed under them` : ''}`);
   }
   return out;
+}
+
+/**
+ * Where a deleted entry's links and old addresses can go: pages and published entries visitors can reach, as
+ * `page:id` and `entry:id` values. Entries are grouped by collection, a collection with none left out.
+ */
+export function deleteDestinations(state: ProjectState, target: { collectionId: string; entryId: string }) {
+  // A draft is left out of the website, and so would be the links sent to it.
+  const pages = state.site.pageOrder
+    .filter((id) => Object.hasOwn(state.pages, id) && (state.pages[id].draft !== true || id === state.site.homePageId))
+    .map((id) => ({ value: `page:${id}`, label: `${state.pages[id].title} (${state.pages[id].route})` }));
+  const from = state.collections[target.collectionId];
+  const referenced = entryReferenceUses(state, target.entryId).length > 0;
+  // Grouped by collection, each under its own name (a renamed blog is not "Posts").
+  const groups = Object.keys(state.collections)
+    .sort()
+    .map((id) => {
+      const collection = state.collections[id];
+      const entries = orderedEntries(collection).filter((x) => x.id !== target.entryId && x.draft === false && canReplaceEntry(from, { collection, entry: x }, referenced));
+      return { id, name: collection.settings.name, entries: entries.map((x) => ({ value: `entry:${x.id}`, label: x.title })) };
+    })
+    .filter((g) => g.entries.length > 0);
+  return { pages, groups };
+}
+
+/** Whether a destination chosen for a deleted entry's links is still one `deleteDestinations` offers. */
+export function isDeleteDestination(state: ProjectState, target: { collectionId: string; entryId: string }, value: string): boolean {
+  if (!findEntry(state, target.entryId)) return false;
+  const { pages, groups } = deleteDestinations(state, target);
+  return [...pages, ...groups.flatMap((g) => g.entries)].some((o) => o.value === value);
 }
