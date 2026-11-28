@@ -1042,7 +1042,7 @@ describe('reading a WordPress export: statuses, dates and links', () => {
     expect(own(published).map((f) => f.site)).not.toContain('own-link|https://old.example/category/clay/');
     // The same import into a collection without category archives keeps no old category address.
     const flat = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }]).state;
-    flat.collections.posts.settings.categoryArchives = false;
+    flat.collections.posts.settings.termArchives = false;
     const unarchived = planPostImport(flat, source, '2026-11-24');
     expect(unarchived.archiveRedirects).toEqual([]);
     expect(unarchived.oldSiteLinks.find((l) => l.url.endsWith('/category/soil-science/'))).toEqual({ url: 'https://old.example/category/soil-science/', posts: 1 });

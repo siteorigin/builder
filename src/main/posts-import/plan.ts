@@ -6,7 +6,7 @@
  */
 import type { AssetRecord, CollectionTaxonomy, EntryDoc, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasCategoryArchives, hasDetailPages, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasTermArchives, hasDetailPages, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
 import { archiveRoute } from '@shared/archives';
 import { hasTerm, publishedEntries } from '@shared/entry-feed';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
@@ -94,13 +94,19 @@ export interface PostImportPlan {
   skipped: string[];
   /**
    * The old site's addresses the posts still link to, as they wrote them, each with how many posts link to it, most
-   * linked first: links the new site may replace once it is published there. `to` is where an old category archive's
-   * address sends visitors once the import keeps it working (archiveRedirects); `pending` while no published post is
-   * filed under that category, so its archive is not there yet.
+   * linked first: links the new site may replace once it is published there. `to` is where an old category's or tag's
+   * archive address sends visitors once the import keeps it working (archiveRedirects); `pending` while no published
+   * post is filed under it, so its archive is not there yet.
    */
   oldSiteLinks: Array<{ url: string; posts: number; to?: string; pending?: true }>;
-  /** The old site's category archive addresses the posts link to, kept working by sending visitors to the new archive. */
-  archiveRedirects: Array<{ from: string; to: string }>;
+  /**
+   * The old site's category and tag archive addresses (`/category/<slug>/`, `/tag/<slug>/`, and any other the posts
+   * link to), kept working by sending visitors to the new archive: `pending` while no published post is filed under
+   * it, so its archive is not there yet.
+   */
+  archiveRedirects: Array<{ from: string; to: string; pending?: true }>;
+  /** The old site's category and tag archive addresses that can't keep working, each with the archive it would have gone to and why. */
+  archiveRedirectsLost: Array<{ from: string; to: string; reason: string }>;
   /** What stops the import. Nothing is imported while there is one. */
   problems: string[];
   /** What stops only updating the posts already in the project. */
@@ -218,17 +224,20 @@ export function selectPlan(plan: PostImportPlan, existing: ExistingPosts): PostI
     for (const tax of plan.addedTaxonomies) if (!added.includes(tax)) delete kept[tax];
     taxonomies = plan.collection.create || added.length || newTerms.categories.length || newTerms.tags.length ? kept : null;
   }
-  // The old site's links of the posts imported, and the category archives kept working for them while their category
+  // The old site's links of the posts imported, and the category and tag archives kept working while their term
   // comes: one only a post left out brings is not there to send visitors to.
-  const dropped = new Set(plan.newTermIds.categories.filter((id) => !newTermIds.categories.includes(id)).map((id) => archiveRoute(plan.collection.route, id, 1)));
+  const dropped = new Set(
+    (Object.keys(TAXONOMIES) as TaxonomyId[]).flatMap((tax) => plan.newTermIds[tax].filter((id) => !newTermIds[tax].includes(id)).map((id) => lower(archiveRoute(plan.collection.route, { taxonomy: tax, id }, 1))))
+  );
   const was = new Map(plan.oldSiteLinks.map((l) => [l.url, l]));
   const oldSiteLinks = plan.source.site
     ? linksToOldSite(posts, plan.source.site).map((l) => {
         const row = was.get(l.url);
-        return row?.to && !dropped.has(row.to) ? { ...l, to: row.to, ...(row.pending ? { pending: true as const } : {}) } : l;
+        return row?.to && !dropped.has(lower(row.to)) ? { ...l, to: row.to, ...(row.pending ? { pending: true as const } : {}) } : l;
       })
     : [];
-  const archiveRedirects = plan.archiveRedirects.filter((r) => oldSiteLinks.some((l) => l.to === r.to && lower(oldCategoryAddress(l.url)?.from ?? '') === lower(r.from)));
+  const archiveRedirects = plan.archiveRedirects.filter((r) => !dropped.has(lower(r.to)));
+  const archiveRedirectsLost = plan.archiveRedirectsLost.filter((r) => !dropped.has(lower(r.to)));
   return {
     ...plan,
     taxonomies,
@@ -239,6 +248,7 @@ export function selectPlan(plan: PostImportPlan, existing: ExistingPosts): PostI
     missing: plan.missing.filter((m) => m.key === undefined || keys.has(m.key)),
     oldSiteLinks,
     archiveRedirects,
+    archiveRedirectsLost,
     problems: existing === 'update' ? [...plan.problems, ...plan.updateProblems] : [...plan.problems],
     updateProblems: []
   };
@@ -518,35 +528,57 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   }
   if (!source.posts.length) problems.push(`${source.label} has no posts to import.`);
 
-  // The old site's addresses the posts still link to. Its category archives among them, for a category the import
-  // brings, are kept working by sending visitors to that category's new archive, as the posts' own old addresses are.
+  // The old site's addresses the posts still link to, and its category and tag archives: each, for a term the import
+  // brings, kept working by sending visitors to that term's new archive, as the posts' own old addresses are.
   const oldSiteLinks = source.site ? linksToOldSite(posts, source.site) : [];
   const archiveRedirects: PostImportPlan['archiveRedirects'] = [];
-  if (archived && (!existing || hasCategoryArchives(existing.settings))) {
-    // A category by its WordPress ID spelled as an address spells it, as the link's path is read.
-    const bySlug = new Map<string, SourceTerm>();
-    for (const p of source.posts) for (const t of p.categories) if (t.slug) bySlug.set(normalizeRoute(`/${t.slug}/`), t);
-    // The categories whose archive the website has once the import is in: one with a published post.
-    const listed = new Set(posts.flatMap((p) => (p.draft ? [] : (p.terms.categories ?? []))));
+  const archiveRedirectsLost: PostImportPlan['archiveRedirectsLost'] = [];
+  if (archived && (!existing || hasTermArchives(existing.settings)) && route !== '/') {
+    // A term by its WordPress ID spelled as an address spells it, as the link's path is read.
+    const bySlug: Record<TaxonomyId, Map<string, SourceTerm>> = { categories: new Map(), tags: new Map() };
+    for (const p of source.posts) for (const tax of Object.keys(TAXONOMIES) as TaxonomyId[]) for (const t of tax === 'categories' ? p.categories : p.tags) if (t.slug) bySlug[tax].set(normalizeRoute(`/${t.slug}/`), t);
+    // The terms whose archive the website has once the import is in: one with a published post.
+    const listed = new Set(posts.flatMap((p) => (p.draft ? [] : (Object.keys(TAXONOMIES) as TaxonomyId[]).flatMap((tax) => (p.terms[tax] ?? []).map((id) => `${tax}:${id}`)))));
     let filed: EntryDoc[] | undefined;
-    const live = (id: string) => listed.has(id) || (!!existing && (filed ??= publishedEntries(state, existing)).some((e) => hasTerm(e, 'categories', id)));
+    const live = (tax: TaxonomyId, id: string) => listed.has(`${tax}:${id}`) || (!!existing && (filed ??= publishedEntries(state, existing)).some((e) => hasTerm(e, tax, id)));
     const kept = new Set((Array.isArray(state.site.redirects) ? state.site.redirects : []).flatMap((r) => (typeof r?.from === 'string' ? [lower(r.from)] : [])));
-    const sent = new Map<string, string>();
-    for (const row of oldSiteLinks) {
-      const old = oldCategoryAddress(row.url);
-      const term = old && bySlug.get(`/${old.slug}/`);
-      const id = term ? termId('categories', term) : null;
-      if (!old || !id) continue;
-      const k = lower(old.from);
-      if (!sent.has(k)) {
-        // Only an address nothing else holds: a page's, a post's (its own or an old one kept), a collection's, or one kept already.
-        if (validateRoute(old.from) || taken.has(k) || planned.has(k) || redirects.has(k) || kept.has(k) || underArchiveFolder(route, old.from) || archiveRouteOwner(state, old.from)) continue;
-        const to = archiveRoute(route, id, 1);
-        sent.set(k, to);
-        archiveRedirects.push({ from: old.from, to });
+    // Each old address once, by where it sends visitors (null: it can't be kept).
+    const sent = new Map<string, string | null>();
+    const keep = (from: string, tax: TaxonomyId, term: SourceTerm): string | null => {
+      const k = lower(from);
+      if (sent.has(k)) return sent.get(k)!;
+      const id = termId(tax, term);
+      if (!id || validateRoute(from)) return null;
+      const to = archiveRoute(route, { taxonomy: tax, id }, 1);
+      // One kept already (by an earlier import, or by hand) stays as it is: it is neither added again nor lost.
+      if (kept.has(k) || lower(to) === k) {
+        sent.set(k, null);
+        return null;
       }
-      row.to = sent.get(k);
-      if (!live(id)) row.pending = true;
+      // Only an address nothing else holds: a page's, a post's (its own or an old one kept), a collection's or its archive's.
+      const holder = taken.get(k)?.label ?? (planned.has(k) || redirects.has(k) ? 'an imported post' : underArchiveFolder(route, from) ? `the ${name} collection's archive pages` : archiveRouteOwner(state, from)?.label);
+      if (holder) {
+        sent.set(k, null);
+        archiveRedirectsLost.push({ from, to, reason: `it is the address of ${holder}` });
+        return null;
+      }
+      sent.set(k, to);
+      archiveRedirects.push({ from, to, ...(live(tax, id) ? {} : { pending: true as const }) });
+      return to;
+    };
+    // Every category's and tag's own archive on the old site, under the site's own installation.
+    const home = source.siteKey ? new URL(source.siteKey).pathname.replace(/\/+$/, '') : null;
+    if (home !== null)
+      for (const tax of Object.keys(TAXONOMIES) as TaxonomyId[]) for (const [slug, term] of bySlug[tax]) keep(normalizeRoute(`${home}/${tax === 'categories' ? 'category' : 'tag'}${slug}`), tax, term);
+    // Then any other archive address the posts link to (a category under another: `/category/farming/soil/`).
+    for (const row of oldSiteLinks) {
+      const old = oldTermAddress(row.url);
+      const term = old && bySlug[old.taxonomy].get(`/${old.slug}/`);
+      if (!old || !term) continue;
+      const to = keep(old.from, old.taxonomy, term);
+      if (!to) continue;
+      row.to = to;
+      if (archiveRedirects.find((r) => r.to === to && lower(r.from) === lower(old.from))?.pending) row.pending = true;
     }
   }
   const plan: PostImportPlan = {
@@ -563,6 +595,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     skipped,
     oldSiteLinks,
     archiveRedirects,
+    archiveRedirectsLost,
     problems,
     updateProblems
   };
@@ -590,11 +623,12 @@ function linksToOldSite(posts: PlannedPost[], site: string): PostImportPlan['old
 }
 
 /**
- * A WordPress category archive's address (`/category/soil-science/`, or `/category/farming/soil-science/` for a
- * category under another), as a route, with the category's ID there (its last part: WordPress's IDs for categories
- * are unique), or null for any other address. One with a query lists something else (a later page, a search).
+ * A WordPress category or tag archive's address (`/category/soil-science/`, or `/category/farming/soil-science/` for
+ * a category under another; `/tag/nitrogen/`), as a route, with the grouping and the term's ID there (its last part:
+ * WordPress's IDs for terms are unique in their grouping), or null for any other address. One with a query lists
+ * something else (a later page, a search).
  */
-function oldCategoryAddress(url: string): { from: string; slug: string } | null {
+function oldTermAddress(url: string): { from: string; taxonomy: TaxonomyId; slug: string } | null {
   let u: URL;
   try {
     u = new URL(url);
@@ -612,9 +646,10 @@ function oldCategoryAddress(url: string): { from: string; slug: string } | null 
   }
   if (`${typed.replace(/\/+$/, '')}/` !== from) return null;
   const parts = from.slice(1, -1).split('/');
-  // A later page of an archive (`/category/news/page/2/`) is no category of its own.
-  if (parts.length < 2 || parts[0] !== 'category' || (parts.length >= 4 && parts[parts.length - 2] === 'page' && /^\d+$/.test(parts[parts.length - 1]))) return null;
-  return { from, slug: parts[parts.length - 1] };
+  // A later page of an archive (`/category/news/page/2/`) is no term of its own, and a tag is never under another.
+  const taxonomy = parts[0] === 'category' ? 'categories' : parts[0] === 'tag' && parts.length === 2 ? 'tags' : null;
+  if (parts.length < 2 || !taxonomy || (parts.length >= 4 && parts[parts.length - 2] === 'page' && /^\d+$/.test(parts[parts.length - 1]))) return null;
+  return { from, taxonomy, slug: parts[parts.length - 1] };
 }
 
 /**
@@ -715,7 +750,7 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostI
 /**
  * The plan as one batch: the new library images first (`assets`, made from the pictures found), the collection and
  * its groupings, every entry (each keeping its old address), then the text of those that link to entries of the
- * import, once they all exist, and last the old category archive addresses kept working. `assetIds` maps each
+ * import, once they all exist, and last the old category and tag archive addresses kept working. `assetIds` maps each
  * picture's key to its library image; one missing is left out. With `addToNavigation`, a blog the import makes asks
  * for its link in the header menu, as the starter card's does.
  */

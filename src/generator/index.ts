@@ -107,7 +107,7 @@ import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteE
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
-import { archivePages, collectionIndexRoutes } from '@shared/archives';
+import { archivePages, collectionIndexRoutes, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
@@ -370,6 +370,15 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     }
     case 'collection': {
+      // A category's or tag's archive, at its current address, while it has one (an entry's linked terms); otherwise
+      // its words alone.
+      if (link.term) {
+        const terms = derived(ctx.state, 'termArchiveRoutes', (s) => termArchiveRoutes(derived(s, 'archivePages', archivePages)));
+        const to = terms.get(termArchiveKey(link.target, link.term));
+        if (!to) return null;
+        href = to;
+        break;
+      }
       // The first page of the collection's list, at its current address: one the website has no index for shows its
       // words alone, as a link to an entry it does not publish does.
       const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);

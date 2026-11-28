@@ -289,7 +289,7 @@ const COLLECTION_SETTINGS = {
     .nullable()
     .optional()
     .describe('Whether its published entries are listed in the website\'s RSS feed (rss.xml). Default: as its kind says, editorial yes and structured no. null goes back to that default.'),
-  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
+  termArchives: z.boolean().optional().describe('Whether each category and tag with a published entry gets an archive page under the collection\'s address, at category/<term ID>/ or tag/<term ID>/. Default true.'),
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
     .optional()

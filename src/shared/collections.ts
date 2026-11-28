@@ -26,9 +26,9 @@ export function archivePageSize(settings: { pageSize?: unknown } | undefined): n
   return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_PAGE_SIZE ? n : DEFAULT_PAGE_SIZE;
 }
 
-/** Whether a collection's categories get archive pages of their own: yes unless it says no. */
-export function hasCategoryArchives(settings: { categoryArchives?: unknown } | undefined): boolean {
-  return settings?.categoryArchives !== false;
+/** Whether a collection's categories and tags get archive pages of their own: yes unless it says no. */
+export function hasTermArchives(settings: { termArchives?: unknown } | undefined): boolean {
+  return settings?.termArchives !== false;
 }
 
 /** What a collection holds: structured records when it says so, otherwise dated articles, as every blog is. */
@@ -52,7 +52,7 @@ export function hasDetailPages(settings: { pages?: unknown } | undefined): boole
 }
 
 /**
- * Whether a collection has an index (and category archives) at its own address: yes unless it says no, and never
+ * Whether a collection has an index (and category and tag archives) at its own address: yes unless it says no, and never
  * without entry pages for it to link to (a hand edit that asks for one anyway is reported, and has none).
  */
 export function hasArchivePages(settings: { pages?: unknown } | undefined): boolean {
@@ -295,11 +295,11 @@ export function routeOwners(state: ProjectState): RouteOwner[] {
 
 /**
  * The folders under a collection's address that its archive pages live in: `page/` for the later pages of its index
- * (`/blog/page/2/`) and `category/` for each category's archive (`/blog/category/news/`, `/blog/category/news/page/2/`).
- * Everything under them belongs to the collection, so no page, old address or other collection can sit there; the
- * folder's own address stays free (an entry may be called "page").
+ * (`/blog/page/2/`), `category/` for each category's archive (`/blog/category/news/`, `/blog/category/news/page/2/`)
+ * and `tag/` for each tag's (`/blog/tag/nitrogen/`). Everything under them belongs to the collection, so no page, old
+ * address or other collection can sit there; the folder's own address stays free (an entry may be called "page").
  */
-export const ARCHIVE_FOLDERS = ['page', 'category'] as const;
+export const ARCHIVE_FOLDERS = ['page', 'category', 'tag'] as const;
 
 /** Whether `route` is under one of the archive folders of a collection at `prefix` (both compared in lowercase). */
 export function underArchiveFolder(prefix: string, route: string): boolean {

@@ -245,7 +245,7 @@ describe('a collection’s index and category archives', () => {
     // Only a draft in it: no archive.
     expect(files.has(route('/blog/category/events/'))).toBe(false);
     // Turned off, the collection has its index alone.
-    const off = run(s, { type: 'collection.update', collectionId: 'posts', categoryArchives: false } as EditOperation);
+    const off = run(s, { type: 'collection.update', collectionId: 'posts', termArchives: false } as EditOperation);
     expect(archivePages(publishedState(off)).filter((p) => p.category)).toEqual([]);
     expect(generateProject(publishedState(off)).get(route('/blog/'))).not.toContain('/blog/category/');
   });
@@ -351,7 +351,7 @@ describe('an archive page’s styles', () => {
     ['one page', () => sized(blog(), 100)],
     ['several pages', () => sized(blog(), 2)],
     ['enough pages to leave a gap in the page links', () => sized(blog(), 1)],
-    ['no category archives to link to', () => run(blog(), { type: 'collection.update', collectionId: 'posts', categoryArchives: false } as EditOperation)],
+    ['no category archives to link to', () => run(blog(), { type: 'collection.update', collectionId: 'posts', termArchives: false } as EditOperation)],
     // The newest post, which leads, has no picture; one in the grid does.
     ['a lead with no picture above a card with one', () => run(sized(blog(), 100), post('en_text', 'Words only', '2026-04-20'))],
     ['nothing published', bare],

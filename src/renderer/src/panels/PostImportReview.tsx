@@ -167,7 +167,7 @@ function OldSiteLinks({ links, site }: { links: PostImportPreview['oldSiteLinks'
         {links.map((l) => (
           <li key={l.url}>
             <b>{l.url}</b> · {plural(l.posts, 'post', 'posts')}
-            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under that category is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
+            {l.to ? (l.pending ? ` · sends visitors to ${l.to} once a post filed under it is published` : ` · kept working: it sends visitors to ${l.to}`) : ''}
           </li>
         ))}
       </ul>
@@ -478,21 +478,31 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
           ],
           ['Into', where],
           ['From', sourceOf(preview)],
-          (preview.redirects > 0 || !!preview.redirectsLost) && [
+          (preview.redirects > 0 || !!preview.redirectsLost || chosen.archiveRedirects.kept > 0 || chosen.archiveRedirects.lost.length > 0) && [
             'Old addresses',
             <>
               {(() => {
-                // The addresses kept for drafts start working once their posts are published, not now.
-                const pending = preview.redirectsPending;
-                const now = preview.redirects - pending;
+                // The posts' old addresses and their categories' and tags' archives, counted together. Those kept for
+                // drafts, or for a term no published post is filed under yet, start working once they are published.
+                const pending = preview.redirectsPending + chosen.archiveRedirects.pending;
+                const now = preview.redirects + chosen.archiveRedirects.kept - pending;
                 const later = pending ? `${pending.toLocaleString()} once ${pending === 1 ? 'its post is' : 'their posts are'} published` : '';
                 return now ? `${plural(now, 'keeps', 'keep')} working${later ? ` · ${later}` : ''}` : later ? `${later.charAt(0).toUpperCase()}${later.slice(1)}` : 'None keep working';
               })()}
-              {!!preview.redirectsLost && (
+              {(preview.redirectsLost ?? 0) + chosen.archiveRedirects.lost.length > 0 && (
                 <>
                   {' · '}
-                  <span className="import-summary-loss">{preview.redirectsLost.toLocaleString()} can’t</span>
+                  <span className="import-summary-loss">{((preview.redirectsLost ?? 0) + chosen.archiveRedirects.lost.length).toLocaleString()} can’t</span>
                 </>
+              )}
+              {chosen.archiveRedirects.lost.length > 0 && (
+                <ul className="import-summary-list" data-testid="post-import-archives-lost">
+                  {chosen.archiveRedirects.lost.map((l) => (
+                    <li key={l.from}>
+                      {l.from} can’t keep working: {l.reason}.
+                    </li>
+                  ))}
+                </ul>
               )}
             </>
           ],
