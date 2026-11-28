@@ -21,7 +21,7 @@ const columns = ['Day', 'Central library', 'Riverside room', 'Children’s desk'
 /** Enough rows that the grid scrolls in its own frame, which is what offers the shortcut. */
 const table = { columns, rows: Array.from({ length: 30 }, (_, i) => ({ id: `r${i}`, cells: { c0: `Day ${i + 1}` } })) };
 
-/** The Inspector in small: its sticky heading, at the height it wraps to, over the real table editor. */
+/** The Inspector in small: its sticky heading over the real table editor. The heading is tall, as one that wraps is, so only an allowance that follows its height clears it. */
 const ENTRY = [
   "import { createElement as h, useEffect, useRef } from 'react';",
   "import { createRoot } from 'react-dom/client';",
@@ -32,7 +32,7 @@ const ENTRY = [
   // As Header does in Inspector.tsx: the panel allows for the heading's height and the room above a field.
   "  useEffect(() => head.current.parentElement.style.setProperty('--insp-head-h', Math.ceil(head.current.offsetHeight) + 32 + 'px'), []);",
   '  return h("div", { className: "panel-body insp", style: { height: "460px" } },',
-  '    h("div", { className: "insp-head insp-sel", ref: head, style: { height: "104px", boxSizing: "border-box" } }, "Data table"),',
+  '    h("div", { className: "insp-head insp-sel", ref: head, style: { height: "200px", boxSizing: "border-box" } }, "Data table"),',
   '    h("div", { style: { padding: "0 14px" } }, h(TableEditor, { name: "table", schema: { type: "table", label: "Table", default: value }, value, onTable: async () => true })),',
   '    h("div", { style: { height: "600px" } }));',
   '}',
