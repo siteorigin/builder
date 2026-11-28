@@ -12,6 +12,8 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, planHomeChange } from '@engine/apply';
 import { headerMenu, headerMenuRoom } from '@engine/tree';
+import { generateHostRedirects } from '@generator/host-redirects';
+import { liveRedirects, publishedState } from '@generator/index';
 import { planPageAddress } from '@shared/page-address';
 import { PUBLISHED_FILE, publishedDocProblem, publishedPageAt, wasPublishedFor, withPublished } from '@shared/published';
 import { validateRoute } from '@shared/routes';
@@ -213,6 +215,35 @@ describe('recording an export in the project', () => {
     expect(s.state.site.name).toBe('Test Studio');
     expect(wasPublishedFor(s.state, '/about-us/', byTitle(s.state, 'About').id)).toBe(true);
     expect(wasPublishedFor(s.state, '/services/', 'pg_services')).toBe(true);
+    await s.close();
+  });
+
+  it('keeps a page’s exported newer address working when Undo takes it back off it (#1382)', async () => {
+    const { s } = await session();
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }] }, { label: 'Change page address' })).ok).toBe(true);
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/services/');
+    // The next export sends the newer address on to the page, by host rule and by its own page.
+    const live = publishedState(s.state);
+    expect(liveRedirects(live).map((r) => [r.from, r.to])).toEqual([['/what-we-do/', '/services/']]);
+    expect(generateHostRedirects(live)).toContain('/what-we-do/ /services/ 301');
+    // Redo still puts the page back where it was moved, keeping its first address working.
+    expect((await s.redo()).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/what-we-do/');
+    expect(liveRedirects(publishedState(s.state)).map((r) => [r.from, r.to])).toEqual([['/services/', '/what-we-do/']]);
+    await s.close();
+  });
+
+  it('keeps nothing when Undo takes a page off an address no export delivered', async () => {
+    const { s } = await session();
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }] }, { label: 'Change page address' })).ok).toBe(true);
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/services/');
+    expect(liveRedirects(publishedState(s.state))).toEqual([]);
+    expect(generateHostRedirects(publishedState(s.state))).toBeNull();
     await s.close();
   });
 
