@@ -697,7 +697,7 @@ export const DEFINE_COLLECTION_ARGS = z
       .nullable()
       .optional()
       .describe(
-        'Search, filters and sorting visitors get on the first page of its index (a real estate or directory index), over every published entry; needs its index with the ready-made cards. search: its titles and excerpts. filters: terms.<grouping ID>, or field.<name> of an enum (pick options), boolean (yes or no) or number field (a range). sort: title, publishedAt, or field.<name> of a string, number or date field. Replaces the whole setting; null removes it.'
+        'Search, filters and sorting visitors get on the first page of its index (a real estate or directory index), over every published entry; needs its index with the ready-made cards. read_project shows the current setting as browse. search: its titles, excerpts and categories, and the options of its choice filters. filters: terms.<grouping ID>, or field.<name> of an enum (pick options), boolean (yes or no) or number field (a range). sort: title, publishedAt, or field.<name> of a string, number or date field. Replaces the whole setting; null removes it.'
       )
   })
   .strict();
@@ -705,7 +705,8 @@ export type DefineCollectionArgs = z.infer<typeof DEFINE_COLLECTION_ARGS>;
 
 export const DEFINE_COLLECTION_DESCRIPTION =
   'Create a collection (a Team, Projects or Events: entries kept apart from the pages), or change one. A blog is the ready-made collection "posts": create it with only collectionId "posts", which brings its index at /blog/, categories, tags and the RSS feed. A change sets its name, what one entry is called, its kind, pages and address, and its custom fields and groupings. An update only adds and relabels: every field, option, grouping and term the collection has stays, with every entry\'s values. Then write its entries with upsert_collection_entry (custom fields as values), show them on a page with connect_collection_list, or in a section placed by upsert_page_with_sections. A collection synced from an external source (readOnly) cannot be changed.';
-export const DEFINE_COLLECTION_BRIEF = 'Create a collection, or update one. A blog is the ready-made "posts" (create with only that collectionId). An update only adds or relabels fields and groupings, keeping every one it has. Then its entries with upsert_collection_entry. Never a readOnly one.';
+export const DEFINE_COLLECTION_BRIEF =
+  'Create a collection, or update one. A blog is the ready-made "posts" (create with only that collectionId). An update only adds or relabels fields and groupings, keeping every one it has. browse gives its index visitor search, filters (terms.<grouping ID> or field.<name>) and sorts (title, publishedAt, field.<name>), replacing the setting read_project shows; null removes it. Then its entries with upsert_collection_entry. Never a readOnly one.';
 
 /** A field row as collection.create and collection.update take it: the new field, or the field it has with what the row adds. */
 function fieldSchema(row: z.infer<typeof FIELD_ROW>, was: CollectionFieldSchema | undefined, issues: FieldIssue[], at: string): Record<string, unknown> | null {

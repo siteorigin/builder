@@ -38,7 +38,7 @@ function site(): ProjectState {
     route: '/homes/',
     pageSize: 3,
     fields: { price: { type: 'number', label: 'Price' }, garden: { type: 'boolean', label: 'Garden' } },
-    taxonomies: { region: { label: 'Region', terms: { north: { label: 'North Coast' }, south: { label: 'South Bay' } } } },
+    taxonomies: { region: { label: 'Region', terms: { north: { label: 'North Coast' }, south: { label: 'South Bay' } } }, categories: { label: 'Categories', terms: { coastal: { label: 'Coastal' } } } },
     browse: { search: true, filters: ['terms.region', 'field.garden', 'field.price'], sort: ['field.price', 'title'] }
   } as EditOperation);
   const homes: Array<[string, string, number, boolean, string]> = [
@@ -51,7 +51,8 @@ function site(): ProjectState {
     ['en_reef', 'Reef View', 990000, true, 'north']
   ];
   homes.forEach(([entryId, title, price, garden, region], i) =>
-    apply({ type: 'entry.create', collectionId: 'homes', entryId, title, publishedAt: `2026-0${i + 1}-01`, draft: false, values: { price, garden }, terms: { region: [region] } } as EditOperation)
+    // Cliff Cottage is filed under a category too, whose archive its card links to before its title.
+    apply({ type: 'entry.create', collectionId: 'homes', entryId, title, publishedAt: `2026-0${i + 1}-01`, draft: false, values: { price, garden }, terms: { region: [region], ...(entryId === 'en_cliff' ? { categories: ['coastal'] } : {}) } } as EditOperation)
   );
   return s;
 }
@@ -198,7 +199,7 @@ describe.skipIf(!browserInstalled)('a collection index for a visitor', () => {
       await search.getByRole('searchbox', { name: 'Search' }).fill('south bay');
       await expect.poll(() => status(page).innerText()).toBe('3 matches');
       await search.getByRole('searchbox', { name: 'Search' }).fill('zeppelin');
-      await expect.poll(() => status(page).innerText()).toBe('Nothing matches. Try fewer filters or other words.');
+      await expect.poll(() => status(page).innerText()).toBe('Nothing matches.');
       expect(loads()).toBe(1);
       expect(problems).toEqual([]);
     } finally {
@@ -262,6 +263,20 @@ describe.skipIf(!browserInstalled)('a collection index for a visitor', () => {
       await expect(titles(page)).resolves.toEqual(['Reef View', 'Café Corner', 'Quay Flat']);
       await page.getByRole('button', { name: 'Try again' }).click();
       await expect.poll(() => titles(page)).toEqual(['Quay Flat']);
+      expect(loads()).toBe(2);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('tries the entries again for the next search once a failed one is cleared', async () => {
+    const { page, loads } = await open({ index: (n) => (n === 1 ? 'fail' : 'ok') });
+    try {
+      await page.getByRole('searchbox', { name: 'Search' }).fill('quay');
+      await expect.poll(() => status(page).innerText()).toBe('The list could not load.');
+      await page.getByRole('button', { name: 'Clear all' }).click();
+      await page.getByRole('searchbox', { name: 'Search' }).fill('dune');
+      await expect.poll(() => titles(page)).toEqual(['Dune House']);
       expect(loads()).toBe(2);
     } finally {
       await page.close();

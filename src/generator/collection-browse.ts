@@ -25,8 +25,10 @@ import { resolveImage } from './index';
 export const BROWSE_HELPER_FILE = 'collection-browse.js';
 /** The component holding a collection index's controls. */
 export const BROWSE_COMPONENT_FILE = 'CollectionBrowse.svelte';
+/** The folder of the runtime folder holding each browsing collection's index. */
+export const BROWSE_INDEX_DIR = 'collections';
 /** A browsing collection's index, under the runtime folder: loaded the first time a visitor uses a control. */
-export const browseIndexFile = (collectionId: string): string => `collections/${collectionId}.js`;
+export const browseIndexFile = (collectionId: string): string => `${BROWSE_INDEX_DIR}/${collectionId}.js`;
 
 /** One control as the page gives it to the browse component: what it reads, what kind it is, and what it is called. */
 export type BrowseFilter = { key: string; kind: 'choice'; label: string; options: Array<{ value: string; label: string }> } | { key: string; kind: Exclude<BrowseFilterKind, 'choice'>; label: string };
@@ -251,6 +253,16 @@ function wordsOf(entry) {
 	return f;
 }
 
+/** How text sorts in the page's language, or in the browser's own when it does not know that one. */
+function textCollator(locale) {
+	const options = { numeric: true, sensitivity: 'base' };
+	try {
+		return new Intl.Collator(locale || undefined, options);
+	} catch {
+		return new Intl.Collator(undefined, options);
+	}
+}
+
 /** The entries that match, in the order chosen. \`locale\` is the page's language, which text sorts by. */
 export function browse(entries, controls, criteria, locale) {
 	const words = [...new Set(searchWords(criteria.query))];
@@ -279,15 +291,16 @@ export function browse(entries, controls, criteria, locale) {
 	const [key, dir] = String(criteria.sort ?? '').split(':');
 	const sort = controls.sorts.find((s) => s.key === key);
 	if (!sort) return found;
-	const collator = new Intl.Collator(locale || undefined, { numeric: true, sensitivity: 'base' });
-	const missing = (x) => x === null || x === undefined || x === '';
+	const collator = sort.kind === 'text' ? textCollator(locale) : null;
+	// Blank text is no value, however many spaces it holds.
+	const missing = (x) => x === null || x === undefined || (typeof x === 'string' && !x.trim());
 	const order = new Map(found.map((e, i) => [e, i]));
 	const sign = dir === 'desc' ? -1 : 1;
 	return found.sort((a, b) => {
 		const x = a.values ? a.values[key] : undefined;
 		const y = b.values ? b.values[key] : undefined;
 		if (missing(x) || missing(y)) return missing(x) === missing(y) ? order.get(a) - order.get(b) : missing(x) ? 1 : -1;
-		const c = sort.kind === 'number' ? x - y : sort.kind === 'date' ? (x < y ? -1 : x > y ? 1 : 0) : collator.compare(String(x), String(y));
+		const c = sort.kind === 'number' ? x - y : sort.kind === 'date' ? (x < y ? -1 : x > y ? 1 : 0) : collator.compare(String(x).trim(), String(y).trim());
 		return c * sign || order.get(a) - order.get(b);
 	});
 }
@@ -346,9 +359,11 @@ export const BROWSE_SVELTE = String.raw`<script>
 		};
 	});
 
-	// The index loads the first time a control is used.
+	// The index loads the first time a control is used. A load that failed is tried again by Try again, or once every
+	// control is cleared, by the next one used.
 	$effect(() => {
-		if (active && !entries && !loading && !failed) fetchEntries();
+		if (!active) failed = false;
+		else if (!entries && !loading && !failed) fetchEntries();
 	});
 
 	function fetchEntries() {
@@ -397,7 +412,9 @@ export const BROWSE_SVELTE = String.raw`<script>
 		const before = shown;
 		more_pages += 1;
 		await tick();
-		list?.querySelectorAll('li')[before]?.querySelector('a')?.focus();
+		const card = list?.querySelectorAll('li')[before];
+		// Its title's link, which opens it, rather than a category's before it.
+		(card?.querySelector(':is(h2, h3, h4) a') ?? card?.querySelector('a'))?.focus();
 	}
 </script>
 
@@ -612,7 +629,8 @@ export const BROWSE_SVELTE = String.raw`<script>
 		display: none;
 	}
 	@media print {
-		.so-browse {
+		.so-browse,
+		.so-browse__more {
 			display: none;
 		}
 	}

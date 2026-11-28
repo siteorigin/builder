@@ -19,6 +19,7 @@ import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, generateProject, publishedState } from '@generator/index';
 import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseControls, browseIndexFile, browseJs, buildBrowseIndex } from '@generator/collection-browse';
 import { archiveFile } from '@generator/archive';
+import { collectionsSummary } from '@agent/context';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -75,6 +76,8 @@ describe('the browse setting', () => {
     expect(s.collections.homes.settings.browse).toEqual({ search: true, filters: ['field.price', 'terms.region'] });
     expect(run(s, { type: 'collection.update', collectionId: 'homes', browse: null } as EditOperation).collections.homes.settings.browse).toBeUndefined();
     expect(run(s, { type: 'collection.update', collectionId: 'homes', browse: { search: false } } as EditOperation).collections.homes.settings.browse).toBeUndefined();
+    // A setting given replaces the whole of the one it has.
+    expect(run(s, { type: 'collection.update', collectionId: 'homes', browse: { sort: ['title', 'title'] } } as EditOperation).collections.homes.settings.browse).toEqual({ sort: ['title'] });
     // A change of something else keeps it.
     expect(run(s, { type: 'collection.update', collectionId: 'homes', pageSize: 5 } as EditOperation).collections.homes.settings.browse).toEqual({ search: true, filters: ['field.price', 'terms.region'] });
   });
@@ -88,6 +91,8 @@ describe('the browse setting', () => {
       browse: { search: true, filters: ['field.senior'], sort: ['title'] }
     } as EditOperation);
     expect(s.collections.team.settings.browse).toEqual({ search: true, filters: ['field.senior'], sort: ['title'] });
+    // A field it is not made with is refused, and so is the collection.
+    expect(() => run(createStarterState('business', 'Coast Realty', false), { type: 'collection.create', collectionId: 'team', fields: { senior: { type: 'boolean', label: 'Senior' } }, browse: { filters: ['field.senior', 'field.age'] } } as EditOperation)).toThrow(/"field.age" is none of those/);
   });
 
   it('refuses a filter or sort its fields give no control for, naming the field', () => {
@@ -96,6 +101,15 @@ describe('the browse setting', () => {
     expect(refusal(s, { type: 'collection.update', collectionId: 'homes', browse: { filters: ['field.nope'] } } as EditOperation)).toMatch(/"field.nope" is none of those/);
     expect(refusal(s, { type: 'collection.update', collectionId: 'homes', browse: { sort: ['terms.region'] } } as EditOperation)).toMatch(/sort Homes .*“Region” is none of those/);
     expect(refusal(s, { type: 'collection.update', collectionId: 'homes', browse: { sort: ['field.garden'] } } as EditOperation)).toMatch(/“Garden” is none of those/);
+    // Every key is checked, not only the first.
+    expect(refusal(s, { type: 'collection.update', collectionId: 'homes', browse: { filters: ['field.price', 'field.agent'] } } as EditOperation)).toMatch(/“Agent” is none of those/);
+    expect(refusal(s, { type: 'collection.update', collectionId: 'homes', browse: { sort: ['title', 'field.nope'] } } as EditOperation)).toMatch(/sort Homes .*"field.nope" is none of those/);
+    // Checked against the fields the same change gives it: one it adds can be chosen, one it removes cannot.
+    const fields = structuredClone(s.collections.homes.settings.fields);
+    const added = run(s, { type: 'collection.update', collectionId: 'homes', fields: { ...fields, beds: { type: 'number', label: 'Beds' } }, browse: { filters: ['field.beds'] } } as unknown as EditOperation);
+    expect(added.collections.homes.settings.browse).toEqual({ filters: ['field.beds'] });
+    const { garden: _garden, ...rest } = fields;
+    expect(refusal(s, { type: 'collection.update', collectionId: 'homes', fields: rest, browse: { filters: ['field.garden'] } } as unknown as EditOperation)).toMatch(/"field.garden" is none of those/);
   });
 
   it('drops a filter or sort whose field goes or stops giving that control, and the setting with the last of them', () => {
@@ -114,6 +128,15 @@ describe('the browse setting', () => {
     expect(swapped.collections.homes.settings.browse).toEqual({ filters: ['field.status'] });
     const none = run(run(ungrouped, { type: 'collection.update', collectionId: 'homes', browse: { filters: ['field.size'] } } as EditOperation), { type: 'collection.update', collectionId: 'homes', fields } as unknown as EditOperation);
     expect(none.collections.homes.settings.browse).toBeUndefined();
+  });
+
+  it("is shown to the assistant, which replaces it whole, with whether the index's own design keeps it off", () => {
+    const s = homes({ search: true, filters: ['terms.region'] });
+    expect(collectionsSummary(s).find((c) => c.id === 'homes')).toMatchObject({ browse: { search: true, filters: ['terms.region'] } });
+    expect(collectionsSummary(s).find((c) => c.id === 'homes')).not.toHaveProperty('browseOff');
+    const designed = run(s, { type: 'collection.update', collectionId: 'homes', archiveTemplate: 'start' } as EditOperation);
+    expect(collectionsSummary(designed).find((c) => c.id === 'homes')).toMatchObject({ browseOff: 'the index has its own design' });
+    expect(collectionsSummary(homes()).find((c) => c.id === 'homes')).not.toHaveProperty('browse');
   });
 
   it('is reported when a hand edit names a field it cannot use, and the index leaves that out', () => {
@@ -227,6 +250,12 @@ describe('the matching code', () => {
     // Text sorts ignore case; blank text is no value.
     expect(ids(h, { sort: 'field.agent:asc' })).toEqual(['en_harbour', 'en_quay', 'en_cliff', 'en_cafe', 'en_orchard', 'en_dune']);
     expect(ids(h, { sort: 'field.listed:desc' })).toEqual(['en_dune', 'en_cliff', 'en_cafe', 'en_quay', 'en_orchard', 'en_harbour']);
+    // Spaces alone are no value either, and go last with the blanks.
+    const spaced = entries.map((e) => (e.id === 'en_orchard' ? { ...e, values: { ...e.values, 'field.agent': '   ' } } : e));
+    expect(h.browse(spaced, controls, { ...none, sort: 'field.agent:asc' }, 'en').map((e) => e.id)).toEqual(['en_harbour', 'en_quay', 'en_cliff', 'en_cafe', 'en_orchard', 'en_dune']);
+    // A page language the browser cannot sort by sorts as the browser does, and sorting by a number never asks.
+    expect(h.browse(entries, controls, { ...none, sort: 'title:asc' }, 'en_US').map((e) => e.id)).toEqual(['en_cafe', 'en_cliff', 'en_dune', 'en_harbour', 'en_orchard', 'en_quay']);
+    expect(h.browse(entries, controls, { ...none, sort: 'field.price:desc' }, 'en_US')[0].id).toBe('en_dune');
     // A sort the page does not offer is the index's order.
     expect(ids(h, { sort: 'field.motive:asc' })).toEqual(entries.map((e) => e.id));
   });
@@ -284,6 +313,12 @@ describe('the index page', () => {
     expect(page).toContain('.so-archive__category a');
     expect(page).toContain('import SoImage');
     expect(svelteWarnings(page, 'src/routes/homes/+page.svelte')).toEqual([]);
+  });
+
+  it('has no controls when none would do anything: a filter whose grouping no published entry is filed under', () => {
+    const s = homes({ filters: ['terms.region'] });
+    for (const e of Object.values(s.collections.homes.entries)) e.terms.region = [];
+    expect(generateProject(s).get(archiveFile('/homes/'))).not.toContain('SoBrowse');
   });
 
   it('has no controls and no browse files without the setting, or with a design of its own', () => {

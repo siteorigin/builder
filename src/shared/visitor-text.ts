@@ -335,7 +335,7 @@ const EN: VisitorText = {
   browseLoading: 'Loading…',
   browseFailed: 'The list could not load.',
   browseRetry: 'Try again',
-  browseNone: 'Nothing matches. Try fewer filters or other words.',
+  browseNone: 'Nothing matches.',
   browseOne: '1 match',
   browseMany: '{count} matches',
   browseMore: 'Show more'
@@ -424,7 +424,7 @@ const AR: VisitorText = {
   browseLoading: 'جارٍ التحميل…',
   browseFailed: 'تعذّر تحميل القائمة.',
   browseRetry: 'إعادة المحاولة',
-  browseNone: 'لا توجد نتائج مطابقة. جرّب عوامل تصفية أقل أو كلمات أخرى.',
+  browseNone: 'لا توجد نتائج مطابقة.',
   browseOne: 'نتيجة واحدة مطابقة',
   browseMany: 'عدد النتائج المطابقة: {count}',
   browseMore: 'عرض المزيد'
@@ -513,7 +513,7 @@ const HE: VisitorText = {
   browseLoading: 'בטעינה…',
   browseFailed: 'לא ניתן היה לטעון את הרשימה.',
   browseRetry: 'ניסיון חוזר',
-  browseNone: 'אין התאמות. כדאי לנסות פחות מסננים או מילים אחרות.',
+  browseNone: 'אין התאמות.',
   browseOne: 'התאמה אחת',
   browseMany: 'התאמות: {count}',
   browseMore: 'הצגת עוד'

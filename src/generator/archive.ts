@@ -161,14 +161,16 @@ export function generateArchive(state: ProjectState, collectionId: string, route
 
   // The first page of the index, with something to list, gives visitors the collection's search, filters and sorting
   // when it offers them: until a visitor uses one, the page shows what is written above.
-  const browsing = !layout && !here.category && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId);
+  const controls = !layout && !here.category && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId) ? browseControls(state, collectionId) : undefined;
+  // Only with a control that does something: a filter whose grouping has lost its last term offers none.
+  const browsing = !!controls && (controls.search || controls.filters.length > 0 || controls.sorts.length > 0);
   if (browsing) {
     for (const part of ['grid', 'card', 'image', 'category', 'categoryLink', 'meta', 'excerpt'] as const) uses.add(part);
     const content = body.splice(0).map((b) => b.replace(/^/gm, '\t'));
     const load = js(relImport(file, `${RUNTIME_DIR}/${browseIndexFile(collectionId)}`));
     body.push(
       [
-        `\t\t<SoBrowse controls={${js(browseControls(state, collectionId))}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`,
+        `\t\t<SoBrowse controls={${js(controls)}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`,
         browseResults(),
         ...content,
         `\t\t</SoBrowse>`

@@ -23,6 +23,7 @@ import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
+import { BROWSE_INDEX_DIR } from '@generator/collection-browse';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -437,6 +438,18 @@ async function websiteFiles(project: string, state: ProjectState): Promise<{ fil
 const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
 
 /**
+ * What of a generated file names the files it loads, for finding the library files the website uses: all of it,
+ * nothing of the search index, and of a collection's browse index (generator/collection-browse.ts) only its cards'
+ * pictures, never the words and values of its entries (a sorted text field may hold any file's name).
+ */
+function namingText(rel: string, text: string): string {
+  if (rel === SEARCH_INDEX) return '';
+  if (!isBrowseIndex(rel)) return text;
+  return [...text.matchAll(/"(?:src|srcset)":("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]) as string).join('\n');
+}
+const isBrowseIndex = (rel: string) => rel.startsWith(`${RUNTIME_DIR}/${BROWSE_INDEX_DIR}/`);
+
+/**
  * Which of `names` everything the website build reads as text names, apart from library files: `file` as namesFile
  * finds a name, `whole` as namesWholeFile does. A draft-only component counts once anything else the website reads
  * names its file (a code component importing it), and so on through what that one names. The search index is left
@@ -451,7 +464,7 @@ async function websiteNames(project: string, { files, candidate, draftOnly }: { 
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = await readExportFile(join(project, rel), 'utf8');
+    const text = namingText(rel, await readExportFile(join(project, rel), 'utf8'));
     if (draftOnly.has(rel)) held.set(rel, text);
     else matcher.scan(text);
   }
@@ -574,7 +587,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
-  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
+  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text));
   for (const text of unreached) used.scan(text);
   const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
   // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document

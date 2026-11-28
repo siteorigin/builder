@@ -1,4 +1,5 @@
 import { axesOf, selectedVariants } from '@shared/variants';
+import { storedBrowse } from '@shared/collection-browse';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
@@ -301,7 +302,10 @@ export function collectionsSummary(state: ProjectState) {
         entries: entries.length,
         published: entries.filter((e) => e?.draft === false).length,
         ...(fields.length ? { fields } : {}),
-        taxonomies
+        taxonomies,
+        // What visitors can do on its index (define_collection's browse replaces it whole), and whether the index's own
+        // design keeps it from showing.
+        ...(s && storedBrowse(s) ? { browse: storedBrowse(s), ...(s.archiveTemplate ? { browseOff: 'the index has its own design' } : {}) } : {})
       };
     });
 }

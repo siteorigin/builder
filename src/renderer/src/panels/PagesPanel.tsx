@@ -5,7 +5,7 @@ import { suggestRoute } from '@shared/routes';
 import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives, hasDetailPages } from '@shared/collections';
 import { defaultArchiveDescription } from '@shared/archives';
 import type { CollectionBrowse, CollectionDoc, ElementRef, ProjectState } from '@shared/types';
-import { browseChoices, storedBrowse, type BrowseFilterKind } from '@shared/collection-browse';
+import { MAX_BROWSE_KEYS, browseChoices, storedBrowse, type BrowseFilterKind } from '@shared/collection-browse';
 import { redirectRecords } from '@shared/redirects';
 import { aiActivity, api, applyOps, commitDraft, commitOps, confirmDialog, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
@@ -1237,15 +1237,19 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
   const { collectionId, name, settings, designed } = props;
   const now = storedBrowse(settings) ?? {};
   const { filters, sorts } = browseChoices(settings);
-  const commit = (next: CollectionBrowse, label: string) => {
-    const stored = storedBrowse({ ...settings, browse: next });
-    return commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label);
+  // Each change replaces the whole setting, so it is made from the project as it is when chosen, and only to that
+  // project: a second click before the first lands is refused (choose again) rather than undoing the first.
+  const commit = (change: (was: CollectionBrowse) => CollectionBrowse, label: string) => {
+    const snapshot = getState().snapshot;
+    const latest = snapshot?.state.collections[collectionId]?.settings ?? settings;
+    const stored = storedBrowse({ ...latest, browse: change(storedBrowse(latest) ?? {}) });
+    return commitOps([{ type: 'collection.update', collectionId, browse: stored ?? null }], label, undefined, snapshot?.revision);
   };
   // Each list keeps the order the fields are offered in.
-  const toggle = (list: 'filters' | 'sort', offered: Array<{ key: string }>, key: string, on: boolean, label: string) => {
-    const had = now[list] ?? [];
-    void commit({ ...now, [list]: offered.map((c) => c.key).filter((k) => (k === key ? on : had.includes(k))) }, label);
-  };
+  const toggle = (list: 'filters' | 'sort', offered: Array<{ key: string }>, key: string, on: boolean, label: string) =>
+    void commit((was) => ({ ...was, [list]: offered.map((c) => c.key).filter((k) => (k === key ? on : (was[list] ?? []).includes(k))) }), label);
+  // At the most a list takes, the fields not chosen wait until one is unticked.
+  const full = (list: 'filters' | 'sort', key: string) => (now[list] ?? []).length >= MAX_BROWSE_KEYS && !(now[list] ?? []).includes(key);
   return (
     <fieldset className="pages-collection-browse" disabled={designed}>
       <legend>Visitor browsing</legend>
@@ -1254,8 +1258,8 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
         checked={!!now.search}
         disabled={designed}
         label="Search"
-        hint="Visitors search the entries’ titles and excerpts."
-        onChange={(on) => void commit({ ...now, search: on }, on ? `Let visitors search the ${name} index` : `Stop letting visitors search the ${name} index`)}
+        hint="Visitors search the entries’ titles, excerpts and categories, and the options they can filter by."
+        onChange={(on) => void commit((was) => ({ ...was, search: on }), on ? `Let visitors search the ${name} index` : `Stop letting visitors search the ${name} index`)}
       />
       <fieldset className="pages-collection-checks">
         <legend>Filters</legend>
@@ -1267,6 +1271,7 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
                   <input
                     type="checkbox"
                     checked={(now.filters ?? []).includes(f.key)}
+                    disabled={full('filters', f.key)}
                     onChange={(e) => toggle('filters', filters, f.key, e.target.checked, e.target.checked ? `Let visitors filter ${name} by ${f.label}` : `Stop letting visitors filter ${name} by ${f.label}`)}
                   />
                   <span className="grow">{f.label}</span>
@@ -1288,6 +1293,7 @@ function CollectionBrowsing(props: { collectionId: string; name: string; setting
                 <input
                   type="checkbox"
                   checked={(now.sort ?? []).includes(f.key)}
+                  disabled={full('sort', f.key)}
                   onChange={(e) => toggle('sort', sorts, f.key, e.target.checked, e.target.checked ? `Let visitors sort ${name} by ${f.label}` : `Stop letting visitors sort ${name} by ${f.label}`)}
                 />
                 <span className="grow">{f.label}</span>
