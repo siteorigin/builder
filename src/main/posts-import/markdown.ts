@@ -313,7 +313,23 @@ function emphasis(s: string): string {
     .replace(/\*(?=[^\s*])([^*]{0,1000}?[^\s*])\*/g, '<em>$1</em>')
     .replace(/\*(?=[^\s*])([^\s*])\*/g, '<em>$1</em>')
     .replace(/(?<![\w])_(?=\S)([^_]{0,1000}?\S)_(?![\w])/g, '<em>$1</em>')
-    .replace(/~~([^\s~](?:[^~]{0,1000}?[^\s~])?)~~/g, '<del>$1</del>');
+    .replace(STRIKE, (whole, inner: string) => (balanced(inner) ? `<del>${inner}</del>` : whole));
+}
+
+/**
+ * `~~` around words, as GFM strikes them through: a lone `~` inside stays one, and a run of three or more is no mark.
+ * Bounded like the marks above, so a line of unclosed marks is read once.
+ */
+const STRIKE = /(?<!~)~~(?!~)([^\s~](?:(?:[^~]|~(?!~)){0,1000}?[^\s~])?)(?<!~)~~(?!~)/g;
+
+/** Whether the bold and italic marks read in `html` each close inside it: a strike across one (`**a ~~b** c~~`) is no strike. */
+function balanced(html: string): boolean {
+  const open: string[] = [];
+  for (const [, slash, tag] of html.matchAll(/<(\/?)(strong|em)>/g)) {
+    if (!slash) open.push(tag);
+    else if (open.pop() !== tag) return false;
+  }
+  return open.length === 0;
 }
 
 /** `[label](href "title")`, `[label][ref]`, `[label][]` or `[ref]` at `at` (its "["), with where it ends. */
@@ -445,6 +461,13 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
         } else break;
         i++;
       }
+      // A list of tasks (`- [ ] task`, `- [x] done`), every item one, is a check list as post text reads one, and its
+      // markers go. What follows a marker is still its item's words (`- [ ] ---` is a task, not a rule): a character
+      // the inline reader removes stands in its place. A list inside a list joins the outer one, and keeps its markers.
+      const TASK = /^\[([ xX])\](?: +|$)/;
+      const tasks = !ordered && !inList && depth < 8 && items.every((it) => TASK.test(it.lines[0]));
+      const done = items.map((it) => tasks && TASK.exec(it.lines[0])![1] !== ' ');
+      if (tasks) for (const it of items) it.lines[0] = `\u0001${it.lines[0].replace(TASK, '')}`;
       const li = (it: ListItem) => {
         const inner = it.lines.join('\n').replace(/\n+$/, '');
         // An item of one paragraph holds its words; one with more holds blocks.
@@ -452,15 +475,8 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
         // The item's first paragraph is its own words, as a tight list shows them.
         return markdownToHtml(inner, depth + 1, refs, budget, true).replace(/^<p>([\s\S]*?)<\/p>(?=\n|$)/, '$1');
       };
-      const html = items.map(li);
-      // A list of tasks (`- [ ] task`, `- [x] done`), every item one, is a check list as post text reads one, and its
-      // markers go: taken from each item's words once they are read, so what follows a marker is read as it is
-      // written (`- [ ] ---` is a task, not a rule). A list inside a list joins the outer one, and keeps its markers.
-      const TASK = /^\[([ xX])\](?: +|$)/;
-      const tasks = !ordered && !inList && html.every((h) => TASK.test(h));
-      const done = (h: string) => (tasks && TASK.exec(h)![1] !== ' ' ? ' class="task-done"' : '');
       const tag = ordered ? 'ol' : 'ul';
-      out.push(`<${tag}${tasks ? ' class="contains-task-list"' : ''}>${html.map((h) => `<li${done(h)}>${tasks ? h.replace(TASK, '') : h}</li>`).join('')}</${tag}>`);
+      out.push(`<${tag}${tasks ? ' class="so-task-list"' : ''}>${items.map((it, k) => `<li${done[k] ? ' class="so-task-done"' : ''}>${li(it)}</li>`).join('')}</${tag}>`);
       continue;
     }
     // A table: a row of cells, then a line of dashes.

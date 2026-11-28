@@ -176,24 +176,27 @@ describe('formatting post text has no form for (#1506)', () => {
       '1.2 × 10⁶ cells, m², CO₂, H₂O, October¹ and xⁿ⁺¹.'
     ]);
     // No character of its own: a mark keeps the digits apart; letters alone (an ordinal) read as they are.
-    expect(read('<p>10<sup>-1.5</sup>2, x<sub>i,2</sub>, the 19<sup>th</sup> century and <sup>[1]</sup></p>').text).toEqual(['10^(-1.5)2, x_(i,2), the 19th century and ^([1])']);
-    // A subscript inside a superscript is its own; one with nothing to show is no superscript at all.
-    const nested = read('<p>e<sup>x<sub>2</sub></sup> and <strong>m<sup>2</sup></strong> and a<sup> </sup>b</p>');
-    expect(nested.text).toEqual(['ex₂ and m² and a b']);
+    expect(read('<p>10<sup>-1.5</sup>2, x<sub>i,2</sub>, x<sup>٦</sup>7, the 19<sup>th</sup> century and <sup>[1]</sup></p>').text).toEqual(['10^(-1.5)2, x_(i,2), x^(٦)7, the 19th century and ^([1])']);
+    // One inside another is bracketed (never 10²³); one with nothing to show is no superscript at all.
+    const nested = read('<p>10<sup>2<sup>3</sup></sup>, e<sup>x<sub>2</sub></sup> and <strong>m<sup>2</sup></strong> and a<sup> </sup>b</p>');
+    expect(nested.text).toEqual(['10^(2³), e^(x₂) and m² and a b']);
     expect(nested.blocks[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'm²', strong: true }]) });
-    expect(nested.report.raised).toBe(3);
+    expect(nested.report.raised).toBe(5);
   });
 
   it('writes superscripts and subscripts on the line in a picture’s caption', () => {
-    const { blocks, notes } = read('<figure><img src="c.jpg" alt="Gas"><figcaption>CO<sub>2</sub> at 10<sup>6</sup> ppm</figcaption></figure>', { autop: true });
-    expect(blocks).toEqual([{ type: 'image', assetId: 'm:c.jpg', alt: 'Gas', caption: 'CO₂ at 10⁶ ppm' }]);
-    expect(notes).toEqual(['2 superscripts and subscripts became ordinary text on the line.']);
+    const { blocks, notes } = read('<figure><img src="c.jpg" alt="Gas"><figcaption>CO<sub>2</sub> at 10<sup>-1.5</sup>2 and 10<sup>2<sup>3</sup></sup>, <del>old</del></figcaption></figure>', { autop: true });
+    expect(blocks).toEqual([{ type: 'image', assetId: 'm:c.jpg', alt: 'Gas', caption: 'CO₂ at 10^(-1.5)2 and 10^(2³), old' }]);
+    expect(notes).toEqual(['4 superscripts and subscripts became ordinary text on the line.', 'Kept a struck-through passage as ordinary text, no longer struck through.']);
+    // Pictures that share a caption show none: nothing of it is said to be kept.
+    expect(read('<figure><img src="a.jpg" alt="A"><img src="b.jpg" alt="B"><figcaption>10<sup>6</sup></figcaption></figure>').notes).toEqual([]);
   });
 
   it('keeps a superscript’s link, as a footnote marker has', () => {
     expect(read('<p>October<sup><a href="https://example.com/#fn1">1</a></sup></p>').blocks).toEqual([
       { type: 'p', spans: [{ text: 'October' }, { text: '¹', link: { type: 'url', target: 'https://example.com/#fn1' } }] }
     ]);
+    expect(read('<p>October<sup><a href="https://example.com/#fn1">1</a></sup></p>').notes).toEqual(['A superscript or subscript became ordinary text on the line.']);
     expect(read('<p>October<a href="https://example.com/#fn1"><sup>1</sup></a></p>').blocks).toEqual([
       { type: 'p', spans: [{ text: 'October' }, { text: '¹', link: { type: 'url', target: 'https://example.com/#fn1' } }] }
     ]);
@@ -216,14 +219,21 @@ describe('formatting post text has no form for (#1506)', () => {
     ]);
     expect(read('<p>Plain <strong>bold</strong> text.</p>').notes).toEqual([]);
     // Preformatted text in a table cell is still code: both are said.
-    expect(read('<table><tr><td><pre>a\nb</pre></td></tr></table>', { autop: true }).notes).toEqual(['A table became plain lines of text.', 'A block of code or preformatted text became ordinary text.']);
+    const cell = read('<table><tr><td><pre>a\nb</pre></td></tr></table>', { autop: true });
+    expect(cell.text).toEqual(['a\nb']);
+    expect(cell.notes).toEqual(['A table became plain lines of text.', 'A block of code or preformatted text became ordinary text.']);
   });
 
   it('reads Markdown strikethrough and task lists', () => {
     const md = (s: string) => read(markdownToHtml(s));
-    const struck = md('A correction: ~~12%~~ 21%, `~~kept~~` and ~~ spaced ~~.');
-    expect(struck.text).toEqual(['A correction: 12% 21%, ~~kept~~ and ~~ spaced ~~.']);
-    expect(struck.notes).toEqual(['Kept a struck-through passage as ordinary text, no longer struck through.']);
+    const struck = md('A correction: ~~12%~~ 21%, `~~kept~~`, ~~ spaced ~~, ~~~three~~~ and ~~a ~ b~~.');
+    expect(struck.text).toEqual(['A correction: 12% 21%, ~~kept~~, ~~ spaced ~~, ~~~three~~~ and a ~ b.']);
+    expect(struck.report.struck).toBe(2);
+    // A strike across bold or italic is no strike: its marks stay as written, and no words are lost.
+    expect(md('**a ~~b** c~~ and ~~d *e~~ f*').blocks).toEqual([
+      { type: 'p', spans: [{ text: 'a ~~b', strong: true }, { text: ' c~~ and ~~d ' }, { text: 'e~~ f', em: true }] }
+    ]);
+    expect(md('~~**bold** gone~~').notes).toEqual(['Kept a struck-through passage as ordinary text, no longer struck through.']);
     const tasks = md('- [ ] task\n- [x] done\n- [X] **also**\n- [ ] ---');
     expect(tasks.blocks).toEqual([{ type: 'check', items: [[{ text: 'task' }], [{ text: 'done' }], [{ text: 'also', strong: true }], [{ text: '---' }]] }]);
     expect(tasks.notes).toEqual(['Left out the tick of 2 done tasks: a check list shows every item alike.']);
@@ -232,6 +242,15 @@ describe('formatting post text has no form for (#1506)', () => {
     expect(md('- [ ] task\n- plain').blocks).toEqual([{ type: 'ul', items: [[{ text: '[ ] task' }], [{ text: 'plain' }]] }]);
     expect(md('- outer\n  - [x] inner').blocks).toEqual([{ type: 'ul', items: [[{ text: 'outer' }], [{ text: '[x] inner' }]] }]);
     expect(md('> - [ ] quoted').blocks).toEqual([{ type: 'check', items: [[{ text: 'quoted' }]] }]);
+    expect(md('- outer\n\n  > - [x] nested').blocks).toEqual([{ type: 'ul', items: [[{ text: 'outer' }], [{ text: '[x] nested' }]] }]);
+    // A marker is read from what was written: a reference named x is no task's tick, and an escaped bracket no marker.
+    expect(md('- [x] done\n- [ ] [x]\n\n[x]: https://example.com/x').blocks).toEqual([
+      { type: 'check', items: [[{ text: 'done' }], [{ text: 'x', link: { type: 'url', target: 'https://example.com/x' } }]] }
+    ]);
+    expect(md('- \\[x] literal').blocks).toEqual([{ type: 'ul', items: [[{ text: '[x] literal' }]] }]);
+    expect(md('- [x]\n  done').blocks).toEqual([{ type: 'check', items: [[{ text: 'done' }]] }]);
+    // GitHub's own task list markup is a form's checkboxes, not this reader's check list.
+    expect(read('<ul class="contains-task-list"><li><input type="checkbox" checked>Done</li></ul>').blocks).toEqual([{ type: 'ul', items: [[{ text: 'Done' }]] }]);
     expect(md('```\nx\n```').notes).toEqual(['A block of code or preformatted text became ordinary text.']);
   });
 });

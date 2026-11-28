@@ -424,44 +424,49 @@ function digits(forms: string): Record<string, string> {
   return Object.fromEntries([...forms].map((c, d) => [String(d), c]));
 }
 
-const isScript = (n: HNode): n is HElement => typeof n !== 'string' && (n.tag === 'sup' || n.tag === 'sub');
-/** An element's own text: a superscript or subscript inside it is its own. */
-const ownText = (n: HNode): string => (typeof n === 'string' ? n : n.children.map((c) => (isScript(c) ? '' : ownText(c))).join(''));
+const isScript = (n: HNode) => typeof n !== 'string' && (n.tag === 'sup' || n.tag === 'sub');
+const hasScript = (el: HElement): boolean => el.children.some((c) => typeof c !== 'string' && (isScript(c) || hasScript(c)));
 
 function mapText(nodes: HNode[], map: Record<string, string>): HNode[] {
-  return nodes.map((n) => (typeof n === 'string' ? [...n].map((c) => map[c] ?? c).join('') : isScript(n) ? n : { ...n, children: mapText(n.children, map) }));
+  return nodes.map((n) => (typeof n === 'string' ? [...n].map((c) => map[c] ?? c).join('') : { ...n, children: mapText(n.children, map) }));
 }
 
 /**
- * How a superscript or subscript holding `text` is written on the line, which post text has no form for: with
- * characters of its own when it has them (m², CO₂, October¹), so its digits never join the number or word around it;
- * otherwise, holding a digit, in brackets after "^" or "_" (10^(-1.5), x_(i,2)). Letters alone, an ordinal's (19th),
- * read as they are.
+ * How a superscript or subscript is written on the line, which post text has no form for: with characters of its own
+ * when every one it holds has them (m², CO₂, October¹), so its digits never join the number or word around it;
+ * otherwise, holding a digit, in brackets after "^" or "_" (10^(-1.5), x_(i,2)), as is one holding another
+ * (10^(2³), never 10²³). Letters alone, an ordinal's (19th), read as they are.
  */
-function scriptForm(tag: string, text: string): { map: Record<string, string> } | { mark: string } | null {
-  const map = tag === 'sup' ? SUP : SUB;
-  if ([...text].every((c) => /\s/.test(c) || Object.hasOwn(map, c))) return { map };
-  return /\p{Nd}/u.test(text) ? { mark: tag === 'sup' ? '^' : '_' } : null;
+function scriptForm(el: HElement): { map: Record<string, string> } | { mark: string } | null {
+  const map = el.tag === 'sup' ? SUP : SUB;
+  const text = textOf(el);
+  if (!hasScript(el) && [...text].every((c) => /\s/.test(c) || Object.hasOwn(map, c))) return { map };
+  return /\p{Nd}/u.test(text) ? { mark: el.tag === 'sup' ? '^' : '_' } : null;
 }
 
 /** A superscript or subscript on the line (see scriptForm). What it holds (a footnote marker's link) is kept. */
 function raised(node: HElement, convertKids: (nodes: HNode[]) => RichDomNode[], report: HtmlReport): RichDomNode[] {
-  const text = ownText(node);
   if (!textOf(node).trim()) return [{ tag: 'span', children: convertKids(node.children) }];
-  if (text.trim()) report.raised++;
-  const form = text.trim() ? scriptForm(node.tag, text) : null;
+  report.raised++;
+  const form = scriptForm(node);
   if (form && 'map' in form) return [{ tag: 'span', children: convertKids(mapText(node.children, form.map)) }];
   const kids: RichDomNode = { tag: 'span', children: convertKids(node.children) };
   return form ? [`${form.mark}(`, kids, ')'] : [kids];
 }
 
-/** An element's words as one line of text (a picture's caption), its superscripts and subscripts written on the line. */
+/**
+ * An element's words as one line of text (a picture's caption): its superscripts and subscripts written on the line
+ * as in the text, and what else it held counted as there.
+ */
 function lineText(n: HNode, report: HtmlReport): string {
   if (typeof n === 'string') return n;
   const inner = n.children.map((c) => lineText(c, report)).join('');
-  if (!isScript(n) || !inner.trim()) return inner;
+  if (!inner.trim()) return inner;
+  if (n.tag === 'pre') report.code++;
+  if (n.tag === 's' || n.tag === 'strike' || n.tag === 'del') report.struck++;
+  if (!isScript(n)) return inner;
   report.raised++;
-  const form = scriptForm(n.tag, inner);
+  const form = scriptForm(n);
   return !form ? inner : 'map' in form ? [...inner].map((c) => form.map[c] ?? c).join('') : `${form.mark}(${inner})`;
 }
 
@@ -483,10 +488,11 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
     } else if (tag === 'figure') {
       const imgs = descendants(node, 'img');
       if (imgs.length) {
-        const caption = oneLine(descendants(node, 'figcaption').map((c) => lineText(c, report)).join(' '));
+        // Several pictures share no caption: it is left out, and so is what it held.
+        const caption = imgs.length === 1 ? oneLine(descendants(node, 'figcaption').map((c) => lineText(c, report)).join(' ')) : '';
         for (const img of imgs) {
           const key = opts.image({ src: img.attrs.src ?? '', alt: oneLine(img.attrs.alt ?? '') });
-          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption && imgs.length === 1 ? { caption } : {}) }, children: [] });
+          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption ? { caption } : {}) }, children: [] });
         }
       } else {
         const url = embedAddress(node);
@@ -516,9 +522,9 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
     else if (tag === 's' || tag === 'strike' || tag === 'del') {
       if (textOf(node).trim()) report.struck++;
       out.push({ tag: 'span', children: kids() });
-    } else if (tag === 'ul' && hasClass(node, 'contains-task-list')) {
+    } else if (tag === 'ul' && hasClass(node, 'so-task-list')) {
       // A Markdown task list (markdown.ts): a check list, which shows no item as done.
-      report.ticked += node.children.filter((c) => typeof c !== 'string' && c.tag === 'li' && hasClass(c, 'task-done')).length;
+      report.ticked += node.children.filter((c) => typeof c !== 'string' && c.tag === 'li' && hasClass(c, 'so-task-done')).length;
       out.push({ tag, check: true, children: kids() });
     }
     else if (tag === 'hr') out.push({ tag: 'div', children: [] });
