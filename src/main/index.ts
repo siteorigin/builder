@@ -21,7 +21,7 @@ import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { appMenuTemplate, noticesFile, offersDeveloperItems } from './app-menu';
 import { createMenuPopups } from './app-menu-popup';
-import { MENU_ANCHOR, opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
+import { opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
 import { captureMainErrors, createMainLog } from './main-log';
 import { writingMenuTemplate } from './writing-menu';
@@ -1251,10 +1251,11 @@ async function createWindow() {
     const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt };
     if (forwardsKey(chord, currentShortcuts().askAi, process.platform === 'darwin')) controller.send('input:key', chord);
     // F10 opens the application menu where the menu button stands in for a menu bar, as it opens a menu bar, from
-    // the editor or the preview alike, leaving focus where it is so Edit acts on it. Not while a shortcut is recorded.
+    // the editor or the preview alike: the button opens it (WindowMenuButton.tsx), so Edit acts on the field that had
+    // focus, as a press of the button does. Not while a shortcut is recorded.
     else if (!recordingShortcut && opensMenuKey(process.platform, { ...chord, isAutoRepeat: input.isAutoRepeat })) {
       e.preventDefault();
-      void popupApplicationMenu(MENU_ANCHOR);
+      if (!editorContents.isDestroyed()) editorContents.send('menu:open');
     }
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
@@ -1296,12 +1297,16 @@ async function createWindow() {
   });
   recoveries.set(self, recovery);
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
-  self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
+  self.webContents.on('did-navigate', () => {
+    recordingShortcut = false;
+    self.webContents.setIgnoreMenuShortcuts(false);
+  });
   self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
     if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
   });
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
+    recordingShortcut = false;
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
@@ -1500,7 +1505,7 @@ function buildMenu() {
   hideMenuBar();
 }
 
-/** Whether Settings is recording a shortcut, which takes every key, F10 too. */
+/** Whether Settings is recording a shortcut, which takes every key, F10 too; cleared with the page that recorded it. */
 let recordingShortcut = false;
 
 /**
@@ -1516,7 +1521,8 @@ function hideMenuBar() {
 const menuPopups = createMenuPopups();
 
 /**
- * The installed application menu, popped up over the editor window at a point in its page (under the menu button), so
+ * The installed application menu, popped up over the editor window at a point in its page (under the menu button, which
+ * F10 presses too), so
  * it is the very menu the menu bar would show, with the same enabled states. Read when asked, so a menu built again
  * since (Developer mode) is the one shown. An automated run records it instead of showing it (headless-desktop.ts).
  * Resolves once the menu has closed.

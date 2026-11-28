@@ -193,6 +193,9 @@ describe('toolbar tiers', () => {
     expect(toolbarTier(1100, windows)).toBe('overflow');
     // Full screen hides the caption buttons, and their room comes back.
     expect(toolbarTier(1398, { ...windows, end: 0 })).toBe('full');
+    // Zoomed in to 125%, the caption buttons take 111 CSS pixels: what the window reports is what the tier takes.
+    expect(toolbarTier(1509, { ...windows, end: 111 })).toBe('full');
+    expect(toolbarTier(1508, { ...windows, end: 111 })).toBe('compact');
   });
 });
 

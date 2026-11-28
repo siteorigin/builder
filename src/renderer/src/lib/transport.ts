@@ -28,6 +28,7 @@ type Namespace = (typeof NAMESPACES)[number];
 export const DEVICE_CHANNELS: ReadonlySet<string> = new Set([
   'menu:command',
   'menu:history',
+  'menu:open',
   'input:key',
   'lifecycle:request',
   'appearance',

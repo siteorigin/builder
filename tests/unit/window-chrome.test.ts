@@ -5,12 +5,9 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { MENU_ANCHOR, MENU_BUTTON, MENU_BUTTON_ROOM, TOP_BAR_HEIGHT, opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
+import { MENU_BUTTON, MENU_BUTTON_ROOM, TOP_BAR_HEIGHT, opensMenuKey, popupPoint, titleBarOverlay, windowChrome, windowChromeOptions } from '@shared/window-chrome';
 import { createMenuPopups } from '../../src/main/app-menu-popup';
-import { MAC_TOOLBAR_CHROME } from '../../src/renderer/src/lib/layout';
-
-vi.mock('../../src/renderer/src/store', () => ({ api: { platform: 'win32' } }));
-const { captionButtonsWidth, toolbarChromeFor } = await import('../../src/renderer/src/lib/window-chrome');
+import { MAC_TOOLBAR_CHROME, captionButtonsWidth, toolbarChromeFor } from '../../src/renderer/src/lib/layout';
 
 const tokens = readFileSync('src/renderer/src/styles/tokens.css', 'utf8');
 /** A token's value in the light scheme (the first) or the dark one (under data-appearance='dark'). */
@@ -52,8 +49,6 @@ describe('the window chrome by platform', () => {
     expect(opensMenuKey('win32', { ...k, ctrl: true })).toBe(false);
     expect(opensMenuKey('win32', { ...k, isAutoRepeat: true })).toBe(false);
     expect(opensMenuKey('win32', { ...k, key: 'F9' })).toBe(false);
-    // From the keyboard it opens where a click would: under the button.
-    expect(MENU_ANCHOR).toEqual({ x: MENU_BUTTON.left, y: MENU_BUTTON.top + MENU_BUTTON.size });
     expect(MENU_BUTTON_ROOM).toBeGreaterThanOrEqual(MENU_BUTTON.size + MENU_BUTTON.left - 10);
   });
 });

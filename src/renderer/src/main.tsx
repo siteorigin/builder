@@ -10,7 +10,6 @@ import { RenderFailure } from './components/RenderFailure';
 import { CatalogueFailed, NoThemes } from './components/StartupFailure';
 import { WindowChrome } from './components/WindowMenuButton';
 import { markWindowChrome } from './lib/window-chrome';
-import type { ReactNode } from 'react';
 
 // Every module the editor's script imports up front has been evaluated (src/shared/perf.ts).
 perfMark('launch.scriptEvaluated');
@@ -20,19 +19,17 @@ followAppearance();
 // Every screen keeps the window's own chrome free from its first paint (#1355).
 markWindowChrome();
 const root = createRoot(document.getElementById('root')!);
-/** A screen, with the application menu's button off macOS beside it and outside its failure boundary, so whatever the
- *  screen (a failure too) the menu is a click away (#1355). Always the first in the page, so Tab reaches it first. */
-const render = (screen: ReactNode) =>
-  root.render(
-    <>
-      <WindowChrome />
-      {screen}
-    </>
-  );
+// The application menu's button off macOS (#1355), in a root of its own after the screens': whatever the screen (a
+// failure too) the menu is a click away, a dialog never makes it inert, and its place in the window is never part of
+// the top bar's drag region, which the later of two overlapping regions decides.
+const chrome = document.createElement('div');
+chrome.className = 'window-chrome';
+document.getElementById('root')!.after(chrome);
+createRoot(chrome).render(<WindowChrome />);
 // Welcome needs no theme, so it shows while the main process verifies the theme packs. The catalogue is registered
 // before anything reads it: a project opens only once the packs are verified, and the editor waits for it (App.tsx).
 // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
-render(
+root.render(
   <RenderFailure onFailure={abandonLeaves}>
     <App />
   </RenderFailure>
@@ -42,7 +39,7 @@ api.app
   .then((catalogue) => {
     // Without any theme there is nothing to make or open a site with: say why, rather than fail part way in.
     if (!catalogue.packs.length) {
-      render(<NoThemes refused={catalogue.refused} userDir={catalogue.userDir} />);
+      root.render(<NoThemes refused={catalogue.refused} userDir={catalogue.userDir} />);
       return;
     }
     registerPacks(catalogue.packs);
@@ -50,5 +47,5 @@ api.app
     perfMark('launch.catalogueReceived');
   })
   .catch((e: Error) => {
-    render(<CatalogueFailed message={e.message} />);
+    root.render(<CatalogueFailed message={e.message} />);
   });

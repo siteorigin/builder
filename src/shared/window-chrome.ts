@@ -32,9 +32,6 @@ export const MENU_BUTTON = { left: 10, top: 12, size: 28 } as const;
 /** The room the menu button takes at the start of the top bar: the button and the gap after it. */
 export const MENU_BUTTON_ROOM = 36;
 
-/** Where the application menu opens from the keyboard (F10): under the menu button, as a click opens it. */
-export const MENU_ANCHOR = { x: MENU_BUTTON.left, y: MENU_BUTTON.top + MENU_BUTTON.size } as const;
-
 /** The caption buttons' width before the window reports it (three of 46px on Windows 11). */
 export const CAPTION_BUTTONS_WIDTH = 138;
 
@@ -55,7 +52,7 @@ export function windowChromeOptions(platform: string, scheme: 'light' | 'dark') 
   }
 }
 
-/** Whether a key press opens the application menu: F10 alone, as it opens a menu bar, on a platform with the menu button. */
+/** Whether a key press opens the application menu (main asks the menu button to: menu:open): F10 alone, as it opens a menu bar, on a platform with the menu button. */
 export function opensMenuKey(platform: string, k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean; isAutoRepeat?: boolean }): boolean {
   return windowChrome(platform).menuButton && k.key === 'F10' && !k.meta && !k.ctrl && !k.shift && !k.alt && !k.isAutoRepeat;
 }

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
-import { CAPTION_BUTTONS_WIDTH, MENU_BUTTON_ROOM, windowChrome } from '@shared/window-chrome';
-import { MAC_TOOLBAR_CHROME } from './layout';
-import type { ToolbarChrome } from './layout';
+import { windowChrome } from '@shared/window-chrome';
+import { captionButtonsWidth, toolbarChromeFor } from './layout';
+import type { OverlayLike, ToolbarChrome } from './layout';
 import { api } from '../store';
 
 /**
@@ -12,32 +12,8 @@ import { api } from '../store';
  * room in its own rules (`.mac`).
  */
 
-interface OverlayLike extends EventTarget {
-  visible: boolean;
-  getTitlebarAreaRect(): { x: number; width: number };
-}
-
 /** The window controls overlay, where the window has one. */
 const overlay = (): OverlayLike | null => ((navigator as Navigator & { windowControlsOverlay?: OverlayLike }).windowControlsOverlay ?? null);
-
-/**
- * The width the caption buttons take at the window's right, in CSS pixels: what the title bar area leaves of the
- * window. Hidden (full screen), they take none; before the window reports them, the usual three.
- */
-export function captionButtonsWidth(o: OverlayLike | null, windowWidth: number): number {
-  if (!o) return CAPTION_BUTTONS_WIDTH;
-  if (!o.visible) return 0;
-  const r = o.getTitlebarAreaRect();
-  if (!(r.width > 0)) return CAPTION_BUTTONS_WIDTH;
-  return Math.max(0, Math.ceil(windowWidth - (r.x + r.width)));
-}
-
-/** The toolbar's chrome on a platform, with the caption buttons this wide (Windows). */
-export function toolbarChromeFor(platform: string, captions: number): ToolbarChrome {
-  const chrome = windowChrome(platform);
-  if (!chrome.menuButton) return MAC_TOOLBAR_CHROME;
-  return { start: MENU_BUTTON_ROOM, end: chrome.titleBar === 'overlay' ? captions : 0, fullStart: MENU_BUTTON_ROOM };
-}
 
 /** The chrome's room as the window has it now. */
 function read(): ToolbarChrome {
@@ -91,7 +67,7 @@ const subscribe = (l: () => void) => {
 const snapshot = () => (current ??= read());
 
 /** The room the window's chrome takes from the toolbar now, kept up to date while the caller is mounted. */
-export const useToolbarChrome = (): ToolbarChrome => useSyncExternalStore(subscribe, snapshot);
+export const useToolbarChrome = (): ToolbarChrome => useSyncExternalStore(subscribe, snapshot, snapshot);
 
 /** Mark the root before the first paint, so no screen draws its top bar under the chrome first. */
 export const markWindowChrome = () => mark(snapshot());

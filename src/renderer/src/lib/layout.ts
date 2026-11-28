@@ -2,6 +2,7 @@
 // much of the toolbar shows. Pure and DOM-free, so the unit tests compile it with the main process code.
 
 import { VIEWPORT_PRESETS } from '@shared/styles';
+import { CAPTION_BUTTONS_WIDTH, MENU_BUTTON_ROOM, windowChrome } from '@shared/window-chrome';
 
 export type PanelSide = 'left' | 'right';
 
@@ -105,6 +106,31 @@ export const MAC_TOOLBAR_CHROME: ToolbarChrome = { start: MAC_TRAFFIC_LIGHTS, en
 export function toolbarTier(windowWidth: number, chrome: ToolbarChrome, session: ToolbarSession = 'local'): ToolbarTier {
   if (windowWidth - chrome.fullStart - chrome.end >= TOOLBAR_FULL_MIN[session] - MAC_FULL_START_EXTRA) return 'full';
   return windowWidth - chrome.start - chrome.end >= TOOLBAR_COMPACT_MIN[session] - MAC_TRAFFIC_LIGHTS ? 'compact' : 'overflow';
+}
+
+/** What the chrome reads of the window controls overlay (navigator.windowControlsOverlay). */
+export interface OverlayLike extends EventTarget {
+  visible: boolean;
+  getTitlebarAreaRect(): { x: number; width: number };
+}
+
+/**
+ * The width the caption buttons take at the window's right, in CSS pixels: what the title bar area leaves of the
+ * window. Hidden (full screen), they take none; before the window reports them, the usual three.
+ */
+export function captionButtonsWidth(o: OverlayLike | null, windowWidth: number): number {
+  if (!o) return CAPTION_BUTTONS_WIDTH;
+  if (!o.visible) return 0;
+  const r = o.getTitlebarAreaRect();
+  if (!(r.width > 0)) return CAPTION_BUTTONS_WIDTH;
+  return Math.max(0, Math.ceil(windowWidth - (r.x + r.width)));
+}
+
+/** The toolbar's chrome on a platform, with the caption buttons this wide (Windows). */
+export function toolbarChromeFor(platform: string, captions: number): ToolbarChrome {
+  const chrome = windowChrome(platform);
+  if (!chrome.menuButton) return MAC_TOOLBAR_CHROME;
+  return { start: MENU_BUTTON_ROOM, end: chrome.titleBar === 'overlay' ? captions : 0, fullStart: MENU_BUTTON_ROOM };
 }
 
 /** The widths the preview can be set to, by the width field and the frame's resize handles alike. */

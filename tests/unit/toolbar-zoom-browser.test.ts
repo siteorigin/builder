@@ -142,9 +142,10 @@ describe.skipIf(!browserInstalled)('Toolbar under View zoom (#1367)', { timeout:
     return page;
   }
 
-  // 1100, 1280 and 1440px windows from 100% to 207%, and both sides of where the overflow toolbar starts to wrap.
+  // 1100, 1280 and 1440px windows from 100% to 207%, and both sides of where the overflow toolbar starts to wrap; and a
+  // 1600px window, which has Windows's full toolbar beside its caption buttons.
   // Every 4px from the 1100px window down to 207% of it, so each place a group wraps is crossed.
-  const widths = [1440, 1280, ...Array.from({ length: Math.floor((1100 - 531) / 4) + 1 }, (_, i) => 1100 - 4 * i), 531];
+  const widths = [1600, 1440, 1280, ...Array.from({ length: Math.floor((1100 - 531) / 4) + 1 }, (_, i) => 1100 - 4 * i), 531];
   const snapshot = (conflicts: unknown[], shown = state) => ({ state: shown, revision: 1, workspaceKey: 'w1', conflicts, history: { canUndo: false, canRedo: false } });
   // The quiet state, the longest one ("AI is waiting for you", which lets the project name give way) and a conflict.
   const now = Date.now();

@@ -20,7 +20,7 @@
   .sk-toolbar[data-tier='overflow'] .sk-toolbar-end { min-width: 276px; margin-left: auto; }
   .sk-toolbar.mac .sk-toolbar-start { padding-left: 70px; }
   /* The window's chrome off macOS, kept free as the toolbar keeps it (Toolbar.css). */
-  .sk-toolbar:not(.mac) { padding-left: calc(10px + var(--chrome-start, 0px)); padding-right: calc(10px + var(--chrome-end, 0px)); }
+  .sk-toolbar:not(.mac) { padding-left: calc(10px + var(--chrome-start, 0px)); padding-right: calc(10px + var(--chrome-end, 0px)); min-height: max(var(--toolbar-h), env(titlebar-area-height, 0px)); }
   .sk-toolbar-start, .sk-toolbar-mid, .sk-toolbar-end { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .sk-toolbar-end { justify-content: flex-end; }
   .sk-toolbar .sk-bar { height: 28px; border-radius: var(--r-sm); }

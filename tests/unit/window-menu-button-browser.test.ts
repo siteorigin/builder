@@ -1,7 +1,9 @@
 /**
  * The application menu's button off macOS (#1355), in a real browser: it sits at the top bar's left, opens the menu
- * under itself, and keeps Edit acting on the field that had focus, whether it is clicked (it never takes focus) or
- * reached by Tab and pressed (the field gets focus back, with its selection, before the menu opens). macOS has none.
+ * under itself, and keeps Edit acting on the field that had focus, whether it is clicked (it never takes focus, and the
+ * page never hears the press), reached by Tab and pressed, or pressed by F10 (the field gets focus back, with its
+ * selection, before the menu opens), over a dialog too. macOS has none. Mounted as main.tsx mounts it: in a root of
+ * its own after the screens'.
  */
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -24,12 +26,25 @@ const ENTRY = [
   "const field = h('input', { id: 'field', defaultValue: 'Harbour Lane Studio' });",
   "const region = h('div', { id: 'region', contentEditable: true, suppressContentEditableWarning: true }, 'Fresh bread daily');",
   "const other = h('button', { id: 'other', type: 'button' }, 'Other');",
-  "flushSync(() => createRoot(document.getElementById('root')).render(h('div', { style: { paddingTop: 80 } }, h(WindowChrome), field, region, other)));"
+  "const plain = h('p', { id: 'plain' }, 'Some words');",
+  // The screen's top bar, a drag region the button sits in.
+  "const bar = h('header', { className: 'drag', style: { position: 'fixed', inset: '0 0 auto', height: 52 } });",
+  "flushSync(() => createRoot(document.getElementById('root')).render(h('div', { style: { paddingTop: 80 } }, bar, field, region, other, plain)));",
+  "const chrome = document.createElement('div');",
+  "document.getElementById('root').after(chrome);",
+  "flushSync(() => createRoot(chrome).render(h(WindowChrome)));",
+  // A popover's way of closing on a press outside it, which a press of the button must never reach.
+  "window.outside = 0;",
+  "document.addEventListener('pointerdown', () => (window.outside += 1), true);",
+  "document.addEventListener('mousedown', () => (window.outside += 1), true);",
+  "document.addEventListener('click', () => (window.outside += 1));"
 ].join('\n');
 
 /** The preload bridge: the menu records what had focus and the selection when it was asked to open, and stays open until closeMenu. */
 const bridge = (platform: string) => `
   window.calls = [];
+  window.listeners = {};
+  window.send = (channel) => (window.listeners[channel] ?? []).forEach((cb) => cb());
   // Electron's window controls overlay on Windows: three 46px caption buttons at the right, until the test moves them.
   const overlay = new EventTarget();
   overlay.visible = true;
@@ -44,7 +59,10 @@ const bridge = (platform: string) => `
         window.calls.push({ at, active: a && (a.id || a.getAttribute('aria-label')), selection: a && 'selectionStart' in a && a.selectionStart !== null ? a.value.slice(a.selectionStart, a.selectionEnd) : String(getSelection()) });
         return new Promise((r) => (window.closeMenu = r));
       };
-      if (key === 'on') return () => () => undefined;
+      if (key === 'on') return (channel, cb) => {
+        (window.listeners[channel] ??= []).push(cb);
+        return () => (window.listeners[channel] = window.listeners[channel].filter((l) => l !== cb));
+      };
       return undefined;
     }
   });
@@ -118,7 +136,7 @@ describe.skipIf(!browserInstalled)('the application menu button (#1355)', { time
   it('on Linux, has no caption buttons to make room for', async () => {
     const page = await open('linux');
     await expect(button(page).count()).resolves.toBe(1);
-    expect(await page.evaluate(`[document.documentElement.dataset.chrome, getComputedStyle(document.documentElement).getPropertyValue('--chrome-end')]`)).toEqual(['system', '0px']);
+    expect(await page.evaluate(`[document.documentElement.dataset.chrome, getComputedStyle(document.documentElement).getPropertyValue('--chrome-start'), getComputedStyle(document.documentElement).getPropertyValue('--chrome-end')]`)).toEqual(['system', '36px', '0px']);
     await page.context().close();
   });
 
@@ -128,12 +146,19 @@ describe.skipIf(!browserInstalled)('the application menu button (#1355)', { time
     await page.context().close();
   });
 
-  it('opens the menu under itself on a click, leaving focus and the selection in the field', async () => {
+  it('comes after the screens, so its place is never part of their drag region', async () => {
+    const page = await open('win32');
+    expect(await page.evaluate("[!!(document.getElementById('root').compareDocumentPosition(document.querySelector('.window-menu-button')) & Node.DOCUMENT_POSITION_FOLLOWING), getComputedStyle(document.querySelector('.window-menu-button')).getPropertyValue('app-region') || getComputedStyle(document.querySelector('.window-menu-button')).getPropertyValue('-webkit-app-region')]")).toEqual([true, 'no-drag']);
+    await page.context().close();
+  });
+
+  it('opens the menu under itself on a click, leaving focus and the selection in the field, and the page hears no press', async () => {
     const page = await open('win32');
     await page.locator('#field').click();
-    await page.evaluate("document.getElementById('field').setSelectionRange(0, 7)");
+    await page.evaluate("document.getElementById('field').setSelectionRange(0, 7); window.outside = 0");
     await button(page).click();
     expect(await calls(page)).toEqual([{ at: { x: 10, y: 40 }, active: 'field', selection: 'Harbour' }]);
+    expect(await page.evaluate('window.outside')).toBe(0);
     await expect(button(page).getAttribute('aria-expanded')).resolves.toBe('true');
     // A second press while it is open asks for nothing more.
     await button(page).click();
@@ -148,10 +173,53 @@ describe.skipIf(!browserInstalled)('the application menu button (#1355)', { time
     const page = await open('win32');
     await page.locator('#field').click();
     await page.evaluate("document.getElementById('field').setSelectionRange(8, 12)");
-    await page.keyboard.press('Shift+Tab');
+    // On through another control (the editable region, then Other) to the button, the last in the page.
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
     expect(await page.evaluate("document.activeElement.getAttribute('aria-label')")).toBe('Application menu');
     await page.keyboard.press('Enter');
-    expect(await calls(page)).toEqual([{ at: { x: 10, y: 40 }, active: 'field', selection: 'Lane' }]);
+    expect(await calls(page)).toEqual([{ at: { x: 10, y: 40 }, active: 'region', selection: '' }]);
+    await closeMenu(page);
+    // Shift+Tab back from the field to the button, with nothing between.
+    await page.locator('#field').click();
+    await page.evaluate("document.getElementById('field').setSelectionRange(8, 12)");
+    await button(page).focus();
+    await page.keyboard.press(' ');
+    expect((await calls(page)).at(-1)).toEqual({ at: { x: 10, y: 40 }, active: 'field', selection: 'Lane' });
+    await closeMenu(page);
+    await page.context().close();
+  });
+
+  it('opens on F10 as a press of it does, the field it came from getting focus back if the button had it', async () => {
+    const page = await open('win32');
+    await page.locator('#field').click();
+    await page.evaluate("document.getElementById('field').setSelectionRange(0, 7)");
+    await page.evaluate("window.send('menu:open')");
+    expect(await calls(page)).toEqual([{ at: { x: 10, y: 40 }, active: 'field', selection: 'Harbour' }]);
+    await expect.poll(() => button(page).getAttribute('aria-expanded')).toBe('true');
+    await closeMenu(page);
+    await expect.poll(() => button(page).getAttribute('aria-expanded')).toBe('false');
+    await button(page).focus();
+    await page.evaluate("window.send('menu:open')");
+    expect((await calls(page)).at(-1)).toMatchObject({ active: 'field', selection: 'Harbour' });
+    await closeMenu(page);
+    await page.context().close();
+  });
+
+  it('stays live over a dialog, which makes the screens inert, and Edit acts on the dialog’s field', async () => {
+    const page = await open('win32');
+    await page.evaluate(`(() => {
+      document.getElementById('root').inert = true;
+      const dialog = document.createElement('div');
+      dialog.className = 'overlay-backdrop';
+      dialog.innerHTML = '<div role="dialog"><input id="dialog-field" value="Site name"></div>';
+      document.body.append(dialog);
+    })()`);
+    await page.locator('#dialog-field').click();
+    await page.evaluate("document.getElementById('dialog-field').setSelectionRange(0, 4)");
+    await button(page).click();
+    expect(await calls(page)).toEqual([{ at: { x: 10, y: 40 }, active: 'dialog-field', selection: 'Site' }]);
     await closeMenu(page);
     await page.context().close();
   });
@@ -170,7 +238,7 @@ describe.skipIf(!browserInstalled)('the application menu button (#1355)', { time
   it('forgets the field once a press lands on something else that takes no typing', async () => {
     const page = await open('win32');
     await page.locator('#field').click();
-    await page.locator('#other').click();
+    await page.locator('#plain').click();
     await button(page).focus();
     await page.keyboard.press('Enter');
     expect((await calls(page)).map((c) => c.active)).toEqual(['Application menu']);
