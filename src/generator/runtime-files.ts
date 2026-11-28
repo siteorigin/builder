@@ -199,6 +199,9 @@ export const ACTION_SVELTE = `<script>
 	let anchor = $state();
 	let dialog = $state();
 	let caption = $state();
+	// Whether the caption needs its own scrolling area: Safari and other WebKit browsers leave such an area out of the
+	// Tab order, so it becomes a stop (and the arrow, Page and End keys scroll it) only then.
+	let captionScrolls = $state(false);
 	let slides = $state([]);
 	let index = $state(0);
 	// The link that opened the viewer, which gets focus back however far the visitor moves through the group.
@@ -239,6 +242,20 @@ export const ACTION_SVELTE = `<script>
 		if (current && caption) caption.scrollTop = 0;
 	});
 
+	$effect(() => {
+		if (!current || !caption) {
+			captionScrolls = false;
+			return;
+		}
+		const measure = () => {
+			captionScrolls = caption.scrollHeight > caption.clientHeight;
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(caption);
+		return () => observer.disconnect();
+	});
+
 	// A viewer whose photo stops showing (a gallery hidden at the new screen width) would be an invisible modal: it closes.
 	$effect(() => {
 		if (!current) return;
@@ -260,6 +277,8 @@ export const ACTION_SVELTE = `<script>
 	}
 
 	function go(step) {
+		// A focused caption goes away with a photo that has none: focus moves to Close first, so the arrow keys keep working.
+		if (caption && document.activeElement === caption && !slides[(index + step + slides.length) % slides.length].caption) dialog?.querySelector('.so-viewer__close')?.focus();
 		index = (index + step + slides.length) % slides.length;
 	}
 
@@ -308,7 +327,7 @@ export const ACTION_SVELTE = `<script>
 			</button>
 			<figure class="so-viewer__figure">
 				<img class="so-viewer__img" src={current.src} alt={current.alt} width={current.width} height={current.height} decoding="async" />
-				{#if current.caption}<figcaption bind:this={caption} class="so-viewer__caption">{current.caption}</figcaption>{/if}
+				{#if current.caption}<!-- svelte-ignore a11y_no_noninteractive_tabindex --><figcaption bind:this={caption} class="so-viewer__caption" tabindex={captionScrolls ? 0 : undefined}>{current.caption}</figcaption>{/if}
 			</figure>
 			{#if slides.length > 1}
 				<div class="so-viewer__nav">

@@ -176,6 +176,27 @@ describe.skipIf(!browserInstalled)('the full-image viewer moving through a galle
     }
   });
 
+  it('makes the caption a keyboard stop only while it needs its own scrolling area (#1430)', async () => {
+    const { page, problems } = await open();
+    try {
+      await page.locator('a.so-action--image').first().click();
+      await page.waitForSelector('dialog.so-viewer[open]');
+      const tab = () => page.evaluate(`document.querySelector('dialog.so-viewer[open] .so-viewer__caption')?.getAttribute('tabindex') ?? null`);
+      await expect.poll(tab).toBe('0');
+      // Close has focus on opening; the caption is the next stop, and the keys scroll it.
+      await page.keyboard.press('Tab');
+      expect(await page.evaluate(`document.activeElement?.classList.contains('so-viewer__caption')`)).toBe(true);
+      await page.keyboard.press('End');
+      await expect.poll(async () => (await captionOf(page)).top).toBeGreaterThan(0);
+      // A tall window fits the whole caption: no extra stop.
+      await page.setViewportSize({ width: 1200, height: 3000 });
+      await expect.poll(tab).toBe(null);
+      expect(problems).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('keeps focus on a caption the visitor is reading while the arrow keys change the photo', async () => {
     const { page, problems } = await open();
     try {
