@@ -713,11 +713,17 @@ function joinFontFamilies(out: Array<BatchOutcome | undefined>, joins: Array<str
   // into "X Medium" into "X"). Settled against the families as they were, so the files' order never matters.
   const moving = new Set(moves.map((m) => m.face));
   const stays = new Set(faces.filter((f) => !moving.has(f)).map((f) => f.family.toLowerCase()));
-  const onward = new Map(moves.map((m) => [m.face.family.toLowerCase(), m.to]));
+  // Only a family whose faces all go to one place leads anywhere; one whose faces part ways stays where it is named.
+  const onward = new Map<string, string | null>();
+  for (const m of moves) {
+    const from = m.face.family.toLowerCase();
+    const was = onward.get(from);
+    onward.set(from, was === undefined || was?.toLowerCase() === m.to.toLowerCase() ? m.to : null);
+  }
   const named = new Map(faces.filter((f) => !moving.has(f)).reverse().map((f) => [f.family.toLowerCase(), f.family]));
   for (const m of moves) {
     let to = m.to;
-    for (let hops = 0; !stays.has(to.toLowerCase()) && onward.has(to.toLowerCase()) && hops < moves.length; hops++) to = onward.get(to.toLowerCase())!;
+    for (let hops = 0; !stays.has(to.toLowerCase()) && onward.get(to.toLowerCase()) && hops < moves.length; hops++) to = onward.get(to.toLowerCase())!;
     m.to = named.get(to.toLowerCase()) ?? to;
   }
   for (const m of moves) {

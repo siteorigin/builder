@@ -224,7 +224,7 @@ describe('web font metadata', async () => {
     await expect(info('Brand Light Italic', 300, true)).resolves.toMatchObject({ family: 'Brand Light Italic', style: 'italic', joins: ['Brand', 'Brand Light'] });
     await expect(info('Brand Italic', 400, true)).resolves.toMatchObject({ joins: ['Brand'] });
     // A word the font's own weight or slant does not bear out is part of its name: Archivo Black is a regular weight.
-    for (const [family, weight, italic] of [['Archivo Black', 400, false], ['Brand Italic', 400, false], ['Brand Bold', 400, false], ['Roboto Condensed', 400, false], ['Medium', 500, false], ['Brand Medium', 450, false], ['Brand Thin', 300, false], ['Gotham Book', 400, false]] as const) {
+    for (const [family, weight, italic] of [['Archivo Black', 400, false], ['Brand Italic', 400, false], ['Brand Bold', 400, false], ['Roboto Condensed', 400, false], ['Medium', 500, false], ['Brand Medium', 450, false], ['Brand Thin', 300, false], ['Gotham Book', 400, false], ['Brand Regular', 400, false], ['Brand Normal', 400, false]] as const) {
       expect(await info(family, weight, italic)).not.toHaveProperty('joins');
     }
     // A typographic family (name ID 16) is already the whole family.
@@ -233,6 +233,11 @@ describe('web font metadata', async () => {
     expect(await fontInfo(woff2([[5, nameTable('Brand Italic', { 2: 'Italic' })]]))).not.toHaveProperty('joins');
     // A variable font holds every weight, so a word in its name says nothing about one.
     expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(100, 900)]]))).not.toHaveProperty('joins');
+    // Even one whose weight axis is a single weight: its other axes (slant, width) still vary.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(500, 500)]]))).toMatchObject({ weight: '500' });
+    expect(await fontInfo(woff2([[5, nameTable('Brand Medium')], [6, os2Table(500, false)], [47, fvarTable(500, 500)]]))).not.toHaveProperty('joins');
+    // A weight class of 0 is no weight, though it is read as 400.
+    expect(await fontInfo(woff2([[5, nameTable('Brand Light')], [6, os2Table(0, false)]]))).not.toHaveProperty('joins');
   });
 
   it('keeps only characters that are safe in a CSS family name', async () => {

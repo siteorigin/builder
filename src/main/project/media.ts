@@ -552,15 +552,16 @@ async function readFontInfo(buf: Buffer): Promise<FontInfo> {
   const shown = clean(family) || 'Custom font';
   // A typographic family (16) is already the whole family, a variable font's name holds no single weight or slant, and
   // a font without an OS/2 table has no weight of its own to bear a weight word out.
-  const declared = !!os2 && os2.length >= 64 && !fvar;
+  const declared = !!os2 && os2.length >= 64 && os2.readUInt16BE(4) !== 0 && !fvar;
   const joins = name && declared && !nameString(name, [16]) ? legacyFamilies(shown, Number(weight), italic).map(clean).filter(Boolean) : [];
   return { family: shown, weight, style: italic ? 'italic' : 'normal', ...(joins.length ? { joins } : {}) };
 }
 
 /**
  * The OS/2 weight classes each weight word in a legacy family name (name ID 1) stands for: its CSS weight, and for Thin
- * and Extra Light the 250 and 275 that older Windows-compatible fonts use. "Book" is left out: it is a regular weight
- * in some families and a light one in others, so it can't say which face it is.
+ * and Extra Light the 250 and 275 that older Windows-compatible fonts use. Words for the regular weight ("Regular",
+ * "Normal", "Book") are left out: a family already has a regular face, so such a file is another design, not a face
+ * the family lacks.
  */
 const WEIGHT_WORDS: Record<string, number[]> = {
   thin: [100, 250],
@@ -568,8 +569,6 @@ const WEIGHT_WORDS: Record<string, number[]> = {
   extralight: [200, 275],
   ultralight: [200, 275],
   light: [300],
-  regular: [400],
-  normal: [400],
   medium: [500],
   semibold: [600],
   demibold: [600],

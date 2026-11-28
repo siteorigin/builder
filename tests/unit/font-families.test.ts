@@ -103,9 +103,9 @@ describe('a legacy-named weight of a static font family (#1469)', () => {
   });
 
   it('joins a family already in the library, named as the library names it', async () => {
-    const [first] = await importFonts([['regular.woff', woff('ibm plex mono', 400)]]);
+    const [first] = await importFonts([['regular.woff', woff('Ibm plex MONO', 400)]]);
     const [added] = await importFonts([['medium-italic.woff', woff('IBM Plex Mono Medium Italic', 500, { italic: true })]], [first]);
-    expect(faces([added])).toEqual([['ibm plex mono Medium Italic', 'ibm plex mono', '500', 'italic']]);
+    expect(faces([added])).toEqual([['Ibm plex MONO Medium Italic', 'Ibm plex MONO', '500', 'italic']]);
   });
 
   it('keeps its own family when nothing it could join is there, or its weight does not bear the word out', async () => {
@@ -127,6 +127,14 @@ describe('a legacy-named weight of a static font family (#1469)', () => {
     // A family the library keeps stays one to join.
     const [kept] = await importFonts([['medium.woff', woff('Brand Medium', 500)]]);
     expect(faces(await importFonts([['medium-bold.woff', woff('Brand Medium Bold', 700)]], [kept]))).toEqual([['Brand Medium Bold', 'Brand Medium', '700', 'normal']]);
+    // A family whose faces go different ways leads nowhere, whatever the files' order.
+    const [brand, light] = await importFonts([['x.woff', woff('Brand', 400)], ['light.woff', woff('Brand Light', 400)]]);
+    const parting: Array<[string, Buffer]> = [['a.woff', woff('Brand Light Italic', 300, { italic: true })], ['b.woff', woff('Brand Light Italic', 400, { italic: true })], ['c.woff', woff('Brand Light Italic Bold', 700, { italic: true })]];
+    for (const files of [parting, [...parting].reverse()]) {
+      const bold = (await importFonts(files, [brand, light])).find((r) => r.font!.weight === '700')!;
+      const moved = (await importFonts(files, [brand, light])).filter((r) => r.font!.weight !== '700').map((r) => r.font!.family).sort();
+      expect([bold.font!.family, moved]).toEqual(['Brand Light Italic', ['Brand', 'Brand Light']]);
+    }
   });
 
   it('gives a library font recorded without its details the family it joins', async () => {
@@ -139,5 +147,10 @@ describe('a legacy-named weight of a static font family (#1469)', () => {
     const plain = { ...plex, font: { ...plex.font!, family: 'Plex' } };
     const [o] = await importAssetBatch(temp(), [{ path: join(src, 'again.woff'), opts: {} }], [plain, bare], fence, { parallel: 1, go: () => true });
     expect(o && !('error' in o) && [o.existing, o.record.id, o.font]).toEqual([true, bare.id, { family: 'Plex', weight: '500', style: 'normal' }]);
+    // A library font recorded without its details, given them by this import, is a family another file can join.
+    const bareRegular = { ...plex, font: undefined } as AssetRecord;
+    writeFileSync(join(src, 'regular.woff'), regular);
+    const both = await importAssetBatch(temp(), [{ path: join(src, 'regular.woff'), opts: {} }, { path: join(src, 'medium.woff'), opts: {} }].map((f, k) => (k ? { path: (writeFileSync(f.path, medium), f.path), opts: {} } : f)), [bareRegular], fence, { parallel: 1, go: () => true });
+    expect(both.map((r) => r && !('error' in r) && (r.existing ? r.font?.family : r.record.font?.family))).toEqual(['IBM Plex Mono', 'IBM Plex Mono']);
   });
 });
