@@ -58,6 +58,24 @@ function withTeam(s: ProjectState): { s: ProjectState; id: string } {
 }
 
 /**
+ * Foundation's Team grid inside `depth` designs built in the editor, each handing its own people on to the one inside
+ * it, the outermost placed on Home: its node ID.
+ */
+function withWrappedTeam(s: ProjectState, depth: number): { s: ProjectState; id: string } {
+  s = structuredClone(withTeam(s).s);
+  const team = Object.values(s.components).find((d) => d.owner === 'theme' && d.componentId === 'team.grid')!;
+  let inner = team.id;
+  for (let i = depth; i >= 1; i--) {
+    const def = projectDesign(s, { componentId: `project.wrap${i}`, name: `Wrap ${i}`, properties: { people: structuredClone(team.properties.people) }, parts: { root: { nodeId: 'root', label: 'Wrap' } }, build: (b) => b.el('root', 'section', { name: 'Wrap' }, []) });
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: inner, props: { people: { $prop: 'people' } } } as InstanceNode;
+    (def.tree!.nodes.root as { children: string[] }).children.push('inner');
+    inner = def.id;
+  }
+  const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, definitionId: inner }]);
+  return { s: r.state, id: r.results[0].nodeId as string };
+}
+
+/**
  * A team design built in the editor, with a heading and a list of people, placed on Home: a placement that can be
  * detached into elements, which Foundation's Team grid (a code component) cannot.
  */
@@ -514,13 +532,29 @@ describe('last review regressions', () => {
     expect(rows.every((t) => t.computed)).toBe(true);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('counts a connected list in the shipped theme’s Team grid as rows Find cannot replace in place', async () => {
+  it('counts a connected list in the shipped theme’s Team grid as rows Find cannot replace in place', async () => {
     let { s, id } = withTeam(studio());
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
     const { renderedContent } = await import('@generator/checks');
     const rows = renderedContent(s, s.pages[s.site.homePageId]).filter((t) => t.value === 'Ana Ruiz');
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((t) => t.computed)).toBe(true);
+    // An entry's row is no item of the placement's own list (#1341).
+    expect(rows.every((t) => t.computed && !t.source)).toBe(true);
+    // The Team grid's own words are its placement's (#1341); the collection's names are changed in the collection.
+    const { findContent, planReplace } = await import('../../src/renderer/src/lib/find-content');
+    const found = findContent(s, 'Ana Ruiz').filter((m) => !m.field.entry);
+    expect(found.map((m) => [m.field.section, m.blocked])).toEqual([['Team', expect.stringMatching(/collection entry/)]]);
+    expect(planReplace(s, found, 'Ana Ross').operations).toEqual([]);
+  });
+
+  it('counts the shipped Team grid’s rows as the collection’s however many designs hand the connected list down', async () => {
+    const { renderedContent } = await import('@generator/checks');
+    for (const depth of [1, 2]) {
+      let { s, id } = withWrappedTeam(studio(), depth);
+      s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
+      const rows = renderedContent(s, s.pages[s.site.homePageId]).filter((t) => t.value === 'Ana Ruiz');
+      expect(rows.length, `${depth} designs`).toBeGreaterThan(0);
+      expect(rows.every((t) => t.computed && !t.source), `${depth} designs`).toBe(true);
+    }
   });
 });

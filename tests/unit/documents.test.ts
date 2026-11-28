@@ -347,8 +347,7 @@ describe('linking to a document', () => {
     expect(planReplace(state, found, 'Guide 2027').operations).toEqual([]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the release's hero counts as custom code, and blockedReason in find-content.ts gives the custom-code notice before the link's own download notice.
-  it.fails('says a link of the release’s hero downloads a document from Assets, not that it belongs to custom code', () => {
+  it('says a link of the release’s hero downloads a document from Assets, not that it belongs to custom code', () => {
     const { s } = withGuide();
     const { state } = linkHero(s, { type: 'document', target: 'a_guide' });
     expect(findContent(state, 'Guide 2026').filter((m) => m.kind === 'link').map((m) => m.blocked)).toEqual([expect.stringMatching(/^This downloads a document from Assets\./)]);

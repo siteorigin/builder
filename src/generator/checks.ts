@@ -24,8 +24,10 @@ import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
-import { selectedVariantStyles, startingVariants } from '@shared/variants';
+import { selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
+import { CODE_TEXT_ATTR, codeTextField, parseCodeTextPath } from '@shared/code-text';
+import { findTheme } from '@catalogue/index';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -488,6 +490,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
               fedLists.add(k);
               continue;
             }
+            // So is a connected list handed on, or a value of one of its rows: still the collection's, however far down.
+            if (isBinding(v) && (('$prop' in v && frame.scope.fedLists?.has(v.$prop)) || ('$item' in v && frame.scope.computed))) fedLists.add(k);
             const f = placementField(v, frame.scope);
             if (f) forwarded[k] = f;
           }
@@ -1256,6 +1260,55 @@ export interface RenderedContent {
   computed?: boolean;
 }
 
+/** The theme packs whose code sections the checks read: Foundation, and the development fixture built from it. */
+const FOUNDATION_PACKS = ['foundation', 'foundation-alt'];
+
+/** A text marker as code writes it, its path a string literal (src/main/codecheck.ts refuses any other). */
+const CODE_TEXT_MARKER = new RegExp(`${CODE_TEXT_ATTR}\\s*=\\s*\\{\\s*[A-Za-z_$][\\w$]*\\?\\.\\(\\s*(['"\`])([^'"\`]+)\\1`, 'g');
+const markedPaths = new WeakMap<ComponentDefinition, string[]>();
+
+/**
+ * The text a Foundation code section shows, as its markup marks it for typing over on the canvas (src/shared/code-text.ts):
+ * property names, and `list.field` for its lists' items. Read from the section as the pack ships it, never the project's
+ * copy, which a publication takes the markers out of; each path must still name text among the project's properties.
+ * Undefined for any other code, a copy made unique included: what that shows is up to its own markup.
+ */
+function foundationText(def: ComponentDefinition): Set<string> | undefined {
+  const pack = def.owner === 'theme' && def.kind === 'code' && FOUNDATION_PACKS.includes(def.provenance?.pack ?? '') ? findTheme(def.provenance!.pack!) : undefined;
+  const shipped = pack?.components.find((c) => c.componentId === def.componentId && c.kind === 'code');
+  if (!shipped?.source) return undefined;
+  let paths = markedPaths.get(shipped);
+  if (!paths) markedPaths.set(shipped, (paths = [...new Set([...shipped.source.matchAll(CODE_TEXT_MARKER)].map((m) => m[2]))]));
+  return new Set(
+    paths.filter((p) => {
+      const path = parseCodeTextPath(p);
+      return !!path && !('problem' in codeTextField(def.properties, path));
+    })
+  );
+}
+
+/**
+ * What decides whether a Foundation section shows a piece of marked text: the placement, the item, and the option it
+ * shows on an axis (undefined for an axis bound to UI state, which can change while the page is open).
+ */
+type GateContext = { state: ProjectState; props: Record<string, unknown>; item: Record<string, unknown>; variant: (axis: string) => string | undefined };
+
+/**
+ * Marked text a Foundation section's markup shows only in some states, where having words is not enough: the
+ * screenshot hero's frame title only in its window frame, the comparison's highlight label only over a highlighted
+ * plan it shows (its third only while that has a name), and a testimonial's initials only without a portrait.
+ */
+const FOUNDATION_GATES: Record<string, Record<string, (c: GateContext) => boolean>> = {
+  'hero.screenshot': { frameTitle: ({ variant }) => [undefined, 'window'].includes(variant('frame')) },
+  'pricing.compare': {
+    highlightLabel: ({ state, props, variant }) => {
+      const plan = variant('highlight');
+      return plan === undefined || plan === 'one' || plan === 'two' || (plan === 'three' && shown((props.planThree as { name?: unknown } | undefined)?.name, state));
+    }
+  },
+  'block.testimonial': { initials: ({ state, props }) => !shown(props.portrait, state) }
+};
+
 /**
  * The shipped code component a definition is, or a header copied from it (Make unique keeps its code and
  * properties). A copied form is not: the project keeps its answers' submission keys only for the theme's own forms
@@ -1263,7 +1316,7 @@ export interface RenderedContent {
  */
 export function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
   if (def.owner === 'theme') {
-    const foundationCode = ['foundation', 'foundation-alt'].includes(def.provenance?.pack ?? '') && ['content.text', 'content.media', 'intro.page', 'contact.details', 'shell.footer'].includes(def.componentId);
+    const foundationCode = FOUNDATION_PACKS.includes(def.provenance?.pack ?? '') && ['content.text', 'content.media', 'intro.page', 'contact.details', 'shell.footer'].includes(def.componentId);
     return def.componentId === 'shell.header' || def.componentId === 'data.table' || foundationCode || isVideoContract(def.componentId) || (isFormContract(def.componentId) && namesFormFields(def)) ? def.componentId : undefined;
   }
   // Back through every copy (a copy of a copy) to where it started.
@@ -1290,7 +1343,12 @@ const headerNoticeLinkNamed = (props: Record<string, unknown>) => headerNoticeSh
  */
 function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
   // These packed Foundation sections render their words directly; heading level and image choice are settings.
-  if (which === 'content.text' || which === 'content.media') return new Set(['eyebrow', 'heading', 'body']);
+  if (which === 'content.text') return new Set(['eyebrow', 'heading', 'body']);
+  // Its points, and its two actions, both buttons: each shows only with words and somewhere to go.
+  if (which === 'content.media') {
+    const button = (label: string, link: string) => (words(props[label]) && resolveLink(props[link] as LinkValue | undefined, { state }) ? [label, link] : []);
+    return new Set(['eyebrow', 'heading', 'body', 'points.text', ...button('actionLabel', 'actionLink'), ...button('linkLabel', 'link')]);
+  }
   if (which === 'intro.page') return new Set(['eyebrow', 'heading', 'lead']);
   if (which === 'contact.details') return new Set(['eyebrow', 'heading', 'lead', 'items.label', 'items.value', 'items.link', ...(words(props.actionLabel) ? ['actionLabel', 'actionLink'] : [])]);
   if (which === 'shell.footer') return new Set(['siteName', 'tagline', 'linksHeading', 'links.label', 'links.link', 'contactHeading', 'contact.label', 'contact.link', 'copyright', 'legal.label', 'legal.link', 'social.label', 'social.link']);
@@ -1341,8 +1399,11 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     const at = `${scope.trail ?? ''}|${defNodeId}|${(scope.path ?? []).join(',')}|${field}`;
     return { ...(f ? { source: { kind: 'prop' as const, ...f } } : { at }), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
   };
-  /** A value read from a computed list's row: an item field inside a News card or article header. */
-  const fromRow = (b: unknown, scope: Scope) => !!scope.computed && isBinding(b) && '$item' in b;
+  /**
+   * A value read from a computed list's row: an item field inside a News card or article header, or what a design is
+   * handed from a connected list or one of its rows.
+   */
+  const fromRow = (b: unknown, scope: Scope) => isBinding(b) && ((!!scope.computed && '$item' in b) || ('$prop' in b && !!scope.fedLists?.has(b.$prop)));
   walkRendered(state, tree, {
     text: (n, scope, reportId, inDef) => {
       const value = evaluate(n.text, scope);
@@ -1361,10 +1422,43 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     code: (def, props, reportId, placement, n, scope, inDef) => {
       const which = shippedCode(state, def);
       const shows = which ? shippedCodeShows(state, which, props) : undefined;
+      // Any other Foundation section: the text its markup marks, which the canvas types over, is its words too.
+      const marked = shows ? undefined : foundationText(def);
       // The placement's own field each property is: directly, or through the binding a design hands it.
       const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
       // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
       const keyless = (key: string) => isFormContract(which) && inDef && key === 'fields';
+      // A list connected to a collection, here or on a design that hands it on, shows its entries' rows, and so does a
+      // value a design hands on from one of them: nothing in them is a field of the placement.
+      const fromRows = (key: string) => Object.hasOwn(n.listSources ?? {}, key) || (inDef && fromRow(n.props[key], scope));
+      /**
+       * What a Foundation section's markup says of one of its fields (`list` is the list it is a field of): text it
+       * marks, or the link a marked label names, is `shown`. A marked label beside its own link is a button's, which
+       * the site leaves out while it goes nowhere, and some marked text shows only in some states (FOUNDATION_GATES):
+       * `hidden`, then. Anything else is up to its code.
+       */
+      // The option shown on an axis: chosen, or bound to a field the placement has (its default unless that names an
+      // option, as the generator writes it). Undefined when it may be any: bound to UI state, which changes while the
+      // page is open, or to a field the item lacks, which the generated site reads as nothing, not as a default.
+      const variant = (axis: string): string | undefined => {
+        const v = selectedVariants(def, n.variants)[axis];
+        if (typeof v === 'string') return v;
+        if (isStateRef(v) || ('$item' in v && !Object.hasOwn(scope.item ?? {}, v.$item))) return undefined;
+        const chosen = evaluate(v, scope);
+        const a = def.variantAxes?.[axis];
+        return typeof chosen === 'string' && a && Object.hasOwn(a.options, chosen) ? chosen : a?.default;
+      };
+      const known = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, list?: string): 'shown' | 'hidden' | undefined => {
+        const path = (k: string) => (list ? `${list}.${k}` : k);
+        const value = (k: string) => (Object.hasOwn(values, k) ? values[k] : (schemas[k] as { default?: unknown } | undefined)?.default);
+        if (!marked) return undefined;
+        if (schemas[key].type === 'link') return marked.has(path(labelKeyFor(key))) ? 'shown' : undefined;
+        if (!marked.has(path(key))) return undefined;
+        const link = Object.keys(schemas).find((k) => schemas[k].type === 'link' && labelKeyFor(k) === key);
+        if (link && !resolveLink(value(link) as LinkValue | undefined, { state })) return 'hidden';
+        const gate = FOUNDATION_GATES[def.componentId]?.[path(key)];
+        return !gate || gate({ state, props, item: values, variant }) ? 'shown' : 'hidden';
+      };
       /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
       const guard = (f: PlacementField | undefined) => {
         if (!f) return;
@@ -1373,37 +1467,42 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
         const schema = !f.itemId && f.field === undefined ? fieldSchema(state, tree, reportId, f) : undefined;
         if (schema?.type === 'object') for (const k of Object.keys(schema.fields)) guarded.add(JSON.stringify([reportId, f.prop, null, k]));
       };
-      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string, custom: boolean) =>
+      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string, custom: boolean, computed: boolean) =>
         push({
           nodeId: reportId,
           kind,
           value,
           ...(source ? { source: { kind: 'prop', ...source } } : { at }),
           ...(custom ? { custom: true } : {}),
+          ...(computed ? { computed: true } : {}),
           ...(inDef ? { direct: false } : {}),
           ...(schema.type === 'richtext' ? { rich: true, richLinks: codeTakesBlocks(schema) } : {})
         });
-      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string, custom: boolean) => {
+      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string, custom: boolean, computed: boolean) => {
         const schema = schemas[key];
         const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
         if (custom) guard(source);
-        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at, custom);
+        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at, custom, computed);
         if (schema.type !== 'link' || !isLinkValue(v) || !resolveLink(v, { state })) return;
         // A shipped component's own markup decides (above). Other code: a link named by a label property shows only
         // while that label has words, as the shipped header does.
         const labelKey = labelKeyFor(key);
         const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
         if (!shows && schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
-        add('link', v, source, schema, at, custom);
+        add('link', v, source, schema, at, custom, computed);
       };
       for (const [key, schema] of Object.entries(def.properties)) {
         const field = fieldOf(key);
         if (schema.type !== 'list') {
-          // A shipped component's setting is not listed, and whatever else shows its field may not change it.
+          // A shipped component's setting is not listed, and whatever else shows its field may not change it. Words the
+          // site leaves out here (a button with nowhere to go) are not listed either, but are no setting.
+          const markup = known(def.properties, props, key);
+          const rows = fromRows(key);
           if (shows && !shows.has(key)) guard(field);
-          else take(def.properties, props, key, field, `${placement}|${key}`, !shows);
+          else if (markup !== 'hidden') take(def.properties, props, key, rows ? undefined : field, `${placement}|${key}`, !shows && markup !== 'shown', rows);
           continue;
         }
+        const rows = fromRows(key);
         for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
           if (!item || typeof item !== 'object') continue;
           // A computed list's rows are pages, not items of the placement: their words are not its fields.
@@ -1411,9 +1510,10 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
           // A form field's setting its type never shows (a checkbox's placeholder) is not on the page.
           const unused = isFormContract(which) && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
           for (const f of Object.keys(schema.fields)) {
-            const source = field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
+            const source = !rows && field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
+            const markup = known(schema.fields, item, f, key);
             if ((shows && !shows.has(`${key}.${f}`)) || unused.includes(f)) guard(source);
-            else take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, !shows || keyless(key));
+            else if (markup !== 'hidden') take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, (!shows && markup !== 'shown') || keyless(key), rows);
           }
           // A whole list handed in from a design is that design's field too.
           if (!shows || keyless(key)) guard(field);

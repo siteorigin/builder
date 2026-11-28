@@ -185,7 +185,9 @@ describe('site search index', () => {
     // The footer's text is on every page; the home page's index entry does not repeat it.
     const footerText = pageText(s, { ...s.pages[s.site.homePageId], nodes: s.site.shell.footer.nodes, rootIds: s.site.shell.footer.rootIds });
     for (const line of footerText.split('\n').filter((l) => l.length > 12)) expect(homeEntry.text).not.toContain(line);
-    expect(homeEntry.text).not.toContain('Search this site');
+    // The search section's heading is words on the page (#1341); its box's own label, buttons and messages are not.
+    expect(homeEntry.text).toContain('Search this site');
+    expect(homeEntry.text).not.toContain('Clear search');
     expect(homeEntry.text).not.toContain('Type a word or phrase');
   });
 
