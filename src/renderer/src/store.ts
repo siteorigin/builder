@@ -1918,6 +1918,13 @@ export function applyAiEvent(e: AiEvent) {
   // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
   // closed mid-run, tagged with none) would look sent there while being saved elsewhere.
   if (!conv || e.conversationId !== conv.id) return;
+  if (e.kind === 'open-page') {
+    // The page the author asked to go to (#1357), opened as Pages opens it: only while that request is the one running,
+    // and only if the page is still in the site this window shows.
+    const pageId = e.pageId;
+    if (pageId && s.activeRunId === e.runId && s.snapshot && Object.hasOwn(s.snapshot.state.pages, pageId)) pageOpener?.(pageId);
+    return;
+  }
   if (e.kind === 'message' && e.message) {
     const msgs = [...conv.messages];
     const i = msgs.findIndex((m) => m.id === e.message!.id);

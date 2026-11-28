@@ -92,6 +92,24 @@ export function themePinProblem(state: { site: { themeId: string }; themeLock?: 
   return null;
 }
 
+/**
+ * The installed theme someone needs before they can edit this project in SiteOrigin Builder (#1477): its name, ID
+ * and the release the project's theme lock records. Null for a theme that ships with the app, which every copy of
+ * SiteOrigin Builder has.
+ */
+export function installedThemeRequirement(state: { site: { themeId: string }; themeLock?: { theme?: { id: string; version: string } } }): { id: string; name: string; version: string } | null {
+  const pack = findTheme(state.site.themeId);
+  if (pack?.source !== 'user') return null;
+  const lock = state.themeLock?.theme?.id === pack.id ? state.themeLock.theme : undefined;
+  // On one line, as the README's section reads it back (isGeneratedReadme).
+  return { id: pack.id, name: pack.name.replace(/\s+/g, ' ').trim(), version: lock?.version ?? pack.version };
+}
+
+/** What the author is told about the installed theme an editable export needs, once it is exported. */
+export function installedThemeNote(theme: { id: string; name: string; version: string }): string {
+  return `This project uses the installed theme ${theme.name} (${theme.id}) ${theme.version}. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of ${theme.version} or a newer release, and restart SiteOrigin Builder, or the project opens read-only: send them a copy of the theme pack with it.`;
+}
+
 export function catalogueComponent(themeId: string, componentId: string): ComponentDefinition | undefined {
   return getTheme(themeId).components.find((c) => c.componentId === componentId);
 }

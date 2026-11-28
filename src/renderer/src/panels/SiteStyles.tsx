@@ -36,6 +36,7 @@ import { directionHint, languageCodeFor, namedLanguage, notFoundScope, ownWordin
 import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
+import { IntegrationFields, SiteCodeFields, integrationsScope, siteCodeScope } from './SiteCode';
 import { redirectRecords } from '@shared/redirects';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
@@ -1138,6 +1139,8 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
 
 export function SiteStyles() {
   const snap = useStore((s) => s.snapshot);
+  // The site's own head code and CSS change in Developer mode alone (Custom code).
+  const developer = useStore((s) => !!s.settings?.developerMode);
   const [dev, setDev] = useState(false);
   useEffect(() => void api.app.info().then((i) => setDev(i.dev)), []);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2233,6 +2236,16 @@ export function SiteStyles() {
       <Section title="Crawlers" id="site-crawlers" defaultOpen={false} keepMounted>
         {/* Keyed by the project's opening: lines typed in one project are never previewed in the next. */}
         <CrawlerPolicyFields key={`crawlers-${snap?.workspaceKey}`} state={st} onChange={updSite} />
+      </Section>
+
+      <Section title="Integrations" id="site-integrations" defaultOpen={false} keepMounted scope={integrationsScope(site)}>
+        {/* Keyed by the project's opening: a site ID typed in one project is never offered in the next. */}
+        {/* Its saves report back, so an ID refused while the AI changes the site stays in its form. */}
+        <IntegrationFields key={`integrations-${snap?.workspaceKey}`} site={site} onChange={(patch) => applyOps([{ type: 'site.update', ...patch }], 'Update site settings')} />
+      </Section>
+
+      <Section title="Custom code" id="site-code" defaultOpen={false} keepMounted scope={siteCodeScope(site)}>
+        <SiteCodeFields key={`code-${snap?.workspaceKey}`} site={site} developer={developer} onChange={updSite} />
       </Section>
 
       <Section title="Redirects" id="site-redirects" defaultOpen={false} keepMounted scope={redirectCount ? plural(redirectCount, 'redirect', 'redirects') : undefined}>

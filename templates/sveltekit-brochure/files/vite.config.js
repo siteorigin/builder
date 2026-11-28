@@ -15,6 +15,9 @@ function publishedBase() {
 }
 
 export default defineConfig(({ command, isPreview }) => ({
+	// A CSS rule the build's minifier cannot read is left out with a warning, as a browser leaves it out, rather than
+	// stopping the build: the site's own CSS (Site settings > Custom code) is written by hand.
+	css: { lightningcss: { errorRecovery: true } },
 	plugins: [
 		sveltekit({
 			compilerOptions: {

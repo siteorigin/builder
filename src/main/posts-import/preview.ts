@@ -7,6 +7,11 @@ import { selectPlan, type PostImportPlan } from './plan';
 const pictures = (plan: PostImportPlan) => new Set(plan.media.map((m) => m.path)).size;
 const missing = (plan: PostImportPlan) => plan.missing.map(({ post, ref, problem }) => ({ post, ref, problem }));
 const newTerms = (plan: PostImportPlan) => ({ categories: plan.newTerms.categories, tags: plan.newTerms.tags });
+const archiveRedirects = (plan: PostImportPlan) => ({
+  kept: plan.archiveRedirects.length,
+  pending: plan.archiveRedirects.filter((r) => r.pending).length,
+  lost: plan.archiveRedirectsLost.map(({ from, reason }) => ({ from, reason }))
+});
 
 /**
  * The review of `plan`: every post, those already in the project marked, and the rest as importing with them skipped
@@ -49,8 +54,11 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
     // Only new posts are given them: one already here keeps its own, whichever way the import goes.
     searchSettings: plan.posts.filter((p) => !p.existing && p.seo).length,
     skipped: plan.skipped,
+    archiveRedirects: archiveRedirects(skip),
     oldSiteLinks: skip.oldSiteLinks,
     problems: skip.problems,
-    ...(update ? { update: { posts: update.posts.filter((p) => p.existing).length, pictures: pictures(update), missing: missing(update), newTerms: newTerms(update), oldSiteLinks: update.oldSiteLinks, problems: update.problems } } : {})
+    ...(update
+      ? { update: { posts: update.posts.filter((p) => p.existing).length, pictures: pictures(update), missing: missing(update), newTerms: newTerms(update), oldSiteLinks: update.oldSiteLinks, archiveRedirects: archiveRedirects(update), problems: update.problems } }
+      : {})
   };
 }
