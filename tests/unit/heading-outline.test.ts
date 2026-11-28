@@ -112,13 +112,55 @@ describe('heading outline', () => {
     expect(main[1]).toMatchObject({ owner: { kind: 'page', id: pageId }, nodeId: heroId, defNodeId: 'heading', direct: true, levelSource: { kind: 'prop', prop: 'headingLevel' }, levels: [1, 2, 3, 4, 5, 6] });
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists the release’s page introduction and centered hero by their headings', () => {
+  it('lists the release’s page introduction and centered hero by their headings', () => {
     const { s, pageId } = releaseContactWithHero();
     expect(rows(s, pageId).slice(0, 2)).toEqual([
       [1, 'Let’s talk'],
       [1, HERO_HEADING]
     ]);
+  });
+
+  it('flags the release’s centered hero as a second page title (#1404)', () => {
+    const { s, pageId } = releaseContactWithHero();
+    const heroId = s.pages[pageId].rootIds[1];
+    const outline = pageOutline(s, pageId);
+    // Foundation's sections are read through their markup: nothing on the page is unknown code.
+    expect(outline.uninspected).toBe(false);
+    expect(outline.review.extraTitles).toBe(true);
+    // The hero's level is its placement's choice, changed from the outline on the placement itself.
+    const hero = own(s, pageId)[1];
+    expect(hero).toMatchObject({ level: 1, nodeId: heroId, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+    expect(headingTarget(s, hero)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [], nodeId: heroId });
+    expect(headingLevelOps(hero, 2)).toEqual([{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'headingLevel', value: 'h2' }]);
+    expect(headingWarnings(s)).toEqual([expect.objectContaining({ code: 'HEADING_MULTIPLE_H1', owner: { kind: 'page', id: pageId }, nodeId: heroId })]);
+    // At Heading 2, the page has one title again.
+    const fixed = applyOperations(s, headingLevelOps(hero, 2)!).state;
+    expect(rows(fixed, pageId).slice(0, 2)).toEqual([
+      [1, 'Let’s talk'],
+      [2, HERO_HEADING]
+    ]);
+    expect(headingWarnings(fixed)).toEqual([]);
+  });
+
+  it('lists the headings of the release’s feature grid, FAQ and plan comparison', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const owner = { kind: 'page' as const, id: about.id };
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    const r = applyOperations(s, [
+      { type: 'node.insert', owner, componentId: 'features.grid', props: { heading: 'Services', items: [{ id: 'a', title: 'Design', description: 'Pages.' }, { id: 'b', title: 'Build', description: 'Sites.' }] } },
+      { type: 'node.insert', owner, componentId: 'faq.list', props: { heading: 'Questions' } },
+      { type: 'node.insert', owner, componentId: 'pricing.compare', props: { heading: 'Compare plans', headingLevel: 'h1' } }
+    ]).state;
+    expect(rows(r, about.id).slice(-5)).toEqual([
+      [2, 'Services'],
+      [3, 'Design'],
+      [3, 'Build'],
+      [2, 'Questions'],
+      [1, 'Compare plans']
+    ]);
+    expect(pageOutline(r, about.id).uninspected).toBe(false);
+    expect(headingWarnings(r).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
   });
 
   it('reads the shared header and footer around the page, unless the page leaves them out', () => {
@@ -135,10 +177,17 @@ describe('heading outline', () => {
     expect(headingOutline(s, about.id).map((h) => h.owner.kind)).toEqual(['page']);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('reads the headings of the release’s footer', () => {
+  it('reads the headings of the release’s footer', () => {
     const s = fresh();
-    expect(headingOutline(s, pageAt(s, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer').length).toBeGreaterThan(0);
+    const footer = headingOutline(s, pageAt(s, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer');
+    expect(footer.map((h) => [h.level, h.text])).toEqual([
+      [2, 'Explore'],
+      [2, 'Contact']
+    ]);
+    // A column heading cleared of its words is left out, as the footer's markup leaves it out.
+    const [placed] = s.site.shell.footer.rootIds;
+    const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: placed, prop: 'linksHeading', value: ' ' }]).state;
+    expect(headingOutline(r, pageAt(r, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer').map((h) => h.text)).toEqual(['Contact']);
   });
 
   it('leaves out a heading whose words are cleared, as the site does', () => {
@@ -167,8 +216,7 @@ describe('heading outline', () => {
     expect(pageOutline(r.state, about.id).uninspected).toBe(false);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists subheadings written in the release’s text section', () => {
+  it('lists subheadings written in the release’s text section', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
     const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
