@@ -42,10 +42,21 @@ export function sampleDiagnostics(groups: readonly SampleContactGroup[], kept: r
 
 const groupsByState = new WeakMap<ProjectState, SampleContactGroup[]>();
 
-/** The sample details the website shows, worked out once for each state (states are never changed once made). */
+/**
+ * The sample details the website shows, worked out once for each state (states are never changed once made). A
+ * project the scan cannot read (a page edited by hand into a shape it does not have, which Project health reports, or
+ * a read-only project of a newer version) has none listed: the review is advice, and never takes the editor down.
+ */
 export function sampleGroups(state: ProjectState): SampleContactGroup[] {
   let groups = groupsByState.get(state);
-  if (!groups) groupsByState.set(state, (groups = sampleContactMatches(state)));
+  if (!groups) {
+    try {
+      groups = sampleContactMatches(state);
+    } catch {
+      groups = [];
+    }
+    groupsByState.set(state, groups);
+  }
   return groups;
 }
 

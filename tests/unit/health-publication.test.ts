@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { OwnerRef, ProjectState } from '@shared/types';
+import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -15,7 +15,7 @@ import { draftLinksStop } from '../../src/main/export';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
 import { healthNotes } from '../../src/renderer/src/lib/export-summary';
 import { sampleContactMatches } from '../../src/renderer/src/lib/find-content';
-import { healthDiagnostics, sampleDiagnostics, sampleKindOf } from '../../src/renderer/src/lib/sample-review';
+import { healthDiagnostics, sampleDiagnostics, sampleGroups, sampleKindOf } from '../../src/renderer/src/lib/sample-review';
 import { P, item, prop } from '@catalogue/dsl';
 import { projectDesign, type DesignSpec } from './fixtures/packs';
 import { SPLIT_HERO, TEAM } from './fixtures/image-drop-designs';
@@ -130,6 +130,27 @@ describe('images the published website shows as empty placeholder boxes', () => 
     expect(of(placed, 'IMAGE_UNFILLED').map((d) => d.nodeId)).toEqual(['n_hero']);
   });
 
+  it('read a code section’s guard by what each of its names holds', () => {
+    const s = createStarterState('blank', 'Studio', true);
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const placed = run(s, { type: 'node.insert', newNodeId: 'n_feature', owner, parentId: null, componentId: 'block.feature' });
+    const feature = placed.components[(placed.pages[owner.id].nodes.n_feature as InstanceNode).definitionId];
+    const withSource = (source: string) => {
+      const t = structuredClone(placed);
+      t.components[feature.id] = { ...feature, source };
+      return of(t, 'IMAGE_UNFILLED').map((d) => d.nodeId);
+    };
+    const script = `<script>\n  import SoImage from '../runtime/Image.svelte';\n  let { image } = $props();\n</script>\n`;
+    // A name that holds whether the image has a picture hides it while it has none.
+    expect(withSource(`${script}{@const showPicture = !!image?.src}{#if showPicture}<SoImage {image} />{/if}`)).toEqual([]);
+    // One declared again in another block to hold something else does not: the placeholder shows.
+    expect(withSource(`${script}{#if true}{@const showPicture = !!image?.src}{/if}{#if true}{@const showPicture = true}{#if showPicture}<SoImage {image} />{/if}{/if}`)).toEqual(['n_feature']);
+    // Nor does a declaration held in a comment.
+    expect(withSource(`${script}<!-- {@const shown = !!image?.src} -->{#if shown}<SoImage {image} />{/if}`)).toEqual(['n_feature']);
+    // With no guard at all, the placeholder shows.
+    expect(withSource(`${script}<SoImage {image} />`)).toEqual(['n_feature']);
+  });
+
   it('leave out drafts, images hidden while empty, decorative and filled ones', () => {
     const s = createStarterState('blank', 'Studio', true);
     const hero = projectDesign(s, SPLIT_HERO).id;
@@ -212,6 +233,17 @@ describe('the starter’s sample contact details in Project health', () => {
     expect(warned[0].message).toMatch(/^Sample email address: hello@example\.com came with the starter and is still on the website \(.+, and in Site settings, under Published by\)/);
     expect(sampleDiagnostics(groups, [SAMPLE_CONTACT.email]).map(sampleKindOf)).toEqual(['phone', 'address']);
     expect(sampleDiagnostics(groups, [SAMPLE_CONTACT.phone, SAMPLE_CONTACT.address]).map(sampleKindOf)).toEqual(['email']);
+  });
+
+  it('leaves a project the scan cannot read with none listed, rather than taking the editor down', () => {
+    const s = structuredClone(withIdentity());
+    const page = s.pages[s.site.homePageId];
+    // An element with a newer version's keyed children, as a read-only project can hold it.
+    (page.nodes as Record<string, unknown>).n_bad = { id: 'n_bad', kind: 'element', tag: 'div', children: { main: 'n_x' } };
+    page.rootIds.push('n_bad');
+    expect(() => sampleContactMatches(s)).toThrow();
+    expect(sampleGroups(s)).toEqual([]);
+    expect(healthDiagnostics(s, [], [])).toEqual([]);
   });
 
   it('is counted with the project’s own findings, the same list while nothing changes', () => {

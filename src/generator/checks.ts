@@ -2296,9 +2296,13 @@ function namesFor(source: string, names: string[]): string[] {
   // The script's declarations, and the markup's own (`{@const hasMedia = !!image?.src}`), outside its comments.
   const markup = source.replace(/<!--[\s\S]*?-->/g, '');
   const decls = [...script.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g), ...markup.matchAll(/\{@const\s+([A-Za-z_$][\w$]*)\s*=([^}]*)\}/g)].map((m) => [m[1], m[2]] as const);
+  // A name declared more than once (a `{@const}` in each of two blocks) tests the value only where every one of its
+  // declarations reads it: one of them may hold something else entirely.
+  const byName = new Map<string, string[]>();
+  for (const [name, rhs] of decls) byName.set(name, [...(byName.get(name) ?? []), rhs]);
   for (let grew = true; grew; ) {
     grew = false;
-    for (const [name, rhs] of decls) if (!out.has(name) && [...out].some((n) => mentions(rhs, n))) (out.add(name), (grew = true));
+    for (const [name, all] of byName) if (!out.has(name) && all.every((rhs) => [...out].some((n) => mentions(rhs, n)))) (out.add(name), (grew = true));
   }
   return [...out];
 }
