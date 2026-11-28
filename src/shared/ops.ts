@@ -10,6 +10,8 @@ import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
 import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
+import { GLOBAL_CSS_MAX, HEAD_CODE_MAX } from './site-code';
+import { FATHOM_ID_MAX } from './integrations';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -705,6 +707,28 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('The header menu\'s order. "own" (default): its links keep the order the author gave them, whatever the page order. "follow": its links to pages stay in the page order through every edit (a page.reorder, a page added to the menu), a deleted page\'s menu links are removed rather than pointed at its replacement, and its links cannot be moved by hand. Other links and submenus keep their places.'),
     webmcp: z.boolean().optional().describe('WebMCP: declare each contact and signup form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
+    headCode: z
+      .string()
+      .max(HEAD_CODE_MAX)
+      .optional()
+      .describe('Developer mode only. The author\'s own markup for the <head> of every page of the published website (verification <meta> tags, <link> hints and stylesheets, analytics <script>s): only <meta>, <link>, <script> and <style> elements and comments, each closed. Never run in the editor\'s preview. Replaces it whole, kept as written; "" removes it.'),
+    globalCss: z
+      .string()
+      .max(GLOBAL_CSS_MAX)
+      .optional()
+      .describe('Developer mode only. The site\'s own stylesheet, loaded after every other on every page (preview too): rules, @media and the like, no @import; url() must be https:, data: or a path from the site root. Replaces it whole, kept as written; "" removes it.'),
+    integrations: z
+      .object({
+        fathom: z
+          .object({ siteId: z.string().max(FATHOM_ID_MAX).describe('The site ID from Fathom\'s site settings, e.g. "ABCDEFGH".') })
+          .strict()
+          .nullable()
+          .optional()
+          .describe('Fathom Analytics: counts visits to the published website. null removes it.')
+      })
+      .strict()
+      .optional()
+      .describe('Services the website works with, each added with its own settings. Only the integrations given change.'),
     redirectHost: z
       .enum(['cloudflare', 'netlify', 'vercel'])
       .optional()
