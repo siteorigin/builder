@@ -591,7 +591,7 @@ describe('SEO and performance', () => {
     expect(page).toContain('application/ld+json');
     expect(page).not.toContain('<script type');
     expect(files.get('static/favicon.svg')).toMatch(/^<svg[^]*>T<\/text>/);
-    expect(files.get('src/routes/+layout.svelte')).toContain('href={asset("favicon.svg")}');
+    expect(files.get('src/routes/+layout.svelte')).toContain('href={headAsset("favicon.svg")}');
   });
 
   it('derives the base path from the public URL', () => {
