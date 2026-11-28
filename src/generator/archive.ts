@@ -1,5 +1,5 @@
 /**
- * A collection's index and category archive pages (see shared/archives.ts), written as static pages inside the site's
+ * A collection's index and its category and tag archive pages (see shared/archives.ts), written as static pages inside the site's
  * own header and footer. Each lists its share of the collection's published entries, newest first, as cards (featured
  * picture, categories, title, date, author and excerpt; the boxed card the Post grid section shows, each one link to
  * its entry through its title), and links to the pages before and after it in its series,
@@ -7,7 +7,7 @@
  * written into the page when the site is generated: visitors' browsers look nothing up.
  */
 import type { ArchivePage } from '@shared/archives';
-import { archivePages, archiveWords, categoryTerms, fillWords as fill } from '@shared/archives';
+import { archivePages, archiveTerms, archiveWords, fillWords as fill, sameTerm } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
 import { siteLanguage } from '@shared/languages';
 import { routeDir } from '@shared/routes';
@@ -67,11 +67,11 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const words = visitorTextFor(site, siteLanguage(site));
   const file = archiveFile(route);
   // Category labels link to their archive while the category has one.
-  const archives = new Map(series.filter((p) => p.category && p.page === 1).map((p) => [p.category!, p.route]));
-  const terms = new Map(categoryTerms(collection).map((t) => [t.id, t.label]));
+  const archives = new Map(series.filter((p) => p.term?.taxonomy === 'categories' && p.page === 1).map((p) => [p.term!.id, p.route]));
+  const terms = new Map(archiveTerms(collection, 'categories').map((t) => [t.id, t.label]));
   const { heading } = archiveWords(state, here);
-  // A category's pages lead back to the whole collection's index, by its own heading.
-  const index = here.category ? series.find((p) => !p.category && p.page === 1) : undefined;
+  // A category's or tag's pages lead back to the whole collection's index, by its own heading.
+  const index = here.term ? series.find((p) => !p.term && p.page === 1) : undefined;
   const rctx = { state };
   // What the markup below turns out to hold, so that the page is styled for that and nothing more: Svelte warns of
   // every selector that matches nothing, in the build of the exported project.
@@ -124,7 +124,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   // The first page of the index leads with its newest entry, shown large; every other page is a grid of cards.
   const ids = here.entryIds.filter((id) => Object.hasOwn(collection.entries, id));
   const layout = hasArchiveLayout(collection.settings) ? emitArchiveLayout(state, collectionId, ids, file, opts) : null;
-  const lead = !layout && !here.category && here.page === 1 && ids.length ? ids[0] : undefined;
+  const lead = !layout && !here.term && here.page === 1 && ids.length ? ids[0] : undefined;
   const rest = layout ? [] : lead ? ids.slice(1) : ids;
   const body: string[] = [];
   if (lead) body.push(`\t\t${card(lead, true, 'h2')}`);
@@ -144,7 +144,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     const numbers = links
       .map((n) => {
         if (n === null) return `\t\t\t\t<li aria-hidden="true">…</li>`;
-        const to = series.find((p) => p.category === here.category && p.page === n)!.route;
+        const to = series.find((p) => sameTerm(p.term, here.term) && p.page === n)!.route;
         // Wording that leaves the number out still names each link apart.
         const name = words.archivePage.includes('{page}') ? fill(words.archivePage, { page: n }) : `${words.archivePage} ${n}`;
         return `\t\t\t\t<li><a href=${href(to)} aria-label={${js(name)}}${n === here.page ? ' aria-current="page"' : ''}>${n}</a></li>`;
@@ -169,12 +169,12 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   // The layout's own imports, each once (the layout may show pictures too).
   for (const line of layout?.imports ?? []) if (!imports.includes(line)) imports.push(line);
   const script = [imports.join('\n'), layout?.script ?? ''].filter(Boolean).join('\n\n');
-  if (here.category) uses.add('eyebrow');
+  if (here.term) uses.add('eyebrow');
   if (index) uses.add('trail');
   if (here.page > 1) uses.add('count');
   const intro = [
-    here.category
-      ? `\t\t\t<p class="so-archive__eyebrow">${index ? `<a href=${href(index.route)}>{${js(archiveWords(state, index).heading)}}</a><span aria-hidden="true">/</span>` : ''}{${js(words.archiveCategory)}}</p>`
+    here.term
+      ? `\t\t\t<p class="so-archive__eyebrow">${index ? `<a href=${href(index.route)}>{${js(archiveWords(state, index).heading)}}</a><span aria-hidden="true">/</span>` : ''}{${js(here.term.taxonomy === 'tags' ? words.archiveTag : words.archiveCategory)}}</p>`
       : '',
     `\t\t\t<h1 class="so-archive__heading">{${js(heading)}}</h1>`,
     here.page > 1 ? `\t\t\t<p class="so-archive__count">{${js(fill(words.archivePageOf, { page: here.page, count: here.pages }))}}</p>` : ''

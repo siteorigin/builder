@@ -107,7 +107,7 @@ import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteE
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
-import { archivePages, collectionIndexRoutes } from '@shared/archives';
+import { archivePages, collectionIndexRoutes, termArchiveKey, termArchiveRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
@@ -131,7 +131,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { headCodeWithoutComments, siteGlobalCss, siteHeadCode } from '@shared/site-code';
 import { integrationHead } from '@shared/integrations';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
-import { graphScript, inGenerationRun } from './structured-data';
+import { graphScript, inGenerationRun, perRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
@@ -326,6 +326,12 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
+/** Every category's and tag's archive address, worked out once per run outside a cached one too: every post's terms read it. */
+function termArchiveRoutesOf(state: ProjectState): Record<string, string> {
+  if (isTracked(state)) return termArchiveRoutes(derived(state, 'archivePages', archivePages));
+  return perRun(state, 'termArchiveRoutes', (s) => termArchiveRoutes(archivePages(s)));
+}
+
 /**
  * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
  * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
@@ -372,6 +378,15 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     }
     case 'collection': {
+      // A category's or tag's archive, at its current address, while it has one (an entry's linked terms); otherwise
+      // its words alone.
+      if (link.term) {
+        const terms = derived(ctx.state, 'termArchiveRoutes', termArchiveRoutesOf);
+        const key = termArchiveKey(link.target, link.term);
+        if (!Object.hasOwn(terms, key)) return null;
+        href = terms[key];
+        break;
+      }
       // The first page of the collection's list, at its current address: one the website has no index for shows its
       // words alone, as a link to an entry it does not publish does.
       const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);
