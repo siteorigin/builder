@@ -1605,7 +1605,7 @@ describe('site styles that follow other styles (#201)', () => {
     expect(() => create(fresh(), 'radius', 'Soft', 'soft')).toThrow(/length/);
     // The theme's own values all pass the same check.
     for (const t of effectiveTokens(fresh()).filter((x) => ['space', 'container', 'radius'].includes(x.group)))
-      expect(set(fresh(), t.id, t.value).tokens.overrides[t.id], t.id).toBe(t.value);
+      expect(set(fresh(), t.id, t.value).tokens.overrides[t.id], t.id).toEqual(t.value);
   });
 
   it('says a custom style has no theme default to go back to', () => {

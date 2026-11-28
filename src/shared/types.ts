@@ -1559,6 +1559,21 @@ export interface CollectionDoc {
    * (its share of the index or of one category, page by page). Absent: the ready-made cards. Archives only.
    */
   archiveTemplate?: NodeTree;
+  /**
+   * The controls the first page of the collection's index gives visitors (see shared/collection-browse.ts), which work
+   * in their own browser over every published entry. Absent: none. Only with the ready-made cards.
+   */
+  browse?: CollectionBrowse;
+}
+
+/**
+ * What visitors can do on a collection's index: search its entries' titles and excerpts, filter them (`filters`) and
+ * sort them (`sort`), by fields named as queries name them (`terms.<grouping>`, `field.<name>`, `title`, `publishedAt`).
+ */
+export interface CollectionBrowse {
+  search?: boolean;
+  filters?: string[];
+  sort?: string[];
 }
 
 /** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */

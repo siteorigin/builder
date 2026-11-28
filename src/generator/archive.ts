@@ -9,6 +9,8 @@
 import type { ArchivePage } from '@shared/archives';
 import { archivePages, archiveTerms, archiveWords, fillWords as fill, sameTerm } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
+import { archivePageSize } from '@shared/collections';
+import { BROWSE_COMPONENT_FILE, browseControls, browseIndexFile, browsesIndex } from './collection-browse';
 import { siteLanguage } from '@shared/languages';
 import { routeDir } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
@@ -157,6 +159,25 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     );
   }
 
+  // The first page of the index, with something to list, gives visitors the collection's search, filters and sorting
+  // when it offers them: until a visitor uses one, the page shows what is written above.
+  const controls = !layout && !here.term && here.page === 1 && ids.length > 0 && browsesIndex(state, collectionId) ? browseControls(state, collectionId) : undefined;
+  // Only with a control that does something: a filter whose grouping has lost its last term offers none.
+  const browsing = !!controls && (controls.search || controls.filters.length > 0 || controls.sorts.length > 0);
+  if (browsing) {
+    for (const part of ['grid', 'card', 'image', 'category', 'categoryLink', 'meta', 'excerpt'] as const) uses.add(part);
+    const content = body.splice(0).map((b) => b.replace(/^/gm, '\t'));
+    const load = js(relImport(file, `${RUNTIME_DIR}/${browseIndexFile(collectionId)}`));
+    body.push(
+      [
+        `\t\t<SoBrowse controls={${js(controls)}} load={() => import(${load})} size={${archivePageSize(collection.settings)}} name={${js(heading)}}>`,
+        browseResults(),
+        ...content,
+        `\t\t</SoBrowse>`
+      ].join('\n')
+    );
+  }
+
   // What it says when it is found or shared, as a page does: its title and description, its sharing tags, its own
   // address and, once the site has a public URL, the site's structured data with its trail from Home.
   const head = seoHead(state, archiveMetadata(state, here), { article: false, alternates: [] });
@@ -165,7 +186,11 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   if (here.prev) head.push(`\t<link rel="prev" href=${href(here.prev)} />`);
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 
-  const imports = [`\timport { resolve } from '$app/paths';`, ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : [])];
+  const imports = [
+    `\timport { resolve } from '$app/paths';`,
+    ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : []),
+    ...(browsing ? [`\timport SoBrowse from ${js(relImport(file, `${RUNTIME_DIR}/${BROWSE_COMPONENT_FILE}`))};`] : [])
+  ];
   // The layout's own imports, each once (the layout may show pictures too).
   for (const line of layout?.imports ?? []) if (!imports.includes(line)) imports.push(line);
   const script = [imports.join('\n'), layout?.script ?? ''].filter(Boolean).join('\n\n');
@@ -185,6 +210,33 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     ? [`<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n\t</div>\n</section>`, layout.markup, body.length ? `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${body.join('\n')}\n\t</div>\n</section>` : ''].filter(Boolean).join('\n')
     : `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n${body.join('\n')}\n\t</div>\n</section>`;
   return HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) + `<script>\n${script}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` + `${sections}\n\n${archiveStyle(uses)}`;
+}
+
+/**
+ * The snippet an index's browse component lists the entries that match with: the grid of ready-made cards, each card
+ * written from the entry's row in the collection's browse index (see generator/collection-browse.ts) as the page's own
+ * cards are written from the entry.
+ */
+function browseResults(): string {
+  return [
+    `\t\t\t{#snippet results(entries)}`,
+    `\t\t\t\t<ul class="so-archive__grid">`,
+    `\t\t\t\t\t{#each entries as entry (entry.id)}`,
+    `\t\t\t\t\t\t<li>`,
+    `\t\t\t\t\t\t\t<article class="so-archive__card">`,
+    `\t\t\t\t\t\t\t\t{#if entry.image}<SoImage image={entry.image} sizes="(min-width: 1024px) 33vw, (min-width: 768px) 50vw, 100vw" class="so-archive__image" />{/if}`,
+    `\t\t\t\t\t\t\t\t<div class="so-archive__text">`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.categories.length}<p class="so-archive__category">{#each entry.categories as category, i (i)}{#if i}, {/if}{#if category.route}<a href={resolve(category.route)}>{category.label}</a>{:else}<span>{category.label}</span>{/if}{/each}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t\t<h2 class="so-archive__title"><a href={resolve(entry.route)}>{entry.title}</a></h2>`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.date || entry.byline}<p class="so-archive__meta">{#if entry.date}<time datetime={entry.date}>{entry.dateLabel}</time>{/if}{#if entry.date && entry.byline}{' '}{/if}{#if entry.byline}<span>{entry.byline}</span>{/if}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t\t{#if entry.excerpt}<p class="so-archive__excerpt">{entry.excerpt}</p>{/if}`,
+    `\t\t\t\t\t\t\t\t</div>`,
+    `\t\t\t\t\t\t\t</article>`,
+    `\t\t\t\t\t\t</li>`,
+    `\t\t\t\t\t{/each}`,
+    `\t\t\t\t</ul>`,
+    `\t\t\t{/snippet}`
+  ].join('\n');
 }
 
 /** The parts of an archive page that not every one has, each with rules of its own. */

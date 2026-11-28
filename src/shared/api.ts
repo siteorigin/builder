@@ -580,9 +580,9 @@ export type ExportFormat = 'folder' | 'zip';
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
-  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
-  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
+  | { kind: 'site'; field: 'name' | 'description' | 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'publisherUrl' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
+  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'canonical' | 'socialImage' | 'structuredData' | 'pageTitle' }
+  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'canonical' | 'body'; picture?: number }
   | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
   /** Colors in Site styles, showing one of the site's palettes, with a colour's row (`token`) focused when there is one. */
   | { kind: 'colors'; scheme: 'light' | 'dark'; token?: string }

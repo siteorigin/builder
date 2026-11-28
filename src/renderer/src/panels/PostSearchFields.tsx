@@ -132,7 +132,9 @@ export function PostSearchFields({
         hint={published ? 'When on, search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'When on, once it is published, search engines are asked not to list it, and the sitemap leaves it out.'}
       />
       <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void change({ kind: 'searchHidden', on: v })} label="Hide from site search" hint={`When on, this ${noun} is left out of the site’s own search results, whatever search engines are told.`} />
-      <CanonicalUrlField keep={`${home}:canonical`} keepWhile={alive} value={seo.canonical} ownUrl={ownUrl} what={noun} onTyped={on.canonical} onCommit={(url) => change({ kind: 'canonical', url })} />
+      <div data-entry-field="canonical" style={{ display: 'contents' }}>
+        <CanonicalUrlField keep={`${home}:canonical`} keepWhile={alive} value={seo.canonical} ownUrl={ownUrl} what={noun} onTyped={on.canonical} onCommit={(url) => change({ kind: 'canonical', url })} />
+      </div>
     </>
   );
 }
