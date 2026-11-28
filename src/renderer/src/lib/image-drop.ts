@@ -45,6 +45,9 @@ export interface ImageTarget {
   label: string;
 }
 
+/** What resolveImageDrop finds: the image a drop changes, or a picture under the pointer that takes nothing. */
+export type ImageHit = { target: ImageTarget; direct: boolean } | { blocked: true };
+
 /** What the page says is at the pointer. */
 export interface PointedAt {
   chain: BridgeDesc[];
@@ -174,9 +177,11 @@ export function scopeAt(state: ProjectState, chain: BridgeDesc[]): { ctx: string
  * The image a drop where the page says the pointer is would change, and whether the pointer is on it. On an image, that
  * image (none when it can't take one). Off any image, the one empty image of the component or list item the pointer is
  * in, counted once however often it shows; none when it has none, or more than one. `shown` says whether the page
- * shows an image's box now (a tab not chosen does not): only those count.
+ * shows an image's box now (a tab not chosen does not): only those count. `blocked` for a picture a list item of a code
+ * placement shows that can't take it (another item, or other content of the placement, shows the same file): the drop
+ * is the picture's, and does nothing.
  */
-export function resolveImageDrop(state: ProjectState, targets: readonly ImageTarget[], at: PointedAt, shown: (t: ImageTarget) => boolean = () => true): { target: ImageTarget; direct: boolean } | null {
+export function resolveImageDrop(state: ProjectState, targets: readonly ImageTarget[], at: PointedAt, shown: (t: ImageTarget) => boolean = () => true): ImageHit | null {
   const first = at.chain[0];
   if (!first) return null;
   const on = targets.find((t) => !t.code && !t.hidden && sameDesc(t.desc, first));
@@ -189,7 +194,7 @@ export function resolveImageDrop(state: ProjectState, targets: readonly ImageTar
     // A picture the code draws of one item of its list (a Gallery's): the one item whose picture shows that file. Two
     // showing it can't be told apart.
     const items = first.code && (at.picture.own || at.picture.inside) ? targets.filter((t) => t.code?.item && shows(t)) : [];
-    if (items.length) return items.length === 1 && items[0].field ? { target: items[0], direct: true } : null;
+    if (items.length) return items.length === 1 && items[0].field ? { target: items[0], direct: true } : { blocked: true };
     // Any other picture (one the code draws of its own, an entry's, one in rich text) takes nothing. An empty one the
     // code draws (its placeholder shows no file) is the placement's empty image, as anywhere else on it.
     if (!(first.code && at.picture.own && !at.picture.src)) return null;
@@ -244,9 +249,11 @@ export type AssetAim = { kind: 'pending' } | { kind: 'none' } | { kind: 'image';
  * no image is targeted (#506). `hit`: what resolveImageDrop found, `outline` the box it shows; `ready`: whether what
  * an empty image off the pointer and a place between content are found by is measured where the page now shows (an
  * empty image not yet measured is not yet counted, so a miss means nothing until then); `insert`: where it would go
- * between content. An image that takes it but can't be outlined (one shown more than once) takes it nowhere.
+ * between content. An image that takes it but can't be outlined (one shown more than once), or a picture that takes
+ * nothing (`blocked`), takes it nowhere.
  */
-export function assetAim(hit: { target: ImageTarget; direct: boolean } | null, outline: Box | null, ready: boolean, insert: () => InsertAim | null): AssetAim {
+export function assetAim(hit: ImageHit | null, outline: Box | null, ready: boolean, insert: () => InsertAim | null): AssetAim {
+  if (hit && 'blocked' in hit) return { kind: 'none' };
   if (hit?.direct || (hit && ready)) return outline ? { kind: 'image', target: hit.target, outline } : { kind: 'none' };
   if (!ready) return { kind: 'pending' };
   const aim = insert();

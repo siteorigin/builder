@@ -2870,7 +2870,7 @@ export function Canvas() {
         const picture = pointed.picture ? { src: pointed.picture.src, own: pointed.picture.own, inside: pointed.picture.inside } : null;
         const hit = resolveImageDrop(st, targets, { chain: pointed.chain, picture }, showing);
         // On the image, the element under the pointer; off it, the empty image's box.
-        const outline = hit ? (hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target)) : null;
+        const outline = hit && 'target' in hit ? (hit.direct ? (hit.target.code ? (pointed.picture?.rect ?? null) : pointed.rect) : boxOf(hit.target)) : null;
         aim = assetAim(hit, outline, !!measured && !!lists, () => (lists ? dest.aim(lists, page.x, page.y, page.z) : null));
       }
       // Off the page nothing is shown to go anywhere.

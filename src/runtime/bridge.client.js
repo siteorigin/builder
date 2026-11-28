@@ -5691,8 +5691,10 @@ window.addEventListener('message', async (e) => {
       if (pic) {
         const img = pic.tagName === 'IMG' ? pic : pic.querySelector('img');
         const own = el && el.hasAttribute('data-so-code') ? [...el.querySelectorAll('.so-img')].filter((p) => innermost(p) === el) : [];
+        // SoImage's picture is its <img> (or placeholder), also when a <picture> around it with other formats is hit.
+        const so = pic.tagName === 'PICTURE' ? pic.querySelector('img.so-img') || pic : pic;
         // An address longer than any library file's (an inline picture) is cut short: it names no file either way.
-        picture = { rect: rectOf(pic), src: ((img && img.getAttribute('src')) || '').slice(0, 1000), own: own.length === 1 && own[0] === pic, inside: own.includes(pic) };
+        picture = { rect: rectOf(pic), src: ((img && img.getAttribute('src')) || '').slice(0, 1000), own: own.length === 1 && own[0] === so, inside: own.includes(so) };
       }
       send('pointed', { requestId: m.payload.requestId, chain: hit ? chainFrom(hit) : [], rect: el ? rectOf(el) : null, picture, scroll: [window.scrollX, window.scrollY] });
       break;

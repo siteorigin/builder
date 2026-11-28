@@ -1732,53 +1732,83 @@ function outcomes(whole: string): string[] {
   return colon < 0 ? [expr] : [...outcomes(expr.slice(q + 1, colon)), ...outcomes(expr.slice(colon + 1))];
 }
 
-/** Where the `{` at `open` closes, past quoted strings inside it; -1 when it never does. */
+/** Where the string or template literal opening at `open` ends (past a template's `${...}`); -1 when it never does. */
+function stringEnd(source: string, open: number): number {
+  const q = source[open];
+  for (let i = open + 1; i < source.length; i++) {
+    const c = source[i];
+    if (c === '\\') i++;
+    else if (c === q) return i;
+    else if (q === '`' && c === '$' && source[i + 1] === '{') {
+      i = closingBrace(source, i + 1);
+      if (i < 0) return -1;
+    }
+  }
+  return -1;
+}
+
+/** Where the `{` at `open` closes, past strings and template literals inside it; -1 when it never does. */
 function closingBrace(source: string, open: number): number {
   let depth = 0;
   for (let i = open; i < source.length; i++) {
     const c = source[i];
-    if (c === '"' || c === "'") {
-      const end = source.indexOf(c, i + 1);
-      if (end < 0) return -1;
-      i = end;
+    if (c === '"' || c === "'" || c === '`') {
+      i = stringEnd(source, i);
+      if (i < 0) return -1;
     } else if (c === '{') depth++;
     else if (c === '}' && --depth === 0) return i;
   }
   return -1;
 }
 
+/** Markup with its HTML comments blanked out, every other character where it was. */
+const uncommented = (source: string) => source.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ' '));
+
+/** Attributes of SoImage's that would show a picture of their own in place of its image's. */
+const OWN_PICTURE = /^(?:src|srcset|sources)$/;
+
 /**
- * Code markup's one `<SoImage>`, and the expression its `image` attribute gives (`image={...}`, or the shorthand
- * `{image}`): null when there is not exactly one, it has no image attribute or more than one, or a spread
- * (`{...rest}`) could give it one.
+ * Code markup's one `<SoImage>` (comments left out), and the expression its `image` attribute gives (`image={...}`, or
+ * the shorthand `{image}`): null when there is not exactly one, it has no image attribute or more than one, or a
+ * spread (`{...rest}`) or a picture of its own (`src`, `srcset`, `sources`) could show something else.
  */
-function soImageAttr(source: string): { at: number; expr: string } | null {
+function soImageAttr(markup: string): { at: number; expr: string } | null {
+  const source = uncommented(markup);
   const tags = [...source.matchAll(/<SoImage\b/g)];
   if (tags.length !== 1) return null;
   const at = tags[0].index;
   const start = at + '<SoImage'.length;
   let expr: string | null = null;
+  // The tag's attributes with every value (and attribute of braces) as one letter: what is left names them.
+  let names = '';
   for (let i = start; i < source.length; i++) {
     const c = source[i];
-    if (c === '>' || (c === '/' && source[i + 1] === '>')) return expr === null ? null : { at, expr };
+    if (c === '>' || (c === '/' && source[i + 1] === '>')) {
+      const named = names.match(/[A-Za-z_$:][\w$:.-]*(?=\s*=)/g) ?? [];
+      if (named.some((n) => OWN_PICTURE.test(n))) return null;
+      return expr === null ? null : { at, expr };
+    }
     if (c === '"' || c === "'") {
       const end = source.indexOf(c, i + 1);
       if (end < 0) return null;
+      names += 'v';
       i = end;
     } else if (c === '{') {
       const end = closingBrace(source, i);
       if (end < 0) return null;
       const inner = source.slice(i + 1, end).trim();
-      const before = source.slice(start, i);
-      const named = /(?:^|\s)image\s*=\s*$/.test(before);
-      const attribute = /(?:^|\s)$/.test(before);
-      if (attribute && inner.startsWith('...')) return null;
-      if (named || (attribute && inner === 'image')) {
+      // A value (`image={...}`), or an attribute of its own (`{image}`, `{...rest}`).
+      const value = /=\s*$/.test(names);
+      const named = value && /(?:^|\s)image\s*=\s*$/.test(names);
+      if (!value && inner.startsWith('...')) return null;
+      if (!value && OWN_PICTURE.test(inner)) return null;
+      if (named || (!value && inner === 'image')) {
         if (expr !== null) return null;
         expr = named ? source.slice(i + 1, end) : 'image';
       }
+      names += 'v';
       i = end;
-    }
+    } else names += c;
   }
   return null;
 }
@@ -1824,20 +1854,23 @@ export function showsItemsWithSoImage(source: string, prop: string, field: strin
   if (!name.test(prop) || !name.test(field) || /\{#snippet\b/.test(source)) return false;
   const attr = soImageAttr(source);
   if (!attr) return false;
+  const markup = uncommented(source);
   // The loops open around the SoImage.
   const open: string[] = [];
-  for (const m of source.slice(0, attr.at).matchAll(/\{#each\b|\{\/each\s*\}/g)) {
+  for (const m of markup.slice(0, attr.at).matchAll(/\{#each\b|\{\/each\s*\}/g)) {
     if (m[0].startsWith('{/')) {
       if (!open.pop()) return false;
       continue;
     }
-    const end = closingBrace(source, m.index);
+    const end = closingBrace(markup, m.index);
     if (end < 0 || end > attr.at) return false;
-    open.push(source.slice(m.index, end + 1));
+    open.push(markup.slice(m.index, end + 1));
   }
   if (open.length !== 1) return false;
   const each = open[0].match(/^\{#each\s+([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)\s*(?:,\s*[A-Za-z_$][\w$]*\s*)?(?:\([^()]*\)\s*)?\}$/);
-  return !!each && each[1] === prop && givesImage(attr.expr, `${each[2]}.${field}`);
+  // An item the markup names again (`{@const item = ...}`) may be another one.
+  if (!each || each[1] !== prop || new RegExp(`\\{@const\\s+${each[2].replace(/\$/g, '\\$')}\\b`).test(markup)) return false;
+  return givesImage(attr.expr, `${each[2]}.${field}`);
 }
 
 /** An expression without the parentheses around the whole of it (`(photo)` is `photo`). */
@@ -1943,32 +1976,47 @@ export function renderedImages(state: ProjectState, tree: NodeTree): RenderedIma
       const prop = codeImageProp(def);
       const list = prop ? null : codeImageList(def);
       if (list) {
-        // A list of pictures the code shows one of per item (a Gallery): each item's chosen picture is a picture of its
-        // own, named on the page by its file. An item with none shows nothing to point at. A list connected to a
-        // collection holds its entries' rows, and an item whose ID its list does not give it alone can't be named.
-        if (Object.hasOwn(n.listSources ?? {}, list.prop) || !showsItemsWithSoImage(def.source ?? '', list.prop, list.field)) return;
+        // A list of pictures the code shows one of per item (a Gallery): each item's picture, as the page shows it, is
+        // a picture of its own, named on the page by its file. An item with none shows nothing to point at. A list
+        // connected to a collection holds its entries' rows.
         const schema = def.properties[list.prop];
-        const rows = Object.hasOwn(n.props, list.prop) ? n.props[list.prop] : schema.default;
+        if (schema?.type !== 'list' || Object.hasOwn(n.listSources ?? {}, list.prop) || !showsItemsWithSoImage(def.source ?? '', list.prop, list.field)) return;
+        const rows = props[list.prop];
         if (!Array.isArray(rows)) return;
-        const ids = rows.map((r) => (r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' ? (r as { id: string }).id : ''));
-        rows.forEach((r, i) => {
-          const id = ids[i];
-          const value = (r as Record<string, unknown> | null)?.[list.field];
-          const files = filesOf(value);
-          if (!id || ids.indexOf(id) !== i || ids.lastIndexOf(id) !== i || !files.length) return;
+        const stored = Object.hasOwn(n.props, list.prop) ? n.props[list.prop] : schema.default;
+        const idOf = (r: unknown) => (r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' ? (r as { id: string }).id : '');
+        const storedIds = Array.isArray(stored) ? stored.map(idOf) : [];
+        // Every other library picture the placement can show (one in an item's text, say): one of those showing the
+        // same file as an item's picture can't be told apart from it.
+        const elsewhere = new Set<string>();
+        const collect = (v: unknown): void => {
+          if (!v || typeof v !== 'object') return;
+          if (Array.isArray(v)) return v.forEach(collect);
+          const assetId = (v as { assetId?: unknown }).assetId;
+          if (typeof assetId === 'string') for (const f of filesOf({ assetId })) elsewhere.add(f);
+          Object.values(v).forEach(collect);
+        };
+        for (const [k, v] of Object.entries(props)) if (k !== list.prop) collect(v);
+        for (const r of rows) if (r && typeof r === 'object') for (const [k, v] of Object.entries(r)) if (k !== list.field) collect(v);
+        rows.forEach((r) => {
+          const files = filesOf((r as Record<string, unknown> | null)?.[list.field]);
+          if (!files.length) return;
+          const id = idOf(r);
+          // Written by the item's ID, which only the one stored item may have.
+          const named = !!id && storedIds.filter((x) => x === id).length === 1;
+          const at = named ? { nodeId: n.id, prop: list.prop, itemId: id, field: list.field } : null;
           const title = schema.titleField ? (r as Record<string, unknown>)[schema.titleField] : undefined;
-          const at = { nodeId: n.id, prop: list.prop, itemId: id, field: list.field };
           shownThrough.set(out.length, scope);
           out.push({
             nodeId: n.id,
             instancePath: scope.instances ?? [],
             itemPath: [],
             repeats: [],
-            field: at,
+            field: at && !files.some((f) => elsewhere.has(f)) ? at : null,
             reads: at,
             unfilled: false,
             code: { drawn: true, files, item: true },
-            name: schema.fields?.[list.field]?.label?.trim() || 'Image',
+            name: schema.fields[list.field]?.label?.trim() || 'Image',
             ...(typeof title === 'string' && title.trim() ? { item: title.trim() } : {})
           });
         });

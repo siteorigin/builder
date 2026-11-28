@@ -10,6 +10,7 @@ import { projectDesign, type DesignSpec } from './fixtures/packs';
 import { GALLERY, SPLIT_HERO, TEAM } from './fixtures/image-drop-designs';
 import { SECTION } from './fixtures/insert-at-designs';
 import { showsItemsWithSoImage, showsWithSoImage } from '@generator/checks';
+import { pointedAt } from '../../src/renderer/src/lib/payload';
 import { aimKey, assetAim, imageDropOps, imageDropTargets, resolveImageDrop, showsFile, type ImageTarget, type PointedAt } from '../../src/renderer/src/lib/image-drop';
 import type { InsertAim } from '../../src/renderer/src/lib/insert-drop';
 import { descOf, type BridgeDesc } from '../../src/renderer/src/lib/model';
@@ -92,7 +93,8 @@ function chain(state: ProjectState, owner: OwnerRef, placement: string, nodeId: 
   return out;
 }
 
-const pick = (state: ProjectState, targets: ImageTarget[], at: BridgeDesc[], picture: PointedAt['picture'] = null) => resolveImageDrop(state, targets, { chain: at, picture });
+/** What a drop finds, typed as an image so a test can read it; one that blocks is asserted as `{ blocked: true }`. */
+const pick = (state: ProjectState, targets: ImageTarget[], at: BridgeDesc[], picture: PointedAt['picture'] = null) => resolveImageDrop(state, targets, { chain: at, picture }) as { target: ImageTarget; direct: boolean } | null;
 const headingOf = (state: ProjectState, placement: InstanceNode) => Object.values(state.components[placement.definitionId].tree!.nodes).find((n) => n.kind === 'text' && n.name === 'Heading')!;
 
 /** A project component built with the catalogue helpers, installed into the project. */
@@ -461,6 +463,15 @@ describe('a code component’s picture (#505)', () => {
     expect(showsWithSoImage('<SoImage {image} />', 'photo')).toBe(false);
     // Given twice, or by a spread that could give it.
     expect(showsWithSoImage('<SoImage {image} image={badge} />', 'image')).toBe(false);
+    expect(showsWithSoImage('<SoImage image={badge} {image} />', 'image')).toBe(false);
+    // A spread past a template literal's brace, or a picture of its own given beside it.
+    expect(showsWithSoImage('<SoImage {image} class={`}>`} {...overrides} />', 'image')).toBe(false);
+    expect(showsWithSoImage('<SoImage {image} class={`a ${b ? `}` : c}`} />', 'image')).toBe(true);
+    expect(showsWithSoImage('<SoImage {image} src={badgeSrc} />', 'image')).toBe(false);
+    expect(showsWithSoImage('<SoImage {image} {srcset} />', 'image')).toBe(false);
+    // A tag in a comment is no tag; a shorthand is an attribute of its own, never another's value.
+    expect(showsWithSoImage('<!-- <SoImage image={badge} /> --><SoImage {image} />', 'image')).toBe(true);
+    expect(showsWithSoImage('<SoImage title= {image} />', 'image')).toBe(false);
     expect(showsWithSoImage('<SoImage {...rest} {image} />', 'image')).toBe(false);
     // Another attribute's expression, or text in a quoted value, is not the image.
     expect(showsWithSoImage('<SoImage class={image} />', 'image')).toBe(false);
@@ -483,6 +494,11 @@ describe('a code component’s picture (#505)', () => {
     expect(showsItemsWithSoImage(gallery('{#each [1, 2] as n}<SoImage image={item.image} />{/each}'), 'images', 'image')).toBe(false);
     expect(showsItemsWithSoImage(`{#each rows as row}${gallery('<SoImage image={item.image} />')}{/each}`, 'images', 'image')).toBe(false);
     expect(showsItemsWithSoImage(`{#snippet pic(item)}<SoImage image={item.image} />{/snippet}${gallery('{@render pic(item)}{@render pic(item)}')}`, 'images', 'image')).toBe(false);
+    expect(showsItemsWithSoImage(gallery('{#snippet pic()}<SoImage image={item.image} />{/snippet}{@render pic()}{@render pic()}'), 'images', 'image')).toBe(false);
+    expect(showsItemsWithSoImage(gallery('{#each [0, 1] as copy}<!-- {/each} --><SoImage image={item.image} />{/each}'), 'images', 'image')).toBe(false);
+    // Another row's picture, or the item named again as another.
+    expect(showsItemsWithSoImage(gallery('<SoImage image={images[0].image} />'), 'images', 'image')).toBe(false);
+    expect(showsItemsWithSoImage(gallery('{@const item = images[0]}<SoImage image={item.image} />'), 'images', 'image')).toBe(false);
     // A filtered copy of the list shows other items than its own rows' places.
     expect(showsItemsWithSoImage('{#each shown as item}<SoImage image={item.image} />{/each}', 'images', 'image')).toBe(false);
     expect(showsItemsWithSoImage(gallery('<SoImage image={item.image} /><SoImage image={item.image} />'), 'images', 'image')).toBe(false);
@@ -553,14 +569,71 @@ describe('a Foundation section’s filled picture (#1386)', () => {
     expect(rows().filter((r) => r.id !== second.id)).toEqual(before.filter((r) => r.id !== second.id));
   });
 
-  it('takes nothing on a Gallery picture two items show, which can’t be told apart', () => {
+  it('tells two Gallery items apart by what a release would change', () => {
+    const s = business();
+    const rows = (s.page().nodes[s.gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>;
+    const targets = imageDropTargets(s.state, s.owner.id);
+    const [a, b] = rows.map((r) => pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(r.image.assetId!), own: false, inside: true }) as { target: ImageTarget });
+    const box = { x: 0, y: 0, width: 10, height: 10 };
+    expect(aimKey({ kind: 'image', target: a.target, outline: box })).not.toBe(aimKey({ kind: 'image', target: b.target, outline: box }));
+  });
+
+  it('reports a picture the code draws, and whether it is the only one', () => {
+    expect(pointedAt({ chain: [], picture: { src: '/assets/a.png', own: false, inside: true }, scroll: [0, 0] })?.picture).toMatchObject({ own: false, inside: true });
+    expect(pointedAt({ chain: [], picture: { src: '/assets/a.png', own: true }, scroll: [0, 0] })?.picture).toMatchObject({ own: true, inside: true });
+    expect(pointedAt({ chain: [], picture: { src: '/assets/a.png' }, scroll: [0, 0] })?.picture).toMatchObject({ own: false, inside: false });
+  });
+
+  it('does nothing on a Gallery picture two items show, which can’t be told apart, rather than go between content', () => {
     const s = business();
     const rows = (s.page().nodes[s.gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>;
     s.step([{ type: 'instance.setProp', owner: s.owner, nodeId: s.gallery, prop: 'images', itemId: rows[1].id, field: 'image', value: rows[0].image }]);
     const targets = imageDropTargets(s.state, s.owner.id);
-    expect(pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(rows[0].image.assetId!), own: false, inside: true })).toBeNull();
+    const hit = pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(rows[0].image.assetId!), own: false, inside: true });
+    expect(hit).toEqual({ blocked: true });
+    expect(assetAim(hit, null, true, () => ({ at: null }) as unknown as InsertAim)).toEqual({ kind: 'none' });
     // Another item's own picture still takes it.
     expect(pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(rows[2].image.assetId!), own: false, inside: true })).toMatchObject({ target: { field: { itemId: rows[2].id } } });
+  });
+
+  it('takes nothing on a Gallery item whose ID another item shares, which an edit could not name alone', () => {
+    const s = business();
+    const rows = structuredClone((s.page().nodes[s.gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>);
+    rows[1].id = rows[0].id;
+    (s.page().nodes[s.gallery] as InstanceNode).props.images = rows;
+    const targets = imageDropTargets(s.state, s.owner.id);
+    for (const r of rows.slice(0, 2)) expect(pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(r.image.assetId!), own: false, inside: true })).toEqual({ blocked: true });
+    expect(pick(s.state, targets, on(s.owner, s.gallery), { src: s.file(rows[2].image.assetId!), own: false, inside: true })).toMatchObject({ target: { field: { itemId: rows[2].id } } });
+  });
+
+  it('takes nothing on an item’s picture whose file the placement also shows elsewhere, as in an item’s text', () => {
+    const s = business();
+    // A code component of the project's own, made from the Gallery's: each item's photo, and a note that may show one.
+    const strip = {
+      ...s.state.components['foundation.media.gallery'],
+      id: 'project.strip',
+      name: 'Strip',
+      owner: 'project',
+      properties: {
+        items: { type: 'list', label: 'Items', fields: { photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } }, note: { type: 'richtext', label: 'Note', default: [] } }, default: [] }
+      },
+      source: '<script>let { items = [] } = $props();</script>{#each items as item (item.id)}<SoImage image={item.photo} /><SoRichText blocks={item.note} />{/each}'
+    } as unknown as ComponentDefinition;
+    s.state.components[strip.id] = strip;
+    const placed = makeInstance(strip, {
+      items: [
+        { id: 'a', photo: { assetId: studio.id, alt: '' }, note: [{ type: 'image', assetId: 'img_nook', alt: '' }] },
+        { id: 'b', photo: { assetId: 'img_nook', alt: '' }, note: [] }
+      ]
+    });
+    s.page().nodes[placed.id] = placed;
+    s.page().rootIds.push(placed.id);
+    s.step([{ type: 'asset.add', asset: nook }]);
+    const targets = imageDropTargets(s.state, s.owner.id);
+    const at = on(s.owner, placed.id);
+    const first = (placed.props.items as Array<{ id: string }>)[0].id;
+    expect(pick(s.state, targets, at, { src: s.file(studio.id), own: false, inside: true })).toMatchObject({ target: { field: { nodeId: placed.id, itemId: first, field: 'photo' } } });
+    expect(pick(s.state, targets, at, { src: s.file(nook.id), own: false, inside: true })).toEqual({ blocked: true });
   });
 });
 
