@@ -20,6 +20,7 @@ import { heldAsMedia } from '../../src/main/project/versions';
 import { ProjectSession } from '../../src/main/project/session';
 import { projectSummary } from '../../src/agent/context';
 import { run, seoSite } from './fixtures/seo-site';
+import { createStarterState } from '@catalogue/starters';
 import { markdownDesigns } from './fixtures/llms-designs';
 
 const SECRET = 'PRIVATE-SENTINEL-7f3a';
@@ -235,14 +236,43 @@ describe('Markdown copies', () => {
     for (const words of footerWords) expect(md).not.toContain(words);
   });
 
-  // Release gap: the Markdown copies read only the release's table, form and video code sections (code() in src/generator/markdown.ts).
-  it.fails('keeps the headings, paragraphs, lists, links and questions with their answers of Foundation’s text and FAQ sections', () => {
+  it('keeps the headings, paragraphs, lists, links and questions with their answers of Foundation’s text and FAQ sections', () => {
     const { s } = richHome({ release: true });
     const md = files(s).get('static/index.html.md')!;
     expect(md).toContain('\n### How classes run\n');
     expect(md).toContain('We throw, **trim** and glaze. See [our services](https://example.com/studio/services/).');
     expect(md).toContain('#### What to bring\n\n- An apron\n- Old clothes');
     expect(md).toContain('**Do I need experience?**\n\nNo. Beginners are welcome.');
+  });
+
+  it('writes what the Business starter’s Foundation sections say, in each copy and in the full text (#1350)', () => {
+    const s = run(createStarterState('business', 'Harbor Studio', false), { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true });
+    const out = files(s);
+    const contact = out.get('static/contact/index.html.md')!;
+    // The page's introduction, every contact method and every question with its answer.
+    for (const words of ['Let’s talk', 'Whether you are planning a single room or a whole building', 'Get in touch', 'hello@example.com', '+1 555 0134', 'What happens at a consultation visit?', 'After a free first call'])
+      expect(contact).toContain(words);
+    const home = out.get('static/index.html.md')!;
+    // The Split hero, the Services grid, Content with image, the statistics, the testimonials and the call to action.
+    for (const words of [
+      'Calm, considered spaces for everyday life',
+      'Start a project',
+      'Everything your project needs, in one place',
+      'Planning & layout',
+      'Room-by-room plans that make the most of light',
+      'Good design starts with listening',
+      'That conversation shapes **every decision** that follows',
+      'A small studio with a long record',
+      'In practice',
+      'What clients say once the builders have gone',
+      'Amelia Hart',
+      'Let’s make your space work better',
+      'Get in touch'
+    ])
+      expect(home).toContain(words);
+    const full = out.get('static/llms-full.txt')!;
+    for (const copy of [home, contact]) expect(full).toContain(copy.trimEnd());
+    expect(full.length).toBeGreaterThan(4000);
   });
 
   it('keeps a quote apart from the words after it in a list item, and a working button’s words when its page is not listed', () => {
