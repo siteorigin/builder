@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkSvelteSource, declaredPackages, type CheckOptions } from '../../src/main/codecheck';
+import { checkSvelteSource, declaredPackages, importedPackages, type CheckOptions } from '../../src/main/codecheck';
 import { fixComponentSource } from '@agent/fixer';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 
@@ -118,10 +118,10 @@ describe('syntax-tree code checks', () => {
     expect((await check('chart.js/auto'))[0].message).toBe('"chart.js/auto" is part of "chart.js", which is not a package this project has. Add it under Packages in Project health, then import it.');
     // A path that climbs out of a declared package, a builtin and a URL are no packages at all.
     for (const spec of ['zod/../vite', 'zod//x', 'node:fs', 'https://esm.sh/zod', '@scope']) expect((await check(spec))[0].message).toMatch(/is not available in this project/);
-    // The website's build tools are declared, but code that imports one breaks the build.
-    expect((await check('vite'))[0].message).toBe('"vite" is one of the website’s build tools, which a component can’t import.');
-    expect((await check('@sveltejs/kit'))[0].message).toMatch(/build tools.*Use the \$app modules instead\./);
-    expect([...packages].sort()).toEqual(['@scope/charts', 'searchsocket', 'svelte', 'zod']);
+    // Any package it declares counts, the website's own tools among them: Vite decides what each one exports.
+    expect(await check('@sveltejs/kit')).toEqual([]);
+    // Only the packages it declares itself: one there because another needs it is not the project's to rely on.
+    expect((await check('@sveltejs/vite-plugin-svelte'))[0].message).toMatch(/not a package this project has/);
     // The assistant (and any code held to its policy) may use no package, installed or not.
     expect((await check('zod', { strict: true }))[0].message).toBe('Code written by the assistant may not use npm packages ("zod").');
     expect((await check('canvas-confetti', { strict: true }))[0].message).toBe('Code written by the assistant may not use npm packages ("canvas-confetti").');
@@ -135,10 +135,20 @@ describe('syntax-tree code checks', () => {
   });
 
   it('reads the packages a package.json declares (#1480)', () => {
-    expect([...declaredPackages(JSON.stringify({ dependencies: { a: '1' }, devDependencies: { b: '1', '@sveltejs/vite-plugin-svelte': '7' }, optionalDependencies: { c: '1' }, peerDependencies: { d: '1' } }))]).toEqual(['a', 'b', 'c']);
+    const declared = declaredPackages(JSON.stringify({ dependencies: { a: '1' }, devDependencies: { b: '1', '@s/v': '7' }, optionalDependencies: { c: '1' }, peerDependencies: { d: '1' }, bundleDependencies: ['e'], overrides: { f: '1' } }));
+    expect([...declared].sort()).toEqual(['@s/v', 'a', 'b', 'c', 'd']);
+    // A name npm would never install is no package to import.
+    expect([...declaredPackages(JSON.stringify({ dependencies: { '../x': '1', '@s': '1', 'ok.js': '1', JSONStream: '1' } }))]).toEqual(['ok.js', 'JSONStream']);
     for (const text of [null, '', 'not json', '[]', '{"dependencies": ["a"]}', '{"dependencies": null}']) expect(declaredPackages(text).size).toBe(0);
-    // Svelte is declared and stays importable the way it always was.
-    expect(declaredPackages('{"devDependencies": {"svelte": "5"}}').has('svelte')).toBe(true);
+  });
+
+  it('finds every npm package a component imports, however it imports it (#1480)', async () => {
+    const src = `<script>\n\timport 'leaflet/dist/leaflet.css';\n\timport { z } from 'zod';\n\timport { fade } from 'svelte/transition';\n\timport Card from './Card.svelte';\n\texport { thing } from '@scope/kit/sub';\n\tconst lazy = () => import('chart.js/auto');\n</script>\n<p>{import('not-code')}</p>\n`;
+    expect((await importedPackages(src)).sort()).toEqual(['@scope/kit', 'chart.js', 'leaflet', 'not-code', 'zod']);
+    // Prose and dynamic names are no imports.
+    expect(await importedPackages(`<script>\n\tconst name = 'zod';\n\tconst m = () => import(name);\n</script>\n<p>We import from 'everywhere'.</p>\n`)).toEqual([]);
+    // A draft the compiler can't read still says which packages it uses, so the assistant never "fixes" one away.
+    expect(await importedPackages(`<script>\n\timport { z } from 'zod';\n\tlet x = ;\n</script>\n<p>{x</p>`)).toEqual(['zod']);
   });
 
   it('refuses a relative or #lib import of a file the project does not have (#1479)', async () => {
