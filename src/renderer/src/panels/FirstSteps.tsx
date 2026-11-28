@@ -167,7 +167,7 @@ export function FirstSteps() {
       <div className="get-started-meter" aria-hidden="true">
         <span style={{ width: `${(count / FIRST_STEPS.length) * 100}%` }} />
       </div>
-      <div id={`${listId}-body`} hidden={folded}>
+      <div id={`${listId}-body`} className="get-started-body" hidden={folded}>
         {all ? (
           <div className="get-started-done">
             <p>You’ve done all five steps, including a website export. Hiding this list also hides it in new projects.</p>
