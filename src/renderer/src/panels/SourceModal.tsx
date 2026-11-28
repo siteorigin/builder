@@ -12,7 +12,7 @@ import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
 import { EXTERNAL_SOURCE_REFUSED, type CodePropsTaken, type SourceManifest } from '@shared/api';
-import { codePropsSync, declareFromCode, removeProperties } from '../lib/prop-schema';
+import { codePropsSync, declareFromCode, removeProperties, starterUntouched } from '../lib/prop-schema';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -714,7 +714,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
             </button>
           </div>
         )}
-        {src?.editable && !liveChecking && <CodePropsNote rows={rows} taken={taken} disabled={saving} onRows={syncRows} />}
+        {src?.editable && !liveChecking && <CodePropsNote rows={rows} taken={taken} disabled={saving || propsStale} onRows={syncRows} stored />}
         <SaveProblems problems={errors} onGoTo={goToLine} focusRef={problemsList} />
         <span className="sr-only" role="status">
           {refusal(errors)}
@@ -727,38 +727,66 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
 /** Names joined for a sentence: “a”, “a and b”, “a, b and c”. */
 const joined = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
 
+/** A default as the note quotes it. */
+const quoted = (v: unknown) => (typeof v === 'string' ? `“${v.length > 40 ? `${v.slice(0, 39)}…` : v}”` : typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
+
 /**
  * Where the properties and the props the code takes disagree, with one action that declares the props the code takes
- * (each undeclared one added, each default the code writes taken) and one that removes the properties it never reads.
- * Either shows its result in the Properties tab, to review before saving. Says nothing while the check has yet to
- * report on the code as it stands, so it never acts on code that has since changed.
+ * (each undeclared one added, each default the code writes taken, and the properties `untouched` says nothing has
+ * been done to removed when the code never reads them) and one that removes the other properties it never reads.
+ * Either shows its result in the Properties tab, to review before saving, and works out what it does from the rows
+ * as they are when it is pressed. The host shows it only once the check has reported on the code as it stands.
  */
-function CodePropsNote({ rows, taken, disabled, onRows }: { rows: SchemaRow[]; taken: CodePropsTaken | null; disabled: boolean; onRows: (edit: (rows: SchemaRow[]) => SchemaRow[]) => void }) {
+function CodePropsNote({ rows, taken, disabled, onRows, untouched, stored }: {
+  rows: SchemaRow[];
+  taken: CodePropsTaken | null;
+  disabled: boolean;
+  onRows: (edit: (rows: SchemaRow[]) => SchemaRow[]) => void;
+  /** Properties nothing has been done to yet (a new component's starter ones), which declaring removes when unread. */
+  untouched?: (row: SchemaRow) => boolean;
+  /** The properties are saved ones, which placements may have set. */
+  stored?: boolean;
+}) {
   if (!taken) return null;
-  const sync = codePropsSync(rows, taken);
-  if (!sync.add.length && !sync.defaults.length && !sync.unread.length) return null;
-  const labelOf = (name: string) => {
-    const r = rows.find((x) => x.name.trim() === name);
-    return `“${String(r?.schema.label || name)}”`;
+  const plan = (r: SchemaRow[]) => {
+    const sync = codePropsSync(r, taken);
+    const declares = sync.add.length > 0 || sync.defaults.length > 0;
+    const drop = declares && untouched ? sync.unread.filter((n) => r.some((x) => x.name.trim() === n && untouched(x))) : [];
+    return { sync, declares, drop, unread: sync.unread.filter((n) => !drop.includes(n)) };
   };
+  const { sync, declares, drop, unread } = plan(rows);
+  if (!declares && !sync.manual.length && !unread.length) return null;
+  const labelOf = (name: string) => `“${String(rows.find((x) => x.name.trim() === name)?.schema.label || name)}”`;
   const said: string[] = [];
   if (sync.add.length) said.push(`The code takes ${joined(sync.add.map((a) => a.name))}, which ${sync.add.length === 1 ? 'is not a property' : 'are not properties'}.`);
-  if (sync.defaults.length) said.push(`It writes ${sync.defaults.length === 1 ? 'another default' : 'other defaults'} for ${joined(sync.defaults.map((d) => labelOf(d.name)))}.`);
-  if (sync.unread.length) said.push(`It never reads ${joined(sync.unread.map(labelOf))}.`);
+  if (sync.defaults.length === 1) said.push(`It writes ${quoted(sync.defaults[0].value)} as the default for ${labelOf(sync.defaults[0].name)}, which has ${sync.defaults[0].was === undefined ? 'none' : quoted(sync.defaults[0].was)}.`);
+  else if (sync.defaults.length) said.push(`It writes other defaults for ${joined(sync.defaults.map((d) => labelOf(d.name)))}.`);
+  if (drop.length) said.push(`Declaring removes ${joined(drop.map(labelOf))}, which it never reads.`);
+  if (sync.manual.length) said.push(`Declare ${joined(sync.manual)} by hand: ${sync.manual.length === 1 ? 'its default is' : 'their defaults are'} not text, a number or on/off.`);
+  if (unread.length) said.push(`It never reads ${joined(unread.map(labelOf))}${stored ? ': removing a property clears what placements set in it' : ''}.`);
   return (
     <div className="scope-note code-props-sync" role="status">
       <ListPlus aria-hidden="true" />
       <span className="grow">
         <strong>The properties don’t match the code.</strong> {said.join(' ')}
       </span>
-      {(sync.add.length > 0 || sync.defaults.length > 0) && (
-        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => declareFromCode(r, codePropsSync(r, taken)))}>
+      {declares && (
+        <button
+          className="btn btn-sm"
+          disabled={disabled}
+          onClick={() =>
+            onRows((r) => {
+              const now = plan(r);
+              return declareFromCode(r, now.sync, now.drop);
+            })
+          }
+        >
           Declare from code
         </button>
       )}
-      {sync.unread.length > 0 && (
-        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => removeProperties(r, codePropsSync(r, taken).unread))}>
-          {sync.unread.length === 1 ? 'Remove it' : `Remove ${sync.unread.length}`}
+      {unread.length > 0 && (
+        <button className="btn btn-sm" disabled={disabled} onClick={() => onRows((r) => removeProperties(r, plan(r).unread))}>
+          {unread.length === 1 ? `Remove ${labelOf(unread[0])}` : `Remove ${unread.length} unread`}
         </button>
       )}
     </div>
@@ -1057,6 +1085,7 @@ export function NewCodeComponentModal() {
             rows={rows}
             taken={taken}
             disabled={saving}
+            untouched={starterUntouched}
             onRows={(edit) => {
               setRows(edit);
               setErrors((e) => (e.length ? [] : e));

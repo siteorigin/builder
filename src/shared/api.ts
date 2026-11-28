@@ -1333,7 +1333,8 @@ export type SourceSyncResult =
  * hands the props object on, where a property may be read without the check seeing it.
  */
 export interface CodePropsTaken {
-  props: Array<{ name: string; default?: { value: unknown } }>;
+  /** `computed` says the code writes a default that is not a literal value (`= format(price)`). */
+  props: Array<{ name: string; default?: { value: unknown }; computed?: boolean }>;
   handed: boolean;
   /** The props the component's variant axes arrive in: never properties, whether the code takes them or not. */
   axes: string[];

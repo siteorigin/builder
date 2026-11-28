@@ -1,5 +1,6 @@
 import type { PropSchema } from '@shared/types';
 import type { CodePropsTaken } from '@shared/api';
+import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { checkPropName } from '@engine/schema';
 
 /** Text as a valid code name, or null when it makes none: "Hero Title" becomes heroTitle. */
@@ -280,9 +281,14 @@ export const parseOptions = (s: string) =>
 export interface CodePropsSync {
   /** Props the code takes that no property declares, as the properties declaring them would be. */
   add: Array<{ name: string; schema: Record<string, unknown> }>;
-  /** Properties whose default is not the one the code writes for them, with the code's. */
-  defaults: Array<{ name: string; value: string | number | boolean }>;
-  /** Properties the code never takes, by code name: offered for removal, never removed by declaring. */
+  /** Properties whose default is not the one the code writes for them, with the default they have and the code's. */
+  defaults: Array<{ name: string; was: unknown; value: string | number | boolean }>;
+  /**
+   * Props the code takes that no property declares, whose default is not text, a number or on/off (a list, an object,
+   * a value it works out): a property of the wrong type would hand it something else, so they are declared by hand.
+   */
+  manual: string[];
+  /** Properties the code never takes, by code name. */
   unread: string[];
 }
 
@@ -297,25 +303,30 @@ export function labelFromCodeName(name: string): string {
   return words ? words[0].toUpperCase() + words.slice(1) : name;
 }
 
-const PRIMITIVE_TYPES: Record<string, PropType> = { string: 'string', number: 'number', boolean: 'boolean' };
+const isPrimitive = (v: unknown): v is string | number | boolean => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)) || typeof v === 'boolean';
+
+/** Whether a property of its type takes `value` as its default as it is: the same kind, and a number in its range. */
+function takesDefault(schema: Record<string, unknown>, value: string | number | boolean): boolean {
+  if (schema.type !== typeof value) return false;
+  if (typeof value !== 'number') return true;
+  return !(typeof schema.min === 'number' && value < schema.min) && !(typeof schema.max === 'number' && value > schema.max);
+}
 
 /**
  * What declaring a component's properties from its code would change: a property for each prop the code takes that
- * none declares, typed from the default the code writes (text, number, on/off; text when it writes none or one that
- * is not one of those), the default of each text, number or on/off property whose code writes another of the same
- * kind, and the properties the code never takes. Nothing is unread while the code hands its props on, as a property
- * may be read where the check cannot follow.
+ * none declares, typed from the default the code writes (text, number, on/off; text when it writes none), and the
+ * default of each property whose code writes another its type takes. Props whose default is some other value are left
+ * to declare by hand. The properties the code never takes are listed, though none while the code hands its props on,
+ * as a property may be read where the check cannot follow.
  */
 export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePropsSync {
   const byName = new Map(rows.map((r) => [r.name.trim(), r]));
-  const add: CodePropsSync['add'] = [];
-  const defaults: CodePropsSync['defaults'] = [];
-  for (const { name, default: written } of taken.props) {
-    const row = byName.get(name);
+  const out: CodePropsSync = { add: [], defaults: [], manual: [], unread: [] };
+  for (const { name, default: written, computed } of taken.props) {
     const value = written?.value;
-    const kind = typeof value;
+    const row = byName.get(name);
     if (row) {
-      if ((kind === 'string' || kind === 'number' || kind === 'boolean') && row.schema.type === kind && row.schema.default !== value) defaults.push({ name, value: value as string | number | boolean });
+      if (isPrimitive(value) && row.schema.default !== value && takesDefault(row.schema, value)) out.defaults.push({ name, was: row.schema.default, value });
       continue;
     }
     try {
@@ -324,18 +335,23 @@ export function codePropsSync(rows: SchemaRow[], taken: CodePropsTaken): CodePro
       // A name no property can have: the check still says the code reads it.
       continue;
     }
-    const type = PRIMITIVE_TYPES[kind] ?? 'string';
-    add.push({ name, schema: { type, label: labelFromCodeName(name), default: type === kind ? value : '' } });
+    // No default, or none in particular (null), reads as text.
+    if (isPrimitive(value)) out.add.push({ name, schema: { type: typeof value, label: labelFromCodeName(name), default: value } });
+    else if (!computed && (value === undefined || value === null)) out.add.push({ name, schema: { type: 'string', label: labelFromCodeName(name), default: '' } });
+    else out.manual.push(name);
   }
   const reads = new Set([...taken.props.map((p) => p.name), ...taken.axes]);
-  const unread = taken.handed ? [] : rows.map((r) => r.name.trim()).filter((n) => n && !reads.has(n));
-  return { add, defaults, unread };
+  if (!taken.handed) out.unread = rows.map((r) => r.name.trim()).filter((n) => n && !reads.has(n));
+  return out;
 }
 
-/** Declare from the code what `sync` found: the properties it adds, after those there are, and the defaults it writes. */
-export function declareFromCode(rows: SchemaRow[], sync: CodePropsSync): SchemaRow[] {
+/**
+ * Declare from the code what `sync` found: the defaults it writes, then the properties it adds after those there
+ * are. `drop` names properties to take out at the same time (a new component's starter properties, never edited).
+ */
+export function declareFromCode(rows: SchemaRow[], sync: CodePropsSync, drop: string[] = []): SchemaRow[] {
   const defaults = new Map(sync.defaults.map((d) => [d.name, d.value]));
-  const next = rows.map((r) => (defaults.has(r.name.trim()) ? { ...r, schema: { ...r.schema, default: defaults.get(r.name.trim()) } } : r));
+  const next = removeProperties(rows, drop).map((r) => (defaults.has(r.name.trim()) ? { ...r, schema: { ...r.schema, default: defaults.get(r.name.trim()) } } : r));
   return [...next, ...sync.add.map((a): SchemaRow => ({ key: rowKey(), name: a.name, schema: structuredClone(a.schema) }))];
 }
 
@@ -343,4 +359,10 @@ export function declareFromCode(rows: SchemaRow[], sync: CodePropsSync): SchemaR
 export function removeProperties(rows: SchemaRow[], names: string[]): SchemaRow[] {
   const gone = new Set(names);
   return rows.filter((r) => !gone.has(r.name.trim()));
+}
+
+/** Whether a row is one of a new component's starter properties as the dialog began with it, never edited. */
+export function starterUntouched(row: SchemaRow): boolean {
+  const name = row.name.trim();
+  return !row.drafts && row.orig === undefined && Object.hasOwn(CODE_STARTER_PROPERTIES, name) && JSON.stringify(schemaOf(row)) === JSON.stringify(CODE_STARTER_PROPERTIES[name as keyof typeof CODE_STARTER_PROPERTIES]);
 }

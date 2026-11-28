@@ -16,8 +16,15 @@ import {
   setItemField,
   itemFieldNote,
   typeOptions,
+  codePropsSync,
+  declareFromCode,
+  labelFromCodeName,
+  removeProperties,
+  starterUntouched,
   type SchemaRow
 } from '../../src/renderer/src/lib/prop-schema';
+import type { CodePropsTaken } from '@shared/api';
+import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 
 const cards = {
   type: 'list',
@@ -214,5 +221,69 @@ describe('schema problems', () => {
     expect(typeOptions('choices', false)[0]).toEqual(['choices', 'Multiple choice']);
     expect(typeOptions('string', true).map(([t]) => t)).not.toContain('list');
     expect(typeOptions('list', false).map(([t]) => t)).toContain('table');
+  });
+});
+
+describe('properties from the props the code takes (#1527)', () => {
+  const taken = (props: CodePropsTaken['props'], handed = false, axes: string[] = []): CodePropsTaken => ({ props, handed, axes });
+
+  it('types each new property from the default the code writes, falsy ones included, and text for none', () => {
+    const sync = codePropsSync([], taken([{ name: 'count', default: { value: 0 } }, { name: 'open', default: { value: false } }, { name: 'note', default: { value: '' } }, { name: 'ctaURL' }, { name: 'image', default: { value: null } }]));
+    expect(sync.add).toEqual([
+      { name: 'count', schema: { type: 'number', label: 'Count', default: 0 } },
+      { name: 'open', schema: { type: 'boolean', label: 'Open', default: false } },
+      { name: 'note', schema: { type: 'string', label: 'Note', default: '' } },
+      { name: 'ctaURL', schema: { type: 'string', label: 'Cta url', default: '' } },
+      { name: 'image', schema: { type: 'string', label: 'Image', default: '' } }
+    ]);
+    expect(sync.manual).toEqual([]);
+  });
+
+  it('leaves a list, an object or a worked-out default to declare by hand, and skips a name no property can have', () => {
+    const sync = codePropsSync([], taken([{ name: 'tiers', default: { value: [] } }, { name: 'meta', default: { value: { a: 1 } } }, { name: 'total', computed: true }, { name: 'snake_case', default: { value: 'x' } }]));
+    expect(sync.add).toEqual([]);
+    expect(sync.manual).toEqual(['tiers', 'meta', 'total']);
+  });
+
+  it('takes the code’s default only where the property’s type and range take it', () => {
+    const rows = rowsFromProperties({
+      title: { type: 'string', label: 'Title', default: 'Hi' },
+      price: { type: 'number', label: 'Price', default: 5, min: 0, max: 10 },
+      body: { type: 'richtext', label: 'Body', default: '' },
+      same: { type: 'boolean', label: 'Same', default: true }
+    });
+    const sync = codePropsSync(rows, taken([{ name: 'title', default: { value: 'Hello' } }, { name: 'price', default: { value: 50 } }, { name: 'body', default: { value: 'x' } }, { name: 'same', default: { value: true } }]));
+    expect(sync.defaults).toEqual([{ name: 'title', was: 'Hi', value: 'Hello' }]);
+    const next = declareFromCode(rows, sync);
+    expect(next.map((r) => r.key)).toEqual(rows.map((r) => r.key));
+    expect((propertiesFromRows(next).title as { default: unknown }).default).toBe('Hello');
+  });
+
+  it('matches a renamed row by its code name now, keeping it a rename', () => {
+    const rows = rowsFromProperties({ title: { type: 'string', label: 'Title', default: 'Hi' } }).map((r) => ({ ...r, name: 'heading' }));
+    const sync = codePropsSync(rows, taken([{ name: 'heading', default: { value: 'Hi' } }]));
+    expect(sync).toEqual({ add: [], defaults: [], manual: [], unread: [] });
+    expect(renamesFromRows(declareFromCode(rows, sync))).toEqual([{ from: 'title', to: 'heading' }]);
+  });
+
+  it('lists the properties the code never reads, but not its axes’ or any while it hands its props on', () => {
+    const rows = rowsFromProperties({ a: { type: 'string', label: 'A', default: '' }, tone: { type: 'string', label: 'Tone', default: '' } });
+    expect(codePropsSync(rows, taken([])).unread).toEqual(['a', 'tone']);
+    expect(codePropsSync(rows, taken([], false, ['tone'])).unread).toEqual(['a']);
+    expect(codePropsSync(rows, taken([], true)).unread).toEqual([]);
+    expect(removeProperties(rows, ['a']).map((r) => r.name)).toEqual(['tone']);
+  });
+
+  it('tells an untouched starter property from one that was edited or saved', () => {
+    const starter = rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES) as Record<string, unknown>, false);
+    expect(starter.map(starterUntouched)).toEqual([true, true]);
+    expect(starterUntouched({ ...starter[0], schema: { ...starter[0].schema, label: 'Title' } })).toBe(false);
+    expect(starterUntouched({ ...starter[0], drafts: { default: { text: 'x', message: 'no' } } })).toBe(false);
+    expect(rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES) as Record<string, unknown>).map(starterUntouched)).toEqual([false, false]);
+  });
+
+  it('labels a code name in words', () => {
+    expect(labelFromCodeName('monthlyPrice')).toBe('Monthly price');
+    expect(labelFromCodeName('heroCTALabel')).toBe('Hero cta label');
   });
 });

@@ -41,7 +41,7 @@ const BRIDGE = `
   window.__applied = [];
   const answers = {
     readSource: async () => window.__source,
-    validateSource: async () => ({ ok: true, errors: [], diagnostics: [] }),
+    validateSource: async () => ({ ok: true, errors: [], diagnostics: [], props: null }),
     apply: async (batch) => (window.__applied.push(batch), { ok: true, revision: 2 })
   };
   const project = new Proxy({}, { get: (_, key) => answers[key] ?? any('project.' + String(key)) });

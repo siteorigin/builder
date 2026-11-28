@@ -10,7 +10,9 @@ import { join } from 'node:path';
 import type { ComponentDefinition, PropSchema } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
-import { checkSvelteSource, codeManifestProblems, packManifestProblems, type CodeManifest } from '../../src/main/codecheck';
+import { checkSvelteSource, codeManifestProblems, codePropsTaken, packManifestProblems, type CodeManifest } from '../../src/main/codecheck';
+import { codePropsSync, declareFromCode, propertiesFromRows, rowsFromProperties, starterUntouched } from '../../src/renderer/src/lib/prop-schema';
+import { CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { ProjectSession } from '../../src/main/project/session';
 
 const props = (properties: Record<string, PropSchema>, variantAxes?: ComponentDefinition['variantAxes']): CodeManifest => ({ properties, ...(variantAxes ? { variantAxes } : {}) });
@@ -178,5 +180,46 @@ describe('saving a code component holds its code to its manifest', () => {
     } finally {
       await session.close();
     }
+  });
+});
+
+describe('declaring a code component’s properties from its code (#1527)', () => {
+  const PRICING = `<script>\n\tlet { heading = 'Simple pricing', monthly = 29, discount = 20, class: className = '', so_o } = $props();\n</script>\n<section class={className}><h2 class={so_o?.heading} data-so-part="heading">{heading}</h2><p>{monthly} less {discount}%</p></section>\n`;
+
+  it('lists the props the code takes, with literal defaults, leaving out the editor’s own', async () => {
+    const taken = await codePropsTaken(PRICING);
+    expect(taken).toEqual({ props: [{ name: 'heading', default: { value: 'Simple pricing' } }, { name: 'monthly', default: { value: 29 } }, { name: 'discount', default: { value: 20 } }], handed: false, axes: [] });
+  });
+
+  it('reads a bindable default, flags one the code works out, and adds reads of the whole props', async () => {
+    const source = `<script>\n\tlet { open = $bindable(false), total = price * 2, plain, ...rest } = $props();\n\tconst price = 3;\n</script>\n<p>{open}{total}{plain}{rest.extra}</p>\n`;
+    expect((await codePropsTaken(source))!.props).toEqual([{ name: 'open', default: { value: false } }, { name: 'total', computed: true }, { name: 'plain' }, { name: 'extra' }]);
+  });
+
+  it('leaves out the axes’ props, says when the props are handed on, and says nothing of code it cannot read', async () => {
+    const axes = { tone: { label: 'Tone', prop: 'tone', default: 'light', options: { light: { label: 'Light' }, dark: { label: 'Dark' } } } } as unknown as ComponentDefinition['variantAxes'];
+    const taken = await codePropsTaken(`<script>\n\tlet { tone, title, ...rest } = $props();\n</script>\n<p {...rest}>{tone}{title}</p>\n`, { variantAxes: axes });
+    expect(taken).toEqual({ props: [{ name: 'title' }], handed: true, axes: ['tone'] });
+    expect(await codePropsTaken('<script>let {')).toBeNull();
+    expect(await codePropsTaken(PRICING, { designFile: true })).toBeNull();
+  });
+
+  it('turns the starter’s properties into the pasted code’s, which then passes the check with no warnings', async () => {
+    const starter = rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES) as Record<string, unknown>, false);
+    const taken = (await codePropsTaken(PRICING))!;
+    const sync = codePropsSync(starter, taken);
+    expect(sync.add.map((a) => a.schema)).toEqual([
+      { type: 'number', label: 'Monthly', default: 29 },
+      { type: 'number', label: 'Discount', default: 20 }
+    ]);
+    expect(sync.defaults).toEqual([{ name: 'heading', was: 'Hello', value: 'Simple pricing' }]);
+    expect(sync.unread).toEqual(['text']);
+    const drop = sync.unread.filter((n) => starter.some((r) => r.name === n && starterUntouched(r)));
+    expect(drop).toEqual(['text']);
+    const properties = propertiesFromRows(declareFromCode(starter, sync, drop)) as Record<string, PropSchema>;
+    expect(Object.keys(properties)).toEqual(['heading', 'monthly', 'discount']);
+    expect(await codeManifestProblems(PRICING, props(properties), false)).toEqual([]);
+    // Once declared, there is nothing left to declare.
+    expect(codePropsSync(rowsFromProperties(properties), taken)).toEqual({ add: [], defaults: [], manual: [], unread: [] });
   });
 });

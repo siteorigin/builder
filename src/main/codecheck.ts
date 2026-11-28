@@ -896,8 +896,8 @@ function manifestProblems(ast: Node, manifest: CodeManifest, strict: boolean): A
 
 /**
  * The props a code component's code takes from $props() that a property could set (see manifestProblems): by name
- * in the destructuring, in the order written, with the default written for each when it is a literal, then those it
- * reads by name from the whole props object or the rest of them. The editor's own props, the slots' and the axes'
+ * in the destructuring, in the order written, with the default written for each when it is a literal (`computed` when
+ * it is not one), then those it reads by name from the whole props object or the rest of them. The editor's own props, the slots' and the axes'
  * are left out. `handed` says the code hands the props object or the rest on, where any property may be read. Null
  * when the code cannot be parsed, or for a design's file, which takes its properties by other keys.
  */
@@ -918,8 +918,11 @@ export async function codePropsTaken(source: string, manifest: Pick<CodeManifest
   for (const [name, { right }] of propsTaken(ast)) {
     if (editors(name)) continue;
     seen.add(name);
-    const written = literalValue(right);
-    props.push({ name, ...(written ? { default: written } : {}) });
+    // A bindable prop's default is the one handed to $bindable().
+    const callee = right?.type === 'CallExpression' ? (right.callee as Node) : undefined;
+    const fallback = callee?.type === 'Identifier' && callee.name === '$bindable' ? ((right!.arguments as Node[]) ?? [])[0] : right;
+    const written = literalValue(fallback);
+    props.push({ name, ...(written ? { default: written } : fallback ? { computed: true } : {}) });
   }
   for (const name of whole.read) if (!seen.has(name) && !editors(name)) props.push({ name });
   return { props, handed: whole.handed, axes: [...axisProps] };
