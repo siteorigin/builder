@@ -78,10 +78,10 @@ export function addPageStarter(state: ProjectState, page: PageDoc, starter: Page
     if (!props) continue;
     const def = state.components[installComponent(state, section.componentId)];
     const node = makeInstance(def, {}, section.variant);
+    // The site's business details where the design shows the samples (#1368); the starter's own texts come after.
+    fillBusinessDetails(state, { kind: 'page', id: page.id }, node);
     Object.assign(node.props, props);
     section.settle?.(state, page, node);
-    // The site's business details where the section would show the samples (#1368).
-    fillBusinessDetails(state, { kind: 'page', id: page.id }, node);
     page.nodes[node.id] = node;
     page.rootIds.push(node.id);
   }

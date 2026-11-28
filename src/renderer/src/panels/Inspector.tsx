@@ -1293,7 +1293,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const hideAction = (b: UnlinkedButton | undefined) => (b?.hide ? { label: 'Hide button', run: () => void applyOps([hideButtonOp(owner, node.id, b.hide!)], `Hide ${b.label ? `“${b.label}” ` : ''}button in ${subjectWords(state, here)}`) } : undefined);
   const formNotes = (key: string) => (key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined);
   // Where this placement shows the site's business details, or their samples, which Site details changes (#1368).
-  const detailShown = detailPlaces(state, node);
+  const detailShown = detailPlaces(state, { owner, node });
   const detailHint = (key: string) => {
     const place = detailShown.find((d) => d.prop === key && d.itemId === undefined && d.field === undefined);
     return place ? placeNote(place) : undefined;

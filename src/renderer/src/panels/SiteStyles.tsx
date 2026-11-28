@@ -40,7 +40,7 @@ import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { isLanguageCode, siteDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { carrySiteName, siteNameNote, siteNameText } from '@shared/site-name';
-import { publisherDetailNote, type BusinessDetail } from '@engine/business-details';
+import { publisherDetailNotes, type BusinessDetail } from '@engine/business-details';
 import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
 import './SiteStyles.css';
 
@@ -637,7 +637,8 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
   // Keyed by the project's opening: text one project refused never shows in the next.
   const key = (field: string) => `identity-${field}-${workspaceKey}`;
   // Where the sections, links and footer show each contact detail, which change with it (#1368).
-  const shownAt = (detail: BusinessDetail) => publisherDetailNote(state, detail);
+  const shown = publisherDetailNotes(state);
+  const shownAt = (detail: BusinessDetail) => shown[detail];
   return (
     <div className="ss-group sd-group" role="group" aria-labelledby={`${uid}-identity`}>
       <div className="ss-group-label" id={`${uid}-identity`}>

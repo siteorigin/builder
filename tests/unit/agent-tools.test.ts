@@ -768,7 +768,7 @@ describe('update_site_brand', () => {
   });
 
   it('makes the email and number the site’s own, which the Contact section, its action and the footer show (#1368)', async () => {
-    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example', contactPhone: '+1 202 555 0142' })], () => finish()], {}, 'business');
+    const { session, adapter, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example', contactPhone: '+1 202 555 0142' })], () => finish()], {}, 'business');
     await run('Our email is bookings@kloof.example and our number is +1 202 555 0142');
     const s = session.state;
     expect(s.site.identity).toMatchObject({ email: 'bookings@kloof.example', telephone: '+1 202 555 0142' });
@@ -781,7 +781,32 @@ describe('update_site_brand', () => {
     ]);
     expect(section.props.actionLink).toEqual({ type: 'email', target: 'bookings@kloof.example' });
     const contact = shellProps(s, 'footer').contact as Array<{ label: string; link: LinkValue }>;
-    expect(contact.map((c) => c.label).slice(0, 2)).toEqual(['bookings@kloof.example', '+1 202 555 0142']);
+    expect(contact.map((c) => [c.label, c.link])).toEqual([
+      ['bookings@kloof.example', { type: 'email', target: 'bookings@kloof.example' }],
+      ['+1 202 555 0142', { type: 'tel', target: '+12025550142' }],
+      ['12 Harbor Lane, Millbrook', { type: 'none', target: '' }]
+    ]);
+    const r = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it('follows a footer the design gives its rows, adding none beside them', async () => {
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example' })], () => finish()], {}, 'business', (s) => {
+      delete (s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode).props.contact;
+    });
+    await run('Our email is bookings@kloof.example');
+    const contact = shellProps(session.state, 'footer').contact as Array<{ label: string; link: LinkValue }>;
+    expect(contact.filter((c) => c.link.type === 'email')).toEqual([expect.objectContaining({ label: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } })]);
+  });
+
+  it('says so when only a row’s words follow and its link opens an inbox of the author’s own', async () => {
+    const { adapter, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'office@kloof.example' })], () => finish()], {}, 'business', (s) => {
+      const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+      (footer.props.contact as Array<ListItem & { link: LinkValue }>).find((c) => c.link.type === 'email')!.link = { type: 'email', target: 'tickets@kloof.example' };
+    });
+    await run('Our email is office@kloof.example');
+    const r = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
+    expect(r.warnings).toEqual([expect.stringContaining("The footer's email link opens an address of the author's own")]);
   });
 
   it('leaves a footer email of the author’s own as it is, and says so', async () => {
@@ -794,7 +819,7 @@ describe('update_site_brand', () => {
     expect(contact.filter((c) => c.link.type === 'email')).toEqual([expect.objectContaining({ label: 'Bookings', link: { type: 'email', target: 'tickets@kloof.example' } })]);
     expect(session.state.site.identity).toMatchObject({ email: 'office@kloof.example' });
     const r = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
-    expect(r.warnings).toEqual([expect.stringContaining("The footer's email address is one of the author's own")]);
+    expect(r.warnings).toEqual([expect.stringContaining("The footer's email link opens an address of the author's own")]);
   });
 
   it('updates the site, header, footer and derived color tokens together', async () => {

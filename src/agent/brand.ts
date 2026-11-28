@@ -290,6 +290,7 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   // the old one, or the sample, shows the new one; a value of the author's own stays.
   const identity: { email?: string; telephone?: string } = {};
   const stored = (state.site.identity ?? {}) as { email?: unknown; telephone?: unknown };
+  const places = detailPlaces(state);
   for (const [field, link, value, key, check] of [
     ['contactEmail', email, args.contactEmail, 'email', checkEmail],
     ['contactPhone', phone, args.contactPhone, 'telephone', checkTelephone]
@@ -297,7 +298,8 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     if (!link || value === undefined) continue;
     const c = check(value);
     if (!c.ok) issues.push({ field, message: c.message });
-    else if (c.value !== stored[key]) identity[key] = c.value;
+    // The site's value sent again still replaces a sample left somewhere (a section pasted in).
+    else if (c.value !== stored[key] || places.some((p) => p.detail === key && p.shows === 'sample')) identity[key] = c.value;
   }
   // How the site is found and shared, set with the brand so a rebrand ships complete.
   // A value the site already has is left out, so a call that changes nothing says so.
@@ -347,16 +349,18 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
 
     const schema = state.components[footer.definitionId]?.properties.contact;
     if (schema?.type === 'list') {
-      const list = (footer.props.contact as ListItem[] | undefined) ?? [];
+      // The rows the footer shows: its own, or its design's while it keeps none.
+      const own = footer.props.contact;
+      const list = (Array.isArray(own) ? own : own === undefined && Array.isArray(schema.default) ? schema.default : []) as ListItem[];
       let room = schema.max === undefined ? Infinity : schema.max - list.length;
-      // The rows that show the site's email or number, or the sample, follow the site's new one (a deliberate label
-      // such as "Call reception" keeps its words, and only the destination behind it changes).
-      const following = detailPlaces(state, footer).filter((p) => p.prop === 'contact');
+      // The rows whose link opens the site's email or number, or the sample, follow the site's new one (a deliberate
+      // label such as "Call reception" keeps its words, and only the destination behind it changes).
+      const owner = { kind: 'shell' as const, id: 'footer' };
+      const following = detailPlaces(state, { owner, node: footer }).filter((p) => p.prop === 'contact' && p.kind === 'link' && !p.kept);
       for (const [link, label, detail] of [[email, args.contactEmail, 'email'], [phone, args.contactPhone, 'telephone']] as const) {
         if (!link) continue;
-        const owner = { kind: 'shell' as const, id: 'footer' };
         if (list.some((i) => (i.link as LinkValue | undefined)?.type === link.type)) {
-          if (!following.some((p) => p.detail === detail)) warnings.push(`The footer's ${detail === 'email' ? 'email address' : 'telephone number'} is one of the author's own, so it still shows that. Change its contact row with instance.setProp if it should show ${label!.trim()} too.`);
+          if (!following.some((p) => p.detail === detail)) warnings.push(`The footer's ${detail === 'email' ? 'email link opens an address' : 'telephone link dials a number'} of the author's own, so it still does. Change its contact row with instance.setProp if it should open ${label!.trim()} too.`);
         } else if (room-- > 0) ops.push({ type: 'instance.listInsert', owner, nodeId: footer.id, prop: 'contact', item: { label: label!.trim(), link } });
         else warnings.push(`The footer's contact list is full, so ${label} was not added.`);
       }

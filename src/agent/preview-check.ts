@@ -5,7 +5,7 @@ import type { EditOperation, OperationType } from '@shared/ops';
 import { scopeForWidth } from '@shared/styles';
 import type { ProjectState } from '@shared/types';
 import { allTrees, placementCounts } from '@engine/tree';
-import { changesShownDetails } from '@engine/business-details';
+import { changedDetailOwners } from '@engine/business-details';
 import { patchIdentity } from '@shared/site-identity';
 import { named } from './completeness';
 import type { Viewport } from './report';
@@ -295,11 +295,18 @@ function fieldsReach(op: EditOperation, reach: Reach, before: ProjectState, arti
     const direction = op.direction === undefined ? before.site.direction : op.direction === 'auto' ? undefined : op.direction;
     const turned = (op.language !== undefined || op.direction !== undefined) && siteDirection(before.site) !== siteDirection({ language: op.language ?? before.site.language, direction });
     // The publisher's email, telephone, address and hours show wherever a section, link or footer row shows them, the
-    // hours in the site's language (#1368).
-    const identity = op.identity === undefined ? undefined : patchIdentity(before.site.identity, op.identity, () => true);
-    const site = { ...before.site, ...(op.language !== undefined ? { language: op.language } : {}), ...(identity?.ok ? { identity: identity.value } : {}) };
-    const details = (op.identity !== undefined || op.language !== undefined) && changesShownDetails(before, site);
-    if (turned || details || set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
+    // hours in the site's language (#1368): the pages, shared parts and designs whose texts the change rewrites. A
+    // patch the engine refuses changes nothing.
+    const identity = op.identity === undefined ? undefined : patchIdentity(before.site.identity, op.identity, (id) => Object.hasOwn(before.assets.assets, id) && before.assets.assets[id].kind === 'image');
+    if ((op.identity !== undefined || op.language !== undefined) && identity?.ok !== false) {
+      const site = { ...before.site, ...(op.language !== undefined ? { language: op.language } : {}), ...(identity ? { identity: identity.value } : {}) };
+      for (const owner of changedDetailOwners(before, site, op.identity !== undefined)) {
+        if (owner.kind === 'page') reach.pages.add(owner.id);
+        else if (owner.kind === 'component') reach.components.add(owner.id);
+        else reach.shared = true;
+      }
+    }
+    if (turned || set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
     if (set(op).some((k) => NOT_FOUND.has(k))) reach.unreachable.add('not-found');
   } else if (op.type === 'asset.update') {
     // A font's files change how its text is drawn everywhere; a name or description shows in the editor only.

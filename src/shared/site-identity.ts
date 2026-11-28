@@ -59,11 +59,14 @@ export function checkTwitterHandle(input: string): Checked<string> {
   return ok(`@${body}`);
 }
 
-/** An email address: one mailbox, nothing around it. */
+/**
+ * An email address: one mailbox, nothing around it. A ? or # in it would end the address in the email links that open
+ * it (mailto:), so neither is taken.
+ */
 export function checkEmail(input: string): Checked<string> {
   const text = input.trim();
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
+  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:\\?#]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
   return ok(text);
 }
 
@@ -114,33 +117,55 @@ function englishTime(h: number, min: number): string {
 const englishList = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
 
 /** How one language names the days and the hours, from the platform's own names for them. */
-function localWords(language: string): { day: (i: number) => string; time: (h: number, min: number) => string; list: (parts: string[]) => string } {
-  const day = new Intl.DateTimeFormat([language, 'en'], { weekday: 'long', timeZone: 'UTC' });
-  const time = new Intl.DateTimeFormat([language, 'en'], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
-  const list = new Intl.ListFormat([language, 'en'], { type: 'conjunction' });
-  // 2024-01-01 was a Monday.
-  return { day: (i) => day.format(Date.UTC(2024, 0, 1 + i)), time: (h, min) => time.format(Date.UTC(2024, 0, 1, h % 24, min)), list: (parts) => list.format(parts) };
+interface LocalWords {
+  locale: string;
+  day: (i: number) => string;
+  time: (h: number, min: number) => string;
+  list: (parts: string[]) => string;
+}
+
+/**
+ * The platform's words for `language`, or for its language alone when the platform takes no more of it ("zh" for
+ * "zh-cmn-Hans"); null for English, which says hours its own way, and for a language the platform does not know.
+ */
+function localWords(language: string): LocalWords | null {
+  for (const tag of [language, language.split('-')[0]]) {
+    let locale: string;
+    try {
+      locale = new Intl.DateTimeFormat(tag).resolvedOptions().locale;
+    } catch {
+      continue;
+    }
+    if (/^en\b/i.test(locale)) return null;
+    const day = new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' });
+    const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
+    // The end of the day is 24:00, which a clock that starts the day at 0:00 cannot say.
+    const end = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hourCycle: 'h24', timeZone: 'UTC' });
+    const list = new Intl.ListFormat(locale, { type: 'conjunction' });
+    // 2024-01-01 was a Monday.
+    return {
+      locale,
+      day: (i) => day.format(Date.UTC(2024, 0, 1 + i)),
+      time: (h, min) => (h === 24 ? end : clock).format(Date.UTC(2024, 0, 1, h % 24, min)),
+      list: (parts) => list.format(parts)
+    };
+  }
+  return null;
 }
 
 /**
  * Opening hours as visitors read them, in the site's language: “Monday to Friday, 9am – 5pm” for Schema.org's
- * “Mo-Fr 09:00-17:00”, the periods joined with semicolons. A period of days alone is open all day. Each period is
- * checked as Site details keeps it, and one that is not usable is left out.
+ * “Mo-Fr 09:00-17:00”, the periods joined with semicolons. A period of days alone is open all day: “all day” in
+ * English, the whole day's hours in another language. Each period is checked as Site details keeps it, and one that
+ * is not usable is left out. A language the platform does not know is written in English.
  */
 export function openingHoursText(periods: readonly string[], language = 'en'): string {
-  const english = /^en\b/i.test(language);
-  let words: ReturnType<typeof localWords> | null = null;
-  if (!english) {
-    try {
-      words = localWords(language);
-    } catch {
-      words = null;
-    }
-  }
+  const words = localWords(language);
   const dayName = (code: string) => {
     const i = DAY_CODES.indexOf(code.toLowerCase() as (typeof DAY_CODES)[number]);
     return words ? words.day(i) : ENGLISH_DAYS[i];
   };
+  const time = words ? words.time : englishTime;
   const out: string[] = [];
   for (const raw of periods) {
     const c = checkOpeningHours(raw);
@@ -152,13 +177,12 @@ export function openingHoursText(periods: readonly string[], language = 'en'): s
     });
     const named = words ? words.list(groups) : englishList(groups);
     let text: string;
-    if (!hours) text = words ? named : `${named}, all day`;
+    if (!hours) text = words ? `${named}, ${time(0, 0)} – ${time(24, 0)}` : `${named}, all day`;
     else {
       const [from, to] = hours.split('-').map((t) => t.split(':').map(Number));
-      const time = words ? words.time : englishTime;
       text = `${named}, ${time(from[0], from[1])} – ${time(to[0], to[1])}`;
     }
-    out.push(text.charAt(0).toLocaleUpperCase(language) + text.slice(1));
+    out.push(text.charAt(0).toLocaleUpperCase(words?.locale ?? 'en') + text.slice(1));
   }
   return out.join('; ');
 }

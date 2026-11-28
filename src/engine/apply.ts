@@ -79,7 +79,7 @@ import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
-import { carryBusinessDetails, detailTexts, fillBusinessDetails } from './business-details';
+import { carryBusinessDetails, detailTexts, fillBusinessDetails, releaseDetailKeeps } from './business-details';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
@@ -1784,6 +1784,9 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     }
     for (const [axis, id] of Object.entries(op.variants ?? {})) chosen[axis] = variantOption(def, id, axis).id;
     const inst = makeInstance(def, {}, chosen);
+    // A section placed once Site details has the business's details shows them where its design shows the samples;
+    // the values the insert gives are the placement's own.
+    if (op.owner.kind !== 'component') fillBusinessDetails(state, op.owner, inst);
     if (op.props) {
       for (const [k, v] of Object.entries(op.props)) {
         const schema = def.properties[k];
@@ -1793,8 +1796,6 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
       // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
       if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[], new Set(), formDefaults(def));
     }
-    // A section placed once Site details has the business's details shows them where it would show the samples.
-    if (op.owner.kind !== 'component') fillBusinessDetails(state, op.owner, inst);
     nodes = [inst];
   }
   // The editor names the node it inserts when the same batch goes on to fill it (an image and its picture).
@@ -1842,7 +1843,7 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if (!plan.keepAppear) delete node.appear;
   // A form's tool name and description stay with it when it becomes another form, and go when it becomes something else.
   if (!isWebMcpForm(target)) delete node.webmcp;
-  // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
+  // Text kept through a site rename or a change of its details names the old design's fields: the new one follows.
   delete node.keepsText;
   return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
 }
@@ -2937,6 +2938,8 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
+  // An edit makes the property's values the author's again: each follows the site's details if it shows them.
+  releaseDetailKeeps(node, op.prop);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
@@ -3418,7 +3421,8 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     else delete s.identity;
   }
   // The sections, links and footer that showed a detail (or its sample) show its new value (#1368); their own stay.
-  const problem = carryBusinessDetails(state, details);
+  // An edit of the details also replaces a sample still shown of one it leaves as it was (a section pasted in).
+  const problem = carryBusinessDetails(state, details, op.identity !== undefined);
   if (problem) fail(problem);
   return {};
 }
