@@ -30,7 +30,7 @@ import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type For
 import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, dependentsOf, filledSlots, removalWithPlacements } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
-import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
+import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, stopsExportOnly, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles, IMPORTED_DOCUMENT_FILE, IMPORTED_MEDIA_FILE } from './asset-files';
 import { keptDraftAssetsNote, restoreDraftAssets } from './draft-assets';
@@ -6012,7 +6012,8 @@ export class ProjectSession extends EventEmitter {
     if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.
-    const broken = introducedDiagnostics(this.problemsOf(this.state), this.problemsOf(next), { byNode: true }).filter((d) => d.severity === 'error');
+    // A link to a draft is no problem of the project's: only the website export stops on it, and says so.
+    const broken = introducedDiagnostics(this.problemsOf(this.state), this.problemsOf(next), { byNode: true }).filter((d) => d.severity === 'error' && !stopsExportOnly(d));
     if (broken.length) return problem(broken[0].message);
     // Links to a page that would be gone, counted rather than told apart by message, so one already broken nearby
     // never hides another.

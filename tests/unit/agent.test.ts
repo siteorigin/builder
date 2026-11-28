@@ -23,7 +23,7 @@ import { drafts } from '@engine/draft';
 import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@shared/icons';
-import { diagnosticKey, validateState } from '@engine/validate';
+import { diagnosticKey, validateState, type Diagnostic } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 import { turnState } from '@shared/turns';
@@ -2281,6 +2281,21 @@ describe('run budget, parallel calls and validation', () => {
     expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
     expect(result?.validation.join(' ')).toMatch(/build without errors/);
     expect(result?.canUndo).toBe(true);
+  });
+
+  it('makes a linked page a draft as asked, with no repair of the links to it: only the website export stops on them (#1633)', async () => {
+    let session: ProjectSession;
+    const about = () => Object.values(session.state.pages).find((p) => p.title === 'About')!;
+    const env = await setup([() => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.update', pageId: about().id, draft: true }] })], () => finish('About is a draft now.')]);
+    session = env.session;
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT')).toEqual([]);
+    const { result } = await env.run('Keep the About page as a draft for now');
+    expect(result?.status).toBe('completed');
+    // The site's links to it are listed in Project health, and the run left them and the draft as asked.
+    expect(session.diagnostics().filter((d) => d.code === 'LINK_TO_DRAFT').length).toBeGreaterThan(0);
+    expect(about().draft).toBe(true);
+    expect(env.adapter.requests).toHaveLength(2);
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(false);
   });
 
   it('treats an error with the same message as one already there, but somewhere else, as new (#132)', async () => {
@@ -4967,6 +4982,8 @@ describe('the project brief as standing context (#519)', () => {
 });
 
 describe('the project diagnostics in the editor context (#757)', () => {
+  /** What the editor context lists: problems and warnings, but images waiting for the author's pictures (#1633). */
+  const inContext = (d: Diagnostic) => d.severity !== 'info' && d.code !== 'IMAGE_UNFILLED';
   const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.find((i) => (i as { kind?: string }).kind === 'user') as { text: string }).text)![1]);
   const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
   /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
@@ -4992,7 +5009,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
       // The other page comes first in the validator's own order.
       env.session.state = { ...env.session.state, site: { ...env.session.state.site, pageOrder: [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)] } };
       seed(env.session, [other, home]);
-      const expected = env.session.diagnostics().filter((d) => d.severity !== 'info');
+      const expected = env.session.diagnostics().filter(inContext);
       expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
       expect(expected.filter((d) => d.severity === 'warning').length).toBeGreaterThanOrEqual(2);
       const { result } = await env.run('Tidy up the footer', pageCtx(home, 'Home', mode === 'ask' ? { mode: 'ask' } : { scope: 'page' }));
@@ -5043,7 +5060,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
 
   it('leaves the section out of a project without problems', async () => {
     const env = await setup([() => finish('Done.')]);
-    expect(env.session.diagnostics().filter((d) => d.severity !== 'info')).toEqual([]);
+    expect(env.session.diagnostics().filter(inContext)).toEqual([]);
     await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'page' }));
     expect(editorContext(env.adapter.requests[0])).not.toHaveProperty('diagnostics');
   });
@@ -5053,7 +5070,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const env = await setup([() => finish('Done.')], { capabilities: { contextWindowTokens: 40_000 } });
     const pages = pagesOf(env.session);
     seed(env.session, pages, 10);
-    const all = env.session.diagnostics().filter((d) => d.severity !== 'info');
+    const all = env.session.diagnostics().filter(inContext);
     const totals = { errors: all.filter((d) => d.severity === 'error').length, warnings: all.filter((d) => d.severity === 'warning').length };
     await env.run('Tidy up the footer', pageCtx(pages[0], 'Home', { scope: 'site' }));
     const listed = editorContext(env.adapter.requests[0]).diagnostics;
