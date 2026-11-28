@@ -175,7 +175,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   });
   const redirects = new Map<string, string>();
   const oldClaims = new Map<string, number>();
-  for (const p of source.posts) if (p.oldPath && !p.draft) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
+  for (const p of source.posts) if (p.oldPath) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
 
   const byKey = new Map(source.posts.map((p) => [p.key, p]));
   // Every post's text first: one cut to fit arrives as a draft, which the posts linking to it are told. The imported
@@ -236,9 +236,9 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     let lostAddress: string | undefined;
     if (p.oldPath && lower(p.oldPath) !== lower(entryRoute)) {
       const from = p.oldPath;
-      const why = draft
-        ? null
-        : from === '/' || validateRoute(from)
+      // A draft keeps its old address as a published post does: the website sends visitors there once it is published.
+      const why =
+        from === '/' || validateRoute(from)
           ? `${validateRoute(from) ?? 'it is the Home page'}`
           : archived && lower(from) === lower(route)
             ? `it is the address of the ${name} collection`

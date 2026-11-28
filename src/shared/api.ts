@@ -1042,6 +1042,8 @@ export interface PostImportPreview {
   newTerms: { categories: string[]; tags: string[] };
   /** Old addresses kept working. */
   redirects: number;
+  /** Of those, the ones kept for a post that arrives as a draft: they start working once it is published. */
+  redirectsPending: number;
   /** Old addresses that can't keep working (each post's note says why). */
   redirectsLost?: number;
   /** What is not imported at all. */

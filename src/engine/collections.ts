@@ -870,14 +870,13 @@ function applyEntrySeo(state: ProjectState, entry: EntryDoc, op: EntryFields, la
 /**
  * Keeps `from`, an address the entry had on an earlier site (an imported post's old permalink), working for it: an
  * address the site can have, other than Home and the entry's own, that nothing else holds or keeps for its archives.
+ * A draft keeps it too: the website sends visitors there once the entry is published (see publishedState).
  */
 function keepOldAddress(state: ProjectState, c: Collection, entry: EntryDoc, from: string) {
   const label = `“${entry.title}”`;
   const route = entryRoute(c, entry);
   // Nor is an entry without a page of its own.
   if (route === undefined) fail(`${label}: entries of ${c.settings.name} have no pages, so no old address can send visitors to one.`);
-  // A draft is no destination: visitors at the old address would find nothing.
-  if (entry.draft !== false) fail(`${label}: an old address is kept working only for a published entry.`);
   const err = from === '/' ? 'the Home page keeps its own address.' : validateRoute(from);
   if (err) fail(`${label}: ${from.slice(0, 80)} cannot be kept as its old address: ${err}`);
   if (from.toLowerCase() === route!.toLowerCase()) fail(`${label}: ${from} is its own address, not an old one.`);

@@ -383,6 +383,7 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
             'Old addresses',
             <>
               {preview.redirects ? `${plural(preview.redirects, 'keeps', 'keep')} working` : 'None keep working'}
+              {!!preview.redirectsPending && ` · ${preview.redirectsPending.toLocaleString()} once ${preview.redirectsPending === 1 ? 'its post is' : 'their posts are'} published`}
               {!!preview.redirectsLost && (
                 <>
                   {' · '}

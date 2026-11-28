@@ -73,6 +73,7 @@ const preview = (create: boolean, more: Partial<PostImportPreview> = {}): PostIm
   missing: [],
   newTerms: { categories: [], tags: [] },
   redirects: 0,
+  redirectsPending: 0,
   skipped: [],
   problems: [],
   ...more
@@ -181,6 +182,16 @@ describe.skipIf(!browserInstalled)('the header link in the post import review (#
     await page.getByTestId('post-import-confirm').waitFor();
     expect(await box().count()).toBe(0);
     expect(await importing()).toEqual(['review-1', 'w', false]);
+  });
+
+  it('says how many old addresses wait for their draft to be published (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 4, redirectsPending: 1, redirectsLost: 2 }));
+    await page.getByText(/4 keep working · 1 once its post is published · 2 can’t/).waitFor();
+  });
+
+  it('says nothing of drafts when every old address works now (#1501)', async () => {
+    await mount(site, preview(true, { redirects: 3 }));
+    await page.getByText(/^3 keep working$/).waitFor();
   });
 
   it('is not offered for posts that can’t be imported', async () => {
