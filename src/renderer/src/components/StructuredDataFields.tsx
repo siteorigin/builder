@@ -19,7 +19,8 @@ import {
   type StructuredInspection,
   type StructuredIssue
 } from '@shared/page-structured-data';
-import { commitOps, getState, toast, undoAction } from '../store';
+import { commitOps, getState, toast, undoAction, useStore } from '../store';
+import { publicUrl } from '@shared/public-url';
 import { pageUpdate } from '../lib/page-settings';
 import { DraftInput, Field, RequiredMark, type DraftHandle, type DraftProblem } from './ui';
 
@@ -657,6 +658,10 @@ const FIXES: Partial<Record<StructuredFact | 'type', string>> = {
  * says nothing of the entity, and the rest of it is written as before.
  */
 export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd }) {
+  // What keeps complete details off the exported page, so "ready" never reads as "done": the page names nothing
+  // without the site's public URL, and a page hidden from search engines carries no structured data.
+  const noAddress = useStore((s) => !!s.snapshot && !publicUrl(s.snapshot.state.site));
+  const held = noAddress ? 'once the site has a public URL' : page.seo?.noindex ? 'once the page is no longer hidden from search engines' : null;
   const raw: unknown = page.seo && typeof page.seo === 'object' ? page.seo.structuredData : undefined;
   const found = inspectPageStructuredData(raw);
   const stored = isRecord(raw) ? raw : {};
@@ -694,6 +699,14 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
       'Tells search engines what the page is. Choose Service, Product, Event or How-to guide to add details such as a price or a date.'
     ) : !facts.length ? (
       `Search engines are told this is the site’s ${type === 'AboutPage' ? 'about' : 'contact'} page.`
+    ) : found.ready && held ? (
+      // Complete, but the export can't carry them yet: what holds them back leads, then any saved detail it would leave out.
+      <span className="sd-status" data-structured-ready data-structured-held>
+        <CircleDashed aria-hidden="true" />
+        <span>
+          The saved {details} are ready. Search engines get them {held}.{left.length ? ` Correct the ${sentenceList(left)} below too.` : ''}
+        </span>
+      </span>
     ) : found.ready && left.length ? (
       // Included, but a detail saved beside them is left out: said with them, so the check never vouches for a red field.
       <span className="sd-status" data-structured-ready data-structured-partial>

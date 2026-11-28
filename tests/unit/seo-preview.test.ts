@@ -71,7 +71,7 @@ describe('previewDocument', () => {
     expect(p.date).toBeNull();
     expect(p.card).toMatchObject({ host: 'example.com', title: 'Classes and commissions · Riverside Studio', addressNote: null });
     expect(p.card.image?.id).toBe('img_share');
-    expect(p.card.imageSaid).toMatch(/, the site’s\.$/);
+    expect(p.card.imageSaid).toMatch(/, the site’s sharing image\.$/);
     expect(p.own).toEqual({ title: true, description: true });
   });
 
@@ -258,7 +258,7 @@ describe('structuredPreview', () => {
     expect(hidden.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/hidden from search engines/) });
     expect(Object.fromEntries(hidden.status.map((l) => [l.id, l.on]))).toMatchObject({ search: false, sitemap: false, structured: false, llms: false, siteSearch: true });
     const bare = structuredPreview(run(state, { type: 'site.update', baseUrl: '' }), PAGE)!;
-    expect(bare.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/Public URL/) });
+    expect(bare.graph).toMatchObject({ kind: 'none', reason: expect.stringMatching(/until the site has one\.$/) });
     expect(bare.status.find((l) => l.id === 'canonical')).toMatchObject({ on: false, value: 'None: the site has no public URL' });
     const noLlms = structuredPreview(run(state, { type: 'site.update', llmsTxt: false }), PAGE)!;
     expect(noLlms.status.find((l) => l.id === 'llms')).toMatchObject({ on: false, value: 'The site writes no llms.txt' });

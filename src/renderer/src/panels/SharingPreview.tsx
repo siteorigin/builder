@@ -15,6 +15,22 @@ export function openSiteSharing(field: 'socialImage' | 'baseUrl') {
   requestAnimationFrame(() => openSection('site-settings', { focus: field === 'baseUrl' ? '#site-public-url' : '.insp-image.plain-social .insp-image-top .btn' }));
 }
 
+/**
+ * Bring a platform's card to the top of the preview it is in, under the row of jumps. Beside the settings the preview
+ * scrolls on its own, so only it moves and the settings stay where they are; focus stays on the jump, so the next
+ * platform is one key away.
+ */
+function jumpTo(from: HTMLElement, id: string) {
+  const card = from.closest('.share-preview')?.querySelector<HTMLElement>(`[data-share-sample="${id}"]`);
+  if (!card) return;
+  const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  const panel = from.closest<HTMLElement>('[role="tabpanel"]');
+  if (panel && panel.scrollHeight > panel.clientHeight) {
+    const under = from.closest<HTMLElement>('.share-jumps')?.offsetHeight ?? 0;
+    panel.scrollTo({ top: card.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop - under - 8, behavior });
+  } else card.scrollIntoView({ block: 'start', behavior });
+}
+
 /** A length of the card at full size, which shrinks with the card where there is less room (see SeoPreview.css). */
 const px = (n: number) => `calc(var(--u) * ${n})`;
 
@@ -64,7 +80,7 @@ function PlatformCard({ platform, card, gone }: { platform: (typeof SHARE_PLATFO
     <CardPicture key={picture ? `${picture.id}\n${picture.file}\n${devUrl}\n${missingKey(snapshot, picture.id)}` : 'none'} picture={picture} alt={card.imageAlt} box={box} devUrl={gone ? null : devUrl} />
   );
   const lang = card.language || undefined;
-  const host = <span className="share-card-host">{card.host ?? 'No usable public URL'}</span>;
+  const host = <span className="share-card-host">{card.host ?? 'No public URL'}</span>;
   const title = (
     <span className="share-card-title" lang={lang} dir="auto">
       {card.title}
@@ -77,7 +93,7 @@ function PlatformCard({ platform, card, gone }: { platform: (typeof SHARE_PLATFO
   );
   const style = { '--w': layout.width, '--title-lines': layout.titleLines, '--desc-lines': layout.descriptionLines } as CSSProperties;
   return (
-    <div className="share-sample" role="group" aria-label={`${platform.name} link preview`}>
+    <div className="share-sample" role="group" aria-label={`${platform.name} link preview`} data-share-sample={platform.id} style={{ width: layout.width }}>
       <p className="share-sample-name">
         {platform.place} · {platform.name}
       </p>
@@ -114,13 +130,17 @@ function PlatformCard({ platform, card, gone }: { platform: (typeof SHARE_PLATFO
 }
 
 /**
- * A page or a post as a shared link shows it where people share links: the effective image, title, description and
+ * A page or a post as a shared link shows it where people share links (a site without a public URL is said once, over
+ * the SEO view's previews, with the way to set one): the effective image, title, description and
  * host, whichever of the document and the site each comes from, laid out as each platform lays a card out (see
  * lib/share-card-layout). It reads what the generator writes into the document's `<head>` (see lib/seo-preview
  * `previewDocument`). Every platform shows, each named (the SEO view, #708).
  */
 export function SharingPreview({ card }: { card: LinkCard }) {
   const snapshot = useStore((s) => s.snapshot);
+  const readOnly = !!snapshot?.readOnly;
+  // Which card a jump brought into view, said to screen readers, since focus stays on the jump.
+  const [jumped, setJumped] = useState('');
   const gone = !!card.image && !!snapshot?.missingAssets.some((m) => m.assetId === card.image!.id && m.original);
   const warning = pictureWarning(card.image, gone);
   return (
@@ -129,18 +149,41 @@ export function SharingPreview({ card }: { card: LinkCard }) {
         {card.imageSaid}
         {warning && ` ${warning}`}
       </p>
-      {SHARE_PLATFORMS.map((p) => (
-        <PlatformCard key={p.id} platform={p} card={card} gone={gone} />
-      ))}
-      <p className="field-hint share-preview-note">How each platform likely crops the picture and cuts the text short. Their apps change, and differ between devices.</p>
-      {card.addressNote && (
+      {/* A way straight to each platform's card, for a view too short to show all four at once: it stays at the top of
+          the preview as the cards scroll under it. Without a picture the cards are short, so there is nothing to jump. */}
+      {card.image && (
+      <nav className="share-jumps field-hint" aria-label="Link previews">
+        <span aria-hidden="true">Jump to</span>
+        {SHARE_PLATFORMS.map((p) => (
+          <button key={p.id} type="button" className="link-btn" onClick={(e) => (jumpTo(e.currentTarget, p.id), setJumped(`Showing the ${p.name} link preview.`))}>
+            {p.name}
+          </button>
+        ))}
+      </nav>
+      )}
+      <span className="sr-only" role="status">
+        {jumped}
+      </span>
+      {/* A picture the exported page can't give an address for yet: the cards show it, so say what it waits on. */}
+      {card.image && card.addressNote && (
         <p className="field-hint share-preview-note">
-          {card.addressNote}{' '}
+          Shared links can show this picture once the site has a public URL.{' '}
           <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
-            Open Site details
+            {readOnly ? 'Show Site details' : 'Set the public URL'}
           </button>
         </p>
       )}
+      {/* Each card at its platform's width, side by side wherever two fit (the narrow message and chat cards, mostly),
+          so all four show without a long scroll and none is shrunk to make room. */}
+      <div className="share-samples">
+        {SHARE_PLATFORMS.map((p) => (
+          <PlatformCard key={p.id} platform={p} card={card} gone={gone} />
+        ))}
+      </div>
+      <p className="field-hint share-preview-note">
+        {card.image ? 'How each platform likely crops the picture and cuts the text short.' : 'How each platform likely cuts the text short. Without a picture, most show the text alone, and X keeps an empty space for one.'} Their apps
+        change, and differ between devices.
+      </p>
     </div>
   );
 }
