@@ -1,6 +1,6 @@
 import './SourceModal.css';
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { CircleAlert, CircleCheck, Code, FileCode2, ListPlus, Lock, Sparkles } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { CircleAlert, CircleCheck, Code, FileCode2, FileText, ListPlus, Lock, Sparkles } from 'lucide-react';
 import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog, warningsToast } from '../store';
 import { CODE_DRAFT } from '../lib/pending';
 import { Field, Modal, Spinner, Tabs } from '../components/ui';
@@ -13,6 +13,7 @@ import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
 import { EXTERNAL_SOURCE_REFUSED, type CodePropsTaken, type SourceManifest } from '@shared/api';
 import { MAX_PROPERTIES, codePropsSync, declareFromCode, removeProperties, starterUntouched } from '../lib/prop-schema';
+import { CodeWorkspace } from './CodeWorkspace';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -76,13 +77,13 @@ function TabDot({ on }: { on: boolean }) {
   return on ? <span className="code-dot code-tab-dot" role="img" aria-label="unsaved" /> : null;
 }
 
-/** The dialog's badge: a component definition in its own hue (edits reach every page that uses it), a page in
- *  neutral. */
-function CodeBadge({ kind }: { kind: 'component' | 'page' }) {
-  return <span className={`code-badge ${kind}`}>{kind === 'page' ? <FileCode2 aria-hidden="true" /> : <Code aria-hidden="true" />}</span>;
+/** The dialog's badge: a component definition in its own hue (edits reach every page that uses it), a page or a
+ *  project file in neutral. */
+export function CodeBadge({ kind }: { kind: 'component' | 'page' | 'file' }) {
+  return <span className={`code-badge ${kind}`}>{kind === 'page' ? <FileCode2 aria-hidden="true" /> : kind === 'file' ? <FileText aria-hidden="true" /> : <Code aria-hidden="true" />}</span>;
 }
 
-function SourceLoading({ failed, what, onRetry }: { failed: boolean; what: string; onRetry: () => void }) {
+export function SourceLoading({ failed, what, onRetry }: { failed: boolean; what: string; onRetry: () => void }) {
   return failed ? (
     <div className="code-loading" role="alert">
       <span>{what} could not be loaded.</span>
@@ -98,7 +99,7 @@ function SourceLoading({ failed, what, onRetry }: { failed: boolean; what: strin
 }
 
 /** The dialog's heading: what this is, whether it can be changed, and which file it is. */
-function CodeTitle({ name, file, state }: { name: string; file?: string; state?: 'unsaved' | 'draft' | 'readonly' | null }) {
+export function CodeTitle({ name, file, state }: { name: string; file?: string; state?: 'unsaved' | 'draft' | 'readonly' | null }) {
   return (
     <span className="code-title">
       <span className="code-title-row">
@@ -178,13 +179,13 @@ const isSaveKey = (e: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'shiftKey' | '
 const busyLabel = (status: string | null, writing = 'Saving…') => (status?.includes('Fixing') ? 'Fixing…' : status ? 'Checking…' : writing);
 /** Progress said with a real ellipsis, whatever the checker wrote. */
 const tidy = (status: string | null) => status?.replace(/\.{3}$/, '…') ?? null;
-const SAVE_KEYS = 'Meta+S Control+S';
-const saveTitle = (label: string) => `${label} (${api.platform === 'darwin' ? '⌘S' : 'Ctrl+S'})`;
+export const SAVE_KEYS = 'Meta+S Control+S';
+export const saveTitle = (label: string) => `${label} (${api.platform === 'darwin' ? '⌘S' : 'Ctrl+S'})`;
 const count = (n: number, one: string) => (n === 1 ? `the ${one}` : `the ${n} ${one}s`);
 
 /** Cmd/Ctrl+S anywhere in the dialog (its header and footer too) runs `run`. The code editor handles its own
  *  press, and a prompt over the dialog is outside it, so neither runs this twice. */
-function useSaveKey(inside: RefObject<HTMLElement | null>, run: () => void) {
+export function useSaveKey(inside: RefObject<HTMLElement | null>, run: () => void) {
   const latest = useRef(run);
   latest.current = run;
   useEffect(() => {
@@ -205,7 +206,7 @@ function useSaveKey(inside: RefObject<HTMLElement | null>, run: () => void) {
  * blocked, a conflict note's choice, Revert once nothing is left to revert. Focus goes to the first listed problem
  * when there is one, else to the code, else to the open tab. Focus that is still on something usable is left alone.
  */
-function useFocusKeeper(inside: RefObject<HTMLElement | null>, alive: () => boolean, list: RefObject<HTMLElement | null>, fallback: () => void) {
+export function useFocusKeeper(inside: RefObject<HTMLElement | null>, alive: () => boolean, list: RefObject<HTMLElement | null>, fallback: () => void) {
   const last = useRef<HTMLElement | null>(null);
   const restore = useRef(fallback);
   restore.current = fallback;
@@ -246,7 +247,34 @@ function refusal(problems: string[], heading = 'Not saved'): string {
   return faults.length ? `${heading}. ${faults.length} ${noun}${faults.length === 1 ? '' : 's'} to fix.` : `${heading}. ${problems[0]}`;
 }
 
+/** What an editor of one file gives the code workspace to frame it with: its heading, badge, footer and body. */
+export interface EditorFrame {
+  title: ReactNode;
+  icon: ReactNode;
+  footer: ReactNode;
+  /** A write is under way: nothing closes the dialog until it ends. */
+  busy: boolean;
+  /** Every way out of the dialog (×, Escape, the backdrop) goes through here, asking about unsaved work first. */
+  onClose: () => void;
+  body: ReactNode;
+}
+
+/**
+ * The open editor's way of letting go of its file: asks about unsaved work first (a discard prompt), then runs `then`
+ * (another file opens), or does nothing when the person keeps editing. Each editor sets it while it is shown.
+ */
+export type LeaveGuard = MutableRefObject<((then: () => void) => void) | null>;
+
+/** A code component's editor in the code workspace (CodeWorkspace.tsx): edit the component with its source and its properties. */
 export function SourceModal({ definitionId }: { definitionId: string }) {
+  return <CodeWorkspace start={{ kind: 'component', definitionId }} />;
+}
+
+/**
+ * The editor of one code component's Svelte source and properties, framed by the code workspace (`frame`). A
+ * component made from its settings shows its generated source, read only.
+ */
+export function ComponentSourceEditor({ definitionId, frame, leave, onSaved }: { definitionId: string; frame: (f: EditorFrame) => ReactElement; leave: LeaveGuard; /** Told after each save that landed, so the preview can show it. */ onSaved?: () => void }) {
   const def = useStore((s) => s.snapshot?.state.components[definitionId]);
   const canFix = useStore((s) => !!s.providers.find((p) => p.id === s.settings?.ai.provider)?.configured);
   const [src, setSrc] = useState<{ source: string; hash: string; path: string; editable: boolean } | null>(null);
@@ -284,7 +312,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const problemsList = useRef<HTMLElement | null>(null);
   // A discard prompt still open: a save waits for its answer before it writes anything.
   const discarding = useRef<Promise<boolean | null> | null>(null);
-  const latest = useRef({ close: () => {}, save: () => {}, request: () => {} });
+  const latest = useRef({ leave: (_then: () => void, _closing: boolean) => {}, save: () => {}, request: () => {} });
   useSaveKey(body, () => latest.current.request());
   // Closing the editor cancels an automatic fix that is still running, and a save in progress.
   const alive = useAlive();
@@ -370,15 +398,53 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   }, [edit]);
   // Edits made from an older version of the code (an undo, the AI or an outside edit changed it since).
   const codeStale = codeDirty && !!baseHash && !!src && src.hash !== baseHash;
-  if (!def) return null;
+  if (!def) {
+    // Removed while it was open (an undo, the AI, another window): the code that was being edited stays on screen to
+    // copy, and leaving it asks first, since nothing can save it now.
+    const drop = (then: () => void) =>
+      !dirty
+        ? then()
+        : void confirmDialog({
+            title: 'Discard the changes you were making?',
+            body: codeDirty ? 'Its component is no longer in the project, so your changes can’t be saved. Copy the code first to keep it.' : 'Its component is no longer in the project, so your changes to its properties can’t be saved.',
+            details: [{ kind: 'final', text: 'The changes can’t be brought back.' }],
+            confirmLabel: 'Discard changes',
+            cancelLabel: 'Keep it open',
+            tone: 'caution',
+            icon: 'discard'
+          }).then((ok) => ok === true && then());
+    leave.current = drop;
+    const closeGone = () => drop(() => setState({ modal: null }));
+    return frame({
+      title: <CodeTitle name="Component removed" state={src ? 'readonly' : null} />,
+      icon: <CodeBadge kind="component" />,
+      busy: false,
+      onClose: closeGone,
+      footer: (
+        <>
+          <span className="code-foot-note grow">
+            <span>{codeDirty ? 'This component was removed. Copy your code to keep it.' : dirty ? 'This component was removed, so your changes to its properties can’t be saved.' : 'This component is no longer in the project.'}</span>
+          </span>
+          <button className="btn" onClick={closeGone}>
+            Close
+          </button>
+        </>
+      ),
+      body: (
+        <div className="code-dialog" ref={body}>
+          {src ? <CodeEditor value={code} readOnly label="The removed component’s code, read only" height="100%" /> : <div className="code-loading">This component is no longer in the project.</div>}
+        </div>
+      )
+    });
+  }
   const changed = codeDirty && propsDirty ? 'code and properties' : codeDirty ? 'code' : 'properties';
-  // Unsaved code is never lost to Escape, the backdrop or ×: ask first. Nothing closes during the write itself.
-  const close = () => {
+  // Unsaved code is never lost to Escape, the backdrop, × or another file: ask first. Nothing leaves during the write.
+  const leaveNow = (then: () => void, closing: boolean) => {
     if (writing || discarding.current) return;
-    if (!dirty || !src?.editable) return void setState({ modal: null });
+    if (!dirty || !src?.editable) return then();
     const asked = confirmDialog({
       title: 'Discard your changes?',
-      body: `The editor closes without saving your changes to the ${changed}.`,
+      body: closing ? `The editor closes without saving your changes to the ${changed}.` : `Your changes to the ${changed} are not saved.`,
       subject: def.name,
       subjectKind: 'component',
       details: [
@@ -393,10 +459,14 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     discarding.current = asked;
     void asked.then((ok) => {
       discarding.current = null;
-      if (ok === true) setState({ modal: null });
+      if (ok === true) then();
     });
   };
-  const requestClose = () => (commitField() ? void setTimeout(() => latest.current.close()) : close());
+  const close = () => leaveNow(() => setState({ modal: null }), true);
+  // A property field still being typed in commits first, so its text counts as an edit.
+  const requestLeave = (then: () => void, closing = false) => (commitField() ? void setTimeout(() => latest.current.leave(then, closing)) : leaveNow(then, closing));
+  const requestClose = () => requestLeave(() => setState({ modal: null }), true);
+  leave.current = (then) => requestLeave(then);
   const goToLine = (line: number) => {
     setTab('source');
     setTimeout(() => editor.current?.goTo(line));
@@ -500,6 +570,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       }
       // Save disables itself once the refreshed code shows nothing left to save; the focus keeper hands focus on.
       setSaved(true);
+      onSaved?.();
       if (r.fixed) toast(`Fixed and saved: ${r.fixed}`);
       else if (r.warnings?.length) warningsToast('Saved', r.warnings);
     } catch {
@@ -547,7 +618,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       field.focus();
     });
   };
-  latest.current = { close, save: () => void save(), request: requestSave };
+  latest.current = { leave: leaveNow, save: () => void save(), request: requestSave };
   // Saved stays on screen only while nothing new is waiting, typed-in-but-uncommitted fields included.
   const justSaved = saved && !dirty && !status && !refused;
   const busy = !!status || writing;
@@ -574,15 +645,12 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   };
   const note = footNote();
   const saveHint = !dirty || blocked || propsStale ? null : reviewing ? 'reviews errors' : action === 'Fix and save' ? 'fixes and saves' : 'saves';
-  return (
-    <Modal
-      wide
-      busy={writing}
-      title={<CodeTitle name={def.name} file={src?.path} state={!src ? null : !src.editable ? 'readonly' : dirty ? 'unsaved' : null} />}
-      icon={<CodeBadge kind="component" />}
-      onClose={requestClose}
-      footer={
-        src?.editable ? (
+  return frame({
+    busy: writing,
+    title: <CodeTitle name={def.name} file={src?.path} state={!src ? null : !src.editable ? 'readonly' : dirty ? 'unsaved' : null} />,
+    icon: <CodeBadge kind="component" />,
+    onClose: requestClose,
+    footer: src?.editable ? (
           <>
             <span className={`code-foot-note grow${justSaved ? ' saved' : ''}`} role="status">
               {busy ? <Spinner decorative /> : justSaved ? <CircleCheck aria-hidden="true" /> : null}
@@ -610,9 +678,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
               Close
             </button>
           </>
-        )
-      }
-    >
+        ),
+    body: (
       <div className="code-dialog" ref={body}>
         <Tabs
           value={tab}
@@ -730,8 +797,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
           {refusal(errors)}
         </span>
       </div>
-    </Modal>
-  );
+    )
+  });
 }
 
 /** Names joined for a sentence: “a”, “a and b”, “a, b and c”. */

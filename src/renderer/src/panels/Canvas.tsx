@@ -704,9 +704,12 @@ export function Canvas() {
       }
     })();
   };
-  useEffect(() => api.on('preview:load-failed', ({ url: failedUrl }) => {
+  useEffect(() => api.on('preview:load-failed', ({ url: failedUrl, frame: failedFrame }) => {
     const frame = frameRef.current;
     if (!origin || !frame || frame.name !== session) return;
+    // Only a failure the main process found in this frame is the canvas's: another frame's showing the same page (the
+    // code workspace's preview), or one it could not tell the frame of, never resets a canvas that may be fine.
+    if (failedFrame !== session) return;
     let failed: URL;
     try { failed = new URL(failedUrl); } catch { return; }
     if (failed.origin !== origin) return;

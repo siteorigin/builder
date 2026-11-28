@@ -38,6 +38,46 @@ const openPicker = (id: string) => {
   }
 };
 
+/**
+ * The code editor the code workspace hands files to (#1483): the system's default app for each file, or an application
+ * chosen here with the system's chooser (the main process checks it can be started).
+ */
+function CodeEditorRow({ editor, onDefault }: { editor: AppSettings['externalEditor']; onDefault: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const choose = async () => {
+    setChoosing(true);
+    setProblem(null);
+    try {
+      const r = await api.app.chooseExternalEditor();
+      if (r && r.ok) setState({ settings: r.settings });
+      else if (r) setProblem(r.message);
+    } catch {
+      setProblem('Your code editor could not be chosen. Try again.');
+    } finally {
+      setChoosing(false);
+    }
+  };
+  const app = editor?.kind === 'app' ? editor : null;
+  return (
+    <InlineRow id="settings-code-editor" label="Code editor" hint={app ? `The code workspace opens files and the project’s folder in ${app.name}.` : 'The code workspace opens each file in the app your computer uses for it. Choose an editor, such as Visual Studio Code or Cursor, to open files and the project’s folder there.'} error={problem}>
+      <div className="settings-code-editor">
+        <span className="settings-code-editor-name" title={app?.path}>
+          {app ? app.name : 'System default'}
+        </span>
+        <button type="button" className="btn btn-sm" disabled={choosing} onClick={() => void choose()}>
+          {app ? 'Change…' : 'Choose…'}
+        </button>
+        {app && (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onDefault}>
+            Use system default
+          </button>
+        )}
+      </div>
+    </InlineRow>
+  );
+}
+
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
   const providers = useStore((s) => s.providers);
@@ -664,6 +704,7 @@ export function SettingsModal() {
                     <div className="settings-row">
                       <SwitchRow id={DEVELOPER_MODE_SWITCH} checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
                     </div>
+                    {settings.developerMode && <CodeEditorRow editor={settings.externalEditor} onDefault={() => void update({ externalEditor: { kind: 'system' } })} />}
                     <div className="settings-row">
                       <SwitchRow
                         checked={settings.gitSnapshots}

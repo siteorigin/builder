@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess, webFrameMain } from 'electron';
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,6 +50,7 @@ import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { createPageChecker } from './page-check-window';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
+import { setEditorHandOff } from './external-editor';
 import { PastedImages } from './pasted-images';
 import { installSourceTestHosts } from './sources/test-hosts';
 import { sweepSpools } from './sources/spool';
@@ -157,6 +158,8 @@ const { headless, automated } = launchMode(process.env, globalThis);
 // Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
 // to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
+// Nor do they start the developer's code editor: that hand-off is recorded too (external-editor.ts).
+if (desktop) setEditorHandOff(desktop.codeEditor);
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = automated ? installAiJournal(globalThis) : null;
 // And may serve a source's pictures on this computer, which a sync never fetches from otherwise (sources/test-hosts.ts).
@@ -487,6 +490,27 @@ const compileCacheFor = (session: object): CompileCache => {
   return cache;
 };
 
+/**
+ * The code workspace's Svelte check compiles in the same workers (#1483), from the same cache as the AI's checks: a file
+ * whose source has not changed since it was last compiled is not compiled again, so the check takes the workers only
+ * for what changed.
+ */
+controller.compileSvelte = async (files) => {
+  const session = controller.session;
+  const cache = session ? compileCacheFor(session) : null;
+  const known = files.map(([path, source]) => cache?.get(path, source));
+  const misses = files.filter((_, i) => known[i] === undefined);
+  const batch = misses.length ? await compileWorkers.compile(misses) : { outcomes: [], runs: 0 };
+  let next = 0;
+  const outcomes = files.map(([path, source], i) => {
+    if (known[i] !== undefined) return known[i];
+    const outcome = batch.outcomes[next++];
+    if (outcome !== undefined && controller.session === session) cache?.set(path, source, outcome);
+    return outcome;
+  });
+  return { outcomes, runs: batch.runs };
+};
+
 /** Learning mode's recorder (#1566), made at launch once the log is open (below); null while learning mode is off. */
 let learning: LearningRecorder | null = null;
 
@@ -668,6 +692,8 @@ function registerIpc() {
     if (s.developerMode !== developerModeOn) {
       developerModeOn = s.developerMode;
       buildMenu();
+      // The code workspace's checks run project code only while Developer mode is on.
+      if (!s.developerMode) void controller.stopProjectChecks();
     }
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
     if (s.appearance !== appearance) {
@@ -685,6 +711,7 @@ function registerIpc() {
   });
   // The menu button's (and F10's) application menu, for every screen, the failure screens' too (#1355).
   handle('menu:popup', (at: unknown) => popupApplicationMenu(at), { anytime: true });
+  handle('app:chooseExternalEditor', () => controller.chooseExternalEditor());
   handle(
     'app:openExternal',
     async (url: string) => {
@@ -910,6 +937,14 @@ function registerIpc() {
   handle('project:componentThumb', (definitionId: unknown, opening: unknown, have?: unknown) => controller.componentThumb(definitionId, opening, have));
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));
+  handle('project:codeFiles', (opening: string) => controller.codeFiles(opening));
+  handle('project:readCodeFile', (opening: string, path: string) => controller.readCodeFile(opening, path));
+  handle('project:saveCodeFile', (opening: string, path: string, text: string, expectedHash: string) => controller.saveCodeFile(opening, path, text, expectedHash));
+  handle('project:openInEditor', (opening: string, target: unknown) => controller.openInEditor(opening, target));
+  handle('project:runCheck', (opening: string, task: unknown) => controller.runProjectCheck(opening, task));
+  handle('project:stopCheck', (opening: string, runId: string) => controller.stopProjectCheck(opening, runId));
+  handle('project:checks', (opening: string) => controller.projectChecks(opening));
+  handle('project:previewLog', (opening: string, since: number) => controller.previewLog(opening, since));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }) => controller.resolveConflict(p, choice, opts && typeof opts === 'object' ? opts : undefined));
@@ -1302,12 +1337,23 @@ async function createWindow() {
     recordingShortcut = false;
     self.webContents.setIgnoreMenuShortcuts(false);
   });
-  self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
-    if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
+  self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame, frameProcessId, frameRoutingId) => {
+    if (isMainFrame || !/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) return;
+    // Which frame it was, by its name, so a failure in one frame (the code workspace's preview) is never taken for
+    // another's showing the same page (the canvas).
+    let frame: string | undefined;
+    try {
+      frame = webFrameMain.fromId(frameProcessId, frameRoutingId)?.name;
+    } catch {
+      frame = undefined;
+    }
+    self.webContents.send('preview:load-failed', { url, ...(frame ? { frame } : {}) });
   });
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     recordingShortcut = false;
+    // Nobody is left to see or stop the code workspace's checks.
+    void controller.stopProjectChecks();
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
