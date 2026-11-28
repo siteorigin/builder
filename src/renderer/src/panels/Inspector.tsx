@@ -2972,7 +2972,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             wideColumns
             tokens={tokens}
-            allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
+            allowed={(placedDef && partStyleControls(placedDef, 'root')) ?? styleSetFor(node)}
             gridChild={gridChild}
             grouped={inGroupAt(state, owner, node.id)}
             layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}

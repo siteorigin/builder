@@ -142,7 +142,7 @@ const urlHint = win.locator('#dock-panel-styles .field').filter({ has: win.locat
 await eventually(async () => assert.match(await urlHint.innerText(), /The website you last exported was built without it: export it again/));
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 const reopened = modal.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').first();
-await eventually(async () => assert.match(await reopened.innerText(), /Public URL set since this export\. Export again to include canonical links and the sitemap\./));
+await eventually(async () => assert.match(await reopened.innerText(), /Public URL set since this export\. Export again to publish with the new address\./));
 // The form still cannot send: its note still leads to it.
 assert.equal(await reopened.locator('.export-note-line', { hasText: 'contact form' }).getByRole('button', { name: 'Go to form' }).count(), 1);
 const connected = await apply([{ type: 'instance.setProp', owner: { kind: 'page', id: lookbookId }, nodeId: formId, prop: 'endpoint', value: 'https://formspree.io/f/abcd1234' }], 'Connect the form');
