@@ -224,6 +224,13 @@ describe('an interrupted save that cannot be read (#1435)', () => {
     rmSync(join(dir, '.siteorigin', 'journal.json'), { recursive: true });
     expect((await reopen(dir)).state.site.name).toBe('Persist');
   });
+
+  it('opens a project whose journal is read but empty, as before', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    writeFileSync(join(dir, '.siteorigin', 'journal.json'), '');
+    expect((await reopen(dir)).state.site.name).toBe('Persist');
+  });
 });
 
 describe('generated files edited outside the app', () => {

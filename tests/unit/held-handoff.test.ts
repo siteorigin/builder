@@ -1307,6 +1307,29 @@ describe('a typed edit the project folder cannot be written for (#1435)', () => 
     expect(applyCalls).toBe(sent);
   });
 
+  it('never takes an older journal put in this one’s place for this save’s journal', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // The journal takes its place, and something else (a sync of the folder, say) puts an older one there before the
+    // page can be written.
+    const s = session as unknown as { placeJournal: (j: unknown, beforeReplace: () => Promise<boolean>) => Promise<void> };
+    const placeJournal = s.placeJournal.bind(session);
+    s.placeJournal = async (j, beforeReplace) => {
+      s.placeJournal = placeJournal;
+      await placeJournal(j, beforeReplace);
+      writeFileSync(join(dir, '.siteorigin', 'journal.json'), JSON.stringify({ schemaVersion: 1, writes: [], deletes: [], revision: session.revision }));
+    };
+    const allow = denyAccess(pagesDir(dir), 'write');
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      allow();
+    }
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'failed', save: 'blocked', text: 'Typed in the inspector' });
+    rmSync(join(dir, '.siteorigin', 'journal.json'));
+  });
+
   it('never takes something else in the journal’s place for this save’s journal', async () => {
     const { session, dir } = await setup([]);
     const home = session.state.site.homePageId;

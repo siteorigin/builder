@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
@@ -2048,7 +2048,7 @@ export class ProjectSession extends EventEmitter {
     const j = await readIfExists(this.local('journal.json'));
     // One that is there but cannot be read is never taken for none: the next save would replace the only copy of what
     // it was saving (#1435).
-    if (!j && (await fs.lstat(this.local('journal.json')).then(() => true, () => false)))
+    if (j === null && (await fs.lstat(this.local('journal.json')).then(() => true, () => false)))
       throw new Error('This project has an interrupted save that could not be read. Check that you can read and write the files in its .siteorigin folder, then open it again.');
     if (!j) return;
     const keepAside = async (why: string) => {
@@ -2386,7 +2386,7 @@ export class ProjectSession extends EventEmitter {
         // What became of it (#1435): nothing of it written; its documents in place, with only the rest of the save left
         // for reopening to finish; its journal on disk, which reopening finishes; or its journal never put in place (its
         // rename failed), so reopening finishes nothing of it, although nothing more is saved until then.
-        const kind: WriteFailure = !this.unsettled ? 'failed' : this.state === next ? 'landed' : this.journalInPlace && existsSync(this.local('journal.json')) ? 'unfinished' : 'blocked';
+        const kind: WriteFailure = !this.unsettled ? 'failed' : this.state === next ? 'landed' : this.journalInPlace && this.journalOf(this.revision + 1) ? 'unfinished' : 'blocked';
         // The save indicator names the change reopening finishes, and so none that it does not.
         this.failedSave = kind === 'blocked' ? null : { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
         if (e && typeof e === 'object') this.writeFailures.set(e, kind);
@@ -3304,6 +3304,15 @@ export class ProjectSession extends EventEmitter {
    */
   writeFailure(e: unknown): WriteFailure | null {
     return e && typeof e === 'object' ? (this.writeFailures.get(e) ?? null) : null;
+  }
+
+  /** Whether the journal on disk still names the revision a save making `revision` gave it: not one put in its place since. */
+  private journalOf(revision: number): boolean {
+    try {
+      return (JSON.parse(readFileSync(this.local('journal.json'), 'utf8')) as { revision?: unknown } | null)?.revision === revision;
+    } catch {
+      return false;
+    }
   }
 
 
