@@ -666,8 +666,8 @@ describe('making a web-sized copy of a large library image', () => {
     const id = (await c.importAssets([sourceFile('field.jpg', photo)])).assetIds[0];
     await c.copiesMade();
     const file = join(dir, c.session!.state.assets.assets[id].file);
-    // Nothing remembered by the file's stat, so every question is put to the worker.
-    c.session!.settleMs = 60_000;
+    // Nothing remembered by the file's stat, so every question is put to the worker, however long the import took.
+    c.session!.settleMs = Infinity;
     later.requests = [];
     const [meta, plan] = await Promise.all([c.photoMetadata(id), c.webCopyPlan(id)]);
     expect(meta).toEqual(photoMetadata(readFileSync(file)));
@@ -723,12 +723,15 @@ describe('making a web-sized copy of a large library image', () => {
     await c.copiesMade();
     const file = join(dir, c.session!.state.assets.assets[id].file);
     later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    later.requests = [];
     let planned = false;
     const plan = c.webCopyPlan(id).then((p) => ((planned = true), p));
     expect(await c.photoMetadata(id)).toEqual(photoMetadata(readFileSync(file)));
     expect(planned).toBe(false);
     later.releaseCopy!();
     expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
+    // Both answers came from that one look, not from a read here after the worker gave up on it.
+    expect(later.requests).toEqual([{ kind: 'library', bytes: 0, weighed: false }]);
   }, LARGE_PHOTO_MS);
 
   it('never offers a lighter copy of its own web-sized copy, or of a photo a copy would hardly lighten', async () => {
