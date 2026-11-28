@@ -17,10 +17,13 @@ describe.each(RELEASES)("%s", (file) => {
   };
   const source = pack.components.find((c) => c.id.endsWith("faq.list"))!.source;
 
-  it("starts the answer below the focus ring instead of pulling it up under it", () => {
-    const answer = /\.faq__answer \{([^}]*)\}/.exec(source)![1];
-    expect(answer).toMatch(/margin-block:\s*5px var\(--so-space-lg\)/);
-    expect(answer).not.toMatch(/\*\s*-1/);
+  it("starts an open row's answer below the focus ring, and leaves a closed row's answer as it was", () => {
+    expect(/\.faq__answer \{([^}]*)\}/.exec(source)![1]).toMatch(
+      /margin-block:\s*calc\(var\(--so-space-md\) \* -1\) var\(--so-space-lg\)/,
+    );
+    expect(source).toMatch(
+      /\.faq__item\[open\] > \.faq__answer \{\s*margin-block-start:\s*5px;/,
+    );
   });
 
   it("shortens the open summary's bottom padding by the same distance", () => {
