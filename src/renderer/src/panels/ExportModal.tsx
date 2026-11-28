@@ -1,3 +1,4 @@
+import { runsOnNode } from '@shared/deploy-target';
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FolderCode, Globe, Info, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
@@ -426,6 +427,8 @@ function healthNotesOf(state: ProjectState, diagnostics: readonly Diagnostic[]):
 }
 
 export function ExportModal() {
+  // A site built as a Node.js server (shared/deploy-target.ts) is exported as one, to start rather than upload.
+  const node = useStore((s) => (s.snapshot ? runsOnNode(s.snapshot.state.site) : false));
   // A read-only question changes nothing, so exporting goes on while it runs.
   // An edit request in the chat, or the project held for the AI: either way the export waits for it.
   const aiBusy = useStore((s) => !!editRunStatus(s) || !!s.snapshot?.aiBusy);
@@ -714,7 +717,7 @@ export function ExportModal() {
         <span className="ico"><Globe size={18} /></span>
         <span className="grow">
           <span className="export-card-title">
-            <strong>Website files, ready to upload</strong>
+            <strong>{node ? 'Node.js server, ready to run' : 'Website files, ready to upload'}</strong>
             {cardEnd('static', websiteUnavailable)}
           </span>
           {pagesText ? (
@@ -731,7 +734,7 @@ export function ExportModal() {
               )}
             </>
           ) : (
-            <span className="export-card-line">Every published page as a finished website, for any web host.</span>
+            <span className="export-card-line">{node ? 'Every published page and your API endpoints, as a server for any Node.js host.' : 'Every published page as a finished website, for any web host.'}</span>
           )}
           <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
             <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and color stay.</span>

@@ -7,7 +7,7 @@
  */
 import './EndpointsPanel.css';
 import { useEffect, useRef, useState } from 'react';
-import { ENDPOINT_METHODS, newEndpointProblem, newEndpointRoute, type EndpointFile, type EndpointLanguage, type EndpointMethod, type EndpointResponse } from '@shared/endpoints';
+import { ENDPOINT_METHODS, newEndpointProblem, newEndpointRoute, parseHeaderLines, shownBody, type EndpointFile, type EndpointLanguage, type EndpointMethod, type EndpointResponse } from '@shared/endpoints';
 import { envNameProblem, envValueProblem, type EndpointEnvironment } from '@shared/endpoint-env';
 import { runsOnNode } from '@shared/deploy-target';
 import { api, confirmDialog, useStore } from '../store';
@@ -25,30 +25,6 @@ interface Open {
 
 /** A route as a first address to test: its parameters (`[id]`, `[...rest]`) left for the author to fill in. */
 const testPath = (route: string) => route;
-
-/** Request headers typed one per line, as `Name: value`. Lines without a colon are left out. */
-export function parseHeaderLines(text: string): Array<[string, string]> {
-  return text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .flatMap((l): Array<[string, string]> => {
-      const at = l.indexOf(':');
-      return at > 0 ? [[l.slice(0, at).trim(), l.slice(at + 1).trim()]] : [];
-    });
-}
-
-/** A body laid out for reading: JSON indented when it is JSON, anything else as it came. */
-export function shownBody(body: string, headers: Array<[string, string]>): { text: string; json: boolean } {
-  const type = headers.find(([n]) => n.toLowerCase() === 'content-type')?.[1] ?? '';
-  const looks = /json/i.test(type) || /^\s*[[{]/.test(body);
-  if (!looks) return { text: body, json: false };
-  try {
-    return { text: JSON.stringify(JSON.parse(body), null, 2), json: true };
-  } catch {
-    return { text: body, json: false };
-  }
-}
 
 export function EndpointsPanel() {
   const opening = useStore((s) => s.snapshot?.workspaceKey ?? '');

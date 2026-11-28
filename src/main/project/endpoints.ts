@@ -6,10 +6,10 @@
  * editor is never overwritten. Nothing here depends on Electron, so it is unit tested directly.
  */
 import { createHash } from 'node:crypto';
-import { promises as fs, type Dirent } from 'node:fs';
+import { lstatSync, promises as fs, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { endpointFileFor, endpointLanguage, endpointMethods, endpointRoute, endpointStarter, isEndpointFile, MAX_ENDPOINT_BYTES, newEndpointProblem, type EndpointFile, type EndpointLanguage, type EndpointWrite } from '@shared/endpoints';
-import { atomicWrite, safeJoinLooking } from './fsutil';
+import { atomicWrite, safeJoin } from './fsutil';
 
 export type { EndpointWrite };
 
@@ -67,11 +67,36 @@ async function refusal(dir: string, file: string): Promise<string | null> {
   return null;
 }
 
-/** The plain file at `file` below `dir`, reached through no link; null when nothing is there. Throws for anything else. */
+/**
+ * What is at `rel` below the project folder `root`, looked at part by part without following any link: a plain file
+ * reached through plain folders, nothing (`missing`: a part is not there), or anything else (`other`: a link on the
+ * way or at the end, a file where a folder should be, a folder where the file should be).
+ */
+export function lookPlain(root: string, rel: string): { abs: string; kind: 'file' | 'missing' | 'other' } {
+  const abs = safeJoin(root, rel);
+  const parts = rel.split('/');
+  let at = root;
+  for (let i = 0; i < parts.length; i++) {
+    at = join(at, parts[i]);
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(at);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return { abs, kind: 'missing' };
+      if (code === 'ENOTDIR') return { abs, kind: 'other' };
+      throw e;
+    }
+    if (st.isSymbolicLink() || (i < parts.length - 1 ? !st.isDirectory() : !st.isFile())) return { abs, kind: 'other' };
+  }
+  return { abs, kind: 'file' };
+}
+
+/** The plain file at `file` below `dir`, reached through no link, or none there. Throws for anything else. */
 function plainFile(dir: string, file: string): { abs: string; exists: boolean } {
-  const { abs, st } = safeJoinLooking(dir, file);
-  if (st === undefined) throw new Error(`${file} is not a plain file in the project (it is a folder, or reached through a link), so it is not opened.`);
-  return { abs, exists: st !== null };
+  const { abs, kind } = lookPlain(dir, file);
+  if (kind === 'other') throw new Error(`${file} is not a plain file in the project (it is a folder, or reached through a link), so it is not opened.`);
+  return { abs, exists: kind === 'file' };
 }
 
 async function readEndpointText(dir: string, file: string): Promise<string> {

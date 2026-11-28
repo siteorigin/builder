@@ -10,7 +10,8 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { dotenvNames, ENV_DECLARATIONS, ENV_DECLARATIONS_FILE, ENV_NAMES_FILE, envNameProblem, envNamesJson, envValueProblem, LOCAL_ENV_FILE, managedDeclarations, MAX_ENV_NAMES, readEnvNames, setDotenv, type EndpointEnvironment, type EnvChange } from '@shared/endpoint-env';
-import { atomicWrite, safeJoinLooking } from './fsutil';
+import { atomicWrite } from './fsutil';
+import { lookPlain } from './endpoints';
 
 export type { EnvChange };
 
@@ -19,11 +20,17 @@ const MAX_DOTENV_BYTES = 256 * 1024;
 
 /** A plain file's text below `dir`, null when nothing is there; refused through a link or for anything but a file. */
 async function readPlain(dir: string, rel: string, max: number): Promise<string | null> {
-  const { abs, st } = safeJoinLooking(dir, rel);
-  if (st === null) return null;
-  if (st === undefined) throw new Error(`${rel} is not a plain file in the project (it is a folder, or reached through a link), so it is left as it is.`);
-  if (Number(st.size) > max) throw new Error(`${rel} is too large to read here.`);
+  const { abs, kind } = plainAt(dir, rel);
+  if (kind === 'missing') return null;
+  if ((await fs.stat(abs)).size > max) throw new Error(`${rel} is too large to read here.`);
   return fs.readFile(abs, 'utf8');
+}
+
+/** `rel` below `dir` when it is a plain file or nothing; anything else (a link, a folder) is refused. */
+function plainAt(dir: string, rel: string): { abs: string; kind: 'file' | 'missing' } {
+  const at = lookPlain(dir, rel);
+  if (at.kind === 'other') throw new Error(`${rel} is not a plain file in the project (it is a folder, or reached through a link), so it is left as it is.`);
+  return { abs: at.abs, kind: at.kind };
 }
 
 /** The project's environment, as the Endpoints panel shows it: names, and whether each has a local value. */
@@ -52,8 +59,7 @@ export function envChangeProblem(change: EnvChange): string | null {
 
 /** Write .env whole, mode 0600, through a temporary file with a private name, never through a link. */
 async function writeDotenv(dir: string, text: string): Promise<void> {
-  const { abs, st } = safeJoinLooking(dir, LOCAL_ENV_FILE);
-  if (st === undefined) throw new Error(`${LOCAL_ENV_FILE} is not a plain file in the project, so it is left as it is.`);
+  const { abs } = plainAt(dir, LOCAL_ENV_FILE);
   if (!text) {
     await fs.rm(abs, { force: true });
     return;
@@ -99,11 +105,11 @@ export async function changeEndpointVariable(dir: string, change: EnvChange, fen
         if (next.length !== names.length) {
           const managed = managedDeclarations(declarations);
           if (next.length) {
-            await atomicWrite(safeJoinLooking(dir, ENV_NAMES_FILE).abs, envNamesJson(next));
-            if (managed && declarations !== ENV_DECLARATIONS) await atomicWrite(safeJoinLooking(dir, ENV_DECLARATIONS_FILE).abs, ENV_DECLARATIONS);
+            await atomicWrite(plainAt(dir, ENV_NAMES_FILE).abs, envNamesJson(next));
+            if (managed && declarations !== ENV_DECLARATIONS) await atomicWrite(plainAt(dir, ENV_DECLARATIONS_FILE).abs, ENV_DECLARATIONS);
           } else {
-            await fs.rm(safeJoinLooking(dir, ENV_NAMES_FILE).abs, { force: true });
-            if (managed && declarations !== null) await fs.rm(safeJoinLooking(dir, ENV_DECLARATIONS_FILE).abs, { force: true });
+            await fs.rm(plainAt(dir, ENV_NAMES_FILE).abs, { force: true });
+            if (managed && declarations !== null) await fs.rm(plainAt(dir, ENV_DECLARATIONS_FILE).abs, { force: true });
           }
           changed = true;
         }
