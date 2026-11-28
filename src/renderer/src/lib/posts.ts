@@ -367,3 +367,136 @@ export function deleteFingerprint(state: ProjectState, ref: PostRef): string {
   const refs = entryReferenceUses(state, ref.entryId).map((r) => `${r.collection.settings.id}:${r.entry.id}:${r.field}`);
   return JSON.stringify([links.sort(), addresses.sort(), refs.sort()]);
 }
+
+/**
+ * The rows a click picks in the list (#1507), as in a file manager: Shift picks every row from the anchor to the one
+ * clicked, in the order the list shows them, in place of what was picked; Cmd/Ctrl adds the row or takes it out. An
+ * anchor no longer shown starts the range at the row clicked.
+ */
+export function pickRows(shown: readonly string[], picked: ReadonlySet<string>, anchor: string | null, id: string, how: 'range' | 'toggle'): Set<string> {
+  if (how === 'toggle') {
+    const next = new Set(picked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  }
+  const from = anchor === null ? -1 : shown.indexOf(anchor);
+  const to = shown.indexOf(id);
+  if (to < 0) return new Set(picked);
+  const [a, b] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
+  return new Set(shown.slice(a, b + 1));
+}
+
+/** The picked entries still in the collection, in the order given; none of a synced one, whose entries change there. */
+function pickedEntries(state: ProjectState, collectionId: string, ids: readonly string[]): EntryDoc[] {
+  const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
+  if (!c || isSyncedCollection(c.settings)) return [];
+  return [...new Set(ids)].flatMap((id) => (Object.hasOwn(c.entries, id) && c.entries[id] && typeof c.entries[id] === 'object' ? [c.entries[id]] : []));
+}
+
+/**
+ * Publishing the picked entries, or moving them to drafts, as one change: only those not already so. `future` names
+ * the drafts dated after `today`, which Publish asks about first (#1115).
+ */
+export function bulkStatusOps(state: ProjectState, collectionId: string, ids: readonly string[], draft: boolean, today = ''): { ops: EditOperation[]; future: Array<{ id: string; title: string; date: string }> } {
+  const changing = pickedEntries(state, collectionId, ids).filter((e) => (e.draft !== false) !== draft);
+  return {
+    ops: changing.map((e) => ({ type: 'entry.update', collectionId, entryId: e.id, draft })),
+    future: draft ? [] : changing.flatMap((e) => (isFutureDay(e.publishedAt, today) ? [{ id: e.id, title: e.title, date: e.publishedAt }] : []))
+  };
+}
+
+/** The most terms of one grouping an entry can be filed under (the operation's limit). */
+export const MAX_ENTRY_TERMS = 50;
+
+/** A term of one of a collection's groupings to file the picked entries under (`on`), or take them out of. */
+export interface TermChange {
+  taxonomyId: string;
+  termId: string;
+  on: boolean;
+}
+
+/**
+ * Filing the picked entries under terms of the collection's groupings, or taking them out of them, as one change: one
+ * update for each entry it changes, with every change to it. Each keeps its other terms; one gone from its grouping
+ * (deleted, undone away) is dropped, since the engine refuses a list naming it. Terms the collection does not have
+ * change nothing. `full` names the entries that would be filed under more terms of one grouping than an entry can
+ * hold; they are left as they are, and the caller says so rather than sending a change that leaves them out.
+ */
+export function bulkTermOps(state: ProjectState, collectionId: string, ids: readonly string[], changes: readonly TermChange[]): { ops: EditOperation[]; full: string[] } {
+  const c = Object.hasOwn(state.collections, collectionId) ? state.collections[collectionId] : undefined;
+  const termsIn = (tax: string) => {
+    const t = c?.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, tax) ? c.settings.taxonomies[tax] : undefined;
+    return t?.terms && typeof t.terms === 'object' ? t.terms : undefined;
+  };
+  const real = changes.filter((x) => {
+    const terms = termsIn(x.taxonomyId);
+    return !!terms && Object.hasOwn(terms, x.termId);
+  });
+  const taxonomies = [...new Set(real.map((x) => x.taxonomyId))];
+  const full: string[] = [];
+  const ops = pickedEntries(state, collectionId, ids).flatMap((e): EditOperation[] => {
+    const next: Record<string, string[]> = {};
+    for (const tax of taxonomies) {
+      const terms = termsIn(tax)!;
+      const filed: unknown = e.terms && Object.hasOwn(e.terms, tax) ? e.terms[tax] : undefined;
+      const had = Array.isArray(filed) ? filed.filter((x): x is string => typeof x === 'string') : [];
+      let ids = [...new Set(had.filter((x) => Object.hasOwn(terms, x)))];
+      // Taken out first, so a term added in place of one taken out fits; one past the most an entry can hold is not added.
+      for (const x of real) if (x.taxonomyId === tax && !x.on) ids = ids.filter((id) => id !== x.termId);
+      for (const x of real) if (x.taxonomyId === tax && x.on && !ids.includes(x.termId)) ids = [...ids, x.termId];
+      // More than an entry can hold (one written by hand may hold more already): it is named, and left as it is.
+      if (ids.length > MAX_ENTRY_TERMS) {
+        full.push(e.title);
+        return [];
+      }
+      if (ids.length !== had.length || ids.some((id, i) => id !== had[i])) next[tax] = ids;
+    }
+    return Object.keys(next).length ? [{ type: 'entry.update', collectionId, entryId: e.id, terms: next }] : [];
+  });
+  return { ops, full };
+}
+
+/**
+ * Deleting the picked entries as one change (#1507): those nothing links to or names, and with no old address kept
+ * working, go at once. The rest (`held`) ask what takes their place, so they are left for the author to delete one at a
+ * time, where that is asked. A link or reference from another picked entry holds one too: the engine removes them in
+ * turn, so two naming each other would refuse the whole change. One pass over the project for all of them, however
+ * many are picked.
+ */
+export function bulkDeletePlan(state: ProjectState, collectionId: string, ids: readonly string[]): { ops: EditOperation[]; free: Array<{ id: string; title: string }>; held: Array<{ id: string; title: string }> } {
+  const entries = pickedEntries(state, collectionId, ids);
+  const set = new Set(entries.map((e) => e.id));
+  const holds = new Set<string>();
+  for (const u of entryLinkUses(state, set)) holds.add(u.link.target);
+  const kept: unknown = state.site.redirects;
+  if (Array.isArray(kept)) for (const r of kept) if (typeof (r as { entryId?: unknown })?.entryId === 'string') holds.add((r as { entryId: string }).entryId);
+  for (const r of entryReferenceUses(state, set)) {
+    const v: unknown = r.entry.values?.[r.field];
+    for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string') holds.add(id);
+  }
+  // Both pass over holders among the picked themselves: their links and references to one another, here. Any link
+  // value anywhere in one of them counts, which may hold more than the engine would, never less.
+  const linksIn = (x: unknown, self: string): void => {
+    if (Array.isArray(x)) return x.forEach((y) => linksIn(y, self));
+    if (!x || typeof x !== 'object') return;
+    const l = x as { type?: unknown; target?: unknown };
+    if (l.type === 'entry' && typeof l.target === 'string' && l.target !== self && set.has(l.target)) holds.add(l.target);
+    for (const y of Object.values(x)) linksIn(y, self);
+  };
+  for (const e of entries) linksIn(e, e.id);
+  for (const c of Object.values(state.collections ?? {})) {
+    const refs = Object.entries(c.settings?.fields ?? {}).filter(([, f]) => f?.type === 'reference').map(([name]) => name);
+    if (!refs.length) continue;
+    for (const e of Object.values(c.entries)) {
+      if (!set.has(e.id)) continue;
+      for (const field of refs) {
+        const v: unknown = e.values && Object.hasOwn(e.values, field) ? e.values[field] : undefined;
+        for (const id of Array.isArray(v) ? v : [v]) if (typeof id === 'string' && id !== e.id) holds.add(id);
+      }
+    }
+  }
+  const row = (e: EntryDoc) => ({ id: e.id, title: e.title });
+  const free = entries.filter((e) => !holds.has(e.id)).map(row);
+  return { ops: free.map((f) => ({ type: 'entry.remove', collectionId, entryId: f.id })), free, held: entries.filter((e) => holds.has(e.id)).map(row) };
+}
