@@ -440,3 +440,76 @@ describe('the file watch of an open project', () => {
     expect(full).not.toHaveBeenCalled();
   });
 });
+
+describe('an outside edit that breaks a code component (#1533)', () => {
+  /** A project in a controller with code components named `names`, each in its own file, and what it sends the editor. */
+  async function withCode(...names: string[]) {
+    const open = await openInController();
+    const sent: string[] = [];
+    open.c.send = (channel: string) => void sent.push(channel);
+    const ids: Record<string, { id: string; path: string; source: string }> = {};
+    for (const name of names) {
+      const source = `<p>${name}</p>\n`;
+      // Made as the editor makes it in Developer mode.
+      expect(await open.session.apply({ operations: [{ type: 'component.createCode', name, source }] }, { label: `Create ${name}`, codeAllowed: true })).toMatchObject({ ok: true });
+      const def = Object.values(open.session.state.components).find((d) => d.name === name)!;
+      ids[name] = { id: def.id, path: def.sourcePath!, source };
+    }
+    const refusals = () => (open.c.snapshot()?.diagnostics ?? []).filter((d) => d.code === 'EXTERNAL_SOURCE_REFUSED');
+    return { ...open, sent, ids, refusals };
+  }
+  const broken = '<div>\n  <p>Hello</p>\n  {broken\n</div>\n';
+
+  it('tells the editor the file was refused, with its line, and clears it once the file is put back', async () => {
+    const { dir, session, tell, sent, ids, refusals } = await withCode('Greeting');
+    const { id, path, source } = ids.Greeting;
+    const revision = session.revision;
+    const undo = session.historyInfo().undoLabel;
+    sent.length = 0;
+    writeFileSync(join(dir, path), broken);
+    tell(path);
+    await vi.waitFor(() => expect(refusals()).toHaveLength(1), { timeout: 5000, interval: 20 });
+    const [refusal] = refusals();
+    expect(refusal.owner).toEqual({ kind: 'component', id });
+    expect(refusal.severity).toBe('error');
+    expect(refusal.message).toMatch(new RegExp(`^The edited code for "Greeting" has problems, so it was not loaded \\(${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, line \\d+\\): .+`));
+    // Sent to the editor at once, though the project did not change.
+    expect(sent).toContain('project:changed');
+    expect(session.revision).toBe(revision);
+    expect(session.state.components[id].source).toBe(source);
+    expect(session.historyInfo().undoLabel).toBe(undo);
+    expect(readFileSync(join(dir, path), 'utf8')).toBe(broken);
+    // The file put back as it was loads nothing new, and the refusal goes.
+    sent.length = 0;
+    writeFileSync(join(dir, path), source);
+    tell(path);
+    await vi.waitFor(() => expect(refusals()).toEqual([]), { timeout: 5000, interval: 20 });
+    expect(sent).toContain('project:changed');
+    expect(session.revision).toBe(revision);
+  });
+
+  it('names every refused component, and loads the batch once each is put right', async () => {
+    const { dir, session, tell, ids, refusals, home } = await withCode('First', 'Second');
+    writeFileSync(join(dir, ids.First.path), broken);
+    writeFileSync(join(dir, ids.Second.path), broken);
+    const doc = read(dir, page(home));
+    doc.title = 'Retitled in another editor';
+    write(dir, page(home), doc);
+    tell(ids.First.path, ids.Second.path, page(home));
+    await vi.waitFor(() => expect(refusals().map((d) => d.owner?.id).sort()).toEqual([ids.First.id, ids.Second.id].sort()), { timeout: 5000, interval: 20 });
+    expect(session.state.pages[home].title).not.toBe('Retitled in another editor');
+    // First is fixed: only Second is refused now, and nothing loads yet.
+    writeFileSync(join(dir, ids.First.path), '<p>First, fixed</p>\n');
+    tell(ids.First.path);
+    await vi.waitFor(() => expect(refusals().map((d) => d.owner?.id)).toEqual([ids.Second.id]), { timeout: 5000, interval: 20 });
+    expect(session.state.components[ids.First.id].source).toBe(ids.First.source);
+    // Second is fixed too: the whole batch loads as one outside change, and nothing is refused.
+    writeFileSync(join(dir, ids.Second.path), '<p>Second, fixed</p>\n');
+    tell(ids.Second.path);
+    await vi.waitFor(() => expect(session.historyInfo().undoLabel).toBe('External change'), { timeout: 5000, interval: 20 });
+    expect(session.state.components[ids.Second.id].source).toBe('<p>Second, fixed</p>\n');
+    expect(session.state.components[ids.First.id].source).toBe('<p>First, fixed</p>\n');
+    expect(session.state.pages[home].title).toBe('Retitled in another editor');
+    expect(refusals()).toEqual([]);
+  });
+});

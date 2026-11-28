@@ -858,6 +858,12 @@ export class ProjectSession extends EventEmitter {
    */
   private pending = new Map<string, string | null>();
   /**
+   * Code components whose file was edited outside the app into code with errors, by definition id: the file, and the
+   * refusal as the editor shows it. The project keeps the version that last loaded; the file keeps the edit. Worked out
+   * again by every read that gets as far as the code (#1533), and held only in memory.
+   */
+  private refusedSources = new Map<string, { path: string; message: string }>();
+  /**
    * For each canonical document in conflict that an AI request's rollback left, the version that request tried to save:
    * the stored blob that holds it (null = it removed the file), and its text once read. The reference is kept even
    * while the text cannot be read, so it is never forgotten or collected. Shown when comparing, and kept under Saved
@@ -6012,7 +6018,8 @@ export class ProjectSession extends EventEmitter {
    * does not keep, a folder, a held conflict, a format update due, an interrupted save) is for the full read to decide.
    */
   private async ownSave(paths: string[]): Promise<boolean> {
-    if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size) return false;
+    // A refused outside edit is looked at again by the full read, whatever the watch named: only it can tell it settled.
+    if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size || this.refusedSources.size) return false;
     // A lock taken over is noticed now, as any reload notices it.
     if (!(await this.stillOwner())) return false;
     try {
@@ -6065,6 +6072,9 @@ export class ProjectSession extends EventEmitter {
       if (settled) this.emit('history');
       return { ok: false, message: (e as Error).message };
     }
+    // Every component's edited code is checked, so each refused file is told of, and one put right is no longer.
+    const refused = await this.refusedSourcesOf(next);
+    if (refused.size) return { ok: false, message: [...refused.values()].map((r) => r.message).join(' ') };
     const errors = this.introducedProblems(next);
     if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
     const pin = themePinProblem(next);
@@ -6078,11 +6088,6 @@ export class ProjectSession extends EventEmitter {
       return older(kind === 'shell' ? stored.site : kind === 'page' ? stored.pages[id] : stored.components[id]);
     });
     if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
-    for (const def of Object.values(next.components)) {
-      if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-      const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
-      if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
-    }
     this.migrationDue = migrated;
     // Frozen as it will be once it is the project, so its documents' texts are kept from here.
     const nextDocs = stateToDocs(frozen(next));
@@ -6122,6 +6127,31 @@ export class ProjectSession extends EventEmitter {
     if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
     this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
     return { ok: true };
+  }
+
+  /**
+   * The code components of `next` whose source differs from the project's and has errors, which a reload refuses, and
+   * those kept as the standing refusals. Told (`refused-sources`) when they change, though no revision does.
+   */
+  private async refusedSourcesOf(next: ProjectState): Promise<Map<string, { path: string; message: string }>> {
+    const refused = new Map<string, { path: string; message: string }>();
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
+      const bad = (await checkSvelteSource(def.source ?? '')).find((p) => p.severity === 'error');
+      if (!bad) continue;
+      const path = defFile(def);
+      const where = bad.line ? `${path}, line ${bad.line}` : path;
+      refused.set(def.id, { path, message: `The edited code for "${def.name}" has problems, so it was not loaded (${where}): ${bad.message}` });
+    }
+    const before = JSON.stringify([...this.refusedSources]);
+    this.refusedSources = refused;
+    if (JSON.stringify([...refused]) !== before) this.emit('refused-sources');
+    return refused;
+  }
+
+  /** The outside edits of code components refused for their errors, as Project health and the source editor show them. */
+  refusedSourceDiagnostics(): Diagnostic[] {
+    return [...this.refusedSources].map(([id, r]) => ({ severity: 'error', code: 'EXTERNAL_SOURCE_REFUSED', message: r.message, owner: { kind: 'component', id }, site: r.path }));
   }
 
   /** Read-only inspection follows the owner's edits without writing anything. */

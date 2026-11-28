@@ -683,7 +683,7 @@ export class Controller {
       history: s.historyInfo(),
       versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s), ...s.refusedSourceDiagnostics()],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -1652,6 +1652,10 @@ export class Controller {
     });
     // A save that failed shows in the editor's save indicator at once, though the project's revision did not move.
     session.on('save-failed', () => {
+      if (this.session === session) this.broadcast();
+    });
+    // An outside edit of a code component refused for its errors, or one no longer refused, is told at once (#1533).
+    session.on('refused-sources', () => {
       if (this.session === session) this.broadcast();
     });
     await this.onSessionOpened?.(session);
