@@ -13,7 +13,7 @@ import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { emptyReport, htmlToPlain, htmlToRichText } from './html';
 import { markdownToHtml, readFrontmatter, type FrontValue } from './markdown';
 import { MediaTable, segmentsWithin } from './media';
-import { readContained } from './files';
+import { isInsideRoot, readContained } from './files';
 import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, MAX_MARKDOWN_FILE_BYTES, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
@@ -35,12 +35,13 @@ interface Found {
  * folder chosen is the site's, its posts are read from the first of these that has any, so its pages (`index.md`,
  * `about.md`) are not taken for posts and a picture addressed from the site's root (`/assets/cover.jpg`) is found there.
  */
-const POST_FOLDERS = [['_posts'], ['content', 'posts'], ['content', 'post'], ['content', 'blog'], ['src', 'content', 'blog'], ['src', 'content', 'posts'], ['src', 'posts']];
+const POST_FOLDERS = [['_posts'], ['content', 'posts'], ['content', 'post'], ['content', 'blog'], ['src', 'content', 'blog'], ['src', 'content', 'posts']];
 
-async function findPosts(root: string): Promise<{ found: Found[]; over: number }> {
+async function findPosts(root: string, realRoot: string): Promise<{ found: Found[]; over: number }> {
   for (const at of POST_FOLDERS) {
-    const st = await fs.lstat(join(root, ...at)).catch(() => null);
-    if (!st?.isDirectory()) continue;
+    // Never through a link that leads outside the chosen folder (`content` linked to another folder).
+    const real = await fs.realpath(join(root, ...at)).catch(() => null);
+    if (!real || !isInsideRoot(realRoot, real) || !(await fs.stat(real).catch(() => null))?.isDirectory()) continue;
     const posts = await findPostsIn(root, at);
     if (posts.found.length) return posts;
   }
@@ -133,7 +134,7 @@ function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
 export async function readMarkdownFolder(root: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
   const realRoot = await fs.realpath(root);
   const label = basename(root);
-  const { found, over } = await findPosts(root);
+  const { found, over } = await findPosts(root, realRoot);
   if (!found.length) throw new Error(`${label} has no Markdown posts (.md files) in it. Choose the site’s folder, or the folder that holds its posts.`);
   const media = new MediaTable(root, realRoot);
   const skipped: string[] = [];

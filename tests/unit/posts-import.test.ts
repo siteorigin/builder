@@ -1068,6 +1068,14 @@ describe('reading a static site folder (#1517)', () => {
     ]);
   });
 
+  it('never reads a posts folder a link leads to outside the chosen folder', async () => {
+    const outside = mdFolder({ 'posts/secret.md': '---\ntitle: Secret\ndate: 2020-01-01\n---\nText' });
+    const dir = mdFolder({ 'mine.md': '---\ntitle: Mine\ndate: 2020-01-01\n---\nText' });
+    symlinkSync(outside, join(dir, 'content'));
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['mine.md']);
+  });
+
   it('still reads a folder of posts chosen on its own', async () => {
     const dir = mdFolder({ 'one.md': '---\ntitle: One\ndate: 2020-01-01\n---\nText', '_draft.md': 'Not a post' });
     const source = await readMarkdownFolder(dir, {});
