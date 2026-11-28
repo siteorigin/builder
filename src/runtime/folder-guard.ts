@@ -31,21 +31,31 @@ export function within(root: string, path: string): boolean {
 }
 
 const refusal = (path: string) =>
-  Object.assign(new Error(`ENOENT: no such file or directory, the project folder is gone: mkdir '${path}'`), { code: 'ENOENT', errno: -2, syscall: 'mkdir', path });
+  Object.assign(new Error(`ENOENT: no such file or directory, the project folder is gone: mkdir '${path}'`), { code: 'ENOENT', syscall: 'mkdir', path });
 
 /**
- * From now on, in this process, a folder is never made at or inside `root` once `root` itself has been found missing:
- * the call fails as it would without the recursive option. Like the editor's own session, the guard stays on once
- * the folder has gone, even if a folder appears at that address again. Returns the undo.
+ * From now on, in this process, a folder is never made at or inside `root` once `root` itself has been found missing,
+ * or found to be another folder than the one there when the guard was put in place (one made at the old address, by
+ * a folder made there in the moment between a look and a mkdir, or by anyone else): the call fails as it would
+ * without the recursive option. Like the editor's own session, the guard stays on once the folder has gone, even if
+ * the folder itself comes back. Returns the undo.
  */
 export function guardProjectFolder(root: string): () => void {
   const base = resolve(root);
   let gone = false;
-  // Gone as the editor's session judges it: not there (a folder it cannot read is not gone).
+  const identity = (s: fs.BigIntStats) => `${s.dev}:${s.ino}`;
+  let own: string | null = null;
+  try {
+    own = identity(fs.statSync(base, { bigint: true }));
+  } catch {
+    /* not there yet: anything at the address is taken as the project's until it goes */
+  }
+  // Gone as the editor's session judges it, not there (a folder it cannot read is not gone), or another folder now.
   const missing = () => {
     try {
-      fs.statSync(base);
-      return false;
+      const now = identity(fs.statSync(base, { bigint: true }));
+      if (own === null) own = now;
+      return now !== own;
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       return code === 'ENOENT' || code === 'ENOTDIR';

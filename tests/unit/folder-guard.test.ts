@@ -61,22 +61,58 @@ describe('the preview’s guard on its project folder', () => {
     expect(existsSync(join(root, '.svelte-kit'))).toBe(false);
   });
 
-  it('leaves folders inside a folder that is there, and anywhere else, alone', async () => {
+  it('finds the folder gone through the promise API alone', async () => {
+    const { root } = guarded();
+    rmSync(root, { recursive: true, force: true });
+    await expect(mkdir(join(root, 'node_modules', '.vite-temp'), { recursive: true })).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it('finds the folder gone when what held it is now a file', () => {
+    const { parent, root } = guarded();
+    rmSync(parent, { recursive: true, force: true });
+    writeFileSync(parent, 'not a folder');
+    try {
+      expect(() => kitWrite(join(root, '.svelte-kit', 'root.js'))).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+    } finally {
+      rmSync(parent, { force: true });
+    }
+  });
+
+  it('makes nothing in another folder put at the old address', () => {
+    const { parent, root } = guarded();
+    renameSync(root, join(parent, 'moved-away'));
+    // Someone else's folder put at the address, before this process looked again.
+    const other = join(parent, 'someone-else');
+    mkdirSync(join(other, 'inner'), { recursive: true });
+    renameSync(other, root);
+    expect(() => kitWrite(join(root, '.svelte-kit', 'generated', 'root.js'))).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+    expect(existsSync(join(root, '.svelte-kit'))).toBe(false);
+  });
+
+  it('leaves folders inside a folder that is there, and anywhere else, alone, before and after it goes', async () => {
     const { parent, root } = guarded();
     kitWrite(join(root, '..cache', 'x.js'));
     await mkdir(join(root, 'node_modules', '.vite'), { recursive: true });
     expect(existsSync(join(root, 'node_modules', '.vite'))).toBe(true);
     rmSync(root, { recursive: true, force: true });
+    expect(() => kitWrite(join(root, '.svelte-kit', 'root.js'))).toThrow(expect.objectContaining({ code: 'ENOENT' }));
     kitWrite(join(parent, 'gone-site-other', 'file.js'));
+    await mkdir(join(parent, 'gone-site-other', 'promised'), { recursive: true });
     expect(existsSync(join(parent, 'gone-site-other', 'file.js'))).toBe(true);
+    expect(existsSync(join(parent, 'gone-site-other', 'promised'))).toBe(true);
   });
 
-  it('is undone with its undo', () => {
+  it('is undone with its undo, every call it guarded', async () => {
     const { root } = guarded();
     rmSync(root, { recursive: true, force: true });
+    expect(() => kitWrite(join(root, 'x.js'))).toThrow(expect.objectContaining({ code: 'ENOENT' }));
     for (const u of undo.splice(0)) u();
     kitWrite(join(root, '.svelte-kit', 'root.js'));
-    expect(existsSync(join(root, '.svelte-kit', 'root.js'))).toBe(true);
+    await mkdir(join(root, 'promised'), { recursive: true });
+    await fs.promises.mkdir(join(root, 'promised-too'), { recursive: true });
+    await new Promise((resolve, reject) => fs.mkdir(join(root, 'called-back'), { recursive: true }, (e) => (e ? reject(e) : resolve(null))));
+    for (const made of ['.svelte-kit/root.js', 'promised', 'promised-too', 'called-back']) expect(existsSync(join(root, made))).toBe(true);
   });
 
   it('counts a child named like a parent step as inside', () => {
@@ -108,6 +144,8 @@ describe('the preview worker', () => {
       // This folder has no Vite to load: the start fails after the guard is in place, as a server that started would.
       deliver({ data: { type: 'start', dir: root } });
       await expect.poll(() => posted.find((m) => m.type === 'error')).toBeTruthy();
+      // Out of the folder first: Windows will not remove the folder a process is working in.
+      process.chdir(cwd);
       rmSync(root, { recursive: true, force: true });
       expect(() => kitWrite(join(root, '.svelte-kit', 'generated', 'root.js'))).toThrow(expect.objectContaining({ code: 'ENOENT' }));
       expect(existsSync(root)).toBe(false);
