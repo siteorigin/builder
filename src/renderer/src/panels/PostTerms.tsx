@@ -4,7 +4,7 @@ import { Check, ChevronRight, Pencil, Plus, Search, Trash2, X } from 'lucide-rea
 import type { Collection, EntryDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, entriesWithTerm, hasArchivePages, termIdFor } from '@shared/collections';
-import { archiveRoute, defaultArchiveDescription } from '@shared/archives';
+import { archiveRoute, defaultArchiveDescription, isArchiveTaxonomy } from '@shared/archives';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { termFeedUses } from '@engine/terms';
 import { commitOps, confirmDialog, getState, toast, undoAction, useStore } from '../store';
@@ -518,8 +518,11 @@ function TermList({
   const terms = termsOf(collection, taxonomy.id);
   const state = useStore((s) => s.snapshot?.state);
   const site = state?.site;
-  const archived = taxonomy.id === 'categories' && hasArchivePages(collection.settings) && collection.settings.categoryArchives !== false;
-  const archiveOf = (termId: string) => archiveRoute(collection.settings.route ?? '', termId, 1);
+  const archiveTaxonomy = isArchiveTaxonomy(taxonomy.id) ? taxonomy.id : undefined;
+  const archived = !!archiveTaxonomy && hasArchivePages(collection.settings) && collection.settings.termArchives !== false;
+  // Only a category's archive has a description of its own to edit here; a tag's says the default wording.
+  const describable = archived && archiveTaxonomy === 'categories';
+  const archiveOf = (termId: string) => (archiveTaxonomy ? archiveRoute(collection.settings.route ?? '', { taxonomy: archiveTaxonomy, id: termId }, 1) : '');
 
   const taken = name.trim() ? termCalled(collection, taxonomy.id, name) : undefined;
   const create = async () => {
@@ -668,7 +671,7 @@ function TermList({
             const moves = open && archived && editing.text.trim() && editing.text.trim() !== t.label && next !== t.id;
             const uses = state ? termFeedUses(state, collectionId, taxonomy.id, t.id) : [];
             const description = collection.settings.taxonomies.categories?.terms[t.id]?.description ?? '';
-            const describe = !open && archived && !!site && describing === t.id;
+            const describe = !open && describable && !!site && describing === t.id;
             const main = (
               <span className="term-main">
                 {open ? (
@@ -692,7 +695,7 @@ function TermList({
                     {posts(n)}
                     {archived && !moves ? ` · ${archiveOf(t.id)}` : ''}
                   </span>
-                  {!open && archived && site && (
+                  {!open && describable && site && (
                     <button type="button" className="term-describe" aria-expanded={describe} aria-controls={`${uid}-${t.id}-describe`} onClick={() => (setDescribing(describe ? null : t.id), describe || requestAnimationFrame(() => document.getElementById(`${uid}-${t.id}-describe`)?.querySelector('textarea')?.focus()))}>
                       <ChevronRight className="term-describe-chevron" aria-hidden="true" />
                       Description<span className="sr-only"> of the “{t.label}” archive</span>
@@ -726,11 +729,11 @@ function TermList({
                       keepWhile={() => {
                         // Only while the category has its archive, so a draft hidden by turning archives off is offered to copy.
                         const c = getState().snapshot?.state.collections[collectionId];
-                        return !!c && hasArchivePages(c.settings) && c.settings.categoryArchives !== false && Object.hasOwn(c.settings.taxonomies?.categories?.terms ?? {}, t.id);
+                        return !!c && hasArchivePages(c.settings) && c.settings.termArchives !== false && Object.hasOwn(c.settings.taxonomies?.categories?.terms ?? {}, t.id);
                       }}
                       ariaLabel={`Archive description of “${t.label}”, for search engines and link previews`}
                       value={description}
-                      placeholder={defaultArchiveDescription({ site: site!, collections: { [collectionId]: collection } }, collectionId, t.id)}
+                      placeholder={defaultArchiveDescription({ site: site!, collections: { [collectionId]: collection } }, collectionId, { taxonomy: 'categories', id: t.id })}
                       onCommit={(v) => commitOps([{ type: 'collection.update', collectionId, categoryDescription: { termId: t.id, description: v } }], `Change the “${t.label}” archive description`)}
                     />
                     <span className="term-describe-hint">For search engines and link previews of {archiveOf(t.id)}. Left empty, they get the wording shown.</span>

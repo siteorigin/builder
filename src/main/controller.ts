@@ -13,7 +13,7 @@ import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } fr
 import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
-import { findTheme } from '@catalogue/index';
+import { findTheme, installedThemeNote, installedThemeRequirement } from '@catalogue/index';
 import { routeUrl, slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
 import { websiteFormNotes, type Diagnostic } from '@engine/validate';
@@ -4495,6 +4495,9 @@ export class Controller {
       const leftover = await heldDraftAssetFiles(folder);
       if (leftover.length) return { ok: false, message: heldDraftAssetsStop(leftover), warnings: [] };
       if (snap.unsaved) warn(snap.unsaved);
+      // Anyone who edits the handoff in SiteOrigin Builder needs the installed theme it uses (#1477).
+      const theme = installedThemeRequirement(snap.state);
+      if (theme) warn(installedThemeNote(theme));
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);

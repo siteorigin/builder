@@ -11,6 +11,8 @@ import { IDENTITY_LIMITS } from './site-identity';
 import { SEARCH_ENDPOINT_MAX, SEARCH_PATH_PREFIX_MAX } from './site-search';
 import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
+import { GLOBAL_CSS_MAX, HEAD_CODE_MAX } from './site-code';
+import { FATHOM_ID_MAX } from './integrations';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -82,7 +84,7 @@ export const MODEL_BINDING = z
 export const LAYOUT_BINDING = z
   .union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()])
   .nullable()
-  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
+  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "categories.links" or "tags.links" (rich text: each term a link to its archive page) or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
@@ -290,7 +292,7 @@ const COLLECTION_SETTINGS = {
     .nullable()
     .optional()
     .describe('Whether its published entries are listed in the website\'s RSS feed (rss.xml). Default: as its kind says, editorial yes and structured no. null goes back to that default.'),
-  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
+  termArchives: z.boolean().optional().describe('Whether each category and tag with a published entry gets an archive page under the collection\'s address, at category/<term ID>/ or tag/<term ID>/. Default true.'),
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
     .optional()
@@ -717,6 +719,28 @@ export const OPERATION_SCHEMAS = {
       .nullable()
       .optional()
       .describe('Which search Site search runs. Only the fields given change; null restores the site\'s own index and forgets the rest.'),
+    headCode: z
+      .string()
+      .max(HEAD_CODE_MAX)
+      .optional()
+      .describe('Developer mode only. The author\'s own markup for the <head> of every page of the published website (verification <meta> tags, <link> hints and stylesheets, analytics <script>s): only <meta>, <link>, <script> and <style> elements and comments, each closed. Never run in the editor\'s preview. Replaces it whole, kept as written; "" removes it.'),
+    globalCss: z
+      .string()
+      .max(GLOBAL_CSS_MAX)
+      .optional()
+      .describe('Developer mode only. The site\'s own stylesheet, loaded after every other on every page (preview too): rules, @media and the like, no @import; url() must be https:, data: or a path from the site root. Replaces it whole, kept as written; "" removes it.'),
+    integrations: z
+      .object({
+        fathom: z
+          .object({ siteId: z.string().max(FATHOM_ID_MAX).describe('The site ID from Fathom\'s site settings, e.g. "ABCDEFGH".') })
+          .strict()
+          .nullable()
+          .optional()
+          .describe('Fathom Analytics: counts visits to the published website. null removes it.')
+      })
+      .strict()
+      .optional()
+      .describe('Services the website works with, each added with its own settings. Only the integrations given change.'),
     redirectHost: z
       .enum(['cloudflare', 'netlify', 'vercel'])
       .optional()
@@ -784,7 +808,12 @@ export const OPERATION_SCHEMAS = {
     .object({
       type: z.literal('redirect.add'),
       from: z.string().max(REDIRECT_PATH_MAX).describe('The old address, as a route such as "/old-services/".'),
-      ...REDIRECT_TARGET
+      ...REDIRECT_TARGET,
+      archiveOf: z
+        .string()
+        .max(60)
+        .optional()
+        .describe('With `to`, a collection (by ID) whose archive page `to` is (its index, a later page, or a category\'s or tag\'s archive): the redirect then follows the collection when it moves, even while that page has nothing to list yet.')
     })
     .describe('Keep an old address working: visitors and search engines are sent on with a permanent redirect (HTTP 301). Give exactly one of pageId, entryId or to.'),
   'redirect.update': z
