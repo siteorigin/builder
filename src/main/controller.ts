@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportExisting, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
-import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
+import type { NearbyProject, SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
@@ -26,6 +26,7 @@ import { placeholderImageCount } from '@generator/checks';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
+import { notAProject, NOT_A_PROJECT } from './near-project';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
@@ -269,7 +270,7 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
-type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest };
+type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest; nearby?: NearbyProject };
 
 /**
  * A preview server started while its project was still opening (prepareRuntime), until its start takes it over:
@@ -377,7 +378,7 @@ export async function readManifestSummary(dir: string): Promise<{ ok: true; name
   } catch (e) {
     return { ok: false, message: `Could not read ${where}: ${(e as Error).message}` };
   }
-  if (text === null) return { ok: false, message: `That folder is not a SiteOrigin Builder project. Choose a folder that contains ${MANIFEST_FILE}.` };
+  if (text === null) return { ok: false, message: NOT_A_PROJECT };
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -1306,7 +1307,11 @@ export class Controller {
       if (replaces !== undefined) return { ok: false, message: 'Choose the folder the project is in now. A ZIP file would make a new copy of it.' };
       return this.openZip(dir, abort);
     }
-    if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: dirArg === undefined ? 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' : projectNotFound(dir) };
+    if (!existsSync(join(dir, MANIFEST_FILE))) {
+      // A chosen folder that is not a project is most often one beside it: the project is named and offered (#1433).
+      if (dirArg === undefined) return { ok: false, ...(await notAProject(dir)) };
+      return { ok: false, message: projectNotFound(dir) };
+    }
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
