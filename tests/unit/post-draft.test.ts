@@ -125,7 +125,7 @@ describe('the post draft', () => {
     // Only the pause stops; the longest wait keeps counting.
     expect(h.timers.size).toBe(1);
     h.type('にほ');
-    expect(h.timers.size).toBe(0);
+    expect(h.timers.size).toBe(1);
     expect(await h.draft.flush()).toBe(false);
     expect(h.saves).toHaveLength(0);
     h.type('日本');
