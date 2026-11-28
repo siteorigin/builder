@@ -88,7 +88,7 @@ import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { dialString } from '@shared/contact-links';
-import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
@@ -4666,7 +4666,7 @@ export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ lang
   const members = translationMembers(state, group)
     .filter((p) => state.site.pageOrder.includes(p.id) && !isDraftPage(state, p))
     .map((p) => ({ language: pageLanguage(state.site, p), route: p.route, pageId: p.id }));
-  const languages = new Set(members.map((m) => m.language.toLowerCase()));
+  const languages = new Set(members.map((m) => languageKey(m.language)));
   return members.length < 2 || languages.size < members.length ? [] : members;
 }
 
@@ -5017,9 +5017,9 @@ function sitemapAlternates(state: ProjectState, listed: Array<EffectiveSeo & { u
   }
   const out = new Map<string, Array<{ language: string; url: string }>>();
   for (const members of groups.values()) {
-    const languages = new Set(members.map((m) => m.language.toLowerCase()));
+    const languages = new Set(members.map((m) => languageKey(m.language)));
     if (members.length < 2 || languages.size < members.length) continue;
-    const fallback = members.find((m) => sameLanguage(m.language, siteLanguage(state.site)));
+    const fallback = members.find((m) => languageKey(m.language) === languageKey(siteLanguage(state.site)));
     const links = [...members.map(({ language, url }) => ({ language, url })), ...(fallback ? [{ language: 'x-default', url: fallback.url }] : [])];
     for (const m of members) out.set(m.pageId, links);
   }
