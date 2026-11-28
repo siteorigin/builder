@@ -2,7 +2,7 @@
 
 ## Initial version: product and technical specification
 
-**Version:** 0.1 specification draft  
+**Version:** 1.0 specification  
 **Date:** 23 November 2026  
 **Status:** Proposed implementation specification  
 **Product:** Free, open-source desktop application for creating brochure websites  
@@ -13,13 +13,13 @@
 
 This document defines the first version that someone can use to create, edit, preview and export a small business website. It includes the product experience, implementation boundaries, data contracts, AI workflow, delivery sequence and acceptance criteria.
 
-**MUST** identifies a release requirement. **SHOULD** identifies a desirable refinement that can follow the first working release. **Later** identifies an intentional extension point, not work required for version 0.1. Recommendations and numeric targets are design decisions, not claims about an existing implementation. Technical references appear at the end.
+**MUST** identifies a release requirement. **SHOULD** identifies a desirable refinement that can follow the first working release. **Later** identifies an intentional extension point, not work required for version 1.0. Recommendations and numeric targets are design decisions, not claims about an existing implementation. Technical references appear at the end.
 
-The immediate objective is a usable editor with a coherent foundation. The initial release does not need a large catalogue, trained local models or a hosting business to demonstrate its value.
+Builder is working towards a full, highly polished 1.0 release for SiteOrigin's users. The release does not need a large catalogue, trained local models or a hosting business to demonstrate its value.
 
 ### Decisions changed during implementation
 
-The v0.1 implementation deliberately departs from this draft in seven places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
+The implementation deliberately departs from this draft in seven places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
 
 | Area | Draft | Implementation | Sections |
 | --- | --- | --- | --- |
@@ -28,7 +28,7 @@ The v0.1 implementation deliberately departs from this draft in seven places. Th
 | Source editor | Monaco. | CodeMirror 6 with Svelte language support and live compiler diagnostics: much smaller, and enough for project code components. | §15.1 |
 | Tool result payload | A tool's payload under `data` in `ToolResult`. | A tool's own fields sit beside `ok` and `revision`, which every result has, success or failure: write results always carried them there, and every reader of a result keeps one place to look. | §13.3 |
 | Component model | Built-in brochure sections are managed definitions wherever possible; hand-written code components are small reviewed leaves for behavior such as mobile navigation and accordions. | Every theme component is a Svelte 5 component plus a static manifest. The editor changes it only through the contract the manifest declares (properties, inline text, parts, single list items, slots and variants); structural changes happen in its source, by a person or the assistant. Pages and their layout stay structured documents built from the basic elements. Managed definitions remain only for project components (made from a selection or started blank) and the page-level elements. The craft of a section (state, keyboard handling, accessibility, motion, right-to-left and language rules) lives in its Svelte, which the managed format's bounded states and actions cannot fully express, and the project's own model learns transferable Svelte rather than a bespoke format. | §8.1–8.5, §9.1–9.3, §13.2, §13.4, §16.1, §16.4, §16.5, §17.3, §25.2 |
-| Catalogue location | A separate `siteorigin-builder-components` repository. | Theme components are authored in `siteorigin/builder-components` as Svelte components, and that repository builds its packs with this one's pack build. v0.1 bundles a Foundation release built there, committed in `resources/packs/` and pinned by `resources/packs.lock.json`. | §9.1, §23 |
+| Catalogue location | A separate `siteorigin-builder-components` repository. | Theme components are authored in `siteorigin/builder-components` as Svelte components, and that repository builds its packs with this one's pack build. Builder bundles a Foundation release built there, committed in `resources/packs/` and pinned by `resources/packs.lock.json`. | §9.1, §23 |
 | Unfinished runs | A run that reaches a budget limit is unsuccessful and is reverted, optionally keeping the attempted diff for inspection. | A run that reaches its turn, tool-call, time or context limit, or finishes with requested work still missing, after making valid changes, ends **Partly done** (`partial`), never Completed. Its validated work is kept as one undoable history group so the user can continue it. Work with new errors, or that breaks a changed page in the application's preview check, is still reverted and the run fails. A run that changed nothing is not partial: stopped at a limit it fails, and finished with work missing it reads as not finished with no changes. Reverting valid work would throw away model time the user already paid for, and Continue needs that work in place. | §11.3, §12.3, §12.5 |
 
 ## Contents
@@ -74,13 +74,13 @@ The initial audience includes existing SiteOrigin page-builder users, freelancer
 
 A user can create a five-page business website, replace the sample content and images, adjust the brand styles, customize mobile layouts, create a reusable component, ask the AI to add and refine sections, close and reopen the project, and export a working static website.
 
-That flow must work without opening a terminal. Manual editing and export must continue to work when the AI provider is unavailable. Cloud AI in version 0.1 requires network access and user-supplied credentials; the future local-model experience is a separate milestone.
+That flow must work without opening a terminal. Manual editing and export must continue to work when the AI provider is unavailable. Cloud AI in version 1.0 requires network access and user-supplied credentials; the future local-model experience is a separate milestone.
 
 ---
 
 ## 2. Scope and release boundaries
 
-### 2.1 Required in version 0.1
+### 2.1 Required in version 1.0
 
 | Area | Required behavior |
 | --- | --- |
@@ -103,7 +103,7 @@ That flow must work without opening a terminal. Manual editing and export must c
 
 **Provider implementation default** *(changed in implementation)*: OpenAI is the default provider for the first end-to-end implementation (Responses API, default model GPT-6.2 Sol, `gpt-6.2-sol`), and the Anthropic adapter ships in the same release behind the same adapter contract. Support for both is not a prerequisite for a usable build. Every provider shown as available in the UI must work; unavailable adapters are not selectable placeholders. No particular model identifier is hard-coded into the project format.
 
-### 2.2 Deliberately outside version 0.1
+### 2.2 Deliberately outside version 1.0
 
 | Capability | Boundary |
 | --- | --- |
@@ -119,7 +119,7 @@ That flow must work without opening a terminal. Manual editing and export must c
 | General coding environment | No terminal, extension marketplace, unrestricted shell agent or general repository coding assistant. |
 | Advanced content tools | No localization system, blog engine, complex rich-text editor or built-in image generation. |
 
-These boundaries apply to supported editor features. A user can still take the exported SvelteKit source into their own development workflow.
+Several of these boundaries have since been crossed: Builder now ships WordPress and Markdown post import, a blog, structured collections and outside data sources, translated pages and live sessions. Those features are part of 1.0 and are held to the same polish as the rest of the app; the README describes what ships. These boundaries apply to supported editor features. A user can still take the exported SvelteKit source into their own development workflow.
 
 ---
 
@@ -215,7 +215,7 @@ Changing mode preserves page, viewport width and scroll position where possible.
 - Fit to available width, 100% and common zoom values.
 - Scroll to selected element and reveal selected layer.
 - Visible pending/ready/error preview state.
-- A single active viewport in version 0.1.
+- A single active viewport in version 1.0.
 
 Viewport width changes the iframe's actual CSS layout viewport. Zoom only changes its display scale. At 50% zoom, a 1280 px page still runs desktop media queries. Overlay coordinates must account for iframe position, scroll and zoom.
 
@@ -233,7 +233,7 @@ Viewport width changes the iframe's actual CSS layout viewport. Zoom only change
 | Open AI for selection | Context action plus an assignable shortcut. |
 | Reorder without dragging | Accessible move up/down actions in layer context menu. |
 
-Multi-selection, cross-project clipboard and complex canvas gesture systems can follow later. Version 0.1 supports one selected element or subtree at a time.
+Multi-selection, cross-project clipboard and complex canvas gesture systems can follow later. Version 1.0 supports one selected element or subtree at a time.
 
 ---
 
@@ -306,7 +306,7 @@ Ordinary text editing does not change a component definition. Editing declared s
 
 Every page has a stable ID independent of its title and path. The page record includes display name, route, navigation label, layout choice, SEO fields and a managed content tree.
 
-Version 0.1 supports static routes such as `/`, `/about/` and `/services/design/`. Validate uniqueness after normalization and account for case-insensitive filesystems. Disallow reserved framework paths, traversal and dynamic route syntax through the normal page UI.
+Version 1.0 supports static routes such as `/`, `/about/` and `/services/design/`. Validate uniqueness after normalization and account for case-insensitive filesystems. Disallow reserved framework paths, traversal and dynamic route syntax through the normal page UI.
 
 One page is Home. A user deleting Home must choose a replacement or leave a new blank Home page. Renaming a route must update all internal links because links store page IDs, not only URL strings. Warn about references when deleting a page and let the user choose their replacement target.
 
@@ -328,7 +328,7 @@ Generate title/meta tags, canonical URLs when a base URL is known, and a sitemap
 
 ### 6.4 Contact functionality
 
-The included Contact section supports email, telephone, address and calls to action. Version 0.1 does not require a form backend. Do not ship a form that displays a successful submission without actually delivering anything.
+The included Contact section supports email, telephone, address and calls to action. Version 1.0 does not require a form backend. Do not ship a form that displays a successful submission without actually delivering anything.
 
 A later endpoint-based form component can be added under a separately defined delivery, privacy and error-handling contract. Its absence must not prevent producing a useful Contact page now.
 
@@ -347,7 +347,7 @@ Use one content tree. Responsive changes alter styles; they do not duplicate pag
 | Tablet | Width at least 768 px and below 1024 px | Tablet: 834 px. |
 | Desktop | Width at least 1024 px | Desktop: 1280 px. |
 
-These are product defaults. Version 0.1 keeps the thresholds fixed to simplify component compatibility. Custom breakpoints can follow later. Continuous preview widths from 320 to 1920 px MUST be supported; narrower or wider custom values MAY be available in the advanced width control.
+These are product defaults. Version 1.0 keeps the thresholds fixed to simplify component compatibility. Custom breakpoints can follow later. Continuous preview widths from 320 to 1920 px MUST be supported; narrower or wider custom values MAY be available in the advanced width control.
 
 The inspector has an explicit style scope: **All sizes**, **Phone**, **Tablet**, or **Desktop**. It defaults to All sizes. Switching preview width does not silently change edit scope. A shortcut such as **Override at this size** selects the corresponding named range. Named ranges are exclusive, so a phone-only padding edit leaves tablet and desktop unchanged.
 
@@ -454,7 +454,7 @@ The manifest is static data. Loading it must not execute JavaScript or load a pa
 
 **Make unique:** copy the selected placement's component into a project component, preserving its current variant, property values, part styles and slot content, then rebind only that placement. For a Svelte component the copy is its source and manifest; for a managed one, the complete definition, bindings, all responsive rules and variants. Retain token references. Never bake only the current viewport's computed CSS into the copy. Record provenance without keeping it subject to automatic theme replacement.
 
-**Edit definition** (managed project components): enter an explicit component workspace using sample props. Changes apply to every instance except where an instance has its own override. Property removal or type changes require a usage-aware migration; version 0.1 may reject incompatible changes and offer a fork instead.
+**Edit definition** (managed project components): enter an explicit component workspace using sample props. Changes apply to every instance except where an instance has its own override. Property removal or type changes require a usage-aware migration; version 1.0 may reject incompatible changes and offer a fork instead.
 
 A theme component's structure is changed in its Svelte source and manifest, never through Edit definition: a person, in Developer mode, uses Make unique and then edits the project copy's source; the assistant forks it for the placements its request covers (§13.4). On the first shared edit of a theme-owned managed definition, create a project-owned fork and rebind all existing uses in the displayed scope to it. Show this ownership change and the affected-use count in the component-editing mode before applying changes. Preserve the original catalogue definition for future insertion. Further edits operate on the project-owned definition, which future theme switches leave intact.
 
@@ -483,7 +483,7 @@ Use two repositories:
 | `siteorigin/builder` | Electron application, React UI, shared schemas, edit engine, generator, agent, pack build, bundled project template and packaging. |
 | `siteorigin/builder-components` | Theme manifests and tokens, each theme's Svelte components and their manifests, assets, previews, examples and compatibility tests. |
 
-*(Changed in implementation:)* theme components are authored as Svelte components (§8.1) in `siteorigin/builder-components`, which builds its packs with this repository's pack build. v0.1 bundles a Foundation release built there and committed in `resources/packs/`, pinned by `resources/packs.lock.json`; this repository keeps no copy of its own, and the rest of this section describes the target. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. In v0.1 only bundled packs ship Svelte of their own: a downloaded pack that brings new Svelte needs the trust model for theme code, which comes later. End users do not need Git or repository credentials.
+*(Changed in implementation:)* theme components are authored as Svelte components (§8.1) in `siteorigin/builder-components`, which builds its packs with this repository's pack build. Builder bundles a Foundation release built there and committed in `resources/packs/`, pinned by `resources/packs.lock.json`; this repository keeps no copy of its own, and the rest of this section describes the target. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. In version 1.0 only bundled packs ship Svelte of their own: a downloaded pack that brings new Svelte needs the trust model for theme code, which comes later. End users do not need Git or repository credentials.
 
 ### 9.2 Component copying
 
@@ -501,13 +501,13 @@ Do not replace a concrete installed definition in place solely because a new the
 
 Before applying, check each placement against the new implementation: a filled slot whose shown content its Svelte would stop showing (a slot counts as shown when the manifest declares it and the source takes its snippet and renders or hands it on), or a styled part or single item's part it does not declare. If a part cannot be mapped, the switch is blocked or presents a concrete conflict report before applying. It must not silently discard content or pretend an incompatible pack is compatible. The whole switch is one undoable transaction.
 
-Version 0.1 ships one public theme. A development-only alternate implementation must cover the catalogue contracts sufficiently to exercise theme switching, including at least one changed internal layout with preserved semantic parts. A second polished public theme is not a release requirement.
+Version 1.0 ships one public theme. A development-only alternate implementation must cover the catalogue contracts sufficiently to exercise theme switching, including at least one changed internal layout with preserved semantic parts. A second polished public theme is not a release requirement.
 
 ### 9.4 AI profile associated with a theme
 
 A theme can provide a small `ai-profile.json` containing design guidance, valid component/variant examples, retrieval keywords, schema version and optional future model compatibility metadata.
 
-In version 0.1 this changes context and examples for the hosted model. It does not require separate trained model weights per theme. Later, an optional profile can identify a compatible local base model and adapter, with exact versions and hashes. Theme rendering must remain independent of that model being installed.
+In version 1.0 this changes context and examples for the hosted model. It does not require separate trained model weights per theme. Later, an optional profile can identify a compatible local base model and adapter, with exact versions and hashes. Theme rendering must remain independent of that model being installed.
 
 Treat theme guidance as bounded reference data. It cannot modify tool permissions, access credentials, enable shell execution or override the user's requested scope.
 
@@ -517,11 +517,11 @@ Treat theme guidance as bounded reference data. It cannot modify tool permission
 
 Images imported through a file picker or drag-and-drop are copied into the project, assigned an asset ID and referenced by that ID. Deduplicate identical bytes by hash while preserving useful display names. Replacing an asset updates its references deliberately; replacing one placement creates a new reference for that placement.
 
-Version 0.1 supports common raster web images. SVG input must pass a sanitizer that removes executable content and external references; otherwise reject it with a useful explanation. Font import supports the explicitly tested web-font formats and records family/weight/style. Bundled fonts, icons and sample images need licenses that permit their redistribution in exported sites.
+Version 1.0 supports common raster web images. SVG input must pass a sanitizer that removes executable content and external references; otherwise reject it with a useful explanation. Font import supports the explicitly tested web-font formats and records family/weight/style. Bundled fonts, icons and sample images need licenses that permit their redistribution in exported sites.
 
 Store dimensions, MIME type, byte size, original name, hash and optional user description. Alt text belongs to the image's use because the same asset can have different meanings in different places. A default alt suggestion may be stored with an asset, but it is not a substitute for the instance's final choice. Decorative images use an explicit decorative setting.
 
-Use the original plus generated local derivatives where appropriate. Version 0.1 SHOULD generate a small set of responsive raster sizes in a background worker, preserving originals and recording deterministic outputs. If optimization is deferred, the app must still preserve aspect ratios and flag excessively large files before export.
+Use the original plus generated local derivatives where appropriate. Version 1.0 SHOULD generate a small set of responsive raster sizes in a background worker, preserving originals and recording deterministic outputs. If optimization is deferred, the app must still preserve aspect ratios and flag excessively large files before export.
 
 Asset operations are undoable. Do not immediately destroy the only copy of a removed asset while history still references it. Asset garbage collection must respect history retention. Do not automatically download external images or infer their content using the model.
 
@@ -1025,7 +1025,7 @@ Resolve token values first: theme defaults plus explicit project overrides. Reso
 
 A text node bound to `heading` edits the instance's `heading` value in page mode. Editing that text in definition mode edits its default or its binding deliberately. A page-owned literal can be edited directly. An unbound literal inside a shared instance cannot be edited as instance content until it has an explicit binding; offer Make unique or Edit definition instead of inventing an implicit override.
 
-For version 0.1, every content-bearing part of a managed definition must have an explicit binding. Project component creation generates these bindings for supported text/image/link fields. A Svelte component's text is typed over on the canvas only where the component marks it (§8.1); its other content is edited through its property controls. Reject a visual edit when no valid target exists and offer definition editing or Make unique.
+For version 1.0, every content-bearing part of a managed definition must have an explicit binding. Project component creation generates these bindings for supported text/image/link fields. A Svelte component's text is typed over on the canvas only where the component marks it (§8.1); its other content is edited through its property controls. Reject a visual edit when no valid target exists and offer definition editing or Make unique.
 
 ### 16.6 Schema evolution
 
@@ -1132,7 +1132,7 @@ Persist history across ordinary restarts. A starting retention policy is 100 gro
 
 Before restoring a file, verify that its current hash matches the run's last recorded after-hash. If another process changed it, preserve the external version and enter a conflict state. The same rule applies to a deleted file that has been recreated externally.
 
-Present a narrow conflict list showing the current external content, Builder's attempted change and the pre-run version. Version 0.1 can require a deliberate choice per conflicted file; it does not need automatic three-way source merging. Copy recovery variants into a local recovery folder before any user-selected replacement.
+Present a narrow conflict list showing the current external content, Builder's attempted change and the pre-run version. Version 1.0 can require a deliberate choice per conflicted file; it does not need automatic three-way source merging. Copy recovery variants into a local recovery folder before any user-selected replacement.
 
 Pause writes and preview rebuilding for the affected project until the conflict is resolved. A partially restored project must not be described as a successful rollback. Unaffected completed user work remains intact.
 
@@ -1160,7 +1160,7 @@ The packaged app must not require users to install Node, Git or a command-line p
 
 The template and component source are bundled; third-party package preparation may require an initial network connection. Use the exact dependency lock and an application cache keyed by the tested toolchain/lock. Show downloads and failures honestly. Once the required dependencies are present, manual editing, preview and export must work offline.
 
-A clean-machine, fully offline first launch is not a version 0.1 promise unless dependency artifacts are also bundled and tested for that platform. Do not confuse a bundled template with a bundled installation of every dependency.
+A clean-machine, fully offline first launch is not a version 1.0 promise unless dependency artifacts are also bundled and tested for that platform. Do not confuse a bundled template with a bundled installation of every dependency.
 
 Package installation is app-owned setup, not an agent tool. Use the pinned dependency set and reviewed required lifecycle steps. Do not allow arbitrary package scripts or dependencies supplied by a model. Handle package caches and any native binaries separately per supported operating system/architecture.
 
@@ -1215,7 +1215,7 @@ Framework configuration and library import aliases come from the pinned starter 
 7. Write the export to the chosen destination without including private runtime material.
 8. Show success, output location, tested revision and relevant warnings.
 
-For version 0.1, hold the writer lock throughout validation, build and export; navigation and inspection remain available. Verify relevant file hashes before and after the build to detect external edits, and reject an export assembled from mixed revisions. Release the lock when the export finishes or fails. A later concurrent-edit implementation must build from an actual immutable source snapshot; a revision label alone is insufficient.
+For version 1.0, hold the writer lock throughout validation, build and export; navigation and inspection remain available. Verify relevant file hashes before and after the build to detect external edits, and reject an export assembled from mixed revisions. Release the lock when the export finishes or fails. A later concurrent-edit implementation must build from an actual immutable source snapshot; a revision label alone is insufficient.
 
 ### 20.4 Portability acceptance
 
@@ -1300,7 +1300,7 @@ Provider response time and future local inference speed are measured separately 
 
 ### 22.3 Supported environments
 
-Build the first internal slice on macOS Apple Silicon. Keep filesystem/process handling portable from the start. The proposed public version 0.1 target matrix is macOS arm64, Windows x64 and Linux x64. Additional architectures can follow after their runtime artifacts and installation paths are tested.
+Build the first internal slice on macOS Apple Silicon. Keep filesystem/process handling portable from the start. The proposed public version 1.0 target matrix is macOS arm64, Windows x64 and Linux x64. Additional architectures can follow after their runtime artifacts and installation paths are tested.
 
 Every advertised platform needs a packaged clean-machine smoke test: install, create project, prepare dependencies, preview, edit, export, close and reopen. The app must not be called supported on a platform solely because development mode starts there. Pin the minimum OS versions when choosing the Electron/runtime release.
 
