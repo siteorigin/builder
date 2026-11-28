@@ -39,12 +39,13 @@ export function clearTrace(file: string): void {
  * turned off and on again keeps it).
  */
 export function startTrace(file: string, { maxBytes = 4 * 1024 * 1024, now = () => new Date(), resumed = false }: TraceOptions & { resumed?: boolean } = {}): void {
+  const at = now().getTime();
   if (!resumed) {
     clearTrace(file);
-    began = now().getTime();
+    began = at;
   }
   log = createMainLog({ file, maxBytes, maxEntry: 2000, now });
-  log.write('trace', `+${now().getTime() - began}ms trace: ${resumed ? 'resumed' : 'started'}`);
+  log.write('trace', `+${at - began}ms trace: ${resumed ? 'resumed' : 'started'}`);
 }
 
 /** Whether a trace is being written. */

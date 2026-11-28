@@ -347,6 +347,13 @@ async function configHash(dir: string): Promise<string> {
 
 /** What the editor is sent, for the trace (trace.ts): each message's channel, and for the open project's, what moved. */
 function traceSent(channel: string, payload: unknown) {
+  try {
+    traceSentNow(channel, payload);
+  } catch {
+    // A payload that cannot be described (a damaged file's value) is never the send's problem.
+  }
+}
+function traceSentNow(channel: string, payload: unknown) {
   // The assistant's events stream as it answers: far too many, and none of them the opening's.
   if (channel === 'ai:event') return;
   const p = (payload ?? {}) as Record<string, unknown>;
@@ -1557,7 +1564,7 @@ export class Controller {
     try {
       const first = await Promise.race([readied, opening.then((s) => ({ session: s, shownEarly: false }))]);
       session = first.session;
-      trace('open', `read in ${Date.now() - began}ms: revision ${session.revision}${session.readOnly ? ', read-only' : ''}, ${first.shownEarly ? 'shown before its publication' : 'opened whole'}`);
+      trace('open', `read in ${Date.now() - began}ms: revision ${typeof session.revision === 'number' ? session.revision : '?'}${session.readOnly ? ', read-only' : ''}, ${first.shownEarly ? 'shown before its publication' : 'opened whole'}`);
       if (first.shownEarly)
         void opening.then(
           () => trace('open', `publication done ${Date.now() - began}ms after the open began`),

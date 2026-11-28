@@ -657,7 +657,11 @@ let ipcAsked = 0;
 /** The window's pages and frames in the trace: their loads, failures, console output and crashes. */
 function traceWindow(self: BrowserWindow) {
   const contents = self.webContents;
-  const where = (url: string) => (url.length > 200 ? `${url.slice(0, 200)}…` : url);
+  // An address without its query or fragment, which can carry what a page was given.
+  const where = (url: string) => {
+    const bare = url.replace(/[?#].*$/s, '');
+    return bare.length > 200 ? `${bare.slice(0, 200)}…` : bare;
+  };
   // Warnings and errors only: what a page logs as it works (a component's own console.log) is its business, not the trace's.
   contents.on('console-message', (e) => {
     if (e.level !== 'warning' && e.level !== 'error') return;

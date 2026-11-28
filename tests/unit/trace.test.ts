@@ -30,20 +30,32 @@ describe('the app trace (logs/trace.log)', () => {
       startTrace(file);
       vi.setSystemTime(new Date('2026-11-28T15:44:09.234Z'));
       trace('open', 'asked to open', '/projects/site');
-      expect(lines(file)).toEqual(['2026-11-28T15:44:08.000Z [trace] +0ms trace: started', '2026-11-28T15:44:09.234Z [trace] +1234ms open: asked to open /projects/site']);
+      vi.setSystemTime(new Date('2026-11-28T15:44:10.000Z'));
+      trace('open', 'read');
+      expect(lines(file)).toEqual([
+        '2026-11-28T15:44:08.000Z [trace] +0ms trace: started',
+        '2026-11-28T15:44:09.234Z [trace] +1234ms open: asked to open /projects/site',
+        '2026-11-28T15:44:10.000Z [trace] +2000ms open: read'
+      ]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('carries on after what this launch wrote when tracing is turned on again', () => {
-    const file = join(scratch(), 'trace.log');
-    startTrace(file);
-    trace('open', 'before');
-    stopTrace();
-    startTrace(file, { resumed: true });
-    trace('open', 'after');
-    expect(lines(file).map((l) => l.replace(/^.*ms /, ''))).toEqual(['trace: started', 'open: before', 'trace: resumed', 'open: after']);
+  it('carries on after what this launch wrote, on the same clock, when tracing is turned on again', () => {
+    vi.useFakeTimers({ now: new Date('2026-11-28T15:44:08.000Z') });
+    try {
+      const file = join(scratch(), 'trace.log');
+      startTrace(file);
+      trace('open', 'before');
+      stopTrace();
+      vi.setSystemTime(new Date('2026-11-28T15:44:13.000Z'));
+      startTrace(file, { resumed: true });
+      trace('open', 'after');
+      expect(lines(file).map((l) => l.slice(25))).toEqual(['[trace] +0ms trace: started', '[trace] +0ms open: before', '[trace] +5000ms trace: resumed', '[trace] +5000ms open: after']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never throws on what it is given to say', () => {
