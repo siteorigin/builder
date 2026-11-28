@@ -661,8 +661,10 @@ export interface InstanceNode extends NodeBase {
   /**
    * For the shared header or footer: brand properties (its site name, its copyright line) that keep their text when
    * the site is renamed, although that text says the site's name. The author wrote it before the site took the same
-   * name (see shared/site-name.ts). Editing the property gives it up. An editor that drops it only lets the text
-   * follow the next rename, so it needs no new document version.
+   * name (see shared/site-name.ts). For any placement, `detail:` and a field (`detail:actionLink`,
+   * `detail:items[i1].value`): a value of the author's own that keeps it when the site's business details change,
+   * although it shows the site's (see engine/business-details.ts). Editing the property gives it up. An editor that
+   * drops it only lets the text follow the next change, so it needs no new document version.
    */
   keepsText?: string[];
   /**
@@ -1559,6 +1561,21 @@ export interface CollectionDoc {
    * (its share of the index or of one category, page by page). Absent: the ready-made cards. Archives only.
    */
   archiveTemplate?: NodeTree;
+  /**
+   * The controls the first page of the collection's index gives visitors (see shared/collection-browse.ts), which work
+   * in their own browser over every published entry. Absent: none. Only with the ready-made cards.
+   */
+  browse?: CollectionBrowse;
+}
+
+/**
+ * What visitors can do on a collection's index: search its entries' titles and excerpts, filter them (`filters`) and
+ * sort them (`sort`), by fields named as queries name them (`terms.<grouping>`, `field.<name>`, `title`, `publishedAt`).
+ */
+export interface CollectionBrowse {
+  search?: boolean;
+  filters?: string[];
+  sort?: string[];
 }
 
 /** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */

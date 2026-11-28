@@ -4,6 +4,10 @@
      not as a page that failed to style. The footer holds help on the leading edge and the way back on the trailing
      edge, with the one filled button last, as in a dialog and in the native crash question. */
   .failure { min-height: 100%; display: grid; place-items: center; padding: 20px 24px; box-sizing: border-box; color: var(--text); font-size: 14px; line-height: 1.5; }
+  /* Off macOS the failure screens have the top bar's room too (#1355): a strip that drags the window (and, on Windows,
+     holds its caption buttons) beside the menu button, kept clear of the card. */
+  :root:is([data-chrome='overlay'], [data-chrome='system']) .failure { padding-top: calc(max(var(--toolbar-h), env(titlebar-area-height, 0px)) + 8px); }
+  :root:is([data-chrome='overlay'], [data-chrome='system']) .failure::before { content: ''; position: fixed; inset: 0 0 auto; height: max(var(--toolbar-h), env(titlebar-area-height, 0px)); -webkit-app-region: drag; }
   .failure-card { width: min(520px, 100%); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; }
   .failure-body { padding: 28px 28px 22px; display: flex; flex-direction: column; }
   .failure-mark { display: block; margin-bottom: 16px; }

@@ -21,8 +21,9 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, SITE_HANDLE, SITE_HANDLE_FILE, SITE_HANDLE_USAGE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
+import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
 import { hasFeedEntries } from '@generator/rss';
 import { IMMUTABLE_CACHE_CONTROL, redirectHost, VERCEL_CONFIG_FILE, yieldsToOwnFile } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -427,14 +428,44 @@ export function namesFile(text: string, file: string): boolean {
  * the files of components only drafts place: the published pages never import those, so a picture only they name
  * stays out of the website with the drafts.
  */
-async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }> {
+async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
-  return { files, draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
+  return { files, browse: browseIndexes(state), draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
 }
 
 /** The generated index of the pages Site search finds: the words pages show, which never load a file. */
 const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
+
+/** The browse index of each collection whose index the website browses (generator/collection-browse.ts). */
+const browseIndexes = (state: ProjectState): ReadonlySet<string> => new Set(browsingCollections(state).map((id) => `${RUNTIME_DIR}/${browseIndexFile(id)}`));
+
+/**
+ * What of a generated file names the files it loads, for finding the library files the website uses: all of it,
+ * nothing of the search index, and of a collection's browse index only the pictures its cards show, never the words
+ * and values of its entries (a sorted text field may hold any file's name). A browse index that does not read as the
+ * generator writes it (edited by hand) counts whole, so nothing it may name is left out.
+ */
+function namingText(rel: string, text: string, browse: ReadonlySet<string>): string {
+  if (rel === SEARCH_INDEX) return '';
+  if (!browse.has(rel)) return text;
+  try {
+    const rows: unknown = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
+    if (!Array.isArray(rows)) return text;
+    const out: string[] = [];
+    const take = (v: unknown) => typeof v === 'string' && out.push(v);
+    for (const row of rows) {
+      const image = (row as { image?: { src?: unknown; srcset?: unknown; sources?: unknown } } | null)?.image;
+      if (!image || typeof image !== 'object') continue;
+      take(image.src);
+      take(image.srcset);
+      if (Array.isArray(image.sources)) for (const s of image.sources) take((s as { srcset?: unknown } | null)?.srcset);
+    }
+    return out.join('\n');
+  } catch {
+    return text;
+  }
+}
 
 /**
  * Which of `names` everything the website build reads as text names, apart from library files: `file` as namesFile
@@ -446,12 +477,12 @@ const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
  * start of the next, as a search of them all joined by line breaks would; any other is found exactly as that would.
  * With `unreached`, the texts of the draft-only components' files nothing the website reads names are put there.
  */
-async function websiteNames(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
+async function websiteNames(project: string, { files, candidate, draftOnly, browse }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string>; browse: ReadonlySet<string> }, names: Iterable<string>, unreached?: string[]): Promise<NameMatcher> {
   const matcher = new NameMatcher([...names, ...[...draftOnly].map((rel) => basename(rel))]);
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = await readExportFile(join(project, rel), 'utf8');
+    const text = namingText(rel, await readExportFile(join(project, rel), 'utf8'), browse);
     if (draftOnly.has(rel)) held.set(rel, text);
     else matcher.scan(text);
   }
@@ -513,8 +544,10 @@ export async function unusedComponents(project: string, state: ProjectState): Pr
     for (const dep of def.kind === 'code' ? [...(def.dependencies ?? []), ...(def.generatedFrom ? [def.generatedFrom] : [])] : []) take(dep);
   };
   const seeds: string[] = [];
+  // The search and browse indexes import nothing: their entries' words may read like an import, and are none.
+  const browse = browseIndexes(state);
   for (const rel of (await listFiles(join(project, 'src'))).map((f) => `src/${f.split(sep).join('/')}`)) {
-    if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
+    if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX || browse.has(rel)) continue;
     const text = await readExportFile(join(project, rel), 'utf8');
     if (owner.has(rel)) texts.set(rel, text);
     else seeds.push(text);
@@ -574,7 +607,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
-  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
+  for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(namingText(path, text, site.browse));
   for (const text of unreached) used.scan(text);
   const held = new Set([...unshipped].filter((rel) => namesAsset(used, rel)));
   // And a record the drafts use by its ID where the published site does not, whether or not they show it (a document
@@ -1111,9 +1144,28 @@ export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<strin
     }
     // Read as bytes: a theme's font files are generated output too.
     const disk = await readExportFile(join(dir, path)).catch(() => null);
+    // The generated server hook deleted for one of the project's own, as README.md says to: the staged copy is settled
+    // (settleServerHook) as the next regeneration would.
+    if (disk === null && path === SERVER_HOOK_FILE && replacedServerHook(dir)) continue;
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;
+}
+
+/**
+ * Whether the generated server hook is gone and a hook of the project's own is in its place: a file of its own, not a
+ * link, which a copy of the project leaves out.
+ */
+function replacedServerHook(dir: string): boolean {
+  const lstat = (rel: string) => {
+    try {
+      return lstatSync(join(dir, ...rel.split('/')));
+    } catch {
+      return null;
+    }
+  };
+  const own = ownServerHook(dir, true);
+  return !lstat(SERVER_HOOK_FILE) && !!own && !!lstat(own)?.isFile();
 }
 
 /**
@@ -1656,6 +1708,14 @@ The build names each file in \`build/_app/immutable/\` (the site's scripts, styl
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
 
+## Server hook
+
+\`${SERVER_HOOK_FILE}\` is generated. It runs the site's own server hook, \`${SITE_HANDLE}\` in \`${RUNTIME_DIR}/${SITE_HANDLE_FILE}\`, which makes the not-found page work at any address and gives each page written in another language its own \`<html lang>\`. To run a server hook of your own as well (sign-in, security headers, search), create \`src/hooks.server.ts\` in its place and run the site's first, with SvelteKit's \`sequence()\`. SiteOrigin Builder then stops writing \`${SERVER_HOOK_FILE}\`; delete it if it is still there, since SvelteKit runs only one server hook.
+
+\`\`\`ts
+${SITE_HANDLE_USAGE}
+\`\`\`
+
 ${drafts ? DRAFTS_SECTION : ''}${draftEntries ? DRAFT_ENTRIES_SECTION : ''}${sources ? SOURCES_SECTION : ''}${theme ? installedThemeSection(theme) : ''}## Notices
 
 ${notice}
@@ -1674,19 +1734,6 @@ export function brokenSectionLinks(state: ProjectState): string[] {
   return validateState(state)
     .filter((d) => d.code === 'LINK_SECTION_MISSING')
     .map((d) => d.message);
-}
-
-/**
- * Why the website cannot be exported when it needs the language part of the generated server hook (it has pages in
- * another language) and the project has a hook of its own: SvelteKit would run one of them and skip the other. Null
- * otherwise. A generated hook not written yet is no reason: the staged copy is settled (settleServerHook).
- */
-export async function rivalHookStop(dir: string, state: ProjectState): Promise<string | null> {
-  if (!routeLanguages(state).length) return null;
-  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
-  const claimed = Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE) || Object.hasOwn(manifest.pending ?? {}, SERVER_HOOK_FILE);
-  const own = ownServerHook(dir, claimed);
-  return own ? `Pages written in another language need SiteOrigin Builder's ${SERVER_HOOK_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
 }
 
 /**
@@ -1723,17 +1770,20 @@ export function publicUrlNote(state: ProjectState): ExportNote | null {
  * A built page that does not declare the language it is written in: the project's own server hook or page template
  * took over from the generated ones. Null when it declares its own.
  */
+/** Why a built page can say another language or direction than its own: the project's src/app.html or server hook. */
+const LANGUAGE_CAUSE = `the project’s own src/app.html or server hook may be setting it. A server hook of the project’s own needs to run ${SITE_HANDLE} (see README.md).`;
+
 export function pageLanguageWarning(state: ProjectState, page: PageDoc, html: string): string | null {
   const expected = pageLanguage(state.site, page);
   const found = declaredLanguage(html);
   if (!found || !sameLanguage(found, expected))
-    return `“${page.title}” (${page.route}) was built ${found ? `as “${found}”` : 'without a language'}, not “${expected}”: the project’s own src/app.html or server hook may be setting it.`;
+    return `“${page.title}” (${page.route}) was built ${found ? `as “${found}”` : 'without a language'}, not “${expected}”: ${LANGUAGE_CAUSE}`;
   // The way its text runs, which browsers otherwise take as left to right.
   const dir = pageDirection(state.site, page);
   const foundDir = declaredDirection(html)?.toLowerCase() ?? null;
   if (foundDir === dir) return null;
   const as = (d: string | null) => (d === 'rtl' ? 'right to left' : d === 'ltr' ? 'left to right' : d ? `“${d}”` : 'without a direction');
-  return `“${page.title}” (${page.route}) was built ${foundDir ? `to run ${as(foundDir)}` : 'without a direction'}, not ${as(dir)}: the project’s own src/app.html or server hook may be setting it.`;
+  return `“${page.title}” (${page.route}) was built ${foundDir ? `to run ${as(foundDir)}` : 'without a direction'}, not ${as(dir)}: ${LANGUAGE_CAUSE}`;
 }
 
 /** Warnings for a source export whose links would stop the exported project from building. */
@@ -2068,11 +2118,23 @@ export function ownNotFoundFileNote(project: string): string | null {
     : null;
 }
 
+/**
+ * The note for an editable project whose server hook of its own does not name the site's (SITE_HANDLE), or null. A
+ * build of it then runs theirs alone: the not-found page keeps the addresses it was built with, and pages in another
+ * language say the site's. A hook that runs it from another file of its own is told to check, never stopped.
+ */
+export async function ownServerHookNote(dir: string): Promise<string | null> {
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const own = ownServerHook(dir, Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE));
+  if (!own || ((await readExportText(join(dir, own))) ?? '').includes(SITE_HANDLE)) return null;
+  return `The project's own server hook, ${own}, takes the place of the generated one and does not name ${SITE_HANDLE}. Unless it runs it, a build of the exported project leaves ${NOT_FOUND_FILE} with addresses that break at deeper missing addresses, and pages written in another language without their own language. Run it beside yours with sequence(), as Server hook in README.md shows.`;
+}
+
 /** The export note for a not-found page that keeps addresses relative to where it was built, or null. */
 export function notFoundAddressWarning(html: string): string | null {
   const left = pageRelativeAddresses(html);
   return left.length
-    ? `${NOT_FOUND_FILE}, the not-found page, still uses addresses relative to where it was built (${left[0]}), so at deeper missing addresses it may show without the site's styles and links. This happens when the project has a server hook of its own (src/hooks.server) in place of the generated one.`
+    ? `${NOT_FOUND_FILE}, the not-found page, still uses addresses relative to where it was built (${left[0]}), so at deeper missing addresses it may show without the site's styles and links. This happens when the project has a server hook of its own (src/hooks.server) that does not run ${SITE_HANDLE} from ${RUNTIME_DIR}/${SITE_HANDLE_FILE} (see README.md).`
     : null;
 }
 
@@ -2099,9 +2161,10 @@ export function notFoundHostNote(base: string, host: RedirectHost): string {
  * SvelteKit runs one server hook. The project's files can be a step behind a hook of its own (src/hooks.server.ts, or
  * a file or folder named src/hooks.server) added or removed since SiteOrigin Builder last wrote them: a staged copy
  * settles it as the next regeneration would, leaving the generated src/hooks.server.js out beside the project's own,
- * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has.
+ * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has. The site's own
+ * server hook, which either runs, is a library file the copy always has.
  */
-export async function settleServerHook(dir: string, state: ProjectState): Promise<void> {
+export async function settleServerHook(dir: string): Promise<void> {
   const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
   const files = (manifest.files ??= {});
   const own = ownServerHook(dir, Object.hasOwn(files, SERVER_HOOK_FILE));
@@ -2109,7 +2172,7 @@ export async function settleServerHook(dir: string, state: ProjectState): Promis
     await fs.rm(join(dir, SERVER_HOOK_FILE), { force: true });
     delete files[SERVER_HOOK_FILE];
   } else if (!own && !existsSync(join(dir, SERVER_HOOK_FILE))) {
-    const hook = generateServerHook(state);
+    const hook = generateServerHook();
     await fs.writeFile(join(dir, SERVER_HOOK_FILE), hook);
     files[SERVER_HOOK_FILE] = sha(hook);
   } else return;

@@ -6,7 +6,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, PublishedDoc, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { BRIEF_FILE } from '@shared/brief';
+import { BRIEF_FILE, briefWriteRefusal, type BriefWriteGrant } from '@shared/brief';
 import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -2970,9 +2970,10 @@ export class ProjectSession extends EventEmitter {
     const prev = this.generated.files;
     const inflight = this.generated.pending ?? {};
     const known = (path: string) => !!prev[path] || !!inflight[path];
-    // SvelteKit runs one server hook: a project with its own keeps it, and the generated one is left out (the
-    // not-found page then keeps the addresses it was built with, and the export says so or, for a site with pages in
-    // another language, stops).
+    // SvelteKit runs one server hook: a project with its own keeps it, and the generated one is left out. The site's
+    // server hook is still written to the library, for the project's own to run (see generateServerHook); one that
+    // does not leaves the not-found page with the addresses it was built with, and pages without their languages, which
+    // the export of the website says.
     if (ownServerHook(this.dir, known(SERVER_HOOK_FILE))) for (const files of [clean, dev]) files.delete(SERVER_HOOK_FILE);
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
@@ -3608,7 +3609,8 @@ export class ProjectSession extends EventEmitter {
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
-   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
+   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts), and `briefWrite`
+   * the one brief field its brief tool composed (see shared/brief).
    * `formRouting` is the grant `grantFormRouting` gave when the user allowed an AI batch that changes where a contact
    * form sends: used up by this call, whatever it does.
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
@@ -3622,6 +3624,7 @@ export class ProjectSession extends EventEmitter {
       componentImport?: ComponentImport;
       collectionWrite?: CollectionWriteGrant;
       sourceWrite?: SourceWriteGrant;
+      briefWrite?: BriefWriteGrant;
       sourceSync?: SourceSyncGrant;
       formRouting?: FormRoutingGrant;
       stillWanted?: () => boolean;
@@ -3719,9 +3722,12 @@ export class ProjectSession extends EventEmitter {
       // And a component's placement role, chosen in Component Studio (#661).
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.setInsertAs'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.setInsertAs is only for the editor.', recoverable: true } };
-      // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
-      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
+      // The project brief is the author's own (#518): the assistant reads it as background (#519), and changes it only
+      // as its brief tool composed, when the author asked (#1407).
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update')) {
+        const refused = opts.briefWrite ? briefWriteRefusal(ops, opts.briefWrite, this.state.brief) : 'The project brief can only be changed in the editor, or with update_project_brief when the author asks for it.';
+        if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
+      }
       // So are external sources' settings (#676), which name the secrets the user signs in with, apart from the one
       // mapping or converter the assistant's source tool tested (#680), as it tested it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove')) {

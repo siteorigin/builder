@@ -11,7 +11,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { getTheme } from '@catalogue/index';
-import { FONTS_DIR, SERVER_HOOK_FILE, generateProject, generateServerHook, packFileCopies, preloadFontFiles } from '@generator/index';
+import { FONTS_DIR, RUNTIME_DIR, SITE_HANDLE, SITE_HANDLE_FILE, generateProject, generateSiteHandle, packFileCopies, preloadFontFiles } from '@generator/index';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
 import { GenerationCache } from '@generator/cache';
 import { NOT_FOUND_ROUTE } from '@shared/not-found';
@@ -23,13 +23,16 @@ const INTER = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
 const FRAUNCES = `${FONTS_DIR}/fraunces-latin-wght-normal.woff2`;
 const PLAYFAIR = `${FONTS_DIR}/playfair-display-latin-wght-normal.woff2`;
 
+/** The library file that exports the site's server hook, which src/hooks.server.js runs. */
+const HANDLE = `${RUNTIME_DIR}/${SITE_HANDLE_FILE}`;
+
 const roots: string[] = [];
 afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 type Preload = (input: { type: string; path: string; filename?: string }) => boolean;
 type ResolveOptions = { preload?: Preload; transformPageChunk?: (c: { html: string; done: boolean }) => string };
 
-/** The options the generated server hook hands SvelteKit's `resolve` for a page at `routeId`, as the build runs it. */
+/** The options the site's generated server hook hands SvelteKit's `resolve` for a page at `routeId`, as the build runs it. */
 async function resolveOptions(hookSource: string, routeId: string): Promise<ResolveOptions | undefined> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), 'font-preloads-'));
@@ -37,8 +40,8 @@ async function resolveOptions(hookSource: string, routeId: string): Promise<Reso
   writeFileSync(join(dir, 'env.mjs'), 'export const building = true;\n');
   writeFileSync(join(dir, 'not-found.mjs'), NOT_FOUND_JS);
   const hook = join(dir, 'hooks.server.mjs');
-  writeFileSync(hook, hookSource.replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))).replace("'./lib/siteorigin/runtime/not-found.js'", JSON.stringify(join(dir, 'not-found.mjs'))));
-  const { handle } = await import(/* @vite-ignore */ hook);
+  writeFileSync(hook, hookSource.replace("'$app/env'", JSON.stringify(join(dir, 'env.mjs'))).replace("'./not-found.js'", JSON.stringify(join(dir, 'not-found.mjs'))));
+  const handle = (await import(/* @vite-ignore */ hook))[SITE_HANDLE];
   let seen: ResolveOptions | undefined;
   handle({ event: { route: { id: routeId }, url: new URL(`http://sveltekit-prerender${routeId}`) }, resolve: (_e: unknown, o?: ResolveOptions) => ((seen = o), '') });
   return seen;
@@ -55,7 +58,7 @@ describe('font preloads', () => {
 
   it('are asked for by every page of the website, beside SvelteKit’s own scripts and styles', async () => {
     const s = fresh();
-    const hook = generateProject(s).get(SERVER_HOOK_FILE)!;
+    const hook = generateProject(s).get(HANDLE)!;
     for (const route of ['/', '/about/', NOT_FOUND_ROUTE]) {
       const preload = (await resolveOptions(hook, route))?.preload;
       expect(preload, route).toBeTypeOf('function');
@@ -75,7 +78,7 @@ describe('font preloads', () => {
   it('are asked for on pages in another language too, which keep their own <html lang>', async () => {
     const start = fresh();
     const s = run(start, { type: 'page.update', pageId: start.site.pageOrder[1], language: 'fr' } as EditOperation);
-    const hook = generateServerHook(s);
+    const hook = generateSiteHandle(s);
     // The route SvelteKit gives the page in French, as the hook lists it.
     const french = Object.keys(JSON.parse(hook.match(/const LANGUAGES = (\{[^;]*\});/)![1]))[0];
     const opts = await resolveOptions(hook, french);
@@ -86,18 +89,18 @@ describe('font preloads', () => {
 
   it('are named the same in the editor’s preview, whose dev server has no fonts to ask about', () => {
     const preload = (hook: string) => hook.match(/\nconst FONTS = [^\n]*\n/)?.[0];
-    expect(preload(generateProject(fresh(), { instrument: true }).get(SERVER_HOOK_FILE)!)).toBe(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!));
-    expect(preload(generateProject(fresh()).get(SERVER_HOOK_FILE)!)).toContain(INTER);
+    expect(preload(generateProject(fresh(), { instrument: true }).get(HANDLE)!)).toBe(preload(generateProject(fresh()).get(HANDLE)!));
+    expect(preload(generateProject(fresh()).get(HANDLE)!)).toContain(INTER);
   });
 
   it('follow a changed font from the cache as from scratch', () => {
     const cache = new GenerationCache();
     const s = fresh();
-    expect(generateProject(s, {}, cache).get(SERVER_HOOK_FILE)).toContain(FRAUNCES);
+    expect(generateProject(s, {}, cache).get(HANDLE)).toContain(FRAUNCES);
     const next = run(s, { type: 'token.set', tokenId: 'font.display', value: stack('Playfair Display') } as EditOperation);
-    const hook = generateProject(next, {}, cache).get(SERVER_HOOK_FILE)!;
+    const hook = generateProject(next, {}, cache).get(HANDLE)!;
     expect(hook).toContain(PLAYFAIR);
-    expect(hook).toBe(generateProject(next).get(SERVER_HOOK_FILE));
+    expect(hook).toBe(generateProject(next).get(HANDLE));
   });
 
   it('name one file when body text and headings share a family', () => {
@@ -146,7 +149,7 @@ describe('font preloads', () => {
   it('leave the server hook as it was while the site shows only system fonts', async () => {
     const s = run(fresh(), { type: 'token.set', tokenId: 'font.body', value: 'system-ui, sans-serif' } as EditOperation, { type: 'token.set', tokenId: 'font.display', value: 'Georgia, serif' } as EditOperation);
     expect(preloadFontFiles(s)).toEqual([]);
-    const hook = generateServerHook(s);
+    const hook = generateSiteHandle(s);
     expect(hook).not.toContain('preload');
     expect(hook).toContain('return resolve(event);');
     expect(await resolveOptions(hook, '/')).toBeUndefined();

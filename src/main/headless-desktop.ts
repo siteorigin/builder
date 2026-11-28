@@ -143,8 +143,8 @@ export interface IntentEvent {
   type: 'intent';
   seq: number;
   at: string;
-  kind: 'open-external' | 'reveal' | 'open-path';
-  /** The address (open-external) or path (reveal, open-path) the app handed over. */
+  kind: 'open-external' | 'reveal' | 'open-path' | 'popup-menu';
+  /** The address (open-external), path (reveal, open-path), or where the application menu was asked to open, as `x,y` in the window's pixels (popup-menu). */
   target: string;
 }
 
@@ -606,7 +606,10 @@ export function createDesktopFixtures(opts: DesktopOptions = {}) {
     }
   };
 
-  return { fixtures, dialog, shell, windows };
+  /** The application menu asked to open over the editor window (#1355): recorded, never shown. */
+  const menuPopup = (at: { x: number; y: number }) => intent('popup-menu', `${at.x},${at.y}`);
+
+  return { fixtures, dialog, shell, windows, menuPopup };
 }
 
 export type HeadlessDesktop = ReturnType<typeof createDesktopFixtures>;

@@ -367,7 +367,7 @@ export async function projectPublication(dir: string, state: ProjectState): Prom
   if (cleaned.marked) return stop(`The code of ${cleaned.marked.name} could not be read, so the editor's markers could not be taken out of it. Fix its code, then prepare the publication again.`);
   projected = cleaned.state;
   await leaveOutDrafts(dir, live, projected);
-  await settleServerHook(dir, projected);
+  await settleServerHook(dir);
   // A route file the generator does not own (one of the author's own beside a draft's page, or a page it no longer
   // lists as its own) would still answer at an address kept back.
   // A route group's folder (`(shop)`) is no part of the address. An archive's own page at such an address, or an old

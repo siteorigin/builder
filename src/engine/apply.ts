@@ -81,6 +81,7 @@ import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
+import { BUSINESS_DETAILS, carryBusinessDetails, detailTexts, fillBusinessDetails, remapDetailKeeps, watchDetailKeeps } from './business-details';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
@@ -1362,6 +1363,7 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
         const before = n.props;
         n.props = freshListIds(def.properties, n.props);
         remapItemStyles(n, before);
+        remapDetailKeeps(n, before);
       }
     }
     to.nodes[nid] = n;
@@ -1803,6 +1805,9 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
       // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
       if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[], new Set(), formDefaults(def));
     }
+    // A section placed once Site details has the business's details shows them where its design shows the samples;
+    // the values the insert gives are the placement's own.
+    if (op.owner.kind !== 'component') fillBusinessDetails(state, op.owner, inst, op.props);
     nodes = [inst];
   }
   // The editor names the node it inserts when the same batch goes on to fill it (an image and its picture).
@@ -1850,7 +1855,7 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if (!plan.keepAppear) delete node.appear;
   // A form's tool name and description stay with it when it becomes another form, and go when it becomes something else.
   if (!isWebMcpForm(target)) delete node.webmcp;
-  // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
+  // Text kept through a site rename or a change of its details names the old design's fields: the new one follows.
   delete node.keepsText;
   return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
 }
@@ -2945,6 +2950,8 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
+  // What the edit changes of a value kept through changes of the site's details is the author's again (#1368).
+  const settleKeeps = watchDetailKeeps(node, op.prop, Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : schema.default, schema);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
@@ -2969,6 +2976,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     const followed = followItemLinks(state, def, op, before, next, sent, ctx);
     list[idx] = next;
     node.props[op.prop] = [...list];
+    settleKeeps(node.props[op.prop]);
     return followed.length ? { followed } : {};
   }
   if (op.field !== undefined) {
@@ -2979,10 +2987,12 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     if (isBinding(own)) fail(`${schema.label} comes from the enclosing component's own property; edit it there.`);
     const current = own && typeof own === 'object' && !Array.isArray(own) ? own : schema.default;
     node.props[op.prop] = normalizeProp(schema, { [op.field]: op.value }, state, `${def.name} → ${schema.label}`, current);
+    settleKeeps(node.props[op.prop]);
     return {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   releaseKept(node, op.prop);
+  settleKeeps(node.props[op.prop]);
   return {};
 }
 
@@ -3338,6 +3348,8 @@ function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
+  // The site's business details as its sections show them before the change (the hours are written in its language).
+  const details = detailTexts(s);
   if (op.name !== undefined) {
     // One line, as the header, the footer and the browser title show it.
     const name = siteNameText(op.name);
@@ -3441,6 +3453,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (next.value) s.identity = next.value;
     else delete s.identity;
   }
+  // The sections, links and footer that showed a detail (or its sample) show its new value (#1368); their own stay.
+  // An edit of a detail also replaces a sample still shown of it when it leaves its value as it was (a section pasted in).
+  const named = op.identity ? BUSINESS_DETAILS.filter((d) => Object.hasOwn(op.identity!, d) && op.identity![d] !== undefined) : [];
+  const problem = carryBusinessDetails(state, details, named);
+  if (problem) fail(problem);
   return {};
 }
 

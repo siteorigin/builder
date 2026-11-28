@@ -21,6 +21,7 @@ import { normalizeProp } from '@engine/values';
 import { codeTextField, parseCodeTextPath } from '@shared/code-text';
 import type { CollectionWriteGrant, LayoutOwner } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
+import type { BriefWriteGrant } from '@shared/brief';
 
 /** A part selected inside a placement: the run may change only what that part shows. */
 export interface PartAuthority {
@@ -648,6 +649,9 @@ export interface AuthorityGrants {
   /** The one source mapping or converter the source tool's call tested (see agent/source-tools.ts): the project
    *  refuses every other source change from a run. */
   sourceWrite?: SourceWriteGrant;
+  /** The one brief field update_project_brief composed (see agent/brief-tools.ts): the project refuses every other
+   *  brief change from a run. */
+  briefWrite?: BriefWriteGrant;
 }
 
 /**

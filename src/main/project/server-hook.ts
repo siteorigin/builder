@@ -21,8 +21,7 @@ const isFile = (path: string) => {
 /**
  * A server hook of the project's own, if it has one: under another name than the generated hook, or at its path
  * when SiteOrigin Builder did not write it there (`claimed` says whether it did). SvelteKit runs only one server hook,
- * so the generated one is never written beside it: the not-found page then keeps the addresses it was built with, and
- * a website with pages in another language cannot be exported.
+ * so the generated one is never written beside it: the project's own runs the site's (SITE_HANDLE) beside its own.
  */
 export function ownServerHook(dir: string, claimed: boolean): string | undefined {
   return OTHER_HOOKS.find((p) => isFile(join(dir, ...p.split('/')))) ?? (!claimed && isFile(join(dir, ...SERVER_HOOK_FILE.split('/'))) ? SERVER_HOOK_FILE : undefined);
