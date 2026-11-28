@@ -1,13 +1,13 @@
 import './CommandMenu.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, ListChecks, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
+import { BookmarkPlus, ListChecks, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, MousePointer2, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { showGetStarted } from './FirstSteps';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
+import { insert, pageOutOfSight, selectPage, askAiAbout, chooseMode, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { platformKeys } from './CopyPaste';
@@ -218,7 +218,13 @@ export function CommandMenu() {
       { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => projectHistory('redo') },
       { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', action: 'Start a new project', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
       { id: 'openproject', kbd: '⌘O', label: 'Open project…', action: 'Choose a project to open', group: 'Project', icon: <FolderOpen />, run: () => sendCommand('open-project') },
-      { id: 'preview', label: mode === 'edit' ? 'Switch to preview' : 'Switch to editing', keywords: 'edit preview mode', action: undefined, group: 'View', icon: <Eye />, run: () => setMode(useStore.getState().mode === 'edit' ? 'preview' : 'edit') },
+      // From the SEO view, either mode leaves it, as the toolbar's Mode toggle does (#1583).
+      ...(leftTab === 'seo'
+        ? [
+            { id: 'edit', label: 'Switch to editing', keywords: 'edit mode leave seo', action: undefined, group: 'View', icon: <MousePointer2 />, run: () => chooseMode('edit') },
+            { id: 'preview', label: 'Switch to preview', keywords: 'preview mode leave seo', action: undefined, group: 'View', icon: <Eye />, run: () => chooseMode('preview') }
+          ]
+        : [{ id: 'preview', label: mode === 'edit' ? 'Switch to preview' : 'Switch to editing', keywords: 'edit preview mode', action: undefined, group: 'View', icon: <Eye />, run: () => setMode(useStore.getState().mode === 'edit' ? 'preview' : 'edit') }]),
       { id: 'desktop', label: 'Preview at desktop width', group: 'View', icon: <Monitor />, run: () => setViewport(VIEWPORT_PRESETS.desktop) },
       { id: 'tablet', label: 'Preview at tablet width', group: 'View', icon: <Tablet />, run: () => setViewport(VIEWPORT_PRESETS.tablet) },
       { id: 'phone', label: 'Preview at phone width', group: 'View', icon: <Smartphone />, run: () => setViewport(VIEWPORT_PRESETS.phone) },
@@ -330,7 +336,7 @@ export function CommandMenu() {
   const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
   const pasteable = useStore((s) => !!copiedHere(s));
   // The page under the post writer or the SEO view, or behind a post's preview, is out of sight: nothing is copied from
-  // it, pasted into it or inserted on it (#578, #700). The SEO view also keeps the canvas's mode as it was.
+  // it, pasted into it or inserted on it (#578, #700). Edit and Preview leave the SEO view, as the toolbar does (#1583).
   const workspace = useStore(activeWorkspace);
   // The page on screen: none while a workspace is in front of it, so going to the page under it is offered.
   const pageShown = workspace ? null : pageId;
@@ -338,7 +344,7 @@ export function CommandMenu() {
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
-    if (workspace === 'seo' && (c.id === 'copy' || c.id === 'paste' || c.inserts || c.id === 'preview' || c.id === 'desktop' || c.id === 'tablet' || c.id === 'phone')) return 'Not in the SEO view';
+    if (workspace === 'seo' && (c.id === 'copy' || c.id === 'paste' || c.inserts || c.id === 'desktop' || c.id === 'tablet' || c.id === 'phone')) return 'Not in the SEO view';
     if (workspace && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return workspace === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
     if (c.inserts) return readOnly ? 'Read-only' : c.refused;
     if (c.id === `panel:${leftTab}`) return 'Already open';

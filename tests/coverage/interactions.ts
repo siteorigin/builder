@@ -504,11 +504,13 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Duplicate a page, keep one as a draft, or delete one',
     start: 'Business site, a page’s options open in Pages',
-    routes: ['item:Pages:Duplicate', 'item:Pages:Make draft', 'item:Pages:Publish page', 'item:Pages:Delete page…'],
+    routes: ['item:Pages:Duplicate', 'item:Pages:Duplicate as draft', 'item:Pages:Make draft', 'item:Pages:Publish page', 'item:Pages:Delete page…'],
     outcome: 'A duplicated draft stays a draft; a draft is previewed but left out of the export and sitemap, and Home can never be one; the export lists drafts left out and published links to them; links to a deleted page go to the replacement chosen, and removing Home hands Home to the first published page',
     scenario: 'unit fixtures · none',
     proof: [
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'keeps a duplicated draft a draft' },
+      { test: 'tests/unit/articles.test.ts', kind: 'unit', step: 'makes a duplicate a draft on request, and otherwise keeps the original publication' },
+      { test: 'tests/unit/live-capabilities.test.ts', kind: 'unit', step: 'keeps a draft duplicate to the host' },
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'never makes the Home page a draft' },
       { test: 'tests/unit/draft-pages.test.ts', kind: 'unit', step: 'lists the pages to publish, the drafts left out, and published links that go to a draft' },
       { test: 'tests/unit/page-remove-links.test.ts', kind: 'unit' },
@@ -606,6 +608,20 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the chosen post deleted while the view is open: the view falls back to nothing chosen' }
     ],
     gaps: [{ missing: 'The view lists and chooses documents; their previews, search settings and a site-wide overview there are still to come', owner: 'pages', issue: 699 }]
+  },
+  {
+    id: 'pages.seo-mode',
+    area: 'pages',
+    intent: 'Move between editing, previewing and the SEO view from the toolbar',
+    start: 'Business site with a blog post, a section of Home selected, Layers showing',
+    routes: ['toolbar:SEO', 'toolbar:Edit', 'toolbar:Preview', 'command:edit', 'command:preview'],
+    outcome: 'The Mode toggle offers Edit, Preview and SEO as one radio group; SEO opens the SEO view and is chosen while it is open, however it was opened; Edit or Preview, from the toggle or the command menu, leaves the view for the canvas in that mode with the sidebar back on the panel the view replaced and the selection back; a live session’s guest has no SEO option',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the toolbar’s Mode toggle opens the view, and Edit or Preview leaves it for the canvas in that mode (#1583)' },
+      { test: 'tests/unit/toolbar-mode.test.ts', kind: 'unit' },
+      { test: 'tests/unit/toolbar-place-browser.test.ts', kind: 'unit' }
+    ]
   },
   {
     id: 'pages.seo-health',

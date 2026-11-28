@@ -6,6 +6,7 @@ import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
 import type { FirstStepsRecord } from './first-steps';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
+import type { PreviewControlRequest, PreviewControlResult } from './preview-control';
 import type { ComponentThumb } from './component-thumbs';
 import type { ProjectChange } from './project-feed';
 import type { ThemePack } from '@catalogue/pack';
@@ -452,6 +453,8 @@ export interface LocalWorkspaceState {
   chatDrafts?: Record<string, string>;
   /** Library images attached to those unsent messages, by asset ID, keyed the same way. */
   chatImages?: Record<string, string[]>;
+  /** The AI conversations in which the author allowed the whole site, by ID (#1412): they keep it when reopened. */
+  chatSiteGrants?: Record<string, true>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
   chatConversation?: string;
   /** Whether the next AI message was set to be a read-only question, so an unsent question stays one. */
@@ -865,6 +868,14 @@ export interface FormRoutingPrompt {
   }>;
 }
 
+/** Plain affirmative answers that grant a scope-widening question (or the app's own) when typed instead of clicked. */
+export const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+/** Whether an answer to a scope-widening question allows it: its first choice, or a plain typed yes. */
+export function grantsWider(q: Pick<ChatQuestion, 'widen' | 'choices'> | null | undefined, answer: unknown): boolean {
+  return !!q?.widen && typeof answer === 'string' && (answer === q.choices?.[0] || TYPED_YES.test(answer));
+}
+
 /** A turn's questions in order, including one stored by an earlier version as `question`. */
 export function turnQuestions(m: Pick<ChatMessage, 'questions' | 'question'>): ChatQuestion[] {
   if (Array.isArray(m.questions)) return m.questions;
@@ -1089,6 +1100,8 @@ export interface PostImportPreview {
   redirectsPending: number;
   /** Old addresses that can't keep working (each post's note says why). */
   redirectsLost?: number;
+  /** New posts that bring search settings of their own from the site's SEO plugin (a search title, description, canonical address or noindex). */
+  searchSettings: number;
   /** What is not imported at all. */
   skipped: string[];
   /**
@@ -1794,6 +1807,8 @@ export interface BuilderApi {
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number; revision?: number } & InspectLayoutOptions) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
   on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) => void): () => void;
+  /** The assistant's set_preview (#1405): change the preview controls, and answer with previewControlResult. */
+  on(channel: 'preview-control:request', cb: (req: PreviewControlRequest) => void): () => void;
   /** The main process no longer waits for this batch: start no more of its steps. */
   on(channel: 'component-preview:cancel', cb: (req: { requestId: string }) => void): () => void;
   /** A File menu command: confirm it with menuReceived(id); the same id may be offered again until then. */
@@ -1828,6 +1843,7 @@ export interface BuilderApi {
   on(channel: 'notes:changed', cb: (notes: LiveNotes) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
+  previewControlResult(requestId: string, result: PreviewControlResult): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
   menuReady(): void;
   /** The File menu command `id` arrived, so the main process stops offering it. */
